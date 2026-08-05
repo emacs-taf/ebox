@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emacs-nox python3
+
+      - name: Run local verification suite
+        run: make ci EMACS=emacs PYTHON=python3
+
+      - name: Run package-lint
+        run: make package-lint-install EMACS=emacs
+
+  native-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust verification toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+
+      - name: Check native formatting
+        run: cargo +stable fmt --manifest-path native/Cargo.toml -- --check
+
+      - name: Lint native targets
+        run: cargo +stable clippy --locked --manifest-path native/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test native runtime
+        run: cargo +stable test --locked --manifest-path native/Cargo.toml
+
+      - name: Build native module
+        run: cargo +stable build --locked --manifest-path native/Cargo.toml --release
+
+      - name: Verify platform module artifact
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) test -f native/target/release/libebox_native_reflow.so ;;
+            macOS) test -f native/target/release/libebox_native_reflow.dylib ;;
+            Windows) test -f native/target/release/ebox_native_reflow.dll ;;
+            *) exit 1 ;;
+          esac
+
+  native-msrv:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust minimum supported toolchain
+        run: rustup toolchain install 1.82.0 --profile minimal
+
+      - name: Test native runtime at MSRV
+        run: cargo +1.82.0 test --locked --manifest-path native/Cargo.toml
+
+      - name: Build native module at MSRV
+        run: cargo +1.82.0 build --locked --manifest-path native/Cargo.toml --release
+
+      - name: Verify MSRV platform module artifact
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) test -f native/target/release/libebox_native_reflow.so ;;
+            macOS) test -f native/target/release/libebox_native_reflow.dylib ;;
+            Windows) test -f native/target/release/ebox_native_reflow.dll ;;
+            *) exit 1 ;;
+          esac

@@ -1,0 +1,7 @@
+(box :content "Playground file"
+     :box-sizing border-box
+     :padding (1 (12))
+     :border t
+     :border-color "#2563EB"
+     :bgcolor "#EFF6FF"
+     :color "#1E3A8A")

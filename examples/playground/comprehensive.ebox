@@ -1,0 +1,45 @@
+(column
+ (box :content "Ebox comprehensive DSL showcase\nThe outer sections omit :width so Playground viewport sizing drives the layout."
+      :padding (1 (16)) :border "#334155"
+      :bgcolor "#F8FAFC" :color "#0F172A" :text-align center)
+
+ (spacer :height 1)
+
+ (box :content "Width rule in this file\nContainer sections use auto width. Fixed widths remain only where the example demonstrates exact item sizing, basis, min-width, or max-width."
+      :padding (0 (14)) :border "#64748B"
+      :bgcolor "#F8FAFC" :color "#111827" :wrap-mode word)
+
+ (spacer :height 1)
+
+ (flex
+  :margin (1 0 0 1) :padding (1 (8))
+  :border "#475569" :bgcolor "#F8FAFC"
+  :flex-flow (row wrap)
+  :justify-content space-between :align-items center
+  :align-content flex-start :row-gap 1 :column-gap (12)
+  (item
+   :order -1 :flex-basis (270) :align-self flex-start
+   (box :content "item order -1\n:flex-basis 270\nalign-self start"
+        :width (270) :padding (0 (8))
+        :border "#BE185D" :bgcolor "#FCE7F3" :color "#831843"
+        :wrap-mode word))
+  (item
+   :flex (1 1 (220))
+   (box :content "item :flex (1 1 220)\ngrow shrink basis"
+        :width (220) :height 4
+        :padding (0 (8)) :border "#1D4ED8"
+        :bgcolor "#DBEAFE" :color "#111827" :wrap-mode word))
+  (item
+   :flex-grow 2 :flex-shrink 1 :flex-basis (240)
+   :align-self center
+   (box :content "item grow 2\nshrink 1\nbasis 240"
+        :width (240) :height 4 :padding (0 (8))
+        :border "#B45309" :bgcolor "#FEF3C7" :color "#78350F"
+        :wrap-mode word))
+  (item :flex-shrink 3
+        :flex-basis (190)
+        :align-self flex-end
+        (box :content "item shrink 3\nbasis 190\nalign-self flex-end"
+             :width (190) :height 4 :padding (0 (8))
+             :border "#15803D" :bgcolor "#DCFCE7" :color "#14532D"
+             :wrap-mode word))))

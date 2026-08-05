@@ -1,0 +1,140 @@
+# Ebox user guide
+
+Ebox is the low-level box, layout, and buffer-rendering package. Use it directly when an application needs precise geometry or use it as the rendering substrate below ETAF. This guide intentionally does not introduce Components, reactive state, behaviors, or application data.
+
+## 1. Load the package
+
+```elisp
+(add-to-list 'load-path "/path/to/github/ebox")
+(require 'ebox)
+```
+
+Loading defines the public package and its pure layout modules. It does not create a buffer, install a mode, build Rust code, or change the current editing buffer.
+
+## 2. Build a node tree
+
+`ebox-create` makes a node. Container helpers accept child nodes and return another node:
+
+```elisp
+(ebox-column
+ (ebox-create :content "Title"
+              :face 'bold
+              :color "#263244"
+              :bgcolor "#F4F6FB"
+              :padding '(1 2))
+ (ebox-row
+  (ebox-create :content "Left" :width 12)
+  (ebox-create :content "Right" :width 12)))
+```
+
+The public shape is data, not rendered text. A node may contain `:content`, `:ebox-content-node`, or child nodes supplied to a container. Use `:key` when siblings have stable application identity and `:host-ref` when an application needs a public handle position after rendering.
+
+## 3. Dimensions and surface properties
+
+Ordinary horizontal numbers are character columns. A one-element list denotes a pixel width; vertical numbers are line counts. Padding and margins accept scalar or CSS-like 1–4-value forms. Borders are width, style, and color:
+
+```elisp
+(ebox-create
+ :content "A readable panel"
+ :width '(420)
+ :padding '(1 2)
+ :margin '(0 1)
+ :border '((1) solid "#8A93A6")
+ :color "#263244"
+ :bgcolor "#FFFFFF")
+```
+
+Keep foreground and background explicit on tinted surfaces. `:face` may be a face symbol or a face plist; use `:color` and `:bgcolor` when the surface itself carries semantic colors.
+
+## 4. Row, column, flex, and Grid
+
+Use row and column for simple one-dimensional composition. Use flex when free space is distributed among items. Use Grid when two-dimensional tracks or stable placement matter:
+
+```elisp
+(ebox-grid
+ :width '(640)
+ :grid-template-columns '((200) 1fr 1fr)
+ :grid-template-rows '(1 1)
+ :gap '(1 (12))
+ :padding '(1 2)
+ :border '((1) solid "#8A93A6")
+ (ebox-create :content "Header" :grid-column 1 :grid-column-span 3)
+ (ebox-create :content "Navigation" :grid-column 1 :grid-row 2)
+ (ebox-create :content "Main" :grid-column 2 :grid-row 2)
+ (ebox-create :content "Aside" :grid-column 3 :grid-row 2))
+```
+
+Grid tracks can be fixed, fractional, `auto`, `minmax`, or repeated. Explicit placement is one-based. Use positive integer spans and let implicit tracks fill omitted positions.
+
+## 5. Render text or a buffer
+
+`ebox-render` is pure with respect to buffers and returns propertized text. `ebox-render-to-buffer` owns the initial buffer publication:
+
+```elisp
+(let ((node (ebox-column
+             (ebox-create :content "Ready" :width '(240))
+             (ebox-create :content "Rendered by Ebox"))))
+  (ebox-render node)
+  (ebox-render-to-buffer "*Ebox Demo*" node))
+```
+
+The returned text carries display, face, region, and identity properties needed by Ebox. Do not edit those properties by hand.
+
+## 6. Update an existing buffer
+
+Build a fresh root tree and commit it to the existing buffer:
+
+```elisp
+(ebox-commit
+ "*Ebox Demo*"
+ (ebox-column
+  (ebox-create :content "Updated" :key 'title :width '(240))))
+```
+
+Ebox compares stable keys and region identity, chooses the smallest safe patch, and records a report:
+
+```elisp
+(ebox-buffer-update-report "*Ebox Demo*")
+```
+
+If a candidate cannot be proven safe, Ebox escalates to an owner or root rerender. A failed commit must leave the previously published tree and buffer intact.
+
+## 7. Selectors and handles
+
+Selectors query the rendered tree and return public handles. They do not edit the buffer or own application state. Prefer explicit keys and refs for application identity; use selectors for inspection and bounded updates.
+
+## 8. Standalone `.ebox` files
+
+`ebox-build` reads one data-oriented Ebox form:
+
+```elisp
+(ebox-build
+ '(grid :width (640)
+        :grid-template-columns ((200) 1fr 1fr)
+        :gap (1 (12))
+        (box :content "A")
+        (box :content "B")
+        (box :content "C")))
+```
+
+The files under `examples/playground/` are executable fixtures for this syntax. They remain low-level layout examples and do not require the ETAF framework.
+
+## 9. Optional native reflow
+
+The Rust module accelerates eligible reflow work; it is not required for correctness. Load Ebox normally, run `make native-build` when you want a local module, and configure `ebox-native-reflow-module-path` if the module is outside its default location. Ebox keeps the Elisp path as the exact fallback and never builds native code while loading.
+
+## 10. Public boundary
+
+Use public `ebox-*` functions and constructors. Names beginning with `ebox--` are private implementation details and may change. ETAF is the sibling package for Components, View trees, state, behavior, Context, data, and application lifecycle; Ebox should stay focused on geometry and publication.
+
+## 11. Verification
+
+From the repository root:
+
+```sh
+make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+```
+
+Use `make grid-tests`, `make dsl-tests`, or `make visual-check-tests` for focused changes. Use `make native-rust-tests` after changing the native module.

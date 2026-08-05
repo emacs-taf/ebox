@@ -1,0 +1,10 @@
+*.elc
+__pycache__
+scripts/ebox-scroll-profile.el
+native/target/
+
+# Local oh-my-codex runtime state/logs.
+.omx/
+
+# Local isolated implementation worktrees.
+.worktrees/
