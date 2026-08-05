@@ -12,6 +12,30 @@
 (require 'ebox-flex)
 (require 'ebox-grid)
 
+(defun ebox--dsl-unquote-value (value)
+  "Unquote one static DSL property VALUE when it is quoted data."
+  (if (and (consp value)
+           (eq (car value) 'quote)
+           (null (cddr value)))
+      (cadr value)
+    value))
+
+(defun ebox--dsl-unquote-properties (items)
+  "Unquote static property values in top-level DSL ITEMS.
+Structural child forms remain untouched; only values immediately following
+keyword properties are normalized."
+  (let (result)
+    (while items
+      (let ((item (pop items)))
+        (if (keywordp item)
+            (progn
+              (unless items
+                (error "ebox-build: missing value for %S" item))
+              (push item result)
+              (push (ebox--dsl-unquote-value (pop items)) result))
+          (push item result))))
+    (nreverse result)))
+
 (defun ebox--build-split-attrs (items)
   "Split DSL ITEMS into (PROPS . CHILDREN)."
   (let (props children)
@@ -171,7 +195,7 @@ the child layout in a box using the rendered child layout as content."
     (error "ebox-build: invalid DSL node %S" dsl))
    (t
     (let ((tag (car dsl))
-          (items (cdr dsl)))
+          (items (ebox--dsl-unquote-properties (cdr dsl))))
       (pcase tag
         ((or 'box 'ebox) (ebox--build-box items))
         ('row (ebox--build-layout tag #'ebox-row items))

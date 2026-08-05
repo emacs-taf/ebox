@@ -32,7 +32,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 
 The package intentionally does not include application Components, UI controls, reactive data, or a playground implementation. Those are sibling-package responsibilities.
 
-The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `examples/ebox-basic-examples.el`, `examples/playground/basic.ebox`, `examples/playground/comprehensive.ebox`, `examples/playground/flex-reference.ebox`, `examples/playground/responsive-reference.ebox`, `tests/ebox-core-render-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-examples-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, and `scripts/ebox-visual-check.el`.
+The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, and `scripts/ebox-visual-check.el`.
 
 ## Runtime model
 
@@ -77,7 +77,7 @@ Grid currently covers fixed and pixel tracks, `auto`, fractional tracks, `minmax
 
 ## Active examples and tests
 
-The maintained examples are `examples/ebox-basic-examples.el` and the `.ebox` fixtures under `examples/playground/`. The regression boundary is the ERT files under `tests/` listed in the repository's documentation contract. No test in this package should load the historical full-stack source tree or an application framework.
+The standalone package has no bundled playground fixtures. The migrated `.ebox` references and their file runner live in the sibling `ebox-playground` package; this repository tests the DSL and layout primitives directly. The regression boundary is the ERT files under `tests/` listed in the repository's documentation contract. No test in this package should load the historical full-stack source tree or an application framework.
 
 ## Verification matrix
 
@@ -91,7 +91,6 @@ make ebox-commit-tests
 make visual-check-tests
 make package-tests
 make selector-tests
-make examples-tests
 make dsl-tests
 make flex-tests
 make docs-contract-tests

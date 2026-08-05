@@ -17,7 +17,7 @@
   (let ((source (ebox-ci-test--read "Makefile")))
     (dolist (target '("check:" "ci:" "load:" "compile:" "test:"
                       "core-tests:" "grid-tests:" "ebox-commit-tests:"
-                      "examples-tests:" "docs-contract-tests:"
+                      "docs-contract-tests:"
                       "ci-contract-tests:" "native-rust-tests:"
                       "native-build:" "diff-check:"))
       (should (string-match-p (concat "^" (regexp-quote target)) source)))

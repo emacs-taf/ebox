@@ -32,6 +32,8 @@
 
 本包有意不包含应用 Component、UI control、响应式 data 或 playground 实现；它们属于同级包。历史应用性能记录器和 native reflow 评估器也不属于独立 Ebox 的发布边界；Ebox 只保留 native 模块本身、Rust 构建输入和可重复的构建检查。
 
+active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el` 和 `scripts/ebox-visual-check.el`。
+
 ## 运行时模型
 
 正常数据流是：
@@ -75,7 +77,7 @@ Source Tree
 
 ## Active 示例与测试
 
-维护中的示例是 `examples/ebox-basic-examples.el` 和 `examples/playground/` 下的 `.ebox` fixture。回归边界是 `tests/` 下由文档合同列出的 ERT 文件。本包测试不得加载历史全栈源码树或应用框架。
+独立 Ebox 包不再内置 playground fixture。迁移后的 `.ebox` 参考文件及其运行器位于同级 `ebox-playground` 包；本仓库直接测试 DSL 与布局原语。回归边界是 `tests/` 下由文档合同列出的 ERT 文件。本包测试不得加载历史全栈源码树或应用框架。
 
 ## 验证矩阵
 
@@ -87,7 +89,6 @@ make ebox-commit-tests
 make visual-check-tests
 make package-tests
 make selector-tests
-make examples-tests
 make dsl-tests
 make flex-tests
 make docs-contract-tests

@@ -22,13 +22,8 @@
     "ebox-layout.el" "ebox-flex.el" "ebox-grid.el"
     "ebox-buffer-backend.el" "ebox-incremental.el" "ebox-dsl.el"
     "ebox-selector.el" "ebox-native-reflow.el"
-    "examples/ebox-basic-examples.el"
-    "examples/playground/basic.ebox"
-    "examples/playground/comprehensive.ebox"
-    "examples/playground/flex-reference.ebox"
-    "examples/playground/responsive-reference.ebox"
     "tests/ebox-core-render-tests.el" "tests/ebox-grid-tests.el"
-    "tests/ebox-commit-tests.el" "tests/ebox-examples-tests.el"
+    "tests/ebox-commit-tests.el"
     "tests/ebox-dsl-tests.el" "tests/ebox-flex-tests.el"
     "tests/ebox-selector-tests.el" "tests/ebox-package-tests.el"
     "tests/ebox-visual-check-tests.el" "tests/ebox-docs-contract-tests.el"
@@ -42,7 +37,7 @@
 (defconst ebox-docs-test--targets
   '("check" "ci" "load" "compile" "core-tests" "grid-tests"
     "ebox-commit-tests" "visual-check-tests" "package-tests"
-    "selector-tests" "examples-tests" "dsl-tests" "flex-tests"
+    "selector-tests" "dsl-tests" "flex-tests"
     "docs-contract-tests" "ci-contract-tests" "visual-check"
     "native-rust-tests" "native-build" "package-lint" "diff-check")
   "Make targets that must be documented and executable.")

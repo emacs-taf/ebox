@@ -64,7 +64,7 @@ Use row and column for simple one-dimensional composition. Use flex when free sp
  (ebox-create :content "Aside" :grid-column 3 :grid-row 2))
 ```
 
-Grid tracks can be fixed, fractional, `auto`, `minmax`, or repeated. Explicit placement is one-based. Use positive integer spans and let implicit tracks fill omitted positions.
+Grid tracks can be fixed, fractional, `auto`, `minmax`, or repeated. Explicit placement is one-based. Use positive integer spans and let implicit tracks fill omitted positions. Multiline items are aligned line by line to their grid rectangle before a wrapper border is painted, keeping a bordered Grid's right edge continuous even when child lines have different natural widths.
 
 ## 5. Render text or a buffer
 
@@ -117,7 +117,9 @@ Selectors query the rendered tree and return public handles. They do not edit th
         (box :content "C")))
 ```
 
-The files under `examples/playground/` are executable fixtures for this syntax. They remain low-level layout examples and do not require the ETAF framework.
+Inside a `.ebox` fixture, keep the structural form unquoted. Quote list and symbol constants in property positions (for example, `:gap '(1 (12))` and `:justify-content 'center`), while leaving executable Elisp property expressions unquoted. `ebox-playground` evaluates those property expressions before passing the form to `ebox-build`, matching the `etaf-view` value convention.
+
+Executable `.ebox` references are maintained by the sibling [`ebox-playground`](../../ebox-playground/README.md) package. Its `examples/` directory contains the migrated Basic, Comprehensive, Flex, Responsive, and complete Grid reference files; they remain low-level layout examples and do not require the ETAF framework.
 
 ## 9. Optional native reflow
 

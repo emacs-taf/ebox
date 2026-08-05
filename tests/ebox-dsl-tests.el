@@ -90,6 +90,21 @@
                   :overflow scroll))))
     (should (= (length (ebox-string-lines (ebox-render node))) 4))))
 
+(ert-deftest ebox-build-unquotes-static-list-property-values ()
+  "The DSL should accept quoted list values used by `etaf-view' forms."
+  (let* ((node (ebox-build
+                '(grid :width '(120)
+                   :grid-template-columns '((40) 1fr)
+                   :gap '(0 (4))
+                   (box :content "A")
+                   (box :content "B"))))
+         (props (plist-get node :raw-props))
+         (line (car (ebox-string-lines (ebox-render node)))))
+    (should (equal (plist-get props :width) '(120)))
+    (should (equal (plist-get props :grid-template-columns)
+                   '((40) 1fr)))
+    (should (= (ebox--string-pixel-width line) 120))))
+
 (ert-deftest ebox-build-composes-fixed-viewport-shell-around-scrollbox ()
   "A fixed viewport shell can reserve chrome while an inner box scrolls."
   (let* ((ebox-viewport-height 6)

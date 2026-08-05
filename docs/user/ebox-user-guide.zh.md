@@ -64,7 +64,7 @@ Ebox 是底层的 box、布局和 buffer 渲染包。当应用需要精确几何
  (ebox-create :content "Aside" :grid-column 3 :grid-row 2))
 ```
 
-Grid 轨道支持固定值、分数、`auto`、`minmax` 和重复轨道。显式放置从 1 开始；span 使用正整数；省略的位置由隐式轨道补齐。
+Grid 轨道支持固定值、分数、`auto`、`minmax` 和重复轨道。显式放置从 1 开始；span 使用正整数；省略的位置由隐式轨道补齐。多行子项会先逐行对齐到自己的 Grid 矩形，再绘制外层边框；即使子项各行的自然宽度不同，带边框的 Grid 右边缘也会保持连续。
 
 ## 5. 渲染文本或 buffer
 
@@ -117,7 +117,9 @@ Selector 查询已渲染的树并返回公共 handle；它不编辑 buffer，也
         (box :content "C")))
 ```
 
-`examples/playground/` 下的文件是该语法的可执行 fixture。它们只演示低层布局，不依赖 ETAF。
+在 `.ebox` fixture 中，结构表单保持不加 quote。属性位置的 list 和 symbol 常量要加 quote，例如 `:gap '(1 (12))`、`:justify-content 'center`；可执行的 Elisp 属性表达式则保持不加 quote。`ebox-playground` 会在把 form 交给 `ebox-build` 之前求值这些属性表达式，这与 `etaf-view` 的属性值约定一致。
+
+可执行的 `.ebox` 参考文件由同级 [`ebox-playground`](../../ebox-playground/README.md) 包维护。它的 `examples/` 目录包含迁移后的 Basic、Comprehensive、Flex、Responsive 以及完整 Grid 参考文件；这些文件只演示低层布局，不依赖 ETAF。
 
 ## 9. 可选 native reflow
 
