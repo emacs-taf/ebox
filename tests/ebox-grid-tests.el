@@ -37,6 +37,36 @@
     (should (= (length lines) 1))
     (should (= (ebox--string-pixel-width (car lines)) 120))))
 
+(ert-deftest ebox-grid-constrains-auto-width-children-to-track-size ()
+  "Auto-width grid children should render within their assigned track."
+  (let* ((ebox-viewport-width 120)
+         (node (ebox-grid
+                :width '(120)
+                :grid-template-columns '((50) (50))
+                :gap '(0 (10))
+                :border "#334155"
+                (ebox-create :content "A\nA-long" :padding '(0 (4)))
+                (ebox-create :content "B\nB-long" :padding '(0 (4)))))
+         (lines (ebox-string-lines (ebox-render node)))
+         (widths (mapcar #'ebox--string-pixel-width lines)))
+    (should (equal widths (make-list (length widths) 120)))))
+
+(ert-deftest ebox-grid-aligns-every-line-before-border-render ()
+  "Grid wrapper borders should stay on one right edge across child lines."
+  (let* ((node (ebox-grid
+                :width '(120)
+                :grid-template-columns '((30) auto 1fr)
+                :grid-template-rows '(2)
+                :gap '(1 (4))
+                :justify-content 'space-between
+                :border "#334155"
+                (ebox-create :content "FIXED\n30 PX")
+                (ebox-create :content "AUTO\nINTRINSIC")
+                (ebox-create :content "1FR\nREMAINDER")))
+         (lines (ebox-string-lines (ebox-render node)))
+         (widths (mapcar #'ebox--string-pixel-width lines)))
+    (should (equal widths (make-list (length widths) 120)))))
+
 (ert-deftest ebox-grid-keeps-padded-items-inside-column-width ()
   "Stack padding should use the widest Grid line instead of its first line."
   (let* ((header (ebox-create :content "Header" :width '(720)))

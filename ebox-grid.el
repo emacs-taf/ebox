@@ -439,6 +439,28 @@ Supported properties are `:grid-column', `:grid-row',
          (extra (* gap (max 0 (1- (plist-get entry :column-span))))))
     (+ base extra)))
 
+(defun ebox-grid--auto-width-node-p (node)
+  "Return non-nil when NODE derives its width from the active viewport."
+  (let ((width (plist-get node :width)))
+    (or (null width) (eq width 'auto))))
+
+(defun ebox-grid--entry-source (entry rendered width props)
+  "Return ENTRY's content rendered within WIDTH when it is auto-sized.
+
+Stretching is the default grid item alignment.  Re-render an auto-sized
+child at its assigned width for that alignment, while preserving its natural
+size for start/center/end alignment unless it would overflow its track."
+  (let* ((node (plist-get entry :node))
+         (source (gethash node rendered))
+         (auto-width-p (ebox-grid--auto-width-node-p node))
+         (justify (or (plist-get props :justify-items) 'stretch))
+         (stretch-p (memq justify '(normal stretch)))
+         (overflow-p (> (ebox--string-max-pixel-width source) width)))
+    (if (and auto-width-p (or stretch-p overflow-p))
+        (let ((ebox-viewport-width width))
+          (ebox--render-with-cache node))
+      source)))
+
 (defun ebox-grid--row-entry-size (entry sizes gap)
   "Return the target line size for ENTRY across row SIZES."
   (let* ((start (1- (plist-get entry :row)))
@@ -450,11 +472,12 @@ Supported properties are `:grid-column', `:grid-row',
 
 (defun ebox-grid--align (string width height justify align)
   "Align STRING to WIDTH and HEIGHT using JUSTIFY and ALIGN."
-  (let ((result (ebox--pixel-reach string width
-                                   (pcase justify
-                                     ((or 'end 'right) 'right)
-                                     ('center 'center)
-                                     (_ 'left)))))
+  (let ((result (ebox--lines-justify
+                 string width
+                 (pcase justify
+                   ((or 'end 'right) 'right)
+                   ('center 'center)
+                   (_ 'left)))))
     (ebox--lines-align-vertical
      result height
      (pcase align
@@ -464,10 +487,9 @@ Supported properties are `:grid-column', `:grid-row',
 
 (defun ebox-grid--entry-string (entry rendered widths heights col-gap row-gap props)
   "Render and align ENTRY within its grid rectangle."
-  (let* ((node (plist-get entry :node))
-         (source (gethash node rendered))
-         (width (ebox-grid--entry-size entry widths col-gap))
+  (let* ((width (ebox-grid--entry-size entry widths col-gap))
          (height (ebox-grid--row-entry-size entry heights row-gap))
+         (source (ebox-grid--entry-source entry rendered width props))
          (justify (or (plist-get props :justify-items) 'stretch))
          (align (or (plist-get props :align-items) 'stretch)))
     (ebox-grid--align source width height justify align)))
@@ -594,13 +616,18 @@ Supported properties are `:grid-column', `:grid-row',
          (available (ebox--nonnegative-horizontal-size-pixels
                      (plist-get props :width)
                      (ebox--viewport-pixel-width nil)))
+         (wrapper (plist-get node :box))
          (height (ebox--flex-line-value (plist-get props :height) nil))
          (rendered (make-hash-table :test 'eq)))
+    (when wrapper
+      (setq available (ebox--box-sizing-content-pixel wrapper available)))
     (unless (memq flow '(row column))
       (error "ebox-grid: :grid-auto-flow must be `row' or `column'"))
     (dolist (entry entries)
       (let ((child (plist-get entry :node)))
-        (puthash child (ebox--render-with-cache child) rendered)))
+        (let ((ebox-viewport-width nil)
+              (ebox--intrinsic-layout-measurement t))
+          (puthash child (ebox--render-with-cache child) rendered))))
     (let* ((widths (ebox-grid--resolve-sizes columns column-count 'columns
                                              entries rendered (cdr gaps)
                                              available auto-columns))
