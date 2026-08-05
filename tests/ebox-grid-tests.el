@@ -37,6 +37,22 @@
     (should (= (length lines) 1))
     (should (= (ebox--string-pixel-width (car lines)) 120))))
 
+(ert-deftest ebox-grid-keeps-padded-items-inside-column-width ()
+  "Stack padding should use the widest Grid line instead of its first line."
+  (let* ((header (ebox-create :content "Header" :width '(720)))
+         (grid (ebox-grid
+                :width '(718)
+                :grid-template-columns '((220) 1fr)
+                :gap '(1 (12))
+                :border "#C97252"
+                (ebox-create :content "Fixed" :width '(196)
+                             :padding '(1 (12)))
+                (ebox-create :content "Fractional" :width '(460)
+                             :padding '(1 (12)))))
+         (lines (ebox-string-lines (ebox-render (ebox-column header grid))))
+         (widths (mapcar #'ebox--string-pixel-width lines)))
+    (should (= (apply #'max widths) 720))))
+
 (ert-deftest ebox-grid-supports-explicit-placement-and-span ()
   "Explicit placement should support a cell spanning two columns."
   (let ((plain

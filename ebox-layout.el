@@ -2774,7 +2774,8 @@ stack itself uses its natural max child width."
   (let* ((rendered-items
           (mapcar (lambda (leaf)
                     (let ((rendered (ebox--render-with-cache leaf)))
-                      (cons rendered (ebox--string-pixel-width rendered))))
+                      (cons rendered
+                            (ebox--string-max-pixel-width rendered))))
                   (ebox--stack-leaves node)))
          (max-w (apply #'max (mapcar #'cdr rendered-items)))
          (target-w (if ebox--intrinsic-layout-measurement
