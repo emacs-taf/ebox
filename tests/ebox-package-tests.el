@@ -15,6 +15,7 @@
     "ebox-layout.el"
     "ebox-flex.el"
     "ebox-grid.el"
+    "ebox-selector.el"
     "ebox-native-reflow.el")
   "Source files that currently own public autoload entry points.")
 
@@ -126,6 +127,7 @@
                      ("ebox-scroll-down" . "defun")
                      ("ebox-scroll-up" . "defun")
                      ("ebox-region-update" . "defun")
+                     ("ebox-region-resolve" . "defun")
                      ("ebox-buffer-update-report" . "defun")
                      ("ebox-byte-compile" . "defun")
                      ("ebox-native-build" . "defun")

@@ -19,6 +19,9 @@
 (defvar ebox--render-runtime-revision nil
   "Current buffer runtime revision for render-local cache validation.")
 
+(defvar ebox--region-id-counter)
+(defvar ebox--runtime-node-id-counter)
+
 (defvar ebox--intrinsic-layout-measurement nil
   "Non-nil while measuring intrinsic layout contributions.
 Descendants still see the current containing block, but stack/column containers
@@ -1394,15 +1397,17 @@ Internal implementation of `ebox-render' for box nodes."
       (setq result (ebox--apply-hidden-visibility result)))
         result)))
 
-;;;###autoload
-(defun ebox-render (node)
-  "Render a layout NODE to a multi-line string.
+(defvar ebox--surface-materialization-active nil
+  "Non-nil while an Ebox TP producer is running raw layout.")
+
+(defun ebox--render-layout (node)
+  "Render layout NODE directly to a multi-line propertized string.
 NODE can be:
   - a box plist created by `ebox-create'
   - a concat node created by `ebox-concat'
   - a stack node created by `ebox-stack'
   - a flex node created by `ebox-flex'
-This is the single public rendering entry point."
+This function owns spatial layout only; it never creates a live TP surface."
   (ebox--with-validated-display-cache
     (let ((ebox--box-content-render-cache
            (or ebox--box-content-render-cache
@@ -1416,8 +1421,29 @@ This is the single public rendering entry point."
          ((eq type 'stack)  (ebox--render-stack node))
          ((eq type 'flex)   (ebox--render-flex node))
          ((eq type 'grid)   (ebox--render-grid node))
-         ((eq type 'flex-item) (ebox-render (plist-get node :node)))
+         ((eq type 'flex-item) (ebox--render-layout (plist-get node :node)))
          (t (error "ebox-render: unknown node type %S" type)))))))
+
+(declare-function ebox-surface-producer
+                  "ebox-surface"
+                  (source &optional previous-state preserve-identities-p
+                          state-overrides))
+(declare-function tp-surface-materialize-string "tp-surface" (plan-or-producer))
+
+;;;###autoload
+(defun ebox-render (node)
+  "Render layout NODE to a multi-line string through a TP materialization.
+NODE accepts every layout node supported by `ebox--render-layout'.  The
+materialized surface is ephemeral and creates no live buffer state."
+  (if (or ebox--surface-materialization-active
+          ebox--render-runtime-revision)
+      (ebox--render-layout node)
+    (require 'ebox-surface)
+    (let ((ebox--surface-materialization-active t)
+          (ebox--region-id-counter ebox--region-id-counter)
+          (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
+      (tp-surface-materialize-string
+       (ebox-surface-producer node nil t)))))
 
 (defun ebox--width-pad (string extra-pixels)
   "Append a display-space of EXTRA-PIXELS to the right of every line in STRING.
@@ -1993,6 +2019,7 @@ last cached leaf instead of walking the stack from the beginning."
                max-pixel-width-cache)
               (ebox--render-recached-source-node-cache
                recached-source-node-cache)
+              (ebox--surface-materialization-active t)
               (ebox--scroll-window-prewarm-state prewarm-state)
               (ebox--scroll-window-render-disabled t)
               (ebox--scroll-window-render-result nil))

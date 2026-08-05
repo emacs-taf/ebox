@@ -68,17 +68,17 @@ Grid 轨道支持固定值、分数、`auto`、`minmax` 和重复轨道。显式
 
 ## 5. 渲染文本或 buffer
 
-`ebox-render` 相对于 buffer 是纯函数，返回带属性文本；`ebox-render-to-buffer` 负责首次发布：
+`ebox-render` 相对于 buffer 是纯函数，通过临时 TP surface 返回带属性文本；`ebox-render-to-buffer` 会复制声明式 source，并挂载 retained TP surface 完成首次发布：
 
 ```elisp
 (let ((node (ebox-column
-             (ebox-create :content "Ready" :width '(240))
+             (ebox-create :id "status" :content "Ready" :width '(240))
              (ebox-create :content "Rendered by Ebox"))))
   (ebox-render node)
   (ebox-render-to-buffer "*Ebox Demo*" node))
 ```
 
-返回文本带有 Ebox 所需的 display、face、region 和 identity 属性，不要手动修改这些属性。
+返回文本带有 Ebox 所需的 display、face、region 和 identity 属性，不要手动修改这些属性。source 节点仍由调用者拥有，可以挂载到多个 buffer；每个 buffer 都获得独立的 runtime identity 与状态。
 
 ## 6. 更新已有 buffer
 
@@ -91,17 +91,24 @@ Grid 轨道支持固定值、分数、`auto`、`minmax` 和重复轨道。显式
   (ebox-create :content "Updated" :key 'title :width '(240))))
 ```
 
-Ebox 会比较稳定 key 和 region identity，选择最小且安全的 patch，并记录报告：
+Ebox 会比较稳定 key 和 region identity，准备 dirty/owner 语义计划，再由 TP 原子发布新的 retained surface 与 Ebox runtime 状态。报告同时保留 Ebox 计划与 TP 执行摘要：
 
 ```elisp
 (ebox-buffer-update-report "*Ebox Demo*")
 ```
 
-无法证明安全时会提升到 owner 或 root rerender；候选提交失败必须保留之前已发布的树和 buffer。
+无法证明安全时会提升到 owner 或 root rerender；render、发布、runtime 状态交换或发布回调失败时，之前的 buffer、TP surface、Ebox runtime 状态和最近一次成功报告都必须保持不变。
 
 ## 7. Selector 与 handle
 
-Selector 查询已渲染的树并返回公共 handle；它不编辑 buffer，也不拥有应用状态。应用 identity 优先使用显式 key 和 ref；selector 适合检查和有限更新。
+Selector 查询已渲染的树并返回公共匹配记录，但不拥有应用状态。给可编辑 box 设置逻辑 `:id`，在某个 live buffer 中解析它，再把不透明、surface-scoped 的 handle 交给 `ebox-region-update`：
+
+```elisp
+(let ((handle (ebox-region-resolve "*Ebox Demo*" "status")))
+  (ebox-region-update handle :content "Ready" :color "#166534"))
+```
+
+两个 buffer 中相同的逻辑 id 会解析为两个不同 handle，因此更新一个 surface 不会误改另一个。retained object 被删除或 buffer 被 kill 后，原 handle 会变 stale。新的多 buffer 代码应优先使用 `ebox-region-resolve` handle；在局部更新执行器切换完成前，数字 region id 仍作为内部/旧式更新形式保留。
 
 ## 8. 独立 `.ebox` 文件
 

@@ -82,7 +82,7 @@
         (node (funcall builder)))
     (if projector-p
         (tp-surface-materialize-string
-         (ebox-surface--producer node))
+         (ebox-surface-producer node))
       (ebox-render node))))
 
 (defun ebox-surface-test--walk-runtime (node function)
@@ -141,9 +141,9 @@
 
 (ert-deftest ebox-surface-assigns-object-identity-before-layout ()
   "Every candidate runtime node should own a TP object before layout starts."
-  (let ((original (symbol-function 'ebox-render))
+  (let ((original (symbol-function 'ebox--render-layout))
         checked captured)
-    (cl-letf (((symbol-function 'ebox-render)
+    (cl-letf (((symbol-function 'ebox--render-layout)
                (lambda (node)
                  (unless checked
                    (setq checked t)
@@ -199,7 +199,7 @@
           (setq surface
                 (tp-surface-mount
                  buffer
-                 (ebox-surface--producer
+                 (ebox-surface-producer
                   (funcall (cdr (assq 'box (ebox-surface-test--fixtures)))))
                  '(:capability content)))
           (let* ((state (tp-surface-client-state surface))
@@ -228,11 +228,11 @@
         (progn
           (setq first
                 (tp-surface-mount
-                 first-buffer (ebox-surface--producer source)
+                 first-buffer (ebox-surface-producer source)
                  '(:capability content)))
           (setq second
                 (tp-surface-mount
-                 second-buffer (ebox-surface--producer source)
+                 second-buffer (ebox-surface-producer source)
                  '(:capability content)))
           (let* ((first-state (tp-surface-client-state first))
                  (second-state (tp-surface-client-state second))
@@ -264,7 +264,7 @@
                (_mount
                 (setq surface
                       (tp-surface-mount
-                       buffer (ebox-surface--producer first-source)
+                       buffer (ebox-surface-producer first-source)
                        '(:capability content))))
                (first-state (tp-surface-client-state surface))
                (left (ebox-surface-test--object-by-key first-state 'left))
@@ -274,7 +274,7 @@
                  (ebox-create :key 'right :content "Right!" :width '(60))
                  (ebox-create :key 'left :content "Left!" :width '(60)))))
           (tp-surface-update
-           surface (ebox-surface--producer next-source first-state))
+           surface (ebox-surface-producer next-source first-state))
           (let ((next-state (tp-surface-client-state surface)))
             (should (eq left
                         (ebox-surface-test--object-by-key next-state 'left)))
@@ -286,6 +286,252 @@
                       (with-current-buffer buffer (buffer-string)))))))
       (when (and surface (tp-surface-live-p surface))
         (tp-surface-unmount surface))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-render-materializes-through-tp-surface ()
+  "The public string renderer should materialize one ephemeral TP surface."
+  (ebox-surface-test--reset-render-state)
+  (let ((original (symbol-function 'tp-surface-materialize-string))
+        (calls 0))
+    (cl-letf (((symbol-function 'tp-surface-materialize-string)
+               (lambda (producer)
+                 (cl-incf calls)
+                 (funcall original producer))))
+      (should (stringp
+               (ebox-render
+                (ebox-create :content "Materialized" :width '(100))))))
+    (should (= calls 1))))
+
+(ert-deftest ebox-render-is-repeatable-without-consuming-runtime-identities ()
+  "Ephemeral rendering should be exact and leave live identity counters alone."
+  (ebox-surface-test--reset-render-state)
+  (let* ((source (ebox-create :content "Repeatable" :width '(100)))
+         (first (ebox-render source))
+         (second (ebox-render source)))
+    (should (equal-including-properties first second))
+    (should (= ebox--region-id-counter 0))
+    (should (= ebox--runtime-node-id-counter 0))
+    (should-not (plist-member source :region-id))
+    (should-not (plist-member source :node-id))))
+
+(ert-deftest ebox-render-to-buffer-mounts-one-tp-surface ()
+  "The public buffer renderer should expose TP's committed client state."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-public-surface*"))
+        surface)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :content "Mounted" :width '(100)))
+          (setq surface
+                (with-current-buffer buffer ebox-surface--buffer-surface))
+          (should (tp-surface-live-p surface))
+          (should (eq (ebox--buffer-render-state buffer)
+                      (tp-surface-client-state surface))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))
+    (should-not (tp-surface-live-p surface))))
+
+(ert-deftest ebox-render-to-buffer-reuses-one-source-across-buffers ()
+  "The public mount path should never transfer ownership of its source tree."
+  (ebox-surface-test--reset-render-state)
+  (let* ((source
+          (ebox-create :key 'shared :content "Shared" :width '(100)))
+         (first (generate-new-buffer " *ebox-public-first*"))
+         (second (generate-new-buffer " *ebox-public-second*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer first source)
+          (ebox-render-to-buffer second source)
+          (should (equal
+                   (with-current-buffer first
+                     (substring-no-properties (buffer-string)))
+                   (with-current-buffer second
+                     (substring-no-properties (buffer-string)))))
+          (should-not
+           (equal (ebox-region-ids (ebox--buffer-root-node first))
+                  (ebox-region-ids (ebox--buffer-root-node second))))
+          (should-not
+           (eq (plist-get (ebox--buffer-root-node first) :surface-object)
+               (plist-get (ebox--buffer-root-node second) :surface-object)))
+          (should-not (plist-member source :node-id))
+          (should-not (plist-member source :region-id))
+          (should-not (plist-member source :surface-object)))
+      (dolist (buffer (list first second))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest ebox-commit-publishes-through-the-mounted-tp-surface ()
+  "Declarative commits should bypass every legacy Ebox buffer publisher."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-commit*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :key 'root :content "Before" :width '(100)))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (revision (tp-surface-revision surface))
+                 report)
+            (cl-letf (((symbol-function 'ebox-incremental-commit)
+                       (lambda (&rest _)
+                         (error "Legacy Ebox publisher was called"))))
+              (setq report
+                    (ebox-commit
+                     buffer
+                     (ebox-create :key 'root :content "After"
+                                  :width '(100)))))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should (plist-get report :runtime-published))
+            (should (equal report (ebox-buffer-update-report buffer)))
+            (should (string-match-p "After" (with-current-buffer
+                                                buffer (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-commit-callback-failure-rolls-back-tp-and-ebox-state ()
+  "A failed publication callback should restore one shared old generation."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-rollback*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :key 'root :content "Stable" :width '(100)))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (state (tp-surface-client-state surface))
+                 (revision (tp-surface-revision surface))
+                 (contents (with-current-buffer
+                             buffer
+                             (buffer-substring (point-min) (point-max)))))
+            (should-error
+             (ebox-commit
+              buffer
+              (ebox-create :key 'root :content "Rejected" :width '(100))
+              (lambda (_report) (error "Reject publication"))))
+            (should (= (tp-surface-revision surface) revision))
+            (should (eq (tp-surface-client-state surface) state))
+            (should (equal-including-properties
+                     (with-current-buffer
+                       buffer
+                       (buffer-substring (point-min) (point-max)))
+                     contents))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-commit-killed-buffer-rollback-does-not-revive-runtime ()
+  "A failed commit must not restore runtime state for a killed buffer."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-killed-rollback*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :key 'root :content "Stable" :width '(100)))
+          (should (gethash buffer ebox--buffer-render-state-table))
+          (should-error
+           (ebox-commit
+            buffer
+            (ebox-create :key 'root :content "Rejected" :width '(100))
+            (lambda (_report)
+              (kill-buffer buffer)
+              (error "Reject publication after teardown"))))
+          (should-not (buffer-live-p buffer))
+          (should-not (gethash buffer ebox--buffer-render-state-table)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-logical-candidate-report-is-the-published-client-report ()
+  "Logical candidates should publish one report through TP client state."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-candidate*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :key 'root :host-ref 'root
+                         :content "Before" :width '(100)))
+          (let ((candidate (ebox-candidate-begin buffer)))
+            (ebox-candidate-replace-host-ref
+             candidate 'root
+             (ebox-create :key 'root :host-ref 'root
+                          :content "After" :width '(100)))
+            (let ((report (ebox-commit buffer candidate)))
+              (should (equal report (ebox-buffer-update-report buffer)))
+              (should (eq (plist-get report :constraint-source)
+                          'declarative))
+              (should (string-match-p "After" (with-current-buffer
+                                                  buffer (buffer-string)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-region-handles-are-surface-scoped ()
+  "One logical id should resolve to distinct handles on independent surfaces."
+  (ebox-surface-test--reset-render-state)
+  (let* ((source
+          (ebox-create :id "status" :content "Ready" :width '(100)))
+         (first (generate-new-buffer " *ebox-handle-first*"))
+         (second (generate-new-buffer " *ebox-handle-second*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer first source)
+          (ebox-render-to-buffer second source)
+          (let ((first-handle (ebox-region-resolve first "status"))
+                (second-handle (ebox-region-resolve second 'status)))
+            (should (ebox-region-handle-p first-handle))
+            (should (ebox-region-handle-p second-handle))
+            (should-not (eq first-handle second-handle))
+            (ebox-region-update first-handle :content "Changed")
+            (should (string-match-p "Changed"
+                                    (with-current-buffer first
+                                      (buffer-string))))
+            (should (string-match-p "Ready"
+                                    (with-current-buffer second
+                                      (buffer-string))))))
+      (dolist (buffer (list first second))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest ebox-selector-query-returns-an-editable-region-handle ()
+  "A live selector match should carry the same handle accepted by updates."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-selector-handle*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :id "action" :content "Closed" :width '(100)))
+          (let* ((match (car (ebox-selector-query-buffer buffer "#action")))
+                 (handle (plist-get match :region-handle)))
+            (should (ebox-region-handle-p handle))
+            (ebox-region-update handle :content "Open")
+            (should (string-match-p "Open"
+                                    (with-current-buffer buffer
+                                      (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-region-handle-becomes-stale-with-its-object ()
+  "A handle should fail after a commit removes its retained object."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-stale-handle*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :key 'old :id "old"
+                         :content "Old" :width '(100)))
+          (let ((handle (ebox-region-resolve buffer "old")))
+            (ebox-commit
+             buffer
+             (ebox-create :key 'new :id "new"
+                          :content "New" :width '(100)))
+            (should-error (ebox-region-update handle :content "Invalid")
+                          :type 'user-error)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

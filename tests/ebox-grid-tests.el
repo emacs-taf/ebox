@@ -172,15 +172,14 @@
          (right (ebox-create :content "B" :id "right" :width 20))
          (node (ebox-grid :grid-template-columns '((20) (20)) left right))
          (buffer (ebox-render-to-buffer
-                  (generate-new-buffer-name " *ebox-grid-update*") node))
-         (region-id (car (ebox-region-ids left))))
+                  (generate-new-buffer-name " *ebox-grid-update*") node)))
     (unwind-protect
         (progn
           (should (with-current-buffer buffer
                     (and (string-match-p "A" (buffer-string))
                          (string-match-p "B" (buffer-string)))))
-          (with-current-buffer buffer
-            (ebox-region-update region-id :content "Updated"))
+          (ebox-region-update (ebox-region-resolve buffer "left")
+                              :content "Updated")
           (let ((updated (with-current-buffer buffer (buffer-string))))
             (should (string-match-p "Updated" updated))
             (should (string-match-p "B" updated))))

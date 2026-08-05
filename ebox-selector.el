@@ -10,10 +10,12 @@
 (require 'subr-x)
 (require 'ebox-buffer-backend)
 (require 'ebox-tree)
+(require 'tp-surface)
 
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--ensure-region-id "ebox" (box))
 (declare-function ebox--buffer-root-node "ebox-incremental" (buffer))
+(declare-function ebox--buffer-render-state "ebox-incremental" (buffer))
 (declare-function ebox--buffer-selector-id-table "ebox-incremental" (buffer))
 (declare-function ebox--buffer-selector-class-table
                   "ebox-incremental" (buffer))
@@ -23,6 +25,71 @@
 (declare-function ebox-incremental-flush "ebox-incremental" (buffer))
 (declare-function ebox-region-update "ebox" (region-id &rest props))
 (defvar ebox--region-update-buffer-hint)
+
+(cl-defstruct
+    (ebox-region-handle
+     (:constructor ebox-selector--make-region-handle)
+     (:conc-name ebox-selector--region-handle-))
+  "Opaque surface-scoped identity for one editable Ebox region."
+  buffer surface object logical-id)
+
+(defun ebox-selector--live-region-handle
+    (buffer object &optional logical-id)
+  "Return a live region handle for OBJECT in BUFFER, or nil."
+  (let* ((state (ebox--buffer-render-state buffer))
+         (surface (plist-get state :surface))
+         (region-id
+          (and (tp-object-live-p object)
+               (gethash object
+                        (plist-get state :surface-object-region-table)))))
+    (when (and (tp-surface-live-p surface) region-id)
+      (ebox-selector--make-region-handle
+       :buffer buffer :surface surface :object object :logical-id logical-id))))
+
+;;;###autoload
+(defun ebox-region-resolve (buffer-or-name logical-id)
+  "Resolve LOGICAL-ID in BUFFER-OR-NAME to an opaque editable region handle."
+  (let ((buffer (get-buffer buffer-or-name)))
+    (unless (buffer-live-p buffer)
+      (user-error "Ebox region target is not a live buffer: %S"
+                  buffer-or-name))
+    (let* ((state (ebox--buffer-render-state buffer))
+           (normalized (ebox-selector--metadata-string logical-id))
+           (entries
+            (and state
+                 (gethash normalized
+                          (plist-get state :logical-id-region-table))))
+           (handles
+            (delq nil
+                  (mapcar
+                   (lambda (entry)
+                     (ebox-selector--live-region-handle
+                      buffer (car entry) normalized))
+                   entries))))
+      (pcase (length handles)
+        (0 (user-error "Ebox logical region does not exist: %S" logical-id))
+        (1 (car handles))
+        (_ (user-error "Ebox logical region is ambiguous: %S" logical-id))))))
+
+(defun ebox-selector--region-target (handle)
+  "Return HANDLE's current internal `(BUFFER . REGION-ID)' target."
+  (unless (ebox-region-handle-p handle)
+    (signal 'wrong-type-argument (list 'ebox-region-handle-p handle)))
+  (let* ((buffer (ebox-selector--region-handle-buffer handle))
+         (surface (ebox-selector--region-handle-surface handle))
+         (object (ebox-selector--region-handle-object handle))
+         (state (and (buffer-live-p buffer)
+                     (ebox--buffer-render-state buffer)))
+         (region-id
+          (and state
+               (eq surface (plist-get state :surface))
+               (tp-surface-live-p surface)
+               (tp-object-live-p object)
+               (gethash object
+                        (plist-get state :surface-object-region-table)))))
+    (unless region-id
+      (user-error "Ebox region handle is stale"))
+    (cons buffer region-id)))
 
 (defun ebox-selector--identifier-char-p (char)
   "Return non-nil when CHAR is accepted in a selector identifier."
@@ -331,7 +398,19 @@ selectors match the user's logical layout children."
 
 (defun ebox-selector--handle-with-buffer (handle buffer)
   "Return selector HANDLE annotated with BUFFER ownership."
-  (append handle (list :buffer buffer)))
+  (let* ((state (ebox--buffer-render-state buffer))
+         (region-id (plist-get handle :region-id))
+         (object
+          (and region-id
+               (gethash region-id
+                        (plist-get state :region-surface-object-table))))
+         (region-handle
+          (and object
+               (ebox-selector--live-region-handle
+                buffer object
+                (ebox-tree-node-id (plist-get handle :node))))))
+    (append handle
+            (list :buffer buffer :region-handle region-handle))))
 
 (defun ebox-selector--single-id-simple (sequence)
   "Return the simple selector when SEQUENCE is a single #id candidate."
@@ -470,9 +549,8 @@ tree-query handle fields."
 
 (defun ebox-selector--update-region (handle props)
   "Apply PROPS to HANDLE's region through `ebox-region-update'."
-  (let* ((region-id (plist-get handle :region-id))
-         (ebox--region-update-buffer-hint (plist-get handle :buffer)))
-    (apply #'ebox-region-update region-id props)))
+  (let ((ebox--region-update-buffer-hint (plist-get handle :buffer)))
+    (apply #'ebox-region-update (plist-get handle :region-id) props)))
 
 ;;;###autoload
 (defun ebox-selector-update-buffer (buffer selector &rest props)
@@ -489,7 +567,7 @@ skips, and update reports."
       (unless matches
         (user-error "ebox-selector: no matches for %S" selector))
       (dolist (match matches)
-        (if (plist-get match :region-id)
+        (if (plist-get match :region-handle)
             (push match editable)
           (push (ebox-selector--skip-handle match 'no-region) skipped)))
       (setq editable (nreverse editable)

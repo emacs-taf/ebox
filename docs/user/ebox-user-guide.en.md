@@ -68,17 +68,17 @@ Grid tracks can be fixed, fractional, `auto`, `minmax`, or repeated. Explicit pl
 
 ## 5. Render text or a buffer
 
-`ebox-render` is pure with respect to buffers and returns propertized text. `ebox-render-to-buffer` owns the initial buffer publication:
+`ebox-render` is pure with respect to buffers and returns propertized text through an ephemeral TP surface. `ebox-render-to-buffer` copies the declarative source and mounts a retained TP surface for initial publication:
 
 ```elisp
 (let ((node (ebox-column
-             (ebox-create :content "Ready" :width '(240))
+             (ebox-create :id "status" :content "Ready" :width '(240))
              (ebox-create :content "Rendered by Ebox"))))
   (ebox-render node)
   (ebox-render-to-buffer "*Ebox Demo*" node))
 ```
 
-The returned text carries display, face, region, and identity properties needed by Ebox. Do not edit those properties by hand.
+The returned text carries display, face, region, and identity properties needed by Ebox. Do not edit those properties by hand. The source node remains caller-owned and can be mounted in more than one buffer; each buffer receives independent runtime identity and state.
 
 ## 6. Update an existing buffer
 
@@ -91,17 +91,24 @@ Build a fresh root tree and commit it to the existing buffer:
   (ebox-create :content "Updated" :key 'title :width '(240))))
 ```
 
-Ebox compares stable keys and region identity, chooses the smallest safe patch, and records a report:
+Ebox compares stable keys and region identity, prepares the semantic dirty/owner plan, and asks TP to atomically publish the new retained surface and Ebox runtime state. It records both the Ebox plan and TP execution summary:
 
 ```elisp
 (ebox-buffer-update-report "*Ebox Demo*")
 ```
 
-If a candidate cannot be proven safe, Ebox escalates to an owner or root rerender. A failed commit must leave the previously published tree and buffer intact.
+If a candidate cannot be proven safe, Ebox escalates to an owner or root rerender. A failed render, publication, runtime-state swap, or publication callback leaves the previous buffer, TP surface, Ebox runtime state, and last successful report intact.
 
 ## 7. Selectors and handles
 
-Selectors query the rendered tree and return public handles. They do not edit the buffer or own application state. Prefer explicit keys and refs for application identity; use selectors for inspection and bounded updates.
+Selectors query the rendered tree and return public match records. They do not own application state. Give an editable box a logical `:id`, resolve it in one live buffer, and pass the opaque surface-scoped handle to `ebox-region-update`:
+
+```elisp
+(let ((handle (ebox-region-resolve "*Ebox Demo*" "status")))
+  (ebox-region-update handle :content "Ready" :color "#166534"))
+```
+
+The same logical id in two buffers resolves to two different handles, so updating one surface cannot accidentally mutate the other. A handle becomes stale when its retained object is removed or its buffer is killed. Prefer `ebox-region-resolve` handles for new multi-buffer code; numeric region ids remain an internal/legacy update form during the local-update cutover.
 
 ## 8. Standalone `.ebox` files
 

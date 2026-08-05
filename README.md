@@ -21,7 +21,7 @@ Install TP first, then install Ebox through a package manager so its declared de
                :bgcolor "#F4F6FB")))
 ```
 
-The public model is a tree of Ebox nodes. `ebox-create` builds a leaf or wrapper node; `ebox-column`, `ebox-row`, `ebox-flex`, and `ebox-grid` compose nodes; `ebox-render` returns propertized text; `ebox-render-to-buffer` publishes it into a buffer; and `ebox-commit` updates an existing runtime from a fresh root tree.
+The public model is a tree of Ebox nodes. `ebox-create` builds a leaf or wrapper node; `ebox-column`, `ebox-row`, `ebox-flex`, and `ebox-grid` compose nodes; `ebox-render` materializes propertized text through an ephemeral TP surface; `ebox-render-to-buffer` mounts a retained TP surface; and `ebox-commit` atomically updates that surface from a fresh root tree. Ebox copies declarative input before assigning runtime identity, so one source tree may be mounted in multiple buffers without transferring ownership.
 
 ## What belongs here
 
@@ -40,8 +40,8 @@ ETAF belongs in the sibling package. Install it separately when you need the uni
 | `ebox.el` | Public facade and package entry point. |
 | `ebox-style.el`, `ebox-tree.el`, `ebox-measure.el` | Style, tree, and measurement models. |
 | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Formatting contexts and layout algorithms. |
-| `ebox-surface.el` | Pure Ebox runtime/layout projection into generic TP surface plans. |
-| `ebox-buffer-backend.el`, `ebox-incremental.el` | Buffer publication and incremental updates. |
+| `ebox-surface.el` | Ebox candidate projection plus TP surface mount/update and atomic Ebox runtime-state participation. |
+| `ebox-buffer-backend.el`, `ebox-incremental.el` | Layout dirty planning, marker indexes, and specialized local update paths. |
 | `ebox-dsl.el`, `ebox-selector.el` | Standalone DSL and tree/runtime queries. |
 | `ebox-native-reflow.el`, `native/` | Optional native reflow boundary. |
 | `examples/`, `tests/` | Ebox-only examples and regression tests. |

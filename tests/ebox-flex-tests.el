@@ -548,9 +548,11 @@
 
 (ert-deftest ebox-flex-reuses-measured-non-box-child-render ()
   "Flex should not fully rerender a measured non-box child during one render."
-  (let* ((child (ebox-column
-                 (ebox-create :content "A" :width '(100))
-                 (ebox-create :content "B" :width '(100))))
+  (let* ((child (plist-put
+                 (ebox-column
+                  (ebox-create :content "A" :width '(100))
+                  (ebox-create :content "B" :width '(100)))
+                 :key 'measured-child))
          (layout (ebox-flex :width '(240) :flex-wrap 'wrap
                    child
                    (ebox-column
@@ -560,7 +562,7 @@
          (original-render (symbol-function 'ebox-render)))
     (cl-letf (((symbol-function 'ebox-render)
                (lambda (node)
-                 (when (eq node child)
+                 (when (eq (plist-get node :key) 'measured-child)
                    (cl-incf calls))
                  (funcall original-render node))))
       (ebox-render layout))
@@ -607,9 +609,11 @@
 
 (ert-deftest ebox-flex-reuses-natural-non-box-render-before-cross-padding ()
   "Final cross padding should reuse a naturally sized non-box render."
-  (let* ((source (ebox-column
-                  (ebox-create :content "A" :width '(80))
-                  (ebox-create :content "A2" :width '(80))))
+  (let* ((source (plist-put
+                  (ebox-column
+                   (ebox-create :content "A" :width '(80))
+                   (ebox-create :content "A2" :width '(80)))
+                  :key 'natural-child))
          (layout
           (ebox-flex :width '(220)
             (ebox-flex-item source :flex-grow 1 :flex-basis '(80))
@@ -619,7 +623,7 @@
          rendered)
     (cl-letf (((symbol-function 'ebox-render)
                (lambda (node)
-                 (when (eq node source)
+                 (when (eq (plist-get node :key) 'natural-child)
                    (cl-incf calls))
                  (funcall original node))))
       (setq rendered (ebox-render layout)))
@@ -655,14 +659,17 @@
                   (box :content "B" :height 1)
                   (box :content "C" :height 1)
                   (box :content "D" :height 1))))))
-         (root-id
-          (plist-get (car (ebox-selector-query-all layout "#root"))
-                     :region-id)))
-    (ebox-render layout)
-    (let ((state (ebox-scroll-state root-id)))
-      (should (equal (ebox-get (plist-get state :box) :height) 2))
-      (should-not (plist-get state :content-lines-complete-p))
-      (should-not (plist-get state :render-content-prefix)))))
+         (buffer (generate-new-buffer " *ebox-flex-scroll-state*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer layout)
+          (let* ((match (car (ebox-selector-query-buffer buffer "#root")))
+                 (state (ebox-scroll-state (plist-get match :region-id))))
+            (should (equal (ebox-get (plist-get state :box) :height) 2))
+            (should-not (plist-get state :content-lines-complete-p))
+            (should-not (plist-get state :render-content-prefix))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest ebox-flex-natural-row-padding-uses-rendered-overflow-width ()
   "Natural cross padding should preserve a row item's rendered overflow width."

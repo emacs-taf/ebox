@@ -115,7 +115,7 @@
 (declare-function ebox--smooth-scroll-stop
                   "ebox" (region-id))
 (declare-function ebox--install-buffer-scroll-content-span-template
-                  "ebox" (buffer template start))
+                  "ebox" (buffer template start &optional defer-window-region-set))
 (declare-function ebox--node-children
                   "ebox" (node))
 (declare-function ebox--root-region-box
@@ -250,6 +250,10 @@ user code or signal after mutation.")
      'ebox-incremental-before-runtime-mutation-hook buffer kind)))
 
 (defvar ebox--buffer-render-state-table)
+(defvar ebox-surface--buffer-surface)
+
+(declare-function tp-surface-client-state "tp-surface" (surface))
+(declare-function tp-surface-live-p "tp-surface" (surface))
 
 (defvar ebox-render-cache-max-entries 2048
   "Maximum persistent render cache entries retained per buffer.
@@ -392,7 +396,7 @@ Kept as a narrow predicate for callers that need box-only sizing semantics."
     (while plist
       (let ((key (pop plist))
             (value (pop plist)))
-        (unless (eq key :render-cache)
+        (unless (memq key '(:render-cache :surface-object))
           (push key signature)
           (push (ebox--render-cache-value-signature value) signature))))
     (nreverse signature)))
@@ -968,7 +972,14 @@ Keys are region-id, values are plists with :scroll-offset, :content-lines, etc."
            (eq buffer
                (car ebox-incremental--buffer-render-state-override)))
       (cdr ebox-incremental--buffer-render-state-override)
-    (gethash buffer ebox--buffer-render-state-table)))
+    (let ((surface
+           (and (buffer-live-p buffer)
+                (boundp 'ebox-surface--buffer-surface)
+                (with-current-buffer buffer
+                  ebox-surface--buffer-surface))))
+      (if (and surface (tp-surface-live-p surface))
+          (tp-surface-client-state surface)
+        (gethash buffer ebox--buffer-render-state-table)))))
 
 (defun ebox--buffer-update-report (buffer)
   "Return the update report stored in BUFFER's render state."
@@ -4414,7 +4425,8 @@ prepared proof and publication cannot render, promote owners, or fall back."
                           (plist-get root-metadata
                                      :scroll-content-span-template)
                           (caar (plist-get (car results)
-                                          :new-buffer-spans)))))
+                                          :new-buffer-spans))
+                          t)))
                    (incremental-scroll-refresh
                     (and (eq refresh-scope :incremental-root)
                          (plist-get (car results)
@@ -6330,6 +6342,44 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
                     (ebox-incremental--candidate-path-copy-one
                      root node-id replacement index))))
           root)))))
+
+(defun ebox-incremental-consume-candidate (buffer-or-name candidate)
+  "Consume CANDIDATE for BUFFER-OR-NAME and return its pure surface input.
+The returned plist contains the prepared root, Ebox plan report, identity
+policy, and runtime state overrides needed by the TP surface publisher.
+CANDIDATE is sealed before target and staleness validation, so every attempted
+commit consumes it even when later preparation fails."
+  (unless (ebox-candidate-p candidate)
+    (error "Ebox logical commit requires an Ebox candidate"))
+  (when (ebox-candidate--sealed-p candidate)
+    (error "Ebox candidate is already sealed"))
+  (setf (ebox-candidate--sealed-p candidate) t)
+  (let ((buffer (get-buffer buffer-or-name))
+        (old-state (ebox-candidate--base-state candidate)))
+    (unless (buffer-live-p buffer)
+      (error "Ebox candidate commit requires a live buffer: %S"
+             buffer-or-name))
+    (ebox-incremental--candidate-assert-current candidate buffer old-state)
+    (ebox-incremental--surface-commit-input
+     buffer old-state
+     (ebox-incremental--prepare-logical-candidate
+      buffer old-state candidate))))
+
+(defun ebox-incremental-prepare-root-commit (buffer-or-name next-root)
+  "Prepare declarative NEXT-ROOT for TP publication in BUFFER-OR-NAME.
+Return the same pure surface-input shape as
+`ebox-incremental-consume-candidate'."
+  (let* ((buffer (get-buffer buffer-or-name))
+         (old-state (and buffer (ebox--buffer-render-state buffer))))
+    (unless (buffer-live-p buffer)
+      (error "Ebox declarative commit requires a live buffer: %S"
+             buffer-or-name))
+    (unless old-state
+      (error "Ebox buffer has no rendered runtime: %S" buffer))
+    (ebox-incremental--surface-commit-input
+     buffer old-state
+     (ebox-incremental--prepare-declarative-root
+      buffer old-state next-root))))
 
 (defun ebox-incremental--hash-keys (table)
   "Return the keys currently present in hash TABLE."
@@ -8333,6 +8383,123 @@ All owner promotion and rendering finishes before this function returns."
                      buffer (delq failed-op (copy-sequence ops))
                      promoted)))))))
       complete)))
+
+(defun ebox-incremental--prepared-plan-result (op)
+  "Return publication metadata predicted by prepared patch OP."
+  (let* ((prepared (plist-get op :prepared-publication))
+         (spans (or (plist-get prepared :spans)
+                    (plist-get prepared :old-refresh-spans)))
+         (result
+          (list :op (plist-get op :op)
+                :owner-id (plist-get op :owner-id)
+                :owner-type (plist-get prepared :owner-type)
+                :span-count (length spans))))
+    (dolist (key '(:affected-region-ids :slot-preserving
+                   :flex-line-rerender :publication-scope
+                   :published-buffer-spans :full-root-required-p
+                   :patch-origin :full-frame-bytes :replacement-bytes
+                   :old-span-footprint-signature
+                   :new-span-footprint-signature
+                   :old-external-footprint-signature
+                   :new-external-footprint-signature
+                   :old-parent-slot-signature
+                   :new-parent-slot-signature))
+      (when (plist-member prepared key)
+        (setq result (plist-put result key (plist-get prepared key)))))
+    result))
+
+(defun ebox-incremental--prepared-plan-report
+    (prepared patch-set candidate-state)
+  "Return Ebox's semantic report for PREPARED PATCH-SET and CANDIDATE-STATE."
+  (let* ((results (mapcar #'ebox-incremental--prepared-plan-result patch-set))
+         (strategy (and results (ebox--patch-results-strategy results)))
+         (single (and (= (length results) 1) (car results)))
+         (patch-report
+          (and results
+               (ebox--update-report
+                nil strategy
+                :dirty-count (length (plist-get prepared :dirty-set))
+                :patch-count (length results)
+                :patch-ops (mapcar (lambda (result)
+                                     (plist-get result :op))
+                                   results)
+                :owner-ids (mapcar (lambda (result)
+                                     (plist-get result :owner-id))
+                                   results)
+                :owner-type (plist-get single :owner-type)
+                :span-count (cl-loop for result in results
+                                     sum (plist-get result :span-count))
+                :slot-preserving
+                (cl-some (lambda (result)
+                           (plist-get result :slot-preserving))
+                         results)
+                :old-span-footprint-signature
+                (plist-get single :old-span-footprint-signature)
+                :new-span-footprint-signature
+                (plist-get single :new-span-footprint-signature)
+                :old-external-footprint-signature
+                (plist-get single :old-external-footprint-signature)
+                :new-external-footprint-signature
+                (plist-get single :new-external-footprint-signature)
+                :old-parent-slot-signature
+                (plist-get single :old-parent-slot-signature)
+                :new-parent-slot-signature
+                (plist-get single :new-parent-slot-signature)))))
+    (ebox-incremental--commit-report
+     prepared patch-report candidate-state)))
+
+(defun ebox-incremental--prepare-surface-patch-report
+    (buffer old-state prepared candidate-state)
+  "Prove BUFFER's PREPARED candidate against OLD-STATE.
+Return a non-publishing report for CANDIDATE-STATE."
+  (let* ((render-dirty-set
+          (cl-remove-if
+           (lambda (entry) (eq (plist-get entry :dirty-kind) 'metadata))
+           (plist-get prepared :dirty-set)))
+         (candidate-region-box-table
+          (plist-get candidate-state :region-box-table))
+         (candidate-scroll-state-table
+          (plist-get prepared :scroll-state-table))
+         (base-buffer-modified-tick
+          (with-current-buffer buffer (buffer-modified-tick)))
+         patch-set)
+    (let ((ebox--region-box-table candidate-region-box-table)
+          (ebox--scroll-global-state candidate-scroll-state-table)
+          (ebox--scroll-idle-prefetch-timers (make-hash-table :test 'equal))
+          (ebox--smooth-scroll-state-table (make-hash-table :test 'equal))
+          (ebox--render-cache-scroll-state-restorable-p nil)
+          (ebox-incremental--buffer-render-state-override
+           (cons buffer candidate-state))
+          (ebox-incremental--candidate-base-state (cons buffer old-state)))
+      (cl-letf (((symbol-function 'ebox--scroll-schedule-idle-prefetch)
+                 (lambda (&rest _) nil)))
+        (setq patch-set
+              (ebox-incremental--prepare-declarative-patch-set
+               buffer render-dirty-set))))
+    (unless (= base-buffer-modified-tick
+               (with-current-buffer buffer (buffer-modified-tick)))
+      (error "Ebox buffer changed while declarative patches were prepared"))
+    (ebox-incremental--prepared-plan-report
+     prepared patch-set candidate-state)))
+
+(defun ebox-incremental--surface-commit-input
+    (buffer old-state prepared)
+  "Return TP surface input for BUFFER from OLD-STATE and PREPARED runtime."
+  (let* ((candidate-state
+          (ebox-incremental--candidate-state
+           old-state (plist-get prepared :root)
+           (plist-get prepared :index) prepared))
+         (report
+          (ebox-incremental--prepare-surface-patch-report
+           buffer old-state prepared candidate-state)))
+    (list :root (plist-get prepared :root)
+          :report-base report
+          :preserve-identities-p t
+          :state-overrides
+          (list :logical-candidate-p
+                (plist-get prepared :logical-candidate-p)
+                :detached-identity-history
+                (plist-get prepared :detached-identity-history)))))
 
 (defun ebox-incremental--finalize-declarative-scroll-publication
     (scroll-keys)

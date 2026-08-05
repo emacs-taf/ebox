@@ -2636,8 +2636,10 @@ ROOT-START, and avoids live extent scans for prepared root publications."
     table))
 
 (defun ebox--install-buffer-scroll-content-span-template
-    (buffer template start)
-  "Install scroll marker TEMPLATE in BUFFER relative to START."
+    (buffer template start &optional defer-window-region-set)
+  "Install scroll marker TEMPLATE in BUFFER relative to START.
+When DEFER-WINDOW-REGION-SET is non-nil, postpone computing the visible
+region set until the first scroll operation."
   (when (and (buffer-live-p buffer) (hash-table-p template))
     (let ((region-set (ebox--buffer-region-id-set buffer))
           (seen (make-hash-table :test 'equal))
@@ -2654,7 +2656,7 @@ ROOT-START, and avoids live extent scans for prepared root publications."
                             (cons (+ start (cadr entry))
                                   (+ start (cddr entry)))))
                     entries)
-            t)))
+            defer-window-region-set)))
        template)
       (maphash
        (lambda (region-id state)
@@ -6873,7 +6875,8 @@ Defaults to the current buffer."
 
 (defun ebox--cleanup-current-buffer ()
   "Remove Ebox runtime state owned by the current buffer."
-  (ebox--clear-buffer-runtime-state (current-buffer)))
+  (ebox--clear-buffer-runtime-state (current-buffer))
+  (setq-local ebox-surface--buffer-surface nil))
 
 (defun ebox--foreign-region-in-range-p (start end region-id)
   "Return non-nil if START..END contains another ebox region."
@@ -7192,9 +7195,70 @@ are settled in the same update transaction."
                   (memq key '(:width :min-width :max-width)))
                 changed-keys)))
 
+(defun ebox--surface-region-update (handle props)
+  "Apply PROPS to surface-scoped region HANDLE through one TP commit."
+  (pcase-let* ((`(,buffer . ,region-id)
+                (ebox-selector--region-target handle))
+               (state (ebox--buffer-render-state buffer))
+               (box (gethash region-id
+                             (plist-get state :region-box-table)))
+               (expanded (ebox--expand-plist props))
+               (analysis (ebox--region-update-analysis box expanded)))
+    (dolist (key (plist-get analysis :unknown-keys))
+      (message "ebox-region-update: unknown key %S (ignored)" key))
+    (if (not (plist-get analysis :changed-p))
+        (let ((report
+               (ebox--update-report
+                nil 'no-op :region-handle handle :constraint-source 'region
+                :runtime-published nil :runtime-revision
+                (plist-get state :runtime-revision)
+                :surface-revision
+                (tp-surface-revision (plist-get state :surface))
+                :dirty-count 0 :patch-count 0 :patch-ops nil)))
+          (plist-put state :last-update-report report)
+          report)
+      (let* ((candidate-root
+              (ebox-tree-copy-node-structure
+               (plist-get state :root-node)))
+             (candidate-box
+              (ebox--root-region-box candidate-root region-id))
+             changed-keys)
+        (unless candidate-box
+          (user-error "Ebox region handle no longer resolves to a box"))
+        (cl-loop for (key value) on expanded by #'cddr
+                 for target-key = (ebox--region-update-normalize-property key)
+                 when (or (eq target-key :content)
+                          (memq target-key ebox--region-update-longhand-props))
+                 unless (equal (ebox-get candidate-box target-key) value)
+                 do (ebox-put candidate-box target-key value)
+                 and do (push target-key changed-keys))
+        (setq changed-keys (nreverse changed-keys))
+        (let ((ebox-viewport-width (plist-get state :viewport-width))
+              (ebox-viewport-height (plist-get state :viewport-height)))
+          (let ((surface
+                 (ebox-surface-mount-buffer
+                  buffer candidate-root
+                  (list :region-handle handle
+                        :constraint-source 'region
+                        :dirty-count 1
+                        :dirty-keys changed-keys
+                        :dirty-kinds
+                        (list (ebox--region-update-dirty-kind changed-keys)))
+                  nil t
+                  (list :viewport-width (plist-get state :viewport-width)
+                        :viewport-height (plist-get state :viewport-height)
+                        :detached-identity-history
+                        (plist-get state :detached-identity-history)))))
+            (plist-get (tp-surface-client-state surface)
+                       :last-update-report)))))))
+
 ;;;###autoload
 (defun ebox-region-update (region-id &rest props)
   "Update one or more properties of the box identified by REGION-ID.
+
+REGION-ID may also be an opaque handle returned by `ebox-region-resolve'.
+Handles are surface-scoped and are the preferred form when one declarative
+source is mounted in more than one buffer.
 
 PROPS accepts the same shorthand and longhand keywords as `ebox-create'.
 Properties are expanded through `ebox-property-rules', written to the box
@@ -7206,10 +7270,14 @@ updates return a `no-op' report.
 
 Examples:
   (ebox-region-update id :content \"Hello\")
+  (ebox-region-update (ebox-region-resolve buffer \"status\")
+                      :content \"Ready\")
   (ebox-region-update id :padding (list 1 2) :border-color \"red\")
   (ebox-region-update id :content \"Hi\" :width 30 :color \"white\")"
   (ebox--with-render-gc
-   (ebox--with-validated-display-cache
+   (if (ebox-region-handle-p region-id)
+       (ebox--surface-region-update region-id props)
+     (ebox--with-validated-display-cache
     (catch 'ebox-region-update-result
       (let* ((inhibit-read-only t)
              (buffer (ebox--region-update-buffer region-id))
@@ -7513,7 +7581,7 @@ Examples:
               (setq transaction-completed t))
           (unless transaction-completed
             (restore-model)))
-        result-report)))))))
+        result-report))))))))
 
 (defvar ebox-scroll-map nil
   "Keymap for scroll interaction within ebox.")
@@ -7582,34 +7650,13 @@ NODE can be any box/concat/stack node created by `ebox-create',
 `ebox-concat', or `ebox-stack', or a pre-rendered string."
   (declare (indent 1))
   (unless (stringp node)
-    ;; Validate opaque host identities before clearing an existing target.
+    ;; Validate opaque host identities before preparing a target generation.
     (ebox-tree-validate-host-refs node))
-  (let* ((runtime-root
-          (if (stringp node)
-              node
-            (ebox--prepare-buffer-runtime-root
-             node buffer-or-name)))
-         (buffer (get-buffer-create buffer-or-name)))
+  (let ((buffer (get-buffer-create buffer-or-name)))
     (ebox--with-render-gc
+      (ebox-surface-mount-buffer buffer node)
       (with-current-buffer buffer
-        (let ((inhibit-read-only t))
-          (ebox--clear-buffer-runtime-state buffer)
-          (erase-buffer)
-          (progn
-            (if (stringp runtime-root)
-                (insert runtime-root)
-              (ebox--set-buffer-render-state buffer runtime-root)
-              (condition-case err
-                  (insert
-                   (ebox--with-buffer-render-context buffer
-                     (ebox-render runtime-root)))
-                (error
-                 (ebox--clear-buffer-render-state buffer)
-                 (signal (car err) (cdr err)))))
-            (unless (stringp runtime-root)
-              (ebox--refresh-buffer-scroll-content-markers buffer)
-              (ebox-buffer-refresh-region-role-spans buffer)))
-          (goto-char (point-min)))
+        (goto-char (point-min))
         (add-hook 'kill-buffer-hook #'ebox--cleanup-current-buffer nil t)
         (ebox-buffer-mode 1)
         (read-only-mode 1)
@@ -7741,16 +7788,26 @@ it must not run application code.  An error rolls the Ebox publication back.
 Return the successful publication report stored by `ebox-buffer-update-report'."
   (unless (or (null after-publication) (functionp after-publication))
     (signal 'wrong-type-argument (list 'functionp after-publication)))
-  (let ((ebox-incremental--after-declarative-publication
-         (or after-publication
-             ebox-incremental--after-declarative-publication)))
-    (if (ebox-candidate-p next-root)
-        (ebox-incremental-commit-candidate buffer-or-name next-root)
-      (let ((buffer (get-buffer buffer-or-name)))
-        (unless (buffer-live-p buffer)
-          (error "Ebox declarative commit requires an existing live buffer: %S"
-                 buffer-or-name))
-        (ebox-incremental-commit buffer next-root)))))
+  (let ((buffer (get-buffer buffer-or-name)))
+    (unless (buffer-live-p buffer)
+      (error "Ebox declarative commit requires an existing live buffer: %S"
+             buffer-or-name))
+    (let* ((commit-input
+            (if (ebox-candidate-p next-root)
+                (ebox-incremental-consume-candidate buffer next-root)
+              (ebox-incremental-prepare-root-commit buffer next-root)))
+           (source (plist-get commit-input :root))
+           (callback
+            (or after-publication
+                ebox-incremental--after-declarative-publication))
+           (surface
+            (ebox-surface-mount-buffer
+             buffer source
+             (plist-get commit-input :report-base)
+             callback
+             (plist-get commit-input :preserve-identities-p)
+             (plist-get commit-input :state-overrides))))
+      (plist-get (tp-surface-client-state surface) :last-update-report))))
 
 ;;;###autoload
 (defun ebox-rerender-buffer-with-context

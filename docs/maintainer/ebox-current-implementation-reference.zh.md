@@ -24,9 +24,9 @@
 | `ebox-layout.el` | box、row、column、stack、concat、spacer、换行和通用 formatting context。 |
 | `ebox-flex.el` | flex 归一化、line、剩余空间分配和 flex 渲染。 |
 | `ebox-grid.el` | 轨道、隐式轨道、分数、minmax/repeat、gap、placement、span 和对齐。 |
-| `ebox-surface.el` | Ebox 候选 identity，以及从布局输出到通用 TP surface plan 的纯投影。 |
-| `ebox-buffer-backend.el` | text property、display space/border、marker、extent、替换和 buffer 变更。 |
-| `ebox-incremental.el` | runtime、snapshot、dirty 规划、owner 提升、原子发布和报告。 |
+| `ebox-surface.el` | 候选 identity、向 TP surface plan 的投影、retained mount/update，以及支持 rollback 的 Ebox runtime-state participant。 |
+| `ebox-buffer-backend.el` | text property、display space/border、marker、extent 与专用局部 patch primitive。 |
+| `ebox-incremental.el` | runtime、snapshot、dirty 规划、owner 提升、纯 commit 准备和报告。 |
 | `ebox-dsl.el` | 数据型 `.ebox` form，以及向公共节点的 lowering。 |
 | `ebox-selector.el` | 对树和 runtime handle 的 CSS-like 查询。 |
 | `ebox-native-reflow.el` | 可选 native 模块加载/构建、ABI 校验、受限 session 和 Elisp fallback。 |
@@ -40,15 +40,18 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 正常数据流是：
 
 ```text
-Source Tree
+调用者拥有的 Source Tree
+  -> Surface 拥有的 Runtime Copy
+  -> TP Candidate Objects
   -> Element Tree
   -> Computed Style
   -> Box/Formatting Context
   -> Measurement + Render Context
   -> Layout Fragment/Snapshot
-  -> 纯 TP Surface Plan
-  -> Dirty/Patch Plan
-  -> Emacs Buffer Backend
+  -> Ebox Dirty/Patch Plan
+  -> TP Surface Plan
+  -> TP 原子发布
+  -> Ebox Runtime-State Participant
 ```
 
 | 模型 | Owner | 不得拥有 |
@@ -58,22 +61,26 @@ Source Tree
 | Measurement | `ebox-measure.el` | 应用状态或 dirty 策略。 |
 | Formatting Context | `ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` | Buffer 编辑。 |
 | Fragment/Snapshot | `ebox-fragment.el`、`ebox-incremental.el` | Source parsing 或 identity 分配。 |
-| Surface Projection | `ebox-surface.el` | Buffer 变更或 Ebox 布局决策。 |
-| Dirty/Patch | `ebox-incremental.el` | 原始测量或直接 buffer 编辑。 |
-| Buffer Backend | `ebox-buffer-backend.el` | 样式语义或应用状态。 |
+| Surface 投影与整根发布 | `ebox-surface.el` 加公共 TP surface API | Ebox 布局决策或通用 diff 执行。 |
+| Dirty/Patch 语义 | `ebox-incremental.el` | 原始测量或 TP buffer 写入。 |
+| 通用 Surface Diff/Commit | TP | Ebox 几何、dirty 策略或应用状态。 |
+| 专用局部 Backend | `ebox-buffer-backend.el` | 整根 mount/commit 所有权、样式语义或应用状态。 |
 
 ## 不变量
 
 - 公共 Ebox 节点是数据；`ebox--*` 名称是私有实现。
 - `'(420)` 这样的单元素横向 list 表示像素；普通横向数字表示字符列。
-- `ebox-render` 不发布到 buffer；`ebox-render-to-buffer` 负责首次发布；`ebox-commit` 负责声明式替换。
+- `ebox-render` 使用临时 TP surface，不发布到 buffer；`ebox-render-to-buffer` 挂载 retained TP surface；`ebox-commit` 准备 Ebox 语义后通过 TP 更新该 surface。
+- 声明式输入始终由调用者拥有。live mount/commit 只在 surface-owned copy 上分配 identity，因此同一 source 可以挂载到多个 buffer。
+- 逻辑 `:id` 通过 `ebox-region-resolve` 解析为不透明、surface-scoped 的 handle；同一逻辑 region 挂载到多个 buffer 时，由 handle 而不是 source-tree 数字 id 区分。
 - 候选失败时必须保留之前的 buffer、runtime identity 和报告。
 - Key 只在兄弟节点中有效；不能用可见字符串作为 identity。
 - `owner-rerender` 范围大于 `span-patch`，`span-patch` 大于 `paint-patch`。
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。
 - 加载 Ebox 不会构建或安装可选 Rust 模块。
-- Phase 7 projector 在布局前分配 TP candidate identity，输出不含 marker、position、buffer 或 TP runtime handle 的 plan，并与 `ebox-render` 保持逐字节、逐属性等价。公开 live 入口在下一阶段切换前仍使用现有 Ebox backend。
+- 当前已进入 Phase 8：`ebox-render-to-buffer` 与声明式 `ebox-commit` 只通过 TP 这一条 live 发布边界，Ebox runtime state 在同一个可 rollback transaction 中参与提交。现有的数字 region、selector、viewport 与 scroll 专用局部 publisher 暂时保留到局部更新切换阶段，但不得成为第二条整根发布路径。
+- 成功的整根报告会保留 Ebox 语义策略与 planned publication scope，再加入 `:publication-scope tp-surface`、TP operation 数、surface revision 和 retained-object reconciliation 统计。
 
 ## Grid 合同
 

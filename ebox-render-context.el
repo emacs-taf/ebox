@@ -10,6 +10,7 @@
 (defvar ebox-viewport-width nil)
 (defvar ebox-viewport-height nil)
 (defvar ebox--render-runtime-revision nil)
+(defvar ebox--surface-materialization-active nil)
 (defvar ebox--render-cache-table nil)
 (defvar ebox--render-cache-signature-cache nil)
 (defvar ebox--viewport-dependent-node-ids-cache nil)
@@ -36,6 +37,7 @@
                  (plist-get ,render-state :viewport-height))
                 (ebox--render-runtime-revision
                  (plist-get ,render-state :runtime-revision))
+                (ebox--surface-materialization-active t)
                 (ebox--render-cache-table
                  (plist-get ,render-state :render-cache))
                 (ebox--render-cache-signature-cache

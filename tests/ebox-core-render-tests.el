@@ -82,6 +82,18 @@
                (and (not ambiguous) candidate)))))
     (ebox-buffer-update-report target)))
 
+(defun ebox-test--runtime-root (buffer)
+  "Return BUFFER's surface-owned runtime root."
+  (plist-get (ebox--buffer-render-state buffer) :root-node))
+
+(defun ebox-test--selector-node (buffer selector)
+  "Return the first runtime node matching SELECTOR in BUFFER."
+  (plist-get (car (ebox-selector-query-buffer buffer selector)) :node))
+
+(defun ebox-test--selector-node-id (buffer selector)
+  "Return the first runtime node id matching SELECTOR in BUFFER."
+  (plist-get (car (ebox-selector-query-buffer buffer selector)) :node-id))
+
 (ert-deftest ebox-scroll-window-lookahead-accepts-root-reflow-override ()
   "Root reflow should be able to defer all hidden lookahead work."
   (let ((ebox-scroll-lazy-prefix-lookahead-lines 8)
@@ -371,7 +383,7 @@
     (should-not (gethash (plist-get right :region-id) template))))
 
 (ert-deftest ebox-live-mount-uses-runtime-copy-and-leaves-source-stable ()
-  "First live mount should copy SOURCE while preserving stable source ids."
+  "Live publication should update a surface copy without mutating SOURCE."
   (ebox-test--reset-runtime-state)
   (let* ((source (ebox-build
                   '(box :id "root" :content "before\nhidden" :width (120)
@@ -381,114 +393,67 @@
         (progn
           (should-not (plist-member source :region-id))
           (ebox-render-to-buffer buffer source)
-          (let* ((runtime-root (ebox--buffer-root-node buffer))
-                 (source-ids (ebox-region-ids source))
-                 (region-id (car source-ids))
-                 (runtime-box
-                  (gethash region-id
-                           (ebox--buffer-region-box-table buffer))))
-            (should source-ids)
-            (should (equal (ebox-region-ids source) source-ids))
+          (let* ((runtime-root (ebox-test--runtime-root buffer))
+                 (handle (ebox-region-resolve buffer "root")))
             (should-not (eq runtime-root source))
-            (should (eq runtime-root runtime-box))
-            (should (eq (gethash region-id ebox--region-box-table)
-                        runtime-box))
-            (let ((ebox--region-update-buffer-hint buffer))
-              (ebox-region-update region-id
-                                  :content "after\nhidden"
-                                  :color "#222222"
-                                  :width '(140)
-                                  :scroll-offset 1))
-            (should (equal (ebox-region-ids source) source-ids))
+            (ebox-region-update handle
+                                :content "after\nhidden"
+                                :color "#222222"
+                                :width '(140))
+            (setq runtime-root (ebox-test--runtime-root buffer))
+            (should-not (plist-member source :region-id))
+            (should-not (plist-member source :node-id))
             (should (equal (ebox-get source :content) "before\nhidden"))
             (should (equal (ebox-get source :color) "#111111"))
             (should (equal (ebox-get source :width) 120))
             (should (equal (ebox-get source :scroll-offset) 0))
-            (should (equal (ebox-get runtime-box :content) "after\nhidden"))
-            (should (equal (ebox-get runtime-box :color) "#222222"))
-            (should (equal (ebox-get runtime-box :width) 140))
-            (should (equal (ebox-get runtime-box :scroll-offset) 1))
-            (should (= (plist-get (ebox--scroll-get-state region-id)
-                                  :scroll-offset)
-                       1))
+            (should (equal (ebox-get runtime-root :content) "after\nhidden"))
+            (should (equal (ebox-get runtime-root :color) "#222222"))
+            (should (equal (ebox-get runtime-root :width) 140))
             (with-current-buffer buffer
-              (should (string-match-p "hidden"
+              (should (string-match-p "after"
                                       (buffer-string))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-live-mount-rejects-second-owner-before-target-cleanup ()
-  "Second live mount of retained ids should fail without touching target state."
+(ert-deftest ebox-live-mount-allows-one-source-on-independent-surfaces ()
+  "One immutable source should mount and update independently in two buffers."
   (ebox-test--reset-runtime-state)
   (let* ((source (ebox-build
                   '(box :id "root" :content "owned\nhidden" :width (120)
                         :height 1 :overflow scroll)))
-         (_source-ids (ebox-region-ids source))
-         (retained-copy (copy-tree source))
-         (missing-target-name (generate-new-buffer-name " *ebox-live-missing*"))
-         owner-buffer target-buffer
-         owner-state owner-root owner-region-id owner-scroll-state
-         owner-region-box owner-extents owner-timer
-         target-state target-text)
+         first-buffer second-buffer)
     (unwind-protect
         (progn
-          (setq owner-buffer
+          (setq first-buffer
                 (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-live-owner*")
+                 (generate-new-buffer-name " *ebox-live-first*")
                  source))
-          (setq target-buffer
+          (setq second-buffer
                 (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-live-target*")
-                 (ebox-create :content "target stays" :width 120)))
-          (setq owner-state (ebox--buffer-render-state owner-buffer)
-                owner-root (plist-get owner-state :root-node)
-                owner-region-id (car (ebox-region-ids source))
-                owner-scroll-state (ebox--scroll-get-state owner-region-id)
-                owner-region-box (gethash owner-region-id ebox--region-box-table)
-                owner-extents (gethash owner-region-id ebox--box-extents)
-                target-state (ebox--buffer-render-state target-buffer))
-          (setq owner-timer (run-with-timer 3600 nil #'ignore))
-          (puthash owner-region-id owner-timer
-                   ebox--scroll-idle-prefetch-timers)
-          (with-current-buffer target-buffer
-            (setq target-text (buffer-string)))
-          (dolist (root (list source retained-copy))
-            (should-error
-             (ebox-render-to-buffer target-buffer root)
-             :type 'user-error)
-            (should (eq (ebox--buffer-render-state owner-buffer) owner-state))
-            (should (eq (plist-get owner-state :root-node) owner-root))
-            (should (eq (ebox--scroll-get-state owner-region-id)
-                        owner-scroll-state))
-            (should (eq (gethash owner-region-id ebox--region-box-table)
-                        owner-region-box))
-            (should (eq (gethash owner-region-id ebox--box-extents)
-                        owner-extents))
-            (should (eq (gethash owner-region-id
-                                 ebox--scroll-idle-prefetch-timers)
-                        owner-timer))
-            (should (eq (ebox--buffer-render-state target-buffer)
-                        target-state))
-            (with-current-buffer target-buffer
-              (should (equal-including-properties (buffer-string)
-                                                  target-text)))))
-          (should-error
-           (ebox-render-to-buffer missing-target-name retained-copy)
-           :type 'user-error)
-          (should-not (get-buffer missing-target-name))
-      (dolist (buffer (list owner-buffer target-buffer))
+                 (generate-new-buffer-name " *ebox-live-second*")
+                 source))
+          (let ((first-handle (ebox-region-resolve first-buffer "root"))
+                (second-handle (ebox-region-resolve second-buffer "root")))
+            (should-not (eq first-handle second-handle))
+            (ebox-region-update first-handle :content "first changed")
+            (with-current-buffer first-buffer
+              (should (string-match-p "first changed" (buffer-string))))
+            (with-current-buffer second-buffer
+              (should-not (string-match-p "first changed" (buffer-string))))
+            (ebox-region-update second-handle :content "second changed")
+            (with-current-buffer second-buffer
+              (should (string-match-p "second changed" (buffer-string))))
+            (should (equal (ebox-get source :content) "owned\nhidden"))
+            (should-not (plist-member source :region-id))))
+      (dolist (buffer (list first-buffer second-buffer))
         (when (and buffer (buffer-live-p buffer))
-          (kill-buffer buffer)))
-      (when (timerp owner-timer)
-        (cancel-timer owner-timer))
-      (when-let ((buffer (get-buffer missing-target-name)))
-        (kill-buffer buffer)))))
+          (kill-buffer buffer))))))
 
-(ert-deftest ebox-live-mount-releases-old-source-after-target-replacement ()
-  "Replacing a target root should release the old source ids for reuse."
+(ert-deftest ebox-live-mount-kill-invalidates-handle ()
+  "Killing a surface buffer should invalidate its region handles."
   (ebox-test--reset-runtime-state)
-  (let* ((old-source (ebox-create :content "old" :width 120))
-         (new-source (ebox-create :content "new" :width 120))
+  (let* ((old-source (ebox-create :id "old" :content "old" :width 120))
          primary-buffer secondary-buffer)
     (unwind-protect
         (progn
@@ -496,19 +461,20 @@
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-live-primary*")
                  old-source))
-          (ebox-render-to-buffer primary-buffer new-source)
+          (let ((old-handle (ebox-region-resolve primary-buffer "old")))
+            (kill-buffer primary-buffer)
+            (setq primary-buffer nil)
+            (should-error (ebox-region-update old-handle :content "stale")
+                          :type 'user-error))
           (setq secondary-buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-live-secondary*")
                  old-source))
-          (kill-buffer secondary-buffer)
-          (setq secondary-buffer nil)
-          (setq secondary-buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-live-secondary*")
-                 old-source))
-          (should (eq (ebox--region-buffer (car (ebox-region-ids old-source)))
-                      secondary-buffer)))
+          (ebox-region-update (ebox-region-resolve secondary-buffer "old")
+                              :content "reused")
+          (with-current-buffer secondary-buffer
+            (should (string-match-p "reused" (buffer-string))))
+          (should (equal (ebox-get old-source :content) "old")))
       (dolist (buffer (list primary-buffer secondary-buffer))
         (when (and buffer (buffer-live-p buffer))
           (kill-buffer buffer))))))
@@ -565,7 +531,8 @@
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
                  node))
-          (let ((ids (ebox--runtime-node-ids node)))
+          (let ((ids (ebox--runtime-node-ids
+                      (ebox-test--runtime-root buffer))))
             (should (> (length ids) 1))
             (dolist (node-id ids)
               (should (ebox--buffer-runtime-node buffer node-id)))))
@@ -575,24 +542,26 @@
 (ert-deftest ebox-region-render-owner-index-maps-boxes-and-flex-wrapper ()
   "Region lookup should map each box to its smallest renderable owner."
   (ebox-test--reset-runtime-state)
-  (let* ((plain (ebox-create :content "Plain" :width '(80)))
-         (flex-child (ebox-create :content "Flex child" :width '(80)))
+  (let* ((plain (ebox-create :id "plain" :content "Plain" :width '(80)))
+         (flex-child (ebox-create :id "child" :content "Flex child"
+                                  :width '(80)))
          (flex (ebox-flex :width '(120) :padding 1 flex-child))
-         (flex-wrapper (plist-get flex :box))
          (layout (ebox-column plain flex)))
     (ebox-test--with-rendered-buffer layout
       (let* ((buffer (current-buffer))
+             (runtime-root (ebox-test--runtime-root buffer))
+             (runtime-plain (car (plist-get runtime-root :children)))
+             (runtime-flex (cadr (plist-get runtime-root :children)))
+             (runtime-wrapper (plist-get runtime-flex :box))
+             (runtime-child (car (plist-get runtime-flex :children)))
              (table (ebox--buffer-region-node-table buffer))
-             (plain-region-id (ebox--ensure-region-id plain))
-             (wrapper-region-id (ebox--ensure-region-id flex-wrapper))
-             (child-region-id (ebox--ensure-region-id flex-child))
-             (plain-node-id (ebox--ensure-node-id plain))
-             (flex-node-id (ebox--ensure-node-id flex))
-             (wrapper-node-id (ebox--ensure-node-id flex-wrapper))
-             (child-node-id (ebox--ensure-node-id flex-child))
-             (runtime-plain (ebox--buffer-runtime-node buffer plain-node-id))
-             (runtime-flex (ebox--buffer-runtime-node buffer flex-node-id))
-             (runtime-child (ebox--buffer-runtime-node buffer child-node-id)))
+             (plain-region-id (plist-get runtime-plain :region-id))
+             (wrapper-region-id (plist-get runtime-wrapper :region-id))
+             (child-region-id (plist-get runtime-child :region-id))
+             (plain-node-id (plist-get runtime-plain :node-id))
+             (flex-node-id (plist-get runtime-flex :node-id))
+             (wrapper-node-id (plist-get runtime-wrapper :node-id))
+             (child-node-id (plist-get runtime-child :node-id)))
         (should (hash-table-p table))
         (should (equal (gethash plain-region-id table) plain-node-id))
         (should (equal (gethash wrapper-region-id table) flex-node-id))
@@ -663,8 +632,9 @@
     (let* ((index (ebox--runtime-index layout t))
            (index-table (plist-get index :region-box-table))
            (ebox--region-box-table render-table)
+           (ebox--surface-materialization-active t)
            (ebox--scroll-global-state (make-hash-table :test 'equal)))
-      (ebox-render layout)
+      (ebox--render-layout layout)
       (should (= (hash-table-count index-table)
                  (hash-table-count render-table)))
       (maphash
@@ -2387,7 +2357,8 @@
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
-          (let* ((root-id (plist-get layout :node-id))
+          (let* ((root-id (plist-get (ebox-test--runtime-root buffer)
+                                     :node-id))
                  (snapshot (ebox--layout-snapshot buffer root-id)))
             (should snapshot)
             (should (eq (plist-get snapshot :type) 'concat))
@@ -2623,7 +2594,9 @@
                  (generate-new-buffer-name " *ebox-test*")
                  node))
           (let* ((snapshot (ebox--layout-snapshot
-                            buffer (plist-get node :node-id)))
+                            buffer
+                            (plist-get (ebox-test--runtime-root buffer)
+                                       :node-id)))
                  (child-ids (plist-get snapshot :child-ids))
                  (child-snapshot (ebox--layout-snapshot buffer (car child-ids))))
             (should (equal (plist-get snapshot :display) '(block flow)))
@@ -2813,7 +2786,8 @@
             (should (equal (plist-get report :constraint-owner-id)
                            'viewport))
             (should (equal (plist-get report :constraint-root-node-id)
-                           (plist-get layout :node-id)))
+                           (plist-get (ebox-test--runtime-root buffer)
+                                      :node-id)))
             (should (equal (plist-get report :dirty-kinds)
                            '(geometry)))))
       (when (and buffer (buffer-live-p buffer))
@@ -2837,22 +2811,25 @@
                   (ebox-render-to-buffer
                    (generate-new-buffer-name " *ebox-test*")
                    layout)))
-          (ebox-rerender-buffer-with-context buffer 90)
-          (let ((report (ebox-test--buffer-update-report))
-                (plain (with-current-buffer buffer
-                         (buffer-substring-no-properties
-                          (point-min) (point-max)))))
-            (should (equal (plist-get report :patch-ops)
-                           '(owner-rerender owner-rerender)))
-            (should (= (plist-get report :patch-count) 2))
-            (should-not (member (plist-get layout :node-id)
-                                (plist-get report :owner-ids)))
-            (should (member (plist-get top :node-id)
-                            (plist-get report :owner-ids)))
-            (should (member (plist-get bottom :node-id)
-                            (plist-get report :owner-ids)))
-            (should (string-match-p "Top text" plain))
-            (should (string-match-p "Bottom text" plain))))
+          (let* ((runtime-root (ebox-test--runtime-root buffer))
+                 (runtime-top (car (plist-get runtime-root :children)))
+                 (runtime-bottom (cadr (plist-get runtime-root :children))))
+            (ebox-rerender-buffer-with-context buffer 90)
+            (let ((report (ebox-test--buffer-update-report))
+                  (plain (with-current-buffer buffer
+                           (buffer-substring-no-properties
+                            (point-min) (point-max)))))
+              (should (equal (plist-get report :patch-ops)
+                             '(owner-rerender owner-rerender)))
+              (should (= (plist-get report :patch-count) 2))
+              (should-not (member (plist-get runtime-root :node-id)
+                                  (plist-get report :owner-ids)))
+              (should (member (plist-get runtime-top :node-id)
+                              (plist-get report :owner-ids)))
+              (should (member (plist-get runtime-bottom :node-id)
+                              (plist-get report :owner-ids)))
+              (should (string-match-p "Top text" plain))
+              (should (string-match-p "Bottom text" plain)))))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
@@ -2889,8 +2866,11 @@
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :constraint-source) 'region))
         (should (eq (plist-get report :constraint-owner-type) 'box))
-        (should (equal (plist-get report :constraint-owner-id)
-                       (plist-get left :node-id)))
+        (should
+         (equal (plist-get report :constraint-owner-id)
+                (gethash left-id
+                         (ebox--buffer-region-node-table
+                          (current-buffer)))))
         (should (equal (plist-get report :dirty-kinds)
                        '(geometry)))))))
 
@@ -3140,7 +3120,7 @@
             (should (> (length dirty) 8))
             (should (= (length patches) 1))
             (should (equal (plist-get (car patches) :owner-id)
-                           (plist-get layout :node-id)))
+                           (plist-get root :node-id)))
             (should (= (length source-ids) (length dirty)))
             (dolist (entry dirty)
               (should (member (plist-get entry :node-id) source-ids)))))
@@ -3161,7 +3141,8 @@
          (dirty-entry-count 0)
          (original (symbol-function 'ebox--promote-to-patchable-owner))
          (original-dirty-entry (symbol-function 'ebox--dirty-entry))
-         buffer)
+         buffer
+         root-id)
     (unwind-protect
         (progn
           (let ((ebox-viewport-width 640))
@@ -3175,6 +3156,7 @@
                  (source-ids
                   (ebox--dirty-provenance-node-ids
                    (plist-get (car patches) :dirty))))
+            (setq root-id (plist-get root :node-id))
             (should (> (length dirty) 8))
             (should (= (length source-ids) (length dirty)))
             (dolist (entry dirty)
@@ -3194,7 +3176,7 @@
             (should (= (plist-get report :dirty-count) 1))
             (should (= (plist-get report :patch-count) 1))
             (should (equal (plist-get report :owner-ids)
-                           (list (plist-get layout :node-id))))))
+                           (list root-id)))))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
@@ -3264,7 +3246,9 @@
           (let ((report (ebox-test--buffer-update-report)))
             (should (eq (plist-get report :strategy) 'owner-rerender))
             (should (equal (plist-get report :owner-ids)
-                           (list (plist-get layout :node-id)))))
+                           (list (plist-get
+                                  (ebox-test--runtime-root buffer)
+                                  :node-id)))))
           (should (= slot-probe-count 0)))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
@@ -4980,12 +4964,9 @@
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
-          (let* ((root-id (ebox--ensure-node-id layout))
-                 (left-node-id (ebox--ensure-node-id left))
-                 (right-node-id (ebox--ensure-node-id right))
-                 (runtime-root (ebox--buffer-runtime-node buffer root-id))
-                 (runtime-left (ebox--buffer-runtime-node buffer left-node-id))
-                 (runtime-right (ebox--buffer-runtime-node buffer right-node-id)))
+          (let* ((runtime-root (ebox-test--runtime-root buffer))
+                 (runtime-left (car (plist-get runtime-root :children)))
+                 (runtime-right (cadr (plist-get runtime-root :children))))
             (ebox--with-buffer-render-context buffer
               (ebox--render-cache-node-body-signature runtime-root))
             (let* ((cache (ebox--buffer-render-signature-cache buffer))
@@ -5027,12 +5008,9 @@
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
-          (let* ((root-id (ebox--ensure-node-id layout))
-                 (scroll-node-id (ebox--ensure-node-id scroll-box))
-                 (stable-node-id (ebox--ensure-node-id stable))
-                 (runtime-root (ebox--buffer-runtime-node buffer root-id))
-                 (runtime-scroll (ebox--buffer-runtime-node buffer scroll-node-id))
-                 (runtime-stable (ebox--buffer-runtime-node buffer stable-node-id)))
+          (let* ((runtime-root (ebox-test--runtime-root buffer))
+                 (runtime-scroll (car (plist-get runtime-root :children)))
+                 (runtime-stable (cadr (plist-get runtime-root :children))))
             (ebox--with-buffer-render-context buffer
               (ebox--render-cache-node-body-signature runtime-root))
             (let* ((cache (ebox--buffer-render-signature-cache buffer))
@@ -5251,7 +5229,7 @@
                  (apply original arguments))))
       (setq fast (ebox-render box)))
     (should (= fast-path-calls 1))
-    (should (eq (gethash 'fixed-wrapper ebox--region-box-table) box))
+    (should-not (gethash 'fixed-wrapper ebox--region-box-table))
     (should-not (gethash 'fixed-wrapper ebox--scroll-global-state))
     (should (equal-including-properties fast generic))))
 
@@ -5604,7 +5582,8 @@
           (should (= register-count 0))
           (should (= snapshot-count 0))
           (should (= runtime-node-ids-count 0))
-          (let* ((root-node-id (plist-get layout :node-id))
+          (let* ((root-node-id
+                  (plist-get (ebox-test--runtime-root buffer) :node-id))
                  (target-id (ebox-test--selector-region-id
                              buffer "#lazy-initial-06")))
             (should (ebox--layout-snapshot buffer root-node-id))
@@ -6550,8 +6529,10 @@
     (ebox-test--with-rendered-buffer layout
       (let ((region-id (ebox-test--selector-region-id (current-buffer) "#target"))
             (unrelated-child-id
-             (ebox--ensure-node-id
-              (car (last (ebox--node-children layout)))))
+             (plist-get
+              (car (last (ebox--node-children
+                          (ebox-test--runtime-root (current-buffer)))))
+              :node-id))
             (span-snapshot-calls 0)
             (measure-calls 0)
             (original (symbol-function 'ebox--ensure-layout-snapshot-spans))
@@ -6758,8 +6739,10 @@
           (ebox-region-update flex-wrapper-id :color "#7C3AED")
           (should (eq (plist-get (ebox-test--buffer-update-report) :strategy)
                       'paint-patch))
-          (should (equal (car (plist-get (ebox-test--buffer-update-report) :owner-ids))
-                         (ebox--ensure-node-id flex)))
+          (should
+           (equal
+            (car (plist-get (ebox-test--buffer-update-report) :owner-ids))
+            (gethash flex-wrapper-id region-node-table)))
           (should (= recursive-calls 0))
 
           (ebox-incremental-begin-batch buffer)
@@ -9617,7 +9600,10 @@
                                    :content ,(format "prefix %02d" idx)
                                    :width (100) :height 2)))))
          (limit 4)
-         (full-lines (ebox-string-lines (ebox-render node)))
+         (_index (ebox--runtime-index node t))
+         (full-lines
+          (let ((ebox--surface-materialization-active t))
+            (ebox-string-lines (ebox--render-layout node))))
          (window (ebox--render-flex-window-lines node limit)))
     (should-not (plist-get window :complete))
     (should (equal (mapcar #'substring-no-properties
@@ -9740,12 +9726,13 @@
                (lambda (&rest args)
                  (cl-incf multiline-horizontal-concat-count)
                  (apply original-horizontal-concat args))))
-      (let ((window (ebox--render-flex-window-lines node 4)))
+      (let* ((ebox--surface-materialization-active t)
+             (window (ebox--render-flex-window-lines node 4)))
         (should window)
         (should-not (plist-get window :complete))
         (should (= (length (plist-get window :lines)) 4))
         (should
-         (equal-including-properties
+         (ebox-test--rendered-visually-equal-p
           (ebox-lines-join (seq-take full-lines 4))
           (ebox-lines-join (plist-get window :lines))))))
     (should (= full-wrapper-count 0))
@@ -9766,7 +9753,10 @@
                              collect
                              `(box :content ,(format "complete %02d" idx)
                                    :width (100) :height 2)))))
-         (full (ebox-render node))
+         (_index (ebox--runtime-index node t))
+         (full
+          (let ((ebox--surface-materialization-active t))
+            (ebox--render-layout node)))
          (full-wrapper-count 0)
          (chunk-wrapper-count 0)
          (original-full-wrapper
@@ -9781,7 +9771,8 @@
                (lambda (&rest args)
                  (cl-incf chunk-wrapper-count)
                  (apply original-chunk-wrapper args))))
-      (let ((window (ebox--render-flex-window-lines node 8)))
+      (let* ((ebox--surface-materialization-active t)
+             (window (ebox--render-flex-window-lines node 8)))
         (should window)
         (should (plist-get window :complete))
         (should
@@ -14010,7 +14001,8 @@
                  (generate-new-buffer-name " *ebox-prewarm-test*") layout))
           (setq root-id (ebox-test--selector-region-id buffer "#root"))
           (setq expected-viewport-ids
-                (ebox--viewport-dependent-node-ids layout))
+                (ebox--viewport-dependent-node-ids
+                 (ebox-test--runtime-root buffer)))
           (let* ((state (ebox-scroll-state root-id))
                  (before-lines (length (plist-get state :content-lines)))
                  (materialize (plist-get state :materialize-content-lines)))
@@ -14733,8 +14725,9 @@
                       'minimal-spans))
           (should (plist-get (ebox-test--buffer-update-report)
                              :published-buffer-spans))
-          (let ((expected (let ((ebox-viewport-width 160))
-                            (ebox-render layout))))
+          (let ((expected
+                 (let ((ebox-viewport-width 160))
+                   (ebox-render (ebox-test--runtime-root buffer)))))
             (with-current-buffer buffer
               (should (equal-including-properties
                        (buffer-substring (point-min) (point-max))
