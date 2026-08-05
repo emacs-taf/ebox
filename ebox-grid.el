@@ -494,6 +494,17 @@ size for start/center/end alignment unless it would overflow its track."
          (align (or (plist-get props :align-items) 'stretch)))
     (ebox-grid--align source width height justify align)))
 
+(defun ebox-grid--sized-rendered-entries (entries rendered widths gap props)
+  "Render ENTRIES at their resolved column widths for later row sizing."
+  (let ((sized (make-hash-table :test 'eq)))
+    (dolist (entry entries)
+      (let* ((node (plist-get entry :node))
+             (width (ebox-grid--entry-size entry widths gap)))
+        (puthash node
+                 (ebox-grid--entry-source entry rendered width props)
+                 sized)))
+    sized))
+
 (defun ebox-grid--entry-at (matrix row column)
   "Return entry occupying ROW and COLUMN in MATRIX."
   (and (< row (length matrix))
@@ -631,19 +642,23 @@ size for start/center/end alignment unless it would overflow its track."
     (let* ((widths (ebox-grid--resolve-sizes columns column-count 'columns
                                              entries rendered (cdr gaps)
                                              available auto-columns))
-           (heights (ebox-grid--resolve-sizes rows row-count 'rows
-                                              entries rendered (car gaps)
-                                              height auto-rows))
            (column-layout
             (ebox-grid--content-layout
              widths (cdr gaps) available
              (or (plist-get props :justify-content) 'start)))
+           (sized-rendered
+            (ebox-grid--sized-rendered-entries
+             entries rendered (plist-get column-layout :sizes)
+             (plist-get column-layout :between) props))
+           (heights (ebox-grid--resolve-sizes rows row-count 'rows
+                                              entries sized-rendered (car gaps)
+                                              height auto-rows))
            (row-layout
             (ebox-grid--content-layout
              heights (car gaps) height
              (or (plist-get props :align-content) 'start)))
            (body (ebox-grid--render entries matrix column-layout row-layout
-                                    props rendered)))
+                                    props sized-rendered)))
       (ebox--render-grid-box node body))))
 
 ;;;###autoload

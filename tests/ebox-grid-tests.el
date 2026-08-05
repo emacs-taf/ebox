@@ -51,6 +51,20 @@
          (widths (mapcar #'ebox--string-pixel-width lines)))
     (should (equal widths (make-list (length widths) 120)))))
 
+(ert-deftest ebox-grid-sizes-auto-row-after-assigned-width-wrap ()
+  "Auto rows should use the height of width-constrained child content."
+  (let* ((node (ebox-grid
+                :width '(40)
+                :grid-template-columns '((38))
+                :border "#334155"
+                (ebox-create
+                 :content "WIDE CONTENT WIDE CONTENT WIDE CONTENT WIDE CONTENT"
+                 :wrap-mode 'word)))
+         (lines (ebox-string-lines (ebox-render node)))
+         (widths (mapcar #'ebox--string-pixel-width lines)))
+    (should (= (length lines) 2))
+    (should (equal widths (make-list (length widths) 40)))))
+
 (ert-deftest ebox-grid-aligns-every-line-before-border-render ()
   "Grid wrapper borders should stay on one right edge across child lines."
   (let* ((node (ebox-grid
