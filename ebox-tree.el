@@ -372,13 +372,15 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
            (when (eq (plist-get node :ebox-type) 'box)
              (when (plist-member node :region-id)
                (plist-put node :region-id nil)))
+           (when (plist-member node :surface-object)
+             (plist-put node :surface-object nil))
            (dolist (child (ebox-tree--children-raw node))
              (visit child)))))
     (visit root))
   root)
 
 (defconst ebox-tree--runtime-source-keys
-  '(:node-id :region-id :render-cache)
+  '(:node-id :region-id :surface-object :render-cache)
   "Runtime-owned plist keys excluded from declarative source signatures.")
 
 (defconst ebox-tree--child-source-keys

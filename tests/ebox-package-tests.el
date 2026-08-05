@@ -49,7 +49,7 @@
   (dolist (feature '(ebox-cache ebox-style ebox-tree ebox-measure
                                 ebox-fragment ebox-layout ebox-flex ebox-grid
                                 ebox-buffer-backend ebox-incremental
-                                ebox-dsl ebox-selector))
+                                ebox-surface ebox-dsl ebox-selector))
     (should (featurep feature))))
 
 (ert-deftest ebox-facade-exposes-native-workflow-without-loading-it ()
@@ -67,8 +67,17 @@
           '("ebox-cache.el" "ebox-style.el" "ebox-tree.el" "ebox-measure.el"
             "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
             "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
-            "ebox-dsl.el" "ebox-selector.el" "ebox.el"
+            "ebox-surface.el" "ebox-dsl.el" "ebox-selector.el" "ebox.el"
             "ebox-native-reflow.el"))))
+
+(ert-deftest ebox-surface-depends-only-on-public-tp-api ()
+  "The Ebox projection boundary should never call private TP symbols."
+  (let ((source
+         (with-temp-buffer
+           (insert-file-contents
+            (expand-file-name "ebox-surface.el" ebox-test--root))
+           (buffer-string))))
+    (should-not (string-match-p "\\_<tp--" source))))
 
 (ert-deftest ebox-byte-compile-rebuilds-the-declared-source-set ()
   "The interactive command should recompile every declared source in order."

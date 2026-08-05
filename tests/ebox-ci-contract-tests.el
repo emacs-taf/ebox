@@ -17,6 +17,7 @@
   (let ((source (ebox-ci-test--read "Makefile")))
     (dolist (target '("check:" "ci:" "load:" "compile:" "test:"
                       "core-tests:" "grid-tests:" "ebox-commit-tests:"
+                      "surface-tests:"
                       "docs-contract-tests:"
                       "ci-contract-tests:" "native-rust-tests:"
                       "native-build:" "diff-check:"))
@@ -44,6 +45,7 @@
   "GitHub Actions should call the same local checks as maintainers."
   (let ((source (ebox-ci-test--read ".github/workflows/ci.yml")))
     (should (string-match-p "emacs-nox" source))
+    (should (string-match-p "Kinneyzhang/tp" source))
     (should (string-match-p "make ci" source))
     (should (string-match-p (regexp-quote "cargo +stable test") source))
     (should (string-match-p (regexp-quote "cargo +1.82.0 test") source))))

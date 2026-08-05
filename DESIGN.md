@@ -1,6 +1,6 @@
 # Ebox design
 
-Ebox is the low-level rendering engine. Its job is to turn a declarative node tree into measured layout fragments and then publish those fragments into an Emacs buffer. It is deliberately smaller than an application framework.
+Ebox is the low-level spatial rendering engine. Its job is to turn a declarative node tree into measured layout fragments and a generic TP surface plan. It is deliberately smaller than an application framework.
 
 ## Design principles
 
@@ -19,10 +19,10 @@ node tree
   -> measured formatting context
   -> layout fragments and snapshot
   -> render context
-  -> buffer patch/publication
+  -> pure TP surface plan
 ```
 
-The owners are `ebox-tree.el` for identity and traversal, `ebox-style.el` for style semantics, `ebox-measure.el` for display-sensitive measurement, `ebox-layout.el`/`ebox-flex.el`/`ebox-grid.el` for geometry, `ebox-fragment.el` for fragment facts, `ebox-buffer-backend.el` for text properties and buffer edits, and `ebox-incremental.el` for dirty planning and publication.
+The owners are `ebox-tree.el` for Ebox identity and traversal, `ebox-style.el` for style semantics, `ebox-measure.el` for display-sensitive measurement, `ebox-layout.el`/`ebox-flex.el`/`ebox-grid.el` for geometry, `ebox-fragment.el` for fragment facts, `ebox-surface.el` for pure TP plan projection, and `ebox-incremental.el` for dirty-owner planning. During the staged cutover, the existing Ebox buffer backend still publishes live public entry points; it is not used by the pure projector and will be removed when those entry points move to TP surfaces.
 
 ## Public boundary
 

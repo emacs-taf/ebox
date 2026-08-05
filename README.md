@@ -4,9 +4,10 @@ Ebox is a standalone, pixel-precise box and layout engine for Emacs. It provides
 
 ## Install and use
 
-Clone or place this directory on `load-path`:
+Install TP first, then install Ebox through a package manager so its declared dependency is resolved. For sibling source checkouts, place both directories on `load-path`:
 
 ```elisp
+(add-to-list 'load-path "/path/to/github/tp")
 (add-to-list 'load-path "/path/to/github/ebox")
 (require 'ebox)
 
@@ -39,6 +40,7 @@ ETAF belongs in the sibling package. Install it separately when you need the uni
 | `ebox.el` | Public facade and package entry point. |
 | `ebox-style.el`, `ebox-tree.el`, `ebox-measure.el` | Style, tree, and measurement models. |
 | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Formatting contexts and layout algorithms. |
+| `ebox-surface.el` | Pure Ebox runtime/layout projection into generic TP surface plans. |
 | `ebox-buffer-backend.el`, `ebox-incremental.el` | Buffer publication and incremental updates. |
 | `ebox-dsl.el`, `ebox-selector.el` | Standalone DSL and tree/runtime queries. |
 | `ebox-native-reflow.el`, `native/` | Optional native reflow boundary. |
@@ -54,6 +56,6 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make native-rust-tests
 ```
 
-Run the smallest focused target first (`make grid-tests`, `make dsl-tests`, or `make visual-check-tests`), then run `make check` for shared rendering or public API changes.
+Run the smallest focused target first (`make grid-tests`, `make surface-tests`, `make dsl-tests`, or `make visual-check-tests`), then run `make check` for shared rendering or public API changes. A sibling TP checkout is found at `../tp` by default; override `TP_DIR` when it lives elsewhere.
 
 Read the [Ebox user guide](docs/user/ebox-user-guide.en.md) for public construction examples and the [current implementation reference](docs/maintainer/ebox-current-implementation-reference.en.md) for ownership boundaries and invariants.

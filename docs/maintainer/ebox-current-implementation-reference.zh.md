@@ -24,6 +24,7 @@
 | `ebox-layout.el` | box、row、column、stack、concat、spacer、换行和通用 formatting context。 |
 | `ebox-flex.el` | flex 归一化、line、剩余空间分配和 flex 渲染。 |
 | `ebox-grid.el` | 轨道、隐式轨道、分数、minmax/repeat、gap、placement、span 和对齐。 |
+| `ebox-surface.el` | Ebox 候选 identity，以及从布局输出到通用 TP surface plan 的纯投影。 |
 | `ebox-buffer-backend.el` | text property、display space/border、marker、extent、替换和 buffer 变更。 |
 | `ebox-incremental.el` | runtime、snapshot、dirty 规划、owner 提升、原子发布和报告。 |
 | `ebox-dsl.el` | 数据型 `.ebox` form，以及向公共节点的 lowering。 |
@@ -32,7 +33,7 @@
 
 本包有意不包含应用 Component、UI control、响应式 data 或 playground 实现；它们属于同级包。历史应用性能记录器和 native reflow 评估器也不属于独立 Ebox 的发布边界；Ebox 只保留 native 模块本身、Rust 构建输入和可重复的构建检查。
 
-active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el` 和 `scripts/ebox-visual-check.el`。
+active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-surface-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el` 和 `scripts/ebox-visual-check.el`。
 
 ## 运行时模型
 
@@ -45,6 +46,7 @@ Source Tree
   -> Box/Formatting Context
   -> Measurement + Render Context
   -> Layout Fragment/Snapshot
+  -> 纯 TP Surface Plan
   -> Dirty/Patch Plan
   -> Emacs Buffer Backend
 ```
@@ -56,6 +58,7 @@ Source Tree
 | Measurement | `ebox-measure.el` | 应用状态或 dirty 策略。 |
 | Formatting Context | `ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` | Buffer 编辑。 |
 | Fragment/Snapshot | `ebox-fragment.el`、`ebox-incremental.el` | Source parsing 或 identity 分配。 |
+| Surface Projection | `ebox-surface.el` | Buffer 变更或 Ebox 布局决策。 |
 | Dirty/Patch | `ebox-incremental.el` | 原始测量或直接 buffer 编辑。 |
 | Buffer Backend | `ebox-buffer-backend.el` | 样式语义或应用状态。 |
 
@@ -70,6 +73,7 @@ Source Tree
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。
 - 加载 Ebox 不会构建或安装可选 Rust 模块。
+- Phase 7 projector 在布局前分配 TP candidate identity，输出不含 marker、position、buffer 或 TP runtime handle 的 plan，并与 `ebox-render` 保持逐字节、逐属性等价。公开 live 入口在下一阶段切换前仍使用现有 Ebox backend。
 
 ## Grid 合同
 
@@ -86,6 +90,7 @@ make check
 make core-tests
 make grid-tests
 make ebox-commit-tests
+make surface-tests
 make visual-check-tests
 make package-tests
 make selector-tests

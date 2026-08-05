@@ -12,6 +12,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Check out TP runtime dependency
+        run: git clone --depth 1 https://github.com/Kinneyzhang/tp.git ../tp
+
       - name: Install system dependencies
         run: |
           sudo apt-get update

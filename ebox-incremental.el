@@ -1205,49 +1205,47 @@ node, parent, region, Host, or native-layout indexes."
         (plist-put state :selector-index-stale-p nil)))
     state))
 
+(defun ebox--new-buffer-render-state (root-node)
+  "Return fresh buffer-independent runtime state for ROOT-NODE."
+  (list :root-node root-node
+        :viewport-width ebox-viewport-width
+        :viewport-height ebox-viewport-height
+        :display-signature (ebox--current-display-signature)
+        :layout-snapshots (make-hash-table :test 'equal)
+        :layout-snapshots-complete-p nil
+        :layout-snapshot-detail-generation 0
+        :runtime-revision 0 :last-update-report nil
+        :render-cache (make-hash-table :test 'equal)
+        :detached-identity-history
+        (ebox-incremental--make-detached-history
+         :table (make-hash-table :test 'equal)
+         :order nil :node-count 0)
+        :render-signature-cache (make-hash-table :test 'eq)
+        :flex-content-min-widths (make-hash-table :test 'eq)
+        :viewport-height-dependent-subtree-cache
+        (make-hash-table :test 'eq)
+        :region-role-span-table nil))
+
+(defun ebox--render-state-install-index (state index)
+  "Install runtime INDEX tables into candidate STATE and return STATE."
+  (dolist (key '(:node-table :parent-table :region-id-set :region-node-table
+                 :region-box-count-table :region-box-table :host-ref-table
+                 :selector-id-table :selector-class-table
+                 :selector-type-table :native-node-postorder))
+    (setq state (plist-put state key (plist-get index key))))
+  state)
+
+(defun ebox--make-buffer-render-state (root-node)
+  "Return unpublished complete runtime state for ROOT-NODE."
+  (ebox--render-state-install-index
+   (ebox--new-buffer-render-state root-node)
+   (ebox--runtime-index root-node t)))
+
 (defun ebox--set-buffer-render-state (buffer root-node)
   "Store ROOT-NODE and current render context for BUFFER."
-  (let ((index (ebox--runtime-index root-node t)))
-    (puthash buffer
-             (list :root-node root-node
-                   :viewport-width ebox-viewport-width
-                   :viewport-height ebox-viewport-height
-                   :display-signature (ebox--current-display-signature)
-                   :layout-snapshots (make-hash-table :test 'equal)
-                   :layout-snapshots-complete-p nil
-                   :layout-snapshot-detail-generation 0
-                   :runtime-revision 0
-                   :last-update-report nil
-                   :render-cache (make-hash-table :test 'equal)
-                   :detached-identity-history
-                   (ebox-incremental--make-detached-history
-                    :table (make-hash-table :test 'equal)
-                    :order nil
-                    :node-count 0)
-                   :render-signature-cache (make-hash-table :test 'eq)
-                   :flex-content-min-widths (make-hash-table :test 'eq)
-                   :viewport-height-dependent-subtree-cache
-                   (make-hash-table :test 'eq)
-                   :region-role-span-table nil
-                   :node-table (plist-get index :node-table)
-                   :parent-table (plist-get index :parent-table)
-                   :region-id-set (plist-get index :region-id-set)
-                   :region-node-table (plist-get index :region-node-table)
-                   :region-box-count-table
-                   (plist-get index :region-box-count-table)
-                   :region-box-table
-                   (plist-get index :region-box-table)
-                   :host-ref-table (plist-get index :host-ref-table)
-                   :selector-id-table
-                   (plist-get index :selector-id-table)
-                   :selector-class-table
-                   (plist-get index :selector-class-table)
-                   :selector-type-table
-                   (plist-get index :selector-type-table)
-                   :native-node-postorder
-                   (plist-get index :native-node-postorder))
-             ebox--buffer-render-state-table)
-    (ebox--buffer-viewport-dependent-node-id-axes buffer)))
+  (puthash buffer (ebox--make-buffer-render-state root-node)
+           ebox--buffer-render-state-table)
+  (ebox--buffer-viewport-dependent-node-id-axes buffer))
 
 (defun ebox--buffer-node-table (buffer)
   "Return BUFFER's runtime node table."

@@ -24,6 +24,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | `ebox-layout.el` | Box, row, column, stack, concatenation, spacer, wrapping, and common formatting context. |
 | `ebox-flex.el` | Flex normalization, lines, free-space distribution, and flex rendering. |
 | `ebox-grid.el` | Tracks, implicit tracks, fractions, minmax/repeat, gap, placement, span, and alignment. |
+| `ebox-surface.el` | Pure candidate identity and projection from Ebox layout output to generic TP surface plans. |
 | `ebox-buffer-backend.el` | Text properties, display spaces/borders, markers, extents, replacement, and buffer mutation. |
 | `ebox-incremental.el` | Runtime state, snapshots, dirty planning, owner escalation, atomic publication, and reports. |
 | `ebox-dsl.el` | Data-oriented `.ebox` forms and lowering to public nodes. |
@@ -32,7 +33,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 
 The package intentionally does not include application Components, UI controls, reactive data, or a playground implementation. Those are sibling-package responsibilities.
 
-The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, and `scripts/ebox-visual-check.el`.
+The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, and `scripts/ebox-visual-check.el`.
 
 ## Runtime model
 
@@ -45,6 +46,7 @@ Source Tree
   -> Box/Formatting Context
   -> Measurement + Render Context
   -> Layout Fragment/Snapshot
+  -> Pure TP Surface Plan
   -> Dirty/Patch Plan
   -> Emacs Buffer Backend
 ```
@@ -56,6 +58,7 @@ Source Tree
 | Measurement | `ebox-measure.el` | Application state or dirty policy. |
 | Formatting Context | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Buffer edits. |
 | Fragment/Snapshot | `ebox-fragment.el`, `ebox-incremental.el` | Source parsing or identity allocation. |
+| Surface Projection | `ebox-surface.el` | Buffer mutation or Ebox layout decisions. |
 | Dirty/Patch | `ebox-incremental.el` | Raw measurement or direct buffer edits. |
 | Buffer Backend | `ebox-buffer-backend.el` | Style semantics or application state. |
 
@@ -70,6 +73,7 @@ Source Tree
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.
 - Loading Ebox never builds or installs the optional Rust module.
+- The Phase 7 projector assigns TP candidate identity before layout, emits plans containing no markers, positions, buffers, or TP runtime handles, and is byte-for-byte and property-for-property equivalent to `ebox-render`. Public live entry points still use the existing Ebox backend until the next cutover phase.
 
 ## Grid contract
 
@@ -88,6 +92,7 @@ make check
 make core-tests
 make grid-tests
 make ebox-commit-tests
+make surface-tests
 make visual-check-tests
 make package-tests
 make selector-tests

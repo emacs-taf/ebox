@@ -4,9 +4,10 @@ Ebox 是一个独立的 Emacs 像素级 Box 与布局引擎。它是同级 [ETAF
 
 ## 安装与使用
 
-将本目录放到 `load-path`：
+先安装 TP，再通过包管理器安装 Ebox，让声明的依赖自动解析。使用同级源码 checkout 时，把两个目录都加入 `load-path`：
 
 ```elisp
+(add-to-list 'load-path "/path/to/github/tp")
 (add-to-list 'load-path "/path/to/github/ebox")
 (require 'ebox)
 
@@ -39,6 +40,7 @@ ETAF 属于同级独立包。当你需要统一 View 语法、Component、响应
 | `ebox.el` | 公共门面与包入口。 |
 | `ebox-style.el`、`ebox-tree.el`、`ebox-measure.el` | 样式、树和测量模型。 |
 | `ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` | Formatting Context 与布局算法。 |
+| `ebox-surface.el` | 将 Ebox runtime/layout 纯投影为通用 TP surface plan。 |
 | `ebox-buffer-backend.el`、`ebox-incremental.el` | Buffer 发布与增量更新。 |
 | `ebox-dsl.el`、`ebox-selector.el` | 独立 DSL 与树/runtime 查询。 |
 | `ebox-native-reflow.el`、`native/` | 可选 native reflow 边界。 |
@@ -54,6 +56,6 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make native-rust-tests
 ```
 
-小范围修改先运行对应目标（例如 `make grid-tests`、`make dsl-tests` 或 `make visual-check-tests`）；共享渲染或公共 API 修改后运行完整的 `make check`。
+小范围修改先运行对应目标（例如 `make grid-tests`、`make surface-tests`、`make dsl-tests` 或 `make visual-check-tests`）；共享渲染或公共 API 修改后运行完整的 `make check`。默认从 `../tp` 查找同级 TP checkout；若路径不同可覆盖 `TP_DIR`。
 
 公共构造示例见 [Ebox 用户指南](docs/user/ebox-user-guide.zh.md)，职责边界与不变量见 [当前实现参考](docs/maintainer/ebox-current-implementation-reference.zh.md)。

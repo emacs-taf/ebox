@@ -1,6 +1,6 @@
 # Ebox 设计
 
-Ebox 是底层渲染引擎。它负责把声明式节点树转换为经过测量的布局 fragment，再发布到 Emacs buffer。它有意小于应用框架。
+Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过测量的布局 fragment 与通用 TP surface plan。它有意小于应用框架。
 
 ## 设计原则
 
@@ -19,10 +19,10 @@ Ebox 是底层渲染引擎。它负责把声明式节点树转换为经过测量
   -> 经过测量的 formatting context
   -> 布局 fragment 与 snapshot
   -> render context
-  -> buffer patch/发布
+  -> 纯 TP surface plan
 ```
 
-各层 owner 是：`ebox-tree.el` 负责 identity 与遍历，`ebox-style.el` 负责样式语义，`ebox-measure.el` 负责 display 敏感测量，`ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` 负责几何，`ebox-fragment.el` 负责 fragment 事实，`ebox-buffer-backend.el` 负责 text property 与 buffer 编辑，`ebox-incremental.el` 负责 dirty 规划与发布。
+各层 owner 是：`ebox-tree.el` 负责 Ebox identity 与遍历，`ebox-style.el` 负责样式语义，`ebox-measure.el` 负责 display 敏感测量，`ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` 负责几何，`ebox-fragment.el` 负责 fragment 事实，`ebox-surface.el` 负责纯 TP plan 投影，`ebox-incremental.el` 负责 dirty owner 规划。分阶段切换期间，现有 Ebox buffer backend 仍为公开 live 入口执行发布；纯 projector 不调用它，公开入口切到 TP surface 后会删除这套发布执行器。
 
 ## 公共边界
 

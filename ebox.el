@@ -2,7 +2,7 @@
 
 ;; Author: ebox contributors
 ;; Version: 1.0.1
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (tp "1.0.0"))
 ;; Keywords: ui, graphics, convenience
 ;; URL: https://github.com/ginqi7/ebox
 
@@ -26,7 +26,8 @@
   '("ebox-cache.el" "ebox-style.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
     "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
-    "ebox-dsl.el" "ebox-selector.el" "ebox.el" "ebox-native-reflow.el")
+    "ebox-surface.el" "ebox-dsl.el" "ebox-selector.el" "ebox.el"
+    "ebox-native-reflow.el")
   "Active Ebox Lisp sources compiled by `ebox-byte-compile'.")
 
 (add-to-list 'load-path ebox--directory)
@@ -46,6 +47,7 @@
 (require 'ebox-grid)
 (require 'ebox-buffer-backend)
 (require 'ebox-incremental)
+(require 'ebox-surface)
 (require 'ebox-dsl)
 (require 'ebox-selector)
 
