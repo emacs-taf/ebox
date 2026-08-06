@@ -9,8 +9,8 @@ This document defines the low-level publication contract. It is independent of E
 3. `ebox-style.el`, `ebox-measure.el`, and the layout modules own normalization, measurement, and geometry.
 4. `ebox-incremental.el` owns dirty classification, patch planning, pure declarative commit preparation, and Ebox report semantics.
 5. `ebox-surface.el` projects retained candidates and joins Ebox runtime-state publication to the TP transaction.
-6. TP owns generic retained-surface reconciliation, buffer diff execution, revision changes, and rollback for initial mount and declarative full-root commit.
-7. `ebox-buffer-backend.el` owns Ebox marker/index primitives and the specialized local numeric region, viewport, and scroll publishers that have not yet crossed the local-update cutover.
+6. TP owns generic retained-surface reconciliation, mount/index state, all live buffer diff execution, revision changes, and rollback for initial mount, declarative commit, handle update, viewport/theme update, and scroll update.
+7. `ebox-buffer-backend.el` only builds and reshapes propertized render strings. It does not own live markers or a buffer mutation executor.
 
 No layer may infer application state from visible buffer text. No public caller may mutate a published tree in place.
 
@@ -26,14 +26,14 @@ fresh root
   -> produce TP surface plan plus Ebox report base
   -> TP prepares and atomically publishes buffer changes
   -> Ebox transaction participant publishes matching runtime indexes/report
-  -> retire superseded markers and timers after success
+  -> retire superseded Ebox timers and warm the committed scroll state after success
 ```
 
 The candidate is either fully published or discarded. A failed render, TP write, Ebox participant, or publication callback preserves the previous buffer text, properties, TP revision, Ebox runtime identity, scroll state, and last successful report. If the target buffer is killed during publication, teardown is authoritative and rollback never resurrects it.
 
 ## Patch order
 
-The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. A patch must not silently widen its semantic scope. Declarative full-root reports preserve that Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.
+The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.
 
 ## Identity and coordinates
 

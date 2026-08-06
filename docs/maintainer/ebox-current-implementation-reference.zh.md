@@ -25,7 +25,7 @@
 | `ebox-flex.el` | flex 归一化、line、剩余空间分配和 flex 渲染。 |
 | `ebox-grid.el` | 轨道、隐式轨道、分数、minmax/repeat、gap、placement、span 和对齐。 |
 | `ebox-surface.el` | 候选 identity、向 TP surface plan 的投影、retained mount/update，以及支持 rollback 的 Ebox runtime-state participant。 |
-| `ebox-buffer-backend.el` | text property、display space/border、marker、extent 与专用局部 patch primitive。 |
+| `ebox-buffer-backend.el` | 带文本属性的渲染字符串构造、display space/border 与既有 slot 整形。 |
 | `ebox-incremental.el` | runtime、snapshot、dirty 规划、owner 提升、纯 commit 准备和报告。 |
 | `ebox-dsl.el` | 数据型 `.ebox` form，以及向公共节点的 lowering。 |
 | `ebox-selector.el` | 对树和 runtime handle 的 CSS-like 查询。 |
@@ -61,10 +61,10 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 | Measurement | `ebox-measure.el` | 应用状态或 dirty 策略。 |
 | Formatting Context | `ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` | Buffer 编辑。 |
 | Fragment/Snapshot | `ebox-fragment.el`、`ebox-incremental.el` | Source parsing 或 identity 分配。 |
-| Surface 投影与整根发布 | `ebox-surface.el` 加公共 TP surface API | Ebox 布局决策或通用 diff 执行。 |
+| Surface 投影与 Runtime 发布 | `ebox-surface.el` 加公共 TP surface API | Ebox 布局决策或通用 diff 执行。 |
 | Dirty/Patch 语义 | `ebox-incremental.el` | 原始测量或 TP buffer 写入。 |
 | 通用 Surface Diff/Commit | TP | Ebox 几何、dirty 策略或应用状态。 |
-| 专用局部 Backend | `ebox-buffer-backend.el` | 整根 mount/commit 所有权、样式语义或应用状态。 |
+| 渲染字符串 Backend | `ebox-buffer-backend.el` | Live buffer 写入、retained marker、样式语义或应用状态。 |
 
 ## 不变量
 
@@ -79,8 +79,8 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。
 - 加载 Ebox 不会构建或安装可选 Rust 模块。
-- 当前已进入 Phase 8：`ebox-render-to-buffer` 与声明式 `ebox-commit` 只通过 TP 这一条 live 发布边界，Ebox runtime state 在同一个可 rollback transaction 中参与提交。现有的数字 region、selector、viewport 与 scroll 专用局部 publisher 暂时保留到局部更新切换阶段，但不得成为第二条整根发布路径。
-- 成功的整根报告会保留 Ebox 语义策略与 planned publication scope，再加入 `:publication-scope tp-surface`、TP operation 数、surface revision 和 retained-object reconciliation 统计。
+- 当前已进入 Phase 9：首次 mount、声明式 commit、handle/selector 更新、viewport/theme 更新、batch flush 与 scroll 更新全部通过 TP surface 发布。Ebox 只计算 dirty/layout owner，并让不透明 runtime state 参与同一个可 rollback transaction；不存在第二个 live buffer executor。
+- 成功报告会保留 Ebox 语义 strategy 与 planned publication scope，再加入 `:publication-scope tp-surface`、TP 物理 operation 数、surface revision、scoped/full-root 事实和 retained-object reconciliation 统计。
 
 ## Grid 合同
 

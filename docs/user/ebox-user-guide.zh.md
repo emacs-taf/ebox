@@ -108,7 +108,7 @@ Selector 查询已渲染的树并返回公共匹配记录，但不拥有应用�
   (ebox-region-update handle :content "Ready" :color "#166534"))
 ```
 
-两个 buffer 中相同的逻辑 id 会解析为两个不同 handle，因此更新一个 surface 不会误改另一个。retained object 被删除或 buffer 被 kill 后，原 handle 会变 stale。新的多 buffer 代码应优先使用 `ebox-region-resolve` handle；在局部更新执行器切换完成前，数字 region id 仍作为内部/旧式更新形式保留。
+两个 buffer 中相同的逻辑 id 会解析为两个不同 handle，因此更新一个 surface 不会误改另一个。retained object 被删除或 buffer 被 kill 后，原 handle 会变 stale。`ebox-region-update` 只接受 live handle；数字 region id 只是内部渲染元数据，不是更新 API。
 
 ## 8. 独立 `.ebox` 文件
 

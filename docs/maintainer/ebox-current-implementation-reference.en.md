@@ -25,7 +25,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | `ebox-flex.el` | Flex normalization, lines, free-space distribution, and flex rendering. |
 | `ebox-grid.el` | Tracks, implicit tracks, fractions, minmax/repeat, gap, placement, span, and alignment. |
 | `ebox-surface.el` | Candidate identity, projection to TP surface plans, retained mount/update, and the rollback-capable Ebox runtime-state participant. |
-| `ebox-buffer-backend.el` | Text properties, display spaces/borders, markers, extents, and specialized local patch primitives. |
+| `ebox-buffer-backend.el` | Propertized render-string construction, display spaces/borders, and existing-slot shaping. |
 | `ebox-incremental.el` | Runtime state, snapshots, dirty planning, owner escalation, pure commit preparation, and reports. |
 | `ebox-dsl.el` | Data-oriented `.ebox` forms and lowering to public nodes. |
 | `ebox-selector.el` | CSS-like queries over trees and runtime handles. |
@@ -61,10 +61,10 @@ Caller-owned Source Tree
 | Measurement | `ebox-measure.el` | Application state or dirty policy. |
 | Formatting Context | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Buffer edits. |
 | Fragment/Snapshot | `ebox-fragment.el`, `ebox-incremental.el` | Source parsing or identity allocation. |
-| Surface Projection and Full-Root Publication | `ebox-surface.el` plus public TP surface APIs | Ebox layout decisions or generic diff execution. |
+| Surface Projection and Runtime Publication | `ebox-surface.el` plus public TP surface APIs | Ebox layout decisions or generic diff execution. |
 | Dirty/Patch Semantics | `ebox-incremental.el` | Raw measurement or TP buffer writes. |
 | Generic Surface Diff/Commit | TP | Ebox geometry, dirty policy, or application state. |
-| Specialized Local Backend | `ebox-buffer-backend.el` | Full-root mount/commit ownership, style semantics, or application state. |
+| Render-String Backend | `ebox-buffer-backend.el` | Live buffer writes, retained markers, style semantics, or application state. |
 
 ## Invariants
 
@@ -79,8 +79,8 @@ Caller-owned Source Tree
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.
 - Loading Ebox never builds or installs the optional Rust module.
-- Phase 8 is active: `ebox-render-to-buffer` and declarative `ebox-commit` use TP as their only live publication boundary, while Ebox runtime state joins the same rollback-capable transaction. Existing specialized numeric region, selector, viewport, and scroll update publishers remain until the local-update cutover; they must not become an alternate full-root path.
-- Successful full-root reports preserve the Ebox semantic strategy and planned publication scope, then add `:publication-scope tp-surface`, TP operation counts, surface revision, and retained-object reconciliation counts.
+- Phase 9 is active: first mount, declarative commit, handle/selector update, viewport/theme update, batch flush, and scroll update all publish through TP surfaces. Ebox computes dirty/layout ownership and joins its opaque runtime state to the same rollback-capable transaction; it has no second live buffer executor.
+- Successful reports preserve the Ebox semantic strategy and planned publication scope, then add `:publication-scope tp-surface`, TP physical operation counts, surface revision, scoped/full-root facts, and retained-object reconciliation counts.
 
 ## Grid contract
 

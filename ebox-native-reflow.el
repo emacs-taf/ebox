@@ -64,8 +64,6 @@
 (declare-function ebox-string-lines "ebox" (string))
 (declare-function ebox-string-pixel-width "ebox-measure" (string))
 (declare-function ebox-display-signature "ebox-measure" ())
-(declare-function ebox--register-rendered-root-metadata
-                  "ebox" (rendered prepared))
 
 (defvar ebox--flex-content-min-width-table)
 
@@ -179,9 +177,6 @@ module while loading the package."
 
 (defvar ebox-native-reflow--build-process nil
   "Live asynchronous process started by `ebox-native-build', or nil.")
-
-(defvar ebox-native-reflow--last-owner-proof-error nil
-  "Most recent rejected native owner proof error.")
 
 (defconst ebox-native-reflow--build-buffer-name "*Ebox Native Build*"
   "Compilation buffer used by `ebox-native-build'.")
@@ -2841,8 +2836,7 @@ typed line-width and property invariants instead of repeating them in Emacs."
           decoded)
       (let ((header (aref decoded 0))
             (rendered (aref decoded 1))
-            (line-widths (aref decoded 2))
-            (metadata (aref decoded 3)))
+            (line-widths (aref decoded 2)))
         (unless trusted-native-encoder-p
           (ebox-native-reflow--validate-literal-properties
            rendered styles (plist-get header :complete)
@@ -2855,9 +2849,6 @@ typed line-width and property invariants instead of repeating them in Emacs."
                      unless (= (ebox-string-pixel-width line)
                                (aref line-widths index))
                      do (error "Native reflow tape line width mismatch"))))
-        (when (and trusted-native-encoder-p metadata
-                   (fboundp 'ebox--register-rendered-root-metadata))
-          (ebox--register-rendered-root-metadata rendered metadata))
         rendered))))
 
 (defun ebox-native-reflow-take-layout
@@ -2917,57 +2908,6 @@ template ids are expanded before returning."
         (ebox-native-reflow--materialize-layout-tape
          payload (plist-get package :styles) expected t
          (plist-get package :property-templates))))))
-
-(defun ebox-native-reflow-render-owner-proof
-    (node snapshot _dirty context)
-  "Return a native proof render for NODE and CONTEXT, or nil when unsupported."
-  (when (and (not (plist-get context :root-owner-p))
-             (ebox-native-reflow--native-node-supported-p node)
-             (ebox-native-reflow-layout-ready-p)
-             (>= (length (plist-get snapshot :buffer-spans)) 2))
-    (let* ((details-function (plist-get context :details-function))
-           (details
-            (if (functionp details-function)
-                (funcall details-function)
-              context))
-           (stored-viewport-height (plist-get details :viewport-height))
-           (viewport-height
-            (cond
-             ((and (numberp stored-viewport-height)
-                   (> stored-viewport-height 0))
-              (truncate stored-viewport-height))
-             ((not (plist-get details :viewport-height-dependent-p))
-              (max 1 (length (plist-get snapshot :buffer-spans))))))
-           (node-type (and (listp node) (plist-get node :ebox-type)))
-           (exact-slot-width (plist-get details :parent-content-width))
-           (viewport-width-known-p
-            (and (numberp exact-slot-width) (> exact-slot-width 0)))
-           (slot-width
-            (or (and viewport-width-known-p
-                     (truncate exact-slot-width))
-                (plist-get details :slot-width-placeholder))))
-      (when (and (plist-get details :side-effects-safe-p)
-                 (integerp viewport-height) (> viewport-height 0)
-                 (integerp slot-width) (> slot-width 0))
-        (condition-case err
-            (let ((frame
-                   (list :key 1
-                         :viewport-width slot-width
-                         :viewport-width-known viewport-width-known-p
-                         :viewport-height viewport-height
-                         :runtime-revision
-                         (or (plist-get details :runtime-revision) 0)
-                         :context-hash 0
-                         :complete t
-                         :root-metadata nil)))
-              (when (and viewport-width-known-p (eq node-type 'box))
-                (setq frame (plist-put frame :root-width slot-width)))
-              (setq ebox-native-reflow--last-owner-proof-error nil)
-              (ebox-native-reflow-render-proof-sync node frame))
-          (error
-           (setq ebox-native-reflow--last-owner-proof-error
-                 (error-message-string err))
-           (signal (car err) (cdr err))))))))
 
 (defun ebox-native-reflow-submit (session generation frames)
   "Submit FRAMES for SESSION GENERATION without waiting for results."
@@ -3549,9 +3489,6 @@ When FULL-P is non-nil, query the complete restoration job."
              (signal (car err) (cdr err))))))
     (unless (or (stringp result) (plist-get result :native-patch))
       (error "Native reflow result disappeared before materialization"))
-    (when (and (stringp result)
-               (fboundp 'ebox--rendered-root-metadata))
-      (ebox--rendered-root-metadata result t))
     result))
 
 (defun ebox-native-reflow--materialize-next-ready-frame (preparation)

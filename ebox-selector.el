@@ -24,7 +24,6 @@
 (declare-function ebox-incremental-begin-batch "ebox-incremental" (buffer))
 (declare-function ebox-incremental-flush "ebox-incremental" (buffer))
 (declare-function ebox-region-update "ebox" (region-id &rest props))
-(defvar ebox--region-update-buffer-hint)
 
 (cl-defstruct
     (ebox-region-handle
@@ -549,8 +548,7 @@ tree-query handle fields."
 
 (defun ebox-selector--update-region (handle props)
   "Apply PROPS to HANDLE's region through `ebox-region-update'."
-  (let ((ebox--region-update-buffer-hint (plist-get handle :buffer)))
-    (apply #'ebox-region-update (plist-get handle :region-id) props)))
+  (apply #'ebox-region-update (plist-get handle :region-handle) props))
 
 ;;;###autoload
 (defun ebox-selector-update-buffer (buffer selector &rest props)

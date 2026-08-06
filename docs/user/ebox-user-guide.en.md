@@ -108,7 +108,7 @@ Selectors query the rendered tree and return public match records. They do not o
   (ebox-region-update handle :content "Ready" :color "#166534"))
 ```
 
-The same logical id in two buffers resolves to two different handles, so updating one surface cannot accidentally mutate the other. A handle becomes stale when its retained object is removed or its buffer is killed. Prefer `ebox-region-resolve` handles for new multi-buffer code; numeric region ids remain an internal/legacy update form during the local-update cutover.
+The same logical id in two buffers resolves to two different handles, so updating one surface cannot accidentally mutate the other. A handle becomes stale when its retained object is removed or its buffer is killed. `ebox-region-update` accepts only a live handle; numeric region ids are internal render metadata and are not an update API.
 
 ## 8. Standalone `.ebox` files
 

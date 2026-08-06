@@ -17,8 +17,7 @@
   (setq ebox--region-id-counter 0
         ebox--runtime-node-id-counter 0)
   (dolist (table (list ebox--region-box-table
-                       ebox--scroll-global-state
-                       ebox--rendered-root-metadata-table))
+                       ebox--scroll-global-state))
     (clrhash table)))
 
 (defun ebox-surface-test--interactive-content ()
@@ -334,6 +333,179 @@
         (kill-buffer buffer)))
     (should-not (tp-surface-live-p surface))))
 
+(ert-deftest ebox-viewport-rerender-publishes-only-through-tp ()
+  "A mounted viewport update should advance its TP surface."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-viewport*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 120)
+              (ebox-viewport-height 4)
+              (ebox-runtime-idle-prewarm nil)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :content "Viewport" :width '(viewport)))
+          (let* ((surface
+                  (with-current-buffer buffer ebox-surface--buffer-surface))
+                 (signals
+                  (with-current-buffer buffer
+                    ebox-surface--context-signals))
+                 (revision (tp-surface-revision surface)))
+            (should (= (tp-signal-peek
+                        (ebox-surface--signals-viewport-width signals))
+                       120))
+            (ebox-rerender-buffer-with-context buffer 180 4)
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should (= (tp-signal-peek
+                        (ebox-surface--signals-viewport-width signals))
+                       180))
+            (should (eq (ebox--buffer-render-state buffer)
+                        (tp-surface-client-state surface)))
+            (should (= (with-current-buffer buffer
+                         (ebox--string-pixel-width
+                          (buffer-substring (line-beginning-position)
+                                            (line-end-position))))
+                       180))
+            (let ((report (ebox-buffer-update-report buffer)))
+              (should (eq (plist-get report :constraint-source) 'viewport))
+              (should (plist-get report :runtime-published)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-surface-context-signals-track-exact-layout-dependencies ()
+  "A mounted producer should subscribe only to context it can consume."
+  (ebox-surface-test--reset-render-state)
+  (let ((responsive (generate-new-buffer " *ebox-responsive-signals*"))
+        (static (generate-new-buffer " *ebox-static-signals*"))
+        responsive-signals static-signals)
+    (unwind-protect
+        (let ((ebox-viewport-width 160)
+              (ebox-viewport-height 2))
+          (ebox-render-to-buffer
+              responsive
+            (ebox-create :content "zero\none\ntwo\nthree"
+                         :width '(viewport)
+                         :height '(viewport-height)
+                         :overflow 'scroll))
+          (setq responsive-signals
+                (with-current-buffer responsive
+                  ebox-surface--context-signals))
+          (dolist (signal
+                   (list
+                    (ebox-surface--signals-viewport-width
+                     responsive-signals)
+                    (ebox-surface--signals-viewport-height
+                     responsive-signals)
+                    (ebox-surface--signals-display responsive-signals)
+                    (ebox-surface--signals-scroll responsive-signals)))
+            (should (tp-signal-live-p signal))
+            (should (= (tp-signal-subscriber-count signal) 1)))
+          (ebox-render-to-buffer
+              static
+            (ebox-create :content "Static" :width '(100)))
+          (setq static-signals
+                (with-current-buffer static ebox-surface--context-signals))
+          (should (= (tp-signal-subscriber-count
+                      (ebox-surface--signals-viewport-width static-signals))
+                     0))
+          (should (= (tp-signal-subscriber-count
+                      (ebox-surface--signals-viewport-height static-signals))
+                     0))
+          (should (= (tp-signal-subscriber-count
+                      (ebox-surface--signals-display static-signals))
+                     1))
+          (should (= (tp-signal-subscriber-count
+                      (ebox-surface--signals-scroll static-signals))
+                     0)))
+      (dolist (buffer (list responsive static))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))
+    (dolist (signals (list responsive-signals static-signals))
+      (when signals
+        (dolist (signal
+                 (list (ebox-surface--signals-viewport-width signals)
+                       (ebox-surface--signals-viewport-height signals)
+                       (ebox-surface--signals-display signals)
+                       (ebox-surface--signals-scroll signals)))
+          (should-not (tp-signal-live-p signal)))))))
+
+(ert-deftest ebox-static-viewport-change-updates-context-without-rendering ()
+  "Unused viewport state should change without publishing the surface."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-static-viewport*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 120)
+              (ebox-viewport-height 4)
+              (ebox-runtime-idle-prewarm nil)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :content "Static" :width '(100)))
+          (let* ((surface
+                  (with-current-buffer buffer ebox-surface--buffer-surface))
+                 (signals
+                  (with-current-buffer buffer
+                    ebox-surface--context-signals))
+                 (revision (tp-surface-revision surface))
+                 (renders 0)
+                 (original
+                  (symbol-function 'ebox-surface--render-candidate)))
+            (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                       (lambda (state)
+                         (cl-incf renders)
+                         (funcall original state))))
+              (ebox-rerender-buffer-with-context buffer 180 4))
+            (should (= renders 0))
+            (should (= (tp-surface-revision surface) revision))
+            (should (= (plist-get (tp-surface-client-state surface)
+                                  :viewport-width)
+                       180))
+            (should (= (tp-signal-peek
+                        (ebox-surface--signals-viewport-width signals))
+                       180))
+            (should (eq (plist-get (ebox-buffer-update-report buffer)
+                                   :strategy)
+                        'no-op))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-theme-change-rerenders-with-an-unchanged-viewport ()
+  "A changed display signature should invalidate a fixed-width surface."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-theme-context*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 120)
+              (ebox-viewport-height 4)
+              (ebox-runtime-idle-prewarm nil)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :content "Theme" :width '(100)))
+          (let* ((surface
+                  (with-current-buffer buffer ebox-surface--buffer-surface))
+                 (signals
+                  (with-current-buffer buffer
+                    ebox-surface--context-signals))
+                 (revision (tp-surface-revision surface))
+                 (next-signature '(ebox-test-theme dark)))
+            (cl-letf (((symbol-function 'ebox--display-signature)
+                       (lambda () next-signature)))
+              (ebox-rerender-buffer-with-context buffer 120 4))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should (equal
+                     (tp-signal-peek
+                      (ebox-surface--signals-display signals))
+                     next-signature))
+            (should (equal (plist-get (tp-surface-client-state surface)
+                                      :display-signature)
+                           next-signature))
+            (let ((report (ebox-buffer-update-report buffer)))
+              (should (plist-get report :host-context-changed))
+              (should (memq :display-signature
+                            (plist-get report :dirty-keys))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-render-to-buffer-reuses-one-source-across-buffers ()
   "The public mount path should never transfer ownership of its source tree."
   (ebox-surface-test--reset-render-state)
@@ -364,7 +536,7 @@
           (kill-buffer buffer))))))
 
 (ert-deftest ebox-commit-publishes-through-the-mounted-tp-surface ()
-  "Declarative commits should bypass every legacy Ebox buffer publisher."
+  "Declarative commits should publish through the mounted TP surface."
   (ebox-surface-test--reset-render-state)
   (let ((buffer (generate-new-buffer " *ebox-surface-commit*")))
     (unwind-protect
@@ -376,14 +548,11 @@
                             buffer ebox-surface--buffer-surface))
                  (revision (tp-surface-revision surface))
                  report)
-            (cl-letf (((symbol-function 'ebox-incremental-commit)
-                       (lambda (&rest _)
-                         (error "Legacy Ebox publisher was called"))))
-              (setq report
-                    (ebox-commit
-                     buffer
-                     (ebox-create :key 'root :content "After"
-                                  :width '(100)))))
+            (setq report
+                  (ebox-commit
+                   buffer
+                   (ebox-create :key 'root :content "After"
+                                :width '(100))))
             (should (= (tp-surface-revision surface) (1+ revision)))
             (should (plist-get report :runtime-published))
             (should (equal report (ebox-buffer-update-report buffer)))
@@ -418,6 +587,48 @@
             (should (equal-including-properties
                      (with-current-buffer
                        buffer
+                       (buffer-substring (point-min) (point-max)))
+                     contents))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-context-signal-rolls-back-with-failed-publication ()
+  "A failed Ebox publication should restore its TP context source."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-context-rollback*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 120)
+              (ebox-viewport-height 4))
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :key 'root :content "Stable"
+                         :width '(viewport)))
+          (let* ((surface
+                  (with-current-buffer buffer ebox-surface--buffer-surface))
+                 (signals
+                  (with-current-buffer buffer
+                    ebox-surface--context-signals))
+                 (width-signal
+                  (ebox-surface--signals-viewport-width signals))
+                 (state (tp-surface-client-state surface))
+                 (revision (tp-surface-revision surface))
+                 (contents
+                  (with-current-buffer buffer
+                    (buffer-substring (point-min) (point-max)))))
+            (should-error
+             (ebox-surface-mount-buffer
+              buffer
+              (ebox-create :key 'root :content "Rejected"
+                           :width '(viewport))
+              (ebox--update-report nil 'root-rerender)
+              (lambda (_report) (error "Reject context publication"))
+              nil
+              '(:viewport-width 180 :viewport-height 4)))
+            (should (= (tp-signal-peek width-signal) 120))
+            (should (= (tp-surface-revision surface) revision))
+            (should (eq (tp-surface-client-state surface) state))
+            (should (equal-including-properties
+                     (with-current-buffer buffer
                        (buffer-substring (point-min) (point-max)))
                      contents))))
       (when (buffer-live-p buffer)
@@ -496,6 +707,55 @@
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 
+(ert-deftest ebox-region-handle-update-uses-scoped-tp-publication ()
+  "A handle update should publish a scoped TP plan."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-scoped-handle*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-column
+             (ebox-create :id "left" :content "Left" :width '(100))
+             (ebox-create :id "right" :content "Right" :width '(100))))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (revision (tp-surface-revision surface))
+                 (handle (ebox-region-resolve buffer "left"))
+                 report)
+            (setq report
+                  (ebox-region-update handle :content "Changed"))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should-not (plist-get (tp-surface-report surface) :full-root))
+            (should (> (plist-get (tp-surface-report surface) :scope-count) 0))
+            (should (eq (plist-get report :tp-render-scope) 'objects))
+            (should (string-match-p
+                     "Changed"
+                     (with-current-buffer buffer (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-region-update-rejects-process-global-region-ids ()
+  "Direct updates should require a surface-scoped region handle."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-handle-only-update*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :id "target" :content "Before" :width '(100)))
+          (let* ((match (car (ebox-selector-query-buffer buffer "#target")))
+                 (region-id (plist-get match :region-id)))
+            (should-error (ebox-region-update region-id :content "Wrong")
+                          :type 'wrong-type-argument)
+            (ebox-region-update (plist-get match :region-handle)
+                                :content "After")
+            (should (string-match-p
+                     "After"
+                     (with-current-buffer buffer (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-selector-query-returns-an-editable-region-handle ()
   "A live selector match should carry the same handle accepted by updates."
   (ebox-surface-test--reset-render-state)
@@ -532,6 +792,91 @@
                           :content "New" :width '(100)))
             (should-error (ebox-region-update handle :content "Invalid")
                           :type 'user-error)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-scroll-update-publishes-only-through-tp ()
+  "A mounted scroll update should advance one TP surface revision."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-scroll*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 240)
+              (ebox-viewport-height 2))
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :id "scroll" :content "zero\none\ntwo\nthree"
+                         :width '(120) :height 2 :overflow 'scroll))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (signals
+                  (with-current-buffer buffer
+                    ebox-surface--context-signals))
+                 (revision (tp-surface-revision surface))
+                 (region-id
+                  (plist-get
+                   (car (ebox-selector-query-buffer buffer "#scroll"))
+                   :region-id)))
+            (should (= (ebox--scroll-region-by region-id 1 1) 1))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should (= (alist-get
+                        region-id
+                        (tp-signal-peek
+                         (ebox-surface--signals-scroll signals)))
+                       1))
+            (let* ((state (tp-surface-client-state surface))
+                   (root (plist-get state :root-node))
+                   (text (with-current-buffer buffer
+                           (buffer-substring-no-properties
+                            (point-min) (point-max)))))
+              (should (= (ebox-get (ebox--root-region-box root region-id)
+                                   :scroll-offset)
+                         1))
+              (should (= (plist-get (ebox-scroll-state region-id)
+                                    :scroll-offset)
+                         1))
+              (should (string-match-p "one" text))
+              (should (string-match-p "two" text))
+              (should-not (string-match-p "zero" text)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-scroll-update-rejects-a-runtime-replaced-by-its-hook ()
+  "A stale scroll candidate must not overwrite a hook publication."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-scroll-hook-race*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 240)
+              (ebox-viewport-height 2))
+          (ebox-render-to-buffer
+              buffer
+            (ebox-create :id "scroll" :content "zero\none\ntwo\nthree"
+                         :width '(120) :height 2 :overflow 'scroll))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (revision (tp-surface-revision surface))
+                 (handle (ebox-region-resolve buffer "scroll"))
+                 (region-id
+                  (plist-get
+                   (car (ebox-selector-query-buffer buffer "#scroll"))
+                   :region-id))
+                 (ebox-incremental-before-runtime-mutation-hook
+                  (list
+                   (lambda (target kind)
+                     (when (and (eq target buffer) (eq kind 'scroll))
+                       (let ((ebox-incremental--runtime-mutation-hooks-inhibited-p
+                              t))
+                         (ebox-region-update handle :color "#2563EB")))))))
+            (should-error (ebox--scroll-region-by region-id 1 1))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should (= (plist-get (ebox-scroll-state region-id) :scroll-offset)
+                       0))
+            (should (equal
+                     (ebox-get
+                      (ebox--root-region-box
+                       (plist-get (tp-surface-client-state surface) :root-node)
+                       region-id)
+                      :color)
+                     "#2563EB"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

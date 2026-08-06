@@ -14,7 +14,6 @@
   (setq ebox--runtime-node-id-counter 0)
   (setq ebox--render-region-id nil)
   (dolist (table (list ebox--region-box-table
-                       ebox--box-extents
                        ebox--buffer-render-state-table
                        ebox--scroll-global-state))
     (clrhash table)))
@@ -296,11 +295,14 @@
                  other-node))
           (let ((calls nil))
             (cl-letf (((symbol-function 'ebox-region-update)
-                       (lambda (region-id &rest _props)
-                         (let ((buffer ebox--region-update-buffer-hint))
-                           (push (cons region-id buffer) calls)
+                       (lambda (region-handle &rest _props)
+                         (should (ebox-region-handle-p region-handle))
+                         (let ((buffer
+                                (car (ebox-selector--region-target
+                                      region-handle))))
+                           (push (cons region-handle buffer) calls)
                            (list :buffer buffer
-                                 :region-id region-id
+                                 :region-handle region-handle
                                  :strategy 'stub-direct)))))
               (ebox-selector-update-buffer
                other-buffer "#other-card" :border-color "#0f766e")
@@ -330,11 +332,15 @@
                         node))
           (let* ((match (car (ebox-selector-query-buffer buffer "#card")))
                  (region-id (plist-get match :region-id))
+                 (region-handle (plist-get match :region-handle))
                  (poisoned-entry (list :poisoned-region region-id)))
             (puthash region-id poisoned-entry ebox--region-box-table)
             (cl-letf (((symbol-function 'ebox-region-update)
-                       (lambda (called-region-id &rest _props)
-                         (should (eq called-region-id region-id))
+                       (lambda (called-handle &rest _props)
+                         (should (ebox-region-handle-p called-handle))
+                         (should (equal
+                                  (ebox-selector--region-target called-handle)
+                                  (ebox-selector--region-target region-handle)))
                          (should (eq (gethash region-id ebox--region-box-table)
                                      poisoned-entry))
                          (list :strategy 'stub-direct))))
@@ -363,8 +369,9 @@
                                     :patch-ops '(owner-rerender)
                                     :batched-count 2)))
             (cl-letf (((symbol-function 'ebox-region-update)
-                       (lambda (region-id &rest _props)
-                         (push (list :region-id region-id
+                       (lambda (region-handle &rest _props)
+                         (should (ebox-region-handle-p region-handle))
+                         (push (list :region-handle region-handle
                                      :strategy 'wrong-direct)
                                direct-reports)))
                       ((symbol-function 'ebox-incremental-flush)
@@ -377,6 +384,34 @@
                 (should (= (length direct-reports) 2))
                 (should (equal (plist-get result :reports)
                                (list flush-report)))))))
+      (when (and buffer (buffer-live-p buffer))
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-selector-multi-match-publishes-one-scoped-generation ()
+  "Multi-match updates should publish once through a scoped TP transaction."
+  (ebox-selector-test--reset-runtime-state)
+  (let* ((node (ebox-build
+                '(column
+                  (box :class card :content "One")
+                  (box :class card :content "Two"))))
+         buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (ebox-render-to-buffer
+                        (generate-new-buffer-name " *ebox-selector-test*")
+                        node))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (revision (tp-surface-revision surface))
+                 (result
+                  (ebox-selector-update-buffer
+                   buffer ".card" :border-color "#ef4444"))
+                 (report (car (plist-get result :reports))))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should-not (plist-get (tp-surface-report surface) :full-root))
+            (should (= (plist-get report :flush-count) 1))
+            (should (= (plist-get report :batched-count) 2))
+            (should (equal report (ebox-buffer-update-report buffer)))))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
