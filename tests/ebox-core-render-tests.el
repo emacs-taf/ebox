@@ -165,14 +165,14 @@
   (ebox-test--reset-runtime-state)
   (let ((buffer (generate-new-buffer " *ebox-large-lookahead*"))
         (node-table (make-hash-table :test 'equal))
-        (selector-type-table (make-hash-table :test 'eq)))
+        (runtime-type-count-table (make-hash-table :test 'eq)))
     (unwind-protect
         (progn
           (dotimes (index 512)
             (puthash index t node-table))
           (puthash buffer
                    (list :node-table node-table
-                         :selector-type-table selector-type-table)
+                         :runtime-type-count-table runtime-type-count-table)
                    ebox--buffer-render-state-table)
           (should
            (= (ebox--root-reflow-scroll-lookahead-lines-for-buffer buffer)
@@ -9400,7 +9400,7 @@
   (let ((region-id "scroll")
         (buffer (generate-new-buffer " *ebox-large-prefetch*"))
         (node-table (make-hash-table :test 'equal))
-        (selector-type-table (make-hash-table :test 'eq))
+        (runtime-type-count-table (make-hash-table :test 'eq))
         requested-lines)
     (unwind-protect
         (progn
@@ -9408,7 +9408,7 @@
             (puthash index t node-table))
           (puthash buffer
                    (list :node-table node-table
-                         :selector-type-table selector-type-table)
+                         :runtime-type-count-table runtime-type-count-table)
                    ebox--buffer-render-state-table)
           (puthash
            region-id

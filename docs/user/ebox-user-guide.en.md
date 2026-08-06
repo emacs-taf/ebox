@@ -110,6 +110,14 @@ Selectors query the rendered tree and return public match records. They do not o
 
 The same logical id in two buffers resolves to two different handles, so updating one surface cannot accidentally mutate the other. A handle becomes stale when its retained object is removed or its buffer is killed. `ebox-region-update` accepts only a live handle; numeric region ids are internal render metadata and are not an update API.
 
+`ebox-selector-parse` compiles CSS-like strings directly to TP's structured selector AST. Queries support type, `#id`, `.class`, `[key=value]`, descendant whitespace, child `>`, adjacent sibling `+`, and general sibling `~`. Ebox maps logical children and indexed candidates to generic TP subjects; `tp-selector-match-p` is the only final matcher, so query and cascade semantics cannot diverge. Attribute selectors see built-in `:id`/`:key` plus metadata explicitly supplied through `:selector-attributes`, for example `:selector-attributes '((role . button))`; visible content, layout properties, Ebox runtime containers, and internal `:ebox-*` slots never become selector attributes implicitly.
+
+```elisp
+(ebox-selector-query-buffer "*Ebox Demo*" ".toolbar > box.action")
+(ebox-selector-query-buffer "*Ebox Demo*" "#first + .later")
+(ebox-selector-query-buffer "*Ebox Demo*" "#first ~ [role=button]")
+```
+
 ## 8. Standalone `.ebox` files
 
 `ebox-build` reads one data-oriented Ebox form:

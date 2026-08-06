@@ -43,21 +43,26 @@
   (mapcar #'ebox--string-pixel-width (ebox-string-lines rendered)))
 
 (ert-deftest ebox-selector-parses-type-id-class-and-attributes ()
-  "Selectors should parse type, id, class, and attribute predicates."
+  "Selectors should compile predicates into TP's structured selector AST."
   (should (equal (ebox-selector-parse "box.warning#summary[key=main]")
-                 '(:sequence
-                   ((:type box :id "summary" :classes ("warning")
-                     :attrs ((:key . "main"))))))))
+                 '(:and (:type box)
+                        (:id "summary")
+                        (:class "warning")
+                        (:attr :key "main")))))
 
 (ert-deftest ebox-selector-parses-child-and-descendant-combinators ()
-  "Selectors should preserve child and descendant combinator order."
+  "Selectors should compile relations into nested TP combinators."
   (should (equal (ebox-selector-parse ".panel > box .label")
-                 '(:sequence
-                   ((:classes ("panel"))
-                    :child
-                    (:type box)
-                    :descendant
-                    (:classes ("label")))))))
+                 '(:descendant
+                   (:child (:class "panel") (:type box))
+                   (:class "label")))))
+
+(ert-deftest ebox-selector-parses-adjacent-and-general-sibling-combinators ()
+  "Selectors should expose TP's adjacent and general sibling relations."
+  (should (equal (ebox-selector-parse "#first + box ~ .later")
+                 '(:sibling
+                   (:adjacent (:id "first") (:type box))
+                   (:class "later")))))
 
 (ert-deftest ebox-selector-queries-tree-by-id-class-and-type ()
   "Selector query should match metadata on the element tree."
@@ -82,6 +87,68 @@
                   (box :class action :content "Loose")))))
     (should (= (length (ebox-selector-query-all node ".toolbar > box")) 1))
     (should (= (length (ebox-selector-query-all node ".page .action")) 2))))
+
+(ert-deftest ebox-selector-queries-adjacent-and-general-siblings ()
+  "Selector query should use TP sibling semantics on logical children."
+  (ebox-selector-test--reset-runtime-state)
+  (let ((node (ebox-build
+               '(column
+                 (box :id first :content "A")
+                 (box :id second :class later :content "B")
+                 (box :id third :class later :content "C")))))
+    (should (equal
+             (mapcar (lambda (match)
+                       (ebox-tree-node-id (plist-get match :node)))
+                     (ebox-selector-query-all node "#first + #second"))
+             '("second")))
+    (should (equal
+             (mapcar (lambda (match)
+                       (ebox-tree-node-id (plist-get match :node)))
+                     (ebox-selector-query-all node "#first ~ .later"))
+             '("second" "third")))))
+
+(ert-deftest ebox-selector-query-delegates-matching-to-tp ()
+  "Ebox should adapt nodes while TP remains the only matcher."
+  (ebox-selector-test--reset-runtime-state)
+  (let ((node (ebox-build
+               '(column
+                 (box :class card :content "A")
+                 (box :content "B"))))
+        (calls 0)
+        (matcher (symbol-function 'tp-selector-match-p)))
+    (cl-letf (((symbol-function 'tp-selector-match-p)
+               (lambda (selector subject)
+                 (cl-incf calls)
+                 (funcall matcher selector subject))))
+      (should (= (length (ebox-selector-query-all node ".card")) 1)))
+    (should (> calls 0))))
+
+(ert-deftest ebox-selector-subject-exposes-only-explicit-metadata ()
+  "Selector adaptation should not serialize Ebox runtime containers."
+  (let* ((opaque (vector (make-hash-table :test #'eq)))
+         (node (list :ebox-type 'box :id 'card :class '(panel active)
+                     :selector-state '(focused) :state opaque
+                     :content "visible" :width 12 :render-cache opaque
+                     :selector-attributes '((role . button) (rank . 3))))
+         (subject (ebox-tree-node-subject node))
+         (attributes (tp-subject-attributes subject)))
+    (should (equal (tp-subject-classes subject) '("panel" "active")))
+    (should (equal (tp-subject-state subject) '("focused")))
+    (should (equal (cdr (assq :role attributes)) "button"))
+    (should (equal (cdr (assq :rank attributes)) "3"))
+    (should-not (assq :content attributes))
+    (should-not (assq :width attributes))
+    (should-not (assq :state attributes))
+    (should-not (assq :render-cache attributes))
+    (should-not (assq :ebox-type attributes))))
+
+(ert-deftest ebox-selector-queries-explicit-attributes ()
+  "Attribute queries should read only explicit selector metadata."
+  (let ((node (ebox-build
+               '(box :content "Run"
+                     :selector-attributes '((role . button))))))
+    (should (= (length (ebox-selector-query-all node "[role=button]")) 1))
+    (should-not (ebox-selector-query-all node "[content=Run]"))))
 
 (ert-deftest ebox-selector-queries-rendered-buffer-runtime ()
   "Selector query should return handles owned by a rendered buffer."
@@ -119,7 +186,7 @@
           (setq buffer (ebox-render-to-buffer
                         (generate-new-buffer-name " *ebox-selector-test*")
                         node))
-          (cl-letf (((symbol-function 'ebox-selector--walk)
+          (cl-letf (((symbol-function 'ebox-tree-subject-index)
                      (lambda (&rest _)
                        (error "id query should use runtime index"))))
             (let ((matches (ebox-selector-query-buffer buffer "#summary")))
@@ -141,7 +208,7 @@
           (setq buffer (ebox-render-to-buffer
                         (generate-new-buffer-name " *ebox-selector-test*")
                         node))
-          (cl-letf (((symbol-function 'ebox-selector--walk)
+          (cl-letf (((symbol-function 'ebox-tree-subject-index)
                      (lambda (&rest _)
                        (error "class query should use runtime index"))))
             (let ((matches (ebox-selector-query-buffer buffer ".card")))
@@ -166,7 +233,7 @@
           (setq buffer (ebox-render-to-buffer
                         (generate-new-buffer-name " *ebox-selector-test*")
                         node))
-          (cl-letf (((symbol-function 'ebox-selector--walk)
+          (cl-letf (((symbol-function 'ebox-tree-subject-index)
                      (lambda (&rest _)
                        (error "descendant query should use runtime index"))))
             (let ((matches (ebox-selector-query-buffer buffer ".page .action")))
@@ -174,6 +241,32 @@
               (should (cl-every (lambda (match)
                                   (plist-get match :region-id))
                                 matches)))))
+      (when (and buffer (buffer-live-p buffer))
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-selector-buffer-index-uses-logical-not-adapter-paths ()
+  "Indexed descendant queries should agree with the logical tree query."
+  (ebox-selector-test--reset-runtime-state)
+  (let* ((node (ebox-build
+                '(column :id shell
+                  (box :class target :content "A")
+                  (box :content "B"))))
+         buffer)
+    (unwind-protect
+        (progn
+          (should-not (ebox-selector-query-all node "column .target"))
+          (setq buffer (ebox-render-to-buffer
+                        (generate-new-buffer-name " *ebox-selector-test*")
+                        node))
+          (let ((state (gethash buffer ebox--buffer-render-state-table)))
+            (should-not
+             (gethash 'column (plist-get state :selector-type-table)))
+            (should (= (gethash
+                        'column
+                        (plist-get state :runtime-type-count-table))
+                       1)))
+          (should-not (ebox-selector-query-buffer
+                       buffer "column .target")))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 

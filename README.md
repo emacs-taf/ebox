@@ -23,6 +23,8 @@ Install TP first, then install Ebox through a package manager so its declared de
 
 The public model is a tree of Ebox nodes. `ebox-create` builds a leaf or wrapper node; `ebox-column`, `ebox-row`, `ebox-flex`, and `ebox-grid` compose nodes; `ebox-render` materializes propertized text through an ephemeral TP surface; `ebox-render-to-buffer` mounts a retained TP surface; and `ebox-commit` atomically updates that surface from a fresh root tree. Ebox copies declarative input before assigning runtime identity, so one source tree may be mounted in multiple buffers without transferring ownership.
 
+CSS-like selector strings are compiled to TP's structured selector AST. Ebox supplies logical node relations and indexed candidates; TP is the only selector matcher for tree queries, rendered-buffer queries, and later cascade rules.
+
 ## What belongs here
 
 - box creation, padding, margins, borders, colors, faces, overflow, and text measurement;

@@ -11,6 +11,7 @@
 
 (require 'subr-x)
 (require 'ebox-style)
+(require 'tp-style)
 
 (defconst ebox--default-display '(block flow)
   "Default CSS-like display for a plain Ebox box.")
@@ -54,7 +55,7 @@ This is an optimization for snapshot capture, not buffer runtime state.")
     ('flex-item 'item)
     (_ nil)))
 
-(defun ebox-tree--metadata-string (value)
+(defun ebox-tree-metadata-string (value)
   "Return VALUE normalized to a selector metadata string."
   (cond
    ((null value) nil)
@@ -65,22 +66,65 @@ This is an optimization for snapshot capture, not buffer runtime state.")
 (defun ebox-tree-node-id (node)
   "Return NODE's selector id string from `:id', or nil."
   (and (listp node)
-       (ebox-tree--metadata-string (plist-get node :id))))
+       (ebox-tree-metadata-string (plist-get node :id))))
+
+(defun ebox-tree--metadata-tokens (value)
+  "Return VALUE as a list of normalized selector metadata tokens."
+  (cond
+   ((null value) nil)
+   ((listp value)
+    (delq nil (mapcar #'ebox-tree-metadata-string value)))
+   (t (list (ebox-tree-metadata-string value)))))
 
 (defun ebox-tree-node-classes (node)
   "Return NODE's selector class strings from `:class'."
-  (when (listp node)
-    (let ((class (plist-get node :class)))
-      (cond
-       ((null class) nil)
-       ((listp class)
-        (delq nil (mapcar #'ebox-tree--metadata-string class)))
-       (t (list (ebox-tree--metadata-string class)))))))
+  (and (listp node)
+       (ebox-tree--metadata-tokens (plist-get node :class))))
+
+(defun ebox-tree-node-state (node)
+  "Return NODE's selector state tokens from `:selector-state'."
+  (and (listp node)
+       (ebox-tree--metadata-tokens (plist-get node :selector-state))))
 
 (defun ebox-tree-node-key (node)
   "Return NODE's selector key string from `:key', or nil."
   (and (listp node)
-       (ebox-tree--metadata-string (plist-get node :key))))
+       (ebox-tree-metadata-string (plist-get node :key))))
+
+(defun ebox-tree--selector-attribute-key (key)
+  "Return canonical keyword selector attribute KEY."
+  (cond
+   ((keywordp key) key)
+   ((symbolp key) (intern (concat ":" (symbol-name key))))
+   ((stringp key) (intern (if (string-prefix-p ":" key)
+                              key
+                            (concat ":" key))))
+   (t (error "Ebox selector attribute name is invalid: %S" key))))
+
+(defun ebox-tree--selector-attribute-value (value)
+  "Return canonical selector attribute VALUE."
+  (cond
+   ((symbolp value) (symbol-name value))
+   ((numberp value) (number-to-string value))
+   (t (copy-tree value))))
+
+(defun ebox-tree-node-attributes (node)
+  "Return NODE's explicit selector attributes plus built-in id and key."
+  (when (listp node)
+    (let ((attributes
+           (delq nil
+                 (list (when-let ((id (ebox-tree-node-id node)))
+                         (cons :id id))
+                       (when-let ((key (ebox-tree-node-key node)))
+                         (cons :key key))))))
+      (dolist (attribute (plist-get node :selector-attributes))
+        (unless (consp attribute)
+          (error "Ebox selector attributes must be an alist: %S"
+                 (plist-get node :selector-attributes)))
+        (push (cons (ebox-tree--selector-attribute-key (car attribute))
+                    (ebox-tree--selector-attribute-value (cdr attribute)))
+              attributes))
+      (nreverse attributes))))
 
 (defun ebox-tree--children-raw (node)
   "Return NODE's direct child nodes without assigning runtime ids."
@@ -544,6 +588,103 @@ candidate runtime index agree."
   (if (and (listp node) (eq (plist-get node :ebox-type) 'flex-item))
       (plist-get node :node)
     node))
+
+(defun ebox-tree--semantic-layout-leaves (node)
+  "Return semantic leaves below internal layout adapter NODE."
+  (pcase (and (listp node) (plist-get node :ebox-type))
+    ((or 'concat 'stack)
+     (apply #'append
+            (mapcar #'ebox-tree--semantic-layout-leaves
+                    (ebox-tree-layout-children node))))
+    ('flex-item
+     (ebox-tree--semantic-layout-leaves (plist-get node :node)))
+    (_ (and (listp node) (list node)))))
+
+(defun ebox-tree-semantic-children (node)
+  "Return NODE's logical children without internal layout adapters."
+  (pcase (and (listp node) (plist-get node :ebox-type))
+    ('box
+     (when-let ((content-node (plist-get node :ebox-content-node)))
+       (ebox-tree--semantic-layout-leaves content-node)))
+    ((or 'concat 'stack)
+     (ebox-tree--semantic-layout-leaves node))
+    ('flex
+     (mapcar #'ebox-tree-flex-item-source-node (plist-get node :children)))
+    ('grid (plist-get node :children))
+    ('flex-item (delq nil (list (plist-get node :node))))
+    (_ (ebox-tree-children node))))
+
+(defun ebox-tree-selector-index (root)
+  "Return id, class, and type indexes over ROOT's logical selector tree."
+  (let ((id-table (make-hash-table :test #'equal))
+        (class-table (make-hash-table :test #'equal))
+        (type-table (make-hash-table :test #'eq)))
+    (cl-labels
+        ((prepend (table key entry)
+           (puthash key (cons entry (gethash key table)) table))
+         (visit (node path)
+           (when (and (listp node) (not (stringp node)))
+             (let* ((current-path (append path (list node)))
+                    (entry (cons node current-path)))
+               (when-let ((id (ebox-tree-node-id node)))
+                 (prepend id-table id entry))
+               (dolist (class (ebox-tree-node-classes node))
+                 (prepend class-table class entry))
+               (when-let ((type (ebox-tree-node-selector-type node)))
+                 (prepend type-table type entry))
+               (dolist (child (ebox-tree-semantic-children node))
+                 (visit child current-path))))))
+      (visit root nil))
+    (dolist (table (list id-table class-table type-table))
+      (maphash (lambda (key entries)
+                 (puthash key (nreverse entries) table))
+               table))
+    (list :selector-id-table id-table
+          :selector-class-table class-table
+          :selector-type-table type-table)))
+
+(defun ebox-tree-node-subject (node)
+  "Return a detached TP selector subject representing NODE."
+  (tp-subject-create
+   :type (ebox-tree-node-selector-type node)
+   :id (ebox-tree-node-id node)
+   :classes (ebox-tree-node-classes node)
+   :attributes (ebox-tree-node-attributes node)
+   :state (ebox-tree-node-state node)))
+
+(defun ebox-tree-subject-index (root)
+  "Return TP subjects and semantic node paths below ROOT in document order."
+  (let ((node-subject-table (make-hash-table :test #'eq))
+        entries)
+    (cl-labels
+        ((visit (node path)
+           (when (and (listp node) (not (stringp node)))
+             (let* ((subject (ebox-tree-node-subject node))
+                    (current-path (append path (list node))))
+               (puthash node subject node-subject-table)
+               (push (list :node node :path current-path :subject subject)
+                     entries)
+               (tp-subject-set-children
+                subject
+                (delq nil
+                      (mapcar (lambda (child) (visit child current-path))
+                              (ebox-tree-semantic-children node))))
+               subject))))
+      (let ((root-subject (visit root nil)))
+        (list :root-subject root-subject
+              :entries (nreverse entries)
+              :node-subject-table node-subject-table)))))
+
+(defun ebox-tree-subject-for-path (path)
+  "Return a TP subject chain for the root-to-node Ebox PATH."
+  (let (parent subject)
+    (dolist (node path)
+      (when (and (listp node) (not (stringp node)))
+        (setq subject (ebox-tree-node-subject node))
+        (when parent
+          (tp-subject-set-children parent (list subject)))
+        (setq parent subject)))
+    subject))
 
 (defun ebox-tree-flex-participation-props (node)
   "Return raw flex item participation props attached to NODE."

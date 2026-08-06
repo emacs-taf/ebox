@@ -55,6 +55,31 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-commit-updates-raw-runtime-type-counts ()
+  "A structural candidate should publish exact raw runtime type counts."
+  (let* ((buffer
+          (ebox-render-to-buffer
+           (generate-new-buffer-name " *ebox-commit-types*")
+           (ebox-build
+            '(flex :key root :width (80)
+                   (item (box :key child :content "A" :width (40)))))))
+         (before (gethash buffer ebox--buffer-render-state-table)))
+    (unwind-protect
+        (progn
+          (should (= (gethash
+                      'item (plist-get before :runtime-type-count-table))
+                     1))
+          (ebox-commit
+           buffer (ebox-create :key 'root :content "B" :width '(80)))
+          (let ((after (gethash buffer ebox--buffer-render-state-table)))
+            (should-not
+             (gethash 'item (plist-get after :runtime-type-count-table)))
+            (should (= (gethash
+                        'box (plist-get after :runtime-type-count-table))
+                       1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-commit-rolls-back-on-invalid-root ()
   "A failed candidate must leave the previously published buffer intact."
   (let ((buffer (ebox-render-to-buffer

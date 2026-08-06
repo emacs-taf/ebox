@@ -262,14 +262,14 @@ unless root reflow and idle prefetch also avoid crossing several such rows.")
   "Return non-nil when BUFFER's lazy scroll rows need atomic scheduling."
   ;; A logical candidate may deliberately defer rebuilding selector paths
   ;; until the first selector query.  Scroll policy needs only the retained
-  ;; type membership hint and must not turn proof rendering into a full-tree
-  ;; selector-index rebuild.
+  ;; runtime type membership and must not turn proof rendering into a
+  ;; logical-tree selector-index rebuild.
   (let* ((state (ebox--buffer-render-state buffer))
-         (type-table (plist-get state :selector-type-table))
+         (type-counts (plist-get state :runtime-type-count-table))
          (node-table (plist-get state :node-table)))
     (or (plist-get state :selector-index-stale-p)
-        (and (hash-table-p type-table)
-             (gethash 'item type-table))
+        (and (hash-table-p type-counts)
+             (> (or (gethash 'item type-counts) 0) 0))
         (and (hash-table-p node-table)
              (>= (hash-table-count node-table)
                  ebox--latency-sensitive-scroll-node-limit)))))
@@ -940,6 +940,16 @@ Keys are region-id, values are plists with :scroll-offset, :content-lines, etc."
       nil)))
 
 
+(defun ebox-incremental--adjust-runtime-type-count (table node delta)
+  "Adjust NODE's raw selector-type count in TABLE by DELTA."
+  (when-let ((type (ebox-tree-node-selector-type node)))
+    (let ((count (+ (or (gethash type table) 0) delta)))
+      (cond
+       ((< count 0)
+        (error "Ebox runtime type count became negative: %S" type))
+       ((= count 0) (remhash type table))
+       (t (puthash type count table))))))
+
 (defun ebox--runtime-index (root-node &optional collect-region-boxes)
   "Return persistent runtime indexes for ROOT-NODE.
 When COLLECT-REGION-BOXES is non-nil, collect `:region-box-table' during the
@@ -952,29 +962,9 @@ same traversal in complete-render overwrite order."
          (and collect-region-boxes (make-hash-table :test 'equal)))
         (region-box-count-table (make-hash-table :test 'equal))
         (host-ref-table (make-hash-table :test 'equal))
-        (selector-id-table (make-hash-table :test 'equal))
-        (selector-class-table (make-hash-table :test 'equal))
-        (selector-type-table (make-hash-table :test 'eq))
+        (runtime-type-count-table (make-hash-table :test 'eq))
         native-node-postorder)
-    (cl-labels ((index-selector-id (node path)
-                  (when-let ((id (ebox-tree-node-id node)))
-                    (puthash id
-                             (cons (cons node path)
-                                   (gethash id selector-id-table))
-                             selector-id-table)))
-                (index-selector-classes (node path)
-                  (dolist (class (ebox-tree-node-classes node))
-                    (puthash class
-                             (cons (cons node path)
-                                   (gethash class selector-class-table))
-                             selector-class-table)))
-                (index-selector-type (node path)
-                  (when-let ((type (ebox-tree-node-selector-type node)))
-                    (puthash type
-                             (cons (cons node path)
-                                   (gethash type selector-type-table))
-                             selector-type-table)))
-                (index-host-ref (node node-id)
+    (cl-labels ((index-host-ref (node node-id)
                   (when-let ((host-ref (plist-get node :host-ref)))
                     (let ((count (hash-table-count host-ref-table)))
                       (puthash host-ref node-id host-ref-table)
@@ -1020,102 +1010,57 @@ same traversal in complete-render overwrite order."
                        (when-let ((box (plist-get node :box)))
                          (puthash (ebox--ensure-region-id box)
                                   box region-box-table))))))
-                (visit (node parent-id path native-layout-p)
+                (visit (node parent-id native-layout-p)
                   (when (and (listp node)
                              (not (stringp node)))
                     (let ((node-id (ebox--ensure-node-id node))
                           (type (plist-get node :ebox-type)))
                       (puthash node-id node node-table)
+                      (ebox-incremental--adjust-runtime-type-count
+                       runtime-type-count-table node 1)
                       (when parent-id
                         (puthash node-id parent-id parent-table))
-                      (let ((current-path (append path (list node))))
-                        (index-region-id node node-id)
-                        (index-host-ref node node-id)
-                        (index-selector-id node current-path)
-                        (index-selector-classes node current-path)
-                        (index-selector-type node current-path)
-                        (dolist (child (ebox--node-children node))
-                          (visit
-                           child node-id current-path
-                           (and native-layout-p
-                                (not (and (eq type 'flex)
-                                          (eq child
-                                              (plist-get node :box)))))))
-                        (index-region-box node)
-                        ;; This is the same child-before-parent order used by
-                        ;; the recursive Layout IR compiler.  Flex wrapper
-                        ;; source boxes and `flex-item' metadata nodes are not
-                        ;; independent native nodes, so retain their runtime
-                        ;; indexes without adding duplicate compiler work.
-                        (when (and native-layout-p
-                                   (not (eq type 'flex-item)))
-                          (push node native-node-postorder)))))))
-      (visit root-node nil nil t))
-    (maphash (lambda (id entries)
-               (puthash id (nreverse entries) selector-id-table))
-             selector-id-table)
-    (maphash (lambda (class entries)
-               (puthash class (nreverse entries) selector-class-table))
-             selector-class-table)
-    (maphash (lambda (type entries)
-               (puthash type (nreverse entries) selector-type-table))
-             selector-type-table)
-    (list :node-table node-table
-          :parent-table parent-table
-          :region-id-set region-id-set
-          :region-node-table region-node-table
-          :region-box-table region-box-table
-          :region-box-count-table region-box-count-table
-          :host-ref-table host-ref-table
-          :selector-id-table selector-id-table
-          :selector-class-table selector-class-table
-          :selector-type-table selector-type-table
-          :native-node-postorder
-          (vconcat (nreverse native-node-postorder)))))
-
-(defun ebox-incremental--selector-index (root-node)
-  "Return selector-only indexes for ROOT-NODE.
-
-Logical candidates keep their core runtime indexes current immediately but
-may defer selector path rebuilding.  This focused traversal is therefore used
-only by the first selector lookup after publication; it does not rebuild the
-node, parent, region, Host, or native-layout indexes."
-  (let ((selector-id-table (make-hash-table :test 'equal))
-        (selector-class-table (make-hash-table :test 'equal))
-        (selector-type-table (make-hash-table :test 'eq)))
-    (cl-labels
-        ((prepend (table key entry)
-           (puthash key (cons entry (gethash key table)) table))
-         (visit (node path)
-           (when (and (listp node) (not (stringp node)))
-             (let* ((current-path (append path (list node)))
-                    (entry (cons node current-path)))
-               (when-let ((id (ebox-tree-node-id node)))
-                 (prepend selector-id-table id entry))
-               (dolist (class (ebox-tree-node-classes node))
-                 (prepend selector-class-table class entry))
-               (when-let ((type (ebox-tree-node-selector-type node)))
-                 (prepend selector-type-table type entry))
-               (dolist (child (ebox--node-children node))
-                 (visit child current-path))))))
-      (visit root-node nil))
-    (dolist (table (list selector-id-table
-                         selector-class-table
-                         selector-type-table))
-      (maphash (lambda (key entries)
-                 (puthash key (nreverse entries) table))
-               table))
-    (list :selector-id-table selector-id-table
-          :selector-class-table selector-class-table
-          :selector-type-table selector-type-table)))
+                      (index-region-id node node-id)
+                      (index-host-ref node node-id)
+                      (dolist (child (ebox--node-children node))
+                        (visit
+                         child node-id
+                         (and native-layout-p
+                              (not (and (eq type 'flex)
+                                        (eq child (plist-get node :box)))))))
+                      (index-region-box node)
+                      ;; This is the same child-before-parent order used by
+                      ;; the recursive Layout IR compiler.  Flex wrapper
+                      ;; source boxes and `flex-item' metadata nodes are not
+                      ;; independent native nodes, so retain their runtime
+                      ;; indexes without adding duplicate compiler work.
+                      (when (and native-layout-p
+                                 (not (eq type 'flex-item)))
+                        (push node native-node-postorder))))))
+      (visit root-node nil t))
+    (let ((selector-index (ebox-tree-selector-index root-node)))
+      (list :node-table node-table
+            :parent-table parent-table
+            :region-id-set region-id-set
+            :region-node-table region-node-table
+            :region-box-table region-box-table
+            :region-box-count-table region-box-count-table
+            :host-ref-table host-ref-table
+            :selector-id-table (plist-get selector-index :selector-id-table)
+            :selector-class-table
+            (plist-get selector-index :selector-class-table)
+            :selector-type-table
+            (plist-get selector-index :selector-type-table)
+            :runtime-type-count-table runtime-type-count-table
+            :native-node-postorder
+            (vconcat (nreverse native-node-postorder))))))
 
 (defun ebox-incremental--ensure-buffer-selector-indexes (buffer)
   "Return BUFFER's state after materializing deferred selector indexes."
   (let ((state (ebox--buffer-render-state buffer)))
     (when (and state (plist-get state :selector-index-stale-p))
-      (let ((index
-             (ebox-incremental--selector-index
-              (plist-get state :root-node))))
+      (let ((index (ebox-tree-selector-index
+                    (plist-get state :root-node))))
         (dolist (key '(:selector-id-table
                        :selector-class-table
                        :selector-type-table))
@@ -1148,7 +1093,8 @@ node, parent, region, Host, or native-layout indexes."
   (dolist (key '(:node-table :parent-table :region-id-set :region-node-table
                  :region-box-count-table :region-box-table :host-ref-table
                  :selector-id-table :selector-class-table
-                 :selector-type-table :native-node-postorder))
+                 :selector-type-table :runtime-type-count-table
+                 :native-node-postorder))
     (setq state (plist-put state key (plist-get index key))))
   state)
 
@@ -4591,6 +4537,8 @@ Return the same pure surface-input shape as
         :selector-id-table (plist-get state :selector-id-table)
         :selector-class-table (plist-get state :selector-class-table)
         :selector-type-table (plist-get state :selector-type-table)
+        :runtime-type-count-table
+        (plist-get state :runtime-type-count-table)
         :selector-index-stale-p
         (plist-get state :selector-index-stale-p)
         :native-node-postorder (plist-get state :native-node-postorder)))
@@ -4940,10 +4888,15 @@ replace those O(n) table copies without changing this delta contract."
                (host-ref-table
                 (ebox-incremental--candidate-copy-index-table
                  old-state :host-ref-table 'equal))
+               (runtime-type-count-table
+                (ebox-incremental--candidate-copy-index-table
+                 old-state :runtime-type-count-table 'eq))
                (affected-region-ids (make-hash-table :test 'equal))
                (ambiguous-region-ids (make-hash-table :test 'equal)))
           (dolist (node removed)
             (let ((node-id (plist-get node :node-id)))
+              (ebox-incremental--adjust-runtime-type-count
+               runtime-type-count-table node -1)
               (remhash node-id node-table)
               (remhash node-id parent-table)
               (when-let ((host-ref (plist-get node :host-ref)))
@@ -4970,6 +4923,8 @@ replace those O(n) table copies without changing this delta contract."
                          entry))
               (let ((node-id (plist-get new-node :node-id)))
                 (when old-node
+                  (ebox-incremental--adjust-runtime-type-count
+                   runtime-type-count-table old-node -1)
                   (when-let ((record
                               (ebox-incremental--candidate-node-region-record
                                old-node)))
@@ -4978,6 +4933,8 @@ replace those O(n) table copies without changing this delta contract."
                     (ebox-incremental--candidate-adjust-region-box-count
                      region-box-count-table old-node -1)))
                 (puthash node-id new-node node-table)
+                (ebox-incremental--adjust-runtime-type-count
+                 runtime-type-count-table new-node 1)
                 (if parent-id
                     (puthash node-id parent-id parent-table)
                   (remhash node-id parent-table))
@@ -5056,6 +5013,7 @@ replace those O(n) table copies without changing this delta contract."
                         (plist-get old-state :selector-class-table)
                         :selector-type-table
                         (plist-get old-state :selector-type-table)
+                        :runtime-type-count-table runtime-type-count-table
                         :selector-index-stale-p t
                         :native-node-postorder native-node-postorder)))
             (list :index index
@@ -5188,6 +5146,8 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
             ,(plist-get candidate-index :selector-class-table))
            (:selector-type-table
             ,(plist-get candidate-index :selector-type-table))
+           (:runtime-type-count-table
+            ,(plist-get candidate-index :runtime-type-count-table))
            (:selector-index-stale-p
             ,(plist-get candidate-index :selector-index-stale-p))
            (:native-node-postorder

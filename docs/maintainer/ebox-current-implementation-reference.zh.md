@@ -17,7 +17,7 @@
 | `ebox.el` | 公共门面、构造辅助函数、渲染、buffer 入口、滚动、commit 与 byte compile。 |
 | `ebox-cache.el` | 测量/渲染缓存记录、失效和缓存报告。 |
 | `ebox-style.el` | 属性注册、别名、shorthand 展开、computed style、颜色、border 和 dirty effect。 |
-| `ebox-tree.el` | 节点遍历、子节点访问、identity、父路径、key 和树 snapshot。 |
+| `ebox-tree.el` | 节点遍历、逻辑子节点访问、TP subject 适配、identity、父路径、key 和树 snapshot。 |
 | `ebox-measure.el` | display 敏感的字符、face、像素测量与测量缓存。 |
 | `ebox-fragment.el` | 布局 fragment、signature、snapshot、span 和 dirty kind 事实。 |
 | `ebox-render-context.el` | render-local context 与发布输入。 |
@@ -28,7 +28,7 @@
 | `ebox-buffer-backend.el` | 带文本属性的渲染字符串构造、display space/border 与既有 slot 整形。 |
 | `ebox-incremental.el` | runtime、snapshot、dirty 规划、owner 提升、纯 commit 准备和报告。 |
 | `ebox-dsl.el` | 数据型 `.ebox` form，以及向公共节点的 lowering。 |
-| `ebox-selector.el` | 对树和 runtime handle 的 CSS-like 查询。 |
+| `ebox-selector.el` | 把 CSS-like 字符串解析为 TP selector AST，利用索引缩小候选，并返回 tree/runtime query handle。 |
 | `ebox-native-reflow.el` | 可选 native 模块加载/构建、ABI 校验、受限 session 和 Elisp fallback。 |
 
 本包有意不包含应用 Component、UI control、响应式 data 或 playground 实现；它们属于同级包。历史应用性能记录器和 native reflow 评估器也不属于独立 Ebox 的发布边界；Ebox 只保留 native 模块本身、Rust 构建输入和可重复的构建检查。
@@ -75,11 +75,12 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 - 逻辑 `:id` 通过 `ebox-region-resolve` 解析为不透明、surface-scoped 的 handle；同一逻辑 region 挂载到多个 buffer 时，由 handle 而不是 source-tree 数字 id 区分。
 - 候选失败时必须保留之前的 buffer、runtime identity 和报告。
 - Key 只在兄弟节点中有效；不能用可见字符串作为 identity。
+- Ebox 只拥有逻辑 node-to-subject 适配与 id/class/type 候选索引；TP 的公共结构化 matcher 是唯一 selector 真相源。subject 只暴露内建 id/key 和显式 `:selector-attributes`，绝不暴露可见 content、布局状态或 runtime 容器。
 - `owner-rerender` 范围大于 `span-patch`，`span-patch` 大于 `paint-patch`。
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。
 - 加载 Ebox 不会构建或安装可选 Rust 模块。
-- 当前已进入 Phase 9：首次 mount、声明式 commit、handle/selector 更新、viewport/theme 更新、batch flush 与 scroll 更新全部通过 TP surface 发布。Ebox 只计算 dirty/layout owner，并让不透明 runtime state 参与同一个可 rollback transaction；不存在第二个 live buffer executor。
+- Phase 9 已完成：首次 mount、声明式 commit、handle/selector 更新、viewport/theme 更新、batch flush 与 scroll 更新全部通过 TP surface 发布。Phase 10 已把 selector 匹配统一到 TP；Ebox 只计算 dirty/layout owner，并让不透明 runtime state 参与同一个可 rollback transaction，不存在第二个 live buffer executor。
 - 成功报告会保留 Ebox 语义 strategy 与 planned publication scope，再加入 `:publication-scope tp-surface`、TP 物理 operation 数、surface revision、scoped/full-root 事实和 retained-object reconciliation 统计。
 
 ## Grid 合同
