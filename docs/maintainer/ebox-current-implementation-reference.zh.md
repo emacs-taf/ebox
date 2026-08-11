@@ -7,9 +7,10 @@
 1. 先读 `AGENTS.md` 了解仓库规则。
 2. 读 `README.md` 了解安装和公共边界。
 3. 读 `docs/user/ebox-user-guide.zh.md` 了解公共构造方式。
-4. 读本文了解所有权和验证方式。
-5. 修改发布或 patch 规划前，读 `docs/maintainer/ebox-incremental-update-contract.zh.md`。
-6. 修改性能、retained surface 或增量数据流前，读 `docs/maintainer/ebox-performance-architecture-analysis.zh.md`。
+4. 读 `docs/user/ebox-api-reference.zh.md` 了解完整的公共函数/property/配置清单。
+5. 读本文了解所有权和验证方式。
+6. 修改发布或 patch 规划前，读 `docs/maintainer/ebox-incremental-update-contract.zh.md`。
+7. 修改性能、retained surface 或增量数据流前，读 `docs/maintainer/ebox-performance-architecture-analysis.zh.md`。
 
 ## Active 源码清单
 
@@ -86,7 +87,7 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 
 ## Grid 合同
 
-当前 Grid 支持固定和像素轨道、`auto`、分数轨道、`minmax`、`repeat`、隐式行列、行列 gap、auto-flow、从 1 开始的 placement、正整数 span、item/content 对齐，以及普通 buffer 渲染和更新。CSS cascade、百分比、绝对定位、z-index、圆角、阴影、完整 typography 和浏览器级 bidi 不在合同内。
+当前 Grid 支持固定和像素轨道、`auto`、分数轨道、`minmax`、`repeat`、隐式行列、行列 gap、auto-flow、从 1 开始的 placement、正整数 span、item/content 对齐，以及普通 buffer 渲染和更新。Ebox 支持有限 typography 子集（`:font`、`:font-family`、`:font-height`/`:font-size`、`:font-weight` 和 `:font-slant`）；完整浏览器 typography 不在合同内。百分比、绝对定位、z-index、圆角、阴影和浏览器级 bidi 也不在合同内。
 
 ## Active 示例与测试
 

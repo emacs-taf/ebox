@@ -22,15 +22,15 @@ node tree
   -> pure TP surface plan
 ```
 
-The owners are `ebox-tree.el` for Ebox identity and traversal, `ebox-style.el` for style semantics, `ebox-measure.el` for display-sensitive measurement, `ebox-layout.el`/`ebox-flex.el`/`ebox-grid.el` for geometry, `ebox-fragment.el` for fragment facts, `ebox-surface.el` for pure TP plan projection, and `ebox-incremental.el` for dirty-owner planning. During the staged cutover, the existing Ebox buffer backend still publishes live public entry points; it is not used by the pure projector and will be removed when those entry points move to TP surfaces.
+The owners are `ebox-tree.el` for Ebox identity and traversal, `ebox-style.el` for style semantics, `ebox-measure.el` for display-sensitive measurement, `ebox-layout.el`/`ebox-flex.el`/`ebox-grid.el` for geometry, `ebox-fragment.el` for fragment facts, `ebox-surface.el` for pure TP plan projection and retained publication, and `ebox-incremental.el` for dirty-owner planning. `ebox-buffer-backend.el` only builds and reshapes propertized render strings; all public live buffer publication routes through the TP surface boundary.
 
 ## Public boundary
 
-Use `ebox-create`, `ebox-column`, `ebox-row`, `ebox-flex`, `ebox-grid`, `ebox-build`, `ebox-render`, `ebox-render-to-buffer`, `ebox-commit`, and selector entry points. Do not call `ebox--*` names from an application or a sibling package. Higher-level Component, reactive, behavior, data, and control concepts belong to ETAF.
+Use the functions and properties in `docs/user/ebox-api-reference.en.md`; the facade inventory is `ebox-public-api`. Do not call `ebox--*` names from an application or a sibling package. Higher-level Component, reactive, behavior, data, and control concepts belong to ETAF.
 
 ## Layout scope
 
-Ebox supports character and pixel dimensions, padding, margins, borders, colors, faces, overflow, wrapping, row/column/flex formatting, and Grid tracks including fixed, fractional, implicit, gap, placement, span, and alignment behavior. CSS compatibility is intentionally partial: browser cascade, percentages, absolute positioning, z-index, shadows, full typography, and browser-level bidi are outside this package.
+Ebox supports character and pixel dimensions, padding, margins, borders, colors, Emacs face/font properties, overflow, wrapping, row/column/flex formatting, and Grid tracks including fixed, fractional, implicit, gap, placement, span, and alignment behavior. The supported typography subset is `:font`, `:font-family`, `:font-height`/`:font-size`, `:font-weight`, and `:font-slant`. CSS compatibility is intentionally partial: percentages, absolute positioning, z-index, shadows, border radius, full browser typography, and browser-level bidi are outside this package.
 
 ## Verification rule
 

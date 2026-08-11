@@ -156,6 +156,53 @@
                 (regexp-quote (car entry)))
         source)))))
 
+(ert-deftest ebox-public-api-includes-all-public-autoloaded-entry-points ()
+  "The facade inventory should not omit an autoloaded public entry point."
+  (dolist (entry '(ebox-byte-compile
+                   ebox-buffer-update-report
+                   ebox-build
+                   ebox-buffer-mode
+                   ebox-candidate-begin
+                   ebox-candidate-replace
+                   ebox-candidate-replace-host-ref
+                   ebox-clear-cache
+                   ebox-column
+                   ebox-commit
+                   ebox-concat
+                   ebox-create
+                   ebox-display-buffer
+                   ebox-display-signature
+                   ebox-flex
+                   ebox-flex-item
+                   ebox-grid
+                   ebox-grid-fr
+                   ebox-grid-item
+                   ebox-host-ref-bounds
+                   ebox-host-ref-position
+                   ebox-native-build
+                   ebox-native-status
+                   ebox-region-ids
+                   ebox-region-resolve
+                   ebox-region-update
+                   ebox-render
+                   ebox-render-to-buffer
+                   ebox-rerender-buffer-with-context
+                   ebox-row
+                   ebox-scroll-down
+                   ebox-scroll-page-down
+                   ebox-scroll-page-up
+                   ebox-scroll-state
+                   ebox-scroll-up
+                   ebox-selector-match-node-p
+                   ebox-selector-parse
+                   ebox-selector-query-all
+                   ebox-selector-query-buffer
+                   ebox-selector-update-buffer
+                   ebox-spacer
+                   ebox-stack
+                   ebox-string-pixel-width))
+    (should (memq entry ebox-public-api))))
+
 (ert-deftest ebox-live-buffer-publication-uses-only-tp-surfaces ()
   "The facade should expose no raw live-buffer writer beside TP surfaces."
   (require 'ebox)

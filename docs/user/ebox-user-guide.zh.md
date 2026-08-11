@@ -1,6 +1,6 @@
 # Ebox 用户指南
 
-Ebox 是底层的 box、布局和 buffer 渲染包。当应用需要精确几何时可以直接使用，也可以作为 ETAF 下方的渲染基座。本指南不引入 Component、响应式状态、behavior 或应用数据。
+Ebox 是底层的 box、布局和 buffer 渲染包。当应用需要精确几何时可以直接使用，也可以作为 ETAF 下方的渲染基座。本指南不引入 Component、响应式状态、behavior 或应用数据。完整的函数、property、配置清单见[公共 API 参考](ebox-api-reference.zh.md)。
 
 ## 1. 加载包
 
@@ -18,7 +18,7 @@ Ebox 是底层的 box、布局和 buffer 渲染包。当应用需要精确几何
 ```elisp
 (ebox-column
  (ebox-create :content "Title"
-              :face 'bold
+              :font 'bold
               :color "#263244"
               :bgcolor "#F4F6FB"
               :padding '(1 2))
@@ -27,7 +27,9 @@ Ebox 是底层的 box、布局和 buffer 渲染包。当应用需要精确几何
   (ebox-create :content "Right" :width 12)))
 ```
 
-公共形状是数据，而不是已渲染文本。节点可以有 `:content`、`:ebox-content-node`，或由容器接收的子节点。兄弟节点具有稳定业务 identity 时使用 `:key`；应用需要在渲染后查询公开位置时使用 `:host-ref`。
+公共形状是数据，而不是已渲染文本。节点可以有字符串 `:content`，或由容器
+辅助函数接收的子节点；wrapper bookkeeping 保持内部。兄弟节点具有稳定业务
+identity 时使用 `:key`；应用需要在渲染后查询公开位置时使用 `:host-ref`。
 
 ## 3. 尺寸与表面属性
 
@@ -44,7 +46,20 @@ Ebox 是底层的 box、布局和 buffer 渲染包。当应用需要精确几何
  :bgcolor "#FFFFFF")
 ```
 
-带色背景的 surface 要显式设置前景色与背景色。`:face` 可以是 face symbol 或 face plist；当 surface 本身承载语义颜色时，优先使用 `:color` 与 `:bgcolor`。
+带色背景的 surface 要显式设置前景色与背景色。`:font` 可以是 face symbol 或 face plist；当 surface 本身承载语义颜色时，优先使用 `:color` 与 `:bgcolor`。支持的 typography longhand 是 `:font-family`、`:font-height`/`:font-size`、`:font-weight` 和 `:font-slant`。
+
+### Stylesheet 规则
+
+Inline property 会由 Ebox 的 ECSS-backed style domain 编译。需要 selector 驱动规则时使用隔离的 stylesheet：
+
+```elisp
+(ebox-style-reset-rules)
+(ebox-style-add-rule ".card"
+                     '(:color "#1F2937" :padding '(1 (12)))
+                     :layer 'base)
+```
+
+规则使用 ECSS cascade 语义，包括 `:origin`、`:layer` 和 `:scope`。改变规则不会自动发布已经 mounted 的 buffer；规则变更后要对目标 buffer rerender 或 commit。完整 property schema 见[公共 API 参考](ebox-api-reference.zh.md)。
 
 ## 4. row、column、flex 与 Grid
 
@@ -110,15 +125,39 @@ Selector 查询已渲染的树并返回公共匹配记录，但不拥有应用�
 
 两个 buffer 中相同的逻辑 id 会解析为两个不同 handle，因此更新一个 surface 不会误改另一个。retained object 被删除或 buffer 被 kill 后，原 handle 会变 stale。`ebox-region-update` 只接受 live handle；数字 region id 只是内部渲染元数据，不是更新 API。
 
-`ebox-selector-parse` 会把 CSS-like 字符串直接编译成 ECSS 的结构化 selector AST。查询支持 type、`#id`、`.class`、`[key=value]`、空格 descendant、子节点 `>`、相邻兄弟 `+` 和一般兄弟 `~`。Ebox 只负责把逻辑子节点关系与索引候选映射成 ECSS subject，最终匹配统一由 `ecss-selector-match-p` 决定，因此 query 与 cascade 不会产生两套语义。属性 selector 只看内建的 `:id`/`:key`，以及通过 `:selector-attributes` 显式传入的元数据，例如 `:selector-attributes '((role . button))`；可见 content、布局属性、Ebox runtime 容器与内部 `:ebox-*` 槽位绝不会被隐式转换成 selector 属性。
+`ebox-selector-parse` 会把 CSS-like 字符串直接编译成 ECSS 的结构化 selector AST。查询支持 selector list、type、`#id`、`.class`、attribute presence 与 `=`、`~=`、`|=`、`^=`、`$=`、`*=` 操作符、state pseudo、`:is()`、`:where()`、`:not()`、`:has()`、空格 descendant、子节点 `>`、相邻兄弟 `+` 和一般兄弟 `~`。Ebox 只负责把逻辑子节点关系与索引候选映射成 ECSS subject，最终匹配统一由 `ecss-selector-match-p` 决定，因此 query 与 cascade 不会产生两套语义。属性 selector 只看内建的 `:id`/`:key`，以及通过 `:selector-attributes` 显式传入的元数据，例如 `:selector-attributes '((role . button))`；可见 content、布局属性、Ebox runtime 容器与内部 `:ebox-*` 槽位绝不会被隐式转换成 selector 属性。
 
 ```elisp
 (ebox-selector-query-buffer "*Ebox Demo*" ".toolbar > box.action")
 (ebox-selector-query-buffer "*Ebox Demo*" "#first + .later")
 (ebox-selector-query-buffer "*Ebox Demo*" "#first ~ [role=button]")
+(ebox-selector-update-buffer "*Ebox Demo*" ".action" :color "#2563EB")
 ```
 
-## 8. 独立 `.ebox` 文件
+`ebox-selector-update-buffer` 返回 `:matched`、`:updated`、结构化 `:skipped` 和 `:reports`。兼容别名 `ebox-select-all` 与 `ebox-update-selector` 分别指向 query 和 update 函数。
+
+## 8. Scroll 与 viewport context
+
+给 box 设置 `:overflow 'scroll`（默认值）和有限的 `:height` 创建 scroll window：
+
+```elisp
+(ebox-create :id "log" :width '(420) :height 8
+             :overflow 'scroll
+             :content (mapconcat #'identity lines "\n"))
+```
+
+`ebox-scroll-down`、`ebox-scroll-up`、`ebox-scroll-page-down` 和
+`ebox-scroll-page-up` 操作 point 所在的最内层 Ebox scroll region；没有可消费命令的 Ebox region 时回退到 Emacs scrolling。`ebox-wheel-scroll-down` 与 `ebox-wheel-scroll-up` 为 Ebox region 消费 mouse event，否则委托 `mwheel-scroll`。`ebox-buffer-mode` 本地安装 `ebox-scroll-map`；`ebox-render-to-buffer` 会在返回的 buffer 上启用它。`ebox-scroll-state` 为数字 region id 提供只读 scroll facts；使用滚动命令或 `ebox-region-update` 的 `:scroll-offset` 改变位置。
+
+Viewport 值使用 `(viewport)` 与 `(viewport-height)`。mounted buffer 要用显式 context 重排：
+
+```elisp
+(ebox-rerender-buffer-with-context (get-buffer "*Ebox Demo*") 800 30)
+```
+
+该调用保留 node 与 region identity。[公共 API 参考](ebox-api-reference.zh.md)列出了 lazy prefix、idle prefetch、cache 和滚动配置变量。
+
+## 9. 独立 `.ebox` 文件
 
 `ebox-build` 读取一个面向数据的 Ebox form：
 
@@ -136,15 +175,15 @@ Selector 查询已渲染的树并返回公共匹配记录，但不拥有应用�
 
 可执行的 `.ebox` 参考文件由同级 [`ebox-playground`](../../ebox-playground/README.md) 包维护。它的 `examples/` 目录包含迁移后的 Basic、Comprehensive、Flex、Responsive 以及完整 Grid 参考文件；这些文件只演示低层布局，不依赖 ETAF。
 
-## 9. 可选 native reflow
+## 10. 可选 native reflow
 
-Rust 模块用于加速符合条件的 reflow，但不是正确性的前提。正常加载 Ebox；需要本地模块时运行 `make native-build`，若模块不在默认位置则配置 `ebox-native-reflow-module-path`。Ebox 保留完全等价的 Elisp 路径，并且加载时不会自动构建 native。
+Rust 模块用于加速符合条件的 reflow，但不是正确性的前提。正常加载 Ebox；需要本地模块时运行 `make native-build`，若模块不在默认位置则配置 `ebox-native-reflow-module-path`。Ebox 保留完全等价的 Elisp 路径，并且加载时不会自动构建 native。`ebox-native-status` 显示 toolchain、module、ABI 与加载诊断；`ebox-native-build` 异步构建，并接受 prefix argument 以清理私有 Cargo cache 后重建。
 
-## 10. 公共边界
+## 11. 公共边界
 
-使用公共的 `ebox-*` 函数与构造器。以 `ebox--` 开头的名称是私有实现细节，可能随时变化。ETAF 是同级包，负责 Component、View 树、状态、behavior、Context、data 和应用生命周期；Ebox 应保持对几何与发布的专注。
+使用[公共 API 参考](ebox-api-reference.zh.md)和 `ebox-public-api` 门面清单中列出的函数与 property。以 `ebox--` 开头的名称是私有实现细节，可能随时变化。ETAF 是同级包，负责 Component、View 树、状态、behavior、Context、data 和应用生命周期；Ebox 应保持对几何与发布的专注。
 
-## 11. 验证
+## 12. 验证
 
 在仓库根目录运行：
 
@@ -152,6 +191,7 @@ Rust 模块用于加速符合条件的 reflow，但不是正确性的前提。�
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```
 
-局部修改可先运行 `make grid-tests`、`make dsl-tests` 或 `make visual-check-tests`；修改 native 模块后运行 `make native-rust-tests`。
+局部修改可先运行 `make grid-tests`、`make dsl-tests`、`make selector-tests`、`make surface-tests` 或 `make visual-check-tests`；修改 native 模块后运行 `make native-rust-tests`。

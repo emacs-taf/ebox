@@ -3640,10 +3640,11 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
 (defun ebox-region-update (handle &rest props)
   "Update the box identified by surface-scoped HANDLE with PROPS.
 HANDLE must come from ebox-region-resolve or an Ebox selector result.  PROPS
-accepts the same shorthand and longhand keywords as ebox-create.  The update
-builds an isolated candidate, runs the Ebox owner planner, and publishes once
-through the mounted TP surface.  Return nil while queued in an explicit batch;
-otherwise return the committed update report.
+accepts mutable content, style, and scroll keywords supported by the target;
+it does not add children or mutate selector metadata.  The update builds an
+isolated candidate, runs the Ebox owner planner, and publishes once through the
+mounted TP surface.  Return nil while queued in an explicit batch; otherwise
+return the committed update report.
 
 Examples:
   (ebox-region-update (ebox-region-resolve buffer \"status\")
@@ -3920,11 +3921,18 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-concat
     ebox-create
     ebox-display-buffer
+    ebox-display-signature
     ebox-flex
     ebox-flex-item
+    ebox-grid
+    ebox-grid-fr
+    ebox-grid-item
     ebox-host-ref-bounds
     ebox-host-ref-position
+    ebox-native-build
+    ebox-native-status
     ebox-region-ids
+    ebox-region-resolve
     ebox-region-update
     ebox-render
     ebox-render-to-buffer
@@ -3944,10 +3952,15 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-selector-update-buffer
     ebox-spacer
     ebox-stack
+    ebox-string-pixel-width
     ebox-update-selector
     ebox-wheel-scroll-down
     ebox-wheel-scroll-up)
-  "Stable core Ebox entry points available to applications and tooling.")
+  "Stable core Ebox entry points available to applications and tooling.
+This inventory includes the public autoloaded constructors, render/update
+commands, selector/scroll helpers, measurement accessors, Grid helpers, and
+optional native workflow commands.  Style-rule helpers live in `ebox-style.el'
+and are documented separately in the public API reference.")
 
 (defconst ebox-feature-families
   '(box-model
@@ -3975,9 +3988,10 @@ through dirty-set and patch-set execution before falling back to root rerender."
 ;;; ============================================================
 ;;; Public API Summary
 ;;; ============================================================
-;; The following functions form the stable public interface of ebox.
-;; All other ebox-- prefixed functions are internal implementation
-;; details and may change without notice.
+;; The complete facade inventory is `ebox-public-api'.  Style-rule entry points
+;; are defined in `ebox-style.el' and the user-facing inventory is maintained
+;; in `docs/user/ebox-api-reference.en.md` and its Chinese counterpart.
+;; All other ebox-- prefixed functions are internal implementation details.
 ;;
 ;; ── Creation ──────────────────────────────────────────────────
 ;;   ebox-create &rest plist
@@ -4019,14 +4033,10 @@ through dirty-set and patch-set execution before falling back to root rerender."
 ;;                                   call BEFORE render-to-buffer
 ;;
 ;; ── Dynamic Updates (call inside with-current-buffer + inhibit-read-only) ──
-;;   ebox-region-update region-id &rest props
-;;       Single entry-point for all dynamic changes.  PROPS keywords mirror
-;;       those of ebox-create:
-;;         :content STRING
-;;         :width SIZE  :padding-left SIZE  :padding-right SIZE  …
-;;         :border-color COLOR  :border-top-color COLOR  …
-;;         :bgcolor COLOR
-;;       Multiple keywords may be combined in one call.
+;;   ebox-region-update handle &rest props
+;;       Single entry-point for all dynamic changes.  HANDLE comes from
+;;       ebox-region-resolve or a selector match's :region-handle field;
+;;       numeric region ids are not update handles.
 ;;
 ;; ── Scroll ────────────────────────────────────────────────────
 ;;   ebox-scroll-up   &optional n

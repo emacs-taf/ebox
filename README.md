@@ -22,7 +22,7 @@ ECSS and TP are independent packages and may be installed in either order. Insta
                :bgcolor "#F4F6FB")))
 ```
 
-The public model is a tree of Ebox nodes. `ebox-create` builds a leaf or wrapper node; `ebox-column`, `ebox-row`, `ebox-flex`, and `ebox-grid` compose nodes; `ebox-render` materializes propertized text through an ephemeral TP surface; `ebox-render-to-buffer` mounts a retained TP surface; `ebox-display-buffer` displays that same retained-surface path; and `ebox-commit` atomically updates the mount from a fresh root tree. Ebox copies declarative input before assigning runtime identity, so one source tree may be mounted in multiple buffers without transferring ownership. It exposes no separate public macro that erases a live buffer and evaluates arbitrary body forms.
+The public model is a tree of Ebox nodes. `ebox-create` builds a leaf or wrapper node; `ebox-column`, `ebox-row`, `ebox-flex`, and `ebox-grid` compose nodes; `ebox-render` materializes propertized text without publishing buffer state (using isolated pure materialization when no cascade/inheritance dependency requires a TP object tree); `ebox-render-to-buffer` mounts a retained TP surface; `ebox-display-buffer` displays that same retained-surface path; and `ebox-commit` atomically updates the mount from a fresh root tree. Ebox copies declarative input before assigning runtime identity, so one source tree may be mounted in multiple buffers without transferring ownership. It exposes no separate public macro that erases a live buffer and evaluates arbitrary body forms.
 
 CSS-like selector strings are compiled to ECSS's structured selector AST. Ebox supplies logical node relations and indexed candidates; ECSS is the only selector matcher and cascade engine for tree queries, rendered-buffer queries, and style rules.
 
@@ -41,7 +41,8 @@ ETAF belongs in the sibling package. Install it separately when you need the uni
 | Path | Responsibility |
 | --- | --- |
 | `ebox.el` | Public facade and package entry point. |
-| `ebox-style.el`, `ebox-tree.el`, `ebox-measure.el` | Style, tree, and measurement models. |
+| `ebox-cache.el`, `ebox-style.el`, `ebox-tree.el`, `ebox-measure.el` | Cache, style, tree, and measurement models. |
+| `ebox-fragment.el`, `ebox-render-context.el` | Layout facts and render-local context. |
 | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Formatting contexts and layout algorithms. |
 | `ebox-surface.el` | Ebox candidate projection plus TP surface mount/update and atomic Ebox runtime-state participation. |
 | `ebox-buffer-backend.el`, `ebox-incremental.el` | Layout dirty planning, marker indexes, and specialized local update paths. |
@@ -61,4 +62,4 @@ make native-rust-tests
 
 Run the smallest focused target first (`make grid-tests`, `make surface-tests`, `make dsl-tests`, or `make visual-check-tests`), then run `make check` for shared rendering or public API changes. Sibling ECSS and TP checkouts are found at `../new-architecture/ecss` and `../tp` by default; override `ECSS_DIR` or `TP_DIR` when they live elsewhere.
 
-Read the [Ebox user guide](docs/user/ebox-user-guide.en.md) for public construction examples and the [current implementation reference](docs/maintainer/ebox-current-implementation-reference.en.md) for ownership boundaries and invariants.
+Read the [Ebox user guide](docs/user/ebox-user-guide.en.md) for a guided start, the [public API reference](docs/user/ebox-api-reference.en.md) for the complete function/property/configuration inventory, and the [current implementation reference](docs/maintainer/ebox-current-implementation-reference.en.md) for ownership boundaries and invariants.

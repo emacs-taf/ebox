@@ -1,6 +1,6 @@
 # Ebox user guide
 
-Ebox is the low-level box, layout, and buffer-rendering package. Use it directly when an application needs precise geometry or use it as the rendering substrate below ETAF. This guide intentionally does not introduce Components, reactive state, behaviors, or application data.
+Ebox is the low-level box, layout, and buffer-rendering package. Use it directly when an application needs precise geometry or use it as the rendering substrate below ETAF. This guide intentionally does not introduce Components, reactive state, behaviors, or application data. For the complete function/property/configuration inventory, see the [public API reference](ebox-api-reference.en.md).
 
 ## 1. Load the package
 
@@ -18,7 +18,7 @@ Loading defines the public package and its pure layout modules. It does not crea
 ```elisp
 (ebox-column
  (ebox-create :content "Title"
-              :face 'bold
+              :font 'bold
               :color "#263244"
               :bgcolor "#F4F6FB"
               :padding '(1 2))
@@ -27,7 +27,10 @@ Loading defines the public package and its pure layout modules. It does not crea
   (ebox-create :content "Right" :width 12)))
 ```
 
-The public shape is data, not rendered text. A node may contain `:content`, `:ebox-content-node`, or child nodes supplied to a container. Use `:key` when siblings have stable application identity and `:host-ref` when an application needs a public handle position after rendering.
+The public shape is data, not rendered text. A node may contain string
+`:content` or child nodes supplied to a container helper; wrapper bookkeeping
+stays internal. Use `:key` when siblings have stable application identity and
+`:host-ref` when an application needs a public handle position after rendering.
 
 ## 3. Dimensions and surface properties
 
@@ -44,7 +47,20 @@ Ordinary horizontal numbers are character columns. A one-element list denotes a 
  :bgcolor "#FFFFFF")
 ```
 
-Keep foreground and background explicit on tinted surfaces. `:face` may be a face symbol or a face plist; use `:color` and `:bgcolor` when the surface itself carries semantic colors.
+Keep foreground and background explicit on tinted surfaces. `:font` may be a face symbol or a face plist; use `:color` and `:bgcolor` when the surface itself carries semantic colors. `:font-family`, `:font-height`/`:font-size`, `:font-weight`, and `:font-slant` are the supported typography longhands.
+
+### Stylesheet rules
+
+Inline properties are compiled by Ebox's ECSS-backed style domain. Selector-driven rules use the isolated stylesheet:
+
+```elisp
+(ebox-style-reset-rules)
+(ebox-style-add-rule ".card"
+                     '(:color "#1F2937" :padding '(1 (12)))
+                     :layer 'base)
+```
+
+Rules use ECSS cascade semantics, including `:origin`, `:layer`, and `:scope`. A rule change does not publish an already-mounted buffer automatically; rerender or commit the affected buffer after changing rules. See the [API reference](ebox-api-reference.en.md#5-stylesheets-and-cascade) for the complete property schema.
 
 ## 4. Row, column, flex, and Grid
 
@@ -110,15 +126,38 @@ Selectors query the rendered tree and return public match records. They do not o
 
 The same logical id in two buffers resolves to two different handles, so updating one surface cannot accidentally mutate the other. A handle becomes stale when its retained object is removed or its buffer is killed. `ebox-region-update` accepts only a live handle; numeric region ids are internal render metadata and are not an update API.
 
-`ebox-selector-parse` compiles CSS-like strings directly to ECSS's structured selector AST. Queries support type, `#id`, `.class`, `[key=value]`, descendant whitespace, child `>`, adjacent sibling `+`, and general sibling `~`. Ebox maps logical children and indexed candidates to ECSS subjects; `ecss-selector-match-p` is the only final matcher, so query and cascade semantics cannot diverge. Attribute selectors see built-in `:id`/`:key` plus metadata explicitly supplied through `:selector-attributes`, for example `:selector-attributes '((role . button))`; visible content, layout properties, Ebox runtime containers, and internal `:ebox-*` slots never become selector attributes implicitly.
+`ebox-selector-parse` compiles CSS-like strings directly to ECSS's structured selector AST. Queries support selector lists, type, `#id`, `.class`, attribute presence and `=`, `~=`, `|=`, `^=`, `$=`, `*=` operators, state pseudos, `:is()`, `:where()`, `:not()`, `:has()`, descendant whitespace, child `>`, adjacent sibling `+`, and general sibling `~`. Ebox maps logical children and indexed candidates to ECSS subjects; `ecss-selector-match-p` is the only final matcher, so query and cascade semantics cannot diverge. Attribute selectors see built-in `:id`/`:key` plus metadata explicitly supplied through `:selector-attributes`, for example `:selector-attributes '((role . button))`; visible content, layout properties, Ebox runtime containers, and internal `:ebox-*` slots never become selector attributes implicitly.
 
 ```elisp
 (ebox-selector-query-buffer "*Ebox Demo*" ".toolbar > box.action")
 (ebox-selector-query-buffer "*Ebox Demo*" "#first + .later")
 (ebox-selector-query-buffer "*Ebox Demo*" "#first ~ [role=button]")
+(ebox-selector-update-buffer "*Ebox Demo*" ".action" :color "#2563EB")
 ```
 
-## 8. Standalone `.ebox` files
+`ebox-selector-update-buffer` returns `:matched`, `:updated`, structured `:skipped`, and `:reports` fields. The compatibility aliases `ebox-select-all` and `ebox-update-selector` refer to the query and update functions.
+
+## 8. Scroll and viewport context
+
+Give a box `:overflow 'scroll` (the default) and a finite `:height` to create a scroll window:
+
+```elisp
+(ebox-create :id "log" :width '(420) :height 8
+             :overflow 'scroll
+             :content (mapconcat #'identity lines "\n"))
+```
+
+`ebox-scroll-down`, `ebox-scroll-up`, `ebox-scroll-page-down`, and `ebox-scroll-page-up` operate on the innermost Ebox scroll region at point and fall back to Emacs scrolling when no Ebox region can consume the command. `ebox-wheel-scroll-down` and `ebox-wheel-scroll-up` consume mouse events for Ebox regions and otherwise delegate to `mwheel-scroll`. `ebox-buffer-mode` installs `ebox-scroll-map` locally; `ebox-render-to-buffer` enables it on its returned buffer. `ebox-scroll-state` exposes read-only scroll facts for a numeric region id; use scroll commands or `ebox-region-update` with `:scroll-offset` to change position.
+
+Viewport-dependent values use `(viewport)` and `(viewport-height)`. Rerender a mounted buffer with an explicit context:
+
+```elisp
+(ebox-rerender-buffer-with-context (get-buffer "*Ebox Demo*") 800 30)
+```
+
+The call preserves node and region identity. The [API reference](ebox-api-reference.en.md#8-scrolling-and-viewport-state) lists lazy prefix, idle prefetch, cache, and scroll customization variables.
+
+## 9. Standalone `.ebox` files
 
 `ebox-build` reads one data-oriented Ebox form:
 
@@ -136,15 +175,15 @@ Inside a `.ebox` fixture, keep the structural form unquoted. Quote list and symb
 
 Executable `.ebox` references are maintained by the sibling [`ebox-playground`](../../ebox-playground/README.md) package. Its `examples/` directory contains the migrated Basic, Comprehensive, Flex, Responsive, and complete Grid reference files; they remain low-level layout examples and do not require the ETAF framework.
 
-## 9. Optional native reflow
+## 10. Optional native reflow
 
-The Rust module accelerates eligible reflow work; it is not required for correctness. Load Ebox normally, run `make native-build` when you want a local module, and configure `ebox-native-reflow-module-path` if the module is outside its default location. Ebox keeps the Elisp path as the exact fallback and never builds native code while loading.
+The Rust module accelerates eligible reflow work; it is not required for correctness. Load Ebox normally, run `make native-build` when you want a local module, and configure `ebox-native-reflow-module-path` if the module is outside its default location. Ebox keeps the Elisp path as the exact fallback and never builds native code while loading. `ebox-native-status` shows toolchain, module, ABI, and load diagnosis; `ebox-native-build` starts an asynchronous build and accepts a prefix argument for a clean private Cargo cache rebuild.
 
-## 10. Public boundary
+## 11. Public boundary
 
-Use public `ebox-*` functions and constructors. Names beginning with `ebox--` are private implementation details and may change. ETAF is the sibling package for Components, View trees, state, behavior, Context, data, and application lifecycle; Ebox should stay focused on geometry and publication.
+Use the functions and properties listed in the [public API reference](ebox-api-reference.en.md) and the `ebox-public-api` facade inventory. Names beginning with `ebox--` are private implementation details and may change. ETAF is the sibling package for Components, View trees, state, behavior, Context, data, and application lifecycle; Ebox should stay focused on geometry and publication.
 
-## 11. Verification
+## 12. Verification
 
 From the repository root:
 
@@ -152,6 +191,7 @@ From the repository root:
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```
 
-Use `make grid-tests`, `make dsl-tests`, or `make visual-check-tests` for focused changes. Use `make native-rust-tests` after changing the native module.
+Use `make grid-tests`, `make dsl-tests`, `make selector-tests`, `make surface-tests`, or `make visual-check-tests` for focused changes. Use `make native-rust-tests` after changing the native module.

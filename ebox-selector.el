@@ -25,7 +25,7 @@
                   "ebox-incremental" (buffer))
 (declare-function ebox-incremental-begin-batch "ebox-incremental" (buffer))
 (declare-function ebox-incremental-flush "ebox-incremental" (buffer))
-(declare-function ebox-region-update "ebox" (region-id &rest props))
+(declare-function ebox-region-update "ebox" (handle &rest props))
 
 (cl-defstruct
     (ebox-region-handle

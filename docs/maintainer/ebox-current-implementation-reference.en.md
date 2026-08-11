@@ -7,9 +7,10 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 1. Read `AGENTS.md` for repository rules.
 2. Read `README.md` for installation and the public boundary.
 3. Read `docs/user/ebox-user-guide.en.md` for public construction patterns.
-4. Read this document for ownership and verification.
-5. Read `docs/maintainer/ebox-incremental-update-contract.en.md` before changing publication or patch planning.
-6. Read `docs/maintainer/ebox-performance-architecture-analysis.en.md` before changing performance, retained surfaces, or incremental data flow.
+4. Read `docs/user/ebox-api-reference.en.md` for the complete public function/property/configuration inventory.
+5. Read this document for ownership and verification.
+6. Read `docs/maintainer/ebox-incremental-update-contract.en.md` before changing publication or patch planning.
+7. Read `docs/maintainer/ebox-performance-architecture-analysis.en.md` before changing performance, retained surfaces, or incremental data flow.
 
 ## Active source map
 
@@ -86,7 +87,7 @@ Caller-owned Source Tree
 
 ## Grid contract
 
-Grid currently covers fixed and pixel tracks, `auto`, fractional tracks, `minmax`, `repeat`, implicit rows and columns, row/column gap, auto-flow, one-based placement, positive spans, item/content alignment, and ordinary buffer rendering and updates. CSS cascade, percentages, absolute positioning, z-index, border radius, shadows, full typography, and browser-level bidi are outside the contract.
+Grid currently covers fixed and pixel tracks, `auto`, fractional tracks, `minmax`, `repeat`, implicit rows and columns, row/column gap, auto-flow, one-based placement, positive spans, item/content alignment, and ordinary buffer rendering and updates. Ebox supports a finite typography subset (`:font`, `:font-family`, `:font-height`/`:font-size`, `:font-weight`, and `:font-slant`); full browser typography is outside the contract. Percentages, absolute positioning, z-index, border radius, shadows, and browser-level bidi are also outside the contract.
 
 ## Active examples and tests
 

@@ -22,15 +22,15 @@ Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过
   -> 纯 TP surface plan
 ```
 
-各层 owner 是：`ebox-tree.el` 负责 Ebox identity 与遍历，`ebox-style.el` 负责样式语义，`ebox-measure.el` 负责 display 敏感测量，`ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` 负责几何，`ebox-fragment.el` 负责 fragment 事实，`ebox-surface.el` 负责纯 TP plan 投影，`ebox-incremental.el` 负责 dirty owner 规划。分阶段切换期间，现有 Ebox buffer backend 仍为公开 live 入口执行发布；纯 projector 不调用它，公开入口切到 TP surface 后会删除这套发布执行器。
+各层 owner 是：`ebox-tree.el` 负责 Ebox identity 与遍历，`ebox-style.el` 负责样式语义，`ebox-measure.el` 负责 display 敏感测量，`ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` 负责几何，`ebox-fragment.el` 负责 fragment 事实，`ebox-surface.el` 负责纯 TP plan 投影与 retained 发布，`ebox-incremental.el` 负责 dirty owner 规划。`ebox-buffer-backend.el` 只构造和整形带文本属性的 render string；所有公共 live buffer 发布路径都经过 TP surface 边界。
 
 ## 公共边界
 
-使用 `ebox-create`、`ebox-column`、`ebox-row`、`ebox-flex`、`ebox-grid`、`ebox-build`、`ebox-render`、`ebox-render-to-buffer`、`ebox-commit` 以及 selector 入口。应用和同级包不得调用 `ebox--*` 私有名称。更高层的 Component、响应式、behavior、data 和 control 概念属于 ETAF。
+使用 `docs/user/ebox-api-reference.zh.md` 中的函数与 property；门面清单是 `ebox-public-api`。应用和同级包不得调用 `ebox--*` 私有名称。更高层的 Component、响应式、behavior、data 和 control 概念属于 ETAF。
 
 ## 布局范围
 
-Ebox 支持字符和像素尺寸、padding、margin、border、颜色、face、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。CSS 兼容性有意是部分实现：浏览器 cascade、百分比、绝对定位、z-index、阴影、完整 typography 和浏览器级 bidi 不属于本包。
+Ebox 支持字符和像素尺寸、padding、margin、border、颜色、Emacs face/font property、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。支持的 typography 子集是 `:font`、`:font-family`、`:font-height`/`:font-size`、`:font-weight` 和 `:font-slant`。CSS 兼容性有意是部分实现：百分比、绝对定位、z-index、阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
 
 ## 验证规则
 

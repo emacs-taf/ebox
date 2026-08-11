@@ -9,6 +9,7 @@
 (defconst ebox-docs-test--current-docs
   '("AGENTS.md" "README.md" "README.zh-CN.md" "DESIGN.md" "DESIGN.zh.md"
     "docs/user/ebox-user-guide.en.md" "docs/user/ebox-user-guide.zh.md"
+    "docs/user/ebox-api-reference.en.md" "docs/user/ebox-api-reference.zh.md"
     "docs/maintainer/ebox-current-implementation-reference.en.md"
     "docs/maintainer/ebox-current-implementation-reference.zh.md"
     "docs/maintainer/ebox-incremental-update-contract.en.md"
@@ -72,12 +73,25 @@
   "Every long-lived user and maintainer document should have both languages."
   (dolist (pair '(("docs/user/ebox-user-guide.en.md"
                    "docs/user/ebox-user-guide.zh.md")
+                  ("docs/user/ebox-api-reference.en.md"
+                   "docs/user/ebox-api-reference.zh.md")
                   ("docs/maintainer/ebox-current-implementation-reference.en.md"
                    "docs/maintainer/ebox-current-implementation-reference.zh.md")
                   ("docs/maintainer/ebox-incremental-update-contract.en.md"
                    "docs/maintainer/ebox-incremental-update-contract.zh.md")))
     (dolist (file pair)
       (should (file-exists-p (expand-file-name file ebox-docs-test--root))))))
+
+(ert-deftest ebox-docs-public-api-reference-covers-facade ()
+  "The bilingual API references should name every facade entry point."
+  (require 'ebox)
+  (dolist (file '("docs/user/ebox-api-reference.en.md"
+                  "docs/user/ebox-api-reference.zh.md"))
+    (let ((source (ebox-docs-test--read file)))
+      (dolist (entry ebox-public-api)
+        (should (string-match-p
+                 (regexp-quote (format "`%s`" entry))
+                 source))))))
 
 (ert-deftest ebox-docs-do-not-present-legacy-source-as-active ()
   "The standalone package documentation must not claim ETAF source ownership."
