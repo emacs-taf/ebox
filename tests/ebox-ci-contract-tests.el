@@ -20,7 +20,7 @@
                       "surface-tests:"
                       "docs-contract-tests:"
                       "ci-contract-tests:" "native-rust-tests:"
-                      "native-build:" "diff-check:"))
+                      "native-build:" "performance-evaluator:" "diff-check:"))
       (should (string-match-p (concat "^" (regexp-quote target)) source)))
     (should-not (string-match-p "ETAF" source))
     (should-not (string-match-p "etaf" source))))

@@ -1,14 +1,15 @@
 EMACS ?= emacs
 CARGO ?= cargo
 TP_DIR ?= ../tp
+ECSS_DIR ?= ../new-architecture/ecss
 LOAD_EXTRA ?=
 
-EMACS_BATCH = $(EMACS) -Q --batch -L . -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
+EMACS_BATCH = $(EMACS) -Q --batch -L . -L $(ECSS_DIR) -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
 NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
 NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
-.PHONY: all check ci load compile test checkdoc core-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests docs-contract-tests ci-contract-tests visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
+.PHONY: all check ci load compile test checkdoc core-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests docs-contract-tests ci-contract-tests performance-evaluator visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
 
 all: check
 
@@ -51,6 +52,9 @@ dsl-tests:
 
 flex-tests:
 	$(EMACS_BATCH) -l tests/ebox-flex-tests.el -f ert-run-tests-batch-and-exit
+
+performance-evaluator: surface-tests ebox-commit-tests
+	$(EMACS_BATCH) -l scripts/ebox-performance-evaluator.el -f ebox-performance-evaluator-batch
 
 docs-contract-tests:
 	$(EMACS_BATCH) -l tests/ebox-docs-contract-tests.el -f ert-run-tests-batch-and-exit

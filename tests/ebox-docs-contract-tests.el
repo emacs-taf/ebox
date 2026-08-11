@@ -31,14 +31,16 @@
     "native/Cargo.toml" "native/Cargo.lock" "native/build.rs"
     "native/vendor/emacs-30/emacs-module.h" "native/src/lib.rs"
     "native/src/layout.rs" "native/c/ebox_module.c"
-    "scripts/ebox-package-lint.el" "scripts/ebox-visual-check.el")
+    "scripts/ebox-package-lint.el" "scripts/ebox-visual-check.el"
+    "scripts/ebox-performance-evaluator.el")
   "Active Ebox files that the maintainer map must cover.")
 
 (defconst ebox-docs-test--targets
   '("check" "ci" "load" "compile" "core-tests" "grid-tests"
     "ebox-commit-tests" "surface-tests" "visual-check-tests" "package-tests"
     "selector-tests" "dsl-tests" "flex-tests"
-    "docs-contract-tests" "ci-contract-tests" "visual-check"
+    "docs-contract-tests" "ci-contract-tests" "performance-evaluator"
+    "visual-check"
     "native-rust-tests" "native-build" "package-lint" "diff-check")
   "Make targets that must be documented and executable.")
 

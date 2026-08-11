@@ -9,6 +9,9 @@
 (require 'cl-lib)
 (require 'ebox-cache)
 
+(declare-function ebox--register-render-owned-text-value
+                  "ebox-render-context" (property value))
+
 ;; Measurement Cache Model:
 ;; These caches only accelerate display-signature-sensitive pixel measurement.
 ;; They must not carry layout identity, dirty state, or buffer ownership.
@@ -257,7 +260,9 @@ Nested uses reuse the outer validation."
   `(if ebox--display-cache-validated
        (progn ,@body)
      (let ((ebox--display-cache-validated t)
-           (ebox--render-display-signature (ebox--display-signature)))
+           (ebox--render-display-signature
+            (or ebox--render-display-signature
+                (ebox--display-signature))))
        (let ((ebox--render-string-pixel-width-cache
               (make-hash-table :test 'equal))
              (ebox--render-string-max-pixel-width-cache
@@ -278,7 +283,7 @@ Nested uses reuse the outer validation."
   "Return STRING width from START to END, preserving text properties."
   (ebox--string-pixel-width (substring string start end)))
 
-(defsubst ebox--space-pixel-width ()
+(defun ebox--space-pixel-width ()
   "Get the pixel width of a space character, using cache."
   (ebox--ensure-display-cache-current)
   (or ebox--space-pixel-cache
@@ -303,7 +308,10 @@ Nested uses reuse the outer validation."
   "Generate a space string with PIXEL-WIDTH."
   (if (or (null pixel-width) (<= pixel-width 0))
       ""
-    (propertize " " 'display `(space :width (,pixel-width)))))
+    (let ((display
+           (ebox--register-render-owned-text-value
+            'display `(space :width (,pixel-width)))))
+      (propertize " " 'display display))))
 
 (defun ebox--pixel-blank (pixel-width height)
   "Generate a blank area of PIXEL-WIDTH and HEIGHT lines."

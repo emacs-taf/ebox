@@ -80,6 +80,20 @@
            (buffer-string))))
     (should-not (string-match-p "\\_<tp--" source))))
 
+(ert-deftest ebox-css-semantics-depend-only-on-public-ecss-api ()
+  "Selectors and cascade must come from ECSS rather than TP or Ebox copies."
+  (let ((source
+         (with-temp-buffer
+           (dolist (file '("ebox-style.el" "ebox-tree.el" "ebox-selector.el"))
+             (insert-file-contents (expand-file-name file ebox-test--root))
+             (insert "\n"))
+           (buffer-string))))
+    (should-not
+     (string-match-p
+      "\\_<tp-\\(?:subject\\|selector\\|stylesheet\\|compute-style\\|computed-style\\)"
+      source))
+    (should-not (string-match-p "\\_<ecss--" source))))
+
 (ert-deftest ebox-byte-compile-rebuilds-the-declared-source-set ()
   "The interactive command should recompile every declared source in order."
   (require 'bytecomp)
@@ -140,6 +154,27 @@
         (format ";;;###autoload[[:space:]\n]+(%s %s\\_>"
                 (regexp-quote (cdr entry))
                 (regexp-quote (car entry)))
+        source)))))
+
+(ert-deftest ebox-live-buffer-publication-uses-only-tp-surfaces ()
+  "The facade should expose no raw live-buffer writer beside TP surfaces."
+  (require 'ebox)
+  (dolist (entry '(ebox-render-to-buffer ebox-display-buffer))
+    (should (fboundp entry))
+    (should (memq entry ebox-public-api)))
+  (dolist (entry '(ebox-pop-to-buffer ebox-switch-to-buffer))
+    (should-not (fboundp entry))
+    (should-not (memq entry ebox-public-api)))
+  (let ((source
+         (with-temp-buffer
+           (insert-file-contents (expand-file-name "ebox.el" ebox-test--root))
+           (buffer-string))))
+    (dolist (definition '("ebox--to-buffer"
+                          "ebox-pop-to-buffer"
+                          "ebox-switch-to-buffer"))
+      (should-not
+       (string-match-p
+        (format "(defmacro[[:space:]]+%s\\_>" (regexp-quote definition))
         source)))))
 
 (ert-deftest ebox-package-exposes-buffer-report-accessor-only ()

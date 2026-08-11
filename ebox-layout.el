@@ -46,6 +46,17 @@ must not stretch their own outer width to that containing block.")
     (puthash rendered pixel-width ebox--rendered-uniform-width-table))
   rendered)
 
+(defun ebox--preformatted-content-lines-fit-p (lines pixel-width)
+  "Return non-nil when LINES fit the exact content PIXEL-WIDTH.
+Blank lines without data-bearing properties are safe because the wrapper
+replaces them with its full-width filler line."
+  (cl-every
+   (lambda (line)
+     (or (and (string-blank-p line)
+              (not (ebox--line-has-non-content-properties-p line)))
+         (= (ebox--string-pixel-width line) pixel-width)))
+   lines))
+
 (defun ebox--every-rendered-line-nonempty-p (rendered)
   "Return non-nil when every line in RENDERED can carry text properties."
   (let ((start 0)
@@ -163,20 +174,18 @@ the generic box pipeline."
           (ebox--apply-surface-properties
            rendered (ebox-get box :surface-properties))
           (puthash region-id box ebox--region-box-table)
-          (ebox--scroll-clear-state region-id)
+          (unless ebox--intrinsic-layout-measurement
+            (ebox--scroll-clear-state region-id))
           (ebox--record-rendered-uniform-width rendered known-width))))))
 
 (defun ebox--render-flat-preformatted-box (box)
-  "Render exact preformatted BOX chrome in one line-oriented pass.
-Return nil unless BOX is a marginless wrapper whose content already has its
-exact width and requires no vertical clipping, padding, or alignment work."
+  "Render simple BOX chrome in a single line-oriented pass.
+Return nil unless BOX has no child layout, no margins or vertical clipping,
+and its formatted content exactly fills the used height."
   (when (and (not ebox--flat-preformatted-box-fast-path-disabled)
-             (plist-get box :ebox-content-width-exact-p)
              (not (eq (ebox-get box :visibility) 'hidden))
              (null (ebox--box-content-node box))
              (stringp (ebox-get box :content))
-             (null (ebox-get box :wrap-mode))
-             (eq (ebox-get box :text-align) 'left)
              (eq (ebox-get box :vertical-align) 'top)
              (equal (or (ebox-get box :min-height) 0) 0)
              (null (ebox-get box :max-height))
@@ -185,17 +194,19 @@ exact width and requires no vertical clipping, padding, or alignment work."
              (equal (ebox-get box :margin-right-pixel) 0)
              (equal (ebox-get box :margin-top-height) 0)
              (equal (ebox-get box :margin-bottom-height) 0))
-    (let* ((content (ebox-get box :content))
-           (lines (ebox-string-lines content))
+    (let* ((content (ebox--box-content box))
+           (exact-p (and (plist-get box :ebox-content-width-exact-p)
+                         (null (ebox-get box :wrap-mode))
+                         (eq (ebox-get box :text-align) 'left)))
+           (formatted (if exact-p
+                          content
+                        (ebox--format-content-string box content)))
+           (lines (ebox-string-lines formatted))
            (text-height (length lines))
-           (height (ebox-get box :height))
-           (overflow (ebox-get box :overflow))
-           (exact-fixed-height-p
-            (and (numberp height)
-                 (eq overflow 'hidden)
-                 (= text-height (ebox--content-height box text-height)))))
-      (when (or (and (null height) (eq overflow 'scroll))
-                exact-fixed-height-p)
+           (content-height (ebox--content-height box text-height)))
+      (when (and (= text-height content-height)
+                 (ebox--preformatted-content-lines-fit-p
+                  lines (ebox--content-pixel box)))
         (let* ((region-id (or ebox--render-region-id
                               (ebox--ensure-region-id box)))
                (content-pixel (ebox--content-pixel box))
@@ -205,7 +216,8 @@ exact width and requires no vertical clipping, padding, or alignment work."
                  (ebox--window-render-flat-wrapper-chunk-lines
                   box lines 0 region-id padding-line-filler t t))))
           (puthash region-id box ebox--region-box-table)
-          (ebox--scroll-clear-state region-id)
+          (unless ebox--intrinsic-layout-measurement
+            (ebox--scroll-clear-state region-id))
           (ebox--record-rendered-uniform-width
            rendered (+ content-pixel (ebox--side-pixel box))))))))
 
@@ -239,6 +251,15 @@ exact width and requires no vertical clipping, padding, or alignment work."
 (defvar ebox--render-cache-allow-viewport-dependent)
 (defvar ebox--render-cache-signature-cache)
 (defvar ebox--render-cache-table)
+(defvar ebox--render-cache-scroll-state-region-ids)
+(defvar ebox--render-cache-scroll-state-restorable-p)
+(defvar ebox--render-cache-scroll-state-retained-cost-cache)
+
+(declare-function ebox-style-cascade-active-p "ebox-style" ())
+(declare-function ebox-surface--candidate-root "ebox-surface"
+                  (source preserve-identities-p))
+(declare-function ebox-surface--inline-inheritance-required-p "ebox-surface"
+                  (root))
 
 (defun ebox--register-window-line-renderer (type function)
   "Register FUNCTION as TYPE's lazy window-line renderer.
@@ -787,24 +808,40 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
 
 (defun ebox--render-box-content-node (box node)
   "Render NODE as BOX content, using the render-pass cache when available."
-  (if (null ebox--box-content-render-cache)
-      (ebox--render-node-as-box-content node box)
-    (let* ((context (ebox--box-content-cache-context))
-           (entries (gethash box ebox--box-content-render-cache))
-           (cached (assoc context entries)))
-      (if cached
-          (cdr cached)
-        (let ((content (ebox--render-node-as-box-content node box)))
-          (puthash box
-                   (cons (cons context content) entries)
-                   ebox--box-content-render-cache)
-          content)))))
+  (let* ((content-viewport (ebox--wrapper-content-viewport-pixel box))
+         (content
+          (if (null ebox--box-content-render-cache)
+              (ebox--render-node-as-box-content node box)
+            (let* ((context (ebox--box-content-cache-context))
+                   (entries (gethash box ebox--box-content-render-cache))
+                   (cached (assoc context entries)))
+              (if cached
+                  (cdr cached)
+                (let ((rendered
+                       (ebox--render-node-as-box-content node box)))
+                  (puthash box
+                           (cons (cons context rendered) entries)
+                           ebox--box-content-render-cache)
+                  rendered))))))
+    ;; A child layout has already resolved wrapping, alignment, and overflow
+    ;; against CONTENT-VIEWPORT.  Preserve that fact on the owning box so the
+    ;; generic string formatter does not traverse the same propertized output
+    ;; a second time.  Intrinsic measurement is deliberately excluded: it
+    ;; produces a natural-width probe, not final box content.
+    (when (and content-viewport
+               (not (eq (and (listp node) (plist-get node :ebox-type))
+                        'box))
+               (not ebox--intrinsic-layout-measurement))
+      (plist-put box :ebox-content-width-exact-p t))
+    content))
 
 (defun ebox--box-content (box)
   "Return BOX content, rendering any lazy child layout content if present."
-  (or (when-let ((node (ebox--box-content-node box)))
-        (ebox--render-box-content-node box node))
-      (ebox-get box :content)))
+  (ebox--propertize-typography
+   (or (when-let ((node (ebox--box-content-node box)))
+         (ebox--render-box-content-node box node))
+       (ebox-get box :content))
+   box))
 
 (defun ebox--line-min-content-pixel (line)
   "Return LINE's min-content width in content pixels."
@@ -923,12 +960,29 @@ an inherited viewport."
   (let ((content-viewport (ebox--wrapper-content-viewport-pixel props)))
     (cond
      ((eq (ebox-get props :width) 'max-content)
-      (let ((ebox-viewport-width nil)
+     (let ((ebox-viewport-width nil)
             (ebox--intrinsic-layout-measurement t))
         (ebox-render node)))
      (content-viewport
       (let ((ebox-viewport-width content-viewport))
-        (ebox-render node)))
+        (if (and (hash-table-p ebox--render-cache-table)
+                 (not ebox--intrinsic-layout-measurement)
+                 (null ebox--render-region-id)
+                 (fboundp 'ebox--render-cache-probe)
+                 (fboundp 'ebox--render-with-cache))
+            (ebox--render-with-cache
+             node nil
+             (ebox--render-cache-probe
+              node nil
+              (list :box-content t
+                    :content-viewport content-viewport
+                    :viewport-height ebox-viewport-height
+                    :intrinsic ebox--intrinsic-layout-measurement
+                    :render-region-id ebox--render-region-id
+                    :scroll-lookahead
+                    ebox--scroll-window-initial-lookahead-lines-override
+                    :scroll-disabled ebox--scroll-window-render-disabled)))
+          (ebox-render node))))
      (t
       (ebox-render node)))))
 
@@ -1377,11 +1431,14 @@ Internal implementation of `ebox-render' for box nodes."
              (overflow-text
               (mapconcat
                (lambda (line)
-                 (concat overflow-left-pad
-                         (if color
-                             (ebox--propertize-color line color)
-                           line)
-                         overflow-right-pad))
+                 (let ((line (if color
+                                 (ebox--propertize-color line color)
+                               (copy-sequence line))))
+                   (when (> (length line) 0)
+                     (put-text-property
+                      0 (length line) 'ebox-overflow-foreground-source
+                      region-id line))
+                   (concat overflow-left-pad line overflow-right-pad)))
                overflow-lines
                "\n")))
         (setq result (concat result "\n" overflow-text))))
@@ -1427,8 +1484,36 @@ This function owns spatial layout only; it never creates a live TP surface."
 (declare-function ebox-surface-producer
                   "ebox-surface"
                   (source &optional previous-state preserve-identities-p
-                          state-overrides))
+                          state-overrides signals projection-kind
+                          source-isolated-p source-path-copied-p))
 (declare-function tp-surface-materialize-string "tp-surface" (plan-or-producer))
+
+(defun ebox--render-ephemeral-static (node)
+  "Render static NODE without constructing a TP object tree.
+The source remains caller-owned; the candidate copy carries all ephemeral
+region/node identities and render side tables for this one materialization."
+  (let ((candidate (ebox-surface--candidate-root node t)))
+    (let ((ebox--surface-materialization-active t)
+          (ebox--region-box-table (make-hash-table :test 'equal))
+          (ebox--scroll-global-state (make-hash-table :test 'equal))
+          (ebox--scroll-idle-prefetch-timers (make-hash-table :test 'equal))
+          (ebox--smooth-scroll-state-table (make-hash-table :test 'equal))
+          (ebox--render-cache-table (make-hash-table :test 'equal))
+          (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
+          (ebox--box-content-render-cache (make-hash-table :test 'eq))
+          (ebox--viewport-dependent-node-ids-cache
+           (make-hash-table :test 'eq))
+          (ebox--viewport-dependent-subtree-cache
+           (make-hash-table :test 'eq))
+          (ebox--viewport-height-dependent-subtree-cache
+           (make-hash-table :test 'eq))
+          (ebox--flex-content-min-width-table (make-hash-table :test 'eq))
+          (ebox--render-runtime-revision nil)
+          (ebox--render-cache-allow-viewport-dependent nil)
+          (ebox--render-cache-scroll-state-region-ids nil)
+          (ebox--render-cache-scroll-state-restorable-p nil)
+          (ebox--render-cache-scroll-state-retained-cost-cache nil))
+      (ebox--render-layout candidate))))
 
 ;;;###autoload
 (defun ebox-render (node)
@@ -1439,18 +1524,27 @@ materialized surface is ephemeral and creates no live buffer state."
           ebox--render-runtime-revision)
       (ebox--render-layout node)
     (require 'ebox-surface)
-    (let ((ebox--surface-materialization-active t)
-          (ebox--region-id-counter ebox--region-id-counter)
-          (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
-      (tp-surface-materialize-string
-       (ebox-surface-producer node nil t)))))
+    (if (and (not (stringp node))
+             (not (ebox-style-cascade-active-p))
+             (not (ebox-surface--inline-inheritance-required-p node)))
+        (let ((ebox--region-id-counter ebox--region-id-counter)
+              (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
+          (ebox--render-ephemeral-static node))
+      (let ((ebox--surface-materialization-active t)
+            (ebox--region-id-counter ebox--region-id-counter)
+            (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
+        (tp-surface-materialize-string
+         (ebox-surface-producer node nil t))))))
 
 (defun ebox--width-pad (string extra-pixels)
   "Append a display-space of EXTRA-PIXELS to the right of every line in STRING.
 Used by `ebox--render-stack' to equalise rows to the same total width."
   (if (<= extra-pixels 0)
       string
-    (let ((pad (propertize " " 'display `(space :width (,extra-pixels)))))
+    (let* ((display
+            (ebox--register-render-owned-text-value
+             'display `(space :width (,extra-pixels))))
+           (pad (propertize " " 'display display)))
       (ebox--maplines (lambda (line) (concat line pad)) string))))
 
 (defun ebox--height-pad (string target-height)

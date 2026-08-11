@@ -9,15 +9,16 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 3. Read `docs/user/ebox-user-guide.en.md` for public construction patterns.
 4. Read this document for ownership and verification.
 5. Read `docs/maintainer/ebox-incremental-update-contract.en.md` before changing publication or patch planning.
+6. Read `docs/maintainer/ebox-performance-architecture-analysis.en.md` before changing performance, retained surfaces, or incremental data flow.
 
 ## Active source map
 
 | File | Owns |
 | --- | --- |
-| `ebox.el` | Public facade, construction helpers, rendering, buffer entry points, scrolling, commit, and byte compilation. |
+| `ebox.el` | Public facade, construction helpers, rendering, TP-backed buffer entry points, scrolling, commit, and byte compilation. |
 | `ebox-cache.el` | Measurement/render cache records, invalidation, and cache reports. |
-| `ebox-style.el` | Property registration, aliases, shorthand expansion, computed style, colors, borders, and dirty effects. |
-| `ebox-tree.el` | Node traversal, logical child access, TP subject adaptation, identity, parent paths, keys, and tree snapshots. |
+| `ebox-style.el` | ECSS property schemas, declarations and cascade, shorthand expansion, computed style, colors, borders, and dirty effects. |
+| `ebox-tree.el` | Node traversal, logical child access, ECSS subject adaptation, identity, parent paths, keys, and tree snapshots. |
 | `ebox-measure.el` | Display-sensitive character/face/pixel measurement and measurement caches. |
 | `ebox-fragment.el` | Layout fragments, signatures, snapshots, spans, and dirty-kind facts. |
 | `ebox-render-context.el` | Render-local context and publication inputs. |
@@ -28,12 +29,12 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | `ebox-buffer-backend.el` | Propertized render-string construction, display spaces/borders, and existing-slot shaping. |
 | `ebox-incremental.el` | Runtime state, snapshots, dirty planning, owner escalation, pure commit preparation, and reports. |
 | `ebox-dsl.el` | Data-oriented `.ebox` forms and lowering to public nodes. |
-| `ebox-selector.el` | CSS-like string parsing to TP selector ASTs, indexed candidate lookup, and tree/runtime query handles. |
+| `ebox-selector.el` | CSS-like string parsing to ECSS structured selector ASTs, indexed candidate lookup, and tree/runtime query handles. |
 | `ebox-native-reflow.el` | Optional native module loading/build commands, ABI checks, bounded sessions, and Elisp fallback. |
 
 The package intentionally does not include application Components, UI controls, reactive data, or a playground implementation. Those are sibling-package responsibilities.
 
-The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, and `scripts/ebox-visual-check.el`.
+The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
 
 ## Runtime model
 
@@ -70,17 +71,17 @@ Caller-owned Source Tree
 
 - Public Ebox nodes are data; `ebox--*` names are private.
 - A one-element horizontal list such as `'(420)` denotes pixels; ordinary horizontal numbers denote character columns.
-- `ebox-render` uses an ephemeral TP surface and does not publish to a buffer; `ebox-render-to-buffer` mounts a retained TP surface; `ebox-commit` prepares Ebox semantics and updates that surface through TP.
+- `ebox-render` uses an ephemeral TP surface and does not publish to a buffer; `ebox-render-to-buffer` mounts a retained TP surface; `ebox-display-buffer` displays that same retained-surface path; and `ebox-commit` prepares Ebox semantics and updates the mount through TP. Ebox exposes no parallel public macro that erases a live buffer and evaluates arbitrary body forms.
 - Declarative input remains caller-owned. Live mount/commit assigns identity only on a surface-owned copy, so the same source can back multiple buffers.
 - Logical `:id` values resolve through `ebox-region-resolve` to opaque surface-scoped handles. Handles, not source-tree numeric ids, distinguish the same logical region mounted in different buffers.
 - A failed candidate leaves the previous buffer, runtime identity, and report intact.
 - Keys are local to siblings; visible strings are never used as identity.
-- Ebox owns logical node-to-subject adaptation and id/class/type candidate indexes; TP's public structured matcher is the only selector truth source. Subjects expose built-in id/key plus explicit `:selector-attributes`, never visible content, layout state, or runtime containers.
+- Ebox owns logical node-to-subject adaptation and id/class/type candidate indexes; ECSS's public structured matcher is the only selector truth source. Subjects expose built-in id/key plus explicit `:selector-attributes`, never visible content, layout state, or runtime containers.
 - `owner-rerender` is broader than `span-patch`, which is broader than `paint-patch`.
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.
 - Loading Ebox never builds or installs the optional Rust module.
-- Phase 9 is complete: first mount, declarative commit, handle/selector update, viewport/theme update, batch flush, and scroll update all publish through TP surfaces. Phase 10 has unified selector matching under TP; Ebox computes dirty/layout ownership and joins its opaque runtime state to the same rollback-capable transaction, with no second live buffer executor.
+- Phase 9 is complete: first mount, declarative commit, handle/selector update, viewport/theme update, batch flush, and scroll update all publish through TP surfaces. Phase 10 has unified selector parsing, matching, and cascade under ECSS; Ebox computes dirty/layout ownership and joins its opaque runtime state to the TP rollback-capable transaction, with no second live buffer executor.
 - Successful reports preserve the Ebox semantic strategy and planned publication scope, then add `:publication-scope tp-surface`, TP physical operation counts, surface revision, scoped/full-root facts, and retained-object reconciliation counts.
 
 ## Grid contract
@@ -108,6 +109,7 @@ make dsl-tests
 make flex-tests
 make docs-contract-tests
 make ci-contract-tests
+make performance-evaluator
 make visual-check
 make native-rust-tests
 make native-build

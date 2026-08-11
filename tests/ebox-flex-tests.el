@@ -85,6 +85,22 @@
       (setq pos (1+ pos)))
     values))
 
+(ert-deftest ebox-flex-batch-line-sizing-preserves-fallback-semantics ()
+  "Batch line sizing should preserve the scalar Flexbox algorithm."
+  (let* ((line
+          (list
+           (list :base 80 :hypothetical 80 :min-main 0 :max-main nil
+                 :props '(:flex-grow 1 :flex-shrink 1))
+           (list :base 80 :hypothetical 80 :min-main 0 :max-main nil
+                 :props '(:flex-grow 2 :flex-shrink 1))))
+         (expected
+          (mapcar (lambda (item) (plist-get item :target))
+                  (ebox--flex-size-line line 200 10)))
+         (actual
+          (mapcar (lambda (item) (plist-get item :target))
+                  (car (ebox--flex-size-lines (list line) 200 10)))))
+    (should (equal actual expected))))
+
 (ert-deftest ebox-flex-module-preserves-item-participation ()
   "Extracted flex code should preserve item participation semantics."
   (let* ((node (ebox-build
@@ -95,6 +111,37 @@
          (rendered (ebox-render node)))
     (should (string-match-p "Grow" rendered))
     (should (string-match-p "Fixed" rendered))))
+
+(ert-deftest ebox-flex-item-clears-disappeared-ecss-props-on-region-update ()
+  "A region update should clear removed rule props but retain inline item props."
+  (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
+         (layout
+          (ebox-flex
+            (ebox-flex-item
+             (ebox-create :id "rule" :class 'grow :content "Rule" :width '(40)))
+            (ebox-flex-item
+             (ebox-create :id "inline" :content "Inline" :width '(40))
+             :flex-grow 2)))
+         (buffer (generate-new-buffer " *ebox-flex-style-reset*")))
+    (unwind-protect
+        (progn
+          (ebox-style-add-rule ".grow" '(:flex-grow 1) :layer 'layout)
+          (ebox-render-to-buffer buffer layout)
+          (let ((items (plist-get (plist-get (ebox--buffer-render-state buffer)
+                                               :root-node)
+                                 :children)))
+            (should (= (plist-get (plist-get (car items) :props) :flex-grow) 1))
+            (should (= (plist-get (plist-get (cadr items) :props) :flex-grow) 2)))
+          (ebox-style-reset-rules)
+          (ebox-region-update (ebox-region-resolve buffer "rule")
+                              :content "Next")
+          (let ((items (plist-get (plist-get (ebox--buffer-render-state buffer)
+                                               :root-node)
+                                 :children)))
+            (should-not (plist-member (plist-get (car items) :props) :flex-grow))
+            (should (= (plist-get (plist-get (cadr items) :props) :flex-grow) 2))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest ebox-flex-accepts-flex-props-on-direct-child-box ()
   "Flex item participation props may live directly on child boxes."
@@ -731,6 +778,32 @@
            (faces (ebox-flex-test--face-signature (ebox-render layout))))
       (should (string-match-p "blue" faces))
       (should-not (string-match-p "red" faces)))))
+
+(ert-deftest ebox-flex-measurement-miss-probes-cache-once ()
+  "A flex measurement miss should compute one exact cache probe."
+  (let* ((source (ebox-create :content "Measured once" :width '(80)))
+         (props '(:flex-basis auto))
+         (ebox--render-cache-table (make-hash-table :test 'equal))
+         (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
+         (ebox--viewport-dependent-subtree-cache (make-hash-table :test 'eq))
+         (signature-calls 0)
+         (lookup-calls 0)
+         (original-signature
+          (symbol-function 'ebox--flex-render-cache-signature))
+         (original-lookup (symbol-function 'ebox--render-cache-lookup)))
+    (cl-letf (((symbol-function 'ebox--flex-render-cache-signature)
+               (lambda (node)
+                 (cl-incf signature-calls)
+                 (funcall original-signature node)))
+              ((symbol-function 'ebox--render-cache-lookup)
+               (lambda (cache-key signature &rest arguments)
+                 (when (and (consp cache-key)
+                            (eq (nth 1 cache-key) 'flex-measure))
+                   (cl-incf lookup-calls))
+                 (apply original-lookup cache-key signature arguments))))
+      (ebox--flex-item-measurement source props 'row 120))
+    (should (= signature-calls 1))
+    (should (= lookup-calls 1))))
 
 (ert-deftest ebox-flex-fixed-basis-wrapped-box-skips-intrinsic-render ()
   "Known flex metrics should not render a wrapped fixed-basis box twice."

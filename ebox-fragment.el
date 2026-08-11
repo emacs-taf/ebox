@@ -11,6 +11,92 @@
 (require 'ebox-tree)
 (require 'ebox-measure)
 
+(declare-function ebox--current-display-signature "ebox-measure" ())
+
+(defvar ebox--layout-fragments-table nil
+  "Dynamic published-generation layout fragment retention table.")
+
+(defvar ebox--layout-fragments-reuse-p nil
+  "Non-nil when the current candidate may reuse retained layout fragments.")
+
+(defconst ebox-fragment-flex-retention-max-entries 512
+  "Maximum number of retained final-sized Flex fragments per generation.")
+
+(defvar ebox-fragment-flex-retention-hit-count 0
+  "Diagnostic count of retained final-sized Flex child fragment hits.")
+
+(defvar ebox-fragment-flex-retention-rerender-count 0
+  "Diagnostic count of final-sized Flex child fragment rerenders.")
+
+(defvar ebox-fragment-flex-retention-store-count 0
+  "Diagnostic count of retained final-sized Flex child fragment stores.")
+
+(defun ebox-fragment-flex-allocation-key
+    (source axis main cross align viewport &optional render-context)
+  "Return exact retained-fragment key for SOURCE in Flex allocation context.
+RENDER-CONTEXT contains layout-mode inputs that affect the rendered child but
+are not part of its final allocated geometry."
+  (when (and (hash-table-p ebox--layout-fragments-table)
+             (listp source)
+             (not (stringp source))
+             (numberp viewport))
+    (let ((height-key
+           (if (and (plist-member render-context
+                                  :viewport-height-dependent)
+                    (null (plist-get render-context
+                                     :viewport-height-dependent)))
+               :viewport-height-independent
+             (and (boundp 'ebox-viewport-height) ebox-viewport-height))))
+      (list (ebox--ensure-node-id source)
+            'flex-final-sized
+            axis main cross align viewport
+            height-key
+            render-context
+            (and (fboundp 'ebox--current-display-signature)
+                 (ebox--current-display-signature))))))
+
+(defun ebox-fragment-flex-retained-side-effects-reusable-p (metadata)
+  "Return non-nil when retained fragment METADATA has no scroll effects.
+Even a clear action is generation-sensitive: replaying or skipping it can
+leave a stale scroll state after an A-to-B-to-A candidate sequence."
+  (and (listp metadata)
+       (not (plist-get metadata :stateful-p))
+       (plist-member metadata :scroll-actions)
+       (null (plist-get metadata :scroll-actions))))
+
+(defun ebox-fragment-flex-retention-lookup (key)
+  "Return retained Flex fragment entry for KEY, or nil."
+  (when (and key (hash-table-p ebox--layout-fragments-table))
+    (let ((entry (gethash key ebox--layout-fragments-table)))
+      (when (and entry
+                 ebox--layout-fragments-reuse-p
+                 (ebox-fragment-flex-retained-side-effects-reusable-p
+                  (plist-get entry :side-effects)))
+        (cl-incf ebox-fragment-flex-retention-hit-count)
+        (plist-get entry :entry)))))
+
+(defun ebox-fragment-flex-retention-store (key entry side-effects)
+  "Store retained Flex fragment ENTRY under KEY with SIDE-EFFECTS."
+  (when (and key entry
+             (ebox-fragment-flex-retained-side-effects-reusable-p
+              side-effects)
+             (hash-table-p ebox--layout-fragments-table))
+    (when (and (not (gethash key ebox--layout-fragments-table))
+               (>= (hash-table-count ebox--layout-fragments-table)
+                   ebox-fragment-flex-retention-max-entries))
+      (let (old-key)
+        (maphash
+         (lambda (candidate-key _old-entry)
+           (setq old-key candidate-key))
+         ebox--layout-fragments-table)
+        (when old-key
+          (remhash old-key ebox--layout-fragments-table))))
+    (puthash key
+             (list :entry entry :side-effects side-effects)
+             ebox--layout-fragments-table)
+    (cl-incf ebox-fragment-flex-retention-store-count))
+  entry)
+
 (cl-defstruct (ebox-fragment
                (:constructor ebox-fragment-create))
   node-id type display region-ids child-ids style-signature size
@@ -197,6 +283,12 @@ include buffer spans and line signatures."
   #'ebox-fragment-node-layout-snapshot)
 (defalias 'ebox--layout-snapshot-dirty-kind
   #'ebox-fragment-layout-snapshot-dirty-kind)
+(defalias 'ebox--flex-fragment-allocation-key
+  #'ebox-fragment-flex-allocation-key)
+(defalias 'ebox--flex-fragment-retention-lookup
+  #'ebox-fragment-flex-retention-lookup)
+(defalias 'ebox--flex-fragment-retention-store
+  #'ebox-fragment-flex-retention-store)
 
 (provide 'ebox-fragment)
 

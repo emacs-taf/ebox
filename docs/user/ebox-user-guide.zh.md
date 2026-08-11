@@ -110,7 +110,7 @@ Selector 查询已渲染的树并返回公共匹配记录，但不拥有应用�
 
 两个 buffer 中相同的逻辑 id 会解析为两个不同 handle，因此更新一个 surface 不会误改另一个。retained object 被删除或 buffer 被 kill 后，原 handle 会变 stale。`ebox-region-update` 只接受 live handle；数字 region id 只是内部渲染元数据，不是更新 API。
 
-`ebox-selector-parse` 会把 CSS-like 字符串直接编译成 TP 的结构化 selector AST。查询支持 type、`#id`、`.class`、`[key=value]`、空格 descendant、子节点 `>`、相邻兄弟 `+` 和一般兄弟 `~`。Ebox 只负责把逻辑子节点关系与索引候选映射成通用 TP subject，最终匹配统一由 `tp-selector-match-p` 决定，因此 query 与 cascade 不会产生两套语义。属性 selector 只看内建的 `:id`/`:key`，以及通过 `:selector-attributes` 显式传入的元数据，例如 `:selector-attributes '((role . button))`；可见 content、布局属性、Ebox runtime 容器与内部 `:ebox-*` 槽位绝不会被隐式转换成 selector 属性。
+`ebox-selector-parse` 会把 CSS-like 字符串直接编译成 ECSS 的结构化 selector AST。查询支持 type、`#id`、`.class`、`[key=value]`、空格 descendant、子节点 `>`、相邻兄弟 `+` 和一般兄弟 `~`。Ebox 只负责把逻辑子节点关系与索引候选映射成 ECSS subject，最终匹配统一由 `ecss-selector-match-p` 决定，因此 query 与 cascade 不会产生两套语义。属性 selector 只看内建的 `:id`/`:key`，以及通过 `:selector-attributes` 显式传入的元数据，例如 `:selector-attributes '((role . button))`；可见 content、布局属性、Ebox runtime 容器与内部 `:ebox-*` 槽位绝不会被隐式转换成 selector 属性。
 
 ```elisp
 (ebox-selector-query-buffer "*Ebox Demo*" ".toolbar > box.action")

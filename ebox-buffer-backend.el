@@ -13,6 +13,10 @@
   "Non-nil allows ownership to be added to fresh content lines in place.")
 (declare-function ebox--maplines
                   "ebox" (function string))
+(declare-function ebox--register-render-owned-text-value
+                  "ebox-render-context" (property value))
+(declare-function ebox--register-render-owned-face-values
+                  "ebox-render-context" (source rendered))
 (declare-function ebox--string-repeat-lines
                   "ebox" (string count))
 (declare-function ebox-lines-join
@@ -177,6 +181,30 @@ immediately after BODY can trigger GC before the updated buffer is visible."
 
 ;;; Paint Mapping
 
+(defun ebox-buffer--font-attributes (style)
+  "Return anonymous face attributes for STYLE typography longhands."
+  (let (face)
+    (dolist (entry '((:font-family . :family)
+                     (:font-height . :height)
+                     (:font-weight . :weight)
+                     (:font-slant . :slant)))
+      (when-let ((value (plist-get style (car entry))))
+        (setq face (plist-put face (cdr entry) value))))
+    face))
+
+(defun ebox-buffer--font-face (style)
+  "Return STYLE's complete Emacs face value for typography."
+  (let* ((base (plist-get style :font))
+         (base (if (stringp base) (list :family base) base))
+         (attributes (ebox-buffer--font-attributes style)))
+    (cond
+     ((and attributes base)
+      (if (and (listp base) (not (keywordp (car-safe base))))
+          (cons attributes base)
+        (list attributes base)))
+     (attributes attributes)
+     (base base))))
+
 (defun ebox-buffer--paint-color (style role)
   "Return the foreground paint color for STYLE and ROLE."
   (or (plist-get style :color)
@@ -197,13 +225,24 @@ immediately after BODY can trigger GC before the updated buffer is visible."
   "Return Emacs text properties for computed STYLE in paint ROLE.
 This backend mapper intentionally accepts computed style facts and emits only
 buffer-facing paint properties.  Layout-only properties never pass through."
-  (let ((face nil))
+  (let ((face (ebox-buffer--font-face style)))
     (when-let ((foreground (ebox-buffer--paint-color style role)))
-      (setq face (plist-put face :foreground foreground)))
+      (setq face
+            (if (eq foreground 'ebox/default-foreground)
+                (plist-put face :inherit 'default)
+              (plist-put face :foreground foreground))))
     (when-let ((background (ebox-buffer--paint-background-color style role)))
       (setq face (plist-put face :background background)))
     (when face
       (list 'face face))))
+
+(defun ebox--propertize-typography (string style)
+  "Apply STYLE's typography to one copy of STRING."
+  (if-let ((face (ebox-buffer--font-face style)))
+      (let ((copy (copy-sequence string)))
+        (add-face-text-property 0 (length copy) face t copy)
+        (ebox--register-render-owned-face-values string copy))
+    string))
 
 ;;; Text Property Helpers
 
@@ -216,50 +255,71 @@ buffer-facing paint properties.  Layout-only properties never pass through."
 (defun ebox--pixel-border (pixel-width height &optional color)
   "Generate a border line of PIXEL-WIDTH and HEIGHT using optional COLOR."
   (when (and pixel-width height (> pixel-width 0) (> height 0))
-    (let ((line (propertize " "
-                            'face (ebox-buffer-side-border-face color)
-                            'display `(space :width (,pixel-width)))))
+    (let* ((face (ebox-buffer-side-border-face color))
+           (display
+            (ebox--register-render-owned-text-value
+             'display `(space :width (,pixel-width))))
+           (line (propertize " "
+                             'face face
+                             'display display)))
+      (ebox--register-render-owned-text-value 'face face)
       (ebox--string-repeat-lines line height))))
 
 (defun ebox--propertize-bgcolor (string bgcolor)
   "Apply background color BGCOLOR to STRING."
-  (let* ((string (copy-sequence string))
+  (let* ((source string)
+         (string (copy-sequence source))
          (length (length string)))
     (add-face-text-property 0 length `(:background ,bgcolor) t string)
-    string))
+    (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-color (string color)
   "Apply foreground COLOR to STRING."
-  (let* ((string (copy-sequence string))
+  (let* ((source string)
+         (string (copy-sequence source))
          (length (length string)))
-    (add-face-text-property 0 length `(:foreground ,color) t string)
-    string))
+    (add-face-text-property
+     0 length
+     (if (eq color 'ebox/default-foreground)
+         '(:inherit default)
+       `(:foreground ,color))
+     t string)
+    (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-colors (string color bgcolor)
   "Apply foreground COLOR and background BGCOLOR to one copy of STRING."
-  (let* ((string (copy-sequence string))
+  (let* ((source string)
+         (string (copy-sequence source))
          (length (length string)))
     (when color
-      (add-face-text-property 0 length `(:foreground ,color) t string))
+      (add-face-text-property
+       0 length
+       (if (eq color 'ebox/default-foreground)
+           '(:inherit default)
+         `(:foreground ,color))
+       t string))
     (when bgcolor
-      (add-face-text-property 0 length `(:background ,bgcolor) t string))
-    string))
+      (add-face-text-property
+       0 length `(:background ,bgcolor) t string))
+    (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-overline (string &optional color)
   "Apply overline to STRING with optional COLOR."
-  (let ((string (copy-sequence string)))
+  (let* ((source string)
+         (string (copy-sequence source)))
     (add-face-text-property
      0 (length string) `(:overline ,(or color t)) t string)
-    string))
+    (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-underline (string &optional color)
   "Apply underline to STRING with optional COLOR."
-  (let ((string (copy-sequence string)))
+  (let* ((source string)
+         (string (copy-sequence source)))
     (add-face-text-property
      0 (length string)
      `(:underline (:position t ,@(when color `(:color ,color))))
      t string)
-    string))
+    (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-region (string property region-id)
   "Add PROPERTY with REGION-ID to each line of STRING."
@@ -307,13 +367,17 @@ current direct owner, so only a stack change can affect the next output run."
                 (setq owners (append owners (list owner))))
               (unless (member region-id owners)
                 (setq owners (append owners (list region-id))))
+              (ebox--register-render-owned-text-value
+               'ebox-content-owner region-id)
+              (ebox--register-render-owned-text-value
+               'ebox-content-owners owners)
               (add-text-properties
                0 length
                (list 'ebox-content-owner region-id
                      'ebox-content-owners owners)
                string))
           (let ((pos 0)
-                next owners)
+                next owners original-owners)
             (while (< pos length)
               (let* ((owner (get-text-property
                              pos 'ebox-content-owner string))
@@ -321,14 +385,20 @@ current direct owner, so only a stack change can affect the next output run."
                                    pos 'ebox-content-owners string))
                      (complete-stack-p
                       (and owners-prop (member owner owners-prop))))
+                (setq original-owners owners-prop)
                 (setq next (ebox--next-content-owner-property-change
-                            pos string length complete-stack-p))
+                             pos string length complete-stack-p))
                 (setq owners
                       (if complete-stack-p
                           owners-prop
                         (ebox--content-owner-stack-at string pos))))
               (unless (member region-id owners)
                 (setq owners (append owners (list region-id))))
+              (ebox--register-render-owned-text-value
+               'ebox-content-owner region-id)
+              (unless (eq owners original-owners)
+                (ebox--register-render-owned-text-value
+                 'ebox-content-owners owners))
               (add-text-properties pos next
                                    (list 'ebox-content-owner region-id
                                          'ebox-content-owners owners)
@@ -352,6 +422,7 @@ current direct owner, so only a stack change can affect the next output run."
                          position 'ebox-content-owner result))
                  (stack (get-text-property
                          position 'ebox-content-owners result))
+                 (original-stack stack)
                  (complete-stack-p (and stack (member owner stack)))
                  (next (ebox--next-content-owner-property-change
                         position result length complete-stack-p)))
@@ -361,6 +432,11 @@ current direct owner, so only a stack change can affect the next output run."
             (dolist (new-owner owners)
               (unless (member new-owner stack)
                 (setq stack (append stack (list new-owner)))))
+            (ebox--register-render-owned-text-value
+             'ebox-content-owner final-owner)
+            (unless (eq stack original-stack)
+              (ebox--register-render-owned-text-value
+               'ebox-content-owners stack))
             (add-text-properties
              position next
              (list 'ebox-content-owner final-owner
@@ -387,16 +463,21 @@ may be added in place."
                    (not (text-property-not-all
                          0 (length source)
                          'ebox-content-owners nil source)))
-              (let ((copy (if mutate-p source (copy-sequence source))))
+              (let ((copy (if mutate-p source (copy-sequence source)))
+                    (owners (list region-id)))
+                (ebox--register-render-owned-text-value
+                 'ebox-content-owner region-id)
+                (ebox--register-render-owned-text-value
+                 'ebox-content-owners owners)
                 (add-text-properties
                  0 (length copy)
                  (list 'ebox-content-owner region-id
-                       'ebox-content-owners (list region-id))
+                       'ebox-content-owners owners)
                  copy)
                 copy)
             (if mutate-p
                 (ebox--add-content-owner! source region-id)
-              (ebox--add-content-owner source region-id)))))
+                (ebox--add-content-owner source region-id)))))
     (unless (text-property-not-all 0 (length line)
                                    'ebox-content nil line)
       (add-text-properties 0 (length line)

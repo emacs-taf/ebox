@@ -28,6 +28,8 @@
                   (session generation key))
 (declare-function ebox-native--module-render-proof "ebox_native_reflow"
                   (payload))
+(declare-function ebox-native--module-flex-size-lines "ebox_native_reflow"
+                  (payload main-limit main-gap))
 (declare-function ebox-native--module-confirm-frame "ebox_native_reflow"
                   (session generation key confirmed-revision))
 (declare-function ebox-native--module-attach-readiness-channel
@@ -67,7 +69,7 @@
 
 (defvar ebox--flex-content-min-width-table)
 
-(defconst ebox-native-reflow-abi-version "7:2:9"
+(defconst ebox-native-reflow-abi-version "8:3:9"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -174,6 +176,9 @@ module while loading the package."
 
 (defvar ebox-native-reflow--last-build-report nil
   "Result plist from the most recent `ebox-native-build' invocation.")
+
+(defvar ebox-native-reflow--flex-geometry-call-count 0
+  "Number of pure native Flex geometry batches executed in this Emacs.")
 
 (defvar ebox-native-reflow--build-process nil
   "Live asynchronous process started by `ebox-native-build', or nil.")
@@ -1188,6 +1193,78 @@ Build output and exact errors appear in `*Ebox Native Build*'."
           :loaded-module-path ebox-native-reflow--loaded-module-path
           :loaded-module-hash ebox-native-reflow--loaded-module-hash
           :load-error ebox-native-reflow--load-error)))
+
+(defun ebox-native-reflow--flex-size-payload (lines)
+  "Encode normalized flex LINES for the pure native geometry kernel."
+  (let ((payload (list (length lines))))
+    (dolist (line lines)
+      (setq payload (nconc payload (list (length line))))
+      (dolist (item line)
+        (let* ((props (plist-get item :props))
+               (base (plist-get item :base))
+               (hypothetical (plist-get item :hypothetical))
+               (min-main (plist-get item :min-main))
+               (max-main (plist-get item :max-main)))
+          (setq payload
+                (nconc
+                 payload
+                 (list (truncate base)
+                       (truncate hypothetical)
+                       (truncate (or min-main 0))
+                       (and (numberp max-main) (truncate max-main))
+                       (float (or (plist-get props :flex-grow) 0))
+                       (float (or (plist-get props :flex-shrink) 0))))))))
+    (vconcat payload)))
+
+(defun ebox-native-reflow--read-flex-i64 (bytes position)
+  "Read one nonnegative little-endian integer from BYTES at POSITION."
+  (let ((value 0))
+    (cl-loop for byte-offset from 0 below 8
+             do
+      (setq value
+            (logior value
+                    (ash (aref bytes (+ position byte-offset))
+                         (* 8 byte-offset))))
+             finally return value)))
+
+(defun ebox-native-reflow-flex-size-lines (lines main-limit main-gap)
+  "Return LINES with native target sizes, or nil when unsupported.
+The native side receives only measured numeric geometry.  It never receives
+Ebox nodes, identities, text, properties, or publication state."
+  (when (and (fboundp 'ebox-native--module-flex-size-lines)
+             (integerp main-limit)
+             (integerp main-gap)
+             (cl-every
+              (lambda (line)
+                (cl-every
+                 (lambda (item)
+                   (and (numberp (plist-get item :base))
+                        (numberp (plist-get item :hypothetical))
+                        (numberp (plist-get item :min-main))
+                        (let ((max-main (plist-get item :max-main)))
+                          (or (null max-main) (numberp max-main)))))
+                 line))
+              lines))
+    (cl-incf ebox-native-reflow--flex-geometry-call-count)
+    (let* ((payload (ebox-native-reflow--flex-size-payload lines))
+           (bytes
+            (ebox-native--module-flex-size-lines
+             payload main-limit main-gap))
+           (expected-bytes
+            (* 8 (apply #'+ (mapcar #'length lines)))))
+      (when (and (stringp bytes) (= (length bytes) expected-bytes))
+        (let ((position 0)
+              result)
+          (dolist (line lines (nreverse result))
+            (let (sized)
+              (dolist (item line)
+                (let ((copy (copy-sequence item)))
+                  (plist-put
+                   copy :target
+                   (ebox-native-reflow--read-flex-i64 bytes position))
+                  (setq position (+ position 8))
+                  (push copy sized)))
+              (push (nreverse sized) result))))))))
 
 (cl-defun ebox-native-reflow-create-session
     (&key workers

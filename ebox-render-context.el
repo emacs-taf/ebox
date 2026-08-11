@@ -19,6 +19,98 @@
 (defvar ebox--flex-content-min-width-table nil
   "Render-owned box measurements reusable by native scene compilation.")
 
+(defvar ebox--render-owned-text-values nil
+  "Candidate-local text-property values explicitly created by Ebox.")
+
+(defvar ebox--render-output-provenance-table
+  (make-hash-table :test #'eq :weakness 'key)
+  "Weak map from rendered strings to Ebox-owned property values.")
+
+(defun ebox--render-owned-text-values-for (property &optional create)
+  "Return the active candidate registry for PROPERTY when CREATE is non-nil."
+  (when (hash-table-p ebox--render-owned-text-values)
+    (or (gethash property ebox--render-owned-text-values)
+        (when create
+          (let ((values (make-hash-table :test #'eq :weakness 'key)))
+            (puthash property values ebox--render-owned-text-values)
+            values)))))
+
+(defun ebox--register-render-owned-text-value (property value)
+  "Register Ebox-created VALUE for PROPERTY in the active render candidate."
+  (when value
+    (when-let ((values (ebox--render-owned-text-values-for property t)))
+      (puthash value t values)))
+  value)
+
+(defun ebox--render-owned-text-value-p (property value &optional registry)
+  "Return non-nil when VALUE is Ebox-owned for PROPERTY.
+REGISTRY defaults to the active render candidate."
+  (let ((ebox--render-owned-text-values
+         (or registry ebox--render-owned-text-values)))
+    (when-let ((values (ebox--render-owned-text-values-for property)))
+      (gethash value values))))
+
+(defun ebox--register-render-owned-face-values (source rendered)
+  "Register Ebox-generated face identities added to RENDERED from SOURCE."
+  (when (and (stringp source)
+             (stringp rendered)
+             (= (length source) (length rendered))
+             (hash-table-p ebox--render-owned-text-values))
+    (let ((position 0)
+          (length (length rendered)))
+      (while (< position length)
+        (let ((next
+               (min (or (next-property-change position source) length)
+                    (or (next-property-change position rendered) length)))
+              (source-face (get-text-property position 'face source))
+              (rendered-face (get-text-property position 'face rendered)))
+          (when (and rendered-face (null source-face))
+            (ebox--register-render-owned-text-value 'face rendered-face))
+          (setq position next)))))
+  rendered)
+
+(defun ebox--record-render-output-provenance (rendered)
+  "Record owned property identities actually present in RENDERED."
+  (when (and (stringp rendered)
+             (hash-table-p ebox--render-owned-text-values))
+    (let ((provenance (make-hash-table :test #'eq))
+          (position 0)
+          (length (length rendered)))
+      (remhash rendered ebox--render-output-provenance-table)
+      (while (< position length)
+        (let ((next (or (next-property-change position rendered) length))
+              (properties (text-properties-at position rendered)))
+          (while properties
+            (let* ((property (pop properties))
+                   (value (pop properties))
+                   (owned (ebox--render-owned-text-value-p property value)))
+              (when owned
+                (let ((values (or (gethash property provenance)
+                                  (let ((new (make-hash-table
+                                              :test #'eq :weakness 'key)))
+                                    (puthash property new provenance)
+                                    new))))
+                  (puthash value t values)))))
+          (setq position next)))
+      (when (> (hash-table-count provenance) 0)
+        (puthash rendered provenance ebox--render-output-provenance-table))))
+  rendered)
+
+(defun ebox--replay-render-output-provenance (rendered)
+  "Replay owned property identities recorded for RENDERED into this candidate."
+  (when (and (stringp rendered)
+             (hash-table-p ebox--render-owned-text-values))
+    (when-let ((provenance
+                (gethash rendered ebox--render-output-provenance-table)))
+      (maphash
+       (lambda (property values)
+         (let ((owned (ebox--render-owned-text-values-for property t)))
+           (maphash (lambda (value _marker)
+                    (puthash value t owned))
+                    values)))
+       provenance)))
+  rendered)
+
 (declare-function ebox--buffer-render-state
                   "ebox-incremental" (buffer))
 

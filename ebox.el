@@ -2,7 +2,7 @@
 
 ;; Author: ebox contributors
 ;; Version: 2.0.0
-;; Package-Requires: ((emacs "29.1") (tp "1.0.0"))
+;; Package-Requires: ((emacs "29.1") (ecss "0.1.0") (tp "1.0.0"))
 ;; Keywords: ui, graphics, convenience
 ;; URL: https://github.com/ginqi7/ebox
 
@@ -389,6 +389,8 @@ caller, such as the Playground preview, renders against a concrete window.")
 
      :color nil
      :bgcolor nil
+     :font nil :font-family nil :font-height nil
+     :font-weight nil :font-slant nil
      :text-align left :vertical-align top
      ;; supports: 'visible / 'hidden / 'scroll
      :overflow scroll
@@ -415,8 +417,21 @@ PLIST is a property list that overrides the defaults."
   "Retrieve PROPERTY from BOX."
   (plist-get box property))
 
-(defsubst ebox-put (box property value)
-  "Set PROPERTY to VALUE in BOX and return the modified box."
+(defun ebox-put (box property value)
+  "Set PROPERTY to VALUE in BOX and return the modified box.
+Registered style properties also update BOX's canonical ECSS declarations so a
+later cascade computes from the public mutation instead of stale source data."
+  (when-let ((declaration
+              (ebox-style-compile-declarations (list property value))))
+    (plist-put
+     box :ebox-style-declarations
+     (ebox-style-merge-declarations
+      (plist-get box :ebox-style-declarations) declaration))
+    (when (plist-get box :ebox-style-wrapper)
+      (plist-put
+       box :ebox-style-overrides
+       (ebox-style-merge-declarations
+        (plist-get box :ebox-style-overrides) declaration))))
   (plist-put box property value))
 
 ;;;###autoload
@@ -761,28 +776,6 @@ indexes.  This prepares component identity without exposing a component API."
   "Build an Ebox node from an ETML-style list DSL."
   (ebox-dsl-build dsl))
 
-(defmacro ebox--to-buffer (buffer-or-name switch-fn &rest body)
-  "Render into BUFFER-OR-NAME using SWITCH-FN, executing BODY."
-  (declare (indent 2))
-  `(let ((buffer (get-buffer-create ,buffer-or-name)))
-     (with-current-buffer buffer
-       (let ((inhibit-read-only t))
-         (erase-buffer)
-         ,@body)
-       (local-set-key "q" (lambda () (interactive)
-                            (local-unset-key "q")
-                            (quit-window)))
-       (read-only-mode 1)
-       (funcall ,switch-fn buffer))))
-
-(defmacro ebox-pop-to-buffer (buffer-or-name &rest body)
-  (declare (indent defun))
-  `(ebox--to-buffer ,buffer-or-name #'pop-to-buffer ,@body))
-
-(defmacro ebox-switch-to-buffer (buffer-or-name &rest body)
-  (declare (indent defun))
-  `(ebox--to-buffer ,buffer-or-name #'switch-to-buffer ,@body))
-
 ;;; ============================================================
 ;;; Property Rules: 配置驱动的 Shorthand/Longhand 映射
 ;;; ============================================================
@@ -859,11 +852,13 @@ Supports: t (default fg), nil, string, (light . dark) cons."
 (defun ebox-create (&rest plist)
   "Create a box from PLIST. Supports all shorthand and longhand properties.
 Properties are expanded recursively according to `ebox-property-rules'."
-  (let ((expanded (ebox--expand-plist plist))
+  (let ((declarations (ebox-style-compile-declarations plist))
+        (expanded (ebox--expand-plist plist))
         (controlled-scroll-offset-p (plist-member plist :scroll-offset)))
     (let ((box (ebox--longhand-create expanded)))
       (plist-put box :ebox-type 'box)
       (plist-put box :display '(block flow))
+      (plist-put box :ebox-style-declarations declarations)
       (when controlled-scroll-offset-p
         (plist-put box :ebox-scroll-offset-controlled-p t))
       box)))
@@ -1318,9 +1313,13 @@ remain transaction-local."
 
 (defun ebox--scroll-clear-state (region-id)
   "Remove scroll state for REGION-ID."
-  (ebox--scroll-cancel-idle-prefetch region-id)
-  (remhash region-id ebox--scroll-global-state)
-  (ebox--record-render-cache-scroll-region region-id))
+  (let ((had-state (gethash region-id ebox--scroll-global-state)))
+    (ebox--scroll-cancel-idle-prefetch region-id)
+    (remhash region-id ebox--scroll-global-state)
+    ;; A clear of an already-empty slot has no candidate-visible effect and
+    ;; must not make an otherwise pure fragment look generation-sensitive.
+    (when had-state
+      (ebox--record-render-cache-scroll-region region-id))))
 
 (defun ebox--scroll-state-rendered-visible-window (state)
   "Return STATE's current rendered visible slice, including text properties."
@@ -2276,7 +2275,7 @@ publishes the prepared rendered-body entry plus its derived root templates."
             (progn
               (ebox--invalidate-reflow-prewarm-scratch-signatures
                scratch region-id)
-              (ebox-put box-copy :width target-width)
+              (plist-put box-copy :width target-width)
               (ebox--render-reflow-prewarm-scratch
                buffer state revision scratch
                (plist-get state :viewport-width)
@@ -2822,7 +2821,8 @@ inside the old prefix, so a line-slide never mixes two layout versions."
                       :patch-ops '(span-patch)
                       :owner-id owner-id
                       :owner-ids (list owner-id)
-                      :scroll-state-transaction t)))))
+                      :scroll-state-transaction t))
+               t)))
            (_staged-cache
             (ebox--surface-restore-staged-scroll-cache
              commit-input region-id staged-scroll-state))
@@ -2840,7 +2840,9 @@ inside the old prefix, so a line-slide never mixes two layout versions."
              scope-node-ids
              (plist-get commit-input :report-base)
              state-overrides nil nil
-             (and (plist-get transition :schedule-prefetch) 0))))
+             (and (plist-get transition :schedule-prefetch) 0)
+             (plist-get commit-input :projection-kind)
+             t)))
       (ignore surface)
       (plist-get transition :result))))
 
@@ -3276,8 +3278,8 @@ Defaults to the current buffer."
     (:background-color :bgcolor)
     (_ property)))
 
-(defun ebox--region-update-analysis (box expanded)
-  "Return the effective change analysis for BOX and EXPANDED properties."
+(defun ebox--region-update-analysis (box expanded declarations)
+  "Return change analysis for BOX, EXPANDED fields, and DECLARATIONS."
   (let (content-seen
         content-value
         style-changed-p
@@ -3295,7 +3297,9 @@ Defaults to the current buffer."
               (t
                (push key unknown-keys))))
     (list :changed-p
-          (or style-changed-p
+          (or (not (equal declarations
+                          (plist-get box :ebox-style-declarations)))
+              style-changed-p
               (and content-seen
                    (not (equal (ebox-get box :content) content-value))))
           :unknown-keys (nreverse unknown-keys))))
@@ -3309,23 +3313,40 @@ Defaults to the current buffer."
           #'ebox--schedule-runtime-prewarm-after-batch-flush t)
 
 
-(defun ebox--surface-region-candidate-root (buffer state)
-  "Return BUFFER's batch candidate or a fresh copy from STATE."
-  (or (ebox-incremental-surface-batch-root buffer)
-      (ebox-tree-copy-node-structure (plist-get state :root-node))))
+(defun ebox--surface-region-candidate-root
+    (buffer state region-id &optional path-copy-p)
+  "Return BUFFER's candidate root for REGION-ID.
+Use a narrow copy-on-write path when PATH-COPY-P is proven safe; active batch
+candidates are copied again before a second mutation so shared published nodes
+cannot be changed through the unpublished batch root."
+  (let ((batch-root (ebox-incremental-surface-batch-root buffer)))
+    (or (and batch-root
+             (ebox-tree-copy-node-structure batch-root))
+        (and path-copy-p
+             (ebox-incremental-surface-region-candidate-root
+              buffer region-id))
+        (ebox-tree-copy-node-structure (plist-get state :root-node)))))
 
-(defun ebox--surface-region-apply-props (root region-id expanded)
-  "Apply EXPANDED properties to REGION-ID in ROOT and return changed keys."
+(defun ebox--surface-region-apply-props
+    (root region-id expanded declarations)
+  "Apply DECLARATIONS then EXPANDED fields to REGION-ID in ROOT."
   (let ((box (ebox--root-region-box root region-id)) changed-keys)
     (unless box
       (user-error "Ebox region handle no longer resolves to a box"))
+    (let ((declarations-changed
+           (not (equal declarations
+                       (plist-get box :ebox-style-declarations)))))
+      (when declarations-changed
+        (plist-put box :ebox-style-declarations declarations))
     (cl-loop for (key value) on expanded by #'cddr
              for target-key = (ebox--region-update-normalize-property key)
              when (or (eq target-key :content)
                       (memq target-key ebox--region-update-longhand-props))
-             unless (equal (ebox-get box target-key) value)
-             do (ebox-put box target-key value)
-             and do (push target-key changed-keys))
+             when (or (not (equal (ebox-get box target-key) value))
+                      (and declarations-changed
+                           (ebox-style-property key)))
+             do (plist-put box target-key value)
+             and do (push target-key changed-keys)))
     (nreverse changed-keys)))
 
 (defun ebox--surface-region-no-op-report (state region-id handle)
@@ -3501,9 +3522,9 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
                     (ebox--surface-region-scroll-report
                      scroll-context changed-keys)))
            (commit-input
-            (ebox--surface-prepare-scroll-changes
+           (ebox--surface-prepare-scroll-changes
              (ebox-incremental-prepare-scoped-commit
-              buffer candidate-root report-overrides)
+              buffer candidate-root report-overrides t)
              changes))
            (scope-node-ids
             (let* ((planned
@@ -3524,7 +3545,9 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
              scope-node-ids
              (plist-get commit-input :report-base)
              (plist-get commit-input :state-overrides)
-             nil nil)))
+             nil nil nil
+             (plist-get commit-input :projection-kind)
+             t)))
       (plist-get (tp-surface-client-state surface) :last-update-report))))
 
 (defun ebox--publish-surface-region-batch (buffer candidate-root pending)
@@ -3546,16 +3569,20 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
 (defun ebox--surface-region-update-target (buffer region-id handle props)
   "Apply PROPS to BUFFER REGION-ID through TP for optional HANDLE."
   (let* ((state (ebox--buffer-render-state buffer))
-         (candidate-root
-          (ebox--surface-region-candidate-root buffer state))
+         (published-root (plist-get state :root-node))
          (candidate-box
-          (or (ebox--root-region-box candidate-root region-id)
+          (or (ebox--root-region-box published-root region-id)
               (user-error "Ebox region handle no longer resolves to a box")))
          (expanded (ebox--expand-plist props))
+         (declarations
+          (ebox-style-merge-declarations
+           (plist-get candidate-box :ebox-style-declarations)
+           (ebox-style-compile-declarations props)))
          (old-style-values
           (and (plist-member expanded :overflow)
                (list :overflow (ebox-get candidate-box :overflow))))
-         (analysis (ebox--region-update-analysis candidate-box expanded)))
+         (analysis
+          (ebox--region-update-analysis candidate-box expanded declarations)))
     (dolist (key (plist-get analysis :unknown-keys))
       (message "ebox-region-update: unknown key %S (ignored)" key))
     (if (not (plist-get analysis :changed-p))
@@ -3566,9 +3593,23 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
                (eq (ebox--region-update-normalize-property (car expanded))
                    :scroll-offset))
           (ebox--surface-scroll-to-offset buffer region-id (cadr expanded))
-        (let* ((changed-keys
+        (let* ((content-only-p
+                (and (= (length expanded) 2)
+                     (eq (ebox--region-update-normalize-property
+                          (car expanded))
+                         :content)
+                     (stringp (cadr expanded))
+                     (numberp (ebox-get candidate-box :width))
+                     (null (plist-get candidate-box :ebox-content-node))
+                     (not (ebox-style-cascade-active-p))
+                     (not (plist-get state :cascade-required-p))
+                     (null (plist-get state :scroll-region-ids))))
+               (candidate-root
+                (ebox--surface-region-candidate-root
+                 buffer state region-id content-only-p))
+               (changed-keys
                 (ebox--surface-region-apply-props
-                 candidate-root region-id expanded))
+                 candidate-root region-id expanded declarations))
                (dirty-kind
                 (ebox--region-update-dirty-kind changed-keys))
                (constraint-change
@@ -3817,7 +3858,9 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
                  buffer source scope-node-ids
                  (plist-get commit-input :report-base)
                  (plist-get commit-input :state-overrides)
-                 callback)
+                 callback nil nil
+                 (plist-get commit-input :projection-kind)
+                 t)
               (ebox-surface-mount-buffer
                buffer source
                (plist-get commit-input :report-base)
@@ -3858,7 +3901,7 @@ through dirty-set and patch-set execution before falling back to root rerender."
 
 ;;;###autoload
 (defun ebox-display-buffer (buffer-or-name node)
-  "Render NODE to BUFFER-OR-NAME and display the buffer with `pop-to-buffer'."
+  "Render NODE to BUFFER-OR-NAME through TP and display the buffer."
   (declare (indent 1))
   (delete-other-windows)
   (switch-to-buffer (ebox-render-to-buffer buffer-or-name node)))
@@ -3881,7 +3924,6 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-flex-item
     ebox-host-ref-bounds
     ebox-host-ref-position
-    ebox-pop-to-buffer
     ebox-region-ids
     ebox-region-update
     ebox-render
@@ -3902,7 +3944,6 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-selector-update-buffer
     ebox-spacer
     ebox-stack
-    ebox-switch-to-buffer
     ebox-update-selector
     ebox-wheel-scroll-down
     ebox-wheel-scroll-up)
@@ -3969,7 +4010,7 @@ through dirty-set and patch-set execution before falling back to root rerender."
 ;;                                → replace one runtime node logically
 ;;   ebox-candidate-replace-host-ref cand ref root &optional old-key new-key
 ;;                                → replace one semantic host boundary
-;;   ebox-display-buffer buf box   → render and display with pop-to-buffer
+;;   ebox-display-buffer buf box   → render through TP and display the buffer
 ;;   ebox-host-ref-position buf ref → first live position for :host-ref
 ;;   ebox-host-ref-bounds buf ref   → live (START . END) bounds for :host-ref
 ;;

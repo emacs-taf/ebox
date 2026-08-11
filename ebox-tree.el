@@ -10,8 +10,8 @@
 (require 'cl-lib)
 
 (require 'subr-x)
+(require 'ecss-selector)
 (require 'ebox-style)
-(require 'tp-style)
 
 (defconst ebox--default-display '(block flow)
   "Default CSS-like display for a plain Ebox box.")
@@ -432,8 +432,14 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
   "Child references excluded from node-local declarative signatures.")
 
 (defconst ebox-tree--excluded-source-keys
-  (append ebox-tree--runtime-source-keys ebox-tree--child-source-keys)
-  "Runtime and child keys excluded from node-local source comparison.")
+  (append ebox-tree--runtime-source-keys
+          ebox-tree--child-source-keys
+          '(:ebox-style-declarations :ebox-style-overrides
+            :ebox-computed-style :ebox-style-wrapper
+            :ebox-style-generated-wrapper))
+  "Non-rendering keys excluded from node-local source comparison.
+Cascade declarations and computed-style records are side state; their
+projected Ebox longhands carry the actual paint and layout consequences.")
 
 (defconst ebox-tree-metadata-source-keys
   '(:key :id :class :host-ref)
@@ -644,16 +650,20 @@ candidate runtime index agree."
           :selector-type-table type-table)))
 
 (defun ebox-tree-node-subject (node)
-  "Return a detached TP selector subject representing NODE."
-  (tp-subject-create
-   :type (ebox-tree-node-selector-type node)
+  "Return a detached ECSS selector subject representing NODE."
+  (ecss-subject-create
+   :type (ebox-tree-metadata-string (ebox-tree-node-selector-type node))
    :id (ebox-tree-node-id node)
    :classes (ebox-tree-node-classes node)
-   :attributes (ebox-tree-node-attributes node)
-   :state (ebox-tree-node-state node)))
+   :attributes
+   (mapcar (lambda (attribute)
+             (cons (substring (symbol-name (car attribute)) 1)
+                   (cdr attribute)))
+           (ebox-tree-node-attributes node))
+   :states (ebox-tree-node-state node)))
 
 (defun ebox-tree-subject-index (root)
-  "Return TP subjects and semantic node paths below ROOT in document order."
+  "Return ECSS subjects and semantic node paths below ROOT in document order."
   (let ((node-subject-table (make-hash-table :test #'eq))
         entries)
     (cl-labels
@@ -664,7 +674,7 @@ candidate runtime index agree."
                (puthash node subject node-subject-table)
                (push (list :node node :path current-path :subject subject)
                      entries)
-               (tp-subject-set-children
+               (ecss-subject-set-children
                 subject
                 (delq nil
                       (mapcar (lambda (child) (visit child current-path))
@@ -676,13 +686,13 @@ candidate runtime index agree."
               :node-subject-table node-subject-table)))))
 
 (defun ebox-tree-subject-for-path (path)
-  "Return a TP subject chain for the root-to-node Ebox PATH."
+  "Return an ECSS subject chain for the root-to-node Ebox PATH."
   (let (parent subject)
     (dolist (node path)
       (when (and (listp node) (not (stringp node)))
         (setq subject (ebox-tree-node-subject node))
         (when parent
-          (tp-subject-set-children parent (list subject)))
+          (ecss-subject-set-children parent (list subject)))
         (setq parent subject)))
     subject))
 

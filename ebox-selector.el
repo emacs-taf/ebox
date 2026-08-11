@@ -1,17 +1,17 @@
 ;;; ebox-selector.el --- CSS-like runtime selectors for Ebox -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Compiles CSS-like lookup syntax to TP structured selectors and adapts Ebox
-;; trees/runtime indexes to TP subjects.  Stable identity remains node ids,
+;; Delegates CSS-like lookup syntax and matching to ECSS, and adapts Ebox
+;; trees/runtime indexes to ECSS subjects.  Stable identity remains node ids,
 ;; region ids, and keys.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'ecss-selector)
 (require 'ebox-buffer-backend)
 (require 'ebox-tree)
-(require 'tp-style)
 (require 'tp-surface)
 
 (declare-function ebox--ensure-node-id "ebox" (node))
@@ -92,161 +92,14 @@
       (user-error "Ebox region handle is stale"))
     (cons buffer region-id)))
 
-(defun ebox-selector--identifier-char-p (char)
-  "Return non-nil when CHAR is accepted in a selector identifier."
-  (or (and (>= char ?a) (<= char ?z))
-      (and (>= char ?A) (<= char ?Z))
-      (and (>= char ?0) (<= char ?9))
-      (memq char '(?_ ?- ?:))))
-
-(defun ebox-selector--skip-space (selector pos)
-  "Return the next non-space position in SELECTOR after POS."
-  (let ((len (length selector)))
-    (while (and (< pos len)
-                (memq (aref selector pos) '(?\s ?\t ?\n ?\r)))
-      (setq pos (1+ pos)))
-    pos))
-
-(defun ebox-selector--read-identifier (selector pos)
-  "Read one selector identifier from SELECTOR at POS.
-Return a cons of (IDENTIFIER . NEXT-POS)."
-  (let ((start pos)
-        (len (length selector)))
-    (while (and (< pos len)
-                (ebox-selector--identifier-char-p (aref selector pos)))
-      (setq pos (1+ pos)))
-    (when (= pos start)
-      (user-error "ebox-selector: expected identifier at %d in %S"
-                  pos selector))
-    (cons (substring selector start pos) pos)))
-
-(defun ebox-selector--read-attr-value (selector pos)
-  "Read one attribute value from SELECTOR at POS.
-Return a cons of (VALUE . NEXT-POS)."
-  (let ((len (length selector)))
-    (if (and (< pos len) (= (aref selector pos) ?\"))
-        (let ((start (1+ pos)))
-          (setq pos start)
-          (while (and (< pos len)
-                      (/= (aref selector pos) ?\"))
-            (setq pos (1+ pos)))
-          (when (>= pos len)
-            (user-error "ebox-selector: unterminated attribute value in %S"
-                        selector))
-          (cons (substring selector start pos) (1+ pos)))
-      (ebox-selector--read-identifier selector pos))))
-
-(defun ebox-selector--compound-selector (type id classes attrs)
-  "Return one TP selector combining TYPE, ID, CLASSES, and ATTRS."
-  (let ((parts
-         (append
-          (when type (list (list :type type)))
-          (when id (list (list :id id)))
-          (mapcar (lambda (class) (list :class class))
-                  (nreverse classes))
-          (mapcar (lambda (attr) (list :attr (car attr) (cdr attr)))
-                  (nreverse attrs)))))
-    (if (= (length parts) 1)
-        (car parts)
-      (cons :and parts))))
-
-(defun ebox-selector--parse-attribute (selector pos attrs)
-  "Parse an attribute selector in SELECTOR at POS and push into ATTRS."
-  (let* ((name-read (ebox-selector--read-identifier selector (1+ pos)))
-         (name (car name-read))
-         (next (cdr name-read)))
-    (unless (and (< next (length selector))
-                 (= (aref selector next) ?=))
-      (user-error "ebox-selector: expected = after attribute at %d in %S"
-                  next selector))
-    (let* ((value-read (ebox-selector--read-attr-value selector (1+ next)))
-           (value (car value-read))
-           (end (cdr value-read)))
-      (unless (and (< end (length selector))
-                   (= (aref selector end) ?\]))
-        (user-error "ebox-selector: expected ] at %d in %S" end selector))
-      (list :attrs (cons (cons (intern (concat ":" name)) value)
-                         attrs)
-            :pos (1+ end)))))
-
-(defun ebox-selector--parse-simple (selector pos)
-  "Parse one simple selector from SELECTOR at POS.
-Return a cons of (SIMPLE-SELECTOR . NEXT-POS)."
-  (let ((len (length selector))
-        type id classes attrs)
-    (when (and (< pos len)
-               (ebox-selector--identifier-char-p (aref selector pos)))
-      (let ((read (ebox-selector--read-identifier selector pos)))
-        (setq type (intern (car read))
-              pos (cdr read))))
-    (while (and (< pos len)
-                (memq (aref selector pos) '(?. ?# ?\[)))
-      (pcase (aref selector pos)
-        (?.
-         (let ((read (ebox-selector--read-identifier selector (1+ pos))))
-           (push (car read) classes)
-           (setq pos (cdr read))))
-        (?#
-         (let ((read (ebox-selector--read-identifier selector (1+ pos))))
-           (setq id (car read)
-                 pos (cdr read))))
-        (?\[
-         (let* ((parsed (ebox-selector--parse-attribute selector pos attrs)))
-           (setq attrs (plist-get parsed :attrs)
-                 pos (plist-get parsed :pos))))))
-    (unless (or type id classes attrs)
-      (user-error "ebox-selector: expected selector at %d in %S"
-                  pos selector))
-    (cons (ebox-selector--compound-selector type id classes attrs) pos)))
-
-(defun ebox-selector--combinator (char)
-  "Return TP combinator for CHAR, or nil when CHAR is not a combinator."
-  (pcase char
-    (?> :child)
-    (?+ :adjacent)
-    (?~ :sibling)
-    (_ nil)))
-
-(defun ebox-selector--combine-sequence (sequence)
-  "Fold parsed selector SEQUENCE into one nested TP selector."
-  (let ((result (pop sequence)))
-    (while sequence
-      (let ((combinator (pop sequence))
-            (target (pop sequence)))
-        (unless target
-          (user-error "ebox-selector: combinator %S has no target" combinator))
-        (setq result (list combinator result target))))
-    result))
-
 ;;;###autoload
 (defun ebox-selector-parse (selector)
-  "Compile CSS-like SELECTOR into TP's structured selector AST."
-  (unless (and (stringp selector)
-               (> (length (string-trim selector)) 0))
-    (user-error "ebox-selector: selector must be a non-empty string"))
-  (let* ((pos (ebox-selector--skip-space selector 0))
-         (len (length selector))
-         sequence)
-    (while (< pos len)
-      (let ((read (ebox-selector--parse-simple selector pos)))
-        (push (car read) sequence)
-        (setq pos (cdr read)))
-      (let ((before-space pos))
-        (setq pos (ebox-selector--skip-space selector pos))
-        (cond
-         ((>= pos len))
-         ((ebox-selector--combinator (aref selector pos))
-          (push (ebox-selector--combinator (aref selector pos)) sequence)
-          (setq pos (ebox-selector--skip-space selector (1+ pos)))
-          (when (>= pos len)
-            (user-error "ebox-selector: combinator has no target in %S"
-                        selector)))
-         ((> pos before-space)
-          (push :descendant sequence))
-         (t
-          (user-error "ebox-selector: expected combinator at %d in %S"
-                      pos selector)))))
-    (ebox-selector--combine-sequence (nreverse sequence))))
+  "Compile CSS-like SELECTOR through the ECSS parser."
+  (condition-case error-data
+      (ecss-selector-parse selector)
+    (ecss-invalid-selector
+     (user-error "ebox-selector: invalid selector %S: %S"
+                 selector (cdr error-data)))))
 
 (defun ebox-selector--node-region-id (node)
   "Return NODE's editable box region id, or nil."
@@ -264,8 +117,8 @@ Return a cons of (SIMPLE-SELECTOR . NEXT-POS)."
 
 ;;;###autoload
 (defun ebox-selector-match-node-p (node selector)
-  "Return non-nil when NODE matches structured TP SELECTOR."
-  (tp-selector-match-p selector (ebox-tree-node-subject node)))
+  "Return non-nil when NODE matches structured ECSS SELECTOR."
+  (ecss-selector-match-p selector (ebox-tree-node-subject node)))
 
 (defun ebox-selector--match-handle (node path selector)
   "Return a selector match handle for NODE on PATH."
@@ -276,10 +129,10 @@ Return a cons of (SIMPLE-SELECTOR . NEXT-POS)."
         :selector selector))
 
 (defun ebox-selector--matching-subject-entries (root ast)
-  "Return semantic ROOT entries whose TP subjects match AST."
+  "Return semantic ROOT entries whose ECSS subjects match AST."
   (cl-remove-if-not
    (lambda (entry)
-     (tp-selector-match-p ast (plist-get entry :subject)))
+     (ecss-selector-match-p ast (plist-get entry :subject)))
    (plist-get (ebox-tree-subject-index root) :entries)))
 
 (defun ebox-selector--subject-entry-handle (entry selector)
@@ -322,7 +175,8 @@ Return a cons of (SIMPLE-SELECTOR . NEXT-POS)."
   "Return non-nil when AST contains a selector relationship."
   (pcase (car-safe ast)
     ((or :descendant :child :adjacent :sibling) t)
-    ((or :and :is :where :not)
+    (:has t)
+    ((or :and :list :is :where :not)
      (cl-some #'ebox-selector--relational-p (cdr ast)))
     (_ nil)))
 
@@ -332,8 +186,8 @@ Return a cons of (SIMPLE-SELECTOR . NEXT-POS)."
     (:descendant
      (and (ebox-selector--descendant-indexable-p (nth 1 ast))
           (ebox-selector--descendant-indexable-p (nth 2 ast))))
-    ((or :child :adjacent :sibling) nil)
-    ((or :and :is :where :not)
+    ((or :child :adjacent :sibling :has) nil)
+    ((or :and :list :is :where :not)
      (cl-every #'ebox-selector--descendant-indexable-p (cdr ast)))
     (_ t)))
 
@@ -374,18 +228,19 @@ Return a cons of (SIMPLE-SELECTOR . NEXT-POS)."
       (push (gethash class (ebox--buffer-selector-class-table buffer))
             candidates))
     (when type
-      (push (gethash type (ebox--buffer-selector-type-table buffer))
+      (push (gethash (if (stringp type) (intern type) type)
+                     (ebox--buffer-selector-type-table buffer))
             candidates))
     (when (or id classes type)
       (cons t (ebox-selector--shortest-candidates candidates)))))
 
 (defun ebox-selector--indexed-entry-matches-p (entry ast)
-  "Return non-nil when indexed ENTRY matches TP selector AST."
+  "Return non-nil when indexed ENTRY matches ECSS selector AST."
   (let ((subject
          (if (ebox-selector--relational-p ast)
              (ebox-tree-subject-for-path (cdr entry))
            (ebox-tree-node-subject (car entry)))))
-    (tp-selector-match-p ast subject)))
+    (ecss-selector-match-p ast subject)))
 
 (defun ebox-selector--entries-to-buffer-handles (entries selector buffer)
   "Return selector match handles for ENTRIES annotated with BUFFER."

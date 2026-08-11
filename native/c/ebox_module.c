@@ -20,6 +20,16 @@ typedef struct {
   size_t len;
 } ebox_native_bytes;
 
+typedef struct {
+  int64_t base;
+  int64_t hypothetical;
+  int64_t min_main;
+  int64_t max_main;
+  double grow;
+  double shrink;
+  bool max_known;
+} ebox_native_flex_item;
+
 typedef bool (*ebox_readiness_signal_fn)(int32_t fd);
 typedef void (*ebox_readiness_close_fn)(int32_t fd);
 
@@ -57,6 +67,13 @@ extern bool ebox_native_layout_ready(void);
 extern bool ebox_native_render_proof(const unsigned char *payload,
                                      size_t payload_len,
                                      ebox_native_bytes *output);
+extern bool ebox_native_flex_size_lines(const ebox_native_flex_item *items,
+                                        size_t item_count,
+                                        const size_t *line_offsets,
+                                        size_t line_count,
+                                        int64_t main_limit,
+                                        int64_t main_gap,
+                                        ebox_native_bytes *output);
 
 static emacs_value
 ebox_nil(emacs_env *env)
@@ -140,7 +157,7 @@ ebox_module_version(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   (void) nargs;
   (void) args;
   (void) data;
-  static const char version[] = "7:2:9";
+  static const char version[] = "8:3:9";
   return env->make_string(env, version, (ptrdiff_t) (sizeof version - 1));
 }
 
@@ -297,6 +314,125 @@ ebox_module_render_proof(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   if (!ok)
     return ebox_signal_native_error(env, output,
                                     "Native proof render failed");
+  emacs_value result = env->make_unibyte_string(
+    env, (const char *) output.data, (ptrdiff_t) output.len);
+  ebox_native_bytes_free(output);
+  return result;
+}
+
+static bool
+ebox_extract_flex_integer(emacs_env *env, emacs_value value, int64_t *output)
+{
+  *output = (int64_t) env->extract_integer(env, value);
+  return env->non_local_exit_check(env) == emacs_funcall_exit_return;
+}
+
+static bool
+ebox_extract_flex_float(emacs_env *env, emacs_value value, double *output)
+{
+  *output = env->extract_float(env, value);
+  return env->non_local_exit_check(env) == emacs_funcall_exit_return;
+}
+
+static emacs_value
+ebox_module_flex_size_lines(emacs_env *env, ptrdiff_t nargs,
+                            emacs_value *args, void *data)
+{
+  (void) nargs;
+  (void) data;
+  ptrdiff_t packed_size = env->vec_size(env, args[0]);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return ||
+      packed_size < 1) {
+    return ebox_nil(env);
+  }
+  int64_t line_count_value = 0;
+  if (!ebox_extract_flex_integer(env, env->vec_get(env, args[0], 0),
+                                 &line_count_value) ||
+      line_count_value < 0 || line_count_value > 2048) {
+    return ebox_nil(env);
+  }
+  size_t line_count = (size_t) line_count_value;
+  size_t *line_offsets = calloc(line_count + 1, sizeof *line_offsets);
+  ebox_native_flex_item *items = NULL;
+  size_t item_capacity = 0;
+  size_t item_count = 0;
+  ptrdiff_t cursor = 1;
+  bool valid = line_offsets != NULL;
+  for (size_t line = 0; valid && line < line_count; line++) {
+    int64_t line_length_value = 0;
+    if (cursor >= packed_size ||
+        !ebox_extract_flex_integer(env, env->vec_get(env, args[0], cursor++),
+                                   &line_length_value) ||
+        line_length_value < 0 || line_length_value > 8192) {
+      valid = false;
+      break;
+    }
+    size_t line_length = (size_t) line_length_value;
+    if (item_count > 8192 - line_length) {
+      valid = false;
+      break;
+    }
+    if (item_count + line_length > item_capacity) {
+      size_t next_capacity = item_count + line_length;
+      ebox_native_flex_item *next = realloc(
+        items, next_capacity * sizeof *items);
+      if (next == NULL) {
+        valid = false;
+        break;
+      }
+      items = next;
+      item_capacity = next_capacity;
+    }
+    line_offsets[line] = item_count;
+    for (size_t item = 0; item < line_length && valid; item++) {
+      ebox_native_flex_item *target = &items[item_count++];
+      if (cursor + 6 > packed_size ||
+          !ebox_extract_flex_integer(env, env->vec_get(env, args[0], cursor++),
+                                     &target->base) ||
+          !ebox_extract_flex_integer(env, env->vec_get(env, args[0], cursor++),
+                                     &target->hypothetical) ||
+          !ebox_extract_flex_integer(env, env->vec_get(env, args[0], cursor++),
+                                     &target->min_main)) {
+        valid = false;
+        break;
+      }
+      emacs_value max_value = env->vec_get(env, args[0], cursor++);
+      target->max_known = env->is_not_nil(env, max_value);
+      if (env->non_local_exit_check(env) != emacs_funcall_exit_return ||
+          (target->max_known &&
+           !ebox_extract_flex_integer(env, max_value, &target->max_main)) ||
+          !ebox_extract_flex_float(
+            env, env->vec_get(env, args[0], cursor++), &target->grow) ||
+          !ebox_extract_flex_float(
+            env, env->vec_get(env, args[0], cursor++), &target->shrink)) {
+        valid = false;
+        break;
+      }
+    }
+    line_offsets[line + 1] = item_count;
+  }
+  int64_t main_limit = 0;
+  int64_t main_gap = 0;
+  if (cursor != packed_size ||
+      !ebox_extract_flex_integer(env, args[1], &main_limit) ||
+      !ebox_extract_flex_integer(env, args[2], &main_gap)) {
+    valid = false;
+  }
+  if (!valid) {
+    free(items);
+    free(line_offsets);
+    return ebox_nil(env);
+  }
+  ebox_native_bytes output = {0};
+  bool ok = ebox_native_flex_size_lines(
+    items, item_count, line_offsets, line_count, main_limit, main_gap,
+    &output);
+  free(items);
+  free(line_offsets);
+  if (!ok || output.data == NULL) {
+    ebox_native_bytes_free(output);
+    return ebox_nil(env);
+  }
   emacs_value result = env->make_unibyte_string(
     env, (const char *) output.data, (ptrdiff_t) output.len);
   ebox_native_bytes_free(output);
@@ -466,6 +602,9 @@ ebox_module_init_impl(struct emacs_runtime *runtime)
       ebox_bind_function(env, "ebox-native--module-render-proof", 1, 1,
                          ebox_module_render_proof,
                          "Render one private native proof synchronously.") ||
+      ebox_bind_function(env, "ebox-native--module-flex-size-lines", 3, 3,
+                         ebox_module_flex_size_lines,
+                         "Calculate pure native Flex geometry lines.") ||
       ebox_bind_function(env, "ebox-native--module-confirm-frame", 4, 4,
                          ebox_module_confirm_frame,
                          "Confirm one published native layout frame.") ||

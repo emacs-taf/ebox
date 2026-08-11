@@ -55,6 +55,266 @@ impl NativeBytes {
     }
 }
 
+/// One already-normalized flex item crossing the pure geometry boundary.
+///
+/// Ebox owns the node identity, style cascade, display measurement, and
+/// rendering.  The native kernel receives only integer geometry facts and
+/// numeric distribution factors, then returns target main-axis sizes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct NativeFlexItem {
+    pub base: i64,
+    pub hypothetical: i64,
+    pub min_main: i64,
+    pub max_main: i64,
+    pub grow: f64,
+    pub shrink: f64,
+    pub max_known: bool,
+}
+
+const MAX_FLEX_ITEMS: usize = 8192;
+const MAX_FLEX_LINES: usize = 2048;
+
+fn flex_distribute(amount: i64, weights: &[f64]) -> Vec<i64> {
+    let amount = amount.max(0);
+    let total: f64 = weights.iter().copied().filter(|weight| *weight > 0.0).sum();
+    if amount == 0 || total <= 0.0 {
+        return vec![0; weights.len()];
+    }
+    let mut shares = weights
+        .iter()
+        .map(|weight| {
+            if *weight > 0.0 {
+                ((amount as f64 * *weight) / total).floor() as i64
+            } else {
+                0
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut remaining = amount - shares.iter().sum::<i64>();
+    while remaining > 0 {
+        for (share, weight) in shares.iter_mut().zip(weights.iter()) {
+            if remaining == 0 {
+                break;
+            }
+            if *weight > 0.0 {
+                *share += 1;
+                remaining -= 1;
+            }
+        }
+    }
+    shares
+}
+
+fn clamp_flex_main(size: i64, min_main: i64, max_main: Option<i64>) -> i64 {
+    let size = size.max(0);
+    let min_main = min_main.max(0);
+    let upper = max_main.unwrap_or(999_999_999).max(0);
+    min_main.max(upper.min(size))
+}
+
+fn flex_size_line(items: &[NativeFlexItem], main_limit: i64, main_gap: i64) -> Vec<i64> {
+    let count = items.len();
+    let gap_total = main_gap * (count.saturating_sub(1) as i64);
+    let available = main_limit - gap_total;
+    let mut targets = items
+        .iter()
+        .map(|item| item.hypothetical)
+        .collect::<Vec<_>>();
+    let hypothetical_total = items.iter().map(|item| item.hypothetical).sum::<i64>();
+    let grow = hypothetical_total < available;
+    let mut frozen = vec![false; count];
+
+    for (index, item) in items.iter().enumerate() {
+        let factor = if grow { item.grow } else { item.shrink };
+        targets[index] = item.base;
+        if factor <= 0.0
+            || (grow && item.base > item.hypothetical)
+            || (!grow && item.base < item.hypothetical)
+        {
+            targets[index] = item.hypothetical;
+            frozen[index] = true;
+        }
+    }
+
+    let initial_free = available
+        - items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                if frozen[index] {
+                    targets[index]
+                } else {
+                    item.base
+                }
+            })
+            .sum::<i64>();
+    loop {
+        let free = available
+            - items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    if frozen[index] {
+                        targets[index]
+                    } else {
+                        item.base
+                    }
+                })
+                .sum::<i64>();
+        let active = (0..count)
+            .filter(|index| !frozen[*index])
+            .collect::<Vec<_>>();
+        let weights = active
+            .iter()
+            .map(|index| {
+                let item = items[*index];
+                if grow {
+                    item.grow
+                } else {
+                    item.base as f64 * item.shrink
+                }
+            })
+            .collect::<Vec<_>>();
+        let weight_total: f64 = weights.iter().copied().sum();
+        let factor_total: f64 = active
+            .iter()
+            .map(|index| {
+                let item = items[*index];
+                if grow {
+                    item.grow
+                } else {
+                    item.shrink
+                }
+            })
+            .sum();
+        let effective_free = if factor_total > 0.0 && factor_total < 1.0 {
+            let partial = initial_free as f64 * factor_total;
+            if partial.abs() < (free as f64).abs() {
+                partial
+            } else {
+                free as f64
+            }
+        } else {
+            free as f64
+        };
+        if active.is_empty()
+            || weight_total <= 0.0
+            || (grow && effective_free < 0.0)
+            || (!grow && effective_free > 0.0)
+        {
+            break;
+        }
+
+        let deltas = flex_distribute(effective_free.abs().floor() as i64, &weights);
+        let mut min_violations = Vec::new();
+        let mut max_violations = Vec::new();
+        let mut total_violation = 0i64;
+        for (active_offset, index) in active.iter().enumerate() {
+            let item = items[*index];
+            let candidate = if grow {
+                item.base + deltas[active_offset]
+            } else {
+                item.base - deltas[active_offset]
+            };
+            let clamped = clamp_flex_main(
+                candidate,
+                item.min_main,
+                item.max_known.then_some(item.max_main),
+            );
+            let adjustment = clamped - candidate;
+            targets[*index] = clamped;
+            if adjustment > 0 {
+                min_violations.push(*index);
+            } else if adjustment < 0 {
+                max_violations.push(*index);
+            }
+            total_violation += adjustment;
+        }
+        if total_violation == 0 {
+            for index in active {
+                frozen[index] = true;
+            }
+        } else if total_violation > 0 {
+            let indices = if min_violations.is_empty() {
+                active
+            } else {
+                min_violations
+            };
+            for index in indices {
+                frozen[index] = true;
+            }
+        } else {
+            let indices = if max_violations.is_empty() {
+                active
+            } else {
+                max_violations
+            };
+            for index in indices {
+                frozen[index] = true;
+            }
+        }
+    }
+    targets
+}
+
+/// Calculate all flex line target sizes without touching Ebox state.
+///
+/// `line_offsets` contains `line_count + 1` offsets into ITEMS.  The output
+/// is a little-endian i64 stream whose values follow the input line order.
+#[no_mangle]
+pub unsafe extern "C" fn ebox_native_flex_size_lines(
+    items: *const NativeFlexItem,
+    item_count: usize,
+    line_offsets: *const usize,
+    line_count: usize,
+    main_limit: i64,
+    main_gap: i64,
+    output: *mut NativeBytes,
+) -> bool {
+    if output.is_null()
+        || (item_count > 0 && items.is_null())
+        || (line_count > 0 && line_offsets.is_null())
+        || item_count > MAX_FLEX_ITEMS
+        || line_count > MAX_FLEX_LINES
+        || main_limit < -MAX_LAYOUT_DIMENSION
+        || main_limit > MAX_LAYOUT_DIMENSION
+        || main_gap < 0
+        || main_gap > MAX_LAYOUT_DIMENSION
+    {
+        set_error(
+            output,
+            "Native flex geometry input is outside the bounded contract",
+        );
+        return false;
+    }
+    let items = slice::from_raw_parts(items, item_count);
+    let offsets = slice::from_raw_parts(line_offsets, line_count.saturating_add(1));
+    if offsets.first().copied().unwrap_or(0) != 0
+        || offsets.last().copied().unwrap_or(0) != item_count
+        || offsets.windows(2).any(|window| window[0] > window[1])
+    {
+        set_error(output, "Native flex geometry line offsets are invalid");
+        return false;
+    }
+    if items.iter().any(|item| {
+        !item.grow.is_finite() || !item.shrink.is_finite() || item.grow < 0.0 || item.shrink < 0.0
+    }) {
+        set_error(output, "Native flex geometry factors are invalid");
+        return false;
+    }
+    let mut bytes = Vec::with_capacity(item_count.saturating_mul(8));
+    for window in offsets.windows(2).take(line_count) {
+        for target in flex_size_line(&items[window[0]..window[1]], main_limit, main_gap) {
+            bytes.extend_from_slice(&target.to_le_bytes());
+        }
+    }
+    unsafe {
+        *output = NativeBytes::from_vec(bytes);
+    }
+    true
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ControlBatch {

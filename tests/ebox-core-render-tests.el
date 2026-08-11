@@ -284,6 +284,19 @@
              face))
    (t nil)))
 
+(defun ebox-test--effective-face-value (face key)
+  "Return the first anonymous FACE value declared for KEY."
+  (cond
+   ((null face) nil)
+   ((and (listp face) (keywordp (car face)))
+    (and (plist-member face key) (plist-get face key)))
+   ((listp face)
+    (cl-loop for item in face
+             when (and (listp item)
+                       (keywordp (car item))
+                       (plist-member item key))
+             return (plist-get item key)))))
+
 (defun ebox-test--face-visual-attributes (face)
   "Return FACE attributes normalized by Emacs anonymous-face precedence."
   (let ((entries (if (and (listp face) (not (keywordp (car-safe face))))
@@ -413,6 +426,305 @@
     (should (ebox-test--face-has-key-value-p
              (get-text-property 0 'face (nth 2 lines))
              :background "#29364A"))))
+
+(ert-deftest ebox-production-render-consumes-isolated-ecss-cascade ()
+  "Ebox rules should reach the real render path through ECSS cascade."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+    (ebox-style-add-rule
+     ".card" '(:color "#F8FAFC" :bgcolor "#1E293B")
+     :layer 'components)
+    (let* ((node (ebox-create :class 'card :content "Cascade" :width '(96)))
+           (face (ebox-test--first-content-face (ebox-render node))))
+      (should (ebox-test--face-has-key-value-p
+               face :foreground "#F8FAFC"))
+      (should (ebox-test--face-has-key-value-p
+               face :background "#1E293B")))))
+
+(ert-deftest ebox-ecss-value-resolver-uses-tp-computed-contract ()
+  "ECSS should resolve tagged TP values while preserving literal functions."
+  (let ((calls 0)
+        (literal (lambda () 'literal)))
+    (should
+     (= (plist-get
+         (ebox-style-compute
+          (list :font-height
+                (tp-computed (lambda () (cl-incf calls) 1.25))))
+         :font-height)
+        1.25))
+    (should (= calls 1))
+    (should
+     (eq (plist-get (ebox-style-compute (list :font-height literal))
+                    :font-height)
+         literal))))
+
+(ert-deftest ebox-style-context-reads-each-ecss-snapshot-once ()
+  "Style projection should not repeatedly copy one computed ECSS snapshot."
+  (let* ((style
+          (ebox-style-compute-subject
+           (ecss-subject-create :type "box")
+           (ebox-style-compile-declarations
+            '(:width (120) :padding (1 (8)) :bgcolor "#1E293B"))))
+         (original-values (symbol-function 'ecss-computed-style-values))
+         (original-active
+          (symbol-function 'ecss-computed-style-active-properties))
+         (original-specified
+          (symbol-function 'ecss-computed-style-specified-properties))
+         (original-provenance
+          (symbol-function 'ecss-computed-style-provenance))
+         (values-reads 0)
+         (active-reads 0)
+         (specified-reads 0)
+         (provenance-reads 0))
+    (cl-letf (((symbol-function 'ecss-computed-style-values)
+               (lambda (computed)
+                 (cl-incf values-reads)
+                 (funcall original-values computed)))
+              ((symbol-function 'ecss-computed-style-active-properties)
+               (lambda (computed)
+                 (cl-incf active-reads)
+                 (funcall original-active computed)))
+              ((symbol-function 'ecss-computed-style-specified-properties)
+               (lambda (computed)
+                 (cl-incf specified-reads)
+                 (funcall original-specified computed)))
+              ((symbol-function 'ecss-computed-style-provenance)
+               (lambda (computed)
+                 (cl-incf provenance-reads)
+                 (funcall original-provenance computed))))
+      (should (ebox-style--context-values style 'box t)))
+    (should (= values-reads 1))
+    (should (= active-reads 1))
+    (should (= specified-reads 1))
+    (should (= provenance-reads 0))))
+
+(ert-deftest ebox-style-apply-computed-reuses-one-ecss-snapshot ()
+  "One computed style projection should reuse its ECSS snapshot."
+  (let* ((style
+          (ebox-style-compute-subject
+           (ecss-subject-create :type "flex")
+           (ebox-style-compile-declarations
+            '(:width (120) :flex-direction row :color "#F8FAFC"))))
+         (node (list :ebox-type 'flex :raw-props nil :props nil))
+         (original-values (symbol-function 'ecss-computed-style-values))
+         (original-active
+          (symbol-function 'ecss-computed-style-active-properties))
+         (original-specified
+          (symbol-function 'ecss-computed-style-specified-properties))
+         (values-reads 0)
+         (active-reads 0)
+         (specified-reads 0))
+    (cl-letf (((symbol-function 'ecss-computed-style-values)
+               (lambda (computed)
+                 (cl-incf values-reads)
+                 (funcall original-values computed)))
+              ((symbol-function 'ecss-computed-style-active-properties)
+               (lambda (computed)
+                 (cl-incf active-reads)
+                 (funcall original-active computed)))
+              ((symbol-function 'ecss-computed-style-specified-properties)
+               (lambda (computed)
+                 (cl-incf specified-reads)
+                 (funcall original-specified computed))))
+      (ebox-style-apply-computed node style))
+    (should (= values-reads 1))
+    (should (= active-reads 1))
+    (should (= specified-reads 1))))
+
+(ert-deftest ebox-cascade-inherits-color-but-honors-explicit-nil ()
+  "A child nil color should block inheritance without inheriting background."
+  (ebox-test--reset-runtime-state)
+  (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
+         (child (ebox-create :id 'child :content "Child" :color nil
+                             :width '(96)))
+         (root (ebox-create :class 'panel :ebox-content-node child
+                            :wrap-mode nil :width '(96))))
+    (ebox-style-add-rule
+     ".panel" '(:color "#E2E8F0" :bgcolor "#0F172A")
+     :layer 'components)
+    (ebox-test--with-rendered-buffer root
+      (let* ((runtime-root (ebox-test--runtime-root (current-buffer)))
+             (runtime-child (plist-get runtime-root :ebox-content-node))
+             (child-style (plist-get runtime-child :ebox-computed-style))
+             (values (ecss-computed-style-values child-style))
+             (active (ecss-computed-style-active-properties child-style)))
+        (should (memq 'ebox/color active))
+        (should (null (plist-get values 'ebox/color)))
+        (should (null (plist-get values 'ebox/background-color)))
+        (should-not (memq 'ebox/background-color active))
+        (goto-char (point-min))
+        (search-forward "Child")
+        (let ((face (get-text-property (match-beginning 0) 'face)))
+          (should (equal (car face) '(:inherit default))))))))
+
+(ert-deftest ebox-flex-layout-properties-come-from-ecss-cascade ()
+  "An ECSS rule should determine a Flex container's actual main axis."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+    (ebox-style-add-rule
+     "flex" '(:flex-direction column :width (96))
+     :layer 'layout)
+    (let ((rendered
+           (substring-no-properties
+            (ebox-render
+             (ebox-flex
+              (ebox-create :content "A")
+              (ebox-create :content "B"))))))
+      (should (equal (mapcar #'string-trim-right
+                             (split-string rendered "\n"))
+                     '("A" "B"))))))
+
+(ert-deftest ebox-cascade-layers-inline-values-and-reset-use-one-winner ()
+  "Production rendering should honor ECSS layers, inline values, and reset."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+    (ebox-style-add-rule ".card" '(:color "#94A3B8") :layer 'base)
+    (ebox-style-add-rule ".card" '(:color "#38BDF8") :layer 'components)
+    (let* ((rule-node (ebox-create :class 'card :content "Rule"))
+           (inline-node
+            (ebox-create :class 'card :content "Inline" :color "#F8FAFC")))
+      (should
+       (equal (ebox-test--effective-face-value
+               (ebox-test--first-content-face (ebox-render rule-node))
+               :foreground)
+              "#38BDF8"))
+      (should
+       (equal (ebox-test--effective-face-value
+               (ebox-test--first-content-face (ebox-render inline-node))
+               :foreground)
+              "#F8FAFC"))
+      (ebox-style-reset-rules)
+      (should-not
+       (ebox-test--face-has-key-p
+        (ebox-test--first-content-face (ebox-render rule-node))
+        :foreground)))))
+
+(ert-deftest ebox-grid-container-and-item-properties-come-from-ecss-cascade ()
+  "Grid container and item rules should reach the production runtime tree."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+    (ebox-style-add-rule
+     "grid" '(:grid-template-columns ((40) (40)) :column-gap (4))
+     :layer 'layout)
+    (ebox-style-add-rule ".placed" '(:grid-column 2) :layer 'layout)
+    (ebox-test--with-rendered-buffer
+        (ebox-grid
+         (ebox-create :class 'placed :content "Placed")
+         (ebox-create :content "Auto"))
+      (let* ((root (ebox-test--runtime-root (current-buffer)))
+             (placed (car (plist-get root :children))))
+        (should (equal (plist-get (plist-get root :props)
+                                  :grid-template-columns)
+                       '((40) (40))))
+        (should (equal (plist-get (plist-get root :props) :grid-column-gap)
+                       '(4)))
+        (should (= (plist-get placed :grid-column) 2))))))
+
+(ert-deftest ebox-font-cascade-inherits-overrides-and-precedes-measurement ()
+  "Font computed values should reach child text before pixel measurement."
+  (ebox-test--reset-runtime-state)
+  (let* ((child
+          (ebox-create :id 'child :content "MMMM"
+                       :font-family "Child Family"))
+         (root
+          (ebox-create :ebox-content-node child :wrap-mode nil
+                       :font-family "Parent Family"
+                       :font-height 1.25 :font-weight 'bold))
+         measured-face)
+    (cl-letf (((symbol-function 'ebox--string-pixel-width)
+               (lambda (string)
+                 (when (string-match-p "MMMM" (substring-no-properties string))
+                   (setq measured-face (get-text-property 0 'face string)))
+                 40)))
+      (ebox-test--with-rendered-buffer root
+        (let* ((runtime-root (ebox-test--runtime-root (current-buffer)))
+               (runtime-child (plist-get runtime-root :ebox-content-node))
+               (style (plist-get runtime-child :ebox-computed-style))
+               (values (ecss-computed-style-values style))
+               (face (ebox-test--first-content-face (buffer-string))))
+          (should (equal (plist-get values 'ebox/font-family) "Child Family"))
+          (should (= (plist-get values 'ebox/font-height) 1.25))
+          (should (eq (plist-get values 'ebox/font-weight) 'bold))
+          (should
+           (equal (ebox-test--effective-face-value face :family)
+                  "Child Family"))
+          (should (= (ebox-test--effective-face-value face :height) 1.25))
+          (should (eq (ebox-test--effective-face-value face :weight) 'bold)))))
+    (should measured-face)
+    (should
+     (equal (ebox-test--effective-face-value measured-face :family)
+            "Child Family"))
+    (should (= (ebox-test--effective-face-value measured-face :height) 1.25))))
+
+(ert-deftest ebox-column-background-owns-blank-lines-with-child-override ()
+  "A column background should fill its blank lines without hiding child paint."
+  (ebox-test--reset-runtime-state)
+  (let* ((parent "#0F172A")
+         (child "#1D4ED8")
+         (rendered
+          (ebox-render
+           (ebox-build
+            `(column :width (120) :height 5 :padding-block 1
+              :bgcolor ,parent
+              (box :width (120) :height 1 :margin-bottom 1
+               :bgcolor ,child "Child")))))
+         (lines (ebox-string-lines rendered)))
+    (should (= (length lines) 5))
+    (dolist (line lines)
+      (should
+       (ebox-test--face-has-key-value-p
+        (get-text-property 0 'face line) :background parent)))
+    (let ((child-line
+           (cl-find-if
+            (lambda (line)
+              (string-match-p "Child" (substring-no-properties line)))
+            lines))
+          (blank-line
+           (cl-find-if
+            (lambda (line)
+              (and (string-blank-p (substring-no-properties line))
+                   (equal (ebox-test--effective-face-value
+                           (get-text-property 0 'face line) :background)
+                          parent)))
+            lines)))
+      (should child-line)
+      (should blank-line)
+      (should
+       (equal (ebox-test--effective-face-value
+               (get-text-property 0 'face child-line) :background)
+              child)))))
+
+(ert-deftest ebox-paint-only-update-skips-measurement-flex-and-grid ()
+  "A pure paint change should not recompute spatial layout."
+  (ebox-test--reset-runtime-state)
+  (let* ((target
+          (ebox-create :id 'target :content "Paint" :width '(60)
+                       :color "#E2E8F0" :bgcolor "#1E293B"))
+         (root
+          (ebox-flex
+           :width '(160)
+           (ebox-grid :grid-template-columns '((60)) target))))
+    (ebox-test--with-rendered-buffer root
+      (let ((handle (ebox-region-resolve (current-buffer) 'target)))
+        (cl-letf (((symbol-function 'ebox--string-pixel-width)
+                   (lambda (&rest _)
+                     (error "Paint update measured text")))
+                  ((symbol-function 'ebox--render-flex)
+                   (lambda (&rest _)
+                     (error "Paint update recomputed Flex")))
+                  ((symbol-function 'ebox--render-grid)
+                   (lambda (&rest _)
+                     (error "Paint update recomputed Grid"))))
+          (ebox-region-update handle :bgcolor "#334155"))
+        (goto-char (point-min))
+        (search-forward "Paint")
+        (should
+         (equal (ebox-test--effective-face-value
+                 (get-text-property (match-beginning 0) 'face)
+                 :background)
+                "#334155"))
+        (should (eq (plist-get (ebox-test--buffer-update-report) :strategy)
+                    'paint-patch))))))
 
 (ert-deftest ebox-region-ids-assigns-stable-ids-before-render ()
   (ebox-test--reset-runtime-state)
@@ -3573,6 +3885,25 @@
      (equal (ebox--render-cache-node-signature left)
             (ebox--render-cache-node-signature right)))))
 
+(ert-deftest ebox-render-cache-probe-reuses-first-render-output ()
+  "The first cache probe should retain the identity used by its output."
+  (ebox-test--reset-runtime-state)
+  (let* ((node (ebox-create :content "Stable" :width 80))
+         (ebox--surface-materialization-active t)
+         (ebox--render-cache-table (make-hash-table :test 'equal))
+         (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
+         (ebox--box-content-render-cache (make-hash-table :test 'eq))
+         (ebox--region-box-table (make-hash-table :test 'equal))
+         (ebox--viewport-dependent-node-ids-cache
+          (make-hash-table :test 'eq))
+         (ebox--viewport-dependent-subtree-cache
+          (make-hash-table :test 'eq))
+         (first (ebox--render-with-cache node))
+         (probe (ebox--render-cache-probe node)))
+    (should (plist-member probe :rendered))
+    (should (equal-including-properties first
+                                        (plist-get probe :rendered)))))
+
 (ert-deftest ebox-render-transaction-snapshots-display-signature ()
   "One render transaction should sample its display signature once."
   (ebox-test--reset-runtime-state)
@@ -3931,6 +4262,88 @@
       (setq fast (ebox-render box)))
     (should (= fast-path-calls 1))
     (should (equal-including-properties fast generic))))
+
+(ert-deftest ebox-flat-preformatted-formatted-string-fast-path-is-exact ()
+  "One-pass formatted strings should preserve generic chrome and ownership."
+  (ebox-test--reset-runtime-state)
+  (let* ((box
+          (ebox-create
+           :content "Alpha beta gamma delta" :width '(88) :wrap-mode 'word
+           :text-align 'center :region-id 'formatted-wrapper
+           :padding-left-pixel 4 :padding-right-pixel 6
+           :border-left-pixel 1 :border-left-color "#AA0000"
+           :border-right-pixel 2 :border-right-color "#00AA00"
+           :color "#111111" :bgcolor "#EEEEEE"))
+         (fast-path-calls 0)
+         (original
+          (symbol-function 'ebox--window-render-flat-wrapper-chunk-lines))
+         generic fast)
+    (let ((ebox--flat-preformatted-box-fast-path-disabled t))
+      (setq generic (ebox-render box)))
+    (clrhash ebox--region-box-table)
+    (clrhash ebox--scroll-global-state)
+    (cl-letf (((symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)
+               (lambda (&rest arguments)
+                 (cl-incf fast-path-calls)
+                 (apply original arguments))))
+      (setq fast (ebox-render box)))
+    (should (= fast-path-calls 1))
+    (should (equal-including-properties fast generic))))
+
+(ert-deftest ebox-flat-preformatted-string-proves-width-before-reuse ()
+  "Formatted string reuse must not publish an unproven uniform width."
+  (ebox-test--reset-runtime-state)
+  (let* ((child (ebox-create :content "This content must wrap" :width '(5)
+                             :wrap-mode nil :region-id 'overflowing-child))
+         (parent (ebox-create :width '(5) :wrap-mode 'word
+                              :region-id 'wrapping-parent
+                              :ebox-content-node child))
+         generic fast)
+    (let ((ebox--flat-preformatted-box-fast-path-disabled t))
+      (setq generic (ebox-render parent)))
+    (clrhash ebox--rendered-uniform-width-table)
+    (clrhash ebox--region-box-table)
+    (let ((ebox--flat-preformatted-box-fast-path-disabled nil))
+      (setq fast (ebox-render parent)))
+    (should (equal-including-properties fast generic))
+    (should (= (ebox-string-height fast) 5))))
+
+(ert-deftest ebox-flat-preformatted-fast-path-keeps-intrinsic-scroll-state ()
+  "Intrinsic flat rendering must not clear the published scroll state."
+  (ebox-test--reset-runtime-state)
+  (let* ((box (ebox-create :content "" :width '(40) :wrap-mode nil
+                           :region-id 'intrinsic-wrapper))
+         (content (ebox-pixel-space 40))
+         (state (list :scroll-offset 0 :sentinel t))
+         region-id)
+    (plist-put box :content content)
+    (plist-put box :ebox-content-width-exact-p t)
+    (setq region-id (ebox--ensure-region-id box))
+    (puthash region-id state ebox--scroll-global-state)
+    (let ((ebox--intrinsic-layout-measurement t))
+      (ebox-render box))
+    (should (eq (gethash region-id ebox--scroll-global-state) state))))
+
+(ert-deftest ebox-transparent-preformatted-fast-path-keeps-intrinsic-scroll-state ()
+  "Intrinsic transparent rendering must not clear the published scroll state."
+  (ebox-test--reset-runtime-state)
+  (let* ((child (ebox-create :content "" :width '(40) :wrap-mode nil
+                             :region-id 'transparent-child))
+         (parent (ebox-create :content "" :width '(40) :wrap-mode nil
+                              :region-id 'transparent-parent
+                              :ebox-content-node child))
+         (content (ebox-pixel-space 40))
+         (state (list :scroll-offset 0 :sentinel t))
+         region-id)
+    (plist-put child :content content)
+    (plist-put child :ebox-content-width-exact-p t)
+    (ebox-render parent)
+    (clrhash ebox--region-box-table)
+    (setq region-id (ebox--ensure-region-id parent))
+    (puthash region-id state ebox--scroll-global-state)
+    (let ((ebox--intrinsic-layout-measurement t))
+      (ebox-render parent))
+    (should (eq (gethash region-id ebox--scroll-global-state) state))))
 
 (ert-deftest ebox-flat-preformatted-fixed-hidden-box-fast-path-is-exact ()
   "Exact fixed-height hidden wrappers should preserve generic output."
@@ -4438,6 +4851,45 @@
             (forward-char 1)))
         (should (ebox-test--face-has-key-value-p
                  bottom-face :underline '(:position t :color "blue")))))))
+
+(ert-deftest ebox-paint-projection-keeps-old-fragment-metadata-immutable ()
+  "Paint projection should not mutate the previous state's fragment metadata."
+  (ebox-test--reset-runtime-state)
+  (let* ((layout (ebox-build
+                  '(flex :flex-flow (row wrap) :column-gap (12)
+                    :padding (0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
+                    (column
+                     (box :id left :content "Left" :width (120)
+                          :padding (0 (8)) :border "#D97757"
+                          :border-bottom-p nil)
+                     (box :content "Body" :width (120)
+                          :padding (0 (8)) :border "#D97757"
+                          :border-top-p nil))
+                    (column
+                     (box :content "Right" :width (120)
+                          :padding (0 (8)) :border "#5E7F6A"
+                          :border-bottom-p nil)
+                     (box :content "Body" :width (120)
+                          :padding (0 (8)) :border "#5E7F6A"
+                          :border-top-p nil)))))
+         (left-id (plist-get
+                   (car (ebox-selector-query-all layout "#left"))
+                   :region-id)))
+    (ebox-test--with-rendered-buffer layout
+      (let* ((old-state (ebox--buffer-render-state (current-buffer)))
+             (old-fragments (plist-get old-state :surface-fragments))
+             (old-metadata (copy-tree old-fragments)))
+        (save-restriction
+          (goto-char (1+ (point-min)))
+          (narrow-to-region (point) (point-max))
+          (ebox-test--region-update left-id
+                                    :border-bottom-p t
+                                    :border-bottom-color "blue"))
+        (should (equal old-metadata
+                       (plist-get old-state :surface-fragments)))
+        (should (cl-every (lambda (fragment)
+                            (not (memq :text fragment)))
+                          old-fragments))))))
 
 (ert-deftest ebox-horizontal-border-removal-preserves-other-border-colors ()
   "Removing top/bottom border surfaces must not corrupt other border faces."
@@ -6757,21 +7209,32 @@
      (ebox-render box) "#abcdef" "#123456")))
 
 (ert-deftest ebox-region-update-refreshes-visible-overflow-foreground ()
-  "Color updates should refresh visible overflow without owning its suffix."
+  "Color updates should add, replace, and remove visible overflow paint."
   (ebox-test--reset-runtime-state)
   (let* ((box (ebox-create :content "A\nB\nC"
                            :width '(40)
                            :height 1
                            :overflow 'visible
-                           :color "#abcdef"
                            :bgcolor "#123456"
                            :padding-inline '(6)
                            :margin-inline '(4)))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
+      (ebox-test--region-update region-id :color "#abcdef")
+      (ebox-test--assert-visible-overflow-paint
+       (buffer-string) "#abcdef" "#123456")
       (ebox-test--region-update region-id :color "#fedcba")
       (ebox-test--assert-visible-overflow-paint
-       (buffer-string) "#fedcba" "#123456"))))
+       (buffer-string) "#fedcba" "#123456")
+      (ebox-test--region-update region-id :color nil)
+      (cl-loop for line in (ebox-string-lines (buffer-string))
+               for glyph in '(?A ?B ?C)
+               for glyph-pos = (cl-position glyph line)
+               do (should (integerp glyph-pos))
+               do (should-not
+                   (ebox-test--face-has-key-p
+                    (get-text-property glyph-pos 'face line)
+                    :foreground))))))
 
 (ert-deftest ebox-owner-rerender-keeps-visible-overflow-unowned ()
   "Owner rerenders should not restore box ownership to visible overflow."
@@ -12821,12 +13284,15 @@
              (box-before (copy-tree box))
              (text-before (buffer-string)))
         (ebox-test--set-buffer-update-report buffer report-before)
-        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
-                   (lambda (&rest _)
-                     (error "Injected rerender failure"))))
+        (let ((failure (lambda (&rest _)
+                         (error "Injected rerender failure"))))
+          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                     failure)
+                    ((symbol-function 'ebox-surface--render-candidate-node)
+                     failure))
           (should-error
            (ebox-test--region-update region-id :content "after")
-           :type 'error))
+           :type 'error)))
         (should (equal box box-before))
         (should (equal-including-properties (buffer-string) text-before))
         (should (eq (ebox-buffer-update-report buffer) report-before))))))

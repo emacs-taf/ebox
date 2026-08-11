@@ -4,9 +4,10 @@ Ebox is a standalone, pixel-precise box and layout engine for Emacs. It provides
 
 ## Install and use
 
-Install TP first, then install Ebox through a package manager so its declared dependency is resolved. For sibling source checkouts, place both directories on `load-path`:
+ECSS and TP are independent packages and may be installed in either order. Install both before Ebox, or let a package manager resolve Ebox's two declared dependencies. For sibling source checkouts, place all three directories on `load-path`:
 
 ```elisp
+(add-to-list 'load-path "/path/to/github/ecss")
 (add-to-list 'load-path "/path/to/github/tp")
 (add-to-list 'load-path "/path/to/github/ebox")
 (require 'ebox)
@@ -21,9 +22,9 @@ Install TP first, then install Ebox through a package manager so its declared de
                :bgcolor "#F4F6FB")))
 ```
 
-The public model is a tree of Ebox nodes. `ebox-create` builds a leaf or wrapper node; `ebox-column`, `ebox-row`, `ebox-flex`, and `ebox-grid` compose nodes; `ebox-render` materializes propertized text through an ephemeral TP surface; `ebox-render-to-buffer` mounts a retained TP surface; and `ebox-commit` atomically updates that surface from a fresh root tree. Ebox copies declarative input before assigning runtime identity, so one source tree may be mounted in multiple buffers without transferring ownership.
+The public model is a tree of Ebox nodes. `ebox-create` builds a leaf or wrapper node; `ebox-column`, `ebox-row`, `ebox-flex`, and `ebox-grid` compose nodes; `ebox-render` materializes propertized text through an ephemeral TP surface; `ebox-render-to-buffer` mounts a retained TP surface; `ebox-display-buffer` displays that same retained-surface path; and `ebox-commit` atomically updates the mount from a fresh root tree. Ebox copies declarative input before assigning runtime identity, so one source tree may be mounted in multiple buffers without transferring ownership. It exposes no separate public macro that erases a live buffer and evaluates arbitrary body forms.
 
-CSS-like selector strings are compiled to TP's structured selector AST. Ebox supplies logical node relations and indexed candidates; TP is the only selector matcher for tree queries, rendered-buffer queries, and later cascade rules.
+CSS-like selector strings are compiled to ECSS's structured selector AST. Ebox supplies logical node relations and indexed candidates; ECSS is the only selector matcher and cascade engine for tree queries, rendered-buffer queries, and style rules.
 
 ## What belongs here
 
@@ -44,9 +45,9 @@ ETAF belongs in the sibling package. Install it separately when you need the uni
 | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Formatting contexts and layout algorithms. |
 | `ebox-surface.el` | Ebox candidate projection plus TP surface mount/update and atomic Ebox runtime-state participation. |
 | `ebox-buffer-backend.el`, `ebox-incremental.el` | Layout dirty planning, marker indexes, and specialized local update paths. |
-| `ebox-dsl.el`, `ebox-selector.el` | Standalone DSL and tree/runtime queries. |
+| `ebox-dsl.el`, `ebox-selector.el` | Standalone DSL and ECSS-backed tree/runtime queries. |
 | `ebox-native-reflow.el`, `native/` | Optional native reflow boundary. |
-| `examples/`, `tests/` | Ebox-only examples and regression tests. |
+| `tests/` | Ebox-only regression and contract tests. |
 | `docs/user/`, `docs/maintainer/` | Long-lived English and Chinese documentation. |
 
 ## Verification
@@ -58,6 +59,6 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make native-rust-tests
 ```
 
-Run the smallest focused target first (`make grid-tests`, `make surface-tests`, `make dsl-tests`, or `make visual-check-tests`), then run `make check` for shared rendering or public API changes. A sibling TP checkout is found at `../tp` by default; override `TP_DIR` when it lives elsewhere.
+Run the smallest focused target first (`make grid-tests`, `make surface-tests`, `make dsl-tests`, or `make visual-check-tests`), then run `make check` for shared rendering or public API changes. Sibling ECSS and TP checkouts are found at `../new-architecture/ecss` and `../tp` by default; override `ECSS_DIR` or `TP_DIR` when they live elsewhere.
 
 Read the [Ebox user guide](docs/user/ebox-user-guide.en.md) for public construction examples and the [current implementation reference](docs/maintainer/ebox-current-implementation-reference.en.md) for ownership boundaries and invariants.

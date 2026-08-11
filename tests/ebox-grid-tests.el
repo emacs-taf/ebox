@@ -153,7 +153,7 @@
                4))))
 
 (ert-deftest ebox-grid-validates-flow-and-spans ()
-  "Invalid flow and non-positive spans should fail at render time."
+  "Invalid flow and non-positive spans should be rejected."
   (should-error
    (ebox-render
     (ebox-grid :grid-auto-flow 'diagonal (ebox-create :content "A"))))
@@ -165,6 +165,18 @@
    (ebox-render
     (ebox-grid
      (ebox-grid-item (ebox-create :content "A") :grid-column 0)))))
+
+(ert-deftest ebox-grid-rejects-invalid-ecss-placement-before-layout ()
+  "ECSS rules should reject invalid Grid placement before layout runs."
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+    (dolist (declarations
+             '((:grid-column-span 0)
+               (:grid-row-span 0)
+               (:grid-column 0)
+               (:grid-row (1 :span 0))))
+      (should-error (ebox-style-add-rule ".invalid" declarations)))
+    (dolist (placement '(1 (1) (1 :span 2) (1 3)))
+      (should (ebox-style-add-rule ".valid" (list :grid-column placement))))))
 
 (ert-deftest ebox-grid-region-update-reflows-grid-child ()
   "Grid children should retain region updates through buffer rendering."

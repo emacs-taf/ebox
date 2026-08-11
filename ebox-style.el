@@ -7,99 +7,234 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
+(require 'ecss)
+(require 'tp-style)
 
-(cl-defstruct (ebox-style-property
-               (:constructor ebox-style-property-create))
-  name aliases initial inherited group parser compute dirty-kind signature
-  backend-mapper)
+(defvar ebox--longhand)
+(declare-function ebox-selector-parse "ebox-selector" (selector))
+(declare-function ebox-create "ebox" (&rest plist))
+(declare-function ebox--flex-normalize-container-props
+                  "ebox-flex" (props))
 
 (defconst ebox-style--border-styles
   '(none hidden dotted dashed solid double groove ridge inset outset)
   "Valid CSS border-style keywords accepted by Ebox style parsing.")
 
-(defun ebox-style--property-definitions ()
-  "Return registered CSS-like property definitions."
-  (list
-   (ebox-style-property-create
-    :name :color :group 'paint :dirty-kind 'paint :signature 'paint)
-   (ebox-style-property-create
-    :name :background-color :aliases '(:bgcolor)
-    :group 'paint :dirty-kind 'paint :signature 'paint)
-   (ebox-style-property-create
-    :name :border-color :group 'paint :dirty-kind 'paint :signature 'paint)
-   (ebox-style-property-create
-    :name :border-width :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)
-   (ebox-style-property-create
-    :name :padding-block-start :aliases '(:padding-top)
-    :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :padding-inline-end :aliases '(:padding-right)
-    :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :padding-block-end :aliases '(:padding-bottom)
-    :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :padding-inline-start :aliases '(:padding-left)
-    :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :margin-block-start :aliases '(:margin-top)
-    :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :margin-inline-end :aliases '(:margin-right)
-    :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :margin-block-end :aliases '(:margin-bottom)
-    :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :margin-inline-start :aliases '(:margin-left)
-    :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :width :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :height :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :min-width :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)
-   (ebox-style-property-create
-    :name :max-width :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)
-   (ebox-style-property-create
-    :name :display :group 'structure :dirty-kind 'structure
-    :signature 'structure)
-   (ebox-style-property-create
-    :name :gap :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :row-gap :group 'geometry :dirty-kind 'geometry :signature 'layout)
-   (ebox-style-property-create
-    :name :column-gap :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)
-   (ebox-style-property-create
-    :name :flex-direction :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)
-   (ebox-style-property-create
-    :name :flex-wrap :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)
-   (ebox-style-property-create
-    :name :justify-content :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)
-   (ebox-style-property-create
-    :name :align-items :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)
-   (ebox-style-property-create
-    :name :align-content :group 'geometry :dirty-kind 'geometry
-    :signature 'layout)))
+(defconst ebox-style--default-foreground 'ebox/default-foreground
+  "Internal paint consequence that blocks an inherited foreground.")
+
+(defconst ebox-style--property-definitions
+  '((:name :color :id ebox/color :initial nil :inherits t
+     :contexts (box) :group paint :dirty-kind paint :signature paint
+     :normalizer color)
+    (:name :background-color :id ebox/background-color :aliases (:bgcolor)
+     :initial nil :contexts (box) :group paint :dirty-kind paint
+     :signature paint :normalizer color)
+    (:name :font :id ebox/font :initial nil :inherits t :contexts (box)
+     :group typography :dirty-kind geometry :signature layout
+     :validator font)
+    (:name :font-family :id ebox/font-family :initial nil :inherits t
+     :contexts (box) :group typography :dirty-kind geometry :signature layout
+     :validator font-family)
+    (:name :font-height :id ebox/font-height :aliases (:font-size)
+     :initial nil :inherits t :contexts (box) :group typography
+     :dirty-kind geometry :signature layout :validator font-height)
+    (:name :font-weight :id ebox/font-weight :initial nil :inherits t
+     :contexts (box) :group typography :dirty-kind geometry :signature layout
+     :validator font-attribute)
+    (:name :font-slant :id ebox/font-slant :initial nil :inherits t
+     :contexts (box) :group typography :dirty-kind geometry :signature layout
+     :validator font-attribute)
+    (:name :box-sizing :id ebox/box-sizing :initial border-box
+     :contexts (box) :group geometry :dirty-kind geometry :signature layout)
+    (:name :width :id ebox/width :initial nil :contexts (box flex grid)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator horizontal-size)
+    (:name :min-width :id ebox/min-width :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator horizontal-size)
+    (:name :max-width :id ebox/max-width :initial nil :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator horizontal-size)
+    (:name :height :id ebox/height :initial nil :contexts (box flex grid)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :min-height :id ebox/min-height :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :max-height :id ebox/max-height :initial nil :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :padding-block-start :id ebox/padding-block-start
+     :aliases (:padding-top :padding-top-height) :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :padding-inline-end :id ebox/padding-inline-end
+     :aliases (:padding-right :padding-right-pixel) :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :padding-block-end :id ebox/padding-block-end
+     :aliases (:padding-bottom :padding-bottom-height) :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :padding-inline-start :id ebox/padding-inline-start
+     :aliases (:padding-left :padding-left-pixel) :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-block-start :id ebox/margin-block-start
+     :aliases (:margin-top :margin-top-height) :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-inline-end :id ebox/margin-inline-end
+     :aliases (:margin-right :margin-right-pixel) :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-block-end :id ebox/margin-block-end
+     :aliases (:margin-bottom :margin-bottom-height) :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-inline-start :id ebox/margin-inline-start
+     :aliases (:margin-left :margin-left-pixel) :initial 0 :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :border-top-width :id ebox/border-top-width
+     :aliases (:border-top-p) :initial nil :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :border-right-width :id ebox/border-right-width
+     :aliases (:border-right-pixel) :initial nil :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :border-bottom-width :id ebox/border-bottom-width
+     :aliases (:border-bottom-p) :initial nil :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :border-left-width :id ebox/border-left-width
+     :aliases (:border-left-pixel) :initial nil :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :border-top-style :id ebox/border-top-style :initial nil
+     :contexts (box) :group structure :dirty-kind structure :signature layout)
+    (:name :border-right-style :id ebox/border-right-style :initial nil
+     :contexts (box) :group structure :dirty-kind structure :signature layout)
+    (:name :border-bottom-style :id ebox/border-bottom-style :initial nil
+     :contexts (box) :group structure :dirty-kind structure :signature layout)
+    (:name :border-left-style :id ebox/border-left-style :initial nil
+     :contexts (box) :group structure :dirty-kind structure :signature layout)
+    (:name :border-top-color :id ebox/border-top-color :initial nil
+     :contexts (box) :group paint :dirty-kind paint :signature paint
+     :normalizer color)
+    (:name :border-right-color :id ebox/border-right-color :initial nil
+     :contexts (box) :group paint :dirty-kind paint :signature paint
+     :normalizer color)
+    (:name :border-bottom-color :id ebox/border-bottom-color :initial nil
+     :contexts (box) :group paint :dirty-kind paint :signature paint
+     :normalizer color)
+    (:name :border-left-color :id ebox/border-left-color :initial nil
+     :contexts (box) :group paint :dirty-kind paint :signature paint
+     :normalizer color)
+    (:name :text-align :id ebox/text-align :initial left :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :vertical-align :id ebox/vertical-align :initial top :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :normalizer vertical-align)
+    (:name :overflow :id ebox/overflow :initial scroll :contexts (box)
+     :group structure :dirty-kind geometry :signature layout)
+    (:name :wrap-mode :id ebox/wrap-mode :initial word :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :visibility :id ebox/visibility :initial visible :contexts (box)
+     :group paint :dirty-kind paint :signature paint)
+    (:name :display :id ebox/display :initial nil :contexts (node)
+     :group structure :dirty-kind structure :signature structure
+     :validator display)
+    (:name :flex-direction :id ebox/flex-direction :initial nil
+     :contexts (flex) :group geometry :dirty-kind geometry :signature layout)
+    (:name :flex-wrap :id ebox/flex-wrap :initial nil :contexts (flex)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :justify-content :id ebox/justify-content :initial nil
+     :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout)
+    (:name :align-items :id ebox/align-items :initial nil
+     :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout)
+    (:name :align-content :id ebox/align-content :initial nil
+     :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout)
+    (:name :justify-items :id ebox/justify-items :initial nil
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
+    (:name :row-gap :id ebox/row-gap :aliases (:grid-row-gap) :initial nil
+     :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :column-gap :id ebox/column-gap :aliases (:grid-column-gap)
+     :initial nil :contexts (flex grid) :group geometry :dirty-kind geometry
+     :signature layout :validator nonnegative-size)
+    (:name :order :id ebox/order :initial nil :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :flex-grow :id ebox/flex-grow :initial nil :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-number)
+    (:name :flex-shrink :id ebox/flex-shrink :initial nil :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-number)
+    (:name :flex-basis :id ebox/flex-basis :initial nil :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator horizontal-size)
+    (:name :align-self :id ebox/align-self :initial nil :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :grid-template-columns :id ebox/grid-template-columns :initial nil
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
+    (:name :grid-template-rows :id ebox/grid-template-rows :initial nil
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
+    (:name :grid-auto-columns :id ebox/grid-auto-columns :initial nil
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
+    (:name :grid-auto-rows :id ebox/grid-auto-rows :initial nil
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
+    (:name :grid-auto-flow :id ebox/grid-auto-flow :initial nil
+     :contexts (grid) :group structure :dirty-kind structure :signature layout)
+    (:name :grid-column :id ebox/grid-column :initial nil :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator grid-placement)
+    (:name :grid-row :id ebox/grid-row :initial nil :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator grid-placement)
+    (:name :grid-column-span :id ebox/grid-column-span :initial nil
+     :contexts (item) :group geometry :dirty-kind geometry :signature layout
+     :validator positive-integer)
+    (:name :grid-row-span :id ebox/grid-row-span :initial nil
+     :contexts (item) :group geometry :dirty-kind geometry :signature layout
+     :validator positive-integer)
+    (:name :padding :id ebox/padding :shorthand padding)
+    (:name :padding-inline :id ebox/padding-inline :shorthand padding-inline)
+    (:name :padding-block :id ebox/padding-block :shorthand padding-block)
+    (:name :margin :id ebox/margin :shorthand margin)
+    (:name :margin-inline :id ebox/margin-inline :shorthand margin-inline)
+    (:name :margin-block :id ebox/margin-block :shorthand margin-block)
+    (:name :border :id ebox/border :shorthand border)
+    (:name :border-top :id ebox/border-top :shorthand border-top)
+    (:name :border-right :id ebox/border-right :shorthand border-right)
+    (:name :border-bottom :id ebox/border-bottom :shorthand border-bottom)
+    (:name :border-left :id ebox/border-left :shorthand border-left)
+    (:name :border-width :id ebox/border-width :shorthand border-width
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :border-style :id ebox/border-style :shorthand border-style
+     :group structure :dirty-kind structure :signature layout)
+    (:name :border-color :id ebox/border-color :shorthand border-color
+     :group paint :dirty-kind paint :signature paint)
+    (:name :gap :id ebox/gap :shorthand gap
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :flex-flow :id ebox/flex-flow :shorthand flex-flow
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :flex :id ebox/flex :shorthand flex
+     :group geometry :dirty-kind geometry :signature layout))
+  "Canonical Ebox property schemas and public aliases.")
 
 (defvar ebox-style--property-table nil
   "Hash table from canonical property names and aliases to metadata.")
+
+(defvar ebox-style-schemas (ecss-schema-set-create)
+  "ECSS property schemas for the isolated Ebox style domain.")
 
 (defun ebox-style--ensure-property-table ()
   "Return the canonical style property registry table."
   (or ebox-style--property-table
       (let ((table (make-hash-table :test 'eq)))
-        (dolist (property (ebox-style--property-definitions))
-          (puthash (ebox-style-property-name property) property table)
-          (dolist (alias (ebox-style-property-aliases property))
+        (dolist (property ebox-style--property-definitions)
+          (puthash (plist-get property :name) property table)
+          (puthash (plist-get property :id) property table)
+          (dolist (alias (plist-get property :aliases))
             (puthash alias property table)))
         (setq ebox-style--property-table table))))
 
@@ -110,7 +245,12 @@
 (defun ebox-style-canonical-name (name)
   "Return canonical CSS-like longhand property name for NAME."
   (when-let ((property (ebox-style-property name)))
-    (ebox-style-property-name property)))
+    (plist-get property :name)))
+
+(defun ebox-style-schema-id (name)
+  "Return namespaced ECSS schema id for Ebox property NAME."
+  (when-let ((property (ebox-style-property name)))
+    (plist-get property :id)))
 
 (defun ebox-style--put (plist key value)
   "Return PLIST with KEY set to VALUE."
@@ -203,88 +343,635 @@
                                   "unspecified-bg"))
       resolved)))
 
-(defun ebox-style--expand-canonical-property (property value)
-  "Return canonical CSS-like longhand entries for PROPERTY and VALUE."
-  (pcase property
-    (:bgcolor (list :background-color (ebox-style--parse-color value)))
-    (:background-color
-     (list :background-color (ebox-style--parse-color value)))
-    (:color (list :color (ebox-style--parse-color value)))
-    (:padding
-     (pcase-let ((`(,top ,right ,bottom ,left)
-                  (ebox-style--split-trbl value)))
-       (list :padding-block-start top
-             :padding-inline-end right
-             :padding-block-end bottom
-             :padding-inline-start left)))
-    (:padding-inline
-     (pcase-let ((`(,start ,end) (ebox-style--split-pair value)))
-       (list :padding-inline-start start :padding-inline-end end)))
-    (:padding-block
-     (pcase-let ((`(,start ,end) (ebox-style--split-pair value)))
-       (list :padding-block-start start :padding-block-end end)))
-    (:padding-top (list :padding-block-start value))
-    (:padding-right (list :padding-inline-end value))
-    (:padding-bottom (list :padding-block-end value))
-    (:padding-left (list :padding-inline-start value))
-    (:margin
-     (pcase-let ((`(,top ,right ,bottom ,left)
-                  (ebox-style--split-trbl value)))
-       (list :margin-block-start top
-             :margin-inline-end right
-             :margin-block-end bottom
-             :margin-inline-start left)))
-    (:margin-inline
-     (pcase-let ((`(,start ,end) (ebox-style--split-pair value)))
-       (list :margin-inline-start start :margin-inline-end end)))
-    (:margin-block
-     (pcase-let ((`(,start ,end) (ebox-style--split-pair value)))
-       (list :margin-block-start start :margin-block-end end)))
-    (:margin-top (list :margin-block-start value))
-    (:margin-right (list :margin-inline-end value))
-    (:margin-bottom (list :margin-block-end value))
-    (:margin-left (list :margin-inline-start value))
-    (:border
-     (pcase-let ((`(,width ,style ,color) (ebox-style--split-wsc value)))
-       (append (when width (list :border-width width))
-               (when style (list :border-style style))
-               (when color
-                 (list :border-color (ebox-style--parse-color color))))))
-    (:border-color
-     (list :border-color (ebox-style--parse-color value)))
-    (_
-     (if-let ((canonical (ebox-style-canonical-name property)))
-         (list canonical value)
-       nil))))
+(defun ebox-style--trbl-declarations (properties value)
+  "Expand VALUE across four namespaced PROPERTIES."
+  (cl-loop for property in properties
+           for part in (ebox-style--split-trbl value)
+           append (list property part)))
 
-(defun ebox-style-expand-shorthands (plist)
-  "Expand PLIST to CSS-like canonical longhand properties."
-  (let (expanded)
-    (while plist
-      (let ((property (pop plist))
-            (value (pop plist)))
-        (setq expanded
-              (nconc expanded
-                     (ebox-style--expand-canonical-property
-                      property value)))))
-    expanded))
+(defun ebox-style--pair-declarations (properties value)
+  "Expand VALUE across two namespaced PROPERTIES."
+  (cl-loop for property in properties
+           for part in (ebox-style--split-pair value)
+           append (list property part)))
+
+(defun ebox-style--padding-shorthand (value)
+  "Expand padding VALUE to namespaced logical longhands."
+  (ebox-style--trbl-declarations
+   '(ebox/padding-block-start ebox/padding-inline-end
+     ebox/padding-block-end ebox/padding-inline-start)
+   value))
+
+(defun ebox-style--padding-inline-shorthand (value)
+  "Expand inline padding VALUE to namespaced longhands."
+  (ebox-style--pair-declarations
+   '(ebox/padding-inline-start ebox/padding-inline-end) value))
+
+(defun ebox-style--padding-block-shorthand (value)
+  "Expand block padding VALUE to namespaced longhands."
+  (ebox-style--pair-declarations
+   '(ebox/padding-block-start ebox/padding-block-end) value))
+
+(defun ebox-style--margin-shorthand (value)
+  "Expand margin VALUE to namespaced logical longhands."
+  (ebox-style--trbl-declarations
+   '(ebox/margin-block-start ebox/margin-inline-end
+     ebox/margin-block-end ebox/margin-inline-start)
+   value))
+
+(defun ebox-style--margin-inline-shorthand (value)
+  "Expand inline margin VALUE to namespaced longhands."
+  (ebox-style--pair-declarations
+   '(ebox/margin-inline-start ebox/margin-inline-end) value))
+
+(defun ebox-style--margin-block-shorthand (value)
+  "Expand block margin VALUE to namespaced longhands."
+  (ebox-style--pair-declarations
+   '(ebox/margin-block-start ebox/margin-block-end) value))
+
+(defconst ebox-style--border-sides '(top right bottom left)
+  "Physical border sides in CSS shorthand order.")
+
+(defun ebox-style--border-side-declarations (side value)
+  "Expand border VALUE for SIDE to three namespaced longhands."
+  (pcase-let ((`(,width ,style ,color) (ebox-style--split-wsc value)))
+    (list (intern (format "ebox/border-%s-width" side)) width
+          (intern (format "ebox/border-%s-style" side)) style
+          (intern (format "ebox/border-%s-color" side)) color)))
+
+(defun ebox-style--border-shorthand (value)
+  "Expand border VALUE directly to all namespaced side longhands."
+  (cl-mapcan (lambda (side)
+               (ebox-style--border-side-declarations side value))
+             ebox-style--border-sides))
+
+(defun ebox-style--border-top-shorthand (value)
+  "Expand top border VALUE to namespaced longhands."
+  (ebox-style--border-side-declarations 'top value))
+
+(defun ebox-style--border-right-shorthand (value)
+  "Expand right border VALUE to namespaced longhands."
+  (ebox-style--border-side-declarations 'right value))
+
+(defun ebox-style--border-bottom-shorthand (value)
+  "Expand bottom border VALUE to namespaced longhands."
+  (ebox-style--border-side-declarations 'bottom value))
+
+(defun ebox-style--border-left-shorthand (value)
+  "Expand left border VALUE to namespaced longhands."
+  (ebox-style--border-side-declarations 'left value))
+
+(defun ebox-style--border-component-shorthand (component value)
+  "Expand border COMPONENT VALUE across all physical sides."
+  (ebox-style--trbl-declarations
+   (mapcar (lambda (side)
+             (intern (format "ebox/border-%s-%s" side component)))
+           ebox-style--border-sides)
+   value))
+
+(defun ebox-style--border-width-shorthand (value)
+  "Expand border width VALUE across all physical sides."
+  (ebox-style--border-component-shorthand 'width value))
+
+(defun ebox-style--border-style-shorthand (value)
+  "Expand border style VALUE across all physical sides."
+  (ebox-style--border-component-shorthand 'style value))
+
+(defun ebox-style--border-color-shorthand (value)
+  "Expand border color VALUE across all physical sides."
+  (ebox-style--border-component-shorthand 'color value))
+
+(defun ebox-style--gap-shorthand (value)
+  "Expand gap VALUE to row and column gaps."
+  (ebox-style--pair-declarations '(ebox/row-gap ebox/column-gap) value))
+
+(defun ebox-style--flex-flow-shorthand (value)
+  "Expand flex-flow VALUE to direction and wrapping longhands."
+  (let ((values (if (listp value) value (list value))) direction wrap)
+    (setq direction
+          (cl-find-if (lambda (item)
+                        (memq item '(row row-reverse column column-reverse)))
+                      values)
+          wrap (cl-find-if (lambda (item)
+                             (memq item '(nowrap wrap wrap-reverse)))
+                           values))
+    (list 'ebox/flex-direction direction 'ebox/flex-wrap wrap)))
+
+(defun ebox-style--flex-shorthand (value)
+  "Expand flex item VALUE to grow, shrink, and basis longhands."
+  (pcase value
+    ((pred numberp) (list 'ebox/flex-grow value 'ebox/flex-shrink 1
+                          'ebox/flex-basis 0))
+    ('none '(ebox/flex-grow 0 ebox/flex-shrink 0 ebox/flex-basis auto))
+    ('auto '(ebox/flex-grow 1 ebox/flex-shrink 1 ebox/flex-basis auto))
+    ('initial '(ebox/flex-grow 0 ebox/flex-shrink 1 ebox/flex-basis auto))
+    ((pred listp)
+     (list 'ebox/flex-grow (or (nth 0 value) 0)
+           'ebox/flex-shrink (or (nth 1 value) 1)
+           'ebox/flex-basis (if (> (length value) 2) (nth 2 value) 'auto)))
+    (_ '(ebox/flex-grow 0 ebox/flex-shrink 1 ebox/flex-basis auto))))
+
+(defun ebox-style--normalizer (name)
+  "Return schema normalizer named NAME."
+  (pcase name
+    ('color #'ebox-style--parse-color)
+    ('vertical-align (lambda (value) (if (eq value 'middle) 'center value)))
+    (_ #'identity)))
+
+(defun ebox-style--negative-numeric-size-p (value)
+  "Return non-nil when VALUE is or starts with a negative number."
+  (or (and (numberp value) (< value 0))
+      (and (consp value)
+           (numberp (car value))
+           (< (car value) 0))))
+
+(defun ebox-style--nonnegative-size-p (value)
+  "Return non-nil when VALUE is not a negative numeric size."
+  (not (ebox-style--negative-numeric-size-p value)))
+
+(defun ebox-style--nonnegative-number-p (value)
+  "Return non-nil when VALUE is nil or a non-negative number."
+  (or (null value) (and (numberp value) (>= value 0))))
+
+(defun ebox-style--positive-integer-p (value)
+  "Return non-nil when VALUE is nil or a positive integer."
+  (or (null value) (and (integerp value) (> value 0))))
+
+(defun ebox-style--grid-placement-p (value)
+  "Return non-nil when VALUE is a valid public Grid placement."
+  (or (null value)
+      (and (integerp value) (> value 0))
+      (and (proper-list-p value)
+           (pcase value
+             (`(,start)
+              (and (integerp start) (> start 0)))
+             (`(,start :span ,span)
+              (and (integerp start) (> start 0)
+                   (integerp span) (> span 0)))
+             (`(,start ,end)
+              (and (integerp start) (> start 0)
+                   (integerp end) (> end start)))))))
+
+(defun ebox-style--display-p (value)
+  "Return non-nil when VALUE is nil or an Ebox display pair."
+  (or (null value)
+      (and (listp value) (= (length value) 2)
+           (cl-every #'symbolp value))))
+
+(defun ebox-style--font-p (value)
+  "Return non-nil when VALUE is an Ebox font face specification."
+  (or (null value) (symbolp value) (stringp value) (proper-list-p value)))
+
+(defun ebox-style--font-family-p (value)
+  "Return non-nil when VALUE is an Ebox font family."
+  (or (null value) (stringp value) (symbolp value)))
+
+(defun ebox-style--font-height-p (value)
+  "Return non-nil when VALUE is an Emacs face height."
+  (or (null value) (numberp value) (functionp value)))
+
+(defun ebox-style--font-attribute-p (value)
+  "Return non-nil when VALUE is a symbolic font attribute."
+  (or (null value) (symbolp value)))
+
+(defun ebox-style--validator (name)
+  "Return schema validator named NAME."
+  (pcase name
+    ((or 'horizontal-size 'nonnegative-size)
+     #'ebox-style--nonnegative-size-p)
+    ('nonnegative-number #'ebox-style--nonnegative-number-p)
+    ('positive-integer #'ebox-style--positive-integer-p)
+    ('grid-placement #'ebox-style--grid-placement-p)
+    ('display #'ebox-style--display-p)
+    ('font #'ebox-style--font-p)
+    ('font-family #'ebox-style--font-family-p)
+    ('font-height #'ebox-style--font-height-p)
+    ('font-attribute #'ebox-style--font-attribute-p)
+    (_ (lambda (_value) t))))
+
+(defun ebox-style--shorthand (name)
+  "Return shorthand expander named NAME."
+  (alist-get
+   name
+   '((padding . ebox-style--padding-shorthand)
+     (padding-inline . ebox-style--padding-inline-shorthand)
+     (padding-block . ebox-style--padding-block-shorthand)
+     (margin . ebox-style--margin-shorthand)
+     (margin-inline . ebox-style--margin-inline-shorthand)
+     (margin-block . ebox-style--margin-block-shorthand)
+     (border . ebox-style--border-shorthand)
+     (border-top . ebox-style--border-top-shorthand)
+     (border-right . ebox-style--border-right-shorthand)
+     (border-bottom . ebox-style--border-bottom-shorthand)
+     (border-left . ebox-style--border-left-shorthand)
+     (border-width . ebox-style--border-width-shorthand)
+     (border-style . ebox-style--border-style-shorthand)
+     (border-color . ebox-style--border-color-shorthand)
+     (gap . ebox-style--gap-shorthand)
+     (flex-flow . ebox-style--flex-flow-shorthand)
+     (flex . ebox-style--flex-shorthand))))
+
+(defun ebox-style--schema-options (property)
+  "Return ECSS registration options for PROPERTY metadata."
+  (let ((options (list :initial (plist-get property :initial)
+                       :inherits (plist-get property :inherits)
+                       :normalizer (ebox-style--normalizer
+                                    (plist-get property :normalizer))
+                       :validator (ebox-style--validator
+                                   (plist-get property :validator))
+                       :equality #'equal)))
+    (when-let ((shorthand (ebox-style--shorthand
+                           (plist-get property :shorthand))))
+      (setq options (plist-put options :shorthand shorthand)))
+    options))
+
+(defun ebox-style-register-properties ()
+  "Register the complete namespaced Ebox property domain with ECSS."
+  (dolist (property ebox-style--property-definitions)
+    (apply #'ecss-schema-set-define
+           ebox-style-schemas (plist-get property :id)
+           (ebox-style--schema-options property))))
+
+(defun ebox-style--ensure-properties ()
+  "Ensure Ebox property schemas exist in the isolated ECSS schema set."
+  (unless (ecss-schema-set-property ebox-style-schemas 'ebox/color)
+    (ebox-style-register-properties)))
+
+(defvar ebox-style-stylesheet (ecss-stylesheet-create)
+  "Isolated ECSS stylesheet containing Ebox layout and paint rules.")
+
+(defun ebox-style-cascade-active-p ()
+  "Return non-nil when the Ebox stylesheet contains cascade rules.
+Inline declarations are compiled into Ebox engine properties while nodes are
+created, so a surface with no stylesheet rules does not need a per-node ECSS
+cascade pass during its initial static projection."
+  (not (null (ecss-stylesheet-rules ebox-style-stylesheet))))
+
+(defun ebox-style-reset-rules ()
+  "Clear all rules and cascade layers in `ebox-style-stylesheet'."
+  (ecss-stylesheet-clear ebox-style-stylesheet))
+
+(defun ebox-style--selector (selector)
+  "Return ECSS selector AST compiled from Ebox SELECTOR."
+  (if (stringp selector)
+      (progn
+        (require 'ebox-selector)
+        (ebox-selector-parse selector))
+    selector))
+
+(defun ebox-style--custom-property-p (property)
+  "Return non-nil when PROPERTY names an ECSS custom property."
+  (and (symbolp property)
+       (string-prefix-p "--" (symbol-name property))))
+
+(defun ebox-style--valid-plist-p (plist)
+  "Return non-nil when PLIST is a proper even-length list."
+  (and (proper-list-p plist) (zerop (% (length plist) 2))))
+
+(defun ebox-style--static-invalid-declaration-p (validator value)
+  "Return non-nil when VALIDATOR rejects static VALUE."
+  (pcase validator
+    ('nonnegative-number
+     (and (numberp value) (< value 0)))
+    ((or 'horizontal-size 'nonnegative-size)
+     (ebox-style--negative-numeric-size-p value))
+    ('positive-integer
+     (and (numberp value) (not (ebox-style--positive-integer-p value))))
+    ('grid-placement
+     (and (or (numberp value) (proper-list-p value))
+          (not (ebox-style--grid-placement-p value))))))
+
+(defun ebox-style--validate-declaration-values (declarations)
+  "Return DECLARATIONS after static Ebox-owned value validation."
+  (cl-loop for (property value) on declarations by #'cddr
+           for schema = (ebox-style-property property)
+           for validator = (and schema (plist-get schema :validator))
+           when (ebox-style--static-invalid-declaration-p validator value)
+           do (error "ebox: invalid value for %S: %S"
+                     (plist-get schema :name) value))
+  declarations)
+
+(defun ebox-style-compile-declarations (plist &optional strict)
+  "Compile Ebox PLIST aliases to ECSS schema declarations.
+When STRICT is non-nil, reject properties outside the Ebox style domain."
+  (ebox-style--ensure-properties)
+  (unless (ebox-style--valid-plist-p plist)
+    (user-error "Ebox style declarations must be an even property list"))
+  (let ((canonical
+         (cl-loop for (property value) on plist by #'cddr
+                  for schema = (ebox-style-schema-id property)
+                  if schema append (list schema value)
+                  else if (ebox-style--custom-property-p property)
+                  append (list property value)
+                  else if strict
+                  do (user-error "Unknown Ebox style property: %S"
+                                 property))))
+    (ebox-style--validate-declaration-values
+     (ecss-merge-declarations ebox-style-schemas canonical))))
+
+(defun ebox-style-merge-declarations (base overrides)
+  "Merge canonical BASE and OVERRIDES through ECSS property schemas."
+  (ebox-style--ensure-properties)
+  (ecss-merge-declarations ebox-style-schemas base overrides))
+
+(cl-defun ebox-style-add-rule
+    (selector declarations &key (origin 'author) layer scope)
+  "Add SELECTOR rule with Ebox DECLARATIONS to the isolated stylesheet.
+ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
+  (ebox-style--ensure-properties)
+  (ecss-stylesheet-add-rule
+   ebox-style-stylesheet ebox-style-schemas (ebox-style--selector selector)
+   (ebox-style-compile-declarations declarations t)
+   :origin origin :layer layer
+   :scope (and scope (ebox-style--selector scope))))
+
+(defun ebox-style-compute-subject (subject declarations &optional parent-style)
+  "Compute SUBJECT style from DECLARATIONS and optional PARENT-STYLE via ECSS."
+  (ebox-style--ensure-properties)
+  (ecss-compute-style
+   ebox-style-schemas subject :declarations declarations
+   :stylesheet ebox-style-stylesheet :parent-style parent-style
+   :value-resolver #'tp-resolve-value))
+
+(defun ebox-style--public-computed-values (style)
+  "Return STYLE values using canonical public Ebox property names."
+  (let ((values (ecss-computed-style-values style)) result)
+    (dolist (property ebox-style--property-definitions)
+      (unless (plist-get property :shorthand)
+        (setq result
+              (plist-put result (plist-get property :name)
+                         (plist-get values (plist-get property :id))))))
+    result))
+
+(defun ebox-style--common-border-value (style component)
+  "Return common border COMPONENT in STYLE, or nil when sides differ."
+  (let ((values
+         (mapcar (lambda (side)
+                   (plist-get style
+                              (intern (format ":border-%s-%s" side component))))
+                 ebox-style--border-sides)))
+    (when (cl-every (lambda (value) (equal value (car values))) (cdr values))
+      (car values))))
+
+(defun ebox-style--add-border-aggregates (style)
+  "Add uniform border shorthand facts to public computed STYLE."
+  (dolist (component '(width style color) style)
+    (when-let ((value (ebox-style--common-border-value style component)))
+      (setq style
+            (plist-put style (intern (format ":border-%s" component)) value)))))
 
 (defun ebox-style-compute (plist)
-  "Return computed canonical style for PLIST."
-  (let ((expanded (ebox-style-expand-shorthands plist))
-        computed)
-    (while expanded
-      (let ((property (pop expanded))
-            (value (pop expanded)))
-        (when (ebox-style-property property)
-          (setq computed
-                (ebox-style--put computed property value)))))
-    computed))
+  "Return canonical public computed style for inline PLIST through ECSS."
+  (let ((style
+         (ecss-compute-style
+          ebox-style-schemas (ecss-subject-create :type "box")
+          :declarations (ebox-style-compile-declarations plist)
+          :rules nil :value-resolver #'tp-resolve-value)))
+    (ebox-style--add-border-aggregates
+     (ebox-style--public-computed-values style))))
+
+(defun ebox-style-expand-shorthands (plist)
+  "Expand PLIST to canonical public longhands through ECSS schemas."
+  (ebox-style-compute plist))
+
+(defun ebox-style-computed-active-p (style property)
+  "Return non-nil when computed STYLE actively contributes PROPERTY."
+  (memq (ebox-style-schema-id property)
+        (ecss-computed-style-active-properties style)))
+
+(defun ebox-style-computed-value (style property)
+  "Return computed STYLE value for public Ebox PROPERTY."
+  (plist-get (ecss-computed-style-values style)
+             (ebox-style-schema-id property)))
+
+(defun ebox-style--computed-snapshot (style &optional specified-p)
+  "Return one detached ECSS values snapshot for STYLE projection.
+When SPECIFIED-P is non-nil, include declaration-winner facts."
+  (list (ecss-computed-style-values style)
+        (ecss-computed-style-active-properties style)
+        (and specified-p
+             (ecss-computed-style-specified-properties style))))
+
+(defun ebox-style--snapshot-active-p (snapshot property)
+  "Return non-nil when SNAPSHOT actively contributes PROPERTY."
+  (memq (ebox-style-schema-id property) (nth 1 snapshot)))
+
+(defun ebox-style--context-values
+    (style context &optional specified-only snapshot)
+  "Return public STYLE values for CONTEXT.
+When SPECIFIED-ONLY is non-nil, exclude initial and inherited-only facts.
+SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
+  (let* ((snapshot
+          (or snapshot
+              (ebox-style--computed-snapshot style specified-only)))
+         (values (nth 0 snapshot))
+         (active (nth 1 snapshot))
+        (specified
+         (and specified-only
+              (nth 2 snapshot)))
+        result)
+    (dolist (property ebox-style--property-definitions)
+      (let ((id (plist-get property :id)))
+        (when (and (not (plist-get property :shorthand))
+                   (memq context (plist-get property :contexts))
+                   (memq id active)
+                   (or (not specified-only)
+                       (memq id specified)))
+          (setq result
+                (plist-put result (plist-get property :name)
+                           (plist-get values id))))))
+    result))
+
+(defun ebox-style--specified-property-p (style property)
+  "Return non-nil when STYLE PROPERTY has a declaration winner."
+  (ecss-computed-style-specified-p style property))
+
+(defun ebox-style-node-declarations (node)
+  "Return canonical ECSS declarations stored on semantic Ebox NODE."
+  (let ((declarations (plist-get node :ebox-style-declarations)))
+    (if (memq (plist-get node :ebox-type) '(flex grid))
+        (ebox-style-merge-declarations
+         declarations
+         (plist-get (plist-get node :box) :ebox-style-overrides))
+      (copy-sequence declarations))))
+
+(defun ebox-style--remove-style-properties (plist)
+  "Return PLIST without Ebox style or ECSS custom properties."
+  (cl-loop for (property value) on plist by #'cddr
+           unless (or (ebox-style-property property)
+                      (ebox-style--custom-property-p property))
+           append (list property value)))
+
+(defun ebox-style--reset-box-engine-style (box)
+  "Reset BOX engine style fields to their declared defaults."
+  (cl-loop for (property value) on ebox--longhand by #'cddr
+           unless (memq property '(:content :scroll-offset))
+           do (plist-put box property (copy-tree value)))
+  box)
+
+(defun ebox-style--apply-engine-values (box values)
+  "Project public style VALUES into BOX engine fields."
+  (ebox-style--reset-box-engine-style box)
+  (let ((expanded (ebox-style-expand-ebox-plist values)))
+    (cl-loop for (property value) on expanded by #'cddr
+             do (plist-put box property value)))
+  box)
+
+(defun ebox-style--box-values (style &optional snapshot)
+  "Return computed box values ready for Ebox engine projection."
+  (let* ((snapshot (or snapshot (ebox-style--computed-snapshot style)))
+         (values (ebox-style--context-values style 'box nil snapshot)))
+    (when (and (ebox-style--snapshot-active-p snapshot :color)
+               (null (plist-get values :color)))
+      (setq values
+            (plist-put values :color ebox-style--default-foreground)))
+    values))
+
+(defconst ebox-style--container-wrapper-neutral-properties
+  '(:width :height :box-sizing :color
+    :font :font-family :font-height :font-weight :font-slant)
+  "Container properties that do not require an internal visual wrapper.")
+
+(defun ebox-style--container-wrapper-needed-p (style &optional snapshot)
+  "Return non-nil when STYLE needs a visual container wrapper."
+  (cl-loop for (property value)
+           on (ebox-style--context-values style 'box t snapshot) by #'cddr
+           thereis (and value
+                        (not (memq
+                              property
+                              ebox-style--container-wrapper-neutral-properties)))))
+
+(defun ebox-style--new-container-wrapper ()
+  "Return a stable internal box for container-owned box paint."
+  (let ((wrapper (ebox-create :content "" :wrap-mode nil
+                              :key 'ebox/style-wrapper)))
+    (plist-put wrapper :ebox-style-wrapper t)
+    (plist-put wrapper :ebox-style-generated-wrapper t)
+    wrapper))
+
+(defun ebox-style--container-wrapper (node style &optional snapshot)
+  "Return NODE wrapper required by STYLE, updating NODE ownership."
+  (let ((wrapper (plist-get node :box))
+        (needed (ebox-style--container-wrapper-needed-p style snapshot)))
+    (cond
+     (needed
+      (unless wrapper
+        (setq wrapper (ebox-style--new-container-wrapper))
+        (plist-put node :box wrapper))
+      wrapper)
+     ((and wrapper (plist-get wrapper :ebox-style-generated-wrapper))
+      (plist-put node :box nil)
+      nil)
+     (t wrapper))))
+
+(defun ebox-style--apply-container-wrapper (node style &optional snapshot)
+  "Apply computed STYLE to NODE's internal visual wrapper."
+  (when-let ((wrapper (ebox-style--container-wrapper node style snapshot)))
+    (ebox-style--apply-engine-values
+     wrapper
+     (ebox-style--box-values style snapshot))
+    (unless (ebox-style--specified-property-p style 'ebox/wrap-mode)
+      (plist-put wrapper :wrap-mode nil))))
+
+(defun ebox-style--grid-values (values)
+  "Translate canonical container VALUES to Grid engine property names."
+  (let ((row-present (plist-member values :row-gap))
+        (column-present (plist-member values :column-gap)))
+    (when row-present
+      (setq values
+            (plist-put values :grid-row-gap (plist-get values :row-gap))))
+    (when column-present
+      (setq values
+            (plist-put values :grid-column-gap
+                       (plist-get values :column-gap))))
+    (cl-loop for (property value) on values by #'cddr
+             unless (memq property '(:row-gap :column-gap))
+             append (list property value))))
+
+(defun ebox-style--apply-container (node style &optional snapshot)
+  "Apply computed STYLE to Flex or Grid NODE."
+  (let* ((type (plist-get node :ebox-type))
+         (metadata
+          (ebox-style--remove-style-properties (plist-get node :raw-props)))
+         (values
+          (append (ebox-style--context-values style 'box nil snapshot)
+                  (ebox-style--context-values style type nil snapshot)))
+         (raw (append metadata
+                      (if (eq type 'grid)
+                          (ebox-style--grid-values values)
+                        values))))
+    (plist-put node :raw-props raw)
+    (plist-put node :props
+               (if (eq type 'flex)
+                   (ebox--flex-normalize-container-props raw)
+                 raw))
+    (ebox-style--apply-container-wrapper node style snapshot)))
+
+(defun ebox-style--delete-node-property (node property)
+  "Delete PROPERTY from NODE in place while preserving NODE identity."
+  (when (eq (car node) property)
+    (error "Ebox internal node property cannot occupy plist head: %S" property))
+  (let ((tail node))
+    (while (cddr tail)
+      (if (eq (caddr tail) property)
+          (setcdr (cdr tail) (cddddr tail))
+        (setq tail (cddr tail)))))
+  node)
+
+(defun ebox-style--apply-item (node style &optional snapshot)
+  "Apply computed Flex/Grid item fields from STYLE to NODE."
+  (let ((values (ebox-style--context-values style 'item nil snapshot)))
+    (dolist (property '(:order :flex-grow :flex-shrink :flex-basis :align-self
+                        :grid-column :grid-row
+                        :grid-column-span :grid-row-span))
+      (ebox-style--delete-node-property node property))
+    (cl-loop for (property value) on values by #'cddr
+             do (plist-put node property value)))
+  node)
+
+(defun ebox-style-apply-computed (node style)
+  "Apply ECSS computed STYLE consequences to semantic Ebox NODE."
+  (unless (ecss-computed-style-p style)
+    (signal 'wrong-type-argument (list 'ecss-computed-style-p style)))
+  (let* ((type (plist-get node :ebox-type))
+         (snapshot
+          (ebox-style--computed-snapshot style (memq type '(flex grid)))))
+    (plist-put node :ebox-computed-style style)
+    (when (ebox-style--snapshot-active-p snapshot :display)
+      (plist-put node :display
+                 (ebox-style-computed-value style :display)))
+    (pcase type
+      ('box
+       (ebox-style--apply-engine-values
+        node
+        (ebox-style--box-values style snapshot)))
+      ((or 'flex 'grid)
+       (ebox-style--apply-container node style snapshot)))
+    (ebox-style--apply-item node style snapshot))
+  node)
+
+(defun ebox-style-sync-flex-item (item)
+  "Synchronize internal Flex ITEM props from its semantic source style."
+  (when (eq (plist-get item :ebox-type) 'flex-item)
+    (when-let* ((source (plist-get item :node)))
+      (let* ((source-style (plist-get source :ebox-computed-style))
+             (child-style
+              (when-let ((child (plist-get source :ebox-content-node)))
+                (plist-get child :ebox-computed-style)))
+             (values
+              (append
+               (and source-style
+                    (ebox-style--context-values source-style 'item))
+               (and child-style
+                    (ebox-style--context-values child-style 'item)))))
+        (when (or source-style child-style)
+          (plist-put item :props values)))))
+  item)
 
 (defun ebox-style-dirty-kind (name)
   "Return dirty kind for canonical property or alias NAME."
   (when-let ((property (ebox-style-property name)))
-    (ebox-style-property-dirty-kind property)))
+    (plist-get property :dirty-kind)))
 
 (defun ebox-style-signature (computed-style groups)
   "Return deterministic signature for COMPUTED-STYLE filtered by GROUPS."
@@ -293,11 +980,11 @@
       (let* ((property-name (pop computed-style))
              (value (pop computed-style))
              (property (ebox-style-property property-name))
-             (group (and property (ebox-style-property-signature property))))
+             (group (and property (plist-get property :signature))))
         (when (and property
                    (or (null groups)
                        (memq group groups)
-                       (memq (ebox-style-property-group property) groups)))
+                       (memq (plist-get property :group) groups)))
           (push (cons property-name value) entries))))
     (setq entries
           (sort entries
@@ -309,6 +996,8 @@
                      (list (car entry) (cdr entry)))
                    entries))))
 
+(ebox-style-register-properties)
+
 (defconst ebox-style-ebox-property-rules
   '((:padding :expand (:padding-top :padding-right
                                     :padding-bottom :padding-left)
@@ -316,18 +1005,26 @@
     (:padding-inline :expand (:padding-left :padding-right) :mode pair)
     (:padding-block :expand (:padding-top :padding-bottom) :mode pair)
     (:padding-top :to :padding-top-height :conv line)
+    (:padding-block-start :to :padding-top-height :conv line)
     (:padding-right :to :padding-right-pixel :conv pixel)
+    (:padding-inline-end :to :padding-right-pixel :conv pixel)
     (:padding-bottom :to :padding-bottom-height :conv line)
+    (:padding-block-end :to :padding-bottom-height :conv line)
     (:padding-left :to :padding-left-pixel :conv pixel)
+    (:padding-inline-start :to :padding-left-pixel :conv pixel)
     (:margin :expand (:margin-top :margin-right
                                   :margin-bottom :margin-left)
              :mode trbl)
     (:margin-inline :expand (:margin-left :margin-right) :mode pair)
     (:margin-block :expand (:margin-top :margin-bottom) :mode pair)
     (:margin-top :to :margin-top-height :conv line)
+    (:margin-block-start :to :margin-top-height :conv line)
     (:margin-right :to :margin-right-pixel :conv pixel)
+    (:margin-inline-end :to :margin-right-pixel :conv pixel)
     (:margin-bottom :to :margin-bottom-height :conv line)
+    (:margin-block-end :to :margin-bottom-height :conv line)
     (:margin-left :to :margin-left-pixel :conv pixel)
+    (:margin-inline-start :to :margin-left-pixel :conv pixel)
     (:border :expand (:border-top :border-right
                                   :border-bottom :border-left)
              :mode same)
@@ -389,13 +1086,6 @@
     (:display :to nil)
     (:visibility :to :visibility))
   "Compatibility rules that expand public Ebox properties to engine keys.")
-
-(defun ebox-style--negative-numeric-size-p (value)
-  "Return non-nil when VALUE is or starts with a negative number."
-  (or (and (numberp value) (< value 0))
-      (and (consp value)
-           (numberp (car value))
-           (< (car value) 0))))
 
 (defun ebox-style--convert (value converter)
   "Convert VALUE using Ebox engine CONVERTER."

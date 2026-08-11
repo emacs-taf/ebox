@@ -11,8 +11,23 @@
 (require 'subr-x)
 (require 'ebox-layout)
 
+(declare-function ebox--flex-fragment-allocation-key
+                  "ebox-fragment"
+                  (source axis main cross align viewport &optional render-context))
+(declare-function ebox--flex-fragment-retention-lookup
+                  "ebox-fragment" (key))
+(declare-function ebox--flex-fragment-retention-store
+                  "ebox-fragment" (key entry side-effects))
+(declare-function ebox--render-cache-render-with-scroll-actions
+                  "ebox-incremental" (node))
+(declare-function ebox--viewport-height-dependent-subtree-p
+                  "ebox-incremental" (node))
+
 (defvar ebox--propertize-private-content-line-p)
 (defvar ebox--flex-content-min-width-table)
+(defvar ebox-fragment-flex-retention-rerender-count)
+(defvar ebox--flex-native-size-lines-backend :unknown
+  "Cached optional pure geometry backend for batched Flex line sizing.")
 
 (defconst ebox--flex-item-prop-keys
   '(:order :flex :flex-grow :flex-shrink :flex-basis :align-self)
@@ -495,6 +510,16 @@ grapheme."
     (max (if horizontal 0 1)
          (- target outer-size))))
 
+(defun ebox--flex-copy-put-size (copy property value)
+  "Set COPY size PROPERTY to VALUE in engine fields and ECSS declarations."
+  (plist-put copy property value)
+  (plist-put
+   copy :ebox-style-declarations
+   (ebox-style-merge-declarations
+    (plist-get copy :ebox-style-declarations)
+    (ebox-style-compile-declarations
+     (list property (if (eq property :width) (list value) value))))))
+
 (defun ebox--flex-copy-node-for-size (node axis main cross stretch)
   "Return NODE or a copy with flex-computed MAIN/CROSS size."
   (if (and (listp node) (eq (plist-get node :ebox-type) 'box))
@@ -503,16 +528,16 @@ grapheme."
         (plist-put copy :region-id (ebox-get node :region-id))
         (when main
           (if (eq axis 'row)
-              (plist-put copy :width
-                         (ebox--flex-box-main-property node axis main))
-            (plist-put copy :height
-                       (ebox--flex-box-main-property node axis main))))
+              (ebox--flex-copy-put-size
+               copy :width (ebox--flex-box-main-property node axis main))
+            (ebox--flex-copy-put-size
+             copy :height (ebox--flex-box-main-property node axis main))))
         (when (and cross stretch)
           (if (eq axis 'row)
-              (plist-put copy :height
-                         (ebox--flex-box-main-property node 'column cross))
-            (plist-put copy :width
-                       (ebox--flex-box-main-property node 'row cross))))
+              (ebox--flex-copy-put-size
+               copy :height (ebox--flex-box-main-property node 'column cross))
+            (ebox--flex-copy-put-size
+             copy :width (ebox--flex-box-main-property node 'row cross))))
         copy)
     node))
 
@@ -522,36 +547,43 @@ grapheme."
        (not (ebox--viewport-dependent-size-value-p
              (plist-get props :flex-basis)))))
 
+(defun ebox--flex-measure-cache-probe (source props axis)
+  "Return one exact flex measurement cache probe for SOURCE.
+The result is nil when SOURCE cannot use the persistent measurement cache;
+otherwise it carries the key, signature, and any cached measurement so a
+caller can pass the same miss context to the renderer."
+  (when (ebox--flex-measure-cacheable-p source props)
+    (let* ((cache-key
+            (list (ebox--ensure-node-id source) 'flex-measure axis props))
+           (signature (ebox--flex-render-cache-signature source)))
+      (list :cache-key cache-key
+            :signature signature
+            :cached (ebox--render-cache-lookup cache-key signature)))))
+
+(defun ebox--flex-measure-cache-value (probe)
+  "Return a copied cached measurement from PROBE, or nil on a miss."
+  (when-let ((cached (plist-get probe :cached)))
+    (copy-sequence cached)))
+
 (defun ebox--flex-render-cache-signature (node)
   "Return NODE's flex cache signature after stabilizing runtime identity."
   (ebox--runtime-node-ids node)
   (ebox--node-all-region-ids node)
   (ebox--render-cache-node-signature node))
 
-(defun ebox--flex-cached-measurement (source props axis)
+(defun ebox--flex-cached-measurement (source props axis &optional probe)
   "Return SOURCE's warm persistent flex measurement, or nil."
-  (when (and ebox--render-cache-table
-             (ebox--flex-measure-cacheable-p source props))
-    (let* ((cache-key (list (ebox--ensure-node-id source)
-                            'flex-measure axis props))
-           (signature (ebox--flex-render-cache-signature source))
-           (cached (ebox--render-cache-lookup cache-key signature)))
-      (when cached
-        (copy-sequence cached)))))
+  (ebox--flex-measure-cache-value
+   (or probe (ebox--flex-measure-cache-probe source props axis))))
 
-(defun ebox--flex-measure-source (source props axis &optional viewport)
-  "Return intrinsic flex measurement plist for SOURCE on AXIS."
-  (let* ((persistent-cache-key
-          (and (ebox--flex-measure-cacheable-p source props)
-               (list (ebox--ensure-node-id source)
-                     'flex-measure axis props)))
-         (persistent-signature
-          (and persistent-cache-key
-               (ebox--flex-render-cache-signature source)))
-         (persistent-cached
-          (and persistent-cache-key
-               (ebox--render-cache-lookup persistent-cache-key
-                                          persistent-signature))))
+(defun ebox--flex-measure-source
+    (source props axis &optional viewport probe)
+  "Return intrinsic flex measurement plist for SOURCE on AXIS.
+PROBE reuses the caller's exact measurement cache lookup when supplied."
+  (let* ((probe (or probe (ebox--flex-measure-cache-probe source props axis)))
+         (persistent-cache-key (plist-get probe :cache-key))
+         (persistent-signature (plist-get probe :signature))
+         (persistent-cached (plist-get probe :cached)))
     (if persistent-cached
         (copy-sequence persistent-cached)
       (let* ((rendered (progn
@@ -618,9 +650,11 @@ measurement and immediately rendering it again at the computed size."
   "Return flex item metrics for SOURCE and PROPS on AXIS.
 Prefer an existing complete measurement, then metadata-only fixed-basis
 metrics, and render intrinsically only when layout semantics require it."
-  (or (ebox--flex-cached-measurement source props axis)
-      (ebox--flex-unrendered-measurement source props axis)
-      (ebox--flex-measure-source source props axis viewport)))
+  (let* ((probe (ebox--flex-measure-cache-probe source props axis))
+         (cached (ebox--flex-measure-cache-value probe)))
+    (or cached
+        (ebox--flex-unrendered-measurement source props axis)
+        (ebox--flex-measure-source source props axis viewport probe))))
 
 (defun ebox--flex-pad-width (string width &optional align)
   "Pad every line of STRING to WIDTH pixels."
@@ -829,20 +863,55 @@ Return a sized render entry containing the rendered string and dimensions."
       (let* ((node (unless can-use-measured
                      (ebox--flex-copy-node-for-size
                       source axis main cross stretch)))
-             (rendered (if can-use-measured
-                          (plist-get item :rendered)
-                         (ebox--flex-bind-source-viewport
-                          source item-viewport
-                          (lambda () (ebox-render (or node source)))))))
+             (fragment-key
+              (and (not can-use-measured)
+                   (listp source)
+                   (not (stringp source))
+                   (numberp item-viewport)
+                   (ebox--flex-fragment-allocation-key
+                    source axis main cross align item-viewport
+                    (list :intrinsic-layout-measurement
+                          ebox--intrinsic-layout-measurement
+                          :scroll-window-render-disabled
+                          ebox--scroll-window-render-disabled
+                          :viewport-height-dependent
+                          (if (fboundp
+                               'ebox--viewport-height-dependent-subtree-p)
+                              (ebox--viewport-height-dependent-subtree-p source)
+                            :unknown)))))
+             (fragment-entry
+              (and fragment-key
+                   (ebox--flex-fragment-retention-lookup fragment-key)))
+             fragment-side-effects
+             (rendered
+              (cond
+               (can-use-measured
+                (plist-get item :rendered))
+               (fragment-entry
+                (ebox--flex-sized-entry-rendered fragment-entry))
+               ((and fragment-key
+                     (fboundp 'ebox--render-cache-render-with-scroll-actions))
+                (let ((ebox-viewport-width item-viewport))
+                  (pcase-let ((`(,captured-rendered ,captured-side-effects)
+                               (ebox--render-cache-render-with-scroll-actions
+                                (or node source))))
+                    (setq fragment-side-effects captured-side-effects)
+                    captured-rendered)))
+               (t
+                (ebox--flex-bind-source-viewport
+                 source item-viewport
+                 (lambda () (ebox-render (or node source))))))))
         (ebox--flex-recache-source-boxes source)
-        (when (and main
+        (when (and (not fragment-entry)
+                   main
                    (not (and can-use-measured (= main render-main))))
           (if (eq axis 'row)
               (setq rendered (ebox--flex-pad-width rendered main))
             (setq rendered
                   (ebox--flex-pad-height
                    rendered main 0 (ebox--flex-string-width rendered)))))
-        (when (and cross
+        (when (and (not fragment-entry)
+                   cross
                    (not (and can-use-measured (= cross render-cross))))
           (if (eq axis 'row)
               (let* ((rendered-width
@@ -857,21 +926,27 @@ Return a sized render entry containing the rendered string and dimensions."
         (let ((entry
                (ebox--flex-sized-entry
                 rendered
-                (if (eq axis 'row)
-                    (or main (if can-use-measured
-                                 render-main
-                               (ebox--flex-string-width rendered)))
-                  (or main (ebox-string-height rendered)))
-                (if (eq axis 'row)
-                    (or cross (if can-use-measured
-                                  render-cross
-                                (ebox-string-height rendered)))
-                  (or cross (if can-use-measured
-                                render-cross
-                              (ebox--flex-string-width rendered)))))))
+                (or (and fragment-entry (plist-get fragment-entry :main))
+                    (if (eq axis 'row)
+                        (or main (if can-use-measured
+                                     render-main
+                                   (ebox--flex-string-width rendered)))
+                      (or main (ebox-string-height rendered))))
+                (or (and fragment-entry (plist-get fragment-entry :cross))
+                    (if (eq axis 'row)
+                        (or cross (if can-use-measured
+                                      render-cross
+                                    (ebox-string-height rendered)))
+                      (or cross (if can-use-measured
+                                    render-cross
+                                  (ebox--flex-string-width rendered))))))))
           (plist-put item :render-cache
                      (cons (cons cache-key entry)
                            (plist-get item :render-cache)))
+          (when (and fragment-key (not fragment-entry))
+            (cl-incf ebox-fragment-flex-retention-rerender-count)
+            (ebox--flex-fragment-retention-store
+             fragment-key entry fragment-side-effects))
           (when persistent-cache-key
             (ebox--render-cache-store persistent-cache-key
                                       persistent-signature
@@ -1015,6 +1090,29 @@ Return a sized render entry containing the rendered string and dimensions."
       (when current
         (push (nreverse current) lines))
       (nreverse lines))))
+
+(defun ebox--flex-native-size-lines-backend ()
+  "Return the optional native Flex geometry function, or nil."
+  (when (eq ebox--flex-native-size-lines-backend :unknown)
+    (setq ebox--flex-native-size-lines-backend
+          (when (require 'ebox-native-reflow nil t)
+            (when (and (fboundp 'ebox-native-reflow-layout-ready-p)
+                       (ebox-native-reflow-layout-ready-p)
+                       (fboundp 'ebox-native-reflow-flex-size-lines))
+              #'ebox-native-reflow-flex-size-lines))))
+  (unless (eq ebox--flex-native-size-lines-backend :unknown)
+    ebox--flex-native-size-lines-backend))
+
+(defun ebox--flex-size-lines (lines main-limit main-gap)
+  "Return sized copies for LINES using the pure geometry boundary when safe.
+The Elisp scalar algorithm remains the exact fallback and owns all item
+metadata and rendering decisions."
+  (or (when (and main-limit (integerp main-gap))
+        (when-let ((backend (ebox--flex-native-size-lines-backend)))
+          (funcall backend lines main-limit main-gap)))
+      (mapcar (lambda (line)
+                (ebox--flex-size-line line main-limit main-gap))
+              lines)))
 
 (defun ebox--flex-size-line (line main-limit main-gap)
   "Return LINE items with computed target main sizes."
@@ -1228,9 +1326,7 @@ Return a sized render entry containing the rendered string and dimensions."
          (justify (plist-get props :justify-content))
          (align-content (plist-get props :align-content))
          (single-line (eq (plist-get props :flex-wrap) 'nowrap))
-         (sized (mapcar (lambda (line)
-                          (ebox--flex-size-line line main-size main-gap))
-                        lines))
+         (sized (ebox--flex-size-lines lines main-size main-gap))
          (line-mains (mapcar (lambda (line)
                                (ebox--flex-line-main-size line main-gap))
                              sized))
@@ -1271,9 +1367,7 @@ Return a sized render entry containing the rendered string and dimensions."
          (justify (plist-get props :justify-content))
          (align-content (plist-get props :align-content))
          (single-line (eq (plist-get props :flex-wrap) 'nowrap))
-         (sized (mapcar (lambda (line)
-                          (ebox--flex-size-line line main-size main-gap))
-                        lines))
+         (sized (ebox--flex-size-lines lines main-size main-gap))
          (crosses (if (and cross-size single-line)
                       (list cross-size)
                     (mapcar (lambda (line)
@@ -1306,11 +1400,17 @@ Return a sized render entry containing the rendered string and dimensions."
   "Wrap NODE with flex item metadata and optional box properties from PLIST."
   (let ((item-props (ebox--plist-keep-keys plist ebox--flex-item-prop-keys))
         (box-props (ebox--plist-remove-keys plist ebox--flex-item-prop-keys)))
-    (list :ebox-type 'flex-item
-          :display '(block flow)
-          :node (ebox--flex-wrap-node-with-box-props
-                 'ebox-flex-item node box-props)
-          :props item-props)))
+    (let* ((source (ebox--flex-wrap-node-with-box-props
+                    'ebox-flex-item node box-props))
+           (source (copy-sequence source))
+           (declarations
+            (append (plist-get source :ebox-style-declarations)
+                    (ebox-style-compile-declarations item-props))))
+      (plist-put source :ebox-style-declarations declarations)
+      (list :ebox-type 'flex-item
+            :display '(block flow)
+            :node source
+            :props item-props))))
 
 ;;;###autoload
 (defun ebox-flex (&rest items)
@@ -1332,13 +1432,21 @@ its child."
                      raw-props ebox--flex-container-layout-prop-keys))
          (wrapper-box (ebox--flex-make-wrapper-box box-props))
          (props (ebox--flex-normalize-container-props raw-props))
-         (children (delq nil (cdr split))))
-    (list :ebox-type 'flex
-          :display '(block flex)
-          :props props
-          :raw-props raw-props
-          :box wrapper-box
-          :children children)))
+         (children (delq nil (cdr split)))
+         (node (list :ebox-type 'flex
+                     :display '(block flex)
+                     :props props
+                     :raw-props raw-props
+                     :ebox-style-declarations
+                     (ebox-style-compile-declarations raw-props)
+                     :box wrapper-box
+                     :children children)))
+    (when wrapper-box
+      (plist-put wrapper-box :ebox-style-wrapper t))
+    (dolist (key '(:id :class :selector-state :selector-attributes :key))
+      (when (plist-member raw-props key)
+        (plist-put node key (plist-get raw-props key))))
+    node))
 
 (defun ebox--render-flex-box (node rendered)
   "Render flex NODE's container box around RENDERED, when present."

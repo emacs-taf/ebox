@@ -27,6 +27,22 @@
     (propertize "Open" 'keymap map 'mouse-face 'highlight
                 'help-echo "Open this item")))
 
+(defun ebox-surface-test--hash-fingerprint (table)
+  "Return a stable content fingerprint for hash TABLE.
+The fingerprint checks entries rather than only table identity, so a failed
+candidate cannot hide mutations by restoring the old hash-table pointer."
+  (let (entries)
+    (when (hash-table-p table)
+      (maphash
+       (lambda (key value)
+         (push (list (prin1-to-string key)
+                     (sxhash-equal value))
+               entries))
+       table))
+    (list (length entries)
+          (sort entries (lambda (left right)
+                          (string< (car left) (car right)))))))
+
 (defun ebox-surface-test--fixtures ()
   "Return named fresh layout builders covering active Ebox layout kinds."
   (list
@@ -122,9 +138,114 @@
     (maphash
      (lambda (_node-id node)
        (when (equal (plist-get node :key) key)
-         (setq object (plist-get node :surface-object))))
+        (setq object (plist-get node :surface-object))))
      (plist-get state :node-table))
     object))
+
+(defun ebox-surface-test--node-by-key (state key)
+  "Return the runtime Ebox node for KEY in STATE."
+  (let (match)
+    (maphash
+     (lambda (_node-id node)
+       (when (equal (plist-get node :key) key)
+         (setq match node)))
+     (plist-get state :node-table))
+    match))
+
+(ert-deftest ebox-surface-role-ids-read-one-property-snapshot ()
+  "Role extraction preserves the ordered Ebox role mapping."
+  (let ((rendered (copy-sequence "x")))
+    (add-text-properties
+     0 1
+     '(ebox-overflow-foreground-source 9
+       ebox-content-owners (20 21)
+       ebox-content 30
+       ebox-content-owner 31
+       ebox-pt 32
+       ignored-property ignored)
+     rendered)
+    (should (equal
+             (ebox-surface--role-ids-at rendered 0)
+             '((overflow-foreground . 9)
+               (content-owner . 20)
+               (content-owner . 21)
+               (content . 30)
+               (content-owner . 31)
+               (pt . 32))))))
+
+(ert-deftest ebox-surface-role-gap-does-not-mutate-next-run ()
+  "A role gap must not destructively change the following run's roles."
+  (let* ((rendered
+          (concat (propertize "A" 'ebox-pt 1)
+                  "gap"
+                  (propertize "B" 'ebox-content 2 'ebox-pt 1)))
+         (fragments (ebox-surface--rendered-fragments rendered))
+         (gap (nth 1 fragments))
+         (next (nth 2 fragments)))
+    (should (equal (plist-get gap :role-ids)
+                   '((pt . 1) (content . 2))))
+    (should (equal (plist-get next :paint-role-ids)
+                   '((content . 2) (pt . 1))))
+    (should (equal (plist-get next :role-ids)
+                   '((content . 2) (pt . 1))))))
+
+(ert-deftest ebox-surface-face-provenance-is-string-scoped ()
+  "Face provenance replays only for the exact rendered string identity."
+  (let* ((rendered (propertize "x" 'face '(:foreground "owned")))
+         (registry (make-hash-table :test #'eq))
+         (faces (make-hash-table :test #'eq :weakness 'key))
+         (ebox--render-owned-text-values registry)
+         (ebox--render-output-provenance-table
+          (make-hash-table :test #'eq :weakness 'key)))
+    (puthash 'face faces registry)
+    (puthash (get-text-property 0 'face rendered) t faces)
+    (ebox--record-render-output-provenance rendered)
+    (let ((ebox--render-owned-text-values (make-hash-table :test #'eq)))
+      (ebox--replay-render-output-provenance rendered)
+      (should
+       (ebox--render-owned-text-value-p
+        'face (get-text-property 0 'face rendered))))
+    (let ((ebox--render-owned-text-values (make-hash-table :test #'eq)))
+      (ebox--replay-render-output-provenance (copy-sequence rendered))
+      (should-not
+       (ebox--render-owned-text-value-p
+        'face (get-text-property 0 'face rendered))))))
+
+(ert-deftest ebox-surface-face-provenance-rejects-caller-face ()
+  "Caller-provided face values are never promoted to Ebox-owned values."
+  (let* ((caller-face (list :foreground "caller"))
+         (source (propertize "x" 'face caller-face))
+         (rendered (copy-sequence source))
+         (ebox--render-owned-text-values (make-hash-table :test #'eq)))
+    (add-face-text-property 0 1 '(:weight bold) t rendered)
+    (ebox--register-render-owned-face-values source rendered)
+    (should-not
+     (ebox--render-owned-text-value-p
+      'face (get-text-property 0 'face rendered)))))
+
+(ert-deftest ebox-surface-candidate-plan-copies-face-property-values ()
+  "Candidate plans isolate mutable face values despite provenance hints."
+  (let* ((color (copy-sequence "#192233"))
+         (font (list :family (copy-sequence "caller-font")))
+         (face (list :foreground color :font font))
+         (display (list 'space :width 2))
+         (rendered (copy-sequence "ab"))
+         (owned-values (make-hash-table :test #'eq))
+         (face-values (make-hash-table :test #'eq))
+         (display-values (make-hash-table :test #'eq)))
+    (put-text-property 0 1 'face face rendered)
+    (put-text-property 1 2 'display display rendered)
+    (puthash face t face-values)
+    (puthash display t display-values)
+    (puthash 'face face-values owned-values)
+    (puthash 'display display-values owned-values)
+    (let* ((snapshot
+            (ebox-surface--candidate-plan-text rendered owned-values))
+           (snapshot-face (get-text-property 0 'face snapshot)))
+      (should-not (eq snapshot-face face))
+      (should-not (eq (plist-get snapshot-face :foreground) color))
+      (should-not (eq (plist-get snapshot-face :font) font))
+      (should (eq (get-text-property 1 'display snapshot) display)))))
 
 (ert-deftest ebox-surface-projects-every-layout-with-exact-equivalence ()
   "TP projection should preserve every character and text property interval."
@@ -160,18 +281,146 @@
     (dolist (object captured)
       (should-not (tp-object-live-p object)))))
 
+(ert-deftest ebox-surface-static-projection-skips-empty-cascade ()
+  "Inline-only static projection should not compute per-node ECSS styles."
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create))
+        (calls 0)
+        (original (symbol-function 'ebox-style-compute-subject)))
+    (cl-letf (((symbol-function 'ebox-style-compute-subject)
+               (lambda (&rest args)
+                 (cl-incf calls)
+                 (apply original args))))
+      (let ((rendered
+             (ebox-surface-test--render-fresh
+              (cdr (assq 'box (ebox-surface-test--fixtures))) t)))
+        (should (= calls 0))
+        (should (string-match-p "Open" (substring-no-properties rendered)))))))
+
+(ert-deftest ebox-surface-inline-inheritance-keeps-empty-cascade ()
+  "Inline inherited values should still compute without stylesheet rules."
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create))
+        (calls 0)
+        (original (symbol-function 'ebox-style-compute-subject)))
+    (cl-letf (((symbol-function 'ebox-style-compute-subject)
+               (lambda (&rest args)
+                 (cl-incf calls)
+                 (apply original args))))
+      (ebox-surface-test--render-fresh
+       (lambda ()
+         (ebox-create
+          :font-height 1.25
+          :ebox-content-node
+          (ebox-create :content "Inherited")))
+       t))
+    (should (> calls 0))))
+
+(ert-deftest ebox-box-content-cache-reuses-fixed-viewport-subtree ()
+  "A fixed box content viewport should reuse its exact composite layout."
+  (let* ((ebox--render-cache-table (make-hash-table :test 'equal))
+         (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
+         (ebox--viewport-dependent-node-ids-cache (make-hash-table :test 'eq))
+         (ebox--viewport-dependent-subtree-cache (make-hash-table :test 'eq))
+         (ebox--viewport-height-dependent-subtree-cache
+          (make-hash-table :test 'eq))
+         (ebox--render-owned-text-values (make-hash-table :test 'eq))
+         (ebox--region-box-table (make-hash-table :test 'equal))
+         (ebox--scroll-global-state (make-hash-table :test 'equal))
+         (ebox-viewport-width 240)
+         (ebox-viewport-height 8)
+         (child
+          (ebox-column
+           (ebox-create :key 'responsive-child
+                        :content "fixed local viewport"
+                        :width '(viewport)
+                        :height 1)))
+         (wrapper (ebox-create :width '(160)))
+         (renders 0)
+         (original (symbol-function
+                    'ebox--render-cache-render-with-scroll-actions)))
+    (cl-letf (((symbol-function 'ebox--render-cache-render-with-scroll-actions)
+               (lambda (node)
+                 (cl-incf renders)
+                 (funcall original node))))
+      (let ((first (ebox--render-node-as-box-content child wrapper))
+            (second (ebox--render-node-as-box-content child wrapper)))
+        (should (= renders 1))
+        (should (equal-including-properties first second))))))
+
 (ert-deftest ebox-surface-plan-stays-free-of-runtime-state ()
-  "The generic surface plan should not contain markers or runtime handles."
+  "The surface plan should not contain markers or runtime handles."
   (let ((original (symbol-function 'tp-surface-result-create))
-        captured)
+        (original-owned (symbol-function 'tp-surface-result-create-owned))
+        captured client-state)
     (cl-letf (((symbol-function 'tp-surface-result-create)
-               (lambda (plan &optional client-state)
-                 (setq captured plan)
-                 (funcall original plan client-state))))
+               (lambda (plan &optional state)
+                 (setq captured plan
+                       client-state state)
+                 (funcall original plan state)))
+              ((symbol-function 'tp-surface-result-create-owned)
+               (lambda (context plan &optional state)
+                 (setq captured plan
+                       client-state state)
+                 (funcall original-owned context plan state))))
       (ebox-surface-test--render-fresh
        (cdr (assq 'box (ebox-surface-test--fixtures))) t))
     (should (tp-surface-plan-p captured))
-    (should (ebox-surface-test--plan-pure-p captured))))
+    (should (ebox-surface-test--plan-pure-p captured))
+    (should (listp client-state))
+    (let* ((fragments-plan (car (tp-surface-plan-children captured)))
+           (text-plan (car (tp-surface-plan-children fragments-plan)))
+           (plan-text (tp-surface-plan-text text-plan))
+           (state-fragments (plist-get client-state :surface-fragments))
+           (owner-position
+            (cl-loop for position from 0 below (length plan-text)
+                     when (get-text-property position
+                                              'ebox-content-owners plan-text)
+                     return position))
+           (plan-owners (and owner-position
+                             (get-text-property owner-position
+                                                'ebox-content-owners plan-text))))
+      (should (cl-every (lambda (fragment)
+                          (and (memq :text-source-p fragment)
+                               (not (memq :text fragment))
+                               (integerp (plist-get fragment :start))
+                               (integerp (plist-get fragment :end))))
+                        state-fragments))
+      (should (integerp owner-position))
+      (should (listp plan-owners))
+      (setcar plan-owners 'plan-mutated)
+      (should (cl-every (lambda (fragment)
+                          (not (memq :ebox-content-owners fragment)))
+                        state-fragments)))))
+
+(ert-deftest ebox-surface-ancestor-tags-are-candidate-local ()
+  "Each projection candidate receives fresh ancestor ownership tags."
+  (let* ((region-id 'region)
+         (ancestor-id 'ancestor)
+         (region-object (make-symbol "region-object"))
+         (ancestor-object (make-symbol "ancestor-object"))
+         (region-node-table (make-hash-table :test #'equal))
+         (parent-table (make-hash-table :test #'equal))
+         (node-objects (make-hash-table :test #'equal))
+         (region-objects (make-hash-table :test #'equal))
+         (role-ids '((content . region))))
+    (puthash region-id 'region-node region-node-table)
+    (puthash 'region-node ancestor-id parent-table)
+    (puthash ancestor-id ancestor-object node-objects)
+    (puthash region-id region-object region-objects)
+    (let* ((first (ebox-surface--fragment-owners
+                   role-ids (list :region-node-table region-node-table
+                                  :parent-table parent-table)
+                   node-objects region-objects))
+           (second (ebox-surface--fragment-owners
+                    role-ids (list :region-node-table region-node-table
+                                   :parent-table parent-table)
+                    node-objects region-objects))
+           (first-tags
+            (cadr (cl-find ancestor-object first :key #'car :test #'eq)))
+           (second-tags
+            (cadr (cl-find ancestor-object second :key #'car :test #'eq))))
+      (should (equal first-tags '(:ebox/descendant-output t)))
+      (should (equal second-tags '(:ebox/descendant-output t)))
+      (should-not (eq first-tags second-tags)))))
 
 (ert-deftest ebox-surface-projection-does-not-mutate-a-buffer ()
   "Pure projection should not call any final buffer mutation primitive."
@@ -288,11 +537,206 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-render-materializes-through-tp-surface ()
-  "The public string renderer should materialize one ephemeral TP surface."
+(ert-deftest ebox-surface-scoped-update-reuses-copy-on-write-candidate ()
+  "A fixed-footprint region update should hand a path candidate to the surface."
   (ebox-surface-test--reset-render-state)
-  (let ((original (symbol-function 'tp-surface-materialize-string))
-        (calls 0))
+  (let ((buffer (generate-new-buffer " *ebox-surface-isolated-candidate*"))
+        (copy-count 0)
+        (validation-count 0)
+        (reconcile-count 0)
+        (runtime-index-count 0)
+        (original-copy (symbol-function 'ebox-tree-copy-node-structure))
+        (original-validate (symbol-function 'ebox-tree-validate-declarative-root))
+        (original-reconcile (symbol-function 'ebox-tree-reconcile-runtime))
+        (original-runtime-index (symbol-function 'ebox--runtime-index)))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-column
+            (ebox-create :key 'target :id 'target :content "Before"
+                         :width '(100))
+            (ebox-create :key 'sibling :content "Sibling" :width '(100))))
+          (let ((handle (ebox-region-resolve buffer "target")))
+            (cl-letf (((symbol-function 'ebox-tree-copy-node-structure)
+                       (lambda (&rest args)
+                         (cl-incf copy-count)
+                         (apply original-copy args)))
+                      ((symbol-function 'ebox-tree-validate-declarative-root)
+                       (lambda (&rest args)
+                         (cl-incf validation-count)
+                         (apply original-validate args)))
+                      ((symbol-function 'ebox-tree-reconcile-runtime)
+                      (lambda (&rest args)
+                         (cl-incf reconcile-count)
+                         (apply original-reconcile args)))
+                      ((symbol-function 'ebox--runtime-index)
+                       (lambda (&rest args)
+                         (cl-incf runtime-index-count)
+                         (apply original-runtime-index args))))
+              (ebox-region-update handle :content "After")))
+        (should (= copy-count 0))
+        (should (= validation-count 0))
+        (should (= reconcile-count 0))
+        (should (= runtime-index-count 0)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-surface-span-update-renders-only-the-owner ()
+  "A fixed-footprint span update should render its owner, not the root tree."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-local-span*"))
+        (rendered-node-ids nil)
+        (ensured-node-count 0))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-column
+            (ebox-create :key 'target :id 'target :content "Before"
+                         :width '(100))
+            (ebox-create :key 'sibling :content "Sibling" :width '(100))))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (target
+                  (cl-loop for node being the hash-values
+                           of (plist-get state :node-table)
+                           when (equal (plist-get node :key) 'target)
+                           return node))
+                 (target-id (plist-get target :node-id))
+                 (handle (ebox-region-resolve buffer "target"))
+                 (original-render (symbol-function 'ebox--render-layout))
+                 (original-ensure (symbol-function
+                                   'ebox-surface--ensure-node-tree)))
+            (cl-letf (((symbol-function 'ebox--render-layout)
+                       (lambda (node)
+                         (push (plist-get node :node-id) rendered-node-ids)
+                         (funcall original-render node)))
+                      ((symbol-function 'ebox-surface--ensure-node-tree)
+                       (lambda (&rest args)
+                         (cl-incf ensured-node-count)
+                         (apply original-ensure args))))
+              (ebox-region-update handle :content "After"))
+            (should (equal (nreverse rendered-node-ids) (list target-id)))
+            (should (= ensured-node-count 0))
+            (let ((expected (ebox-render (ebox--buffer-root-node buffer))))
+              (should
+               (equal-including-properties
+                expected
+                (with-current-buffer buffer (buffer-string)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-surface-partial-row-span-update-renders-only-the-owner ()
+  "A partial row owner should patch disjoint slots without full projection."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-partial-row*"))
+        (rendered-node-ids nil)
+        (ensured-node-count 0))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-row
+            (ebox-create :key 'left :content "Left\ndetail" :width '(52))
+            (ebox-create :key 'target :id 'target
+                         :content "Before\ndetail" :width '(52))
+            (ebox-create :key 'right :content "Right\ndetail" :width '(52))))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (target
+                  (cl-loop for node being the hash-values
+                           of (plist-get state :node-table)
+                           when (equal (plist-get node :key) 'target)
+                           return node))
+                 (target-id (plist-get target :node-id))
+                 (snapshot
+                  (ebox--ensure-layout-snapshot-details buffer target-id))
+                 (spans (plist-get snapshot :buffer-spans))
+                 (handle (ebox-region-resolve buffer "target"))
+                 (original-render (symbol-function 'ebox--render-layout))
+                 (original-ensure
+                  (symbol-function 'ebox-surface--ensure-node-tree)))
+            (with-current-buffer buffer
+              (should (ebox-buffer--partial-line-slots-p spans))
+              (should-not (ebox--spans-contiguous-lines-p spans)))
+            (cl-letf (((symbol-function 'ebox--render-layout)
+                       (lambda (node)
+                         (push (plist-get node :node-id) rendered-node-ids)
+                         (funcall original-render node)))
+                      ((symbol-function 'ebox-surface--ensure-node-tree)
+                       (lambda (&rest args)
+                         (cl-incf ensured-node-count)
+                         (apply original-ensure args))))
+              (ebox-region-update handle :content "UPDATED\ndetail"))
+            (should (equal (nreverse rendered-node-ids) (list target-id)))
+            (should (= ensured-node-count 0))
+            (should (eq (plist-get (ebox-buffer-update-report buffer)
+                                   :strategy)
+                        'span-patch))
+            (let* ((surface (with-current-buffer
+                                buffer ebox-surface--buffer-surface))
+                   (report (tp-surface-report surface))
+                   (object-count
+                    (plist-get (tp-surface-inspect surface) :object-count)))
+              (should (< (plist-get report :reconciled-objects)
+                         object-count)))
+            (let ((expected (ebox-render (ebox--buffer-root-node buffer))))
+              (should
+               (equal-including-properties
+                expected
+                (with-current-buffer buffer (buffer-string)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-surface-cow-fallback-preserves-published-tree-on-failure ()
+  "A widened path candidate must not mutate the published tree before rollback."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-cow-fallback*"))
+        (copy-count 0)
+        (original-copy (symbol-function 'ebox-tree-copy-node-structure)))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-column
+            (ebox-create :key 'target :id 'target :content "Before"
+                         :width '(100))
+            (ebox-create :key 'sibling :content "Sibling" :width '(100))))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (contents
+                  (with-current-buffer buffer
+                    (buffer-substring (point-min) (point-max))))
+                 (handle (ebox-region-resolve buffer "target"))
+                 (region-id (cdr (ebox-selector--region-target handle)))
+                 (tp--surface-publication-step-function
+                  (lambda (step _surface)
+                    (when (eq step 'client-state)
+                      (error "Reject widened candidate")))))
+            (cl-letf (((symbol-function 'ebox-tree-copy-node-structure)
+                       (lambda (&rest args)
+                         (cl-incf copy-count)
+                         (apply original-copy args))))
+              (should-error
+               (ebox-region-update handle :content "A\nB\nC")))
+            (should (> copy-count 0))
+            (should (eq (ebox--buffer-render-state buffer) state))
+            (should (equal-including-properties
+                     (with-current-buffer buffer
+                       (buffer-substring (point-min) (point-max)))
+                     contents))
+            (should (equal (ebox-get
+                            (ebox--root-region-box
+                             (plist-get state :root-node)
+                             region-id)
+                            :content)
+                           "Before"))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-render-uses-isolated-layout-for-static-content ()
+  "Static public string rendering should avoid a retained TP object tree."
+  (ebox-surface-test--reset-render-state)
+  (let ((calls 0)
+        (original (symbol-function 'tp-surface-materialize-string)))
     (cl-letf (((symbol-function 'tp-surface-materialize-string)
                (lambda (producer)
                  (cl-incf calls)
@@ -300,7 +744,7 @@
       (should (stringp
                (ebox-render
                 (ebox-create :content "Materialized" :width '(100))))))
-    (should (= calls 1))))
+    (should (= calls 0))))
 
 (ert-deftest ebox-render-is-repeatable-without-consuming-runtime-identities ()
   "Ephemeral rendering should be exact and leave live identity counters alone."
@@ -369,6 +813,456 @@
             (let ((report (ebox-buffer-update-report buffer)))
               (should (eq (plist-get report :constraint-source) 'viewport))
               (should (plist-get report :runtime-published)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-viewport-reflow-reuses-retained-node-subtree ()
+  "A safe viewport reflow should reuse the retained TP node topology."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-surface-viewport-reflow*"))
+        (ensured-node-count 0)
+        (runtime-index-count 0)
+        (original-ensure (symbol-function 'ebox-surface--ensure-node-tree))
+        (original-runtime-index (symbol-function 'ebox--runtime-index)))
+    (unwind-protect
+        (let ((ebox-viewport-width 180)
+              (ebox-viewport-height 6)
+              (ebox-runtime-idle-prewarm nil)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (ebox-render-to-buffer
+           buffer
+           (apply
+            #'ebox-flex
+            :key 'viewport-reflow-root
+            :width '(viewport)
+            :flex-wrap 'wrap
+            :column-gap '(6)
+            :row-gap 1
+            (cl-loop for index below 12
+                     collect
+                     (ebox-flex-item
+                      (ebox-create
+                       :key (list 'viewport-reflow-item index)
+                       :content (format "item-%02d" index)
+                       :width '(70)
+                       :padding '(0 1)
+                       :color "#172554"
+                       :bgcolor "#DBEAFE")))))
+          (let ((old-root-object
+                 (plist-get (plist-get (ebox--buffer-render-state buffer)
+                                       :root-node)
+                             :surface-object)))
+            (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
+                       (lambda (&rest args)
+                         (cl-incf ensured-node-count)
+                         (apply original-ensure args))))
+              (cl-letf (((symbol-function 'ebox--runtime-index)
+                         (lambda (&rest args)
+                           (cl-incf runtime-index-count)
+                           (apply original-runtime-index args))))
+                (ebox-rerender-buffer-with-context buffer 320 6)))
+            (let* ((state (ebox--buffer-render-state buffer))
+                   (surface (plist-get state :surface))
+                   (tp-report (tp-surface-report surface))
+                   (expected
+                    (let ((ebox-viewport-width 320)
+                          (ebox-viewport-height 6))
+                      (ebox-render (plist-get state :root-node))))
+                   (actual
+                    (with-current-buffer buffer
+                      (buffer-substring (point-min) (point-max))))
+                   (object-count
+                    (plist-get (tp-surface-inspect surface) :object-count)))
+              (should (= ensured-node-count 0))
+              ;; The candidate owns a copied Ebox root, so its node indexes
+              ;; must be rebuilt even though TP's retained object topology is
+              ;; reused.  This is the COW boundary that keeps rollback pure.
+              (should (= runtime-index-count 1))
+              (should (<= (plist-get tp-report :reconciled-objects) 4))
+              (should (< (plist-get tp-report :reconciled-objects)
+                         object-count))
+              (should (eq old-root-object
+                          (plist-get (plist-get state :root-node)
+                                     :surface-object)))
+              (should (equal-including-properties actual expected)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-viewport-reflow-retains-final-sized-flex-child-fragments ()
+  "Viewport reflow should reuse final-sized Flex child fragments exactly."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-flex-fragment-retention*"))
+        (stable-renders 0)
+        (growing-renders 0)
+        stable-source growing-source)
+    (unwind-protect
+        (let ((ebox-viewport-width 300)
+              (ebox-viewport-height 6)
+              (ebox-runtime-idle-prewarm nil)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (setq stable-source
+                (let ((node
+                       (ebox-column
+                       (ebox-create :key 'stable-leaf
+                                     :content "zero\none\ntwo"
+                                     :width '(100)
+                                     :height 1
+                                     :overflow 'hidden
+                                     :surface-properties
+                                     '(help-echo "stable")))))
+                  (plist-put node :key 'stable-source)
+                  node))
+          (setq growing-source
+                (let ((node
+                       (ebox-column
+                        (ebox-create :key 'growing-leaf
+                                     :content "growing"
+                                     :width '(viewport)
+                                     :height 1
+                                     :color "#0F172A"
+                                     :bgcolor "#DBEAFE"))))
+                  (plist-put node :key 'growing-source)
+                  node))
+          (let ((original-render (symbol-function 'ebox-render)))
+            (cl-letf (((symbol-function 'ebox-render)
+                       (lambda (node)
+                         (cond
+                          ((equal (plist-get node :key) 'stable-source)
+                           (cl-incf stable-renders))
+                          ((equal (plist-get node :key) 'growing-source)
+                           (cl-incf growing-renders)))
+                         (funcall original-render node))))
+              (let* ((layout
+                      (ebox-flex
+                       :key 'fragment-root
+                       :width '(viewport)
+                       :height 2
+                       :flex-wrap 'nowrap
+                       (ebox-flex-item stable-source
+                                       :flex-grow 0 :flex-basis '(120))
+                       (ebox-flex-item growing-source
+                                       :flex-grow 1 :flex-basis '(80))))
+                     (items (plist-get layout :children)))
+                (setq stable-source
+                      (plist-get (car items) :node)
+                      growing-source
+                      (plist-get (cadr items) :node))
+                (ebox-render-to-buffer buffer layout))
+              (let* ((old-state (ebox--buffer-render-state buffer))
+                     (old-root-object
+                      (plist-get (plist-get old-state :root-node)
+                                 :surface-object))
+                     (old-stable-object
+                      (ebox-surface-test--object-by-key old-state
+                                                        'stable-source))
+                     (initial-stable-renders stable-renders)
+                     (initial-growing-renders growing-renders)
+                     report state expected actual
+                     candidate-stable-renders candidate-growing-renders)
+                ;; Exercise the fragment boundary independently of the
+                ;; broader render cache; the published fragment table remains
+                ;; the only retained final-sized output for this reflow.
+                (clrhash (plist-get old-state :render-cache))
+                (setq ebox-fragment-flex-retention-hit-count 0
+                      ebox-fragment-flex-retention-rerender-count 0)
+                (setq report
+                      (ebox-rerender-buffer-with-context buffer 360 6))
+                (setq state (ebox--buffer-render-state buffer)
+                      candidate-stable-renders stable-renders
+                      candidate-growing-renders growing-renders
+                      expected
+                      (let ((ebox-viewport-width 360)
+                            (ebox-viewport-height 6))
+                        (ebox-render (plist-get state :root-node)))
+                      actual
+                      (with-current-buffer buffer
+                        (buffer-substring (point-min) (point-max))))
+                (should (eq (plist-get report :projection-kind)
+                            'viewport-reflow))
+                (should (eq old-root-object
+                            (plist-get (plist-get state :root-node)
+                                       :surface-object)))
+                (should (eq old-stable-object
+                            (ebox-surface-test--object-by-key
+                             state 'stable-source)))
+                (should (equal-including-properties actual expected))
+                (should (= candidate-stable-renders initial-stable-renders))
+                (should (> candidate-growing-renders initial-growing-renders))
+                (should (> ebox-fragment-flex-retention-hit-count 0))
+                (should (> ebox-fragment-flex-retention-rerender-count 0))
+                (with-current-buffer buffer
+                  (goto-char (point-min))
+                  (should (text-property-search-forward
+                           'help-echo "stable" t)))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-flex-fragment-retention-rejects-scroll-installations ()
+  "Fragment retention must reject cached scroll state installations."
+  (let ((ebox--layout-fragments-table (make-hash-table :test 'equal))
+        (ebox--layout-fragments-reuse-p t)
+        (ebox-fragment-flex-retention-store-count 0)
+        (set-effects
+         '(:scroll-actions ((set 9 (:scroll-offset 0 :box old-box)))))
+        (clear-effects '(:scroll-actions ((clear 9))))
+        (pure-effects '(:scroll-actions nil))
+        (entry '(:rendered "stable" :main 20 :cross 1)))
+    (should-not
+     (ebox-fragment-flex-retained-side-effects-reusable-p set-effects))
+    (should-not
+     (ebox-fragment-flex-retained-side-effects-reusable-p clear-effects))
+    (should
+     (ebox-fragment-flex-retained-side-effects-reusable-p pure-effects))
+    (should-not
+     (ebox-fragment-flex-retained-side-effects-reusable-p nil))
+    (ebox-fragment-flex-retention-store 'stable entry set-effects)
+    (should (= (hash-table-count ebox--layout-fragments-table) 0))
+    (ebox-fragment-flex-retention-store 'stable entry clear-effects)
+    (should (= (hash-table-count ebox--layout-fragments-table) 0))
+    (ebox-fragment-flex-retention-store 'stable entry pure-effects)
+    (should (= (hash-table-count ebox--layout-fragments-table) 1))
+    (should (= ebox-fragment-flex-retention-store-count 1))
+    (should (ebox-fragment-flex-retention-lookup 'stable))))
+
+(ert-deftest ebox-flex-fragment-key-normalizes-only-height-independent-contexts ()
+  "Retained Flex keys ignore height only after an explicit dependency proof."
+  (let ((ebox--layout-fragments-table (make-hash-table :test 'equal))
+        (node (ebox-create :content "stable" :width '(80))))
+    (cl-labels
+        ((key-at (height dependency)
+           (let ((ebox-viewport-height height))
+             (ebox-fragment-flex-allocation-key
+              node 'column 1 80 'stretch 80
+              (list :viewport-height-dependent dependency)))))
+      (should (equal (key-at nil nil) (key-at 36 nil)))
+      (should-not (equal (key-at nil t) (key-at 36 t)))
+      (should-not (equal (key-at nil :unknown) (key-at 36 :unknown))))))
+
+(ert-deftest ebox-flex-fragment-retention-evicts-one-entry-at-capacity ()
+  "Fragment retention capacity must evict one old entry, not clear the table."
+  (let ((ebox--layout-fragments-table (make-hash-table :test 'equal))
+        (ebox-fragment-flex-retention-max-entries 2)
+        (effects '(:scroll-actions nil))
+        (entry '(:rendered "stable" :main 20 :cross 1)))
+    (ebox-fragment-flex-retention-store 'one entry effects)
+    (ebox-fragment-flex-retention-store 'two entry effects)
+    (ebox-fragment-flex-retention-store 'three entry effects)
+    (should (= (hash-table-count ebox--layout-fragments-table) 2))))
+
+(ert-deftest ebox-viewport-reflow-falls-back-for-active-stylesheet ()
+  "A stylesheet-dependent viewport change must rebuild styled node objects."
+  (ebox-surface-test--reset-render-state)
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create))
+        (buffer (generate-new-buffer " *ebox-viewport-cascade*"))
+        (ensured-node-count 0)
+        (original-ensure (symbol-function 'ebox-surface--ensure-node-tree)))
+    (unwind-protect
+        (let ((ebox-viewport-width 160)
+              (ebox-viewport-height 6)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (ebox-style-add-rule ".viewport-cascade"
+                               '(:color "#1D4ED8")
+                               :layer 'base)
+          (ebox-render-to-buffer
+           buffer
+           (ebox-create :class 'viewport-cascade
+                        :content "Cascade"
+                        :width '(viewport)))
+          (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
+                     (lambda (&rest args)
+                       (cl-incf ensured-node-count)
+                       (apply original-ensure args))))
+            (ebox-rerender-buffer-with-context buffer 240 6))
+          (let ((report (ebox-buffer-update-report buffer)))
+            (should (> ensured-node-count 0))
+            (should-not (plist-get report :projection-kind))
+            (should (plist-get report :runtime-published))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-viewport-reflow-falls-back-for-inline-inheritance ()
+  "An inherited inline value must keep the full styled projection path."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-viewport-inheritance*"))
+        (ensured-node-count 0)
+        (original-ensure (symbol-function 'ebox-surface--ensure-node-tree)))
+    (unwind-protect
+        (let ((ebox-viewport-width 160)
+              (ebox-viewport-height 6)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (ebox-render-to-buffer
+           buffer
+           (ebox-create
+            :font-height 1.25
+            :width '(viewport)
+            :ebox-content-node
+            (ebox-create :content "Inherited")))
+          (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
+                     (lambda (&rest args)
+                       (cl-incf ensured-node-count)
+                       (apply original-ensure args))))
+            (ebox-rerender-buffer-with-context buffer 240 6))
+          (let ((report (ebox-buffer-update-report buffer)))
+            (should (> ensured-node-count 0))
+            (should-not (plist-get report :projection-kind))
+            (should (plist-get report :runtime-published))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-viewport-reflow-falls-back-for-scroll-and-visible-overflow ()
+  "Scroll state and visible overflow must not enter retained reflow."
+  (dolist (fixture
+           (list
+            (cons 'scroll
+                  (lambda ()
+                    (ebox-create :content "zero\none\ntwo"
+                                 :width '(viewport)
+                                 :height 2
+                                 :overflow 'scroll)))
+            (cons 'visible-overflow
+                  (lambda ()
+                    (ebox-create :content "one\ntwo"
+                                 :width '(viewport)
+                                 :height 1
+                                 :overflow 'visible)))))
+    (ebox-surface-test--reset-render-state)
+    (let ((buffer (generate-new-buffer
+                   (format " *ebox-viewport-%s*" (car fixture))))
+          (ensured-node-count 0)
+          (original-ensure (symbol-function 'ebox-surface--ensure-node-tree)))
+      (unwind-protect
+          (let ((ebox-viewport-width 160)
+                (ebox-viewport-height 6)
+                (ebox-runtime-idle-reflow-cache-prewarm nil))
+            (ebox-render-to-buffer buffer (funcall (cdr fixture)))
+            (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
+                       (lambda (&rest args)
+                         (cl-incf ensured-node-count)
+                         (apply original-ensure args))))
+              (ebox-rerender-buffer-with-context buffer 240 6))
+            (let ((report (ebox-buffer-update-report buffer)))
+              (should (> ensured-node-count 0))
+              (should-not (plist-get report :projection-kind))
+              (should (plist-get report :runtime-published))))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest ebox-viewport-reflow-supports-height-and-both-axis-resize ()
+  "Retained viewport reflow should cover height-only and two-axis changes."
+  (dolist (case
+           '((height 120 3 120 5 height)
+             (both 160 3 240 5 both)))
+    (pcase-let ((`(,name ,old-width ,old-height ,new-width ,new-height ,axes)
+                 case))
+      (ebox-surface-test--reset-render-state)
+      (let ((buffer (generate-new-buffer
+                     (format " *ebox-viewport-%s*" name)))
+            (ensured-node-count 0)
+            (original-ensure (symbol-function 'ebox-surface--ensure-node-tree)))
+        (unwind-protect
+            (let ((ebox-viewport-width old-width)
+                  (ebox-viewport-height old-height)
+                  (ebox-runtime-idle-reflow-cache-prewarm nil))
+              (ebox-render-to-buffer
+               buffer
+               (ebox-create :key name :content "One\nTwo"
+                            :width (if (eq axes 'height)
+                                       '(120)
+                                     '(viewport))
+                            :height '(viewport-height)
+                            :overflow 'hidden))
+              (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
+                         (lambda (&rest args)
+                           (cl-incf ensured-node-count)
+                           (apply original-ensure args))))
+                (ebox-rerender-buffer-with-context
+                 buffer new-width new-height))
+              (let ((report (ebox-buffer-update-report buffer)))
+                (should (= ensured-node-count 0))
+                (should (eq (plist-get report :projection-kind)
+                            'viewport-reflow))
+                (should (eq (plist-get report :viewport-axes) axes))
+                (should (plist-get report :runtime-published))
+                (with-current-buffer buffer
+                  (should (= (ebox--string-pixel-width
+                              (buffer-substring (line-beginning-position)
+                                                (line-end-position)))
+                             new-width)))))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))))))
+
+(ert-deftest ebox-viewport-reflow-rolls-back-after-publication-failure ()
+  "A failed retained viewport publication must restore its old generation."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-viewport-rollback*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 160)
+              (ebox-viewport-height 3)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (ebox-render-to-buffer
+           buffer
+           (ebox-create :key 'rollback
+                        :content "zero\none\ntwo\nthree"
+                        :width '(viewport)
+                        :height '(viewport-height)
+                        :overflow 'scroll))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (signals (with-current-buffer
+                            buffer ebox-surface--context-signals))
+                 (state (tp-surface-client-state surface))
+                 (old-root (plist-get state :root-node))
+                 (old-root-object (plist-get old-root :surface-object))
+                 (old-root-cache (plist-get old-root :render-cache))
+                 (old-render-cache (plist-get state :render-cache))
+                 (cache-fingerprints
+                  (mapcar
+                   (lambda (key)
+                     (ebox-surface-test--hash-fingerprint
+                      (plist-get state key)))
+                   '(:render-cache :render-signature-cache
+                     :flex-content-min-widths
+                     :viewport-height-dependent-subtree-cache
+                     :layout-fragments)))
+                 (revision (tp-surface-revision surface))
+                 (contents (with-current-buffer
+                             buffer
+                             (buffer-substring (point-min) (point-max)))))
+            (let ((tp--surface-publication-step-function
+                   (lambda (step _surface)
+                     (when (eq step 'client-state)
+                       (error "Reject viewport publication")))))
+              (should-error
+               (ebox-rerender-buffer-with-context buffer 240 5)))
+            (should (= (tp-surface-revision surface) revision))
+            (should (eq (tp-surface-client-state surface) state))
+            (should (= (tp-signal-peek
+                        (ebox-surface--signals-viewport-width signals))
+                       160))
+            (should (= (tp-signal-peek
+                        (ebox-surface--signals-viewport-height signals))
+                       3))
+            (should (eq (ebox--buffer-render-state buffer) state))
+            (should (eq (plist-get state :root-node) old-root))
+            (should (eq (plist-get old-root :surface-object)
+                        old-root-object))
+            (should (eq (plist-get old-root :render-cache)
+                        old-root-cache))
+            (should (eq (plist-get state :render-cache)
+                        old-render-cache))
+            (should (equal cache-fingerprints
+                           (mapcar
+                            (lambda (key)
+                              (ebox-surface-test--hash-fingerprint
+                               (plist-get state key)))
+                            '(:render-cache :render-signature-cache
+                              :flex-content-min-widths
+                              :viewport-height-dependent-subtree-cache
+                              :layout-fragments))))
+            (should (equal-including-properties
+                     (with-current-buffer buffer
+                       (buffer-substring (point-min) (point-max)))
+                     contents))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -532,6 +1426,33 @@
           (should-not (plist-member source :region-id))
           (should-not (plist-member source :surface-object)))
       (dolist (buffer (list first second))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest ebox-mounted-render-uses-target-display-context ()
+  "A mounted candidate must measure in its target buffer's display context."
+  (ebox-surface-test--reset-render-state)
+  (let* ((source (generate-new-buffer " *ebox-context-source*"))
+         (target (generate-new-buffer " *ebox-context-target*"))
+         (node (ebox-create :content "MMMM" :width '(100)))
+         (seen-buffers nil)
+         (original (symbol-function 'ebox--render-layout)))
+    (unwind-protect
+        (progn
+          (with-current-buffer source
+            (setq-local text-scale-mode-amount 3))
+          (with-current-buffer target
+            (setq-local text-scale-mode-amount 0))
+          (cl-letf (((symbol-function 'ebox--render-layout)
+                     (lambda (candidate)
+                       (push (current-buffer) seen-buffers)
+                       (funcall original candidate))))
+            (with-current-buffer source
+              (ebox-render-to-buffer target node)))
+          (should seen-buffers)
+          (should (cl-every (lambda (buffer) (eq buffer target))
+                            seen-buffers)))
+      (dolist (buffer (list source target))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
 

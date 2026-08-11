@@ -162,7 +162,8 @@ Supported properties are `:grid-column', `:grid-row',
 `:grid-column-span', and `:grid-row-span'."
   (unless (and (listp node) (plist-member node :ebox-type))
     (error "ebox-grid-item: NODE is not an Ebox node: %S" node))
-  (let ((copy (copy-sequence node)))
+  (let ((copy (copy-sequence node))
+        (declarations (ebox-style-compile-declarations props t)))
     (while props
       (let* ((key (pop props))
              (value (progn
@@ -172,6 +173,9 @@ Supported properties are `:grid-column', `:grid-row',
         (unless (memq key ebox--grid-item-prop-keys)
           (error "ebox-grid-item: unsupported property %S" key))
         (plist-put copy key value)))
+    (plist-put copy :ebox-style-declarations
+               (append (plist-get copy :ebox-style-declarations)
+                       declarations))
     copy))
 
 (defun ebox-grid--placement-part (value default)
@@ -677,13 +681,21 @@ Children may carry `:grid-column' and `:grid-row' placement properties.
          (box-props (cl-loop for (key value) on raw-props by #'cddr
                              unless (memq key ebox--grid-layout-prop-keys)
                              collect key and collect value))
-         (wrapper (ebox-grid--wrapper box-props)))
-    (list :ebox-type 'grid
-          :display '(block grid)
-          :props raw-props
-          :raw-props raw-props
-          :box wrapper
-          :children children)))
+         (wrapper (ebox-grid--wrapper box-props))
+         (node (list :ebox-type 'grid
+                     :display '(block grid)
+                     :props raw-props
+                     :raw-props raw-props
+                     :ebox-style-declarations
+                     (ebox-style-compile-declarations raw-props)
+                     :box wrapper
+                     :children children)))
+    (when wrapper
+      (plist-put wrapper :ebox-style-wrapper t))
+    (dolist (key '(:id :class :selector-state :selector-attributes :key))
+      (when (plist-member raw-props key)
+        (plist-put node key (plist-get raw-props key))))
+    node))
 
 (provide 'ebox-grid)
 

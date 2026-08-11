@@ -43,25 +43,25 @@
   (mapcar #'ebox--string-pixel-width (ebox-string-lines rendered)))
 
 (ert-deftest ebox-selector-parses-type-id-class-and-attributes ()
-  "Selectors should compile predicates into TP's structured selector AST."
+  "Selectors should compile predicates into ECSS structured selector AST."
   (should (equal (ebox-selector-parse "box.warning#summary[key=main]")
-                 '(:and (:type box)
-                        (:id "summary")
+                 '(:and (:type "box")
                         (:class "warning")
-                        (:attr :key "main")))))
+                        (:id "summary")
+                        (:attr "key" "=" "main" nil)))))
 
 (ert-deftest ebox-selector-parses-child-and-descendant-combinators ()
-  "Selectors should compile relations into nested TP combinators."
+  "Selectors should compile relations into nested ECSS combinators."
   (should (equal (ebox-selector-parse ".panel > box .label")
                  '(:descendant
-                   (:child (:class "panel") (:type box))
+                   (:child (:class "panel") (:type "box"))
                    (:class "label")))))
 
 (ert-deftest ebox-selector-parses-adjacent-and-general-sibling-combinators ()
-  "Selectors should expose TP's adjacent and general sibling relations."
+  "Selectors should expose ECSS adjacent and general sibling relations."
   (should (equal (ebox-selector-parse "#first + box ~ .later")
                  '(:sibling
-                   (:adjacent (:id "first") (:type box))
+                   (:adjacent (:id "first") (:type "box"))
                    (:class "later")))))
 
 (ert-deftest ebox-selector-queries-tree-by-id-class-and-type ()
@@ -107,16 +107,16 @@
                      (ebox-selector-query-all node "#first ~ .later"))
              '("second" "third")))))
 
-(ert-deftest ebox-selector-query-delegates-matching-to-tp ()
-  "Ebox should adapt nodes while TP remains the only matcher."
+(ert-deftest ebox-selector-query-delegates-matching-to-ecss ()
+  "Ebox should adapt nodes while ECSS remains the only matcher."
   (ebox-selector-test--reset-runtime-state)
   (let ((node (ebox-build
                '(column
                  (box :class card :content "A")
                  (box :content "B"))))
         (calls 0)
-        (matcher (symbol-function 'tp-selector-match-p)))
-    (cl-letf (((symbol-function 'tp-selector-match-p)
+        (matcher (symbol-function 'ecss-selector-match-p)))
+    (cl-letf (((symbol-function 'ecss-selector-match-p)
                (lambda (selector subject)
                  (cl-incf calls)
                  (funcall matcher selector subject))))
@@ -131,16 +131,16 @@
                      :content "visible" :width 12 :render-cache opaque
                      :selector-attributes '((role . button) (rank . 3))))
          (subject (ebox-tree-node-subject node))
-         (attributes (tp-subject-attributes subject)))
-    (should (equal (tp-subject-classes subject) '("panel" "active")))
-    (should (equal (tp-subject-state subject) '("focused")))
-    (should (equal (cdr (assq :role attributes)) "button"))
-    (should (equal (cdr (assq :rank attributes)) "3"))
-    (should-not (assq :content attributes))
-    (should-not (assq :width attributes))
-    (should-not (assq :state attributes))
-    (should-not (assq :render-cache attributes))
-    (should-not (assq :ebox-type attributes))))
+         (attributes (ecss-subject-attributes subject)))
+    (should (equal (ecss-subject-classes subject) '("panel" "active")))
+    (should (equal (ecss-subject-states subject) '("focused")))
+    (should (equal (cdr (assoc "role" attributes)) "button"))
+    (should (equal (cdr (assoc "rank" attributes)) "3"))
+    (should-not (assoc "content" attributes))
+    (should-not (assoc "width" attributes))
+    (should-not (assoc "state" attributes))
+    (should-not (assoc "render-cache" attributes))
+    (should-not (assoc "ebox-type" attributes))))
 
 (ert-deftest ebox-selector-queries-explicit-attributes ()
   "Attribute queries should read only explicit selector metadata."

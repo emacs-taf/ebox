@@ -63,6 +63,8 @@
                   "ebox" (root region-id))
 (declare-function ebox--literal-root-pixel-width
                   "ebox" (box))
+(declare-function ebox--format-content
+                  "ebox-layout" (box))
 (declare-function ebox-put "ebox" (box key value))
 (declare-function ebox--confirm-reflow-prewarm-scratch
                   "ebox" (buffer region-id revision))
@@ -72,6 +74,8 @@
                   "ebox-cache" (buffer))
 (declare-function ebox-cache-restore-report
                   "ebox-cache" (buffer snapshot))
+(declare-function ebox-style-cascade-active-p
+                  "ebox-style" ())
 
 (defvar ebox-viewport-width)
 (defvar ebox-viewport-height)
@@ -84,6 +88,8 @@
 (defvar ebox--render-region-id)
 (defvar ebox--defer-scroll-content-index)
 (defvar ebox--flex-content-min-width-table)
+(defvar ebox--layout-fragments-table)
+(defvar ebox--layout-fragments-reuse-p)
 
 ;;; Render Cache
 
@@ -357,6 +363,14 @@ Kept as a narrow predicate for callers that need box-only sizing semantics."
 
 (defun ebox--render-cache-node-signature (node)
   "Return a cache signature for NODE render output."
+  ;; Cache signatures include rendered region identity because cached text
+  ;; properties carry that identity.  Materialize both identity domains
+  ;; before memoizing the body signature; otherwise the first cache probe can
+  ;; run before `ebox--render-box' assigns :region-id and every later probe
+  ;; misses solely because the same node has since been rendered.
+  (when (listp node)
+    (ebox--runtime-node-ids node)
+    (ebox--node-all-region-ids node))
   (list (ebox--current-display-signature)
         (when (and (ebox--viewport-dependent-subtree-p node)
                    (not (ebox--render-cache-contained-viewport-node-p
@@ -827,6 +841,7 @@ CACHE-PROBE may supply a prior exact miss from an accelerator boundary."
   (if-let ((prepared (and force
                           (ebox--take-prepared-root-render node))))
       (prog1 prepared
+        (ebox--replay-render-output-provenance prepared)
         (ebox--flex-recache-source-boxes node))
     (let ((probe (or cache-probe
                      (ebox--render-cache-probe node force))))
@@ -834,7 +849,8 @@ CACHE-PROBE may supply a prior exact miss from an accelerator boundary."
        ((null probe)
         (ebox-render node))
        ((plist-member probe :rendered)
-        (plist-get probe :rendered))
+        (ebox--replay-render-output-provenance
+         (plist-get probe :rendered)))
        (t
         (pcase-let* ((`(,rendered ,side-effects)
                        (ebox--render-cache-render-with-scroll-actions node))
@@ -859,7 +875,8 @@ CACHE-PROBE may supply a prior exact miss from an accelerator boundary."
           (unless (and stateful-p
                        (not (or ebox--render-cache-scroll-state-restorable-p
                                 portable-p)))
-            (ebox--render-cache-store-context probe rendered metadata))
+            (ebox--render-cache-store-context probe rendered metadata)
+            (ebox--record-render-output-provenance rendered))
           rendered))))))
 
 ;;; Buffer Runtime State
@@ -1079,6 +1096,8 @@ same traversal in complete-render overwrite order."
         :layout-snapshot-detail-generation 0
         :runtime-revision 0 :last-update-report nil
         :render-cache (make-hash-table :test 'equal)
+        :layout-fragments (make-hash-table :test 'equal)
+        :layout-fragments-reuse-p nil
         :detached-identity-history
         (ebox-incremental--make-detached-history
          :table (make-hash-table :test 'equal)
@@ -3549,8 +3568,9 @@ legacy callers."
 
 (defun ebox-incremental-surface-batch-root (buffer)
   "Return BUFFER's unpublished surface batch root, or nil."
-  (plist-get (ebox-incremental--batch-state buffer)
-             :surface-candidate-root))
+  (let ((state (ebox-incremental--batch-state buffer)))
+    (and (plist-get state :active)
+         (plist-get state :surface-candidate-root))))
 
 (defun ebox-incremental-record-surface-region-change
     (buffer candidate-root region-id handle dirty-kind changed-keys
@@ -3894,6 +3914,38 @@ logical tree crosses that boundary."
     (if (equal node-id (plist-get root :node-id))
         replacement
       new-child)))
+
+(defun ebox-incremental-surface-region-candidate-root (buffer region-id)
+  "Return a copy-on-write candidate root for REGION-ID in BUFFER.
+Only the region owner and its ancestor path are copied; untouched runtime
+subtrees remain shared with the published root.  Return nil when the retained
+index cannot identify a directly replaceable region owner, leaving callers to
+use their ordinary isolated-copy path."
+  (let* ((state (ebox--buffer-render-state buffer))
+         (root (plist-get state :root-node))
+         (node-table (plist-get state :node-table))
+         (parent-table (plist-get state :parent-table))
+         (region-node-table (plist-get state :region-node-table))
+         (owner-id (and (hash-table-p region-node-table)
+                        (gethash region-id region-node-table)))
+         (owner (and (hash-table-p node-table)
+                     (gethash owner-id node-table)))
+         (box
+          (pcase (and owner (plist-get owner :ebox-type))
+            ('box owner)
+            ('flex (plist-get owner :box)))))
+    (when (and root owner box
+               (hash-table-p parent-table)
+               (equal (plist-get box :region-id) region-id))
+      (let* ((candidate-box (copy-sequence box))
+             (replacement
+              (if (eq owner box)
+                  candidate-box
+                (ebox-tree-copy-with-direct-child-replacements
+                 owner (list (cons box candidate-box))))))
+        (ebox-incremental--candidate-path-copy-one
+         root owner-id replacement
+         (list :node-table node-table :parent-table parent-table))))))
 
 (defun ebox-incremental--candidate-path-copy-many
     (root index replacements)
@@ -5030,6 +5082,28 @@ replace those O(n) table copies without changing this delta contract."
                   :touched-count (length touched)
                   :removed-count (length removed))))))))))
 
+(defun ebox-incremental--candidate-shares-published-node-p
+    (old-state candidate-root)
+  "Return non-nil when CANDIDATE-ROOT shares a published runtime node.
+The search stops at the first shared node, so a copy-on-write candidate is
+recognized from its first untouched sibling without walking the whole tree."
+  (let ((old-root (plist-get old-state :root-node))
+        (old-node-table (plist-get old-state :node-table)))
+    (and (hash-table-p old-node-table)
+         (catch 'shared
+           (cl-labels
+               ((visit (node)
+                  (when (and (listp node) (not (stringp node)))
+                    (let ((node-id (plist-get node :node-id)))
+                      (when (and node-id
+                                 (not (eq node old-root))
+                                 (eq node (gethash node-id old-node-table)))
+                        (throw 'shared t)))
+                    (dolist (child (ebox-tree--children-raw node))
+                      (visit child)))))
+             (visit candidate-root)
+             nil)))))
+
 (defun ebox-incremental--declarative-dirty-set
     (old-state candidate-root candidate-index)
   "Return source-level dirty entries from OLD-STATE to CANDIDATE-ROOT.
@@ -5087,10 +5161,26 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
        new-table))
     (nreverse dirty)))
 
+(defun ebox-incremental--isolate-candidate-caches (state)
+  "Copy mutable Ebox caches in unpublished STATE.
+Candidate layout may replace entries while proving a publication.  Each
+candidate therefore owns its cache tables until TP commits the generation."
+  (dolist (entry '((:render-cache . equal)
+                   (:layout-fragments . equal)
+                   (:render-signature-cache . eq)
+                   (:flex-content-min-widths . eq)
+                   (:viewport-height-dependent-subtree-cache . eq)))
+    (let ((key (car entry))
+          (value (plist-get state (car entry))))
+      (when (hash-table-p value)
+        (plist-put state key (copy-hash-table value)))))
+  state)
+
 (defun ebox-incremental--candidate-state
     (old-state candidate-root candidate-index prepared)
   "Return unpublished runtime state for a prepared declarative root."
-  (let ((state (copy-sequence old-state)))
+  (let ((state (ebox-incremental--isolate-candidate-caches
+               (copy-sequence old-state))))
     (dolist
         (entry
          `((:root-node ,candidate-root)
@@ -5105,6 +5195,9 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
             ,(1+ (or (plist-get old-state :runtime-revision) 0)))
            (:display-signature ,(plist-get prepared :display-signature))
            (:render-cache ,(plist-get prepared :render-cache))
+           (:layout-fragments ,(plist-get prepared :layout-fragments))
+           (:layout-fragments-reuse-p
+            ,(plist-get prepared :layout-fragments-reuse-p))
            (:detached-identity-history
             ,(or (plist-get prepared :detached-identity-history)
                  (plist-get old-state :detached-identity-history)))
@@ -5154,7 +5247,7 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
             ,(plist-get candidate-index :native-node-postorder))))
       (setq state
             (plist-put state (car entry) (cadr entry))))
-    state))
+    (ebox-incremental--isolate-candidate-caches state)))
 
 (defun ebox-incremental--seed-candidate-node-cache
     (old-cache old-node-table candidate-node-table)
@@ -5239,6 +5332,9 @@ must be recomputed in the next publication."
   (let* ((old-root (plist-get old-state :root-node))
          (render-cache
           (or (plist-get old-state :render-cache)
+              (make-hash-table :test 'equal)))
+         (layout-fragments
+          (or (plist-get old-state :layout-fragments)
               (make-hash-table :test 'equal))))
     (let* ((candidate-index
             (or (plist-get local-preparation :index)
@@ -5295,6 +5391,8 @@ must be recomputed in the next publication."
                 :dirty-set dirty-set
                 :display-signature current-display-signature
                 :render-cache render-cache
+                :layout-fragments layout-fragments
+                :layout-fragments-reuse-p nil
                 :detached-identity-history
                 (or (plist-get local-preparation
                                :detached-identity-history)
@@ -5680,6 +5778,213 @@ render whose line count moved is unpublishable there by construction."
                 :publication-scope 'layout-owners))))
     (ebox-incremental--commit-report prepared report candidate-state)))
 
+(defun ebox-incremental--paint-projection-p
+    (old-state owner-plan dirty-set)
+  "Return non-nil when OWNER-PLAN can reuse OLD-STATE spatial topology."
+  (and owner-plan
+       (null (plist-get old-state :scroll-region-ids))
+       (cl-every (lambda (op) (eq (plist-get op :op) 'paint-patch))
+                 owner-plan)
+       (cl-every
+        (lambda (dirty)
+          (cl-every (lambda (key)
+                      (memq key ebox--paint-style-signature-keys))
+                    (plist-get dirty :changed-keys)))
+        dirty-set)))
+
+(defun ebox-incremental--hash-key-set-equal-p (left right)
+  "Return non-nil when hash tables LEFT and RIGHT have the same keys."
+  (and (hash-table-p left)
+       (hash-table-p right)
+       (= (hash-table-count left) (hash-table-count right))
+       (let ((equal-p t)
+             (missing (make-symbol "ebox-missing-key")))
+         (maphash
+          (lambda (key _value)
+            (when (eq (gethash key right missing) missing)
+              (setq equal-p nil)))
+          left)
+         equal-p)))
+
+(defun ebox-incremental--span-patch-identity-stable-p
+    (buffer old-state candidate-state prepared owner-id)
+  "Return non-nil when a span patch preserves candidate identity topology.
+The candidate index is already the proof boundary for source identity.  This
+check verifies its observable sets and the copied path's parent slots before
+the surface is allowed to reuse retained TP objects."
+  (let* ((old-node-table (plist-get old-state :node-table))
+         (new-node-table (plist-get candidate-state :node-table))
+         (old-parent-table (plist-get old-state :parent-table))
+         (new-parent-table (plist-get candidate-state :parent-table))
+         (touched (delete-dups
+                   (append (plist-get prepared :touched-node-ids)
+                   (list owner-id
+                                 (ebox--buffer-root-node-id buffer))))))
+    (and (ebox-incremental--hash-key-set-equal-p
+          old-node-table new-node-table)
+         (ebox-incremental--hash-key-set-equal-p
+          (plist-get old-state :region-id-set)
+          (plist-get candidate-state :region-id-set))
+         (cl-every
+          (lambda (node-id)
+            (let ((old-node (gethash node-id old-node-table))
+                  (new-node (gethash node-id new-node-table)))
+              (and old-node new-node
+                   (eq (plist-get old-node :ebox-type)
+                       (plist-get new-node :ebox-type))
+                   (equal (plist-get old-node :key)
+                          (plist-get new-node :key))
+                   (equal (gethash node-id old-parent-table)
+                          (gethash node-id new-parent-table)))))
+          (delq nil touched)))))
+
+(defun ebox-incremental--path-span-line-count-stable-p
+    (buffer node spans)
+  "Return non-nil when path-copied NODE keeps the published line count."
+  (and (eq (plist-get node :ebox-type) 'box)
+       (numberp (ebox-get node :width))
+       (null (plist-get node :ebox-content-node))
+       (= (length spans)
+          (with-current-buffer buffer
+            (length (ebox-string-lines (ebox--format-content node)))))))
+
+(defun ebox-incremental--span-patch-projection-proof
+    (buffer old-state prepared candidate-state owner-plan
+             &optional path-copied-p)
+  "Return strict span projection metadata, or nil when it is unsafe.
+This first slice deliberately accepts only one fixed-footprint content owner.
+The surface still performs the output and text-property proof before using the
+metadata; this predicate only authorizes the local attempt."
+  (when (and (= (length owner-plan) 1)
+             (= (length (plist-get prepared :dirty-set)) 1))
+    (let* ((operation (car owner-plan))
+           (dirty (car (plist-get prepared :dirty-set)))
+           (owner-id (plist-get operation :owner-id))
+           (changed-keys (plist-get dirty :changed-keys))
+           (old-node (gethash owner-id (plist-get old-state :node-table)))
+           (new-node (gethash owner-id (plist-get candidate-state :node-table)))
+           (snapshot
+            (and old-node
+                 (ebox--ensure-layout-snapshot-details buffer owner-id)))
+           (spans (and snapshot (plist-get snapshot :buffer-spans)))
+           (axes (plist-get old-state :viewport-dependent-node-id-axes)))
+      (when (and (eq (plist-get operation :op) 'span-patch)
+                 (eq (plist-get dirty :dirty-kind) 'geometry)
+                 (equal changed-keys '(:content))
+                 (not (plist-get dirty :children))
+                 (null (plist-get dirty :node-ids))
+                 (not (plist-get old-state :cascade-active-p))
+                 (not (plist-get old-state :cascade-required-p))
+                 (null (plist-get old-state :scroll-region-ids))
+                 (or (null (plist-get candidate-state :scroll-region-ids))
+                     (null (ebox-incremental--hash-keys
+                            (plist-get candidate-state :scroll-state-table))))
+                 (not (cl-some #'identity (and axes (append (car axes)
+                                                             (cdr axes)))))
+                 old-node new-node
+                 (eq (plist-get old-node :ebox-type)
+                     (plist-get new-node :ebox-type))
+                 (equal (plist-get old-node :key)
+                        (plist-get new-node :key))
+                 (ebox-incremental--node-child-ids-equal-p
+                  old-node new-node)
+                 (equal (ebox-fragment-node-style-signature old-node)
+                        (ebox-fragment-node-style-signature new-node))
+                 (ebox-incremental--same-root-surface-identity-p
+                  (plist-get old-state :root-node)
+                  (plist-get candidate-state :root-node))
+                 (ebox-incremental--span-patch-identity-stable-p
+                  buffer old-state candidate-state prepared owner-id)
+                 (ebox--layout-snapshot-detailed-p snapshot)
+                 spans
+                 (or (not path-copied-p)
+                     (ebox-incremental--path-span-line-count-stable-p
+                      buffer new-node spans))
+                 (plist-get snapshot :span-footprint-signature)
+                 (plist-get snapshot :external-footprint-signature)
+                 (plist-get snapshot :parent-slot-signature)
+                 (plist-get snapshot :role-topology-signature)
+                 (plist-get snapshot :overflow-signature)
+                 ;; Partial row slots are disjoint by design; the backend
+                 ;; shapes each slot independently before the replacement.
+                 (with-current-buffer buffer
+                   (or (ebox-buffer--partial-line-slots-p spans)
+                       (ebox--spans-contiguous-lines-p spans)))
+                 (not (ebox--node-visible-overflow-p old-node))
+                 (not (ebox--ancestor-own-overflow-visible-p buffer owner-id)))
+        (list :owner-id owner-id :dirty-set (list dirty))))))
+
+(defun ebox-incremental--surface-state-overrides
+    (old-state prepared candidate-state projection-kind
+             &optional span-proof source-path-copied-p)
+  "Return surface overrides for PREPARED CANDIDATE-STATE."
+  (let ((overrides
+         (list :viewport-width (plist-get old-state :viewport-width)
+               :viewport-height (plist-get old-state :viewport-height)
+               :display-signature (plist-get prepared :display-signature)
+               :scroll-state-table (plist-get prepared :scroll-state-table)
+               :source-path-copied-p source-path-copied-p
+               :runtime-index-prepared-p
+               (memq projection-kind '(span-patch viewport-reflow))
+               :logical-candidate-p (plist-get prepared :logical-candidate-p)
+               :detached-identity-history
+               (plist-get prepared :detached-identity-history))))
+    (if (not (memq projection-kind '(paint span-patch)))
+        overrides
+      (append
+       overrides
+       (list :layout-snapshots (plist-get candidate-state :layout-snapshots)
+             :layout-snapshots-complete-p
+             (plist-get candidate-state :layout-snapshots-complete-p)
+             :layout-snapshot-detail-generation
+             (plist-get candidate-state :layout-snapshot-detail-generation)
+             :render-cache (plist-get candidate-state :render-cache)
+             :render-signature-cache
+             (plist-get candidate-state :render-signature-cache)
+             :flex-content-min-widths
+             (if (eq projection-kind 'span-patch)
+                 (plist-get candidate-state :flex-content-min-widths)
+               (plist-get old-state :flex-content-min-widths))
+             :viewport-height-dependent-subtree-cache
+             (plist-get candidate-state
+                        :viewport-height-dependent-subtree-cache)
+             :viewport-dependent-node-ids-ready
+             (plist-get candidate-state :viewport-dependent-node-ids-ready)
+             :viewport-dependent-node-ids
+             (plist-get candidate-state :viewport-dependent-node-ids)
+             :viewport-dependent-node-id-axes
+             (plist-get candidate-state :viewport-dependent-node-id-axes)
+             :scroll-region-ids (plist-get candidate-state :scroll-region-ids)
+             :node-table (plist-get candidate-state :node-table)
+             :parent-table (plist-get candidate-state :parent-table)
+             :region-id-set (plist-get candidate-state :region-id-set)
+             :region-node-table (plist-get candidate-state :region-node-table)
+             :region-box-count-table
+             (plist-get candidate-state :region-box-count-table)
+             :region-box-table (plist-get candidate-state :region-box-table)
+             :host-ref-table (plist-get candidate-state :host-ref-table)
+             :selector-id-table (plist-get candidate-state :selector-id-table)
+             :selector-class-table
+             (plist-get candidate-state :selector-class-table)
+             :selector-type-table
+             (plist-get candidate-state :selector-type-table)
+             :runtime-type-count-table
+             (plist-get candidate-state :runtime-type-count-table)
+             :selector-index-stale-p
+             (plist-get candidate-state :selector-index-stale-p)
+             :native-node-postorder
+             (plist-get candidate-state :native-node-postorder)
+             :surface-node-object-table
+             (and (eq projection-kind 'span-patch)
+                  (plist-get old-state :surface-node-object-table))
+             :paint-dirty-set
+             (and (eq projection-kind 'paint)
+                  (plist-get prepared :dirty-set))
+             :span-patch-owner-id
+             (and span-proof (plist-get span-proof :owner-id))
+             :span-patch-dirty-set
+             (and span-proof (plist-get span-proof :dirty-set)))))))
+
 (defun ebox-incremental--same-root-surface-identity-p (old-root new-root)
   "Return non-nil when OLD-ROOT and NEW-ROOT retain one TP root object."
   (and (eq (plist-get old-root :ebox-type)
@@ -5710,7 +6015,18 @@ render whose line count moved is unpublishable there by construction."
                             (plist-get prepared :dirty-set))))))
          (report
           (ebox-incremental--layout-owner-report
-           prepared owner-plan candidate-state)))
+           prepared owner-plan candidate-state))
+         (paint-p
+          (ebox-incremental--paint-projection-p
+           old-state owner-plan (plist-get prepared :dirty-set)))
+         (span-proof
+          (unless paint-p
+            (ebox-incremental--span-patch-projection-proof
+             buffer old-state prepared candidate-state owner-plan)))
+         (projection-kind
+          (cond
+           (paint-p 'paint)
+           (span-proof 'span-patch))))
     (unless same-root-identity-p
       (setq report (plist-put report :strategy 'root-rerender))
       (setq report (plist-put report :publication-scope 'root))
@@ -5718,18 +6034,11 @@ render whose line count moved is unpublishable there by construction."
     (list :root (plist-get prepared :root)
           :scope-node-ids scope-node-ids
           :report-base report
+          :projection-kind projection-kind
           :preserve-identities-p t
           :state-overrides
-          (list :viewport-width (plist-get old-state :viewport-width)
-                :viewport-height (plist-get old-state :viewport-height)
-                :display-signature
-                (plist-get prepared :display-signature)
-                :scroll-state-table
-                (plist-get prepared :scroll-state-table)
-                :logical-candidate-p
-                (plist-get prepared :logical-candidate-p)
-                :detached-identity-history
-                (plist-get prepared :detached-identity-history)))))
+           (ebox-incremental--surface-state-overrides
+           old-state prepared candidate-state projection-kind span-proof))))
 
 (defun ebox-incremental--plist-overlay (base overrides)
   "Return BASE with every property in OVERRIDES replaced."
@@ -5738,48 +6047,105 @@ render whose line count moved is unpublishable there by construction."
     (setq base (plist-put base (pop overrides) (pop overrides))))
   base)
 
+(defun ebox-incremental--prepare-scoped-candidate
+    (buffer old-state next-root isolated-candidate-p)
+  "Prepare NEXT-ROOT and its scoped owner plan for BUFFER.
+Return the intermediate candidate state, owner plan, projection proof, and
+whether NEXT-ROOT shares untouched published nodes."
+  (let* ((path-copied-p
+          (and isolated-candidate-p
+               (ebox-incremental--candidate-shares-published-node-p
+                old-state next-root)))
+         (local-preparation
+          (and path-copied-p
+               (ebox-incremental--candidate-local-index-delta
+                old-state next-root)))
+         (prepared
+          (if isolated-candidate-p
+              (ebox-incremental--prepare-declarative-runtime
+               buffer old-state next-root nil local-preparation)
+            (ebox-incremental--prepare-declarative-root
+             buffer old-state next-root)))
+         (candidate-state
+          (ebox-incremental--candidate-state
+           old-state (plist-get prepared :root)
+           (plist-get prepared :index) prepared))
+         (owner-plan
+          (ebox-incremental--layout-owner-plan
+           buffer old-state candidate-state
+           (plist-get prepared :dirty-set)))
+         (scope-node-ids
+          (delete-dups
+           (or (mapcar (lambda (op) (plist-get op :owner-id)) owner-plan)
+               (mapcar (lambda (entry) (plist-get entry :node-id))
+                       (plist-get prepared :dirty-set)))))
+         (paint-p
+          (ebox-incremental--paint-projection-p
+           old-state owner-plan (plist-get prepared :dirty-set)))
+         (span-proof
+          (unless paint-p
+            (ebox-incremental--span-patch-projection-proof
+             buffer old-state prepared candidate-state owner-plan
+             path-copied-p)))
+         (projection-kind
+          (cond
+           (paint-p 'paint)
+           (span-proof 'span-patch))))
+    (list :prepared prepared
+          :candidate-state candidate-state
+          :owner-plan owner-plan
+          :scope-node-ids scope-node-ids
+          :span-proof span-proof
+          :projection-kind projection-kind
+          :path-copied-p path-copied-p)))
+
 (defun ebox-incremental-prepare-scoped-commit
-    (buffer next-root report-overrides)
+    (buffer next-root report-overrides &optional isolated-candidate-p)
   "Prepare NEXT-ROOT for object-scoped TP publication in BUFFER.
 REPORT-OVERRIDES replaces Ebox semantic report fields.  The returned plist
 contains the isolated candidate root, Ebox node identities, report, and
-runtime overrides; the surface layer resolves identities to opaque TP objects."
+runtime overrides; the surface layer resolves identities to opaque TP objects.
+When ISOLATED-CANDIDATE-P is non-nil, NEXT-ROOT is an internally copied
+runtime candidate whose identities already match the published root."
   (let ((old-state (ebox--buffer-render-state buffer)))
     (unless old-state
       (error "Ebox buffer has no rendered runtime: %S" buffer))
-    (let* ((prepared
-            (ebox-incremental--prepare-declarative-root
-             buffer old-state next-root))
-           (candidate-state
-            (ebox-incremental--candidate-state
-             old-state (plist-get prepared :root)
-             (plist-get prepared :index) prepared))
-           (owner-plan
-            (ebox-incremental--layout-owner-plan
-             buffer old-state candidate-state
-             (plist-get prepared :dirty-set)))
-           (scope-node-ids
-            (delete-dups
-             (or (mapcar (lambda (op) (plist-get op :owner-id)) owner-plan)
-                 (mapcar (lambda (entry) (plist-get entry :node-id))
-                         (plist-get prepared :dirty-set)))))
-           (report
-            (ebox-incremental--plist-overlay
-             (ebox-incremental--layout-owner-report
-              prepared owner-plan candidate-state)
-             report-overrides)))
-      (list :root (plist-get prepared :root)
-            :scope-node-ids scope-node-ids
-            :report-base report
-            :state-overrides
-            (list :viewport-width (plist-get old-state :viewport-width)
-                  :viewport-height (plist-get old-state :viewport-height)
-                  :display-signature
-                  (plist-get prepared :display-signature)
-                  :scroll-state-table
-                  (plist-get prepared :scroll-state-table)
-                  :detached-identity-history
-                  (plist-get prepared :detached-identity-history))))))
+    (let* ((candidate
+            (ebox-incremental--prepare-scoped-candidate
+             buffer old-state next-root isolated-candidate-p)))
+      ;; A path-copied candidate is safe to render in place only after the
+      ;; strict span proof succeeds.  Widened projection would mutate shared
+      ;; layout nodes, so promote it to a private copy before the surface sees
+      ;; it.  The ordinary full-copy path remains the correctness fallback.
+      (when (and (plist-get candidate :path-copied-p)
+                 (not (eq (plist-get candidate :projection-kind)
+                          'span-patch)))
+        (setq candidate
+              (ebox-incremental--prepare-scoped-candidate
+               buffer old-state
+               (ebox-tree-copy-node-structure
+                (plist-get (plist-get candidate :prepared) :root))
+               isolated-candidate-p)))
+      (let* ((prepared (plist-get candidate :prepared))
+             (candidate-state (plist-get candidate :candidate-state))
+             (owner-plan (plist-get candidate :owner-plan))
+             (scope-node-ids (plist-get candidate :scope-node-ids))
+             (span-proof (plist-get candidate :span-proof))
+             (projection-kind (plist-get candidate :projection-kind))
+             (report
+              (ebox-incremental--plist-overlay
+               (ebox-incremental--layout-owner-report
+                prepared owner-plan candidate-state)
+               report-overrides)))
+        (list :root (plist-get prepared :root)
+              :scope-node-ids scope-node-ids
+              :report-base report
+              :projection-kind projection-kind
+              :preserve-identities-p t
+              :state-overrides
+              (ebox-incremental--surface-state-overrides
+               old-state prepared candidate-state projection-kind span-proof
+               (plist-get candidate :path-copied-p)))))))
 
 (defun ebox-incremental--viewport-state-overrides (state)
   "Return surface overrides from viewport candidate STATE."
@@ -5787,6 +6153,9 @@ runtime overrides; the surface layer resolves identities to opaque TP objects."
         :viewport-height (plist-get state :viewport-height)
         :display-signature (plist-get state :display-signature)
         :render-cache (plist-get state :render-cache)
+        :layout-fragments (plist-get state :layout-fragments)
+        :layout-fragments-reuse-p
+        (plist-get state :layout-fragments-reuse-p)
         :render-signature-cache (plist-get state :render-signature-cache)
         :flex-content-min-widths (plist-get state :flex-content-min-widths)
         :viewport-height-dependent-subtree-cache
@@ -5797,9 +6166,164 @@ runtime overrides; the surface layer resolves identities to opaque TP objects."
         (plist-get state :viewport-dependent-node-ids)
         :viewport-dependent-node-id-axes
         (plist-get state :viewport-dependent-node-id-axes)
+        ;; A viewport commit never changes the declarative node topology.
+        ;; Preserve the prepared indexes so the surface layer does not walk
+        ;; the complete runtime tree again after rendering the new geometry.
+        :node-table (plist-get state :node-table)
+        :parent-table (plist-get state :parent-table)
+        :region-id-set (plist-get state :region-id-set)
+        :region-node-table (plist-get state :region-node-table)
+        :region-box-count-table (plist-get state :region-box-count-table)
+        :host-ref-table (plist-get state :host-ref-table)
+        :selector-id-table (plist-get state :selector-id-table)
+        :selector-class-table (plist-get state :selector-class-table)
+        :selector-type-table (plist-get state :selector-type-table)
+        :runtime-type-count-table (plist-get state :runtime-type-count-table)
+        :native-node-postorder (plist-get state :native-node-postorder)
+        :runtime-index-prepared-p t
         :scroll-state-table (plist-get state :scroll-state-table)
         :detached-identity-history
         (plist-get state :detached-identity-history)))
+
+(defun ebox-incremental--viewport-root-proof-p
+    (old-state candidate-state dirty-set owner-plan)
+  "Return non-nil when a retained viewport root proof can begin."
+  (let* ((old-root (plist-get old-state :root-node))
+         (candidate-root (plist-get candidate-state :root-node))
+         (root-id (and old-root (plist-get old-root :node-id)))
+         (operation (and (= (length owner-plan) 1) (car owner-plan)))
+         (objects (plist-get old-state :surface-node-object-table)))
+    (and old-root candidate-root
+         (eq old-root candidate-root)
+         (eq (plist-get operation :op) 'owner-rerender)
+         (equal (plist-get operation :owner-id) root-id)
+         (cl-every (lambda (dirty)
+                     (and (eq (plist-get dirty :dirty-kind) 'geometry)
+                          (not (plist-get dirty :children))))
+                   dirty-set)
+         (not (plist-get old-state :cascade-active-p))
+         (not (plist-get old-state :cascade-required-p))
+         (not (ebox-style-cascade-active-p))
+         (not (ebox-tree-node-visible-overflow-p old-root))
+         (hash-table-p objects)
+         (> (hash-table-count objects) 0)
+         (ebox-incremental--hash-key-set-equal-p
+          (plist-get old-state :node-table)
+          (plist-get candidate-state :node-table))
+         (ebox-incremental--hash-key-set-equal-p
+          (plist-get old-state :region-id-set)
+          (plist-get candidate-state :region-id-set))
+         (ebox-incremental--hash-key-set-equal-p
+          (plist-get old-state :parent-table)
+          (plist-get candidate-state :parent-table)))))
+
+(defun ebox-incremental--viewport-reflow-safe-p
+    (old-state candidate-state dirty-set owner-plan)
+  "Return non-nil when a viewport reflow can reuse the retained node tree.
+This strict projection retains only viewport-independent scroll producers."
+  (and (ebox-incremental--viewport-root-proof-p
+        old-state candidate-state dirty-set owner-plan)
+       (ebox-incremental--stable-scroll-state-p old-state)))
+
+(defun ebox-incremental--stable-scroll-state-p (state)
+  "Return non-nil when STATE's scroll producers are safe to retain.
+The proof is local to each scroll owner: its measured subtree must be
+independent of both viewport axes, must not spill visible overflow, and must
+have a published scroll state.  A changing ancestor position is harmless;
+the producer's content geometry is the retained boundary."
+  (let ((scroll-ids (plist-get state :scroll-region-ids))
+        (region-node-table (plist-get state :region-node-table))
+        (node-table (plist-get state :node-table))
+        (scroll-state-table (plist-get state :scroll-state-table)))
+    (or (null scroll-ids)
+        (and (hash-table-p region-node-table)
+             (hash-table-p node-table)
+             (hash-table-p scroll-state-table)
+             (cl-every
+              (lambda (region-id)
+                (let* ((node-id (gethash region-id region-node-table))
+                       (node (and node-id (gethash node-id node-table))))
+                  (and node
+                       (gethash region-id scroll-state-table)
+                       (not (ebox--viewport-dependent-subtree-p node))
+                       (not (ebox--viewport-height-dependent-subtree-p node))
+                       (not (ebox-tree-node-visible-overflow-p node)))))
+              scroll-ids)))))
+
+(defun ebox-incremental--viewport-scroll-partition (state)
+  "Partition STATE scroll owners into stable and viewport-affected sets.
+A producer is stable only when its own subtree is independent of both
+viewport axes and has no visible overflow; an affected producer is rendered
+fresh by the mixed projection."
+  (let ((region-node-table (plist-get state :region-node-table))
+        (node-table (plist-get state :node-table))
+        (scroll-state-table (plist-get state :scroll-state-table))
+        (stable nil)
+        (affected nil))
+    (when (and (hash-table-p region-node-table)
+               (hash-table-p node-table)
+               (hash-table-p scroll-state-table))
+      (let ((ebox--viewport-dependent-node-ids-cache
+             (make-hash-table :test #'eq))
+            (ebox--viewport-dependent-subtree-cache
+             (make-hash-table :test #'eq))
+            (ebox--viewport-height-dependent-subtree-cache
+             (make-hash-table :test #'eq)))
+        (dolist (region-id (plist-get state :scroll-region-ids))
+          (let* ((node-id (gethash region-id region-node-table))
+                 (node (and node-id (gethash node-id node-table)))
+                 (scroll-state (gethash region-id scroll-state-table))
+                 (stable-p
+                  (and node scroll-state
+                       (not (ebox--viewport-dependent-subtree-p node))
+                       (not (ebox--viewport-height-dependent-subtree-p node))
+                       (not (ebox-tree-node-visible-overflow-p node)))))
+            (if stable-p
+                (push region-id stable)
+              (push region-id affected)))))
+    (setq stable (nreverse stable)
+          affected (nreverse affected))
+    (list :stable stable
+          :affected affected
+          :all (append stable affected)))))
+
+(defun ebox-incremental--viewport-mixed-scroll-proof-p
+    (old-state candidate-state dirty-set owner-plan partition)
+  "Return PARTITION when a mixed viewport projection is proven safe."
+  (and (ebox-incremental--viewport-root-proof-p
+        old-state candidate-state dirty-set owner-plan)
+       (plist-get partition :stable)
+       (plist-get partition :affected)
+       partition))
+
+(defun ebox-incremental--viewport-reflow-state-overrides
+    (old-state candidate-state &optional scroll-partition)
+  "Return candidate STATE overrides for a retained viewport reflow."
+  (append
+   (ebox-incremental--viewport-state-overrides candidate-state)
+   (list
+    :preserve-scroll-producer-region-ids
+    (plist-get scroll-partition :stable)
+    :scroll-region-ids (plist-get candidate-state :scroll-region-ids)
+    :node-table (plist-get candidate-state :node-table)
+    :parent-table (plist-get candidate-state :parent-table)
+    :region-id-set (plist-get candidate-state :region-id-set)
+    :region-node-table (plist-get candidate-state :region-node-table)
+    :region-box-count-table (plist-get candidate-state :region-box-count-table)
+    :region-box-table (plist-get candidate-state :region-box-table)
+    :host-ref-table (plist-get candidate-state :host-ref-table)
+    :selector-id-table (plist-get candidate-state :selector-id-table)
+    :selector-class-table (plist-get candidate-state :selector-class-table)
+    :selector-type-table (plist-get candidate-state :selector-type-table)
+    :runtime-type-count-table
+    (plist-get candidate-state :runtime-type-count-table)
+    :selector-index-stale-p
+    (plist-get candidate-state :selector-index-stale-p)
+    :native-node-postorder
+    (plist-get candidate-state :native-node-postorder)
+    :runtime-index-prepared-p t
+    :surface-node-object-table
+    (plist-get old-state :surface-node-object-table))))
 
 (defun ebox-incremental-prepare-viewport-commit
     (buffer viewport-width viewport-height axes display-signature)
@@ -5839,16 +6363,23 @@ runtime overrides; the surface layer resolves identities to opaque TP objects."
               (ebox-incremental--candidate-scroll-state-table
                buffer old-state old-state
                (plist-get old-state :region-box-table)))
-             (candidate-state (copy-sequence old-state))
+             (candidate-state
+              (ebox-incremental--isolate-candidate-caches
+               (copy-sequence old-state)))
              (prepared
               (list :root (plist-get old-state :root-node)
                     :dirty-set dirty-set
                     :display-signature display-signature
                     :scroll-state-table candidate-scroll-table))
-             owner-plan report)
+             owner-plan report projection-kind scroll-partition)
         (plist-put candidate-state :viewport-width viewport-width)
         (plist-put candidate-state :viewport-height target-height)
         (plist-put candidate-state :display-signature display-signature)
+        ;; Fragment reuse is a consequence of the complete viewport-reflow
+        ;; proof below, not a proxy for "the display did not change".  An
+        ;; owner-rerender can still change intrinsic measurements, scroll
+        ;; dependencies, and generation-sensitive side effects.
+        (plist-put candidate-state :layout-fragments-reuse-p nil)
         (plist-put candidate-state :runtime-revision
                    (1+ (or (plist-get old-state :runtime-revision) 0)))
         (plist-put candidate-state :region-box-table
@@ -5865,6 +6396,32 @@ runtime overrides; the surface layer resolves identities to opaque TP objects."
                (append (ebox--constraint-change-report-props change)
                        (list :viewport-axes axes
                              :host-context-changed display-changed))))
+        (setq projection-kind
+              (cond
+               ((and (not display-changed)
+                     (ebox-incremental--viewport-reflow-safe-p
+                      old-state candidate-state dirty-set owner-plan))
+                'viewport-reflow)
+               ((and (not display-changed)
+                     (setq scroll-partition
+                           (ebox-incremental--viewport-scroll-partition
+                            candidate-state))
+                     (ebox-incremental--viewport-mixed-scroll-proof-p
+                      old-state candidate-state dirty-set owner-plan
+                      scroll-partition))
+                'viewport-reflow-mixed-scroll)))
+        (when (memq projection-kind
+                    '(viewport-reflow viewport-reflow-mixed-scroll))
+          (plist-put candidate-state :layout-fragments-reuse-p t))
+        (when projection-kind
+          (setq report (plist-put report :projection-kind projection-kind))
+          (when scroll-partition
+            (setq report
+                  (plist-put report :viewport-scroll-stable-ids
+                             (plist-get scroll-partition :stable)))
+            (setq report
+                  (plist-put report :viewport-scroll-affected-ids
+                             (plist-get scroll-partition :affected)))))
         (list :root (plist-get candidate-state :root-node)
               :scope-node-ids
               (delete-dups
@@ -5872,9 +6429,16 @@ runtime overrides; the surface layer resolves identities to opaque TP objects."
                    (mapcar (lambda (entry) (plist-get entry :node-id))
                            dirty-set)))
               :report-base report
+              :projection-kind projection-kind
               :state-overrides
-              (ebox-incremental--viewport-state-overrides
-               candidate-state))))))
+              (if (memq projection-kind
+                        '(viewport-reflow viewport-reflow-mixed-scroll))
+                  (ebox-incremental--viewport-reflow-state-overrides
+                   old-state candidate-state
+                   (and (eq projection-kind 'viewport-reflow-mixed-scroll)
+                        scroll-partition))
+                (ebox-incremental--viewport-state-overrides
+                 candidate-state)))))))
 
 (defun ebox-incremental--finalize-declarative-scroll-publication
     (scroll-keys &optional prefetch-delay)
