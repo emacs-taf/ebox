@@ -485,7 +485,7 @@ grapheme."
          (dolist (child (ebox--layout-children node))
            (ebox--flex-recache-source-boxes child)))
         ('flex
-         (dolist (child (plist-get node :children))
+         (dolist (child (ebox-tree-layout-children node))
            (ebox--flex-recache-source-boxes child)))
         ('flex-item
          (ebox--flex-recache-source-boxes (plist-get node :node)))))))
@@ -1468,7 +1468,7 @@ its child."
                  (plist-get node :raw-props)
                  (plist-get node :box)))
          (axis (ebox--flex-axis props))
-         (children (plist-get node :children))
+         (children (ebox-tree-layout-children node))
          (main-size (if (eq axis 'row)
                         (ebox--flex-horizontal-value (plist-get props :width))
                       (ebox--flex-line-value (plist-get props :height))))
@@ -1512,7 +1512,7 @@ assembles already-rendered items."
                      (plist-get node :raw-props)
                      (plist-get node :box)))
              (axis (ebox--flex-axis props))
-             (children (plist-get node :children))
+         (children (ebox-tree-layout-children node))
              (main-size (ebox--flex-main-value
                          axis (plist-get props
                                          (if (eq axis 'row)
@@ -2186,7 +2186,7 @@ Return nil when the flex container needs the normal full renderer."
                           (plist-get node :raw-props)
                           (plist-get node :box)))
                   (axis (ebox--flex-axis props))
-                  (children (plist-get node :children))
+                  (children (ebox-tree-layout-children node))
                   (main-size (if (eq axis 'row)
                                  (ebox--flex-horizontal-value
                                   (plist-get props :width))
@@ -2333,7 +2333,7 @@ known-row render is used only if the new item footprint is not smaller."
                (memq wrap '(wrap nowrap))
                (null (ebox--flex-line-value (plist-get props :height)))
                (not (ebox--flex-reverse-p props)))
-      (let* ((children (plist-get node :children))
+      (let* ((children (ebox-tree-layout-children node))
              (inline-viewport (ebox--flex-inline-viewport
                                axis main-size cross-size))
              (row-gap (or (ebox--flex-line-value
@@ -2384,7 +2384,7 @@ Return nil when NODE's flex configuration needs a full rerender."
                (memq wrap '(wrap nowrap))
                main-size
                (null (ebox--flex-line-value (plist-get props :height))))
-      (let* ((children (plist-get node :children))
+      (let* ((children (ebox-tree-layout-children node))
              (cross-size nil)
              (inline-viewport (ebox--flex-inline-viewport
                                axis main-size cross-size))

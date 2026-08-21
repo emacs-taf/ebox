@@ -123,7 +123,13 @@ The first value is string content.  The second value is a lazy child node."
   (let* ((split (ebox--build-split-attrs items))
          (props (car split))
          (children (cdr split))
-         (layout (apply constructor (mapcar #'ebox-dsl-build (delq nil children)))))
+         (layout
+          (apply constructor
+                 (mapcar (lambda (child)
+                           (if (ebox-child-range--descriptor-p child)
+                               child
+                             (ebox-dsl-build child)))
+                         (delq nil children)))))
     (ebox--build-wrap-layout tag props layout)))
 
 (defun ebox--build-flex (items)

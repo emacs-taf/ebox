@@ -43,6 +43,20 @@ When selected, the candidate keeps the published Ebox topology and reuses the re
 
 If any proof condition fails, the update uses the ordinary safe projection path. That fallback may do broader node projection and TP reconciliation, but it preserves the same output, identity, publication, and rollback contract. Tests in `tests/ebox-surface-tests.el` cover the retained width/height/both-axis path, each unsafe fallback trigger, and publication failure after candidate preparation.
 
+## Retained scroll window
+
+For a chrome-free root scroll owner whose cached rendered lines cover the
+current visible window (the lazy prefix may remain incomplete),
+the scroll patch joins the staged visible window directly instead of entering
+the full candidate layout. It reuses the published cascade, viewport axes,
+object maps, and descendant `region-box-table`; it only advances the scroll
+offset and installs the root `ebox-scroll-window` property. The proof is
+conservative: a cache miss, chrome, active style dependency, topology change,
+or incomplete window falls back to the ordinary retained path. Scroll
+publication still goes through TP and the Ebox participant, so a failure after
+TP client-state publication restores text, offsets, indexes, objects, mounts,
+and report together.
+
 ## Identity and coordinates
 
 Keys are local to a sibling collection. Declarative source trees never own live TP objects, markers, or buffer coordinates. A live logical `:id` resolves through `ebox-region-resolve` to an opaque handle tied to one TP surface object; mounting the same source in two buffers therefore yields distinct handles. Region and host-ref positions are generation-bound; after a buffer mutation, callers must obtain fresh positions from the public accessor. Buffer markers, display spans, and text properties are publication facts, not source-tree identity.

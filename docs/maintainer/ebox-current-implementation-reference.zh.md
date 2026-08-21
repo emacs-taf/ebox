@@ -1,6 +1,6 @@
 # Ebox 当前实现参考
 
-本文是独立 Ebox 仓库的维护者入口，描述包边界、active 文件、运行时模型、不变量和验证命令。历史 `emacs-box` 是另一个旧架构源码树，不是本包依赖。ETAF 是同级高层包。
+本文是独立 Ebox 仓库的维护者入口，描述包边界、active 文件、运行时模型、不变量和验证命令。历史 Ebox checkout 是另一个旧架构源码树，不是本包依赖。ETAF 是同级高层包。
 
 ## 阅读顺序
 
@@ -20,6 +20,7 @@
 | `ebox-cache.el` | 测量/渲染缓存记录、失效和缓存报告。 |
 | `ebox-style.el` | ECSS property schema、declaration 与 cascade、shorthand 展开、computed style、颜色、border 和 dirty effect。 |
 | `ebox-tree.el` | 节点遍历、逻辑子节点访问、ECSS subject 适配、identity、父路径、key 和树 snapshot。 |
+| `ebox-child-range.el` | 不可变 weighted segment trie、稀疏持久 key trie、Range replacement 与 Gate A metrics。 |
 | `ebox-measure.el` | display 敏感的字符、face、像素测量与测量缓存。 |
 | `ebox-fragment.el` | 布局 fragment、signature、snapshot、span 和 dirty kind 事实。 |
 | `ebox-render-context.el` | render-local context 与发布输入。 |
@@ -35,7 +36,7 @@
 
 本包有意不包含应用 Component、UI control、响应式 data 或 playground 实现；它们属于同级包。历史应用性能记录器和 native reflow 评估器也不属于独立 Ebox 的发布边界；Ebox 只保留 native 模块本身、Rust 构建输入和可重复的构建检查。
 
-active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-surface-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el`、`scripts/ebox-visual-check.el` 和 `scripts/ebox-performance-evaluator.el`。
+active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-child-range-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-surface-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el`、`scripts/ebox-visual-check.el` 和 `scripts/ebox-performance-evaluator.el`。
 
 ## 运行时模型
 
@@ -58,7 +59,7 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 
 | 模型 | Owner | 不得拥有 |
 | --- | --- | --- |
-| Source/Element Tree | `ebox-tree.el`、`ebox-dsl.el` | 已发布 buffer 的变更。 |
+| Source/Element Tree | `ebox-child-range.el`、`ebox-tree.el`、`ebox-dsl.el` | 已发布 buffer 的变更。 |
 | Computed Style | `ebox-style.el` | 布局 identity 或 patch 执行。 |
 | Measurement | `ebox-measure.el` | 应用状态或 dirty 策略。 |
 | Formatting Context | `ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` | Buffer 编辑。 |
@@ -98,6 +99,7 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 ```sh
 make check
 make core-tests
+make child-range-tests
 make grid-tests
 make ebox-commit-tests
 make surface-tests

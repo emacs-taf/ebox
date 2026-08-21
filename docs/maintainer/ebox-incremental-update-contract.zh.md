@@ -43,6 +43,17 @@
 
 任意 proof 条件失败时，更新必须使用普通安全 projection 路径。该 fallback 可以执行更宽的 node projection 和 TP reconciliation，但必须保持相同的输出、identity、publication 和 rollback 合同。`tests/ebox-surface-tests.el` 覆盖 retained width/height/both-axis 路径、每个不安全 fallback 触发条件，以及 candidate preparation 之后的 publication failure。
 
+## 保留式 scroll window
+
+对于 chrome-free、缓存 rendered lines 已覆盖当前可见窗口的 root scroll owner
+（lazy prefix 可以仍未完整 materialize），scroll patch 会
+直接从 staged visible window 拼接输出，不再进入完整 candidate layout。它复用已
+发布的 cascade、viewport axes、object maps 和 descendant `region-box-table`，只推进
+scroll offset 并安装 root `ebox-scroll-window` 属性。证明保持保守：cache miss、
+chrome、active style dependency、topology 变化或窗口不完整时，回退到普通 retained
+路径。Scroll publication 仍经过 TP 与 Ebox participant；即使 TP client-state 发布
+之后失败，也会一起恢复文本、offset、index、object、mount 和 report。
+
 ## Identity 与坐标
 
 Key 只在同级兄弟集合内有效。声明式 source tree 不拥有 live TP object、marker 或 buffer 坐标。live 逻辑 `:id` 通过 `ebox-region-resolve` 解析为绑定某个 TP surface object 的不透明 handle；同一 source 挂载到两个 buffer 时会得到不同 handle。Region 与 host-ref 位置绑定于 generation；buffer 变更后调用者必须通过公共 accessor 重新获得位置。Buffer marker、display span 和 text property 是发布事实，不是 source tree identity。

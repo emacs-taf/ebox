@@ -65,7 +65,8 @@
   (should (commandp 'ebox-byte-compile))
   (should
    (equal ebox--compile-sources
-          '("ebox-cache.el" "ebox-style.el" "ebox-tree.el" "ebox-measure.el"
+          '("ebox-cache.el" "ebox-style.el" "ebox-child-range.el"
+            "ebox-tree.el" "ebox-measure.el"
             "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
             "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
             "ebox-surface.el" "ebox-dsl.el" "ebox-selector.el" "ebox.el"
@@ -163,7 +164,10 @@
                    ebox-build
                    ebox-buffer-mode
                    ebox-candidate-begin
+                   ebox-child-range
                    ebox-candidate-replace
+                   ebox-candidate-replace-range-ref
+                   ebox-candidate-replace-root
                    ebox-candidate-replace-host-ref
                    ebox-clear-cache
                    ebox-column

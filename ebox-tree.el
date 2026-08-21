@@ -12,6 +12,7 @@
 (require 'subr-x)
 (require 'ecss-selector)
 (require 'ebox-style)
+(require 'ebox-child-range)
 
 (defconst ebox--default-display '(block flow)
   "Default CSS-like display for a plain Ebox box.")
@@ -138,11 +139,11 @@ This is an optimization for snapshot capture, not buffer runtime state.")
     ('flex
      (append (when-let ((box (plist-get node :box)))
                (list box))
-             (plist-get node :children)))
+             (ebox-tree-layout-children node)))
     ('grid
      (append (when-let ((box (plist-get node :box)))
                (list box))
-             (plist-get node :children)))
+             (ebox-tree-layout-children node)))
     ('flex-item
      (delq nil (list (plist-get node :node))))
     (_ nil)))
@@ -157,15 +158,17 @@ must not modify a published runtime tree through this accessor."
   "Return layout container children for NODE in render order.
 New row/column containers store flat `:children'.  Legacy `ebox-concat' and
 `ebox-stack' nodes may still carry `:left'/`:right' or `:top'/`:bottom'."
-  (or (plist-get node :children)
-      (pcase (and (listp node) (plist-get node :ebox-type))
-        ('concat
-         (delq nil (list (plist-get node :left)
-                         (plist-get node :right))))
-        ('stack
-         (delq nil (list (plist-get node :top)
-                         (plist-get node :bottom))))
-        (_ nil))))
+  (if (plist-member node :ebox-child-sequence)
+      (ebox-child-range--flatten (plist-get node :ebox-child-sequence))
+    (or (plist-get node :children)
+        (pcase (and (listp node) (plist-get node :ebox-type))
+          ('concat
+           (delq nil (list (plist-get node :left)
+                           (plist-get node :right))))
+          ('stack
+           (delq nil (list (plist-get node :top)
+                           (plist-get node :bottom))))
+          (_ nil)))))
 
 (defun ebox-tree--replace-direct-child (child replacements)
   "Return CHILD's identity replacement from REPLACEMENTS, when present.
@@ -242,6 +245,55 @@ still copied while every nested value remains shared."
               (ebox-tree--replace-direct-child-list children replacements)))
         (unless (eq replaced children)
           (setq copy (plist-put copy :children replaced)))))
+    (when-let ((sequence (and (memq type '(concat stack flex grid))
+                              (plist-get copy :ebox-child-sequence))))
+      (let ((updated sequence) changed fallback)
+        (dolist (replacement replacements)
+          (let* ((old (car replacement)) (new (cdr replacement))
+                 (location (and old (plist-get old :ebox-sequence-location)))
+                 (key (and old (plist-get old :key)))
+                 (key-location
+                  (and (null location) key
+                       (ebox-child-range--hash-lookup
+                        (ebox-child-range--sequence-key-root updated) key
+                        (funcall
+                         (ebox-child-range--sequence-hash-function updated)
+                         key)))))
+            (when key-location
+              (let* ((segment (ebox-child-range--segment-at
+                               updated (car key-location)))
+                     (candidate (aref
+                                 (ebox-child-range--segment-payload segment)
+                                 (cdr key-location))))
+                (when (eq candidate old)
+                  (setq location
+                        (list :parent-node-id (plist-get node :node-id)
+                              :segment-index (car key-location)
+                              :offset (cdr key-location))))))
+            (when (and location
+                       (equal (plist-get location :parent-node-id)
+                              (plist-get node :node-id)))
+              (if new
+                  (setq updated
+                        (ebox-child-range--replace-item-at
+                         updated (plist-get location :segment-index)
+                         (plist-get location :offset) old new)
+                        changed t)
+                (setq fallback t)))))
+        (when fallback
+          (let (segments)
+            (dotimes (index (ebox-child-range--sequence-count sequence))
+              (let* ((segment (ebox-child-range--segment-at sequence index))
+                     (items (append
+                             (ebox-child-range--segment-payload segment) nil)))
+                (push (cons (ebox-child-range--segment-ref segment)
+                            (ebox-tree--replace-direct-child-list
+                             items replacements))
+                      segments)))
+            (setq updated (ebox-child-range--build (nreverse segments))
+                  changed t)))
+        (when changed
+          (setq copy (plist-put copy :ebox-child-sequence updated)))))
     copy))
 
 (defun ebox-tree-copy-node-structure (root)
@@ -250,15 +302,57 @@ The returned tree owns distinct node plists and child lists.  Values such as
 keymaps, callbacks, Host references, and surface-property payloads retain their
 original object identity."
   (cl-labels
-      ((copy-node
+      ((without (plist key)
+         (cl-loop for (property value) on plist by #'cddr
+                  unless (eq property key) append (list property value)))
+       (copy-node
         (node)
         (if (or (not (listp node)) (stringp node))
             node
-          (ebox-tree-copy-with-direct-child-replacements
-           node
-           (mapcar (lambda (child)
-                     (cons child (copy-node child)))
-                   (ebox-tree--children-raw node))))))
+          (let* ((type (plist-get node :ebox-type))
+                 (material-p (memq type '(concat stack flex grid)))
+                 (raw (and material-p (plist-get node :children)))
+                 (sequence (and material-p
+                                (plist-get node :ebox-child-sequence)))
+                 (has-range (cl-some #'ebox-child-range--descriptor-p raw)))
+            (if (or has-range sequence)
+                (let ((copy (copy-sequence node)) segments)
+                  (if sequence
+                      (dotimes (index
+                                (ebox-child-range--sequence-count sequence))
+                        (let ((segment
+                               (ebox-child-range--segment-at sequence index)))
+                          (push
+                           (cons (ebox-child-range--segment-ref segment)
+                                 (mapcar #'copy-node
+                                         (append
+                                          (ebox-child-range--segment-payload
+                                           segment)
+                                          nil)))
+                           segments)))
+                    (dolist (entry raw)
+                      (if (ebox-child-range--descriptor-p entry)
+                          (push (cons (ebox-child-range--descriptor-ref entry)
+                                      (mapcar
+                                       #'copy-node
+                                       (ebox-child-range--descriptor-items entry)))
+                                segments)
+                        (push (cons nil (list (copy-node entry))) segments))))
+                  (setq copy (without copy :children))
+                  (pcase type
+                    ((or 'flex 'grid)
+                     (when-let ((box (plist-get node :box)))
+                       (setq copy (plist-put copy :box (copy-node box)))))
+                    ('concat
+                     (setq copy (without (without copy :left) :right)))
+                    ('stack
+                     (setq copy (without (without copy :top) :bottom))))
+                  (plist-put copy :ebox-child-sequence
+                             (ebox-child-range--build (nreverse segments))))
+              (ebox-tree-copy-with-direct-child-replacements
+               node
+               (mapcar (lambda (child) (cons child (copy-node child)))
+                       (ebox-tree--children-raw node))))))))
     (copy-node root)))
 
 (defun ebox-tree--runtime-identity-node-shell
@@ -312,7 +406,7 @@ Record its identities in NODE-ID-SET and REGION-ID-SET."
                    (lambda (child)
                      (ebox-tree--runtime-identity-skeleton
                       child node-id-set region-id-set))
-                   (plist-get node :children))))
+                   (ebox-tree-layout-children node))))
       ('flex-item
        (when-let ((child (plist-get node :node)))
          (plist-put shell :node
@@ -368,7 +462,10 @@ Host references are root-global opaque metadata and are compared with `equal'."
                  (puthash node t seen)
                  (puthash node t active)
                  (dolist (child (ebox-tree--children-raw node))
-                   (visit child))
+                   (if (ebox-child-range--descriptor-p child)
+                       (dolist (item (ebox-child-range--descriptor-items child))
+                         (visit item))
+                     (visit child)))
                  (remhash node active))))))
       (visit root))
     root))
@@ -380,9 +477,12 @@ The runtime tree must be a proper tree: a node object cannot appear in two
 locations, cycles are rejected, explicit sibling keys must be unique, and
 non-nil host references must be unique across the root.  Keys are sibling-local
 and all explicit identities are compared with `equal'.  Return ROOT on success."
+  (when (ebox-child-range--descriptor-p root)
+    (error "Ebox child Range descriptor cannot be the root"))
   (ebox-tree-validate-host-refs root)
   (let ((seen (make-hash-table :test 'eq))
-        (active (make-hash-table :test 'eq)))
+        (active (make-hash-table :test 'eq))
+        (range-refs (make-hash-table :test 'equal)))
     (cl-labels
         ((visit (node)
            (when (and (listp node) (not (stringp node)))
@@ -392,8 +492,36 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
                (error "Ebox declarative tree reuses one node object"))
              (puthash node t seen)
              (puthash node t active)
-             (let ((keys (make-hash-table :test 'equal)))
-               (dolist (child (ebox-tree--children-raw node))
+             (let* ((keys (make-hash-table :test 'equal))
+                    (type (plist-get node :ebox-type))
+                    (raw (and (memq type '(concat stack flex grid))
+                              (plist-get node :children)))
+                    children)
+               (when (and raw (not (proper-list-p raw)))
+                 (error "Ebox material children must be a proper list"))
+               (dolist (entry (ebox-tree--children-raw node))
+                 (if (ebox-child-range--descriptor-p entry)
+                     (progn
+                       (unless (and (proper-list-p raw) (memq entry raw))
+                         (error "Ebox child Range descriptor is invalid in a scalar slot"))
+                       (let ((ref (ebox-child-range--descriptor-ref entry))
+                             (items (ebox-child-range--descriptor-items entry)))
+                         (unless (and ref (proper-list-p items))
+                           (error "Ebox child Range descriptor is invalid"))
+                         (when (gethash ref range-refs)
+                           (error "Ebox child Range ref is not unique: %S" ref))
+                         (puthash ref t range-refs)
+                         (dolist (item items)
+                           (when (ebox-child-range--descriptor-p item)
+                             (error "Nested child Range descriptors are reserved"))
+                           (unless (and (listp item) (not (stringp item)))
+                             (error "Ebox child Range item must be a node"))
+                           (push item children))))
+                   (progn
+                     (when (ebox-child-range--descriptor-p entry)
+                       (error "Ebox child Range descriptor is invalid here"))
+                     (push entry children))))
+               (dolist (child (nreverse children))
                  (when-let ((key (and (listp child)
                                       (not (stringp child))
                                       (plist-get child :key))))
@@ -418,17 +546,21 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
                (plist-put node :region-id nil)))
            (when (plist-member node :surface-object)
              (plist-put node :surface-object nil))
+           (when (plist-member node :ebox-sequence-location)
+             (plist-put node :ebox-sequence-location nil))
            (dolist (child (ebox-tree--children-raw node))
              (visit child)))))
     (visit root))
   root)
 
 (defconst ebox-tree--runtime-source-keys
-  '(:node-id :region-id :surface-object :render-cache)
+  '(:node-id :region-id :surface-object :render-cache :ebox-sequence-location
+    :ebox-content-width-exact-p)
   "Runtime-owned plist keys excluded from declarative source signatures.")
 
 (defconst ebox-tree--child-source-keys
-  '(:children :left :right :top :bottom :node :box :ebox-content-node)
+  '(:children :ebox-child-sequence :left :right :top :bottom :node :box
+    :ebox-content-node)
   "Child references excluded from node-local declarative signatures.")
 
 (defconst ebox-tree--excluded-source-keys
@@ -449,21 +581,76 @@ projected Ebox longhands carry the actual paint and layout consequences.")
   "Return keys from PLIST in source order."
   (cl-loop for (key _value) on plist by #'cddr collect key))
 
+(defun ebox-tree--layout-props-source-signature (node)
+  "Return canonical layout-only props for a Grid/Flex NODE.
+Raw layout props also carry derived paint aliases, host references, duplicate
+width entries, and shorthand gap forms.  Those fields are already represented
+by style declarations or runtime identity and must not make a Theme repaint
+look like a geometry mutation."
+  (when (memq (plist-get node :ebox-type) '(grid flex))
+    (let* ((raw (or (plist-get node :raw-props)
+                    (plist-get node :props)))
+           ;; Compare the same engine vocabulary used by Ebox rendering.  A
+           ;; retained node may arrive once from an already-expanded style
+           ;; snapshot and later from fresh shorthand declarations; comparing
+           ;; those source spellings directly creates fake geometry dirtiness.
+           (raw (ebox-style-expand-ebox-plist raw))
+           (table (make-hash-table :test #'eq)))
+      (cl-loop for (key value) on raw by #'cddr
+               unless (memq key '(:color :background-color :bgcolor :host-ref
+                                  :surface-properties))
+               do (puthash key value table))
+      (when (plist-member raw :gap)
+        (let* ((gap (plist-get raw :gap))
+               (row (if (consp gap) (car gap) gap))
+               (column (if (and (consp gap) (cdr gap)) (cadr gap) row))
+               ;; Flex and Grid deliberately have separate canonical
+               ;; property vocabularies.  Using Grid aliases for a Flex node
+               ;; makes an unchanged `gap' look like geometry dirtiness on
+               ;; the next retained generation.
+               (row-key (if (eq (plist-get node :ebox-type) 'grid)
+                            :grid-row-gap
+                          :row-gap))
+               (column-key (if (eq (plist-get node :ebox-type) 'grid)
+                               :grid-column-gap
+                             :column-gap)))
+          (puthash row-key row table)
+          (puthash column-key column table)
+          (remhash :gap table)))
+      (let (keys)
+        (maphash (lambda (key _value) (push key keys)) table)
+        (setq keys
+              (sort keys
+                    (lambda (left right)
+                      (string< (symbol-name left)
+                               (symbol-name right)))))
+        (cl-loop for key in keys
+                 append (list key (gethash key table)))))))
+
+(defun ebox-tree--local-source-signature (node)
+  "Return NODE's filtered local declarative source signature."
+  (let ((plist node)
+        signature)
+    (while plist
+      (let ((key (pop plist))
+            (value (pop plist)))
+        (unless (or (memq key ebox-tree--excluded-source-keys)
+                    (and (memq key '(:props :raw-props))
+                         (memq (plist-get node :ebox-type) '(grid flex))))
+          (push key signature)
+          (push value signature))))
+    (when-let ((layout (ebox-tree--layout-props-source-signature node)))
+      (push :ebox-layout-props signature)
+      (push layout signature))
+    (nreverse signature)))
+
 (defun ebox-tree-node-local-source-signature (node)
   "Return NODE's non-recursive declarative source signature.
 
 Runtime identities, caches, and child pointers are excluded.  Child order is
 compared independently through stable runtime ids, so a leaf change does not
 mark every ancestor dirty."
-  (let ((plist node)
-        signature)
-    (while plist
-      (let ((key (pop plist))
-            (value (pop plist)))
-        (unless (memq key ebox-tree--excluded-source-keys)
-          (push key signature)
-          (push value signature))))
-    (nreverse signature)))
+  (ebox-tree--local-source-signature node))
 
 (defun ebox-tree--next-local-source-entry (plist)
   "Return PLIST's next node-local source entry, skipping excluded keys."
@@ -489,24 +676,25 @@ mark every ancestor dirty."
 (defun ebox-tree-node-local-changed-keys (old new)
   "Return ordered declarative keys whose node-local values differ.
 OLD and NEW are source nodes with the same retained runtime identity."
-  (unless (ebox-tree--local-source-sequence-equal-p old new)
-    (let (seen changed)
-      (dolist (source (list old new))
-        (let ((plist source))
-          (while plist
-            (let ((key (pop plist)))
-              (pop plist)
-              (unless (or (memq key ebox-tree--excluded-source-keys)
-                          (memq key seen))
-                (push key seen)
-                (let ((old-entry (plist-member old key))
-                      (new-entry (plist-member new key)))
-                  (unless (and (eq (not (null old-entry))
-                                   (not (null new-entry)))
-                               (equal-including-properties
-                                (cadr old-entry) (cadr new-entry)))
-                    (push key changed))))))))
-      (nreverse changed))))
+  (let ((old-signature (ebox-tree--local-source-signature old))
+        (new-signature (ebox-tree--local-source-signature new))
+        seen changed)
+    (dolist (source (list old-signature new-signature))
+      (let ((plist source))
+        (while plist
+          (let ((key (pop plist)))
+            (pop plist)
+            (unless (memq key seen)
+              (push key seen)
+              (let ((old-entry (plist-member old-signature key))
+                    (new-entry (plist-member new-signature key)))
+                (unless (and (eq (not (null old-entry))
+                                 (not (null new-entry)))
+                             (equal-including-properties
+                              (cadr old-entry) (cadr new-entry)))
+                  (push (if (eq key :ebox-layout-props) :props key)
+                        changed))))))))
+    (nreverse changed)))
 
 (defun ebox-tree-transfer-runtime-identity (old new)
   "Transfer retained runtime identity from matching OLD to NEW.
@@ -522,6 +710,9 @@ candidate runtime index agree."
                (plist-get new :ebox-type)))
       (progn
         (plist-put new :node-id (ebox--ensure-node-id old))
+        (when (plist-member old :ebox-sequence-location)
+          (plist-put new :ebox-sequence-location
+                     (copy-sequence (plist-get old :ebox-sequence-location))))
         (when (eq (plist-get new :ebox-type) 'box)
           (plist-put new :region-id (ebox--ensure-region-id old))
           ;; Omitted scroll state is uncontrolled host state.  `ebox-create'
@@ -615,8 +806,8 @@ candidate runtime index agree."
     ((or 'concat 'stack)
      (ebox-tree--semantic-layout-leaves node))
     ('flex
-     (mapcar #'ebox-tree-flex-item-source-node (plist-get node :children)))
-    ('grid (plist-get node :children))
+     (mapcar #'ebox-tree-flex-item-source-node (ebox-tree-layout-children node)))
+    ('grid (ebox-tree-layout-children node))
     ('flex-item (delq nil (list (plist-get node :node))))
     (_ (ebox-tree-children node))))
 
@@ -742,14 +933,14 @@ not only the public update ids."
                      (list (ebox--ensure-region-id box)))
                    (apply #'append
                           (mapcar #'ebox-tree-node-all-region-ids
-                                  (plist-get node :children)))))
+                                  (ebox-tree-layout-children node)))))
                  ('grid
                   (append
                    (when-let ((box (plist-get node :box)))
                      (list (ebox--ensure-region-id box)))
                    (apply #'append
                           (mapcar #'ebox-tree-node-all-region-ids
-                                  (plist-get node :children)))))
+                                  (ebox-tree-layout-children node)))))
                  ('flex-item
                   (ebox-tree-node-all-region-ids (plist-get node :node)))
                  (_ nil))))
@@ -786,14 +977,14 @@ cannot be inspected and reports no conflict."
                   (and (plist-get box paint-key) t)))
            (cl-some (lambda (child)
                       (ebox-tree-node-paint-conflict-p child paint-key t))
-                    (plist-get node :children))))
+                    (ebox-tree-layout-children node))))
       ('grid
        (or (and inherited
                 (when-let ((box (plist-get node :box)))
                   (and (plist-get box paint-key) t)))
            (cl-some (lambda (child)
                       (ebox-tree-node-paint-conflict-p child paint-key t))
-                    (plist-get node :children))))
+                    (ebox-tree-layout-children node))))
       ('flex-item
        (ebox-tree-node-paint-conflict-p
         (plist-get node :node) paint-key inherited))
@@ -834,7 +1025,7 @@ wrapper's visible content is produced by the flex renderer."
          (list node))
         (t
          (catch 'found
-           (dolist (child (plist-get node :children))
+           (dolist (child (ebox-tree-layout-children node))
              (when-let ((path (ebox-tree-node-path-to-region child region-id)))
                (throw 'found (append path (list node)))))
            nil))))
@@ -845,7 +1036,7 @@ wrapper's visible content is produced by the flex renderer."
          (list node))
         (t
          (catch 'found
-           (dolist (child (plist-get node :children))
+           (dolist (child (ebox-tree-layout-children node))
              (when-let ((path (ebox-tree-node-path-to-region child region-id)))
                (throw 'found (append path (list node)))))
            nil))))
@@ -873,12 +1064,12 @@ wrapper's visible content is produced by the flex renderer."
        (or (and (plist-get node :box)
                 (ebox--box-visible-overflow-p (plist-get node :box)))
            (cl-some #'ebox-tree-node-visible-overflow-p
-                    (plist-get node :children))))
+                    (ebox-tree-layout-children node))))
       ('grid
        (or (and (plist-get node :box)
                 (ebox--box-visible-overflow-p (plist-get node :box)))
            (cl-some #'ebox-tree-node-visible-overflow-p
-                    (plist-get node :children))))
+                    (ebox-tree-layout-children node))))
       ('flex-item
        (ebox-tree-node-visible-overflow-p (plist-get node :node)))
       (_ nil)))))

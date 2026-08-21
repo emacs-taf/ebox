@@ -18,12 +18,12 @@
 
 (defconst ebox-docs-test--active-files
   '("Makefile" ".github/workflows/ci.yml"
-    "ebox.el" "ebox-cache.el" "ebox-style.el" "ebox-tree.el"
+    "ebox.el" "ebox-cache.el" "ebox-style.el" "ebox-child-range.el" "ebox-tree.el"
     "ebox-measure.el" "ebox-fragment.el" "ebox-render-context.el"
     "ebox-layout.el" "ebox-flex.el" "ebox-grid.el"
     "ebox-buffer-backend.el" "ebox-incremental.el" "ebox-surface.el" "ebox-dsl.el"
     "ebox-selector.el" "ebox-native-reflow.el"
-    "tests/ebox-core-render-tests.el" "tests/ebox-grid-tests.el"
+    "tests/ebox-core-render-tests.el" "tests/ebox-child-range-tests.el" "tests/ebox-grid-tests.el"
     "tests/ebox-commit-tests.el" "tests/ebox-surface-tests.el"
     "tests/ebox-dsl-tests.el" "tests/ebox-flex-tests.el"
     "tests/ebox-selector-tests.el" "tests/ebox-package-tests.el"
@@ -37,7 +37,7 @@
   "Active Ebox files that the maintainer map must cover.")
 
 (defconst ebox-docs-test--targets
-  '("check" "ci" "load" "compile" "core-tests" "grid-tests"
+  '("check" "ci" "load" "compile" "core-tests" "child-range-tests" "grid-tests"
     "ebox-commit-tests" "surface-tests" "visual-check-tests" "package-tests"
     "selector-tests" "dsl-tests" "flex-tests"
     "docs-contract-tests" "ci-contract-tests" "performance-evaluator"

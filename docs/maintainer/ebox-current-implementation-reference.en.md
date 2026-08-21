@@ -1,6 +1,6 @@
 # Ebox current implementation reference
 
-This is the maintainer entry point for the standalone Ebox repository. It describes the package boundary, active files, runtime model, invariants, and verification commands. The historical `emacs-box` checkout is a separate legacy source tree; it is not a dependency of this package. ETAF is the sibling higher-level package.
+This is the maintainer entry point for the standalone Ebox repository. It describes the package boundary, active files, runtime model, invariants, and verification commands. The historical Ebox checkout is a separate legacy source tree; it is not a dependency of this package. ETAF is the sibling higher-level package.
 
 ## Reading order
 
@@ -20,6 +20,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | `ebox-cache.el` | Measurement/render cache records, invalidation, and cache reports. |
 | `ebox-style.el` | ECSS property schemas, declarations and cascade, shorthand expansion, computed style, colors, borders, and dirty effects. |
 | `ebox-tree.el` | Node traversal, logical child access, ECSS subject adaptation, identity, parent paths, keys, and tree snapshots. |
+| `ebox-child-range.el` | Immutable weighted segment trie, sparse persistent key trie, Range replacement, and Gate A metrics. |
 | `ebox-measure.el` | Display-sensitive character/face/pixel measurement and measurement caches. |
 | `ebox-fragment.el` | Layout fragments, signatures, snapshots, spans, and dirty-kind facts. |
 | `ebox-render-context.el` | Render-local context and publication inputs. |
@@ -35,7 +36,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 
 The package intentionally does not include application Components, UI controls, reactive data, or a playground implementation. Those are sibling-package responsibilities.
 
-The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
+The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-child-range-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
 
 ## Runtime model
 
@@ -58,7 +59,7 @@ Caller-owned Source Tree
 
 | Model | Owner | Must not own |
 | --- | --- | --- |
-| Source/Element Tree | `ebox-tree.el`, `ebox-dsl.el` | Published buffer mutation. |
+| Source/Element Tree | `ebox-child-range.el`, `ebox-tree.el`, `ebox-dsl.el` | Published buffer mutation. |
 | Computed Style | `ebox-style.el` | Layout identity or patch execution. |
 | Measurement | `ebox-measure.el` | Application state or dirty policy. |
 | Formatting Context | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Buffer edits. |
@@ -100,6 +101,7 @@ make load
 make compile
 make check
 make core-tests
+make child-range-tests
 make grid-tests
 make ebox-commit-tests
 make surface-tests

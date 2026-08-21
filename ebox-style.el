@@ -227,6 +227,18 @@
 (defvar ebox-style-schemas (ecss-schema-set-create)
   "ECSS property schemas for the isolated Ebox style domain.")
 
+(defvar ebox-style--registered-schemas nil
+  "Schema-set object whose Ebox properties are already registered.
+`ecss-schema-set-property' returns a detached schema copy, so probing it on
+every `ebox-create' needlessly copies the entire property metadata domain.")
+
+(defconst ebox-style--declaration-cache-max-entries 512
+  "Maximum canonical declaration compilations retained by Ebox.")
+
+(defvar ebox-style--declaration-cache
+  (make-hash-table :test 'equal)
+  "Bounded memo table for canonical Ebox declaration compilation.")
+
 (defun ebox-style--ensure-property-table ()
   "Return the canonical style property registry table."
   (or ebox-style--property-table
@@ -590,12 +602,18 @@
   (dolist (property ebox-style--property-definitions)
     (apply #'ecss-schema-set-define
            ebox-style-schemas (plist-get property :id)
-           (ebox-style--schema-options property))))
+           (ebox-style--schema-options property)))
+  (setq ebox-style--registered-schemas ebox-style-schemas))
 
 (defun ebox-style--ensure-properties ()
   "Ensure Ebox property schemas exist in the isolated ECSS schema set."
-  (unless (ecss-schema-set-property ebox-style-schemas 'ebox/color)
-    (ebox-style-register-properties)))
+  (unless (eq ebox-style--registered-schemas ebox-style-schemas)
+    ;; Only the first call for a new schema-set needs to inspect/register the
+    ;; domain.  Avoid the detached `ecss-schema-set-property' accessor on the
+    ;; hot `ebox-create' path; it recursively copies schema metadata.
+    (if (ecss-schema-set-property ebox-style-schemas 'ebox/color)
+        (setq ebox-style--registered-schemas ebox-style-schemas)
+      (ebox-style-register-properties))))
 
 (defvar ebox-style-stylesheet (ecss-stylesheet-create)
   "Isolated ECSS stylesheet containing Ebox layout and paint rules.")
@@ -628,6 +646,21 @@ cascade pass during its initial static projection."
   "Return non-nil when PLIST is a proper even-length list."
   (and (proper-list-p plist) (zerop (% (length plist) 2))))
 
+(defun ebox-style--declaration-cache-key (plist strict)
+  "Return a stable style-only cache key for PLIST and STRICT.
+Non-style node properties such as content, Host references, and callbacks do
+not affect declaration compilation and are intentionally excluded."
+  (let (canonical)
+    (cl-loop for (property value) on plist by #'cddr
+             for schema = (ebox-style-schema-id property)
+             if schema
+             do (setq canonical
+                      (append canonical (list schema value)))
+             else if (ebox-style--custom-property-p property)
+             do (setq canonical
+                      (append canonical (list property value))))
+    (list strict canonical)))
+
 (defun ebox-style--static-invalid-declaration-p (validator value)
   "Return non-nil when VALIDATOR rejects static VALUE."
   (pcase validator
@@ -657,17 +690,29 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
   (ebox-style--ensure-properties)
   (unless (ebox-style--valid-plist-p plist)
     (user-error "Ebox style declarations must be an even property list"))
-  (let ((canonical
-         (cl-loop for (property value) on plist by #'cddr
-                  for schema = (ebox-style-schema-id property)
-                  if schema append (list schema value)
-                  else if (ebox-style--custom-property-p property)
-                  append (list property value)
-                  else if strict
-                  do (user-error "Unknown Ebox style property: %S"
-                                 property))))
-    (ebox-style--validate-declaration-values
-     (ecss-merge-declarations ebox-style-schemas canonical))))
+  (let* ((cache-key (ebox-style--declaration-cache-key plist strict))
+         (missing (make-symbol "ebox-style-declaration-cache-missing"))
+         (cached (gethash cache-key ebox-style--declaration-cache missing)))
+    (if (not (eq cached missing))
+        ;; Canonical declaration plists are immutable after compilation;
+        ;; return a fresh top-level plist so callers own their list spine
+        ;; without re-running ECSS's recursive boundary copier.
+        (copy-sequence cached)
+      (let ((canonical (cadr cache-key)))
+        (when strict
+          (cl-loop for (property _value) on plist by #'cddr
+                   unless (or (ebox-style-schema-id property)
+                              (ebox-style--custom-property-p property))
+                   do (user-error "Unknown Ebox style property: %S"
+                                  property)))
+        (let ((compiled
+               (ebox-style--validate-declaration-values
+                (ecss-merge-declarations ebox-style-schemas canonical))))
+          (when (>= (hash-table-count ebox-style--declaration-cache)
+                    ebox-style--declaration-cache-max-entries)
+            (clrhash ebox-style--declaration-cache))
+          (puthash cache-key compiled ebox-style--declaration-cache)
+          (copy-sequence compiled))))))
 
 (defun ebox-style-merge-declarations (base overrides)
   "Merge canonical BASE and OVERRIDES through ECSS property schemas."
@@ -692,6 +737,177 @@ ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
    ebox-style-schemas subject :declarations declarations
    :stylesheet ebox-style-stylesheet :parent-style parent-style
    :value-resolver #'tp-resolve-value))
+
+(defconst ebox-style--theme-delta-properties
+  '(ebox/color ebox/background-color)
+  "Canonical paint properties eligible for a declaration-only Theme delta.")
+
+(defconst ebox-style--paint-delta-properties
+  '(ebox/color ebox/background-color
+    ebox/border-top-color ebox/border-right-color
+    ebox/border-bottom-color ebox/border-left-color)
+  "Canonical paint properties that may change without changing geometry.")
+
+(defun ebox-style--without-theme-delta-properties (declarations)
+  "Return DECLARATIONS without the canonical Theme paint properties."
+  (cl-loop for (property value) on declarations by #'cddr
+           unless (memq property ebox-style--theme-delta-properties)
+           append (list property value)))
+
+(defun ebox-style--without-paint-delta-properties (declarations)
+  "Return DECLARATIONS without canonical paint-only properties."
+  (cl-loop for (property value) on declarations by #'cddr
+           unless (memq property ebox-style--paint-delta-properties)
+           append (list property value)))
+
+(defun ebox-style--paint-declarations-equivalent-p (old new)
+  "Return non-nil when OLD and NEW differ only in paint declarations.
+All paint properties retain presence parity; layout, structure, and typography
+declarations must remain identical."
+  (and (equal (ebox-style--without-paint-delta-properties old)
+              (ebox-style--without-paint-delta-properties new))
+       (cl-every
+        (lambda (property)
+          (= (if (plist-member old property) 1 0)
+             (if (plist-member new property) 1 0)))
+        ebox-style--paint-delta-properties)))
+
+(defun ebox-style--theme-declarations-equivalent-p (old new)
+  "Return non-nil when OLD and NEW differ only in explicit Theme paint values.
+Both paint properties must retain presence parity and an explicit foreground
+winner is required so parent inherited geometry/paint cannot be stale."
+  (and (equal (ebox-style--without-theme-delta-properties old)
+              (ebox-style--without-theme-delta-properties new))
+       (cl-every
+        (lambda (property)
+          (= (if (plist-member old property) 1 0)
+             (if (plist-member new property) 1 0)))
+        ebox-style--theme-delta-properties)
+       (plist-member old 'ebox/color)
+       (plist-member new 'ebox/color)))
+
+(defconst ebox-style--inherited-properties
+  '(ebox/color ebox/font ebox/font-family ebox/font-height
+    ebox/font-weight ebox/font-slant)
+  "Inherited ECSS properties whose parent values guard Theme deltas.")
+
+(defun ebox-style--inherited-style-signature (style)
+  "Return the inherited-value fingerprint of computed STYLE, or nil.
+The fingerprint deliberately contains only values that can flow from a
+parent into a descendant, plus custom properties which can feed any
+`var' expression.  A Theme delta may reuse a computed style only when this
+fingerprint is unchanged between the old and candidate parent."
+  (when (ecss-computed-style-p style)
+    (list
+     :inherited
+     (mapcar (lambda (property)
+               (cons property (ecss-computed-style-value style property)))
+             ebox-style--inherited-properties)
+     :custom-properties (ecss-computed-style-custom-properties style))))
+
+(defun ebox-style--theme-delta-computed
+    (style old-declarations new-declarations
+           &optional old-parent-style new-parent-style)
+  "Return a cheap STYLE copy for a safe Theme paint-only declaration delta.
+OLD-DECLARATIONS and NEW-DECLARATIONS are the canonical ECSS plists.
+OLD-PARENT-STYLE and NEW-PARENT-STYLE are the previous and candidate
+computed parent styles, when the subject has an inherited parent.
+
+The cascade selector facts and every non-Theme declaration must be unchanged;
+both Theme properties must keep the same explicit-presence state, and the
+inherited parent fingerprint must be unchanged.  In that case only the
+computed values and winner metadata for those properties change.  Any other
+shape returns nil so the caller uses the full ECSS computation."
+  (when (and (ecss-computed-style-p style)
+             (ebox-style--theme-declarations-equivalent-p
+              old-declarations new-declarations))
+    (let ((changed-p
+           (cl-some
+            (lambda (property)
+              (and (plist-member old-declarations property)
+                   (plist-member new-declarations property)
+                   (not (equal (plist-get old-declarations property)
+                               (plist-get new-declarations property)))))
+            ebox-style--theme-delta-properties)))
+      (when (and changed-p
+                 (equal (ebox-style--inherited-style-signature
+                         old-parent-style)
+                        (ebox-style--inherited-style-signature
+                         new-parent-style)))
+        (let ((values (copy-tree (ecss-computed-style-values style)))
+              (active (copy-sequence
+                       (ecss-computed-style-active-properties style)))
+              (specified (copy-sequence
+                          (ecss-computed-style-specified-properties style))))
+          (dolist (property ebox-style--theme-delta-properties)
+            (let ((id (ebox-style-schema-id property)))
+              (when (plist-member new-declarations property)
+                (setf values
+                      (plist-put values id
+                                 (copy-tree (plist-get new-declarations property))))
+                (cl-pushnew id active)
+                (cl-pushnew id specified))))
+          (ecss-computed-style-copy-with-values
+           style values :active-properties active :specified-properties specified))))))
+
+(defun ebox-style--inherited-style-signature-without-theme-color (style)
+  "Return STYLE's inherited fingerprint excluding the Theme color value.
+The caller uses this to prove that a parent update changes only the inherited
+foreground value; fonts, custom properties, and all other inherited facts must
+  remain identical before a computed child style may be copied."
+  (when (ecss-computed-style-p style)
+    (list
+     :inherited
+     (mapcar
+      (lambda (property)
+        (cons property (ecss-computed-style-value style property)))
+      (delq 'ebox/color (copy-sequence ebox-style--inherited-properties)))
+     :custom-properties (ecss-computed-style-custom-properties style))))
+
+(defun ebox-style--theme-parent-delta-computed
+    (style declarations old-parent-style new-parent-style)
+  "Return a copied STYLE when a static parent changes only Theme color.
+For an explicit child color, STYLE is reusable unchanged.  For an inherited
+child color, the copied value follows NEW-PARENT-STYLE.  OLD-PARENT-STYLE and
+NEW-PARENT-STYLE must have identical non-color inherited fingerprints; any
+provenance or parent-shape mismatch returns nil for normal ECSS computation."
+  (when (and (ecss-computed-style-p style)
+             (proper-list-p declarations)
+             (ecss-computed-style-p old-parent-style)
+             (ecss-computed-style-p new-parent-style)
+             (equal
+              (ebox-style--inherited-style-signature-without-theme-color
+               old-parent-style)
+              (ebox-style--inherited-style-signature-without-theme-color
+               new-parent-style)))
+    (if (ecss-computed-style-specified-p style 'ebox/color)
+        (ecss-computed-style-copy-with-values
+         style (ecss-computed-style-values style))
+      (when (and (equal (ecss-computed-style-value
+                         style 'ebox/color)
+                        (ecss-computed-style-value
+                         old-parent-style 'ebox/color))
+                 (not (equal (ecss-computed-style-value
+                              old-parent-style 'ebox/color)
+                             (ecss-computed-style-value
+                              new-parent-style 'ebox/color))))
+        (let ((values (copy-tree (ecss-computed-style-values style))))
+          (setq values
+                (plist-put values 'ebox/color
+                           (copy-tree
+                            (ecss-computed-style-value
+                             new-parent-style 'ebox/color))))
+          (ecss-computed-style-copy-with-values style values))))))
+
+(defun ebox-style--theme-inherited-delta-computed
+    (style declarations old-parent-style new-parent-style)
+  "Return a copied STYLE when only inherited Theme color changed.
+This compatibility entry point requires STYLE to inherit its color; explicit
+child colors are handled by `ebox-style--theme-parent-delta-computed'."
+  (when (and (ecss-computed-style-p style)
+             (not (ecss-computed-style-specified-p style 'ebox/color)))
+    (ebox-style--theme-parent-delta-computed
+     style declarations old-parent-style new-parent-style)))
 
 (defun ebox-style--public-computed-values (style)
   "Return STYLE values using canonical public Ebox property names."

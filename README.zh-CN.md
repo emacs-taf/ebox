@@ -24,6 +24,8 @@ ECSS 与 TP 是互相独立的包，安装顺序任意。两者都安装后再�
 
 公共模型是一棵 Ebox 节点树。`ebox-create` 构造叶子或包装节点；`ebox-column`、`ebox-row`、`ebox-flex` 和 `ebox-grid` 组合节点；`ebox-render` 生成带属性文本但不发布 buffer state（没有 cascade/inheritance 依赖时使用隔离的 pure materialization）；`ebox-render-to-buffer` 挂载 retained TP surface；`ebox-display-buffer` 展示同一条 retained-surface 路径；`ebox-commit` 使用新的根树原子更新该 mount。Ebox 会在分配 runtime identity 前复制声明式输入，因此同一 source tree 可以挂载到多个 buffer，而不转移所有权。公共 API 不再提供另一套擦除 live buffer 后执行任意 BODY 的宏。
 
+Material child list 可包含 `ebox-child-range` descriptor，logical candidate 用 `ebox-candidate-replace-range-ref` 更新其 base-bound 地址。Candidate 也可用 `ebox-candidate-replace-root` 替换私有 mounted root；最后一次 root replacement 会吸收 descendant operation，并且不会与 `:host-ref` 共用地址。报告通过 `:range-metrics`、framework participant diagnostics 和 scroll finalization diagnostics 暴露只读快照。
+
 CSS-like selector 字符串会编译为 ECSS 的 structured selector AST。Ebox 提供逻辑节点关系与索引候选；对于 tree query、rendered-buffer query 和样式规则，ECSS 是唯一 selector matcher 与 cascade engine。
 
 ## 本包负责什么
@@ -41,7 +43,7 @@ ETAF 属于同级独立包。当你需要统一 View 语法、Component、响应
 | 路径 | 职责 |
 | --- | --- |
 | `ebox.el` | 公共门面与包入口。 |
-| `ebox-cache.el`、`ebox-style.el`、`ebox-tree.el`、`ebox-measure.el` | 缓存、样式、树和测量模型。 |
+| `ebox-cache.el`、`ebox-style.el`、`ebox-tree.el`、`ebox-child-range.el`、`ebox-measure.el` | 缓存、样式、树、持久 child sequence 和测量模型。 |
 | `ebox-fragment.el`、`ebox-render-context.el` | 布局事实与 render-local context。 |
 | `ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` | Formatting Context 与布局算法。 |
 | `ebox-surface.el` | 将 Ebox runtime/layout 投影为 TP surface plan，并负责 retained mount/update 与原子 runtime-state 参与。 |

@@ -16,7 +16,7 @@
   "The Makefile should expose Ebox targets without bundling ETAF."
   (let ((source (ebox-ci-test--read "Makefile")))
     (dolist (target '("check:" "ci:" "load:" "compile:" "test:"
-                      "core-tests:" "grid-tests:" "ebox-commit-tests:"
+                      "core-tests:" "child-range-tests:" "grid-tests:" "ebox-commit-tests:"
                       "surface-tests:"
                       "docs-contract-tests:"
                       "ci-contract-tests:" "native-rust-tests:"
@@ -32,6 +32,7 @@
     (should (string-match-p "byte-compile-error-on-warn" source))
     (should (string-match-p "ebox-byte-compile" source))
     (should (string-match-p "ebox-native-reflow.el" ebox))
+    (should (string-match-p "ebox-child-range.el" ebox))
     (should-not (string-match-p "ebox-playground.el" ebox))))
 
 (ert-deftest ebox-ci-prefers-newer-source-and-cleans-local-products ()

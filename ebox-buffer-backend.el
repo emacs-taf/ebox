@@ -17,6 +17,8 @@
                   "ebox-render-context" (property value))
 (declare-function ebox--register-render-owned-face-values
                   "ebox-render-context" (source rendered))
+(declare-function ebox--add-render-face!
+                  "ebox-render-context" (string start end face &optional append))
 (declare-function ebox--string-repeat-lines
                   "ebox" (string count))
 (declare-function ebox-lines-join
@@ -240,7 +242,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
   "Apply STYLE's typography to one copy of STRING."
   (if-let ((face (ebox-buffer--font-face style)))
       (let ((copy (copy-sequence string)))
-        (add-face-text-property 0 (length copy) face t copy)
+        (ebox--add-render-face! copy 0 (length copy) face t)
         (ebox--register-render-owned-face-values string copy))
     string))
 
@@ -259,9 +261,8 @@ buffer-facing paint properties.  Layout-only properties never pass through."
            (display
             (ebox--register-render-owned-text-value
              'display `(space :width (,pixel-width))))
-           (line (propertize " "
-                             'face face
-                             'display display)))
+           (line (propertize " " 'display display)))
+      (ebox--add-render-face! line 0 (length line) face)
       (ebox--register-render-owned-text-value 'face face)
       (ebox--string-repeat-lines line height))))
 
@@ -270,7 +271,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
   (let* ((source string)
          (string (copy-sequence source))
          (length (length string)))
-    (add-face-text-property 0 length `(:background ,bgcolor) t string)
+    (ebox--add-render-face! string 0 length `(:background ,bgcolor) t)
     (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-color (string color)
@@ -278,12 +279,12 @@ buffer-facing paint properties.  Layout-only properties never pass through."
   (let* ((source string)
          (string (copy-sequence source))
          (length (length string)))
-    (add-face-text-property
-     0 length
+    (ebox--add-render-face!
+     string 0 length
      (if (eq color 'ebox/default-foreground)
          '(:inherit default)
        `(:foreground ,color))
-     t string)
+     t)
     (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-colors (string color bgcolor)
@@ -292,33 +293,33 @@ buffer-facing paint properties.  Layout-only properties never pass through."
          (string (copy-sequence source))
          (length (length string)))
     (when color
-      (add-face-text-property
-       0 length
+      (ebox--add-render-face!
+       string 0 length
        (if (eq color 'ebox/default-foreground)
            '(:inherit default)
          `(:foreground ,color))
-       t string))
+       t))
     (when bgcolor
-      (add-face-text-property
-       0 length `(:background ,bgcolor) t string))
+      (ebox--add-render-face!
+       string 0 length `(:background ,bgcolor) t))
     (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-overline (string &optional color)
   "Apply overline to STRING with optional COLOR."
   (let* ((source string)
          (string (copy-sequence source)))
-    (add-face-text-property
-     0 (length string) `(:overline ,(or color t)) t string)
+    (ebox--add-render-face!
+     string 0 (length string) `(:overline ,(or color t)) t)
     (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-underline (string &optional color)
   "Apply underline to STRING with optional COLOR."
   (let* ((source string)
          (string (copy-sequence source)))
-    (add-face-text-property
-     0 (length string)
+    (ebox--add-render-face!
+     string 0 (length string)
      `(:underline (:position t ,@(when color `(:color ,color))))
-     t string)
+     t)
     (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-region (string property region-id)

@@ -147,7 +147,7 @@ Selector 查询已渲染的树并返回公共匹配记录，但不拥有应用�
 ```
 
 `ebox-scroll-down`、`ebox-scroll-up`、`ebox-scroll-page-down` 和
-`ebox-scroll-page-up` 操作 point 所在的最内层 Ebox scroll region；没有可消费命令的 Ebox region 时回退到 Emacs scrolling。`ebox-wheel-scroll-down` 与 `ebox-wheel-scroll-up` 为 Ebox region 消费 mouse event，否则委托 `mwheel-scroll`。`ebox-buffer-mode` 本地安装 `ebox-scroll-map`；`ebox-render-to-buffer` 会在返回的 buffer 上启用它。`ebox-scroll-state` 为数字 region id 提供只读 scroll facts；使用滚动命令或 `ebox-region-update` 的 `:scroll-offset` 改变位置。
+`ebox-scroll-page-up`、`ebox-scroll-down` 等键盘命令从 point 所在的最内层 scroll owner 开始，默认按一行意图分配；内层不足的剩余量继续交给语义父盒子，最后才回退到普通 Emacs buffer scrolling。`ebox-wheel-scroll-down` 与 `ebox-wheel-scroll-up` 以 mouse event 位置为 anchor（不使用 point），采用同样的内到外 residual 路由；没有可消费的 Ebox region 时才委托普通 Emacs scrolling。`ebox-buffer-mode` 本地安装 `ebox-scroll-map`；`ebox-render-to-buffer` 会在返回的 buffer 上启用它。`ebox-scroll-state` 为数字 region id 提供只读 scroll facts；使用滚动命令或 `ebox-region-update` 的 `:scroll-offset` 改变位置。
 
 Viewport 值使用 `(viewport)` 与 `(viewport-height)`。mounted buffer 要用显式 context 重排：
 
@@ -155,7 +155,7 @@ Viewport 值使用 `(viewport)` 与 `(viewport-height)`。mounted buffer 要用�
 (ebox-rerender-buffer-with-context (get-buffer "*Ebox Demo*") 800 30)
 ```
 
-该调用保留 node 与 region identity。[公共 API 参考](ebox-api-reference.zh.md)列出了 lazy prefix、idle prefetch、cache 和滚动配置变量。
+该调用保留 node 与 region identity。交互式预览中，内容完整且无 chrome 的根 document owner 会在 idle 时一次 materialize，随后采用 Emacs 原生逐行 window scrolling；嵌套或仍处于 lazy 状态的 owner 继续使用事务化 retained-window 路径。[公共 API 参考](ebox-api-reference.zh.md)列出了 lazy prefix、idle prefetch、cache 和滚动配置变量。
 
 ## 9. 独立 `.ebox` 文件
 

@@ -1,6 +1,6 @@
 # Ebox Performance Architecture Diagnosis and Redesign Direction
 
-> Status: Architecture diagnosis and implementation checkpoint. This document records the performance gap between the current refactored `ebox` and the historical `emacs-box`, the evidence boundary, and the high-level redesign direction. Five narrow slices are implemented; the retained mounted-update architecture is not yet considered generally repaired.
+> Status: Architecture diagnosis and implementation checkpoint. This document records the performance gap between the current refactored `ebox` and the historical Ebox checkout, the evidence boundary, and the high-level redesign direction. Five narrow slices are implemented; the retained mounted-update architecture is not yet considered generally repaired.
 >
 > Date: 2026-08-07
 >
@@ -8,7 +8,7 @@
 
 ## Question
 
-Why does the current refactored Ebox fail to match the performance of the pre-refactor `emacs-box` during dynamic content updates, viewport resize, and pure `ebox-render`? The data-flow and ownership causes must be established before optimizing individual functions.
+Why does the current refactored Ebox fail to match the performance of the pre-refactor historical Ebox checkout during dynamic content updates, viewport resize, and pure `ebox-render`? The data-flow and ownership causes must be established before optimizing individual functions.
 
 ## Conclusion
 
@@ -21,7 +21,7 @@ The key distinction is that current’s “local patch” describes publication 
 ## Scope and terminology
 
 - “current” means the standalone refactored `ebox` repository.
-- “legacy” means the sibling historical `emacs-box` source tree.
+- “legacy” means the sibling historical Ebox checkout.
 - “pure materialization” means producing a propertized render string from a source tree without a live buffer, stable retained identity, or rollback requirement.
 - “retained publication” means publishing a candidate to a mounted TP surface with stable identity, ownership, scope proof, revision, and rollback semantics.
 - Absolute timings come from one local measurement environment. The architecture conclusion relies on stage proportions, call counts, and identical outputs rather than on one absolute threshold.
@@ -208,9 +208,9 @@ The current retained data flow crosses these boundaries:
 
 The corresponding legacy path is closer to “computation scope equals modification scope”:
 
-- `emacs-box/ebox.el:7195` directly modifies the target region box and enters the local dirty/patch path.
-- `emacs-box/ebox.el:7399` formats only the target content before applying the local patch.
-- `emacs-box/ebox.el:7578` directly renders, inserts, and refreshes markers/spans.
+- The historical checkout's `ebox.el:7195` directly modifies the target region box and enters the local dirty/patch path.
+- The historical checkout's `ebox.el:7399` formats only the target content before applying the local patch.
+- The historical checkout's `ebox.el:7578` directly renders, inserts, and refreshes markers/spans.
 - Legacy `ebox-style.el` mainly expands local properties and classifies dirty work; it has no equivalent current ECSS stylesheet/reactive per-node cascade.
 
 ## Evidence versus inference

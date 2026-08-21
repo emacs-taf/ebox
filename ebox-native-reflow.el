@@ -1812,7 +1812,7 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
                              content-min
                              (not (eq content-min missing))))
                         (ebox-native-reflow--compile-flex-item item axis)))
-                    (plist-get node :children))))))
+                    (ebox-tree-layout-children node))))))
     (if wrapper
         (ebox-native-reflow--compile-box wrapper inner t)
       inner)))
@@ -1842,6 +1842,7 @@ Grid deliberately stays on the ordinary Ebox renderer until the native
 backend has a matching two-dimensional layout contract."
   (cond
    ((or (null node) (stringp node) (not (listp node))) t)
+   ((plist-get node :ebox-child-sequence) nil)
    ((eq (plist-get node :ebox-type) 'grid) nil)
    ((eq (plist-get node :ebox-type) 'box)
     (ebox-native-reflow--native-node-supported-p
@@ -1853,7 +1854,7 @@ backend has a matching two-dimensional layout contract."
     (cl-every #'ebox-native-reflow--native-node-supported-p
               (append (when-let ((box (plist-get node :box)))
                         (list box))
-                      (plist-get node :children))))
+                      (ebox-tree-layout-children node))))
    ((eq (plist-get node :ebox-type) 'flex-item)
     (ebox-native-reflow--native-node-supported-p (plist-get node :node)))
    (t nil)))

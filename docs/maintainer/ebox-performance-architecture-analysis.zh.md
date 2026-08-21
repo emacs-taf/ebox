@@ -1,6 +1,6 @@
 # Ebox 性能架构诊断与重构方向
 
-> 状态：架构诊断与实现 checkpoint。本文记录 current refactored Ebox 相比历史 `emacs-box` 的性能差异、证据边界和高层重构方向。五个范围很窄的 slice 已经实现；mounted retained-update 架构尚不能认为已经普遍修复。
+> 状态：架构诊断与实现 checkpoint。本文记录 current refactored Ebox 相比历史 Ebox checkout 的性能差异、证据边界和高层重构方向。五个范围很窄的 slice 已经实现；mounted retained-update 架构尚不能认为已经普遍修复。
 >
 > 日期：2026-08-07
 >
@@ -8,7 +8,7 @@
 
 ## 问题
 
-为什么 current refactored Ebox 在动态内容更新、viewport resize 和纯 `ebox-render` 场景下，性能达不到重构前的 `emacs-box`？需要先确定数据流和 ownership 层面的主因，而不是继续优化某个具体函数。
+为什么 current refactored Ebox 在动态内容更新、viewport resize 和纯 `ebox-render` 场景下，性能达不到历史 Ebox checkout？需要先确定数据流和 ownership 层面的主因，而不是继续优化某个具体函数。
 
 ## 结论
 
@@ -21,7 +21,7 @@
 ## 比较范围与术语
 
 - “current”指独立重构版 `ebox` 仓库。
-- “legacy”指同级历史 `emacs-box` 源码树。
+- “legacy”指同级历史 Ebox checkout。
 - “pure materialization”指从 source tree 产生带文本属性的渲染字符串，不需要 live buffer、稳定 retained identity 或 rollback。
 - “retained publication”指向已挂载 TP surface 发布候选状态，包含稳定 identity、ownership、scope proof、revision 和 rollback 语义。
 - 文中的绝对耗时来自同一个本地测量环境；架构判断依赖阶段占比、调用次数和相同输出结果，不依赖某一个绝对时间阈值。
@@ -208,9 +208,9 @@ current 的 retained 数据流由以下边界组成：
 
 legacy 的对应路径更接近“计算范围等于修改范围”：
 
-- `emacs-box/ebox.el:7195` 直接修改目标 region box，并进入局部 dirty/patch 路径。
-- `emacs-box/ebox.el:7399` 只格式化目标内容后执行局部 patch。
-- `emacs-box/ebox.el:7578` 直接 render、insert 并刷新 marker/span。
+- 历史 checkout 的 `ebox.el:7195` 直接修改目标 region box，并进入局部 dirty/patch 路径。
+- 历史 checkout 的 `ebox.el:7399` 只格式化目标内容后执行局部 patch。
+- 历史 checkout 的 `ebox.el:7578` 直接 render、insert 并刷新 marker/span。
 - legacy 的 `ebox-style.el` 主要做本地属性展开和 dirty 分类，没有 current 的 ECSS stylesheet/reactive per-node cascade。
 
 ## Evidence 与 Inference 的边界

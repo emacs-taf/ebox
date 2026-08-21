@@ -446,7 +446,10 @@ Supported properties are `:grid-column', `:grid-row',
 (defun ebox-grid--auto-width-node-p (node)
   "Return non-nil when NODE derives its width from the active viewport."
   (let ((width (plist-get node :width)))
-    (or (null width) (eq width 'auto))))
+    ;; `stretch' and `contain' are containing-block widths.  Treating them
+    ;; as intrinsic leaves fractional Grid tracks empty and makes composite
+    ;; cards hug their natural width instead of filling the assigned track.
+    (or (null width) (memq width '(auto stretch contain)))))
 
 (defun ebox-grid--entry-source (entry rendered width props)
   "Return ENTRY's content rendered within WIDTH when it is auto-sized.
@@ -610,7 +613,7 @@ size for start/center/end alignment unless it would overflow its track."
 (defun ebox--render-grid (node)
   "Render GRID NODE to a propertized string."
   (let* ((props (plist-get node :raw-props))
-         (children (plist-get node :children))
+         (children (ebox-tree-layout-children node))
          (columns (ebox-grid--normalize-tracks
                    (plist-get props :grid-template-columns) 'columns))
          (rows (ebox-grid--normalize-tracks

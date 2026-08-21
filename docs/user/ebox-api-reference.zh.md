@@ -68,8 +68,8 @@ window，再切换到渲染后的 buffer。如果窗口选择由调用方负责�
 (ebox-create &rest properties)
 (ebox-concat node-1 node-2)       ; 两个节点横向排列
 (ebox-stack node-1 node-2)        ; 两个节点纵向排列
-(ebox-row &rest nodes)             ; 多个节点横向排列
-(ebox-column &rest nodes)          ; 多个节点纵向排列
+(ebox-row &rest nodes)             ; 多个节点横向排列；单个 Range 仍保留 row parent
+(ebox-column &rest nodes)          ; 多个节点纵向排列；单个 Range 仍保留 column parent
 (ebox-spacer &rest properties)    ; 空白 box
 ```
 
@@ -304,10 +304,24 @@ Candidate 是基于当前已发布 runtime 的一次性 transaction。多个稳�
   (ebox-commit buffer candidate))
 ```
 
+如果框架的 semantic owner 与 backend anchor 分离，可在选择更宽的发布 owner
+之前使用只读函数 `ebox-range-ref-present-p`。当 semantic Range 嵌套在 material
+anchor 内、当前 Ebox publication 没有独立地址时，它返回 nil。
+
 `ebox-candidate-replace-host-ref` 使用应用拥有的 `:host-ref`，不需要 runtime
 node id。两个 replacement 函数都接受可选的 `old-semantic-key` 与
 `new-semantic-key`，用于有限的 detached identity 复用。Candidate 在 commit
 时 sealed，不能复用；若捕获的 runtime 或 buffer tick 发生变化，它也会 stale。
+
+`ebox-candidate-replace-root` 使用私有且绑定 candidate 的 root 地址。它只接受
+一个声明式节点、清除调用方 runtime identity，并采用 last-wins 语义。最终 root
+replacement 会吸收其前后记录的 descendant node/host-ref operation，不添加
+wrapper，也不暴露公共 reference。
+
+`ebox-child-range` 在 material child list 中创建非节点 segment descriptor。
+其非 nil ref 在 root 内全局唯一，items 直接参与 parent 的 key、selector、style
+与 layout scope。`ebox-candidate-replace-range-ref` 接受 proper declarative
+node list，只替换该 base payload；empty payload 仍可寻址。
 
 ### Host-reference 位置
 
@@ -327,6 +341,13 @@ Host-reference table 与 logical selector id 是两套不同的机制。
 copy；目标缺失或不是 Ebox runtime 时会报错。首次 mount 在第一次 update
 前没有 update report。报告包含 Ebox strategy、publication scope、TP surface
 revision、物理 operation 和 reconciliation 事实。
+
+完整签名是 `(ebox-commit BUFFER NEXT-ROOT &optional FRAMEWORK-PUBLISH
+FRAMEWORK-ROLLBACK)`。buffer、TP surface 与 Ebox runtime 一致后，publish 接收
+report；若后续 phase 失败，rollback 最多一次接收同一个 report，其 error/quit
+会被隔离。`:framework-participant-state`、
+`:framework-participant-diagnostics` 与 `:scroll-finalization-diagnostics`
+是只读 outcome 字段。
 
 当 root 依赖新的 viewport 时使用 `ebox-rerender-buffer-with-context`：
 
@@ -414,9 +435,9 @@ text scale 和固定 `display` space；它也是布局使用的公共测量原�
 | 分组 | 变量与默认值 |
 | --- | --- |
 | Render cache | `ebox-render-cache-max-entries` 2048；`ebox-render-cache-max-bytes` 32 MiB；`ebox-render-root-cache-max-entries` 16；`ebox-render-root-cache-max-bytes` 8 MiB |
-| 键盘/鼠标滚动 | `ebox-scroll-step` 1；`ebox-wheel-scroll-step` 16；`ebox-wheel-smooth-scroll` t；`ebox-wheel-smooth-scroll-interval` 0.016；`ebox-wheel-smooth-scroll-lines-per-tick` 4；`ebox-wheel-smooth-scroll-target-ticks` 8 |
+| 键盘/鼠标滚动 | `ebox-scroll-step` 1；`ebox-wheel-scroll-step` 1；`ebox-wheel-smooth-scroll` nil；`ebox-wheel-smooth-scroll-interval` 0.016；`ebox-wheel-smooth-scroll-lines-per-tick` 4；`ebox-wheel-smooth-scroll-target-ticks` 8。键盘以 point 为 anchor，滚轮以 event 位置为 anchor，剩余行沿嵌套 owner 向外冒泡。交互式、内容完整且无 chrome 的根 document owner 可在 idle 时一次 materialize，之后使用 Emacs 原生 window line start；普通更新/resize 只预热 retained index，不启动第二次 native publication；嵌套/lazy/chrome owner 继续走事务化 Ebox publication。 |
 | Lazy scroll | `ebox-scroll-lazy-prefix-lookahead-lines` 8；`ebox-scroll-lazy-idle-prefetch-lines` 128；`ebox-scroll-lazy-idle-prefetch-slice-lines` 16；`ebox-scroll-lazy-idle-prefetch-delay` 0.15 |
-| Runtime prewarm | `ebox-runtime-idle-prewarm` t；`ebox-runtime-idle-prewarm-delay` 0.1；`ebox-runtime-idle-prewarm-prefix-resume-delay` 2.0；`ebox-runtime-idle-prewarm-slice-size` 32 |
+| Runtime prewarm | `ebox-runtime-idle-prewarm` t；`ebox-runtime-idle-prewarm-delay` 0.1；`ebox-runtime-idle-prewarm-prefix-resume-delay` 2.0；`ebox-runtime-idle-prewarm-slice-size` 32；`ebox-native-buffer-scroll` t（仅 initial/visible-window handoff；严格 root-owner proof） |
 | 预测 reflow | `ebox-runtime-idle-reflow-cache-prewarm` t；`ebox-runtime-idle-reflow-cache-prewarm-delay` 0.15 |
 | Reflow GC | `ebox-reflow-cache-prewarm-gc-cons-threshold` `auto`；`ebox-reflow-cache-prewarm-gc-auto-frame-budget` 0.2；`ebox-reflow-cache-prewarm-gc-auto-min-threshold` 64 MiB；`ebox-reflow-cache-prewarm-gc-auto-max-threshold` 1 GiB；`ebox-reflow-cache-prewarm-gc-auto-initial-threshold` 512 MiB；`ebox-reflow-cache-prewarm-gc-auto-target-layouts` 24；`ebox-reflow-cache-prewarm-gc-cons-percentage` 0.1 |
 | Visual verification | `ebox-visual-check-output-dir` 指向可选 screenshot/report 使用的临时目录。 |
@@ -483,7 +504,7 @@ style API。
 | `ebox-render`、`ebox-render-to-buffer`、`ebox-display-buffer` | 纯 materialization、retained mount 与展示包装。 |
 | `ebox-commit`、`ebox-buffer-update-report`、`ebox-rerender-buffer-with-context` | 原子根提交、报告查询和 viewport-context rerender。 |
 | `ebox-region-ids`、`ebox-region-resolve`、`ebox-region-update` | Region 映射、logical handle 查询与直接更新。 |
-| `ebox-candidate-begin`、`ebox-candidate-replace`、`ebox-candidate-replace-host-ref` | 一次性 logical candidate transaction。 |
+| `ebox-child-range`、`ebox-range-ref-present-p`、`ebox-candidate-begin`、`ebox-candidate-replace`、`ebox-candidate-replace-range-ref`、`ebox-candidate-replace-root`、`ebox-candidate-replace-host-ref` | 持久 material child segment、backend anchor 查询与一次性 logical candidate transaction。 |
 | `ebox-host-ref-bounds`、`ebox-host-ref-position` | Host-reference 的 live bounds 与首位置。 |
 | `ebox-selector-parse`、`ebox-selector-match-node-p`、`ebox-selector-query-all`、`ebox-selector-query-buffer`、`ebox-selector-update-buffer` | ECSS selector 编译、匹配、查询与批量更新。 |
 | `ebox-select-all`、`ebox-update-selector` | 两个 buffer selector 函数的兼容别名。 |
@@ -516,4 +537,4 @@ make native-rust-tests
 `make selector-tests`、`make dsl-tests`、`make flex-tests` 和
 `make visual-check-tests`。可运行的 `.ebox` 示例由同级 `ebox-playground`
 包负责；ETAF 负责 Component、state、control 和应用行为。本包不要调用
-私有 `ebox--*` 函数，也不要在 Ebox 任务中编辑历史 `emacs-box` checkout。
+私有 `ebox--*` 函数，也不要在 Ebox 任务中编辑历史 Ebox checkout。

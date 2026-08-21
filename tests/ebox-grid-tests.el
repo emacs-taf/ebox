@@ -37,6 +37,22 @@
     (should (= (length lines) 1))
     (should (= (ebox--string-pixel-width (car lines)) 120))))
 
+(ert-deftest ebox-grid-stretch-children-fill-fractional-tracks ()
+  "Stretch-width children must reflow to their assigned fractional tracks."
+  (let* ((left (ebox-create :content "left" :width 'stretch))
+         (calls 0)
+         (entry-left (list :node left :column 1 :column-span 1))
+         (rendered (make-hash-table :test #'eq)))
+    (puthash left "left" rendered)
+    (cl-letf (((symbol-function 'ebox--render-with-cache)
+               (lambda (&rest _)
+                 (cl-incf calls)
+                 "track-width")))
+      (should (equal "track-width"
+                     (ebox-grid--entry-source
+                      entry-left rendered 100 '(:justify-items stretch))))
+      (should (= calls 1)))))
+
 (ert-deftest ebox-grid-constrains-auto-width-children-to-track-size ()
   "Auto-width grid children should render within their assigned track."
   (let* ((ebox-viewport-width 120)

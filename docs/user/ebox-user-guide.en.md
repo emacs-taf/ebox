@@ -147,7 +147,7 @@ Give a box `:overflow 'scroll` (the default) and a finite `:height` to create a 
              :content (mapconcat #'identity lines "\n"))
 ```
 
-`ebox-scroll-down`, `ebox-scroll-up`, `ebox-scroll-page-down`, and `ebox-scroll-page-up` operate on the innermost Ebox scroll region at point and fall back to Emacs scrolling when no Ebox region can consume the command. `ebox-wheel-scroll-down` and `ebox-wheel-scroll-up` consume mouse events for Ebox regions and otherwise delegate to `mwheel-scroll`. `ebox-buffer-mode` installs `ebox-scroll-map` locally; `ebox-render-to-buffer` enables it on its returned buffer. `ebox-scroll-state` exposes read-only scroll facts for a numeric region id; use scroll commands or `ebox-region-update` with `:scroll-offset` to change position.
+`ebox-scroll-down`, `ebox-scroll-up`, `ebox-scroll-page-down`, and `ebox-scroll-page-up` start at the innermost scroll owner under point. Keyboard line intent is allocated one line at a time through semantic scroll ancestors; any residual continues to the parent and then ordinary Emacs buffer scrolling. `ebox-wheel-scroll-down` and `ebox-wheel-scroll-up` anchor at the mouse event position (not point) and use the same inner-to-outer residual rule. When no Ebox region can consume the request they delegate to normal Emacs scrolling. `ebox-buffer-mode` installs `ebox-scroll-map` locally; `ebox-render-to-buffer` enables it on its returned buffer. `ebox-scroll-state` exposes read-only scroll facts for a numeric region id; use scroll commands or `ebox-region-update` with `:scroll-offset` to change position.
 
 Viewport-dependent values use `(viewport)` and `(viewport-height)`. Rerender a mounted buffer with an explicit context:
 
@@ -155,7 +155,7 @@ Viewport-dependent values use `(viewport)` and `(viewport-height)`. Rerender a m
 (ebox-rerender-buffer-with-context (get-buffer "*Ebox Demo*") 800 30)
 ```
 
-The call preserves node and region identity. The [API reference](ebox-api-reference.en.md#8-scrolling-and-viewport-state) lists lazy prefix, idle prefetch, cache, and scroll customization variables.
+The call preserves node and region identity. In an interactive preview, a complete chrome-free root document owner is idle-materialized once and then follows Emacs's native line-oriented window scrolling; nested or still-lazy owners keep the transactional retained-window path. The [API reference](ebox-api-reference.en.md#8-scrolling-and-viewport-state) lists lazy prefix, idle prefetch, cache, and scroll customization variables.
 
 ## 9. Standalone `.ebox` files
 

@@ -22,7 +22,7 @@ node tree
   -> pure TP surface plan
 ```
 
-The owners are `ebox-tree.el` for Ebox identity and traversal, `ebox-style.el` for style semantics, `ebox-measure.el` for display-sensitive measurement, `ebox-layout.el`/`ebox-flex.el`/`ebox-grid.el` for geometry, `ebox-fragment.el` for fragment facts, `ebox-surface.el` for pure TP plan projection and retained publication, and `ebox-incremental.el` for dirty-owner planning. `ebox-buffer-backend.el` only builds and reshapes propertized render strings; all public live buffer publication routes through the TP surface boundary.
+The owners are `ebox-child-range.el` for immutable child-sequence and key indexes, `ebox-tree.el` for Ebox identity and traversal, `ebox-style.el` for style semantics, `ebox-measure.el` for display-sensitive measurement, `ebox-layout.el`/`ebox-flex.el`/`ebox-grid.el` for geometry, `ebox-fragment.el` for fragment facts, `ebox-surface.el` for pure TP plan projection and retained publication, and `ebox-incremental.el` for dirty-owner planning. `ebox-buffer-backend.el` only builds and reshapes propertized render strings; all public live buffer publication routes through the TP surface boundary.
 
 ## Public boundary
 

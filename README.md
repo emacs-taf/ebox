@@ -24,6 +24,8 @@ ECSS and TP are independent packages and may be installed in either order. Insta
 
 The public model is a tree of Ebox nodes. `ebox-create` builds a leaf or wrapper node; `ebox-column`, `ebox-row`, `ebox-flex`, and `ebox-grid` compose nodes; `ebox-render` materializes propertized text without publishing buffer state (using isolated pure materialization when no cascade/inheritance dependency requires a TP object tree); `ebox-render-to-buffer` mounts a retained TP surface; `ebox-display-buffer` displays that same retained-surface path; and `ebox-commit` atomically updates the mount from a fresh root tree. Ebox copies declarative input before assigning runtime identity, so one source tree may be mounted in multiple buffers without transferring ownership. It exposes no separate public macro that erases a live buffer and evaluates arbitrary body forms.
 
+Material child lists may contain `ebox-child-range` descriptors, and logical candidates update their base-bound addresses with `ebox-candidate-replace-range-ref`. Candidates may also replace the private mounted root with `ebox-candidate-replace-root`; the last root replacement absorbs descendant operations and never shares an address with `:host-ref`. Reports expose `:range-metrics`, framework participant diagnostics, and scroll finalization diagnostics as read-only snapshots.
+
 CSS-like selector strings are compiled to ECSS's structured selector AST. Ebox supplies logical node relations and indexed candidates; ECSS is the only selector matcher and cascade engine for tree queries, rendered-buffer queries, and style rules.
 
 ## What belongs here
@@ -41,7 +43,7 @@ ETAF belongs in the sibling package. Install it separately when you need the uni
 | Path | Responsibility |
 | --- | --- |
 | `ebox.el` | Public facade and package entry point. |
-| `ebox-cache.el`, `ebox-style.el`, `ebox-tree.el`, `ebox-measure.el` | Cache, style, tree, and measurement models. |
+| `ebox-cache.el`, `ebox-style.el`, `ebox-tree.el`, `ebox-child-range.el`, `ebox-measure.el` | Cache, style, tree, persistent child-sequence, and measurement models. |
 | `ebox-fragment.el`, `ebox-render-context.el` | Layout facts and render-local context. |
 | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Formatting contexts and layout algorithms. |
 | `ebox-surface.el` | Ebox candidate projection plus TP surface mount/update and atomic Ebox runtime-state participation. |

@@ -22,6 +22,17 @@
 (defvar ebox--render-owned-text-values nil
   "Candidate-local text-property values explicitly created by Ebox.")
 
+(cl-defstruct (ebox--paint-origin
+               (:constructor ebox--paint-origin-create))
+  "Transient caller-face baseline captured before Ebox paint composition."
+  baseline)
+
+(defconst ebox--paint-origin-property 'ebox--paint-origin
+  "Private transient property carrying one render-time paint baseline.")
+
+(defvar ebox--paint-origin-capture-p nil
+  "Non-nil while production Ebox rendering captures paint origins.")
+
 (defvar ebox--render-output-provenance-table
   (make-hash-table :test #'eq :weakness 'key)
   "Weak map from rendered strings to Ebox-owned property values.")
@@ -49,6 +60,47 @@ REGISTRY defaults to the active render candidate."
          (or registry ebox--render-owned-text-values)))
     (when-let ((values (ebox--render-owned-text-values-for property)))
       (gethash value values))))
+
+(defun ebox--capture-paint-origins! (string start end)
+  "Capture caller FACE baselines on STRING between START and END.
+Existing origins are preserved so nested Ebox contributions never replace the
+original caller baseline.  The property is stripped before a TP plan leaves
+the render boundary."
+  (when (and ebox--paint-origin-capture-p
+             (stringp string)
+             (< start end))
+    (let ((position start))
+      (while (< position end)
+        (let* ((next (min end
+                          (or (next-single-property-change
+                               position ebox--paint-origin-property string end)
+                              end)))
+               (origin (get-text-property
+                        position ebox--paint-origin-property string)))
+          (unless origin
+            (put-text-property
+             position next ebox--paint-origin-property
+             (ebox--paint-origin-create
+              :baseline (copy-tree (get-text-property position 'face string)))
+             string))
+          (setq position (max next (1+ position)))))))
+  string)
+
+(defun ebox--add-render-face! (string start end face &optional append)
+  "Add Ebox FACE to STRING after capturing its caller baseline."
+  (ebox--capture-paint-origins! string start end)
+  (add-face-text-property start end face append string))
+
+(defun ebox--strip-paint-origins! (string)
+  "Remove transient caller-face carriers from STRING before it escapes.
+The carrier is retained only while an active surface producer harvests its
+baseline.  Public/ephemeral renders must never expose this private property,
+including strings returned from a render-cache hit."
+  (when (and (stringp string)
+             (> (length string) 0))
+    (remove-text-properties
+     0 (length string) (list ebox--paint-origin-property nil) string))
+  string)
 
 (defun ebox--register-render-owned-face-values (source rendered)
   "Register Ebox-generated face identities added to RENDERED from SOURCE."

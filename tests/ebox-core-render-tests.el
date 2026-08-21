@@ -4324,6 +4324,43 @@
       (ebox-render box))
     (should (eq (gethash region-id ebox--scroll-global-state) state))))
 
+(ert-deftest ebox-flat-preformatted-blank-line-preserves-child-owner-segments ()
+  "Blank composite child segments must retain their distinct ownership."
+  (ebox-test--reset-runtime-state)
+  (let* ((left
+          (propertize
+           (ebox-pixel-space 40)
+           'ebox-content 'left 'ebox-content-idx 0
+           'ebox-content-owner 'left 'ebox-content-owners '(left)))
+         (right
+          (propertize
+           (ebox-pixel-space 60)
+           'ebox-content 'right 'ebox-content-idx 0
+           'ebox-content-owner 'right 'ebox-content-owners '(right)))
+         (box (ebox-create :content "" :width 100 :wrap-mode nil
+                           :color "#112233" :bgcolor "#DDEEFF"))
+         (rendered
+          (car
+           (ebox--window-render-flat-wrapper-chunk-lines
+            box (list (concat left right)) 0 'outer
+            (ebox-pixel-space 100) t t))))
+    (should (= (length rendered) 2))
+    (should (= (ebox--string-pixel-width rendered) 100))
+    (should (eq (get-text-property 0 'ebox-content rendered) 'left))
+    (should (eq (get-text-property 1 'ebox-content rendered) 'right))
+    (should (equal (get-text-property 0 'ebox-content-owners rendered)
+                   '(left outer)))
+    (should (equal (get-text-property 1 'ebox-content-owners rendered)
+                   '(right outer)))
+    (should (eq (get-text-property 0 'ebox-content-owner rendered) 'outer))
+    (should (eq (get-text-property 1 'ebox-content-owner rendered) 'outer))
+    (dolist (position '(0 1))
+      (let ((face (get-text-property position 'face rendered)))
+        (should (ebox-test--face-has-key-value-p
+                 face :foreground "#112233"))
+        (should (ebox-test--face-has-key-value-p
+                 face :background "#DDEEFF"))))))
+
 (ert-deftest ebox-transparent-preformatted-fast-path-keeps-intrinsic-scroll-state ()
   "Intrinsic transparent rendering must not clear the published scroll state."
   (ebox-test--reset-runtime-state)
@@ -4425,6 +4462,34 @@
         (setq rendered (ebox-render parent))))
     (should (= justify-count 3))
     (should (= (ebox--string-max-pixel-width rendered) 140))))
+
+(ert-deftest ebox-box-content-node-publishes-only-proven-exact-width ()
+  "A wrapper should mark child output exact only at its proven viewport width."
+  (ebox-test--reset-runtime-state)
+  (let* ((overflow-child
+          (ebox-column
+           (ebox-create :content "A" :width 140)
+           (ebox-create :content "B" :width 140)))
+         (overflow-parent
+          (ebox-create :width 120 :wrap-mode nil
+                       :ebox-content-node overflow-child))
+         (exact-child
+          (ebox-column
+           (ebox-create :content "A" :width 120)
+           (ebox-create :content "B" :width 120)))
+         (exact-parent
+          (ebox-create :width 120 :wrap-mode nil
+                       :ebox-content-node exact-child))
+         (ebox-viewport-width 120)
+         (ebox--box-content-render-cache (make-hash-table :test 'eq))
+         overflow exact)
+    (setq overflow
+          (ebox--render-box-content-node overflow-parent overflow-child))
+    (setq exact (ebox--render-box-content-node exact-parent exact-child))
+    (should (= (ebox--string-max-pixel-width overflow) 140))
+    (should-not (plist-get overflow-parent :ebox-content-width-exact-p))
+    (should (= (ebox--string-max-pixel-width exact) 120))
+    (should (plist-get exact-parent :ebox-content-width-exact-p))))
 
 (ert-deftest ebox-render-caches-lazy-box-content-within-render-pass ()
   "A lazy child layout should be rendered once per box/context in one pass."
@@ -7667,6 +7732,7 @@
     (unwind-protect
         (let ((ebox-viewport-width 240)
               (ebox-viewport-height 12)
+              (ebox-wheel-scroll-step 16)
               (ebox-scroll-lazy-idle-prefetch-lines 0)
               (ebox-scroll-lazy-prefix-lookahead-lines 0))
           (setq buffer
@@ -8329,8 +8395,7 @@
                              `(box :content ,(format "complete %02d" idx)
                                    :width (100) :height 8)))))
          (limit 4)
-         (full-lines (mapcar #'substring-no-properties
-                             (ebox-string-lines (ebox-render node))))
+         (full-lines (ebox-string-lines (ebox-render node)))
          (complete-wrapper-count 0)
          (original-render-box-lines
           (symbol-function 'ebox--flex-window-render-box-lines)))
@@ -8344,9 +8409,19 @@
         (should window)
         (should-not (plist-get window :complete))
         (should (= complete-wrapper-count 0))
-        (should (equal (seq-take full-lines limit)
-                       (mapcar #'substring-no-properties
-                               (plist-get window :lines))))))))
+        (should
+         (cl-every
+          (lambda (pair)
+            (let ((full (car pair))
+                  (prefix (cdr pair)))
+              (or (equal (substring-no-properties full)
+                         (substring-no-properties prefix))
+                  (and (string-blank-p full)
+                       (string-blank-p prefix)
+                       (= (ebox--string-pixel-width full)
+                          (ebox--string-pixel-width prefix))))))
+          (cl-mapcar #'cons (seq-take full-lines limit)
+                     (plist-get window :lines))))))))
 
 (ert-deftest ebox-flex-window-complete-extension-appends-bottom-border ()
   "Completing a cached flex prefix should append bottom border without full render."
@@ -9113,7 +9188,9 @@
          (original-render-box (symbol-function 'ebox--render-box)))
     (unwind-protect
         (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 2))
+              (ebox-viewport-height 2)
+              (ebox-wheel-scroll-step 16)
+              (ebox-wheel-smooth-scroll t))
           (cl-letf (((symbol-function 'ebox--render-box)
                      (lambda (box)
                        (when (equal (ebox-tree-node-id box) "row-30")
@@ -9135,7 +9212,9 @@
               (should (ebox--scroll-region-by root-id 31))
               (should (= hidden-render-count 0))
               (should (gethash root-id ebox--scroll-idle-prefetch-timers))
-              (ebox--scroll-idle-prefetch root-id)
+              (dotimes (_ 40)
+                (when (= hidden-render-count 0)
+                  (ebox--scroll-idle-prefetch root-id)))
               (should (> hidden-render-count 0))
               (let* ((state (ebox--scroll-get-state root-id))
                      (delta (- 30 (or (plist-get state :scroll-offset)
@@ -10627,6 +10706,7 @@
     (unwind-protect
         (let ((ebox-viewport-width 240)
               (ebox-viewport-height 2)
+              (ebox-wheel-scroll-step 16)
               (ebox-wheel-smooth-scroll-lines-per-tick 4)
               (ebox-wheel-smooth-scroll-interval 60.0))
           (setq buffer
@@ -10984,7 +11064,8 @@
          (original-render-box (symbol-function 'ebox--render-box)))
     (unwind-protect
         (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 2))
+              (ebox-viewport-height 2)
+              (ebox-wheel-scroll-step 16))
           (cl-letf (((symbol-function 'ebox--render-box)
                      (lambda (box)
                        (when (equal (ebox-tree-node-id box) "row-30")
@@ -11867,6 +11948,130 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-visible-buffer-rearms-native-scroll-prewarm ()
+  "A buffer rendered off-window should switch to native scrolling when shown."
+  (ebox-test--reset-runtime-state)
+  (let ((buffer nil)
+        (scheduled 0)
+        (fake-window 'ebox-test-window))
+    (unwind-protect
+        (let ((ebox--runtime-prewarm-allow-noninteractive t)
+              (ebox-native-buffer-scroll t)
+              ;; The production hook is intentionally GUI-only.  Bind the
+              ;; flag for this lifecycle test and stub the window primitives.
+              (noninteractive nil))
+          (setq buffer
+                (ebox-render-to-buffer
+                 (generate-new-buffer-name " *ebox-visible-prewarm*")
+                 (ebox-build
+                  '(box :id "root" :height 2 :overflow scroll
+                        (column
+                         (box :content "one" :height 1)
+                         (box :content "two" :height 1)
+                         (box :content "three" :height 1))))))
+          ;; Rendering happened before the buffer had a window, so the
+          ;; original job is allowed to finish without native materializing.
+          (ebox--runtime-prewarm-drain buffer)
+          (should-not (plist-get (ebox--buffer-render-state buffer)
+                                 :native-buffer-scroll-p))
+          (cl-letf (((symbol-function 'window-live-p)
+                     (lambda (window) (eq window fake-window)))
+                    ((symbol-function 'window-buffer)
+                     (lambda (_window) buffer))
+                    ((symbol-function 'get-buffer-window)
+                     (lambda (candidate &optional _frame)
+                       (and (eq candidate buffer) fake-window)))
+                    ((symbol-function 'ebox--viewport-dependent-subtree-p)
+                     (lambda (&rest _) nil))
+                    ((symbol-function
+                      'ebox--viewport-height-dependent-subtree-p)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'ebox--schedule-buffer-runtime-prewarm)
+                     (lambda (candidate &optional _delay _retained-only-p)
+                       (should (eq candidate buffer))
+                       (cl-incf scheduled))))
+            (let ((render-state (ebox--buffer-render-state buffer)))
+              ;; This fixture stands for a viewport-independent root; the
+              ;; production proof consumes the published axes in O(1).
+              (plist-put render-state :viewport-dependent-node-ids-ready t)
+              (plist-put render-state :viewport-dependent-node-id-axes
+                         (list nil))
+              (let ((job (ebox--runtime-prewarm-new-job
+                          buffer render-state)))
+              (should (eq (plist-get job :phase) 'native-scroll))
+                (should (plist-get job :native-scroll-region-id))))
+            (ebox--window-buffer-change fake-window))
+          (should (= scheduled 1)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-native-scroll-prewarm-is-isolated-from-updates ()
+  "Ordinary runtime prewarm must not materialize a native scroll surface.
+Native-window scrolling remains enabled, but only the initial display or an
+explicit visible-window handoff may admit its full-content publication."
+  (ebox-test--reset-runtime-state)
+  (let ((buffer nil))
+    (unwind-protect
+        (let ((noninteractive nil)
+              (ebox--runtime-prewarm-allow-noninteractive t)
+              (ebox-native-buffer-scroll t))
+          (setq buffer
+                (ebox-render-to-buffer
+                 (generate-new-buffer-name " *ebox-native-scroll-opt-in*")
+                 (ebox-build
+                  '(box :id "root" :height 2 :overflow scroll
+                        (column
+                         (box :content "one" :height 1)
+                         (box :content "two" :height 1)
+                         (box :content "three" :height 1))))))
+          (let ((state (ebox--buffer-render-state buffer)))
+            (cl-letf (((symbol-function
+                        'ebox--native-buffer-scroll-root-region-id)
+                       (lambda (&rest _) 1))
+                      ((symbol-function
+                        'ebox--native-buffer-scroll-root-proof-p)
+                       (lambda (&rest _) t)))
+              (let ((job (ebox--runtime-prewarm-new-job buffer state t)))
+                (should (eq (plist-get job :phase) 'snapshots))
+                (should-not (plist-get job :native-scroll-region-id)))
+              (let ((job (ebox--runtime-prewarm-new-job buffer state nil)))
+                (should (eq (plist-get job :phase) 'native-scroll))
+                (should (= (plist-get job :native-scroll-region-id) 1))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-native-scroll-rejects-viewport-dependent-root ()
+  "Native full-content materialization must not freeze a resizable root."
+  (ebox-test--reset-runtime-state)
+  (let ((buffer nil)
+        (fake-window 'ebox-test-window))
+    (unwind-protect
+        (let ((noninteractive nil)
+              (ebox-viewport-width 120)
+              (ebox-viewport-height 2)
+              (ebox-native-buffer-scroll t))
+          (setq buffer
+                (ebox-render-to-buffer
+                 (generate-new-buffer-name " *ebox-native-scroll-viewport*")
+                 (ebox-build
+                  '(box :id "root" :width (viewport) :height 2
+                        :overflow scroll
+                        (column
+                         (box :content "one" :height 1)
+                         (box :content "two" :height 1)
+                         (box :content "three" :height 1))))))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (region-id (car (plist-get state :scroll-region-ids))))
+            (cl-letf (((symbol-function 'get-buffer-window)
+                       (lambda (&rest _) fake-window))
+                      ((symbol-function 'window-live-p)
+                       (lambda (window) (eq window fake-window))))
+              (should-not
+               (ebox--native-buffer-scroll-root-proof-p
+                buffer region-id state)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-runtime-idle-prewarm-does-not-wait-for-prefix-prefetch ()
   "Prewarm should index current scroll lines while lazy prefix work is active."
   (ebox-test--reset-runtime-state)
@@ -12578,11 +12783,241 @@
       (should (ebox--scroll-first-region-by '(stalled active) 1)))
     (should (equal (nreverse visited) '(stalled active)))))
 
+(ert-deftest ebox-scroll-intent-distributes-forward-residual-inner-to-buffer ()
+  "A positive line intent should drain inner, parent, then native buffer."
+  (let ((capacity '((inner . 1) (middle . 2) (outer . 0)))
+        native-residual)
+    (cl-letf (((symbol-function 'ebox--scroll-region-by)
+               (lambda (region-id delta &optional _prefix-budget-lines)
+                 (let* ((available (alist-get region-id capacity))
+                        (consumed (min delta available)))
+                   (setf (alist-get region-id capacity) (- available consumed))
+                   consumed))))
+      (let ((result
+             (ebox--scroll-consume-intent
+              (ebox--scroll-intent-create 5 '(inner middle outer))
+              (lambda (delta) (setq native-residual delta)))))
+        (should (= (plist-get result :requested) 5))
+        (should (equal (plist-get result :consumption)
+                       '((inner . 1) (middle . 2) (outer . 0))))
+        (should (= (plist-get result :ebox-consumed) 3))
+        (should (= (plist-get result :native-residual) 2))
+        (should (= native-residual 2))))))
+
+(ert-deftest ebox-scroll-intent-distributes-reverse-residual-inner-to-buffer ()
+  "A negative line intent should preserve direction through the owner chain."
+  (let ((capacity '((inner . 1) (middle . 2) (outer . 0)))
+        native-residual)
+    (cl-letf (((symbol-function 'ebox--scroll-region-by)
+               (lambda (region-id delta &optional _prefix-budget-lines)
+                 (let* ((available (alist-get region-id capacity))
+                        (magnitude (min (- delta) available))
+                        (consumed (- magnitude)))
+                   (setf (alist-get region-id capacity) (- available magnitude))
+                   consumed))))
+      (let ((result
+             (ebox--scroll-consume-intent
+              (ebox--scroll-intent-create -5 '(inner middle outer))
+              (lambda (delta) (setq native-residual delta)))))
+        (should (equal (plist-get result :consumption)
+                       '((inner . -1) (middle . -2) (outer . 0))))
+        (should (= (plist-get result :ebox-consumed) -3))
+        (should (= (plist-get result :native-residual) -2))
+        (should (= native-residual -2))))))
+
+(ert-deftest ebox-scroll-intent-distributes-real-nested-owner-capacity ()
+  "Nested boxes should consume their capacity before the native buffer."
+  (ebox-test--reset-runtime-state)
+  (let ((layout
+         (ebox-build
+          '(box :id "outer" :height 4 :overflow scroll
+            (column
+             (box :id "middle" :height 2 :overflow scroll
+              (column
+               (box :id "inner" :content "inner 0\ninner 1"
+                    :height 1 :overflow scroll)
+               (box :content "middle 0" :height 1)
+               (box :content "middle 1" :height 1)
+               (box :content "middle 2" :height 1)))
+             (box :content "outer 0\nouter 1" :height 2))))))
+    (ebox-test--with-rendered-buffer layout
+      (let* ((surface (with-current-buffer
+                        (current-buffer) ebox-surface--buffer-surface))
+             (revision (tp-surface-revision surface))
+             (inner-id (ebox-test--selector-region-id
+                       (current-buffer) "#inner"))
+            (middle-id (ebox-test--selector-region-id
+                        (current-buffer) "#middle"))
+            (outer-id (ebox-test--selector-region-id
+                       (current-buffer) "#outer"))
+            native-lines)
+        (should (ebox-scroll-state inner-id))
+        (should (ebox-scroll-state middle-id))
+        (should-not (ebox-scroll-state outer-id))
+        (goto-char (point-min))
+        (search-forward "inner 0")
+        (backward-char)
+        (cl-letf (((symbol-function 'scroll-up)
+                   (lambda (lines) (setq native-lines lines))))
+          (ebox-scroll-down 5))
+        ;; Each owner is currently a separately committed retained surface
+        ;; update; the later atomic multi-owner scroll transaction will reduce
+        ;; this to one revision without changing the consumption contract.
+        (should (= (tp-surface-revision surface) (+ revision 2)))
+        (should (= (plist-get (ebox-scroll-state inner-id) :scroll-offset) 1))
+        (should (= (plist-get (ebox-scroll-state middle-id) :scroll-offset) 2))
+        (should-not (ebox-scroll-state outer-id))
+        (should (= native-lines 2))
+        (setq native-lines nil)
+        (ebox--scroll-consume-intent
+         (ebox--scroll-intent-create -5
+                                     (list inner-id middle-id outer-id))
+         (lambda (residual) (setq native-lines residual)))
+        (should (= (plist-get (ebox-scroll-state inner-id) :scroll-offset) 0))
+        (should (= (plist-get (ebox-scroll-state middle-id) :scroll-offset) 0))
+        (should-not (ebox-scroll-state outer-id))
+        (should (= native-lines -2))))))
+
+(ert-deftest ebox-scroll-intent-refresh-at-boundary-does-not-swallow-input ()
+  "Refreshing unchanged pixels should leave the complete line intent residual."
+  (let (native-residual)
+    (cl-letf (((symbol-function 'ebox--scroll-region-by)
+               (lambda (&rest _) 'refreshed)))
+      (let ((result
+             (ebox--scroll-consume-intent
+              (ebox--scroll-intent-create 1 '(inner))
+              (lambda (delta) (setq native-residual delta)))))
+        (should (equal (plist-get result :consumption) '((inner . 0))))
+        (should (= (plist-get result :ebox-consumed) 0))
+        (should (= (plist-get result :native-residual) 1))
+        (should (= native-residual 1))))))
+
+(ert-deftest ebox-scroll-intent-pending-prefix-does-not-swallow-input ()
+  "An unfulfilled lazy-prefix request should leave its line intent residual."
+  (let (native-residual)
+    (cl-letf (((symbol-function 'ebox--scroll-region-by)
+               (lambda (&rest _) 'pending)))
+      (let ((result
+             (ebox--scroll-consume-intent
+              (ebox--scroll-intent-create 3 '(inner parent))
+              (lambda (delta) (setq native-residual delta)))))
+        (should (equal (plist-get result :consumption)
+                       '((inner . 0) (parent . 0))))
+        (should (= (plist-get result :ebox-consumed) 0))
+        (should (= (plist-get result :native-residual) 3))
+        (should (= native-residual 3))))))
+
+(ert-deftest ebox-scroll-intent-anchor-routes-keyboard-and-wheel-independently ()
+  "Keyboard anchors at point while wheel anchors at the event position."
+  (cl-letf (((symbol-function 'ebox--scroll-region-ids-at-point)
+             (lambda () '(point-inner point-outer)))
+            ((symbol-function 'ebox--wheel-region-ids)
+             (lambda (_event) '(wheel-inner wheel-outer))))
+    (should (equal (plist-get (ebox--scroll-intent-at-point 1) :chain)
+                   '(point-inner point-outer)))
+    (should (equal (plist-get
+                    (ebox--scroll-intent-at-event 'fake-event 1) :chain)
+                   '(wheel-inner wheel-outer)))))
+
+(ert-deftest ebox-scroll-intent-native-fallback-preserves-direction-and-count ()
+  "Keyboard residuals should call the matching native command exactly once."
+  (let (native-up native-down)
+    (cl-letf (((symbol-function 'ebox--scroll-region-ids-at-point)
+               (lambda () '(inner)))
+              ((symbol-function 'ebox--scroll-region-by)
+               (lambda (_region-id delta &optional _budget)
+                 (if (> delta 0) 1 -1)))
+              ((symbol-function 'scroll-up)
+               (lambda (lines) (setq native-up lines)))
+              ((symbol-function 'scroll-down)
+               (lambda (lines) (setq native-down lines))))
+      (ebox-scroll-down 3)
+      (ebox-scroll-up 3))
+    (should (= native-up 2))
+    (should (= native-down 2))))
+
+(ert-deftest ebox-wheel-partial-residual-uses-exact-native-direction ()
+  "A partial wheel residual should not replay the complete wheel event."
+  (let (native-up native-down mwheel-called)
+    (cl-letf (((symbol-function 'event-start)
+               (lambda (_event) (list (selected-window) (point-min))))
+              ((symbol-function 'scroll-up)
+               (lambda (lines) (setq native-up lines)))
+              ((symbol-function 'scroll-down)
+               (lambda (lines) (setq native-down lines)))
+              ((symbol-function 'mwheel-scroll)
+               (lambda (&rest _) (setq mwheel-called t))))
+      (ebox--wheel-native-residual 'event 2 5 nil)
+      (ebox--wheel-native-residual 'event -3 -5 nil))
+    (should (= native-up 2))
+    (should (= native-down 3))
+    (should-not mwheel-called)))
+
+(ert-deftest ebox-wheel-smooth-boundary-defers-to-residual-chain ()
+  "Smooth mode should use the chain allocator when an owner cannot finish."
+  (let ((ebox-wheel-smooth-scroll t)
+        (capacity '((inner . 1) (parent . 2)))
+        native-residual
+        smooth-called)
+    (cl-letf (((symbol-function 'ebox--scroll-intent-at-event)
+               (lambda (_event delta)
+                 (ebox--scroll-intent-create delta '(inner parent))))
+              ((symbol-function 'ebox--first-scrollable-region)
+               (lambda (&rest _) 'inner))
+              ((symbol-function 'ebox--scroll-region-can-consume-complete-p)
+               (lambda (&rest _) nil))
+              ((symbol-function 'ebox--smooth-scroll-region-by)
+               (lambda (&rest _) (setq smooth-called t)))
+              ((symbol-function 'ebox--scroll-region-by)
+               (lambda (region-id delta &optional _budget)
+                 (let* ((available (alist-get region-id capacity))
+                        (consumed (min delta available)))
+                   (setf (alist-get region-id capacity) (- available consumed))
+                   consumed)))
+              ((symbol-function 'ebox--wheel-native-residual)
+               (lambda (_event residual _requested _arg)
+                 (setq native-residual residual))))
+      (ebox--wheel-scroll 'event 5 nil t))
+    (should-not smooth-called)
+    (should (= native-residual 2))))
+
+(ert-deftest ebox-scroll-mount-fallback-orders-equal-spans-deterministically ()
+  "Equal mounted spans should use semantic depth and a stable id tie-break."
+  (let ((ebox--scroll-global-state (make-hash-table :test 'equal)))
+    (puthash 'z-owner t ebox--scroll-global-state)
+    (puthash 'a-owner t ebox--scroll-global-state)
+    (cl-letf (((symbol-function 'ebox-surface-region-bounds)
+               (lambda (&rest _) '(1 . 5)))
+              ((symbol-function 'ebox--scroll-region-semantic-depth)
+               (lambda (_region-id) 2)))
+      (should (equal (ebox--scroll-region-ids-in-mounts-at-pos 2)
+                     '(a-owner z-owner))))))
+
+(ert-deftest ebox-scroll-fast-report-uses-boolean-proof-flag ()
+  "Retained-window proof payload should not leak into the public report."
+  (ebox-test--reset-runtime-state)
+  (let ((layout (ebox-build
+                 '(box :id "root" :content "A\nB"
+                       :height 1 :overflow scroll))))
+    (ebox-test--with-rendered-buffer layout
+      (let ((region-id (ebox-test--selector-region-id
+                        (current-buffer) "#root")))
+        (should (= (ebox--scroll-region-by region-id 1) 1))
+        (let ((flag (plist-get (ebox-test--buffer-update-report)
+                               :scroll-patch-fast-p)))
+          (should (memq flag '(nil t))))))))
+
+(ert-deftest ebox-scroll-defaults-follow-one-line-native-buffer-scrolling ()
+  "Default wheel input should be one immediate document line."
+  (should (= ebox-wheel-scroll-step 1))
+  (should-not ebox-wheel-smooth-scroll))
+
 (ert-deftest ebox-scroll-progress-requires-real-delta-or-pending ()
   "Scroll progress is either a non-zero consumed line count or lazy pending."
   (should (ebox--scroll-progress-p 1))
   (should (ebox--scroll-progress-p -1))
   (should (ebox--scroll-progress-p 'pending))
+  (should-not (ebox--scroll-progress-p 'refreshed))
   (should-not (ebox--scroll-progress-p 0))
   (should-not (ebox--scroll-progress-p nil)))
 

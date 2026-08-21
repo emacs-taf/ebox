@@ -76,8 +76,8 @@ use `ebox-render-to-buffer` when the caller owns window selection.
 (ebox-create &rest properties)
 (ebox-concat node-1 node-2)       ; two nodes side by side
 (ebox-stack node-1 node-2)        ; two nodes vertically
-(ebox-row &rest nodes)             ; many nodes side by side
-(ebox-column &rest nodes)          ; many nodes vertically
+(ebox-row &rest nodes)             ; many nodes side by side; a sole Range keeps its row parent
+(ebox-column &rest nodes)          ; many nodes vertically; a sole Range keeps its column parent
 (ebox-spacer &rest properties)    ; blank box
 ```
 
@@ -332,11 +332,28 @@ one commit:
   (ebox-commit buffer candidate))
 ```
 
+Frameworks that retain semantic owners separately from backend anchors can
+use `ebox-range-ref-present-p` as a read-only check before choosing a wider
+published owner. It returns nil when the semantic Range is nested inside a
+material anchor and therefore is not independently addressable in the current
+Ebox publication.
+
 `ebox-candidate-replace-host-ref` uses an application-owned `:host-ref`
 instead of a runtime node id. Both replacement functions accept optional
 `old-semantic-key` and `new-semantic-key` pairs for bounded detached identity
 reuse. A candidate is sealed by commit and cannot be reused; it also becomes
 stale if the captured buffer runtime or buffer tick changes.
+
+`ebox-candidate-replace-root` targets a private candidate-bound root address.
+It accepts exactly one declarative node, clears caller runtime identities, and
+is last-wins. The final root replacement absorbs descendant node and host-ref
+operations recorded before or after it, with no wrapper or public reference.
+
+`ebox-child-range` creates a non-node segment descriptor in a material child
+list. Its non-nil ref is root-global and its items participate directly in the
+parent's key, selector, style, and layout scope. Use
+`ebox-candidate-replace-range-ref` with a proper declarative node list to
+replace that base payload. Empty payloads remain addressable.
 
 ### Host-reference positions
 
@@ -358,6 +375,13 @@ report for a mounted buffer; it signals for a missing/non-Ebox buffer. A fresh
 mount has no update report until its first update. Reports include the Ebox
 strategy and publication scope plus TP surface revision and physical
 operation/reconciliation facts.
+
+The complete commit signature is `(ebox-commit BUFFER NEXT-ROOT &optional
+FRAMEWORK-PUBLISH FRAMEWORK-ROLLBACK)`. Publish receives the report after the
+buffer, TP surface, and Ebox runtime agree. If a later phase fails, rollback
+receives that same report at most once; rollback errors and quits are contained.
+`:framework-participant-state`, `:framework-participant-diagnostics`, and
+`:scroll-finalization-diagnostics` are read-only outcome fields.
 
 Use `ebox-rerender-buffer-with-context` when a root depends on a new viewport:
 
@@ -455,9 +479,9 @@ The main customization variables are:
 | Group | Variables and defaults |
 | --- | --- |
 | Render cache | `ebox-render-cache-max-entries` 2048; `ebox-render-cache-max-bytes` 32 MiB; `ebox-render-root-cache-max-entries` 16; `ebox-render-root-cache-max-bytes` 8 MiB |
-| Keyboard/mouse scroll | `ebox-scroll-step` 1; `ebox-wheel-scroll-step` 16; `ebox-wheel-smooth-scroll` t; `ebox-wheel-smooth-scroll-interval` 0.016; `ebox-wheel-smooth-scroll-lines-per-tick` 4; `ebox-wheel-smooth-scroll-target-ticks` 8 |
+| Keyboard/mouse scroll | `ebox-scroll-step` 1; `ebox-wheel-scroll-step` 1; `ebox-wheel-smooth-scroll` nil; `ebox-wheel-smooth-scroll-interval` 0.016; `ebox-wheel-smooth-scroll-lines-per-tick` 4; `ebox-wheel-smooth-scroll-target-ticks` 8. Keyboard uses point; wheel uses event position; residual lines bubble through nested owners. An interactive complete, chrome-free root document owner may be idle-materialized once and then use Emacs's native window line start; ordinary updates/resizes only warm retained indexes and never start a second native publication; nested/lazy/chrome owners retain transactional Ebox publication. |
 | Lazy scroll | `ebox-scroll-lazy-prefix-lookahead-lines` 8; `ebox-scroll-lazy-idle-prefetch-lines` 128; `ebox-scroll-lazy-idle-prefetch-slice-lines` 16; `ebox-scroll-lazy-idle-prefetch-delay` 0.15 |
-| Runtime prewarm | `ebox-runtime-idle-prewarm` t; `ebox-runtime-idle-prewarm-delay` 0.1; `ebox-runtime-idle-prewarm-prefix-resume-delay` 2.0; `ebox-runtime-idle-prewarm-slice-size` 32 |
+| Runtime prewarm | `ebox-runtime-idle-prewarm` t; `ebox-runtime-idle-prewarm-delay` 0.1; `ebox-runtime-idle-prewarm-prefix-resume-delay` 2.0; `ebox-runtime-idle-prewarm-slice-size` 32; `ebox-native-buffer-scroll` t (initial/visible-window handoff only; strict root-owner proof) |
 | Predicted reflow | `ebox-runtime-idle-reflow-cache-prewarm` t; `ebox-runtime-idle-reflow-cache-prewarm-delay` 0.15 |
 | Reflow GC | `ebox-reflow-cache-prewarm-gc-cons-threshold` `auto`; `ebox-reflow-cache-prewarm-gc-auto-frame-budget` 0.2; `ebox-reflow-cache-prewarm-gc-auto-min-threshold` 64 MiB; `ebox-reflow-cache-prewarm-gc-auto-max-threshold` 1 GiB; `ebox-reflow-cache-prewarm-gc-auto-initial-threshold` 512 MiB; `ebox-reflow-cache-prewarm-gc-auto-target-layouts` 24; `ebox-reflow-cache-prewarm-gc-cons-percentage` 0.1 |
 | Visual verification | `ebox-visual-check-output-dir` points to the temporary directory used for optional screenshots and reports. |
@@ -528,7 +552,7 @@ style-rule functions immediately below are public module-level style APIs.
 | `ebox-render`, `ebox-render-to-buffer`, `ebox-display-buffer` | Pure materialization, retained mount, and display wrapper. |
 | `ebox-commit`, `ebox-buffer-update-report`, `ebox-rerender-buffer-with-context` | Atomic root commit, report lookup, and viewport-context rerender. |
 | `ebox-region-ids`, `ebox-region-resolve`, `ebox-region-update` | Region mapping, logical handle lookup, and direct update. |
-| `ebox-candidate-begin`, `ebox-candidate-replace`, `ebox-candidate-replace-host-ref` | One-shot logical candidate transactions. |
+| `ebox-child-range`, `ebox-range-ref-present-p`, `ebox-candidate-begin`, `ebox-candidate-replace`, `ebox-candidate-replace-range-ref`, `ebox-candidate-replace-root`, `ebox-candidate-replace-host-ref` | Persistent material child segments, backend-anchor lookup, and one-shot logical candidate transactions. |
 | `ebox-host-ref-bounds`, `ebox-host-ref-position` | Live host-reference bounds and first position. |
 | `ebox-selector-parse`, `ebox-selector-match-node-p`, `ebox-selector-query-all`, `ebox-selector-query-buffer`, `ebox-selector-update-buffer` | ECSS selector compilation, matching, querying, and batch update. |
 | `ebox-select-all`, `ebox-update-selector` | Compatibility aliases for the two buffer selector functions. |
@@ -563,5 +587,5 @@ Focused targets include `make core-tests`, `make grid-tests`,
 `make flex-tests`, and `make visual-check-tests`. The sibling
 `ebox-playground` package owns runnable example fixtures; ETAF owns
 Components, state, controls, and application behavior. Do not call private
-`ebox--*` functions or edit the historical `emacs-box` checkout as part of
+`ebox--*` functions or edit the historical Ebox checkout as part of
 this package.

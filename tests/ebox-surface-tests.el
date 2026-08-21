@@ -27,6 +27,135 @@
     (propertize "Open" 'keymap map 'mouse-face 'highlight
                 'help-echo "Open this item")))
 
+(ert-deftest ebox-range-ref-present-p-is-a-read-only-boundary-query ()
+  "Expose mounted Range anchor presence without leaking runtime tables."
+  (let ((buffer (generate-new-buffer " *ebox-range-anchor-query*"))
+        (table (make-hash-table :test #'equal)))
+    (unwind-protect
+        (progn
+          (puthash 'probe 'record table)
+          (cl-letf (((symbol-function 'ebox--buffer-render-state)
+                     (lambda (_buffer)
+                       (list :range-ref-table table))))
+            (should (equal 'record
+                           (ebox-range-ref-present-p buffer 'probe)))
+            (should-not (ebox-range-ref-present-p buffer 'missing))))
+      (kill-buffer buffer))))
+
+(ert-deftest ebox-surface-context-initializes-from-live-window ()
+  "Use live window dimensions only when no explicit viewport is bound."
+  (let ((buffer (generate-new-buffer " *ebox-live-viewport-test*"))
+        (noninteractive nil)
+        (ebox-viewport-width nil) (ebox-viewport-height nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'get-buffer-window)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'window-body-width)
+                   (lambda (_window pixelwise)
+                     (should pixelwise)
+                     777))
+                  ((symbol-function 'window-pixel-width)
+                   (lambda (_window)
+                     (error "Window outer width must not be sampled")))
+                  ((symbol-function 'window-body-height)
+                   (lambda (_window) 31)))
+          (let ((values (ebox-surface--context-values buffer nil nil)))
+            (should (= 776 (plist-get values :viewport-width)))
+            (should (= 31 (plist-get values :viewport-height)))))
+      (kill-buffer buffer))))
+
+(ert-deftest ebox-surface-context-keeps-headless-viewport-nil ()
+  "Keep viewport dimensions nil when BUFFER has no live window."
+  (let ((buffer (generate-new-buffer " *ebox-headless-viewport-test*"))
+        (ebox-viewport-width nil) (ebox-viewport-height nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'get-buffer-window)
+                   (lambda (&rest _) nil)))
+          (let ((values (ebox-surface--context-values buffer nil nil)))
+            (should-not (plist-get values :viewport-width))
+            (should-not (plist-get values :viewport-height))))
+      (kill-buffer buffer))))
+
+(ert-deftest ebox-surface-context-rejects-half-width-pixelwise-report ()
+  "Use the outer pixel width when a GUI body query returns a half-width."
+  (let ((buffer (generate-new-buffer " *ebox-half-width-viewport-test*"))
+        (noninteractive nil)
+        (ebox-viewport-width nil) (ebox-viewport-height nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'get-buffer-window)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'window-body-width)
+                   (lambda (_window pixelwise)
+                     (should pixelwise)
+                     715))
+                  ((symbol-function 'window-pixel-width)
+                   (lambda (_window) 1430))
+                  ((symbol-function 'window-body-height)
+                   (lambda (_window) 62)))
+          (let ((values (ebox-surface--context-values buffer nil nil)))
+            (should (= 1429 (plist-get values :viewport-width)))
+            (should (= 62 (plist-get values :viewport-height)))))
+      (kill-buffer buffer))))
+
+(ert-deftest ebox-surface-context-prefers-selected-target-window ()
+  "Ignore stale cross-frame lookup when selected window shows BUFFER."
+  (let* ((buffer (generate-new-buffer " *ebox-selected-viewport-test*"))
+         (window (selected-window))
+         (old-buffer (window-buffer window))
+         (ebox-viewport-width nil) (ebox-viewport-height nil))
+    (unwind-protect
+        (progn
+          (set-window-buffer window buffer)
+          (cl-letf (((symbol-function 'get-buffer-window)
+                     (lambda (&rest _)
+                       (error "Stale cross-frame lookup must not run")))
+                    ((symbol-function 'window-body-width)
+                     (lambda (candidate pixelwise)
+                       (should (eq candidate window))
+                       (should pixelwise)
+                       1400))
+                    ((symbol-function 'window-body-height)
+                     (lambda (candidate)
+                       (should (eq candidate window))
+                       60)))
+            (let ((values (ebox-surface--context-values buffer nil nil)))
+              (should (= 1399 (plist-get values :viewport-width)))
+              (should (= 60 (plist-get values :viewport-height))))))
+      (when (window-live-p window) (set-window-buffer window old-buffer))
+      (kill-buffer buffer))))
+
+(ert-deftest ebox-surface-context-prefers-current-frame-over-stale-frame ()
+  "Do not resize a live surface from an older client frame's window."
+  (let ((buffer (generate-new-buffer " *ebox-current-frame-viewport-test*"))
+        (noninteractive nil)
+        (ebox-viewport-width nil) (ebox-viewport-height nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'selected-window)
+                   (lambda () 'selected-window))
+                  ((symbol-function 'window-live-p)
+                   (lambda (_window) t))
+                  ((symbol-function 'window-buffer)
+                   (lambda (_window) (get-buffer-create " *other-window*")))
+                  ((symbol-function 'selected-frame)
+                   (lambda () 'current-frame))
+                  ((symbol-function 'get-buffer-window)
+                   (lambda (_buffer frame)
+                     (if (eq frame 'current-frame)
+                         'current-frame-window
+                       'stale-frame-window)))
+                  ((symbol-function 'window-body-width)
+                   (lambda (window pixelwise)
+                     (should pixelwise)
+                     (if (eq window 'current-frame-window) 901 333)))
+                  ((symbol-function 'window-body-height)
+                   (lambda (_window) 31)))
+          (let ((values (ebox-surface--context-values buffer nil nil)))
+            (should (= 900 (plist-get values :viewport-width)))
+            (should (= 31 (plist-get values :viewport-height)))))
+      (kill-buffer buffer)
+      (when (get-buffer " *other-window*")
+        (kill-buffer " *other-window*")))))
+
 (defun ebox-surface-test--hash-fingerprint (table)
   "Return a stable content fingerprint for hash TABLE.
 The fingerprint checks entries rather than only table identity, so a failed
@@ -222,6 +351,52 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
     (should-not
      (ebox--render-owned-text-value-p
       'face (get-text-property 0 'face rendered)))))
+
+(ert-deftest ebox-surface-paint-origin-captures-before-composition ()
+  "Capture caller face once before Ebox adds a paint contribution."
+  (let* ((caller-face '(:weight bold))
+         (rendered (propertize "x" 'face caller-face))
+         (ebox--paint-origin-capture-p t))
+    (ebox--add-render-face! rendered 0 1 '(:foreground "red") t)
+    (let ((origin (get-text-property 0 ebox--paint-origin-property rendered)))
+      (should (ebox--paint-origin-p origin))
+      (should (equal caller-face
+                     (ebox--paint-origin-baseline origin)))
+      (should (equal (list caller-face '(:foreground "red"))
+                     (get-text-property 0 'face rendered))))
+    ;; A nested contribution must not replace the original caller baseline.
+    (ebox--add-render-face! rendered 0 1 '(:background "blue") t)
+    (should (equal caller-face
+                   (ebox--paint-origin-baseline
+                   (get-text-property 0 ebox--paint-origin-property
+                                      rendered))))))
+
+(ert-deftest ebox-surface-paint-address-is-semantic-and-ordered ()
+  "Paint ledger addresses use owner facts, content index, and local order."
+  (let ((rendered (copy-sequence "ab")))
+    (put-text-property 0 1 'ebox-content-owner 7 rendered)
+    (put-text-property 0 1 'ebox-content-idx 3 rendered)
+    (put-text-property 0 1 'ebox-content-owners '(7 2) rendered)
+    (put-text-property 0 1 'face 'bold rendered)
+    (put-text-property 1 2 'ebox-content-owner 7 rendered)
+    (put-text-property 1 2 'ebox-content-idx 3 rendered)
+    (put-text-property 1 2 'ebox-content-owners '(7 2) rendered)
+    (put-text-property 1 2 'face 'italic rendered)
+    (let* ((origin (ebox--paint-origin-create :baseline '(:weight bold)))
+           (_ (put-text-property 0 2 ebox--paint-origin-property
+                                 origin rendered))
+           (fragments (ebox-surface--rendered-fragments rendered))
+           (first (car fragments))
+           (second (cadr fragments))
+           (address (plist-get first :paint-address)))
+      (should (= (length fragments) 2))
+      (should (equal (plist-get address :content-owner) 7))
+      (should (= (plist-get address :content-index) 3))
+      (should (= (plist-get address :ordinal) 0))
+      (should (= (plist-get (plist-get second :paint-address) :ordinal) 1))
+      (should (equal (plist-get first :face-baseline) '(:weight bold)))
+      (should (plist-get first :face-baseline-known-p))
+      (should-not (get-text-property 0 ebox--paint-origin-property rendered)))))
 
 (ert-deftest ebox-surface-candidate-plan-copies-face-property-values ()
   "Candidate plans isolate mutable face values despite provenance hints."
@@ -1110,15 +1285,19 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
         (kill-buffer buffer)))))
 
 (ert-deftest ebox-viewport-reflow-falls-back-for-scroll-and-visible-overflow ()
-  "Scroll state and visible overflow must not enter retained reflow."
+  "Nested scroll state and visible overflow must not enter retained reflow."
   (dolist (fixture
            (list
-            (cons 'scroll
+            (cons 'nested-scroll
                   (lambda ()
-                    (ebox-create :content "zero\none\ntwo"
+                    (ebox-create :content "outer"
                                  :width '(viewport)
                                  :height 2
-                                 :overflow 'scroll)))
+                                 :overflow 'scroll
+                                 :ebox-content-node
+                                 (ebox-create :content "zero\none\ntwo"
+                                              :height 2
+                                              :overflow 'scroll))))
             (cons 'visible-overflow
                   (lambda ()
                     (ebox-create :content "one\ntwo"
@@ -1146,6 +1325,47 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (should (plist-get report :runtime-published))))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
+
+(ert-deftest ebox-viewport-reflow-retains-viewport-dependent-root-scroll ()
+  "A sole root scroll owner may reflow its own viewport-dependent content."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-viewport-root-scroll*"))
+        (ensured-node-count 0)
+        (original-ensure (symbol-function 'ebox-surface--ensure-node-tree)))
+    (unwind-protect
+        (let ((ebox-viewport-width 160)
+              (ebox-viewport-height 2)
+              (ebox-runtime-idle-prewarm nil)
+              (ebox-runtime-idle-reflow-cache-prewarm nil))
+          (ebox-render-to-buffer
+           buffer
+           (ebox-create :key 'root-scroll
+                        :content "zero\none\ntwo\nthree"
+                        :width '(viewport)
+                        :height '(viewport-height)
+                        :overflow 'scroll))
+          (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
+                     (lambda (&rest args)
+                       (cl-incf ensured-node-count)
+                       (apply original-ensure args))))
+            (ebox-rerender-buffer-with-context buffer 240 2))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (report (ebox-buffer-update-report buffer))
+                 (expected
+                  (let ((ebox-viewport-width 240)
+                        (ebox-viewport-height 2))
+                    (ebox-render (plist-get state :root-node))))
+                 (actual
+                  (with-current-buffer buffer
+                    (buffer-substring (point-min) (point-max)))))
+            (should (= ensured-node-count 0))
+            (should (eq (plist-get report :projection-kind)
+                        'viewport-reflow))
+            (should-not (plist-get report :tp-full-root))
+            (should-not (plist-get report :tp-scope-fallback))
+            (should (equal-including-properties actual expected))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (ert-deftest ebox-viewport-reflow-supports-height-and-both-axis-resize ()
   "Retained viewport reflow should cover height-only and two-axis changes."
@@ -1400,6 +1620,200 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-style-theme-delta-reuses-cascade-facts ()
+  "Copy a paint-only Theme delta without rerunning ECSS cascade computation."
+  (let* ((subject (ecss-subject-create :type "box"))
+         (old-declarations
+          '(ebox/width (100) ebox/color "#252A2E"
+            ebox/background-color "#F8F5EE"))
+         (new-declarations
+          '(ebox/width (100) ebox/color "#F2EEE4"
+            ebox/background-color "#1B1F20"))
+         (old-style
+          (ebox-style-compute-subject subject old-declarations))
+         (delta
+          (ebox-style--theme-delta-computed
+           old-style old-declarations new-declarations)))
+    (should (ecss-computed-style-p delta))
+    (should-not (eq old-style delta))
+    (should (equal "#F2EEE4"
+                   (ecss-computed-style-value delta 'ebox/color)))
+    (should (equal "#1B1F20"
+                   (ecss-computed-style-value
+                    delta 'ebox/background-color)))
+    (should (equal (ecss-computed-style-value old-style 'ebox/width)
+                   (ecss-computed-style-value delta 'ebox/width)))
+    (should-not
+     (ebox-style--theme-delta-computed
+      old-style old-declarations
+      (plist-put (copy-sequence new-declarations) 'ebox/width '(120))))))
+
+(ert-deftest ebox-style-theme-delta-propagates-inherited-color ()
+  "Copy a proven inherited Theme color without rerunning ECSS.
+The child has no explicit color declaration; only its static parent color
+changes.  Geometry and non-inherited computed values must remain identical."
+  (let* ((parent (ecss-subject-create :type "box"))
+         (child (ecss-subject-create :type "box" :parent parent))
+         (parent-old
+          (ebox-style-compute-subject parent '(ebox/color "#111111")))
+         (parent-new
+          (ebox-style-compute-subject parent '(ebox/color "#222222")))
+         (declarations '(ebox/width (100) ebox/background-color "#eeeeee"))
+         (style
+          (ebox-style-compute-subject child declarations parent-old))
+         (delta
+          (ebox-style--theme-inherited-delta-computed
+           style declarations parent-old parent-new)))
+    (should (ecss-computed-style-p delta))
+    (should (equal "#222222"
+                   (ecss-computed-style-value delta 'ebox/color)))
+    (should (equal (ecss-computed-style-value style 'ebox/width)
+                   (ecss-computed-style-value delta 'ebox/width)))
+    (should (equal (ecss-computed-style-value style 'ebox/background-color)
+                   (ecss-computed-style-value
+                    delta 'ebox/background-color)))))
+
+(ert-deftest ebox-style-theme-parent-delta-reuses-explicit-child-style ()
+  "Reuse an explicit child style when only its static parent Theme changes."
+  (let* ((parent (ecss-subject-create :type "box"))
+         (child (ecss-subject-create :type "box" :parent parent))
+         (parent-old
+          (ebox-style-compute-subject parent '(ebox/color "#111111")))
+         (parent-new
+          (ebox-style-compute-subject parent '(ebox/color "#222222")))
+         (declarations '(ebox/color "#ffffff" ebox/width (100)))
+         (style
+          (ebox-style-compute-subject child declarations parent-old))
+         (delta
+          (ebox-style--theme-parent-delta-computed
+           style declarations parent-old parent-new)))
+    (should (ecss-computed-style-p delta))
+    (should (equal (ecss-computed-style-values style)
+                   (ecss-computed-style-values delta)))
+    (let ((parent-font-new
+           (ebox-style-compute-subject
+            parent '(ebox/color "#222222" ebox/font-height 2.0))))
+      (should-not
+       (ebox-style--theme-parent-delta-computed
+        style declarations parent-old parent-font-new)))))
+
+(ert-deftest ebox-tree-source-signature-ignores-derived-width-proof ()
+  "A layout-derived exact-width flag must not dirty declarative content."
+  (let* ((old (ebox-create :content "Stable" :width '(100)))
+         (new (copy-tree old)))
+    (plist-put old :ebox-content-width-exact-p nil)
+    (plist-put new :ebox-content-width-exact-p t)
+    (should (equal (ebox-tree-node-local-source-signature old)
+                   (ebox-tree-node-local-source-signature new)))
+    (should-not (memq :ebox-content-width-exact-p
+                      (ebox-tree-node-local-changed-keys old new)))))
+
+(ert-deftest ebox-tree-grid-source-signature-canonicalizes-layout-aliases ()
+  "Equivalent Grid gap/paint aliases must not become geometry dirtiness."
+  (let ((old (list :ebox-type 'grid
+                   :raw-props '(:width stretch
+                                :grid-template-columns (1fr 1fr)
+                                :grid-row-gap 1 :grid-column-gap (12)
+                                :color "#252A2E" :background-color "#F8F5EE")))
+        (new (list :ebox-type 'grid
+                   :raw-props '(:width stretch
+                                :grid-template-columns (1fr 1fr)
+                                :gap (1 (12))
+                                :color "#F2EEE4" :bgcolor "#1B1F20"))))
+    (should-not (memq :props (ebox-tree-node-local-changed-keys old new)))
+    (should-not (memq :raw-props (ebox-tree-node-local-changed-keys old new)))))
+
+(ert-deftest ebox-tree-flex-source-signature-canonicalizes-layout-aliases ()
+  "Equivalent Flex gap aliases must not become geometry dirtiness."
+  (let ((old (list :ebox-type 'flex
+                   :raw-props '(:width stretch
+                                :row-gap 1 :column-gap (12)
+                                :padding-block-start 0
+                                :padding-inline-end 2
+                                :padding-block-end 0
+                                :padding-inline-start 2
+                                :border-top-width (1)
+                                :border-right-width (1)
+                                :border-bottom-width (1)
+                                :border-left-width (1)
+                                :border-top-style solid
+                                :border-right-style solid
+                                :border-bottom-style solid
+                                :border-left-style solid
+                                :border-top-color "#687386"
+                                :border-right-color "#687386"
+                                :border-bottom-color "#687386"
+                                :border-left-color "#687386"
+                                :align-items center
+                                :color "#252A2E"
+                                :background-color "#F8F5EE")))
+        (new (list :ebox-type 'flex
+                   :raw-props '(:width stretch
+                                :gap (1 (12))
+                                :padding (0 2)
+                                :border ((1) solid "#687386")
+                                :align-items center
+                                :color "#F2EEE4"
+                                :bgcolor "#1B1F20"))))
+    (should-not (memq :props (ebox-tree-node-local-changed-keys old new)))
+    (should-not (memq :raw-props (ebox-tree-node-local-changed-keys old new)))))
+
+(ert-deftest ebox-style-theme-delta-rejects-inherited-parent-change ()
+  "Do not reuse a child style when its inherited parent fingerprint changes."
+  (let* ((parent (ecss-subject-create :type "box"))
+         (child (ecss-subject-create :type "box" :parent parent))
+         (parent-old
+          (ebox-style-compute-subject
+           parent '(ebox/font-height 1.0)))
+         (parent-new
+          (ebox-style-compute-subject
+           parent '(ebox/font-height 2.0)))
+         (declarations '(ebox/color "#ffffff"))
+         (style
+          (ebox-style-compute-subject child declarations parent-old)))
+    (should-not
+     (ebox-style--theme-delta-computed
+      style declarations declarations parent-old parent-new))))
+
+(ert-deftest ebox-style-theme-delta-rejects-parent-custom-property-change ()
+  "Do not reuse a Theme delta when a parent custom property changes."
+  (let* ((parent (ecss-subject-create :type "box"))
+         (child (ecss-subject-create :type "box" :parent parent))
+         (parent-old
+          (ebox-style-compute-subject parent '(--theme "#ffffff")))
+         (parent-new
+          (ebox-style-compute-subject parent '(--theme "#000000")))
+         (old-declarations
+          '(ebox/color "#ffffff" ebox/background-color "#ffffff"))
+         (new-declarations
+          '(ebox/color "#eeeeee" ebox/background-color "#eeeeee"))
+         (style
+          (ebox-style-compute-subject child old-declarations parent-old)))
+    (should-not
+      (ebox-style--theme-delta-computed
+       style old-declarations new-declarations parent-old parent-new))))
+
+(ert-deftest ebox-style-paint-declarations-equivalent-includes-border-colors ()
+  "Pressed/hover paint changes must not invalidate layout style closure."
+  (should
+   (ebox-style--paint-declarations-equivalent-p
+    '(ebox/color "#ffffff"
+      ebox/background-color "#2f6b43"
+      ebox/border-top-color "#2f6b43"
+      ebox/border-right-color "#2f6b43"
+      ebox/border-bottom-color "#2f6b43"
+      ebox/border-left-color "#2f6b43")
+    '(ebox/color "#ffffff"
+      ebox/background-color "#1e5a56"
+      ebox/border-top-color "#174a47"
+      ebox/border-right-color "#174a47"
+      ebox/border-bottom-color "#174a47"
+      ebox/border-left-color "#174a47")))
+  (should-not
+   (ebox-style--paint-declarations-equivalent-p
+    '(ebox/color "#ffffff" ebox/width max-content)
+    '(ebox/color "#ffffff" ebox/width stretch))))
+
 (ert-deftest ebox-render-to-buffer-reuses-one-source-across-buffers ()
   "The public mount path should never transfer ownership of its source tree."
   (ebox-surface-test--reset-render-state)
@@ -1601,6 +2015,30 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-scroll-finalization-contains-each-error-and-quit ()
+  "Post-TP scroll actions report failures without skipping later actions."
+  (let ((ebox--scroll-global-state (make-hash-table :test 'equal))
+        (ebox--smooth-scroll-state-table (make-hash-table :test 'equal))
+        trace diagnostics)
+    (cl-letf (((symbol-function 'ebox--scroll-cancel-idle-prefetch)
+               (lambda (region-id)
+                 (push (list 'cancel region-id) trace)
+                 (error "cancel failure")))
+              ((symbol-function 'ebox--smooth-scroll-stop)
+               (lambda (region-id)
+                 (push (list 'stop region-id) trace)
+                 (signal 'quit nil))))
+      (setq diagnostics
+            (ebox-incremental--finalize-declarative-scroll-publication
+             '(one two))))
+    (should (equal (nreverse trace)
+                   '((cancel one) (stop one) (cancel two) (stop two))))
+    (should (= (length diagnostics) 4))
+    (should (equal (mapcar (lambda (entry) (plist-get entry :action))
+                           diagnostics)
+                   '(cancel-prefetch stop-smooth-scroll
+                     cancel-prefetch stop-smooth-scroll)))))
+
 (ert-deftest ebox-region-handles-are-surface-scoped ()
   "One logical id should resolve to distinct handles on independent surfaces."
   (ebox-surface-test--reset-render-state)
@@ -1653,6 +2091,25 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
             (should (string-match-p
                      "Changed"
                      (with-current-buffer buffer (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-region-update-preserves-point-after-incremental-publication ()
+  "An incremental Ebox content update must not leave point at its patch."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-point-preservation*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-create :id "target" :content "before target after"
+                        :width '(200)))
+          (with-current-buffer buffer (goto-char 4))
+          (let ((point-before (with-current-buffer buffer (point))))
+            (ebox-region-update (ebox-region-resolve buffer "target")
+                                :content "before changed-target after")
+            (should (= point-before
+                       (with-current-buffer buffer (point))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1761,6 +2218,171 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-scroll-patch-reuses-visible-lines-and-retains-region-index ()
+  "A chrome-free root scroll patch must avoid layout and keep all regions indexed."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-scroll-visible-window*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 240)
+              (ebox-viewport-height 2)
+              (full-renders 0))
+          (ebox-render-to-buffer
+           buffer
+           (ebox-create :id "scroll" :content
+                        (mapconcat #'number-to-string (number-sequence 0 31) "\n")
+                        :width '(120) :height 2 :overflow 'scroll))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (region-id
+                 (plist-get
+                   (car (ebox-selector-query-buffer buffer "#scroll"))
+                   :region-id))
+                 (old-state (tp-surface-client-state surface)))
+            ;; Materialize this tiny fixture so the direct visible-window
+            ;; proof is exercised rather than the lazy-prefix fallback.
+            (let ((scroll-state
+                   (ebox--scroll-state-materialize-lines
+                    region-id (ebox--scroll-get-state region-id))))
+              (puthash region-id scroll-state ebox--scroll-global-state))
+              (let ((owner-plan-calls 0)
+                    (original-owner-plan
+                     (symbol-function
+                      'ebox-incremental--layout-owner-plan)))
+                (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                           (lambda (&rest _)
+                             (cl-incf full-renders)
+                             (error "full root render used by scroll patch")))
+                          ((symbol-function
+                            'ebox-incremental--layout-owner-plan)
+                           (lambda (&rest args)
+                             (cl-incf owner-plan-calls)
+                             (apply original-owner-plan args))))
+                  (should (= (ebox--scroll-region-by region-id 1 1) 1)))
+                (should (= owner-plan-calls 0)))
+            (let* ((report (ebox-buffer-update-report buffer))
+                   (state (tp-surface-client-state surface))
+                   (region-table (plist-get state :region-box-table))
+                   (region-set (plist-get state :region-id-set))
+                   (text (with-current-buffer buffer
+                           (buffer-substring-no-properties
+                            (point-min) (point-max)))))
+              (should (= full-renders 0))
+              (should (eq (plist-get report :projection-kind) 'scroll-patch))
+              (should-not (plist-get report :tp-full-root))
+              (should-not (plist-get report :tp-scope-fallback))
+              (should (= (hash-table-count region-table)
+                         (hash-table-count region-set)))
+              (maphash
+               (lambda (id node)
+                 (should (eq node
+                             (gethash (gethash id
+                                               (plist-get state
+                                                          :region-node-table))
+                                      (plist-get state :node-table)))))
+               region-table)
+              (should (string-match-p "1" text))
+              (should-not (string-match-p "^0$" text))
+              (should (equal (plist-get (plist-get old-state :root-node)
+                                        :node-id)
+                             (plist-get (plist-get state :root-node)
+                                        :node-id)))
+              (should (eq (gethash (plist-get (plist-get state :root-node)
+                                               :node-id)
+                                     (plist-get state
+                                                :surface-node-object-table))
+                          (gethash (plist-get (plist-get old-state :root-node)
+                                               :node-id)
+                                   (plist-get old-state
+                                              :surface-node-object-table))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))))
+
+(ert-deftest ebox-scroll-patch-rolls-back-at-tp-client-state-publication ()
+  "A scroll patch failure after TP client-state must restore the old generation."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-scroll-patch-rollback*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 240)
+              (ebox-viewport-height 2))
+          (ebox-render-to-buffer
+           buffer
+           (ebox-create :id "scroll" :content "zero\none\ntwo\nthree"
+                        :width '(120) :height 2 :overflow 'scroll))
+          (let* ((surface (with-current-buffer
+                            buffer ebox-surface--buffer-surface))
+                 (region-id
+                  (plist-get
+                   (car (ebox-selector-query-buffer buffer "#scroll"))
+                   :region-id))
+                 (state (tp-surface-client-state surface))
+                 (revision (tp-surface-revision surface))
+                 (contents (with-current-buffer buffer
+                             (buffer-substring (point-min) (point-max))))
+                 (old-region-table (plist-get state :region-box-table)))
+            (let ((tp--surface-publication-step-function
+                   (lambda (step _surface)
+                     (when (eq step 'client-state)
+                       (error "reject scroll client-state publication")))))
+              (should-error (ebox--scroll-region-by region-id 1 1)))
+            (should (= (tp-surface-revision surface) revision))
+            (should (eq (tp-surface-client-state surface) state))
+            (should (eq (plist-get state :region-box-table)
+                        old-region-table))
+            (should (= (plist-get (ebox-scroll-state region-id)
+                                  :scroll-offset)
+                       0))
+            (should (equal-including-properties
+                     (with-current-buffer buffer
+                       (buffer-substring (point-min) (point-max)))
+                     contents))
+            (should (= (ebox--scroll-region-by region-id 1 1) 1))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-scroll-patch-reuses-incomplete-flex-visible-window ()
+  "A lazy Flex prefix may use retained output when its visible slice is ready.
+The prefix need not be fully materialized; a scroll step that remains inside
+the staged rendered window must not rerun the Flex wrapper layout."
+  (let* ((children
+          (cl-loop for index below 80
+                   collect
+                   (ebox-create :key (intern (format "flex-cell-%03d" index))
+                                :content (format "Cell %03d" index)
+                                :width '(80) :height 1)))
+         (flex (apply #'ebox-flex :flex-flow '(row wrap)
+                      :width '(180) :column-gap '(8) :row-gap 1
+                      children))
+         (root (ebox-create :key 'scroll-root :width '(180) :height 6
+                            :overflow 'scroll :ebox-content-node flex))
+         (buffer (ebox-render-to-buffer
+                  (generate-new-buffer-name " *ebox-incomplete-flex-scroll*")
+                  root))
+         (state (ebox--buffer-render-state buffer))
+         (region-id (car (plist-get state :scroll-region-ids)))
+         (scroll-state (gethash region-id
+                                (plist-get state :scroll-state-table))))
+    (unwind-protect
+        (progn
+          (should region-id)
+          (should scroll-state)
+          (should-not (plist-get scroll-state :content-lines-complete-p))
+          (should (ebox--scroll-state-rendered-visible-window scroll-state))
+          (should (ebox--scroll-state-retained-window-ready-p scroll-state))
+          (with-current-buffer buffer
+            (ebox--scroll-region-by region-id 1 1))
+          (let ((report (ebox-buffer-update-report buffer))
+                (current (ebox--buffer-render-state buffer)))
+            (should (eq (plist-get report :projection-kind) 'scroll-patch))
+            (should (plist-get report :scroll-patch-fast-p))
+            (should-not (plist-get report :tp-full-root))
+            (should-not (plist-get report :tp-scope-fallback))
+            (should (= (hash-table-count
+                        (plist-get current :region-id-set))
+                       (hash-table-count
+                        (plist-get current :region-box-table)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))))
+
 (ert-deftest ebox-scroll-update-rejects-a-runtime-replaced-by-its-hook ()
   "A stale scroll candidate must not overwrite a hook publication."
   (ebox-surface-test--reset-render-state)
@@ -1800,6 +2422,84 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                      "#2563EB"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest ebox-native-buffer-scroll-is-transactional-and-line-oriented ()
+  "An eligible root scroll uses the window one line at a time.
+The test stubs the GUI window boundary so batch ERT can exercise the same
+participant and rollback contract without creating a real frame."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-native-scroll*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 120)
+              (ebox-viewport-height 2)
+              (noninteractive nil)
+              (ebox-runtime-idle-prewarm nil)
+              (window-start 1)
+              (window-point 1))
+          (ebox-render-to-buffer
+           buffer
+           (ebox-create :id "native-scroll" :content "zero\none\ntwo\nthree"
+                        :width '(120) :height 2 :overflow 'scroll))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (region-id (car (plist-get state :scroll-region-ids)))
+                 (scroll-state
+                  (gethash region-id (plist-get state :scroll-state-table))))
+            (plist-put state :native-buffer-scroll-p t)
+            (plist-put scroll-state :content-lines-complete-p t)
+            (plist-put scroll-state :rendered-content-lines
+                       '("zero" "one" "two" "three"))
+            (plist-put scroll-state :content-height 2)
+            (puthash region-id scroll-state ebox--scroll-global-state)
+            (cl-letf (((symbol-function 'get-buffer-window)
+                       (lambda (&rest _) 'ebox-test-window))
+                      ((symbol-function 'window-live-p)
+                       (lambda (&rest _) t))
+                      ((symbol-function 'window-start)
+                       (lambda (&rest _) window-start))
+                      ((symbol-function 'window-point)
+                       (lambda (&rest _) window-point))
+                      ((symbol-function 'set-window-start)
+                       (lambda (_window position &rest _)
+                         (setq window-start position)))
+                      ((symbol-function 'set-window-point)
+                       (lambda (_window position)
+                         (setq window-point position)))
+                      ((symbol-function
+                        'ebox--native-buffer-scroll-root-proof-p)
+                       (lambda (&rest _) t)))
+              (should (= (ebox--native-buffer-scroll-by buffer region-id 1)
+                         1))
+              (should (= (plist-get scroll-state :scroll-offset) 1))
+              (should (> window-start 1))
+              (should (equal (plist-get state :last-update-report)
+                             (ebox-buffer-update-report buffer)))
+              (should (eq (plist-get (ebox-buffer-update-report buffer)
+                                    :projection-kind)
+                          'native-buffer-scroll))
+              ;; The native path is a presentation-only transaction, but it
+              ;; must still restore both window and Ebox state if a window
+              ;; primitive fails halfway through the move.
+              (setq window-start 1
+                    window-point 1)
+              (plist-put scroll-state :scroll-offset 0)
+              (ebox-put (plist-get scroll-state :box) :scroll-offset 0)
+              (plist-put state :last-update-report nil)
+              (let ((fail-once t))
+                (cl-letf (((symbol-function 'set-window-point)
+                           (lambda (_window position)
+                             (if fail-once
+                                 (progn
+                                   (setq fail-once nil)
+                                   (error "native window point failure"))
+                               (setq window-point position)))))
+                  (should-error
+                   (ebox--native-buffer-scroll-by buffer region-id 1))))
+              (should (= window-start 1))
+              (should (= window-point 1))
+              (should (= (plist-get scroll-state :scroll-offset) 0))
+              (should-not (plist-get state :last-update-report))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))))
 
 (provide 'ebox-surface-tests)
 
