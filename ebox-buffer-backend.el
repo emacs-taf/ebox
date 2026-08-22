@@ -223,6 +223,18 @@ immediately after BODY can trigger GC before the updated buffer is visible."
     (or (plist-get style :background-color)
         (plist-get style :bgcolor))))
 
+(defun ebox-buffer--default-foreground-face ()
+  "Return a face that resets only foreground to the resolved default.
+Fall back to inheriting `default' when a headless frame has no concrete
+foreground color."
+  (let ((foreground (face-attribute 'default :foreground nil t)))
+    (if (or (null foreground)
+            (eq foreground 'unspecified)
+            (and (stringp foreground)
+                 (string-prefix-p "unspecified" foreground)))
+        '(:inherit default)
+      (list :foreground foreground))))
+
 (defun ebox-buffer-paint-text-properties (style role)
   "Return Emacs text properties for computed STYLE in paint ROLE.
 This backend mapper intentionally accepts computed style facts and emits only
@@ -231,7 +243,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
     (when-let ((foreground (ebox-buffer--paint-color style role)))
       (setq face
             (if (eq foreground 'ebox/default-foreground)
-                (plist-put face :inherit 'default)
+                (append (ebox-buffer--default-foreground-face) face)
               (plist-put face :foreground foreground))))
     (when-let ((background (ebox-buffer--paint-background-color style role)))
       (setq face (plist-put face :background background)))
@@ -282,7 +294,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
     (ebox--add-render-face!
      string 0 length
      (if (eq color 'ebox/default-foreground)
-         '(:inherit default)
+         (ebox-buffer--default-foreground-face)
        `(:foreground ,color))
      t)
     (ebox--register-render-owned-face-values source string)))
@@ -296,7 +308,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
       (ebox--add-render-face!
        string 0 length
        (if (eq color 'ebox/default-foreground)
-           '(:inherit default)
+           (ebox-buffer--default-foreground-face)
          `(:foreground ,color))
        t))
     (when bgcolor

@@ -4519,46 +4519,55 @@ FRAMEWORK-ROLLBACK, when supplied, receives the same report if publication or
 a later transaction phase fails, and is contained if it violates no-throw.
 
 Return the successful publication report stored by `ebox-buffer-update-report'."
-  (unless (or (null framework-publish) (functionp framework-publish))
-    (signal 'wrong-type-argument (list 'functionp framework-publish)))
-  (unless (or (null framework-rollback) (functionp framework-rollback))
-    (signal 'wrong-type-argument (list 'functionp framework-rollback)))
-  (when (and framework-rollback (null framework-publish))
-    (error "Ebox framework rollback requires framework publish"))
-  (let ((buffer (get-buffer buffer-or-name)))
-    (unless (buffer-live-p buffer)
-      (error "Ebox declarative commit requires an existing live buffer: %S"
-             buffer-or-name))
-    (let* ((commit-input
-            (if (ebox-candidate-p next-root)
-                (ebox-incremental-consume-candidate buffer next-root)
-              (ebox-incremental-prepare-root-commit buffer next-root)))
-           (source (plist-get commit-input :root))
-           (callback
-            (or framework-publish
-                ebox-incremental--after-declarative-publication))
-           (participant
-            (ebox-surface--make-framework-participant
-             :publish callback :rollback framework-rollback
-             :state 'unpublished :diagnostics nil))
-           (_surface
-            (if-let ((scope-node-ids
-                      (plist-get commit-input :scope-node-ids)))
-                (ebox-surface-update-buffer-scoped
-                 buffer source scope-node-ids
-                 (plist-get commit-input :report-base)
-                 (plist-get commit-input :state-overrides)
-                 callback nil nil
-                 (plist-get commit-input :projection-kind)
-                 t participant)
-              (ebox-surface-mount-buffer
-               buffer source
-               (plist-get commit-input :report-base)
-               callback
-               (plist-get commit-input :preserve-identities-p)
-               (plist-get commit-input :state-overrides)
-               participant))))
-      (ebox-surface--framework-participant-report participant))))
+  (let ((execute
+         (lambda ()
+           (unless (or (null framework-publish) (functionp framework-publish))
+             (signal 'wrong-type-argument (list 'functionp framework-publish)))
+           (unless (or (null framework-rollback)
+                       (functionp framework-rollback))
+             (signal 'wrong-type-argument (list 'functionp framework-rollback)))
+           (when (and framework-rollback (null framework-publish))
+             (error "Ebox framework rollback requires framework publish"))
+           (let ((buffer (get-buffer buffer-or-name)))
+             (unless (buffer-live-p buffer)
+               (error
+                "Ebox declarative commit requires an existing live buffer: %S"
+                buffer-or-name))
+             (let* ((commit-input
+                     (if (ebox-candidate-p next-root)
+                         (ebox-incremental-consume-candidate buffer next-root)
+                       (ebox-incremental-prepare-root-commit buffer next-root)))
+                    (source (plist-get commit-input :root))
+                    (callback
+                     (or framework-publish
+                         ebox-incremental--after-declarative-publication))
+                    (participant
+                     (ebox-surface--make-framework-participant
+                      :publish callback :rollback framework-rollback
+                      :state 'unpublished :diagnostics nil))
+                    (_surface
+                     (if-let ((scope-node-ids
+                               (plist-get commit-input :scope-node-ids)))
+                         (ebox-surface-update-buffer-scoped
+                          buffer source scope-node-ids
+                          (plist-get commit-input :report-base)
+                          (plist-get commit-input :state-overrides)
+                          callback nil nil
+                          (plist-get commit-input :projection-kind)
+                          t participant)
+                       (ebox-surface-mount-buffer
+                        buffer source
+                        (plist-get commit-input :report-base)
+                        callback
+                        (plist-get commit-input :preserve-identities-p)
+                        (plist-get commit-input :state-overrides)
+                        participant))))
+               (ebox-surface--framework-participant-report participant))))))
+    (if noninteractive
+        (ebox--with-render-gc
+          (funcall execute))
+      (ebox--with-deferred-render-gc
+        (funcall execute)))))
 
 ;;;###autoload
 (defun ebox-rerender-buffer-with-context

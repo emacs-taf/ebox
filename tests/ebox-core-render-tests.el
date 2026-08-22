@@ -557,6 +557,20 @@
         (let ((face (get-text-property (match-beginning 0) 'face)))
           (should (equal (car face) '(:inherit default))))))))
 
+(ert-deftest ebox-default-foreground-reset-preserves-explicit-background ()
+  "Resolve GUI default foreground without inheriting its background."
+  (let ((original (symbol-function 'face-attribute)))
+    (cl-letf (((symbol-function 'face-attribute)
+               (lambda (face attribute &rest arguments)
+                 (if (and (eq face 'default) (eq attribute :foreground))
+                     "Black"
+                   (apply original face attribute arguments)))))
+      (should
+       (equal
+        (ebox-buffer-paint-text-properties
+         '(:color ebox/default-foreground :bgcolor "#111827") 'content)
+        '(face (:foreground "Black" :background "#111827")))))))
+
 (ert-deftest ebox-flex-layout-properties-come-from-ecss-cascade ()
   "An ECSS rule should determine a Flex container's actual main axis."
   (ebox-test--reset-runtime-state)
@@ -2999,6 +3013,44 @@
           (ebox--deferred-render-gc-enter)
           (should (= gc-cons-threshold (* 512 1024 1024))))
       (ebox--deferred-render-gc-restore))))
+
+(ert-deftest ebox-interactive-commit-owns-deferred-render-gc ()
+  "Keep GC outside an interactive declarative commit and defer restoration."
+  (ebox-test--reset-runtime-state)
+  (let ((buffer nil))
+    (unwind-protect
+        (progn
+          (setq buffer
+                (ebox-render-to-buffer
+                 (generate-new-buffer-name " *ebox-test*")
+                 (ebox-create :content "before")))
+          (let ((noninteractive nil)
+                (gc-cons-threshold 1000)
+                (gc-cons-percentage 0.1)
+                (ebox-deferred-render-gc-cons-threshold 4000)
+                (ebox-render-gc-cons-percentage 0.8)
+                (ebox--deferred-render-gc-state nil)
+                (ebox--deferred-render-gc-timer nil)
+                (ebox--deferred-render-gc-depth 0)
+                observed-threshold)
+            (unwind-protect
+                (progn
+                  (ebox-commit
+                   buffer (ebox-create :content "after")
+                   (lambda (_report)
+                     (setq observed-threshold gc-cons-threshold)))
+                  (should (= observed-threshold 4000))
+                  (should (= gc-cons-threshold 4000))
+                  (should (= gc-cons-percentage 0.8))
+                  (should ebox--deferred-render-gc-state)
+                  (should (timerp ebox--deferred-render-gc-timer)))
+              (when (timerp ebox--deferred-render-gc-timer)
+                (cancel-timer ebox--deferred-render-gc-timer))
+              (setq ebox--deferred-render-gc-state nil
+                    ebox--deferred-render-gc-timer nil
+                    ebox--deferred-render-gc-depth 0))))
+      (when (and buffer (buffer-live-p buffer))
+        (kill-buffer buffer)))))
 
 (ert-deftest ebox-deferred-render-gc-can-raise-an-active-burst-budget ()
   "Measured layout pressure should only raise an active burst budget."

@@ -305,8 +305,8 @@ construction time and can use the static projection path."
 Some Emacs GUI builds return a column-like half-width even when
 `window-body-width' is called with PIXELWISE non-nil.  When the result is
 clearly inconsistent with the outer pixel width, prefer the outer width and
-keep a one-pixel exclusive boundary.  Headless/test windows retain the body
-width fallback."
+reserve two character columns for Emacs continuation/truncation display.
+Headless/test windows retain the body width fallback."
   (let ((body
          (condition-case nil
              (window-body-width window t)
@@ -315,11 +315,16 @@ width fallback."
          (condition-case nil
              (window-pixel-width window)
            (error nil))))
-    (max 0
-         (1-
-          (if (and body outer (> outer (* 1.8 body)))
-              outer
-            (or body outer 0))))))
+    (let* ((char-width
+            (condition-case nil
+                (frame-char-width (window-frame window))
+              (error 1)))
+           (reserve (max 2 (* 2 (max 1 char-width)))))
+      (max 0
+           (- (if (and body outer (> outer (* 1.8 body)))
+                  outer
+                (or body outer 0))
+              reserve)))))
 
 (defun ebox-surface--ensure-signals (buffer values)
   "Return BUFFER's context signals for VALUES and whether they were created."
