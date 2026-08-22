@@ -481,6 +481,109 @@
                                       :range-ref-table))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
+(ert-deftest ebox-child-range-stable-keyed-refresh-is-not-structural ()
+  "Stable keyed Range refreshes must not become root structure updates."
+  (let ((buffer (generate-new-buffer " *ebox-stable-range-dirty*")))
+    (cl-labels
+        ((rows (selected)
+           (cl-loop for id from 1 to 12
+                    collect
+                    (ebox-create
+                     :key id :content (format "row-%02d" id) :width '(420)
+                     :color (and (= id selected) "#2F6B43"))))
+         (root ()
+           (ebox-create
+            :width '(900) :color "#172033" :wrap-mode nil
+            :ebox-content-node
+            (ebox-flex
+             :width '(900)
+             (ebox-create
+              :key 'list :width 'stretch :min-width 0 :wrap-mode nil
+              :min-height 24 :padding '(2 2) :border "#687386"
+              :flex-grow 2 :flex-shrink 1 :flex-basis '(600)
+              :ebox-content-node
+              (ebox-column
+               (apply #'ebox-child-range 'items (rows 1))))
+             (ebox-create :key 'detail :host-ref 'detail
+                          :width 'stretch :min-width 0
+                          :min-height 24 :padding '(2 2) :border "#687386"
+                          :flex-grow 1 :flex-shrink 1 :flex-basis '(300)
+                          :content "detail-1")))))
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer buffer (root))
+            (let ((root-id (ebox--buffer-root-node-id buffer)))
+              (dolist (selected '(2 1 2))
+                (let ((candidate (ebox-candidate-begin buffer)))
+                  (ebox-candidate-replace-range-ref
+                   candidate 'items (rows selected))
+                  (ebox-candidate-replace-host-ref
+                   candidate 'detail
+                   (ebox-create :key 'detail :host-ref 'detail
+                                :width 'stretch :min-width 0
+                                :min-height 24 :padding '(2 2)
+                                :border "#687386"
+                                :flex-grow 1 :flex-shrink 1 :flex-basis '(300)
+                                :content (format "detail-%d" selected)))
+                  (let ((report (ebox-commit buffer candidate)))
+                    (ert-info ((format "selected=%S report=%S"
+                                       selected report))
+                      (should-not (memq 'structure
+                                        (plist-get report :dirty-kinds)))
+                      (should-not (member root-id
+                                          (plist-get report :owner-ids)))
+                      (should (memq (plist-get report :strategy)
+                                    '(span-patch owner-rerender
+                                      mixed-owner-reflow)))
+                      (should (= (plist-get report :tp-scope-count) 3))
+                      (should (= (plist-get report :created-objects) 0))
+                      (should (= (plist-get report :removed-objects) 0))))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest ebox-child-range-does-not-reuse-disappeared-key-positionally ()
+  "A new keyed item must not inherit a removed peer's runtime identity."
+  (let ((buffer (generate-new-buffer " *ebox-range-key-reentry*")))
+    (cl-labels
+        ((rows (keys)
+           (mapcar (lambda (key)
+                     (ebox-create :key key
+                                  :content (format "row-%s" key)))
+                   keys))
+         (row-id (key)
+           (let* ((state (ebox--buffer-render-state buffer))
+                  (resolved (ebox-incremental--range-ref-resolve
+                             state 'items))
+                  (segment (ebox-child-range--segment-at
+                            (plist-get resolved :sequence)
+                            (plist-get resolved :segment-index)))
+                  (node (cl-find key
+                                 (append
+                                  (ebox-child-range--segment-payload segment)
+                                  nil)
+                                 :key (lambda (item)
+                                        (plist-get item :key)))))
+             (plist-get node :node-id))))
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             buffer
+             (ebox-column
+              (apply #'ebox-child-range 'items (rows '(1 2 3 4)))))
+            (let ((initial-1 (row-id 1))
+                  (initial-4 (row-id 4)))
+              (let ((candidate (ebox-candidate-begin buffer)))
+                (ebox-candidate-replace-range-ref
+                 candidate 'items (rows '(1 4)))
+                (ebox-commit buffer candidate))
+              (let ((candidate (ebox-candidate-begin buffer)))
+                (ebox-candidate-replace-range-ref
+                 candidate 'items (rows '(1 2 3 4)))
+                (ebox-commit buffer candidate))
+              (should (= initial-1 (row-id 1)))
+              (should (= initial-4 (row-id 4)))
+              (should-not (= initial-4 (row-id 2)))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
 (ert-deftest ebox-child-range-sole-child-keeps-public-layout-parent ()
   "Keep row/column material parents for one empty or populated Range."
   (dolist (constructor '(ebox-row ebox-column))

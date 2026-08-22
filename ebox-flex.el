@@ -390,8 +390,15 @@ grapheme."
                                box (ebox-get box :min-width) 0)
                               0)))
         (if (null (ebox-get box :wrap-mode))
-            (max (ebox--flex-string-main rendered axis)
-                 (+ (ebox--side-pixel box) declared-min))
+            ;; CSS's automatic minimum is min-content only when the author
+            ;; leaves `min-width' at its automatic value.  A component that
+            ;; deliberately declares `:min-width 0' must be allowed to
+            ;; shrink even when its own rows remain no-wrap (the surrounding
+            ;; card may then own horizontal overflow).
+            (if (ebox--flex-explicit-min-main-p box axis)
+                (+ (ebox--side-pixel box) declared-min)
+              (max (ebox--flex-string-main rendered axis)
+                   (+ (ebox--side-pixel box) declared-min)))
           (let ((content-min (ebox--content-min-pixel box)))
             (when (hash-table-p ebox--flex-content-min-width-table)
               (puthash box content-min
@@ -403,6 +410,11 @@ grapheme."
             (or (ebox--box-sizing-content-height
                  box (ebox-get box :min-height))
                 0)))))
+
+(defun ebox--flex-explicit-min-main-p (box axis)
+  "Return non-nil when BOX declares a main-axis minimum explicitly."
+  (let ((property (if (eq axis 'row) 'ebox/min-width 'ebox/min-height)))
+    (plist-member (plist-get box :ebox-style-declarations) property)))
 
 (defun ebox--flex-box-main-constraint (box axis property)
   "Return BOX's total main-axis size constraint from PROPERTY."

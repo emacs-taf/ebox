@@ -2911,6 +2911,36 @@ its new minimum must still fit CURRENT-MAIN."
       (<= (ebox--flex-min-main style-node rendered axis)
           current-main))))
 
+(defun ebox--flex-fixed-basis-content-allocation-stable-p
+    (style-node item-props axis)
+  "Return non-nil when content cannot affect a fixed-basis flex allocation.
+
+A definite basis owns the item's base size.  An explicit zero main-axis
+minimum removes the content-minimum clamp, so grow/shrink allocation depends
+only on the stable container and sibling flex inputs.  Cross-axis compatibility
+is still verified by the existing rendered slot-footprint proof."
+  (let* ((basis-value (plist-get item-props :flex-basis))
+         (basis (and (not (memq basis-value
+                                '(nil auto min-content max-content
+                                  fit-content stretch contain viewport)))
+                     (ebox--flex-main-value axis basis-value nil)))
+        (minimum (ebox-get style-node
+                           (if (eq axis 'row) :min-width :min-height))))
+    (and (numberp basis) (>= basis 0)
+         (numberp minimum) (= minimum 0))))
+
+(defun ebox--flex-item-fixed-basis-content-allocation-stable-p
+    (buffer node-id)
+  "Return whether NODE-ID has a content-independent fixed flex basis."
+  (when-let* ((node (ebox--buffer-runtime-node buffer node-id))
+              (parent-id (ebox--runtime-parent-id buffer node-id))
+              (parent (ebox--buffer-runtime-node buffer parent-id))
+              ((eq (ebox--display-inner parent) 'flex))
+              (child (ebox--flex-child-for-source-node parent node-id))
+              (style-node (ebox-fragment-style-source-node node)))
+    (ebox--flex-fixed-basis-content-allocation-stable-p
+     style-node (ebox--flex-item-props child) (ebox--flex-main-axis parent))))
+
 (defun ebox--flex-slot-allocation-stable-p
     (buffer node child axis current-main changed-keys)
   "Return non-nil when CHANGED-KEYS preserve NODE's flex allocation.
@@ -2918,19 +2948,29 @@ Unknown changes fail closed.  A fixed outer size is insufficient for content
 updates unless the auto flex basis stays fixed and the new minimum still fits
 the already published slot."
   (when-let ((style-node (ebox-fragment-style-source-node node)))
-    (and changed-keys
-         (cl-every
-          (lambda (key)
-            (and (not (ebox--flex-main-footprint-key-p
-                       key axis style-node))
-                 (not (ebox--flex-main-footprint-key-p
-                       key (ebox--flex-cross-axis axis) style-node))))
-          changed-keys)
-         (or (not (cl-some #'ebox--flex-content-flow-main-key-p
-                           changed-keys))
-             (ebox--flex-content-allocation-stable-p
-              buffer style-node (ebox--flex-item-props child)
-              axis current-main)))))
+    (let* ((item-props (ebox--flex-item-props child))
+           (fixed-basis-p
+            (ebox--flex-fixed-basis-content-allocation-stable-p
+             style-node item-props axis)))
+      (and changed-keys
+           ;; A fixed basis plus zero main minimum makes content independent
+           ;; of main allocation.  Admit cross-axis content changes to the
+           ;; retained-slot render; stretch sizes the candidate to the old
+           ;; cross slot, while non-stretch items remain natural and fail the
+           ;; final footprint comparison if their block size changed.
+           (or fixed-basis-p
+               (cl-every
+                (lambda (key)
+                  (and (not (ebox--flex-main-footprint-key-p
+                             key axis style-node))
+                       (not (ebox--flex-main-footprint-key-p
+                             key (ebox--flex-cross-axis axis) style-node))))
+                changed-keys))
+           (or fixed-basis-p
+               (not (cl-some #'ebox--flex-content-flow-main-key-p
+                             changed-keys))
+               (ebox--flex-content-allocation-stable-p
+                buffer style-node item-props axis current-main))))))
 
 (defun ebox--flex-item-slot-sized-node
     (buffer node-id snapshot &optional changed-keys)
@@ -3006,19 +3046,36 @@ CHANGED-KEYS must prove that reusing the allocation is safe."
               (or (ebox--render-node-in-current-flex-slot
                    buffer node-id snapshot changed-keys)
                   (ebox-render node)))
+             (role-owned-lines-p
+              (ebox--flex-item-fixed-basis-content-allocation-stable-p
+               buffer node-id))
+             (owned-rendered
+              (if role-owned-lines-p
+                  (ebox-buffer--rendered-owned-lines
+                   rendered (plist-get snapshot :region-ids) (length spans))
+                rendered))
+             (owner-set (ebox--region-id-set
+                         (plist-get snapshot :region-ids)))
              (slot-rendered
-              (with-current-buffer buffer
-                (ebox-buffer--rendered-in-existing-slots spans rendered)))
-             (final-rendered (or slot-rendered rendered))
+              (and owned-rendered
+                   (with-current-buffer buffer
+                     (ebox-buffer--rendered-in-existing-slots
+                      spans owned-rendered
+                      (and role-owned-lines-p owner-set)))))
+             (final-rendered slot-rendered)
              (new-span-footprint
-              (ebox--rendered-span-footprint-signature final-rendered))
+              (and final-rendered
+                   (ebox--rendered-span-footprint-signature final-rendered)))
              (new-external-footprint
-              (ebox--external-footprint-signature-from-span-footprint
-               new-span-footprint))
+              (and new-span-footprint
+                   (ebox--external-footprint-signature-from-span-footprint
+                    new-span-footprint)))
              (new-parent-slot
-              (ebox--project-parent-slot-signature
-               old-parent-slot new-span-footprint)))
-        (and (ebox--span-footprint-compatible-p
+              (and new-span-footprint
+                   (ebox--project-parent-slot-signature
+                    old-parent-slot new-span-footprint))))
+        (and final-rendered
+             (ebox--span-footprint-compatible-p
               old-span-footprint new-span-footprint)
              (ebox--external-footprint-compatible-p
               old-external-footprint new-external-footprint)
@@ -3058,7 +3115,9 @@ grow/shrink) legitimately changes with it, so a slot-preserving
            ;; size remains allocation-stable even when its own content changes.
            ;; The following slot-footprint proof still renders the candidate
            ;; in that size and rejects wrapping/overflow/parent-slot misses.
-           (ebox--flex-item-slot-at-declared-main-p buffer node-id))
+           (ebox--flex-item-slot-at-declared-main-p buffer node-id)
+           (ebox--flex-item-fixed-basis-content-allocation-stable-p
+            buffer node-id))
        (ebox--cached-flex-item-slot-footprint-safe-p
         buffer node-id changed-keys)))
 
@@ -4634,6 +4693,14 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
                             (aref old-payload offset)))))
                (when (and old key (null (plist-get old :key))) (setq old nil))
                (when (and old (null key) (plist-get old :key)) (setq old nil))
+               ;; Positional fallback is valid only for unkeyed peers.  A
+               ;; disappeared keyed item must never donate its runtime
+               ;; identity to a newly introduced key at the same offset;
+               ;; doing so leaves its old region properties in the candidate
+               ;; output while the new region index has already retired them.
+               (when (and old key (plist-get old :key)
+                          (not (equal (plist-get old :key) key)))
+                 (setq old nil))
                (ebox-tree-reconcile-runtime old item)))
     items))
 
@@ -4694,14 +4761,14 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
           table)))))
 
 (defun ebox-incremental--candidate-path-copy-overlay
-    (root node-id replacement state)
+    (root node-id replacement state structure-p)
   "Path-copy NODE-ID in ROOT using STATE tables plus the candidate trace."
   (let* ((parent-table (plist-get state :parent-table))
          (old-child (ebox-incremental--candidate-current-node state node-id))
          (new-child replacement)
          (parent-id (gethash node-id parent-table)))
     (ebox-incremental--candidate-record-path-copy
-     node-id replacement parent-id t t)
+     node-id replacement parent-id t structure-p)
     (while parent-id
       (let* ((current-parent-id parent-id)
              (old-parent
@@ -4721,7 +4788,7 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
                  old-parent (list (cons old-child new-child)))))
              (grandparent-id (gethash current-parent-id parent-table)))
         (ebox-incremental--candidate-record-path-copy
-         current-parent-id new-parent grandparent-id nil t)
+         current-parent-id new-parent grandparent-id nil structure-p)
         (setq old-child old-parent new-child new-parent
               parent-id grandparent-id)))
     (if (equal node-id (plist-get root :node-id)) replacement new-child)))
@@ -4808,17 +4875,30 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
                              (ebox-child-range--lookup-ref
                               (car result) (car replacement))) nil))
                          ordered-replacements))
+                       (children-changed
+                        (not
+                         (cl-every
+                          (lambda (pair)
+                            (equal
+                             (mapcar (lambda (node)
+                                       (plist-get node :node-id))
+                                     (car pair))
+                             (mapcar (lambda (node)
+                                       (plist-get node :node-id))
+                                     (cdr pair))))
+                          (cl-mapcar #'cons old-payloads new-payloads))))
                        (new-parent (copy-sequence parent)))
                   (plist-put new-parent :ebox-child-sequence (car result))
                   (push (ebox-child-range--metrics-plist (cdr result)) metrics)
                   (setq root
                         (ebox-incremental--candidate-path-copy-overlay
-                         root parent-id new-parent state))
+                         root parent-id new-parent state children-changed))
                   (let ((trace (gethash parent-id
                                         ebox-incremental--candidate-path-copy-trace)))
                     (plist-put trace :anchor-p nil))
                   (push (list :old-parent base-parent :new-parent new-parent
                               :parent-id parent-id
+                              :children-changed children-changed
                               :old-payloads old-payloads
                               :new-payloads new-payloads)
                         ebox-incremental--candidate-range-index-deltas))))))))
@@ -5297,7 +5377,8 @@ complete preorder first-owner and postorder last-box semantics."
                      entry))
           (when old-node
             (let* ((changed-keys
-                    (ebox-tree-node-local-changed-keys old-node new-node))
+                    (ebox-incremental--candidate-local-changed-keys
+                     old-node new-node))
                    (range-delta
                     (and range-delta-table
                          (gethash (plist-get new-node :node-id)
@@ -5437,7 +5518,7 @@ replace those O(n) table copies without changing this delta contract."
               (record-touched old-parent new-parent
                               (gethash parent-id
                                        (plist-get old-state :parent-table))
-                              t)
+                              (plist-get delta :children-changed))
               (dolist (payload (plist-get delta :old-payloads))
                 (dolist (node payload) (remove-old-subtree node)))
               (dolist (payload (plist-get delta :new-payloads))
@@ -5721,6 +5802,23 @@ recognized from its first untouched sibling without walking the whole tree."
                       (visit child)))))
              (visit candidate-root)
              nil)))))
+
+(defun ebox-incremental--candidate-local-changed-keys (old new)
+  "Return real source changes between published OLD and candidate NEW.
+
+Published nodes carry computed ECSS longhands while fresh candidate nodes are
+still declaration-stage values.  When canonical declarations are unchanged,
+discard style longhand and container-prop differences caused solely by that
+stage mismatch; selector metadata and non-style source fields remain visible."
+  (let ((changed (ebox-tree-node-local-changed-keys old new)))
+    (if (equal (ebox-style-node-declarations old)
+               (ebox-style-node-declarations new))
+        (cl-remove-if
+         (lambda (key)
+           (or (eq key :props)
+               (ebox-style-property key)))
+         changed)
+      changed)))
 
 (defun ebox-incremental--declarative-dirty-set
     (old-state candidate-root candidate-index)
@@ -6386,9 +6484,18 @@ This function is deliberately proof-only: it never widens a scope or
 suppresses the ordinary fallback when any fact is missing."
   (let* ((dirty-set (plist-get prepared :dirty-set))
          (geometry-dirty
-          (cl-remove-if-not
-           (lambda (entry) (eq (plist-get entry :dirty-kind) 'geometry))
-           dirty-set))
+          (mapcar
+           (lambda (entry)
+             ;; A merged provenance entry may carry sibling paint owners in
+             ;; `:node-ids'.  Geometry proof must start from the geometry
+             ;; entry's own node, otherwise a second selected row can lift
+             ;; the LCA to the root and forfeit mixed-owner publication.
+             (let ((copy (copy-sequence entry)))
+               (plist-put copy :node-ids nil)
+               copy))
+           (cl-remove-if-not
+            (lambda (entry) (eq (plist-get entry :dirty-kind) 'geometry))
+            dirty-set)))
          (paint-dirty
           (cl-remove-if-not
            (lambda (entry) (eq (plist-get entry :dirty-kind) 'paint))
@@ -6425,14 +6532,27 @@ suppresses the ordinary fallback when any fact is missing."
            (geometry-span-proof
             (copy-sequence (plist-get geometry-span-proof :owner-ids)))))
          (geometry-owner-id (car geometry-owner-ids))
+         (external-paint-dirty
+          (and geometry-owner-ids
+               (cl-remove-if
+                (lambda (entry)
+                  (cl-some
+                   (lambda (geometry-id)
+                     (let ((node-id (plist-get entry :node-id)))
+                       (or (equal geometry-id node-id)
+                           (ebox--runtime-ancestor-id-p
+                            buffer geometry-id node-id))))
+                   geometry-owner-ids))
+                paint-dirty)))
          (paint-owner-ids
           (delete-dups
-           (cl-mapcan #'ebox--dirty-provenance-node-ids paint-dirty)))
+           (cl-mapcan #'ebox--dirty-provenance-node-ids
+                      external-paint-dirty)))
          (old-nodes (plist-get old-state :node-table))
          (new-nodes (plist-get candidate-state :node-table))
          (root-id (ebox--buffer-root-node-id buffer))
          (paint-valid-p
-          (and paint-dirty
+          (and external-paint-dirty
                (cl-every
                 (lambda (entry)
                   (and (plist-get entry :node-id)
@@ -6469,7 +6589,7 @@ suppresses the ordinary fallback when any fact is missing."
                                      (plist-get
                                       (plist-get entry :new-signature)
                                       :content))))))
-                paint-dirty)))
+                external-paint-dirty)))
          (disjoint-p
           (and geometry-owner-ids
                (not (cl-some (lambda (geometry-id)
@@ -6598,6 +6718,54 @@ suppresses the ordinary fallback when any fact is missing."
          'owner-rerender owner-id
          :dirty (ebox--merge-dirty-provenance-list render-dirty-set))))))
 
+(defun ebox-incremental--nearest-fixed-basis-flex-item-owner-id
+    (buffer node-id)
+  "Return NODE-ID's nearest content-independent fixed-basis Flex item."
+  (let ((candidate node-id)
+        (root-id (ebox--buffer-root-node-id buffer))
+        owner)
+    (while (and candidate (not owner) (not (equal candidate root-id)))
+      (if (ebox--flex-item-fixed-basis-content-allocation-stable-p
+           buffer candidate)
+          (setq owner candidate)
+        (setq candidate (ebox--runtime-parent-id buffer candidate))))
+    owner))
+
+(defun ebox-incremental--fixed-basis-flex-local-op
+    (buffer render-dirty-set)
+  "Return one local Flex-item op for related geometry RENDER-DIRTY-SET.
+
+Multiple descendant content changes can share a fixed-basis, zero-minimum Flex
+item without reflowing the outer Flex line.  The candidate item is still
+rendered into its retained slot and must pass the complete footprint proof."
+  (when (and (> (length render-dirty-set) 1)
+             (cl-every
+              (lambda (entry)
+                (and (eq (plist-get entry :dirty-kind) 'geometry)
+                     (not (plist-get entry :children))))
+              render-dirty-set))
+    (let* ((owner-ids
+            (delete-dups
+             (mapcar
+              (lambda (entry)
+                (ebox-incremental--nearest-fixed-basis-flex-item-owner-id
+                 buffer (plist-get entry :node-id)))
+              render-dirty-set)))
+           (owner-id (and (= (length owner-ids) 1) (car owner-ids)))
+           (changed-keys
+            (delete-dups
+             (cl-mapcan
+              (lambda (entry)
+                (copy-sequence (plist-get entry :changed-keys)))
+              render-dirty-set))))
+      (when (and owner-id
+                 (not (equal owner-id (ebox--buffer-root-node-id buffer)))
+                 (ebox--cached-flex-item-slot-footprint-safe-p
+                  buffer owner-id changed-keys))
+        (ebox--patch-op
+         'owner-rerender owner-id
+         :dirty (ebox--merge-dirty-provenance-list render-dirty-set))))))
+
 (defun ebox-incremental--dirty-set-has-child-splice-p
     (buffer render-dirty-set)
   "Return non-nil when RENDER-DIRTY-SET contains a provable child splice."
@@ -6623,6 +6791,8 @@ suppresses the ordinary fallback when any fact is missing."
                       (ebox-incremental--dirty-set-has-child-splice-p
                        buffer render-dirty-set))
                      (or (ebox-incremental--broad-dirty-op
+                          buffer render-dirty-set)
+                         (ebox-incremental--fixed-basis-flex-local-op
                           buffer render-dirty-set)
                          (ebox-incremental--local-reflow-op
                           buffer render-dirty-set)))))
@@ -7603,13 +7773,120 @@ metadata; this predicate only authorizes the local attempt."
             (setq valid nil)))))
     valid))
 
+(defun ebox-incremental--fixed-basis-flex-group-span-proof
+    (buffer old-state prepared candidate-state owner-plan)
+  "Return a single-owner proof for grouped fixed-basis Flex descendants.
+
+The layout owner plan has already established one content-independent Flex
+allocation.  This final gate renders the complete candidate item into its
+published slot, verifies exact footprint compatibility, and packages the
+result in the same owner-proof shape consumed by span publication."
+  (when (and (= (length owner-plan) 1)
+             (> (length (plist-get prepared :dirty-set)) 1))
+    (let* ((operation (car owner-plan))
+           (owner-id (plist-get operation :owner-id))
+           (dirty-set (plist-get prepared :dirty-set))
+           (root-id (ebox--buffer-root-node-id buffer))
+           (old-node (gethash owner-id (plist-get old-state :node-table)))
+           (new-node (gethash owner-id
+                              (plist-get candidate-state :node-table)))
+           (snapshot
+            (and old-node
+                 (ebox-incremental--cached-layout-snapshot-details
+                  buffer owner-id)))
+           (changed-keys
+            (delete-dups
+             (cl-mapcan
+              (lambda (entry)
+                (copy-sequence (plist-get entry :changed-keys)))
+              dirty-set)))
+           (allocated-width
+            (and snapshot
+                 (plist-get
+                  (plist-get snapshot :external-footprint-signature)
+                  :max-line-pixel-width)))
+           (cascade-safe-p
+            (or (and (not (plist-get old-state :cascade-active-p))
+                     (not (plist-get old-state :cascade-required-p))
+                     (not (ebox-style-cascade-active-p)))
+                (ebox-surface--cascade-local-owner-proof-p
+                 old-state candidate-state dirty-set))))
+      (let ((ebox-incremental--buffer-render-state-override
+             (cons buffer candidate-state))
+            (ebox-incremental--candidate-base-state
+             (cons buffer old-state)))
+        (when (and owner-id old-node new-node snapshot allocated-width
+                   (not (equal owner-id root-id))
+                   (eq (plist-get operation :op) 'owner-rerender)
+                   (cl-every
+                    (lambda (entry)
+                      (and (eq (plist-get entry :dirty-kind) 'geometry)
+                           (not (plist-get entry :children))
+                           (ebox--runtime-ancestor-id-p
+                            buffer owner-id (plist-get entry :node-id))
+                           (cl-every
+                            (lambda (key)
+                              (or (eq key :content)
+                                  (eq key :surface-properties)
+                                  (memq key ebox--paint-style-signature-keys)))
+                            (plist-get entry :changed-keys))))
+                    dirty-set)
+                   (ebox--flex-item-fixed-basis-content-allocation-stable-p
+                    buffer owner-id)
+                   (ebox--cached-flex-item-slot-footprint-safe-p
+                    buffer owner-id changed-keys)
+                   (equal (gethash owner-id
+                                   (plist-get old-state :parent-table))
+                          (gethash owner-id
+                                   (plist-get candidate-state :parent-table)))
+                   (ebox-incremental--node-child-ids-equal-p
+                    old-node new-node)
+                   (equal (ebox-incremental--layout-slot-style-signature
+                           old-node)
+                          (ebox-incremental--layout-slot-style-signature
+                           new-node))
+                   (ebox-incremental--same-root-surface-identity-p
+                    (plist-get old-state :root-node)
+                    (plist-get candidate-state :root-node))
+                   (null (plist-get old-state :scroll-region-ids))
+                   (not (ebox--node-visible-overflow-p old-node))
+                   cascade-safe-p)
+          (let* ((owner-proof
+                  (list :owner-id owner-id
+                        :dirty-set (copy-sequence dirty-set)
+                        :changed-keys (copy-sequence changed-keys)
+                        :snapshot snapshot
+                        :allocated-width allocated-width
+                        :role-owned-lines-p t
+                        :ancestor-slot-signature
+                        (list (list :node-id owner-id
+                                    :parent-slot-signature
+                                    (plist-get snapshot
+                                               :parent-slot-signature)))
+                        :layout-snapshot-detail-generation
+                        (plist-get old-state
+                                   :layout-snapshot-detail-generation)
+                        :static-cascade-p cascade-safe-p))
+                 (owner-proofs (list owner-proof)))
+            (list :owner-ids (list owner-id)
+                  :owner-proofs owner-proofs
+                  :dirty-set (copy-sequence dirty-set)
+                  :ancestor-slot-signature
+                  (copy-sequence
+                   (plist-get owner-proof :ancestor-slot-signature))
+                  :layout-snapshot-detail-generation
+                  (plist-get old-state :layout-snapshot-detail-generation)
+                  :static-cascade-p cascade-safe-p)))))))
+
 (defun ebox-incremental--span-patch-projection-proof
     (buffer old-state prepared candidate-state owner-plan
              &optional path-copied-p)
   "Return one atomic single- or multi-owner projection proof, or nil."
   (if (= (length owner-plan) 1)
-      (ebox-incremental--single-span-patch-projection-proof
-       buffer old-state prepared candidate-state owner-plan path-copied-p)
+      (or (ebox-incremental--single-span-patch-projection-proof
+           buffer old-state prepared candidate-state owner-plan path-copied-p)
+          (ebox-incremental--fixed-basis-flex-group-span-proof
+           buffer old-state prepared candidate-state owner-plan))
     (let (proofs valid)
       (setq valid (and owner-plan
                        (= (length owner-plan)

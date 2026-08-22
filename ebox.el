@@ -2743,6 +2743,42 @@ that was rendered off-window cannot miss the native-scroll handoff."
 (when (boundp 'window-state-change-functions)
   (add-hook 'window-state-change-functions #'ebox--window-state-change))
 
+(defvar ebox--window-size-change-in-progress nil
+  "Non-nil while visible Ebox buffers are synchronizing their viewport.")
+
+(defun ebox--window-size-change (frame)
+  "Synchronize visible Ebox buffers after FRAME changes size.
+
+Ebox stores the containing-block viewport in its mounted surface.  A frame
+resize must publish the new window content width before the next render;
+otherwise responsive Flex/Grid trees keep using the width from mount time.
+One mounted surface represents one viewport, so when a buffer is visible in
+multiple windows the first window in FRAME supplies the shared dimensions."
+  (when (and (frame-live-p frame)
+             (not noninteractive)
+             (not ebox--window-size-change-in-progress))
+    (let ((ebox--window-size-change-in-progress t)
+          (seen (make-hash-table :test #'eq)))
+      (dolist (window (window-list frame 'no-minibuf))
+        (when (and (window-live-p window)
+                   (not (gethash (window-buffer window) seen)))
+          (let ((buffer (window-buffer window)))
+            (puthash buffer t seen)
+            (when (and (buffer-live-p buffer)
+                       (ebox--buffer-render-state buffer)
+                       (ebox-surface-buffer-mounted-p buffer))
+              (let* ((state (ebox--buffer-render-state buffer))
+                     (width (ebox-surface--window-content-width window))
+                     (height (window-body-height window)))
+                (unless (and (= width (or (plist-get state :viewport-width)
+                                           -1))
+                             (= height (or (plist-get state :viewport-height)
+                                           -1)))
+                  (ebox-rerender-buffer-with-context buffer width height))))))))))
+
+(when (boundp 'window-size-change-functions)
+  (add-hook 'window-size-change-functions #'ebox--window-size-change))
+
 (defun ebox--runtime-prewarm-record-viewport-node
     (job node width-allowed)
   "Record NODE's direct viewport dependencies in JOB.

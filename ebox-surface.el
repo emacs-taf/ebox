@@ -43,6 +43,7 @@
 (defvar ebox-viewport-height)
 (defvar ebox--render-display-signature)
 (defvar ebox-incremental--allocated-slot-proof-cache)
+(defvar ebox-incremental--buffer-render-state-override)
 
 (declare-function ebox--render-layout "ebox-layout" (node))
 (declare-function ebox--record-render-output-provenance
@@ -57,6 +58,13 @@
                   "ebox-incremental" (target keys source))
 (declare-function ebox--runtime-region-id-conflict
                   "ebox-incremental" (region-id-set target-buffer))
+(declare-function ebox--region-id-set
+                  "ebox-incremental" (region-ids))
+(declare-function ebox--flex-item-slot-sized-node
+                  "ebox-incremental"
+                  (buffer node-id snapshot &optional changed-keys))
+(declare-function ebox--layout-snapshot-strip-details
+                  "ebox-incremental" (snapshot))
 (declare-function ebox--viewport-dependent-node-id-axes
                   "ebox-incremental" (node))
 (declare-function ebox--update-report
@@ -575,6 +583,19 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
          (plist-put new-state :surface surface)
          (plist-put new-state :runtime-revision
                     (1- (tp-surface-revision surface)))
+         ;; A fixed-basis role-owned patch rendered against the previous
+         ;; allocation.  Its installed details describe that proof render,
+         ;; not the now-committed TP mounts.  Drop only those owners' derived
+         ;; geometry so the next transaction lazily captures the committed
+         ;; spans and cannot drift across a repeated selection round trip.
+         (when-let ((snapshots (plist-get new-state :layout-snapshots)))
+           (dolist (proof (plist-get new-state :owner-scoped-proofs))
+             (when (plist-get proof :role-owned-lines-p)
+               (let ((owner-id (plist-get proof :owner-id)))
+                 (when-let ((snapshot (gethash owner-id snapshots)))
+                   (puthash owner-id
+                            (ebox--layout-snapshot-strip-details snapshot)
+                            snapshots))))))
          (when (plist-get report-base :scroll-state-transaction)
            ;; Scroll changes invalidate every buffer-span coordinate.  Keep
            ;; the committed generation structurally snapshot-free so a later
@@ -1615,9 +1636,9 @@ valid because their declarative layout and viewport did not change."
                     (string< (symbol-name left)
                              (symbol-name right))))))))
 
-(defun ebox-surface--span-patch-lines (buffer spans rendered
-                                        &optional variable-content-p
-                                        variable-content-max-width)
+(defun ebox-surface--span-patch-lines
+    (buffer spans rendered &optional variable-content-p
+            variable-content-max-width owner-set)
   "Return RENDERED shaped for BUFFER SPANS, or nil when unsafe.
 When VARIABLE-CONTENT-P is non-nil, allow a stable partial slot to retain its
 old allocated width while the owner changes its natural content length."
@@ -1633,7 +1654,8 @@ old allocated width while the owner changes its natural content length."
                                     variable-content-max-width))
                               lines)))
                 rendered))
-          (ebox-buffer--rendered-in-existing-slots spans rendered nil t))
+          (ebox-buffer--rendered-in-existing-slots
+           spans rendered owner-set t))
       (and (= (length spans) (length (ebox-string-lines rendered)))
            rendered))))
 
@@ -1756,7 +1778,8 @@ old allocated width while the owner changes its natural content length."
 
 (defun ebox-surface--owner-patch-candidate
     (buffer state owner-id allocated-width
-            &optional variable-content-p variable-content-max-width)
+            &optional variable-content-p variable-content-max-width
+            role-owned-lines-p changed-keys)
   "Return validated patch details for OWNER-ID, or nil."
   (let* (
          (old-snapshot
@@ -1764,16 +1787,36 @@ old allocated width while the owner changes its natural content length."
          (spans (and old-snapshot (plist-get old-snapshot :buffer-spans)))
          (node (and owner-id (gethash owner-id (plist-get state :node-table))))
          (render-node
-          (if allocated-width
-              (plist-put (copy-sequence node) :width allocated-width)
-            node)))
-    (when (and old-snapshot spans node)
+          (if role-owned-lines-p
+              ;; The planner proved this fixed-basis owner in its published
+              ;; Flex slot.  Recreate that exact candidate-state witness for
+              ;; publication; a natural render can have fewer owned lines and
+              ;; would spuriously widen the TP scope to the root.
+              (and (fboundp 'ebox--flex-item-slot-sized-node)
+                   (let ((ebox-incremental--buffer-render-state-override
+                          (cons buffer state)))
+                     (ebox--flex-item-slot-sized-node
+                      buffer owner-id old-snapshot changed-keys)))
+            (if allocated-width
+                (plist-put (copy-sequence node) :width allocated-width)
+              node))))
+    (when (and old-snapshot spans node render-node)
       (let* ((rendered
               (ebox-surface--render-candidate-node state render-node))
+             (owned-rendered
+              (if role-owned-lines-p
+                  (ebox-buffer--rendered-owned-lines
+                   rendered (plist-get old-snapshot :region-ids)
+                   (length spans))
+                rendered))
              (replacement
-             (ebox-surface--span-patch-lines
-               buffer spans rendered variable-content-p
-               variable-content-max-width))
+              (and owned-rendered
+                   (ebox-surface--span-patch-lines
+                    buffer spans owned-rendered variable-content-p
+                    variable-content-max-width
+                    (and role-owned-lines-p
+                         (ebox--region-id-set
+                          (plist-get old-snapshot :region-ids))))))
              (details
               (and replacement
                    (ebox-surface--span-patch-details
@@ -1794,7 +1837,9 @@ old allocated width while the owner changes its natural content length."
                   buffer state (plist-get proof :owner-id)
                   (plist-get proof :allocated-width)
                   (plist-get proof :variable-content-p)
-                  (plist-get proof :variable-content-max-width)))
+                  (plist-get proof :variable-content-max-width)
+                  (plist-get proof :role-owned-lines-p)
+                  (plist-get proof :changed-keys)))
                proofs)
             (list
              (ebox-surface--owner-patch-candidate

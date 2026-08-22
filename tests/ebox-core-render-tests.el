@@ -6698,6 +6698,61 @@
                  (buffer-substring-no-properties (point-min) (point-max))))
         (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
 
+(ert-deftest ebox-flex-grown-fixed-basis-item-content-update-keeps-current-slot ()
+  "A zero-minimum fixed-basis item may update inside its grown slot."
+  (ebox-test--reset-runtime-state)
+  (let ((layout
+         (ebox-build
+          '(flex :id root :width (900) :height 24
+                 :flex-flow (row nowrap) :align-items stretch
+            (box :id list :content "peer" :width stretch :min-width 0
+                 :min-height 24 :flex-grow 4 :flex-shrink 1
+                 :flex-basis (620))
+            (box :id target :content "detail one" :width stretch :min-width 0
+                 :min-height 24 :flex-grow 2 :flex-shrink 1
+                 :flex-basis (340))))))
+    (ebox-test--with-rendered-buffer layout
+      (let* ((match (car (ebox-selector-query-buffer
+                          (current-buffer) "#target")))
+             (region-id (plist-get match :region-id))
+             (node-id (plist-get match :node-id))
+             (root-id (ebox--buffer-root-node-id (current-buffer))))
+        (ebox-test--region-update region-id :content "detail two")
+        (let ((report (ebox-test--buffer-update-report)))
+          (should (eq (plist-get report :strategy) 'span-patch))
+          (should (equal (plist-get report :owner-ids) (list node-id)))
+          (should-not (member root-id (plist-get report :owner-ids))))
+        (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
+
+(ert-deftest ebox-rendered-owned-lines-trims-only-contiguous-outer-chrome ()
+  "Role projection keeps owned lines and rejects an unowned interior gap."
+  (let* ((owned-a (propertize "owned-a" 'ebox-content 7))
+         (owned-b (propertize "owned-b" 'ebox-content 7))
+         (projected
+          (ebox-buffer--rendered-owned-lines
+           (string-join (list "chrome-top" owned-a owned-b "chrome-bottom")
+                        "\n")
+           '(7))))
+    (should (equal (substring-no-properties projected)
+                   "owned-a\nowned-b"))
+    (should-not
+     (ebox-buffer--rendered-owned-lines
+      (string-join (list owned-a "foreign-gap" owned-b) "\n") '(7)))
+    (should-not
+     (ebox-buffer--rendered-owned-lines
+      (concat owned-a (propertize "foreign" 'ebox-content 8)) '(7)))
+    (should
+     (equal
+      (substring-no-properties
+       (ebox-buffer--rendered-owned-lines
+        (string-join
+         (list (propertize "border-top" 'ebox-bt 7)
+               owned-a owned-b
+               (propertize "border-bottom" 'ebox-bb 7))
+         "\n")
+        '(7) 2))
+      "owned-a\nowned-b"))))
+
 (ert-deftest ebox-flex-auto-size-content-update-refuses-current-slot ()
   "Auto-sized content must reflow instead of being forced into its old slot."
   (ebox-test--reset-runtime-state)

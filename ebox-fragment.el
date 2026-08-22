@@ -48,6 +48,7 @@ are not part of its final allocated geometry."
                :viewport-height-independent
              (and (boundp 'ebox-viewport-height) ebox-viewport-height))))
       (list (ebox--ensure-node-id source)
+            (copy-sequence (ebox--node-all-region-ids source))
             'flex-final-sized
             axis main cross align viewport
             height-key

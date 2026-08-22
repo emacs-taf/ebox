@@ -1254,6 +1254,91 @@ remain retained identities."
    (ebox-create :key 'untouched :host-ref 'untouched
                 :content "untouched")))
 
+(defun ebox-commit-test--fixed-basis-selection-root (row-1 row-2)
+  "Return a stretched fixed-basis panel containing two selectable rows."
+  (let ((panel
+         (ebox-create
+          :key 'selection-panel :width 'stretch :min-width 0 :min-height 24
+          :flex-grow 2 :flex-shrink 1 :flex-basis '(340)
+          :ebox-content-node
+          (ebox-column
+           (ebox-create :key 'row-1 :host-ref 'row-1 :content row-1)
+           (ebox-create :key 'row-2 :host-ref 'row-2 :content row-2)))))
+    (ebox-flex
+     :key 'fixed-basis-selection-root
+     :width '(900) :height 24
+     :flex-flow '(row nowrap) :align-items 'stretch
+     (ebox-create :key 'peer :content "peer" :width 'stretch
+                  :min-width 0 :min-height 24
+                  :flex-grow 4 :flex-shrink 1 :flex-basis '(620))
+     panel)))
+
+(defun ebox-commit-test--fixed-basis-selection-candidate
+    (buffer row-1 row-2)
+  "Return BUFFER candidate replacing both fixed-basis selection rows."
+  (let ((candidate (ebox-candidate-begin buffer)))
+    (ebox-candidate-replace-host-ref
+     candidate 'row-1
+     (ebox-create :key 'row-1 :host-ref 'row-1 :content row-1))
+    (ebox-candidate-replace-host-ref
+     candidate 'row-2
+     (ebox-create :key 'row-2 :host-ref 'row-2 :content row-2))
+    candidate))
+
+(ert-deftest ebox-commit-fixed-basis-selection-round-trip-stays-local ()
+  "Continuous row-1 -> row-2 -> row-1 publication keeps local TP scope."
+  (let ((buffer
+         (ebox-render-to-buffer
+          (generate-new-buffer-name " *ebox-fixed-basis-round-trip* ")
+          (ebox-commit-test--fixed-basis-selection-root
+           "[x] row 1" "[ ] row 2"))))
+    (unwind-protect
+        (let* ((root-id (ebox--buffer-root-node-id buffer))
+               (panel-id
+                (plist-get (ebox--host-ref-node buffer 'row-1) :node-id))
+               reports)
+          (setq panel-id
+                (ebox-incremental--nearest-fixed-basis-flex-item-owner-id
+                 buffer panel-id))
+          (dolist (contents '(("[ ] row 1" "[x] row 2")
+                              ("[x] row 1" "[ ] row 2")))
+            (let* ((report
+                    (ebox-commit
+                     buffer
+                     (ebox-commit-test--fixed-basis-selection-candidate
+                      buffer (car contents) (cadr contents))))
+                   (surface (with-current-buffer
+                                buffer ebox-surface--buffer-surface))
+                   (tp-report (tp-surface-report surface))
+                   (object-count
+                    (plist-get (tp-surface-inspect surface) :object-count))
+                   (snapshots
+                    (plist-get (ebox--buffer-render-state buffer)
+                               :layout-snapshots))
+                   (panel-snapshot (and snapshots
+                                        (gethash panel-id snapshots))))
+              (push report reports)
+              (should (eq (plist-get report :projection-kind)
+                          'owner-scoped))
+              (should-not (member root-id (plist-get report :owner-ids)))
+              (should-not (plist-get report :tp-full-root))
+              (should-not (plist-get report :tp-scope-fallback))
+              (should (< (plist-get tp-report :reconciled-objects)
+                         object-count))
+              (should (<= (plist-get tp-report :reconciled-objects) 4))
+              ;; Successful publication leaves the fixed-basis owner ready
+              ;; to recapture geometry from the committed TP mounts.
+              (should panel-snapshot)
+              (should-not (plist-member panel-snapshot :buffer-spans))
+              (with-current-buffer buffer
+                (should
+                 (equal
+                  (buffer-substring-no-properties (point-min) (point-max))
+                  (substring-no-properties
+                   (ebox-render (ebox--buffer-root-node buffer))))))))
+          (should (= (length reports) 2)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (defun ebox-commit-test--mixed-owner-candidate
     (buffer left right paint-a paint-b paint-c)
   "Return BUFFER candidate replacing all mixed fixture owners."

@@ -25,6 +25,7 @@
                   "ebox" (lines))
 (declare-function ebox-string-lines
                   "ebox" (string))
+(defvar ebox-region-types)
 
 (defvar ebox-render-gc-cons-threshold (* 128 1024 1024)
   "Temporary `gc-cons-threshold' used during Ebox render transactions.
@@ -500,6 +501,81 @@ may be added in place."
     line))
 
 ;;; Existing Slot Shaping
+
+(defun ebox-buffer--rendered-owned-lines
+    (rendered region-ids &optional expected-line-count)
+  "Project RENDERED to its contiguous direct role-owned lines.
+
+REGION-IDS is the same owner set used to derive retained TP spans.  Leading
+and trailing lines without a direct target role are stable wrapper chrome and
+are omitted.  When EXPECTED-LINE-COUNT is non-nil, any remaining excess may
+be removed only from role-proven outer margin/border lines (`mt'/`bt' at the
+start, `mb'/`bb' at the end).  Padding and content are never inferred from a
+numeric box-model delta.  An unowned interior line or a foreign direct
+`content' role fails closed.  Returned lines retain all text properties."
+  (let ((region-set (make-hash-table :test 'equal))
+        (lines (ebox-string-lines rendered))
+        infos first last invalid)
+    (dolist (region-id region-ids)
+      (puthash region-id t region-set))
+    (dolist (line lines)
+      (let ((position 0)
+            (limit (length line))
+            owned foreign-content roles)
+        (while (< position limit)
+          (let ((next limit))
+            (dolist (entry ebox-region-types)
+              (let* ((property (cdr entry))
+                     (region-id (get-text-property position property line))
+                     (change (next-single-property-change
+                              position property line limit)))
+                (when (and region-id (gethash region-id region-set))
+                  (setq owned t)
+                  (cl-pushnew (car entry) roles))
+                (when (and (eq (car entry) 'content) region-id
+                           (not (gethash region-id region-set)))
+                  (setq foreign-content t))
+                (when (and change (< change next))
+                  (setq next change))))
+            (setq position (max next (1+ position)))))
+        (push (list :line line :owned (and owned (not foreign-content))
+                    :roles roles)
+              infos)
+        (when (and owned foreign-content)
+          (setq invalid t))))
+    (setq infos (nreverse infos))
+    (cl-loop for info in infos
+             for index from 0
+             when (plist-get info :owned)
+             do (unless first (setq first index))
+             and do (setq last index))
+    (when (and first (not invalid)
+               (cl-every (lambda (info) (plist-get info :owned))
+                         (cl-subseq infos first (1+ last))))
+      (let ((owned (cl-subseq infos first (1+ last))))
+        (when expected-line-count
+          (while (> (length owned) expected-line-count)
+            (let ((leading-roles (plist-get (car owned) :roles))
+                  (trailing-roles (plist-get (car (last owned)) :roles)))
+              (cond
+               ((and (not (memq 'content leading-roles))
+                     (not (memq 'content-owner leading-roles))
+                     (cl-some (lambda (role) (memq role '(mt bt)))
+                              leading-roles))
+                (setq owned (cdr owned)))
+               ((and (not (memq 'content trailing-roles))
+                     (not (memq 'content-owner trailing-roles))
+                     (cl-some (lambda (role) (memq role '(mb bb)))
+                              trailing-roles))
+                (setq owned (butlast owned)))
+               (t
+                (setq invalid t
+                      owned nil))))))
+        (when (and owned (not invalid)
+                   (or (null expected-line-count)
+                       (= (length owned) expected-line-count)))
+          (ebox-lines-join
+           (mapcar (lambda (info) (plist-get info :line)) owned)))))))
 
 (defun ebox-buffer--span-slot-width (span)
   "Return SPAN's visual slot width in its current buffer line."

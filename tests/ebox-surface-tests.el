@@ -170,6 +170,33 @@
       (when (get-buffer " *other-window*")
         (kill-buffer " *other-window*")))))
 
+(ert-deftest ebox-window-size-change-publishes-visible-viewport ()
+  "A live frame resize updates the mounted surface's containing block."
+  (let* ((buffer (generate-new-buffer " *ebox-window-size-change*"))
+         (window (selected-window))
+         (old-buffer (window-buffer window))
+         calls)
+    (unwind-protect
+        (progn
+          (set-window-buffer window buffer)
+          (cl-letf (((symbol-function 'ebox--buffer-render-state)
+                     (lambda (_buffer)
+                       '(:viewport-width 100 :viewport-height 10)))
+                    ((symbol-function 'ebox-surface-buffer-mounted-p)
+                     (lambda (_buffer) t))
+                    ((symbol-function 'ebox-surface--window-content-width)
+                     (lambda (_window) 240))
+                    ((symbol-function 'window-body-height)
+                     (lambda (_window) 20))
+                    ((symbol-function 'ebox-rerender-buffer-with-context)
+                     (lambda (target width height)
+                       (setq calls (list target width height))))
+                    (noninteractive nil))
+            (ebox--window-size-change (selected-frame))
+            (should (equal calls (list buffer 240 20)))))
+      (set-window-buffer window old-buffer)
+      (kill-buffer buffer))))
+
 (defun ebox-surface-test--hash-fingerprint (table)
   "Return a stable content fingerprint for hash TABLE.
 The fingerprint checks entries rather than only table identity, so a failed
@@ -1226,6 +1253,27 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (should (equal (key-at nil nil) (key-at 36 nil)))
       (should-not (equal (key-at nil t) (key-at 36 t)))
       (should-not (equal (key-at nil :unknown) (key-at 36 :unknown))))))
+
+(ert-deftest ebox-flex-fragment-key-includes-rendered-region-ownership ()
+  "Retained Flex output must not replay stale region text properties."
+  (let* ((ebox--layout-fragments-table (make-hash-table :test 'equal))
+         (source (ebox-create :content "stable" :width '(80)))
+         (first-key
+          (ebox-fragment-flex-allocation-key
+           source 'row 80 1 'stretch 80
+           '(:viewport-height-dependent nil)))
+         (candidate (copy-tree source)))
+    ;; Candidate reconciliation can preserve a source node id while replacing
+    ;; one generated box region.  The cached string embeds that region in its
+    ;; ownership properties, so node identity and geometry alone are unsafe.
+    (plist-put candidate :region-id nil)
+    (should (= (plist-get source :node-id)
+               (plist-get candidate :node-id)))
+    (should-not
+     (equal first-key
+            (ebox-fragment-flex-allocation-key
+             candidate 'row 80 1 'stretch 80
+             '(:viewport-height-dependent nil))))))
 
 (ert-deftest ebox-flex-fragment-retention-evicts-one-entry-at-capacity ()
   "Fragment retention capacity must evict one old entry, not clear the table."

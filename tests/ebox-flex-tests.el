@@ -841,6 +841,14 @@
            (ebox-flex-item source :flex-basis '(40)))))
     (should-not (ebox--flex-unrendered-measurement source props 'row))))
 
+(ert-deftest ebox-flex-explicit-zero-min-width-allows-no-wrap-shrink ()
+  "An explicit zero minimum lets a no-wrap card shrink in its Flex line."
+  (let* ((source
+          (ebox-create :content "A long no-wrap card title"
+                       :min-width 0 :wrap-mode nil))
+         (rendered (ebox-render source)))
+    (should (zerop (ebox--flex-box-min-main source rendered 'row)))))
+
 (ert-deftest ebox-flex-bounded-auto-basis-keeps-intrinsic-measurement ()
   "Clipping must not replace an auto-basis item's intrinsic contribution."
   (let* ((source
