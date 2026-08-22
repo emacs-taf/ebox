@@ -368,6 +368,17 @@ Supported properties are `:grid-column', `:grid-row',
     ('minmax (ebox-grid--track-max (plist-get track :max)))
     (_ nil)))
 
+(defun ebox-grid--track-flex-factor (track)
+  "Return TRACK's flexible maximum factor, or zero when it is fixed.
+
+`minmax' tracks commonly use a zero minimum with a fractional maximum for
+responsive layouts.  Treat that maximum as a real flexible track instead of
+letting the grid fall back to each child's intrinsic width."
+  (pcase (plist-get track :kind)
+    ('fr (plist-get track :factor))
+    ('minmax (ebox-grid--track-flex-factor (plist-get track :max)))
+    (_ 0)))
+
 (defun ebox-grid--clamp-track-size (track size)
   "Clamp SIZE to TRACK's fixed maximum when one exists."
   (if-let ((maximum (ebox-grid--track-max track)))
@@ -391,21 +402,18 @@ Supported properties are `:grid-column', `:grid-row',
                                    track axis entries rendered
                                    (if (eq axis 'columns) :column :row)
                                    index))))
-         (fr-total (apply #'+
-                          (mapcar (lambda (track)
-                                    (if (eq (plist-get track :kind) 'fr)
-                                        (plist-get track :factor) 0))
-                                  tracks)))
+         (fr-total (apply #'+ (mapcar #'ebox-grid--track-flex-factor tracks)))
          (used (+ (ebox-grid--sum sizes) (* gap (max 0 (1- count))))))
     (when (and available (> fr-total 0))
       (let ((remaining (max 0 (- available used))))
         (cl-loop for track in tracks
                  for index from 0
-                 when (eq (plist-get track :kind) 'fr)
+                 for factor = (ebox-grid--track-flex-factor track)
+                 when (> factor 0)
                  do (setf (nth index sizes)
-                          (floor (* remaining
-                                    (/ (float (plist-get track :factor))
-                                       fr-total)))))))
+                          (max (nth index sizes)
+                               (floor (* remaining
+                                         (/ (float factor) fr-total))))))))
     sizes))
 
 (defun ebox-grid--distribute (amount count)

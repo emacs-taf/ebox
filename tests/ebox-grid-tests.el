@@ -37,6 +37,19 @@
     (should (= (length lines) 1))
     (should (= (ebox--string-pixel-width (car lines)) 120))))
 
+(ert-deftest ebox-grid-minmax-fractional-columns-fill-and-shrink ()
+  "Zero-minimum fractional maxima should remain responsive to width."
+  (dolist (width '(120 60))
+    (let* ((node (ebox-grid
+                  :width (list width)
+                  :grid-template-columns
+                  '((minmax (0) (fr 1)) (minmax (0) (fr 2)))
+                  (ebox-create :content "A" :width 'stretch)
+                  (ebox-create :content "B" :width 'stretch)))
+           (lines (ebox-string-lines (ebox-render node))))
+      (should (= (ebox--string-max-pixel-width
+                  (car lines)) width)))))
+
 (ert-deftest ebox-grid-stretch-children-fill-fractional-tracks ()
   "Stretch-width children must reflow to their assigned fractional tracks."
   (let* ((left (ebox-create :content "left" :width 'stretch))
