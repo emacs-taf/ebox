@@ -8229,6 +8229,14 @@ result in the same owner-proof shape consumed by span publication."
     (list :root (plist-get prepared :root)
           :scope-node-ids scope-node-ids
           :report-base report
+          ;; A child Range replacement can legitimately change the separator
+          ;; owned by an adjacent sibling when its item count changes.  Keep
+          ;; the fast scoped proof for stable topology, but let the surface
+          ;; publisher use its exact root fallback when that proof cannot
+          ;; establish the outside text invariant.
+          :on-mismatch
+          (and (> (or (plist-get prepared :range-replacement-count) 0) 0)
+               'root)
           :projection-kind projection-kind
           :preserve-identities-p t
           :state-overrides

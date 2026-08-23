@@ -4543,6 +4543,26 @@
     (should (= (ebox--string-max-pixel-width exact) 120))
     (should (plist-get exact-parent :ebox-content-width-exact-p))))
 
+(ert-deftest ebox-string-pixel-width-cache-ignores-ebox-ownership-metadata ()
+  "Reuse visual width measurements across Ebox-owned text properties."
+  (let ((line (propertize "cached row"
+                          'ebox-content 7
+                          'ebox-content-idx 0
+                          'ebox-content-owner 7
+                          'ebox-content-owners '(7)))
+        (calls 0)
+        (original (symbol-function 'ebox--scaled-string-pixel-width)))
+    (ebox--clear-string-pixel-width-cache)
+    (cl-letf (((symbol-function 'ebox--scaled-string-pixel-width)
+               (lambda (&rest args)
+                 (cl-incf calls)
+                 (apply original args))))
+      (let ((first (ebox--string-pixel-width line))
+            (second (ebox--string-pixel-width (copy-sequence line))))
+        (should (> first 0))
+        (should (= first second))))
+    (should (= calls 1))))
+
 (ert-deftest ebox-render-caches-lazy-box-content-within-render-pass ()
   "A lazy child layout should be rendered once per box/context in one pass."
   (ebox-test--reset-runtime-state)

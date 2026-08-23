@@ -2077,6 +2077,12 @@ causes the caller to use the ordinary full projection."
                 (ebox-surface--formatting-context-reflow-output
                  buffer state)))))
          (old-fragments (plist-get previous-state :surface-fragments))
+         (old-text
+          (and (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (save-restriction
+                   (widen)
+                   (buffer-substring (point-min) (point-max))))))
          (old-by-address (make-hash-table :test #'equal))
          (old-by-local-address (make-hash-table :test #'equal)))
     (when (and output old-fragments paint-owner-ids)
@@ -2116,6 +2122,13 @@ causes the caller to use the ordinary full projection."
                      (old-fragment
                       (or (and address (gethash address old-by-address))
                           (and (= (length matches) 1) (car matches))))
+                     (old-fragment-text
+                      (and old-text old-fragment
+                           (integerp (plist-get old-fragment :start))
+                           (integerp (plist-get old-fragment :end))
+                           (substring old-text
+                                      (plist-get old-fragment :start)
+                                      (plist-get old-fragment :end))))
                      (affected-p
                       (cl-some (lambda (entry)
                                 (memq (cdr entry) paint-owner-ids))
@@ -2141,10 +2154,45 @@ causes the caller to use the ordinary full projection."
                                                (plist-get old-fragment
                                                           :paint-role-ids))
                                           roles)))
-                (push (ebox-surface--repaint-fragment
-                       copy previous-state state
-                       old-face-cache new-face-cache)
-                      pieces)))
+                ;; Geometry reflow still produces a complete candidate text,
+                ;; but an unaffected fragment whose text/properties are
+                ;; byte-for-byte identical and whose semantic face
+                ;; contributions are unchanged already has the correct
+                ;; composed face.  Reuse its candidate metadata without
+                ;; rebuilding it; changed/paint-owned fragments retain the
+                ;; existing baseline-safe repaint path.
+                (let* ((old-roles (plist-get copy :old-paint-role-ids))
+                       (new-roles (plist-get copy :paint-role-ids))
+                       (reusable-p
+                        (and old-fragment
+                             (not affected-p)
+                             old-fragment-text
+                             (equal-including-properties
+                              old-fragment-text text)
+                             (equal old-roles new-roles)
+                             (let ((old-faces
+                                    (or (gethash old-roles old-face-cache)
+                                        (let ((value
+                                               (ebox-surface--face-contributions
+                                                previous-state old-roles)))
+                                          (puthash old-roles value old-face-cache)
+                                          value)))
+                                   (new-faces
+                                    (or (gethash new-roles new-face-cache)
+                                        (let ((value
+                                               (ebox-surface--face-contributions
+                                                state new-roles)))
+                                          (puthash new-roles value new-face-cache)
+                                          value))))
+                               (equal old-faces new-faces)))))
+                  (push (if reusable-p
+                           (progn
+                             (cl-remf copy :old-paint-role-ids)
+                             copy)
+                         (ebox-surface--repaint-fragment
+                          copy previous-state state
+                          old-face-cache new-face-cache))
+                        pieces))))
             (let* ((fragments (nreverse pieces))
                    (rendered
                     (apply #'concat

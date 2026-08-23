@@ -168,7 +168,7 @@ property；`ebox-region-update` 接受其目标支持的可变 content/style/scr
 | Padding | `:padding`、`:padding-inline`、`:padding-block`；longhand `:padding-block-start`、`:padding-inline-end`、`:padding-block-end`、`:padding-inline-start`；别名 `:padding-top`、`:padding-right`、`:padding-bottom`、`:padding-left`，以及 `:padding-right-pixel`、`:padding-left-pixel`、`:padding-top-height`、`:padding-bottom-height` |
 | Margin | `:margin`、`:margin-inline`、`:margin-block`；longhand `:margin-block-start`、`:margin-inline-end`、`:margin-block-end`、`:margin-inline-start`；别名 `:margin-top`、`:margin-right`、`:margin-bottom`、`:margin-left`，以及 `:margin-right-pixel`、`:margin-left-pixel`、`:margin-top-height`、`:margin-bottom-height` |
 | Border | `:border`、`:border-top`、`:border-right`、`:border-bottom`、`:border-left`、`:border-width`、`:border-style`、`:border-color`；side longhand `:border-*-width`、`:border-*-style`、`:border-*-color`；兼容别名 `:border-top-p`、`:border-bottom-p`、`:border-left-pixel`、`:border-right-pixel` |
-| Paint | `:color`、`:background-color` 和别名 `:bgcolor` |
+| Paint | `:color`、`:background-color`、别名 `:bgcolor` |
 | Typography | `:font`、`:font-family`、`:font-height` 和别名 `:font-size`、`:font-weight`、`:font-slant` |
 | Text/layout | `:text-align`（`left`、`center`、`right`）、`:vertical-align`（`top`、`center`/`middle`、`bottom`）、`:overflow`（`scroll`、`hidden`、`visible`）、`:wrap-mode`（`word`、`char`、`kp` 或 nil）、`:visibility`（`visible` 或 `hidden`） |
 | Structural style | `:display` 会在 node/layout context 中计算；有效的 display tuple 通常由布局构造器选择。 |

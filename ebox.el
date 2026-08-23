@@ -404,7 +404,6 @@ caller, such as the Playground preview, renders against a concrete window.")
      ;; 上下边框由于 Emacs 限制，用 overline/underline 实现，不支持设置宽度
      :border-top-p nil :border-top-color nil
      :border-bottom-p nil :border-bottom-color nil
-
      :color nil
      :bgcolor nil
      :font nil :font-family nil :font-height nil
@@ -4588,7 +4587,9 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
                           buffer source scope-node-ids
                           (plist-get commit-input :report-base)
                           (plist-get commit-input :state-overrides)
-                          callback nil nil
+                          callback
+                          (plist-get commit-input :on-mismatch)
+                          nil
                           (plist-get commit-input :projection-kind)
                           t participant)
                        (ebox-surface-mount-buffer

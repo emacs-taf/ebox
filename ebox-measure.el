@@ -115,21 +115,30 @@ of pixel measurements it triggers do not each rebuild the display signature.")
   (fillarray ebox--string-pixel-width-cache-ring nil)
   (setq ebox--string-pixel-width-cache-ring-index 0))
 
+(defun ebox--string-pixel-width-visual-key (line factor)
+  "Return a width cache key for LINE at FACTOR when visual properties are constant."
+  (let ((end (length line)))
+    (list factor
+          (substring-no-properties line)
+          (cl-loop for property in '(face display)
+                   for value = (and (> end 0)
+                                    (get-text-property 0 property line))
+                   when value append (list property value)))))
+
 (defun ebox--string-pixel-width-cache-key (line factor)
   "Return a safe display-scoped measurement key for LINE at FACTOR."
   (let* ((end (length line))
-         (properties (and (> end 0) (text-properties-at 0 line)))
+         ;; Ebox layout text uses `face' and `display' as its width-bearing
+         ;; properties.  Ownership/region metadata is deliberately ignored;
+         ;; the other generic text properties are not emitted by Ebox's
+         ;; layout pipeline and would make this hot key scan needlessly broad.
          (constant-p
-          (= (or (next-property-change 0 line end) end) end)))
-    (cond
-     ((and constant-p (null properties))
-      (list factor line))
-     ((and constant-p
-           (= (length properties) 2)
-           (eq (car properties) 'face))
-      (list factor
-            line
-            (cadr properties))))))
+          (and (= (or (next-single-property-change 0 'face line end) end)
+                  end)
+               (= (or (next-single-property-change 0 'display line end) end)
+                  end))))
+    (and constant-p
+         (ebox--string-pixel-width-visual-key line factor))))
 
 (defun ebox--cached-string-pixel-width (line factor key)
   "Return LINE width at FACTOR through the render and display caches at KEY."
@@ -161,7 +170,9 @@ of pixel measurements it triggers do not each rebuild the display signature.")
 Text characters follow the current buffer text scale.  Fixed display spaces
 keep their absolute pixel width."
   (ebox--ensure-display-cache-current)
-  (let* ((line (car (split-string (or string "") "\n")))
+  (let* ((source (or string ""))
+         (newline (and (stringp source) (string-match "\n" source)))
+         (line (if newline (substring source 0 newline) source))
          (factor (ebox--text-scale-factor))
          (pos 0)
          (end (length line))
@@ -171,17 +182,27 @@ keep their absolute pixel width."
         (ebox--cached-string-pixel-width line factor cache-key)
       (while (< pos end)
         (let* ((display (get-text-property pos 'display line))
-               (next (or (next-single-property-change
-                          pos 'display line end)
-                         end))
+               (next
+                (cl-loop for property in
+                         '(face display)
+                         minimize (or (next-single-property-change
+                                       pos property line end)
+                                      end)))
+               (segment (substring line pos next))
+               ;; The segment ends at every visual property change, so its
+               ;; width key can skip the second constant-property scan.
+               (segment-key
+                (ebox--string-pixel-width-visual-key segment factor))
                (space-width (ebox--display-space-width display)))
           (setq total
                 (+ total
                    (if space-width
                        (* space-width (- next pos))
-                     (ebox--scaled-string-pixel-width
-                      (substring line pos next)
-                      factor))))
+                     (if segment-key
+                         (ebox--cached-string-pixel-width
+                          segment factor segment-key)
+                       (ebox--scaled-string-pixel-width
+                        segment factor)))))
           (setq pos next)))
       total)))
 

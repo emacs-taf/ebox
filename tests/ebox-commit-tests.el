@@ -1473,6 +1473,36 @@ remain retained identities."
                   (ebox-render (ebox--buffer-root-node buffer))))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
+(ert-deftest ebox-commit-mixed-owner-reflow-reuses-unchanged-fragments ()
+  "Skip face recomposition for unchanged fragments in a mixed projection."
+  (let* ((buffer
+          (ebox-render-to-buffer
+           (generate-new-buffer-name " *ebox-mixed-owner-reuse* ")
+           (ebox-commit-test--mixed-owner-root
+            "left-old" "right-old" "#111111" "#222222" "#333333")))
+         (surface (with-current-buffer buffer ebox-surface--buffer-surface))
+         (old-state (tp-surface-client-state surface))
+         (fragment-count (length (plist-get old-state :surface-fragments)))
+         (repaints 0)
+         (original (symbol-function 'ebox-surface--repaint-fragment)))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'ebox-surface--repaint-fragment)
+                     (lambda (&rest args)
+                       (cl-incf repaints)
+                       (apply original args))))
+            (should (eq (plist-get
+                         (ebox-commit
+                          buffer
+                          (ebox-commit-test--mixed-owner-candidate
+                           buffer "left-new" "right-new"
+                           "#AAAAAA" "#BBBBBB" "#CCCCCC"))
+                         :projection-kind)
+                        'mixed-owner-reflow)))
+          (should (> fragment-count 0))
+          (should (< repaints fragment-count)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (provide 'ebox-commit-tests)
 
 ;;; ebox-commit-tests.el ends here
