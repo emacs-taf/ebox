@@ -424,12 +424,14 @@ this avoids signature and retained-cost work for one-off responsive sizes."
            (context
             (list (ebox--ensure-node-id source)
                   axis main cross align viewport
-                  ebox--intrinsic-layout-measurement)))
+                  ebox--intrinsic-layout-measurement
+                  ebox--inline-auto-width-intrinsic-p)))
       (if (gethash context observations)
           (let ((ebox-viewport-width viewport))
             (list (ebox--current-display-signature)
                   viewport ebox-viewport-height
                   ebox--intrinsic-layout-measurement
+                  ebox--inline-auto-width-intrinsic-p
                   ebox--render-region-id
                   ebox--scroll-window-initial-lookahead-lines-override
                   ebox--scroll-window-render-disabled
@@ -964,6 +966,8 @@ Return a sized render entry containing the rendered string and dimensions."
                     source axis main cross align item-viewport
                     (list :intrinsic-layout-measurement
                           ebox--intrinsic-layout-measurement
+                          :inline-auto-width-intrinsic
+                          ebox--inline-auto-width-intrinsic-p
                           :scroll-window-render-disabled
                           ebox--scroll-window-render-disabled
                           :viewport-height-dependent

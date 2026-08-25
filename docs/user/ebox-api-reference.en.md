@@ -87,6 +87,12 @@ container children are normally supplied to `ebox-row`, `ebox-column`,
 use the variadic row/column helpers for more than two children. Nil children
 are ignored. An empty row or column becomes a spacer.
 
+In a `row`, omitted or `auto` widths use each child’s intrinsic width when the
+children are concatenated; the parent viewport is not reused as every child’s
+width. Explicit `viewport`, `stretch`, and definite widths still resolve against
+their containing block. A `column` fills narrower layout rows to its containing
+block, while a visual box paints its border and padding at its own used width.
+
 `:key` is the stable application identity for a sibling. `:id` is a logical
 selector/update identifier. `:host-ref` is an opaque application-owned anchor
 used by host-reference lookup and logical candidate replacement. Host refs

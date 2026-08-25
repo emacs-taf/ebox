@@ -738,6 +738,17 @@
     (should (= (nth 2 widths) (nth 0 widths)))
     (should (= (nth 3 widths) (nth 0 widths)))))
 
+(ert-deftest ebox-flex-composite-auto-row-respects-assigned-width ()
+  "A composite auto-width row must not duplicate its Flex item viewport."
+  (let* ((layout
+          (ebox-flex :width '(120)
+            (ebox-row
+             (ebox-create :content "Left" :border t)
+             (ebox-create :content "Right" :border t))))
+         (widths (mapcar #'ebox--string-pixel-width
+                         (ebox-string-lines (ebox-render layout)))))
+    (should (cl-every (lambda (width) (<= width 120)) widths))))
+
 (ert-deftest ebox-flex-sized-persistent-hit-populates-pass-local-cache ()
   "Persistent sized renders should become reusable in the current pass."
   (let* ((source (ebox-create :content "A" :width '(80)))

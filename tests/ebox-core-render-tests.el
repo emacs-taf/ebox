@@ -4246,6 +4246,16 @@
      (equal (ebox--render-cache-value-signature value)
             value))))
 
+(ert-deftest ebox-render-cache-signature-includes-inline-auto-width-context ()
+  "Row intrinsic sizing must not reuse a cross-axis stretch render."
+  (ebox-test--reset-runtime-state)
+  (let ((node (ebox-create :content "context-sensitive")))
+    (let ((normal (let ((ebox--inline-auto-width-intrinsic-p nil))
+                    (ebox--render-cache-node-signature node)))
+          (intrinsic (let ((ebox--inline-auto-width-intrinsic-p t))
+                       (ebox--render-cache-node-signature node))))
+      (should-not (equal normal intrinsic)))))
+
 (ert-deftest ebox-render-cache-signature-includes-rendered-region-identity ()
   "Cached render strings should never cross distinct region identities."
   (ebox-test--reset-runtime-state)

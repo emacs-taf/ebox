@@ -69,6 +69,12 @@
 Descendants still see the current containing block, but stack/column containers
 must not stretch their own outer width to that containing block.")
 
+(defvar ebox--inline-auto-width-intrinsic-p nil
+  "Non-nil while a horizontal layout sizes auto-width children intrinsically.
+The ambient viewport remains available to explicit `viewport' and `stretch'
+widths, but an omitted or `auto' width must not consume the whole horizontal
+containing block merely because the row itself is being rendered in it.")
+
 (defvar ebox--box-content-render-cache nil
   "Dynamic render-pass cache for rendered lazy child content.")
 
@@ -882,6 +888,7 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
   (list ebox-viewport-width
         ebox-viewport-height
         ebox--intrinsic-layout-measurement
+        ebox--inline-auto-width-intrinsic-p
         ebox--render-region-id))
 
 (defun ebox--render-box-content-node (box node)
@@ -1021,7 +1028,8 @@ property parsers."
                      props (ebox-get props :max-width)))
          (preferred-width
           (or (ebox--definite-content-size-pixel props width-value)
-              (and (or (null width-value)
+              (and (not ebox--inline-auto-width-intrinsic-p)
+                   (or (null width-value)
                        (eq width-value 'auto)
                        (eq width-value 'fit-content))
                    (ebox--stretch-content-pixel props))
@@ -1040,11 +1048,16 @@ an inherited viewport."
   (let ((content-viewport (ebox--wrapper-content-viewport-pixel props)))
     (cond
      ((eq (ebox-get props :width) 'max-content)
-     (let ((ebox-viewport-width nil)
-            (ebox--intrinsic-layout-measurement t))
+      (let ((ebox-viewport-width nil)
+            (ebox--intrinsic-layout-measurement t)
+            (ebox--inline-auto-width-intrinsic-p nil))
         (ebox-render node)))
      (content-viewport
-      (let ((ebox-viewport-width content-viewport))
+      (let ((ebox-viewport-width content-viewport)
+            ;; A definite wrapper establishes a new containing block.  Its
+            ;; child layout must resume normal cross-axis stretch semantics,
+            ;; even when the wrapper itself is an item of an intrinsic row.
+            (ebox--inline-auto-width-intrinsic-p nil))
         (if (and (hash-table-p ebox--render-cache-table)
                  (not ebox--intrinsic-layout-measurement)
                  (null ebox--render-region-id)
@@ -1058,6 +1071,8 @@ an inherited viewport."
                     :content-viewport content-viewport
                     :viewport-height ebox-viewport-height
                     :intrinsic ebox--intrinsic-layout-measurement
+                    :auto-width-intrinsic
+                    ebox--inline-auto-width-intrinsic-p
                     :render-region-id ebox--render-region-id
                     :scroll-lookahead
                     ebox--scroll-window-initial-lookahead-lines-override
@@ -1103,7 +1118,8 @@ FALLBACK is used for nil and auto values."
          (preferred-width
           (cond
            ((or (null width-value) (eq width-value 'auto))
-            (or (ebox--stretch-content-pixel box)
+            (or (and (not ebox--inline-auto-width-intrinsic-p)
+                     (ebox--stretch-content-pixel box))
                 (ebox--content-max-pixel box)))
            ((or (eq width-value 'viewport)
                 (memq width-value '(stretch contain)))
@@ -1688,10 +1704,19 @@ A sole child Range keeps a material row parent so the Range stays addressable."
 
 (defun ebox--render-concat (node)
   "Render a concat NODE to a string (internal, called by `ebox-render').
-Children are rendered; shorter children are padded with blank lines so all
-reach the same height before horizontal concatenation."
-  (let* ((rendered (mapcar #'ebox--render-with-cache
-                           (ebox--layout-children node)))
+Auto-width children are rendered at intrinsic inline size while explicit
+viewport/definite widths keep their containing-block semantics.  Shorter
+children are padded with blank lines so all reach the same height before
+horizontal concatenation."
+  (let* ((rendered
+          (mapcar (lambda (child)
+                    ;; A row owns the horizontal concatenation.  Its auto
+                    ;; width children must therefore measure intrinsically;
+                    ;; explicit viewport/stretch widths still resolve against
+                    ;; the ambient containing block.
+                    (let ((ebox--inline-auto-width-intrinsic-p t))
+                      (ebox--render-with-cache child)))
+                  (ebox--layout-children node)))
          (max-h (if rendered
                     (apply #'max (mapcar #'ebox-string-height rendered))
                   0))
@@ -1925,7 +1950,9 @@ Return a plist with :lines and :complete.  This mirrors the normal stack
 renderer for the top window of a scroll container, but stops before hidden
 leaves are rendered.  When CACHE is supplied, rendering continues from the
 last cached leaf instead of walking the stack from the beginning."
-  (let* ((target-w (or (ebox--viewport-pixel-width nil) 0))
+  (let* ((target-w (if ebox--inline-auto-width-intrinsic-p
+                       0
+                     (or (ebox--viewport-pixel-width nil) 0)))
          (cached (and (ebox--stack-window-cache-compatible-p
                        cache node target-w)
                       cache))
@@ -3054,7 +3081,9 @@ Stack leaves are rendered independently.  When a containing-block viewport is
 bound, narrower rows are padded to that available width, while wider definite
 children keep their own width and overflow only on their own rows.  During
 intrinsic measurement, descendants still receive the containing block but the
-stack itself uses its natural max child width."
+stack itself uses its natural max child width.  A stack used as an intrinsic
+inline child follows the same natural-width rule and does not consume the
+ambient horizontal viewport."
   (let* ((rendered-items
           (mapcar (lambda (leaf)
                     (let ((rendered (ebox--render-with-cache leaf)))
@@ -3064,7 +3093,8 @@ stack itself uses its natural max child width."
          (max-w (if rendered-items
                     (apply #'max (mapcar #'cdr rendered-items))
                   0))
-         (target-w (if ebox--intrinsic-layout-measurement
+         (target-w (if (or ebox--intrinsic-layout-measurement
+                         ebox--inline-auto-width-intrinsic-p)
                        max-w
                      (or (ebox--viewport-pixel-width nil) max-w))))
     (let ((rendered

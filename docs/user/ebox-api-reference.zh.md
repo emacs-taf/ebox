@@ -78,6 +78,12 @@ window，再切换到渲染后的 buffer。如果窗口选择由调用方负责�
 `ebox-stack` 接受两个节点；超过两个子节点时使用 row/column。nil 子节点会
 被忽略；空 row/column 会变成 spacer。
 
+`row` 中省略或 `auto` 的宽度按子节点自身的 intrinsic width 参与横向拼接；
+父级 viewport 不会被重复当成每个子节点的宽度。显式 `viewport`、`stretch`
+或 definite width 仍按指定 containing block 解析。`column` 会把较窄的布局
+行补齐到自己的 containing block，但带视觉 box 的子节点会在自己的 used width
+上绘制边框和 padding。
+
 `:key` 是兄弟节点范围内的稳定业务 identity；`:id` 是 logical selector/update
 标识；`:host-ref` 是应用拥有的不透明锚点，用于 host-reference 查询和逻辑
 candidate replacement。一个 source tree 内的非 nil host-ref 必须唯一。

@@ -237,6 +237,53 @@
     (dolist (width widths)
       (should (<= width 180)))))
 
+(ert-deftest ebox-build-column-contains-auto-row-children ()
+  "A column wrapper must not let an auto-width row child duplicate its viewport."
+  (let* ((node (ebox-build
+                '(column :width (120)
+                  (row
+                   (box :content "Left" :border t)
+                   (box :content "Right" :border t))
+                  (box :content "Body" :border t))))
+         (widths (ebox-dsl-test--line-widths node)))
+    (should (cl-every (lambda (width) (<= width 120)) widths))))
+
+(ert-deftest ebox-row-keeps-explicit-viewport-widths-intrinsic-context ()
+  "Row intrinsic sizing must not change explicit viewport-sized children."
+  (let* ((ebox-viewport-width 120)
+         (node (ebox-row
+                (ebox-create :content "Left" :width 'viewport)
+                (ebox-create :content "Right" :width 'stretch)))
+         (widths (ebox-dsl-test--line-widths node)))
+    (should (equal widths '(240)))))
+
+(ert-deftest ebox-row-keeps-composite-column-intrinsic-width ()
+  "A composite column child must not consume the row viewport as auto width."
+  (let* ((ebox-viewport-width 120)
+         (node (ebox-row
+                (ebox-column
+                 (ebox-create :content "Top")
+                 (ebox-create :content "Bottom"))
+                (ebox-create :content "Tail")))
+         (widths (ebox-dsl-test--line-widths node)))
+    (should (cl-every (lambda (width) (<= width 120)) widths))))
+
+(ert-deftest ebox-build-lazy-column-contains-auto-row-children ()
+  "Lazy column windows must apply the same intrinsic row sizing rule."
+  (let* ((ebox-viewport-width 120)
+         (ebox-viewport-height 4)
+         (node (ebox-build
+                '(box :width (viewport)
+                  :height (viewport-height)
+                  :overflow scroll
+                  (column
+                   (row
+                    (box :content "Left" :border t)
+                    (box :content "Right" :border t))
+                   (box :content "Body" :border t)))))
+         (widths (ebox-dsl-test--line-widths node)))
+    (should (cl-every (lambda (width) (<= width 120)) widths))))
+
 (ert-deftest ebox-build-wrapper-viewport-width-bounds-child-layout-viewport ()
   "A wrapper's `(viewport)' width should pass its content box to child layouts."
   (let ((cases

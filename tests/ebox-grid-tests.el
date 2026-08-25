@@ -80,6 +80,18 @@
          (widths (mapcar #'ebox--string-pixel-width lines)))
     (should (equal widths (make-list (length widths) 120)))))
 
+(ert-deftest ebox-grid-composite-auto-row-respects-track-width ()
+  "A composite auto-width row must not duplicate its Grid track viewport."
+  (let* ((node (ebox-grid
+                :width '(120)
+                :grid-template-columns '((120))
+                (ebox-row
+                 (ebox-create :content "Left" :border t)
+                 (ebox-create :content "Right" :border t))))
+         (widths (mapcar #'ebox--string-pixel-width
+                         (ebox-string-lines (ebox-render node)))))
+    (should (equal widths '(120)))))
+
 (ert-deftest ebox-grid-sizes-auto-row-after-assigned-width-wrap ()
   "Auto rows should use the height of width-constrained child content."
   (let* ((node (ebox-grid

@@ -330,6 +330,7 @@ pub struct LayoutContext {
     pub viewport_width: i64,
     pub viewport_width_known: bool,
     pub viewport_height: i64,
+    pub inline_auto_width_intrinsic: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3416,7 +3417,9 @@ fn resolve_child_viewport_width(
     let minimum = definite(min_width).unwrap_or(0);
     let maximum = definite(max_width);
     let auto_stretch = if matches!(width, Size::Auto) {
-        stretch
+        (!context.inline_auto_width_intrinsic)
+            .then_some(stretch)
+            .flatten()
     } else {
         None
     };
@@ -3512,7 +3515,11 @@ fn resolve_definite_box_content_width(
     let maximum = definite(max_width);
     let preferred = override_width
         .or_else(|| definite(width))
-        .or_else(|| matches!(width, Size::Auto).then_some(stretch).flatten())
+        .or_else(|| {
+            (matches!(width, Size::Auto) && !context.inline_auto_width_intrinsic)
+                .then_some(stretch)
+                .flatten()
+        })
         .or(maximum);
     preferred.map(|preferred| minimum.max(preferred.max(0).min(maximum.unwrap_or(i64::MAX))))
 }
@@ -4177,6 +4184,7 @@ fn measure_flex_item<'a>(
         },
         viewport_width_known: uses_inline_viewport && inline_viewport.is_some(),
         viewport_height: context.viewport_height,
+        inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let rendered = render_node(&item.node, measurement_context, uses_inline_viewport)?;
     let min_main = flex_min_main(&item.node, &rendered, axis, context)?;
@@ -4546,6 +4554,7 @@ fn render_flex_sized_entry(
             item_viewport.is_some() || context.viewport_width_known
         },
         viewport_height: context.viewport_height,
+        inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let override_size = box_override_for_flex(item.source, axis, main, cross, stretch);
     let mut rendered =
@@ -4706,7 +4715,11 @@ fn render_node_window(
         return Some(render_node(node, context, intrinsic));
     }
     match node {
-        LayoutNode::Column { children } if !intrinsic && context.viewport_width_known => {
+        LayoutNode::Column { children }
+            if !intrinsic
+                && !context.inline_auto_width_intrinsic
+                && context.viewport_width_known =>
+        {
             Some(render_column_window(children, context, start, height))
         }
         _ => Some(
@@ -5286,6 +5299,8 @@ fn render_node_with_override(
                     viewport_width_known: !intrinsic_child
                         && (preliminary_child_width.is_some() || context.viewport_width_known),
                     viewport_height: preliminary_child_height.unwrap_or(context.viewport_height),
+                    inline_auto_width_intrinsic: context.inline_auto_width_intrinsic
+                        && matches!(effective_width, Size::Auto),
                 };
                 if simple_scroll_window {
                     if let Some(total_height) = exact_rendered_height(child, child_context) {
@@ -5331,7 +5346,11 @@ fn render_node_with_override(
                 let rendered = child_rendered.as_ref().expect("validated child");
                 (rendered.min_content_width(*wrap_mode), rendered.max_width())
             };
-            let auto_width = stretch.unwrap_or(max_content);
+            let auto_width = if context.inline_auto_width_intrinsic {
+                max_content
+            } else {
+                stretch.unwrap_or(max_content)
+            };
             let minimum = resolve_width(
                 min_width,
                 Some(0),
@@ -5630,9 +5649,13 @@ fn render_node_with_override(
             Ok(rendered)
         }
         LayoutNode::Row { children } => {
+            let child_context = LayoutContext {
+                inline_auto_width_intrinsic: true,
+                ..context
+            };
             let rendered = children
                 .iter()
-                .map(|child| render_node(child, context, intrinsic))
+                .map(|child| render_node(child, child_context, intrinsic))
                 .collect::<Result<Vec<_>, _>>()?;
             let height = rendered
                 .iter()
@@ -5665,7 +5688,10 @@ fn render_node_with_override(
                 .map(Rendered::first_width)
                 .max()
                 .unwrap_or(0);
-            let target = if intrinsic || !context.viewport_width_known {
+            let target = if intrinsic
+                || context.inline_auto_width_intrinsic
+                || !context.viewport_width_known
+            {
                 maximum
             } else {
                 context.viewport_width.max(0)
@@ -5810,6 +5836,19 @@ mod tests {
         }
     }
 
+    fn auto_text_box(
+        region_id: i64,
+        content: MeasuredText,
+        surface_template_id: Option<u32>,
+    ) -> LayoutNode {
+        let mut node = text_box(region_id, content, surface_template_id);
+        let LayoutNode::Box { width, .. } = &mut node else {
+            unreachable!();
+        };
+        *width = Size::Auto;
+        node
+    }
+
     fn child_box(
         region_id: i64,
         child: LayoutNode,
@@ -5899,6 +5938,7 @@ mod tests {
             viewport_width: 80,
             viewport_width_known: true,
             viewport_height: 24,
+            inline_auto_width_intrinsic: false,
         }
     }
 
@@ -5953,6 +5993,7 @@ mod tests {
                 viewport_width: 80,
                 viewport_width_known: true,
                 viewport_height: MAX_LAYOUT_WORK_UNITS as i64 + 1,
+                inline_auto_width_intrinsic: false,
             },
             &mut context_work,
         )
@@ -6279,6 +6320,7 @@ mod tests {
             viewport_width: 320,
             viewport_width_known: true,
             viewport_height: 10,
+            inline_auto_width_intrinsic: false,
         };
         let fit_content = Size::FitContent {
             limit: Some(Box::new(Size::Pixels { value: 180 })),
@@ -6319,6 +6361,7 @@ mod tests {
             viewport_width: 0,
             viewport_width_known: false,
             viewport_height: 0,
+            inline_auto_width_intrinsic: false,
         };
         assert_eq!(
             resolve_width(
@@ -6347,6 +6390,7 @@ mod tests {
                     viewport_width: 298,
                     viewport_width_known: true,
                     viewport_height: 20,
+                    inline_auto_width_intrinsic: false,
                 },
                 BoxSizing::BorderBox,
                 0,
@@ -6365,11 +6409,13 @@ mod tests {
             viewport_width: 0,
             viewport_width_known: true,
             viewport_height: 10,
+            inline_auto_width_intrinsic: false,
         };
         let unavailable = LayoutContext {
             viewport_width: 0,
             viewport_width_known: false,
             viewport_height: 10,
+            inline_auto_width_intrinsic: false,
         };
 
         assert_eq!(flex_horizontal_size(&Size::Auto, known_zero), Some(0));
@@ -6871,6 +6917,50 @@ mod tests {
         assert!(
             rendered_nodes <= 8,
             "fixed scroll rendered {rendered_nodes} nodes for five visible lines"
+        );
+    }
+
+    #[test]
+    fn row_auto_children_do_not_duplicate_column_viewport() {
+        let row = LayoutNode::Row {
+            children: vec![
+                auto_text_box(2, measured_text(vec![vec![cluster("Left", 4, None)]]), None),
+                auto_text_box(
+                    3,
+                    measured_text(vec![vec![cluster("Right", 5, None)]]),
+                    None,
+                ),
+            ],
+        };
+        let mut root = child_box(
+            1,
+            LayoutNode::Column {
+                children: vec![
+                    row,
+                    auto_text_box(4, measured_text(vec![vec![cluster("Body", 4, None)]]), None),
+                ],
+            },
+            None,
+        );
+        let LayoutNode::Box { width, .. } = &mut root else {
+            unreachable!();
+        };
+        *width = Size::Pixels { value: 120 };
+        let document = LayoutDocument {
+            version: LAYOUT_VERSION,
+            space_width: 1,
+            style_count: 0,
+            property_template_count: 0,
+            styles: Vec::new(),
+            root,
+        };
+        document.validate().unwrap();
+
+        let tape = document.layout_tape(test_context(), None).unwrap();
+        assert!(
+            tape.lines.iter().all(|line| line.width <= 120),
+            "row children duplicated the containing column width: {:?}",
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>()
         );
     }
 

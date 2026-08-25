@@ -333,6 +333,8 @@ the short runway that makes immediate post-resize smooth scrolling cheap."
 (defvar ebox--viewport-dependent-subtree-cache nil
   "Dynamic render-pass cache for viewport dependency existence checks.")
 
+(defvar ebox--inline-auto-width-intrinsic-p)
+
 (defvar ebox--viewport-height-dependent-subtree-cache nil
   "Dynamic render-pass cache for viewport-height dependency checks.")
 
@@ -420,6 +422,7 @@ Kept as a narrow predicate for callers that need box-only sizing semantics."
           ebox-viewport-width)
         (when (ebox--viewport-height-dependent-subtree-p node)
           ebox-viewport-height)
+        ebox--inline-auto-width-intrinsic-p
         (ebox--render-cache-node-body-signature node)))
 
 (defun ebox--render-cache-box-signature (box)

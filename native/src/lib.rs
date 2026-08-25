@@ -995,6 +995,7 @@ fn checked_layout_context(
         viewport_width,
         viewport_width_known,
         viewport_height,
+        inline_auto_width_intrinsic: false,
     };
     document.validate_context(context)?;
     Ok(context)
