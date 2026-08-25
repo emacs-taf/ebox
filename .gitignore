@@ -2,6 +2,8 @@
 __pycache__
 scripts/ebox-scroll-profile.el
 native/target/
+native/core/target/
+native/core/Cargo.lock
 
 # Local oh-my-codex runtime state/logs.
 .omx/

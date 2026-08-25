@@ -15,6 +15,7 @@
     "ebox-layout.el"
     "ebox-flex.el"
     "ebox-grid.el"
+    "ebox-buffer-backend.el"
     "ebox-selector.el"
     "ebox-native-reflow.el")
   "Source files that currently own public autoload entry points.")
@@ -69,7 +70,8 @@
             "ebox-tree.el" "ebox-measure.el"
             "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
             "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
-            "ebox-surface.el" "ebox-dsl.el" "ebox-selector.el" "ebox.el"
+            "ebox-native-commit.el" "ebox-surface.el" "ebox-dsl.el"
+            "ebox-selector.el" "ebox.el"
             "ebox-native-reflow.el"))))
 
 (ert-deftest ebox-surface-depends-only-on-public-tp-api ()
@@ -125,6 +127,9 @@
   "Stable public entry points should be discoverable by package autoloads."
   (let ((source (ebox-test--source-text)))
     (dolist (entry '(("ebox-clear-cache" . "defun")
+                     ("ebox-render-burst-begin" . "defun")
+                     ("ebox-render-burst-end" . "defun")
+                     ("ebox-call-with-render-burst" . "defun")
                      ("ebox-render" . "defun")
                      ("ebox-region-ids" . "defun")
                      ("ebox-concat" . "defun")
@@ -163,6 +168,7 @@
                    ebox-buffer-update-report
                    ebox-build
                    ebox-buffer-mode
+                   ebox-call-with-render-burst
                    ebox-candidate-begin
                    ebox-child-range
                    ebox-candidate-replace
@@ -189,6 +195,8 @@
                    ebox-region-resolve
                    ebox-region-update
                    ebox-render
+                   ebox-render-burst-begin
+                   ebox-render-burst-end
                    ebox-render-to-buffer
                    ebox-rerender-buffer-with-context
                    ebox-row

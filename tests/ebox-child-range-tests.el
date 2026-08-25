@@ -23,6 +23,58 @@
                 (mapcar #'ebox-child-range-test--item range-items))))
    hash))
 
+(ert-deftest ebox-child-range-reuse-map-rebinds-published-objects ()
+  "Stable slots use published objects; moved slots re-enter normal indexing."
+  (let* ((sequence (ebox-child-range-test--fixture 0 '(one two)))
+         (segment (ebox-child-range--lookup-ref sequence 'range))
+         (payload (ebox-child-range--segment-payload segment))
+         (first (aref payload 0))
+         (second (aref payload 1)))
+    (plist-put first :node-id 1)
+    (plist-put second :node-id 2)
+    (plist-put first :ebox-sequence-location
+               '(:parent-node-id 99 :segment-index 0 :offset 0))
+    (plist-put second :ebox-sequence-location
+               '(:parent-node-id 99 :segment-index 0 :offset 1))
+    (pcase-let
+        ((`(,items ,reuse-map)
+          (ebox-incremental--candidate-canonical-range-reuse
+           sequence 'range (list (copy-tree first) (copy-tree second))
+           '((0 . 0) (1 . 1)) 99 0)))
+      (should (eq (nth 0 items) first))
+      (should (eq (nth 1 items) second))
+      (should (equal reuse-map '((0 . 0) (1 . 1)))))
+    (pcase-let
+        ((`(,items ,reuse-map)
+          (ebox-incremental--candidate-canonical-range-reuse
+           sequence 'range (list second first)
+           '((0 . 1) (1 . 0)) 99 0)))
+      (should-not (eq (nth 0 items) second))
+      (should-not (eq (nth 1 items) first))
+      (should-not (plist-get (nth 0 items) :node-id))
+      (should-not (plist-get (nth 1 items) :node-id))
+      (should-not reuse-map))
+    (should-error
+     (ebox-incremental--candidate-canonical-range-reuse
+      sequence 'range (list (copy-tree first)) '((1 . 0)) 99 0))))
+
+(ert-deftest ebox-child-range-render-signature-snapshots-item-identities ()
+  "A cached Range signature must not follow later runtime identity mutation."
+  (let* ((item (ebox-create :content "item" :key 'item))
+         (sequence (ebox-child-range--build (list (cons 'range (list item)))))
+         (published
+          (aref (ebox-child-range--segment-payload
+                 (ebox-child-range--lookup-ref sequence 'range))
+                0))
+         (signature (ebox--render-cache-value-signature sequence)))
+    (plist-put published :node-id 1)
+    (plist-put published :region-id 10)
+    (setq signature (ebox--render-cache-value-signature sequence))
+    (plist-put published :region-id 20)
+    (should-not
+     (equal signature (ebox--render-cache-value-signature sequence)))
+    (should (equal 10 (plist-get (cadr signature) :region-id)))))
+
 (ert-deftest ebox-child-range-gate-a-exact-segment-and-payload-costs ()
   "Point replacement cost follows trie height, never parent child count."
   (dolist (case '((0 0 1) (10 1 2) (100 2 3) (500 2 3)))

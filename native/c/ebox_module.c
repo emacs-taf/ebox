@@ -67,6 +67,11 @@ extern bool ebox_native_layout_ready(void);
 extern bool ebox_native_render_proof(const unsigned char *payload,
                                      size_t payload_len,
                                      ebox_native_bytes *output);
+extern bool ebox_native_session_render_sync(void *session,
+                                            uint64_t generation,
+                                            const unsigned char *payload,
+                                            size_t payload_len,
+                                            ebox_native_bytes *output);
 extern bool ebox_native_flex_size_lines(const ebox_native_flex_item *items,
                                         size_t item_count,
                                         const size_t *line_offsets,
@@ -157,7 +162,7 @@ ebox_module_version(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   (void) nargs;
   (void) args;
   (void) data;
-  static const char version[] = "8:3:9";
+  static const char version[] = "9:7:12";
   return env->make_string(env, version, (ptrdiff_t) (sizeof version - 1));
 }
 
@@ -318,6 +323,333 @@ ebox_module_render_proof(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
     env, (const char *) output.data, (ptrdiff_t) output.len);
   ebox_native_bytes_free(output);
   return result;
+}
+
+static bool
+ebox_read_u16(const unsigned char *bytes, size_t length, size_t offset,
+              uint16_t *value)
+{
+  if (offset > length || length - offset < 2)
+    return false;
+  *value = (uint16_t) bytes[offset] | ((uint16_t) bytes[offset + 1] << 8);
+  return true;
+}
+
+static bool
+ebox_read_u32(const unsigned char *bytes, size_t length, size_t offset,
+              uint32_t *value)
+{
+  if (offset > length || length - offset < 4)
+    return false;
+  *value = (uint32_t) bytes[offset]
+           | ((uint32_t) bytes[offset + 1] << 8)
+           | ((uint32_t) bytes[offset + 2] << 16)
+           | ((uint32_t) bytes[offset + 3] << 24);
+  return true;
+}
+
+static bool
+ebox_read_u64(const unsigned char *bytes, size_t length, size_t offset,
+              uint64_t *value)
+{
+  if (offset > length || length - offset < 8)
+    return false;
+  uint64_t result = 0;
+  for (size_t index = 0; index < 8; index++)
+    result |= (uint64_t) bytes[offset + index] << (index * 8);
+  *value = result;
+  return true;
+}
+
+static bool
+ebox_checked_add(size_t left, size_t right, size_t *result)
+{
+  if (right > SIZE_MAX - left)
+    return false;
+  *result = left + right;
+  return true;
+}
+
+static bool
+ebox_fragment_section(const unsigned char *bytes, size_t length,
+                      size_t *start, size_t *fragment_length,
+                      size_t *record_count)
+{
+  static const size_t header_length = 112;
+  uint16_t version = 0;
+  uint16_t flags = 0;
+  uint32_t encoded_header_length = 0;
+  uint64_t encoded_total_length = 0;
+  uint64_t fragment_bytes = 0;
+  uint64_t fragment_records = 0;
+  if (length < header_length
+      || memcmp(bytes, "EBXT", 4) != 0
+      || !ebox_read_u16(bytes, length, 4, &version)
+      || version != 12
+      || !ebox_read_u16(bytes, length, 6, &flags)
+      || !ebox_read_u32(bytes, length, 8, &encoded_header_length)
+      || encoded_header_length != header_length
+      || !ebox_read_u64(bytes, length, 12, &encoded_total_length)
+      || encoded_total_length != length)
+    return false;
+
+  size_t offset = header_length;
+  if ((flags & 4) != 0) {
+    uint32_t patch_count = 0;
+    uint32_t coordinate_patch_count = 0;
+    uint64_t payload_length = 0;
+    if (!ebox_read_u32(bytes, length, 120, &patch_count)
+        || !ebox_read_u64(bytes, length, 136, &payload_length)
+        || !ebox_read_u64(bytes, length, 144, &fragment_bytes)
+        || !ebox_read_u64(bytes, length, 152, &fragment_records)
+        || !ebox_read_u32(bytes, length, 160, &coordinate_patch_count))
+      return false;
+    size_t descriptor_bytes = 0;
+    if ((size_t) patch_count > SIZE_MAX - (size_t) coordinate_patch_count
+        || (size_t) patch_count + (size_t) coordinate_patch_count
+             > SIZE_MAX / 32)
+      return false;
+    descriptor_bytes = ((size_t) patch_count + (size_t) coordinate_patch_count)
+                       * 32;
+    if (!ebox_checked_add(offset, 56, &offset)
+        || !ebox_checked_add(offset, descriptor_bytes, &offset)
+        || payload_length > SIZE_MAX
+        || !ebox_checked_add(offset, (size_t) payload_length, &offset))
+      return false;
+  } else {
+    uint64_t literal_length = 0;
+    uint32_t line_count = 0;
+    uint32_t metadata_length = 0;
+    if (!ebox_read_u64(bytes, length, 112, &literal_length)
+        || !ebox_read_u32(bytes, length, 120, &line_count)
+        || !ebox_read_u32(bytes, length, 124, &metadata_length)
+        || !ebox_read_u64(bytes, length, 136, &fragment_bytes)
+        || !ebox_read_u64(bytes, length, 144, &fragment_records))
+      return false;
+    size_t width_bytes = 0;
+    if ((size_t) line_count > SIZE_MAX / 8)
+      return false;
+    width_bytes = (size_t) line_count * 8;
+    if (!ebox_checked_add(offset, 40, &offset)
+        || !ebox_checked_add(offset, width_bytes, &offset)
+        || literal_length > SIZE_MAX
+        || !ebox_checked_add(offset, (size_t) literal_length, &offset)
+        || !ebox_checked_add(offset, (size_t) metadata_length, &offset))
+      return false;
+  }
+  if (fragment_bytes > SIZE_MAX || fragment_records > SIZE_MAX
+      || offset > length || (size_t) fragment_bytes != length - offset)
+    return false;
+  *start = offset;
+  *fragment_length = (size_t) fragment_bytes;
+  *record_count = (size_t) fragment_records;
+  return true;
+}
+
+static bool
+ebox_fragment_flat_length(const unsigned char *bytes, size_t length,
+                          size_t record_count, size_t *scalar_count)
+{
+  size_t cursor = 0;
+  size_t scalars = 0;
+  for (size_t record = 0; record < record_count; record++) {
+    uint32_t roles = 0;
+    uint32_t templates = 0;
+    uint32_t styles = 0;
+    uint32_t reserved = 0;
+    if (cursor > length || length - cursor < 56
+        || !ebox_read_u32(bytes, length, cursor + 40, &roles)
+        || !ebox_read_u32(bytes, length, cursor + 44, &templates)
+        || !ebox_read_u32(bytes, length, cursor + 48, &styles)
+        || !ebox_read_u32(bytes, length, cursor + 52, &reserved)
+        || reserved != 0)
+      return false;
+    size_t variable = 0;
+    if ((size_t) roles > SIZE_MAX / 9
+        || (size_t) templates > SIZE_MAX / 4
+        || (size_t) styles > SIZE_MAX / 4
+        || !ebox_checked_add((size_t) roles * 9,
+                             (size_t) templates * 4, &variable)
+        || !ebox_checked_add(variable, (size_t) styles * 4, &variable)
+        || !ebox_checked_add(cursor, 56, &cursor)
+        || !ebox_checked_add(cursor, variable, &cursor))
+      return false;
+    size_t record_scalars = 8;
+    if ((size_t) roles > (SIZE_MAX - record_scalars) / 2)
+      return false;
+    record_scalars += (size_t) roles * 2;
+    if (!ebox_checked_add(record_scalars, (size_t) templates,
+                          &record_scalars)
+        || !ebox_checked_add(record_scalars, (size_t) styles,
+                             &record_scalars)
+        || !ebox_checked_add(scalars, record_scalars, &scalars))
+      return false;
+  }
+  if (cursor != length || scalars > PTRDIFF_MAX)
+    return false;
+  *scalar_count = scalars;
+  return true;
+}
+
+static bool
+ebox_flat_set(emacs_env *env, emacs_value vector, size_t *index,
+              int64_t value)
+{
+  env->vec_set(env, vector, (ptrdiff_t) *index,
+               env->make_integer(env, (intmax_t) value));
+  (*index)++;
+  return env->non_local_exit_check(env) == emacs_funcall_exit_return;
+}
+
+static emacs_value
+ebox_fragment_flat_vector(emacs_env *env, const unsigned char *bytes,
+                          size_t length, size_t record_count)
+{
+  size_t scalar_count = 0;
+  if (!ebox_fragment_flat_length(bytes, length, record_count, &scalar_count)) {
+    static const char message[] = "Native reflow fragment tape is malformed";
+    return ebox_signal_error(env, message, sizeof message - 1);
+  }
+  emacs_value make_args[] = {
+    env->make_integer(env, (intmax_t) scalar_count), ebox_nil(env)
+  };
+  emacs_value vector = env->funcall(env, env->intern(env, "make-vector"),
+                                    2, make_args);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+
+  size_t cursor = 0;
+  size_t output = 0;
+  for (size_t record = 0; record < record_count; record++) {
+    uint64_t start = 0;
+    uint64_t end = 0;
+    uint64_t line = 0;
+    uint64_t owner = 0;
+    uint64_t content_index = 0;
+    uint32_t roles = 0;
+    uint32_t templates = 0;
+    uint32_t styles = 0;
+    ebox_read_u64(bytes, length, cursor, &start);
+    ebox_read_u64(bytes, length, cursor + 8, &end);
+    ebox_read_u64(bytes, length, cursor + 16, &line);
+    ebox_read_u64(bytes, length, cursor + 24, &owner);
+    ebox_read_u64(bytes, length, cursor + 32, &content_index);
+    ebox_read_u32(bytes, length, cursor + 40, &roles);
+    ebox_read_u32(bytes, length, cursor + 44, &templates);
+    ebox_read_u32(bytes, length, cursor + 48, &styles);
+    if (start > INT64_MAX || end > INT64_MAX || line > INT64_MAX
+        || !ebox_flat_set(env, vector, &output, (int64_t) start)
+        || !ebox_flat_set(env, vector, &output, (int64_t) end)
+        || !ebox_flat_set(env, vector, &output, (int64_t) line)
+        || !ebox_flat_set(env, vector, &output, (int64_t) owner)
+        || !ebox_flat_set(env, vector, &output, (int64_t) content_index)
+        || !ebox_flat_set(env, vector, &output, (int64_t) roles)
+        || !ebox_flat_set(env, vector, &output, (int64_t) templates)
+        || !ebox_flat_set(env, vector, &output, (int64_t) styles))
+      return ebox_nil(env);
+    cursor += 56;
+    for (uint32_t role = 0; role < roles; role++) {
+      uint8_t kind = bytes[cursor];
+      uint64_t region = 0;
+      ebox_read_u64(bytes, length, cursor + 1, &region);
+      if (region > INT64_MAX
+          || !ebox_flat_set(env, vector, &output, kind)
+          || !ebox_flat_set(env, vector, &output, (int64_t) region))
+        return ebox_nil(env);
+      cursor += 9;
+    }
+    for (uint32_t index = 0; index < templates + styles; index++) {
+      uint32_t value = 0;
+      ebox_read_u32(bytes, length, cursor, &value);
+      if (!ebox_flat_set(env, vector, &output, value))
+        return ebox_nil(env);
+      cursor += 4;
+    }
+  }
+  return vector;
+}
+
+static emacs_value
+ebox_module_render_frame(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
+                         void *data)
+{
+  (void) nargs;
+  (void) data;
+  unsigned char *payload = NULL;
+  size_t payload_len = 0;
+  if (!ebox_copy_string(env, args[0], &payload, &payload_len))
+    return ebox_nil(env);
+  ebox_native_bytes output = {0};
+  bool ok = ebox_native_render_proof(payload, payload_len, &output);
+  free(payload);
+  if (!ok)
+    return ebox_signal_native_error(env, output,
+                                    "Native frame render failed");
+  size_t fragment_start = 0;
+  size_t fragment_length = 0;
+  size_t record_count = 0;
+  if (!ebox_fragment_section(output.data, output.len, &fragment_start,
+                             &fragment_length, &record_count)) {
+    ebox_native_bytes_free(output);
+    static const char message[] = "Native frame has an invalid effect tape";
+    return ebox_signal_error(env, message, sizeof message - 1);
+  }
+  emacs_value tape = env->make_unibyte_string(
+    env, (const char *) output.data, (ptrdiff_t) output.len);
+  emacs_value flat = ebox_fragment_flat_vector(
+    env, output.data + fragment_start, fragment_length, record_count);
+  ebox_native_bytes_free(output);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  emacs_value values[] = {
+    tape, flat, env->make_integer(env, (intmax_t) record_count)
+  };
+  return env->funcall(env, env->intern(env, "vector"), 3, values);
+}
+
+static emacs_value
+ebox_module_render_session_frame(emacs_env *env, ptrdiff_t nargs,
+                                 emacs_value *args, void *data)
+{
+  (void) nargs;
+  (void) data;
+  void *session = ebox_session_pointer(env, args[0]);
+  uint64_t generation = (uint64_t) env->extract_integer(env, args[1]);
+  if (session == NULL ||
+      env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  unsigned char *payload = NULL;
+  size_t payload_len = 0;
+  if (!ebox_copy_string(env, args[2], &payload, &payload_len))
+    return ebox_nil(env);
+  ebox_native_bytes output = {0};
+  bool ok = ebox_native_session_render_sync(
+    session, generation, payload, payload_len, &output);
+  free(payload);
+  if (!ok)
+    return ebox_signal_native_error(env, output,
+                                    "Native retained frame render failed");
+  size_t fragment_start = 0;
+  size_t fragment_length = 0;
+  size_t record_count = 0;
+  if (!ebox_fragment_section(output.data, output.len, &fragment_start,
+                             &fragment_length, &record_count)) {
+    ebox_native_bytes_free(output);
+    static const char message[] =
+      "Native retained frame has an invalid effect tape";
+    return ebox_signal_error(env, message, sizeof message - 1);
+  }
+  emacs_value tape = env->make_unibyte_string(
+    env, (const char *) output.data, (ptrdiff_t) output.len);
+  emacs_value flat = ebox_fragment_flat_vector(
+    env, output.data + fragment_start, fragment_length, record_count);
+  ebox_native_bytes_free(output);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  emacs_value values[] = {
+    tape, flat, env->make_integer(env, (intmax_t) record_count)
+  };
+  return env->funcall(env, env->intern(env, "vector"), 3, values);
 }
 
 static bool
@@ -602,6 +934,12 @@ ebox_module_init_impl(struct emacs_runtime *runtime)
       ebox_bind_function(env, "ebox-native--module-render-proof", 1, 1,
                          ebox_module_render_proof,
                          "Render one private native proof synchronously.") ||
+      ebox_bind_function(env, "ebox-native--module-render-frame", 1, 1,
+                         ebox_module_render_frame,
+                         "Render one native frame with decoded effects.") ||
+      ebox_bind_function(env, "ebox-native--module-render-session-frame", 3, 3,
+                         ebox_module_render_session_frame,
+                         "Render one retained native frame synchronously.") ||
       ebox_bind_function(env, "ebox-native--module-flex-size-lines", 3, 3,
                          ebox_module_flex_size_lines,
                          "Calculate pure native Flex geometry lines.") ||

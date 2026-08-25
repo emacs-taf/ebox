@@ -248,8 +248,10 @@ HASH-FUNCTION optionally supplies the stable key hash."
   "Return `(NEW-SEQUENCE . METRICS)' for SEQUENCE after replacing REF ITEMS."
   (ebox-child-range--replace-many sequence (list (cons ref items))))
 
-(defun ebox-child-range--replace-many (sequence replacements)
-  "Replace RANGE REPLACEMENTS in SEQUENCE with one two-phase transaction."
+(defun ebox-child-range--replace-many (sequence replacements &optional reuse-maps)
+  "Replace RANGE REPLACEMENTS in SEQUENCE with one two-phase transaction.
+REUSE-MAPS is an alist from Range ref to proven `(NEW . OLD)' item indexes;
+those NEW items already name canonical published objects and are not copied."
   (let ((metrics (ebox-child-range--make-metrics))
         (missing (make-symbol "missing-range-ref"))
         (seen (make-hash-table :test #'equal)) records)
@@ -267,12 +269,15 @@ HASH-FUNCTION optionally supplies the stable key hash."
                             missing)))
         (when (eq index missing)
           (error "Ebox child Range ref does not exist: %S" (car entry)))
-        (push (list (car entry) index
-                    (vconcat (mapcar
-                              (lambda (item)
-                                (ebox-child-range--item-copy item metrics))
-                              (cdr entry))))
-              records)))
+        (let ((reuse-map (cdr (assoc (car entry) reuse-maps #'equal))))
+          (push (list (car entry) index
+                      (vconcat
+                       (cl-loop for item in (cdr entry) for offset from 0
+                                collect
+                                (if (assq offset reuse-map)
+                                    item
+                                  (ebox-child-range--item-copy item metrics)))))
+              records))))
     (setq records (nreverse records))
     (let ((key-root (ebox-child-range--sequence-key-root sequence))
           (hash-function (ebox-child-range--sequence-hash-function sequence))

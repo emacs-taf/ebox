@@ -28,6 +28,10 @@
                   (session generation key))
 (declare-function ebox-native--module-render-proof "ebox_native_reflow"
                   (payload))
+(declare-function ebox-native--module-render-frame "ebox_native_reflow"
+                  (payload))
+(declare-function ebox-native--module-render-session-frame "ebox_native_reflow"
+                  (session generation payload))
 (declare-function ebox-native--module-flex-size-lines "ebox_native_reflow"
                   (payload main-limit main-gap))
 (declare-function ebox-native--module-confirm-frame "ebox_native_reflow"
@@ -57,6 +61,8 @@
 (declare-function ebox--horizontal-size-pixels
                   "ebox-layout" (value &optional default))
 (declare-function ebox--layout-children "ebox-tree" (node))
+(declare-function ebox-tree-layout-children "ebox-tree" (node))
+(declare-function ebox-tree-node-local-source-signature "ebox-tree" (node))
 (declare-function ebox-buffer-side-border-face
                   "ebox-buffer-backend" (color))
 (declare-function ebox--space-pixel-width "ebox-measure" ())
@@ -66,10 +72,13 @@
 (declare-function ebox-string-lines "ebox" (string))
 (declare-function ebox-string-pixel-width "ebox-measure" (string))
 (declare-function ebox-display-signature "ebox-measure" ())
+(declare-function tp-property-value-copy "tp-core" (value))
+(declare-function tp-paint-slot-p "tp-style" (value))
+(declare-function tp-paint-slot-face "tp-style" (slot))
 
 (defvar ebox--flex-content-min-width-table)
 
-(defconst ebox-native-reflow-abi-version "8:3:9"
+(defconst ebox-native-reflow-abi-version "9:7:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -195,6 +204,8 @@ module while loading the package."
   generation
   styles
   layout-package
+  layout-fragment-cache
+  layout-fragment-revision
   readiness-process
   readiness-preparation
   released-p)
@@ -264,6 +275,15 @@ module while loading the package."
 (defvar ebox-native-reflow--compile-property-template-ids nil
   "Dynamically bound opaque property-template lookup table.")
 
+(defvar ebox-native-reflow--source-cluster-cache
+  (make-hash-table :test #'equal)
+  "Bounded cache of display-specific measured source clusters.")
+
+(defconst ebox-native-reflow--source-cluster-cache-limit 4096
+  "Maximum measured source runs retained by the native compiler.")
+
+(defvar ebox-native-reflow--compile-display-signature nil)
+
 (defconst ebox-native-reflow--unsafe-opaque-properties
   '(category
     composition
@@ -286,13 +306,13 @@ validation.")
 
 (defconst ebox-native-reflow--tape-magic
   (unibyte-string ?E ?B ?X ?T))
-(defconst ebox-native-reflow--tape-version 9)
+(defconst ebox-native-reflow--tape-version 12)
 (defconst ebox-native-reflow--tape-header-length 112)
 (defconst ebox-native-reflow--tape-flag-ok 1)
 (defconst ebox-native-reflow--tape-flag-complete 2)
 (defconst ebox-native-reflow--tape-flag-patch 4)
-(defconst ebox-native-reflow--tape-body-preamble-length 24)
-(defconst ebox-native-reflow--tape-patch-body-preamble-length 32)
+(defconst ebox-native-reflow--tape-body-preamble-length 40)
+(defconst ebox-native-reflow--tape-patch-body-preamble-length 56)
 (defconst ebox-native-reflow--tape-patch-descriptor-length 32)
 (defconst ebox-native-reflow--tape-metadata-role-symbols
   '(content content-owner pt pb pl pr mt mb ml mr bt bb bl br)
@@ -1284,7 +1304,9 @@ Ebox nodes, identities, text, properties, or publication state."
     (ebox-native-reflow--make-session
      :handle (ebox-native--module-create-session
               workers max-jobs max-results max-result-bytes)
-     :generation 0)))
+     :generation 0
+     :layout-fragment-cache (make-hash-table :test 'equal)
+     :layout-fragment-revision 0)))
 
 (defun ebox-native-reflow--live-handle (session)
   "Return SESSION's live module handle or signal an error."
@@ -1336,8 +1358,12 @@ Ebox nodes, identities, text, properties, or publication state."
   "Register opaque text PROPERTIES for LABEL and return its native id."
   (when properties
     (ebox-native-reflow--validate-property-template properties label)
-    (let* ((entry (list :kind (intern label)
-                        :properties (copy-sequence properties)))
+    (let* ((owned-properties
+            (cl-loop for (property value) on properties by #'cddr
+                     append (list property
+                                  (tp-property-value-copy value))))
+           (entry (list :kind (intern label)
+                        :properties owned-properties))
            (missing (make-symbol "missing-property-template"))
            (existing
             (if (hash-table-p
@@ -1417,15 +1443,39 @@ Ebox nodes, identities, text, properties, or publication state."
              (next (or (next-property-change position line) length))
              (template-id
               (ebox-native-reflow--register-property-template
-               properties "source")))
-        (dolist (cluster (append (ebox--grapheme-clusters
-                                  (substring line position next))
-                                 nil))
-          (setq cluster
-                (plist-put cluster :text
-                           (substring-no-properties
-                            (plist-get cluster :text))))
-          (push (ebox-native-reflow--compile-cluster cluster template-id)
+               properties "source"))
+             (plain (substring-no-properties line position next))
+             (cache-key
+              (list ebox-native-reflow--compile-display-signature
+                    properties plain))
+             (missing (make-symbol "native-source-clusters-missing"))
+             (measured
+              (gethash cache-key ebox-native-reflow--source-cluster-cache
+                       missing)))
+        (when (eq measured missing)
+          (setq measured
+                (vconcat
+                 (mapcar
+                  (lambda (cluster)
+                    (setq cluster (copy-sequence cluster))
+                    (plist-put cluster :text
+                               (substring-no-properties
+                                (plist-get cluster :text)))
+                    (ebox-native-reflow--compile-cluster cluster))
+                  (append
+                   (ebox--grapheme-clusters
+                    (substring line position next))
+                   nil))))
+          (when (>= (hash-table-count
+                     ebox-native-reflow--source-cluster-cache)
+                    ebox-native-reflow--source-cluster-cache-limit)
+            (clrhash ebox-native-reflow--source-cluster-cache))
+          (puthash cache-key measured
+                   ebox-native-reflow--source-cluster-cache))
+        (dolist (cluster (append measured nil))
+          (push (append (copy-sequence cluster)
+                        (when template-id
+                          (list :source-template-id template-id)))
                 clusters))
         (setq position next)))
     (vconcat (nreverse clusters))))
@@ -1511,6 +1561,14 @@ When FORMATTED-P is non-nil, preserve exact display spaces produced by KP."
   "Register additive FACE and return its id, or nil."
   (and face (ebox-native-reflow--register-style 'add face)))
 
+(defun ebox-native-reflow--compile-foreground-face (color)
+  "Return the serializable native face for Ebox foreground COLOR."
+  (when color
+    (cond
+     ((tp-paint-slot-p color) (tp-paint-slot-face color))
+     ((eq color 'ebox/default-foreground) '(:inherit default))
+     (t (list :foreground color)))))
+
 (defun ebox-native-reflow--compile-border-face-style (width color)
   "Register the set-face operation for a border of WIDTH and COLOR."
   (and (> width 0)
@@ -1586,12 +1644,15 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
          (border-right (floor (or (ebox-get box :border-right-pixel) 0)))
          (foreground-style
           (ebox-native-reflow--compile-add-face-style
-           (and (ebox-get box :color)
-                (list :foreground (ebox-get box :color)))))
+           (ebox-native-reflow--compile-foreground-face
+            (ebox-get box :color))))
          (background-style
           (ebox-native-reflow--compile-add-face-style
-           (and (ebox-get box :bgcolor)
-                (list :background (ebox-get box :bgcolor)))))
+           (let ((background (ebox-get box :bgcolor)))
+             (cond
+              ((tp-paint-slot-p background)
+               (tp-paint-slot-face background))
+              (background (list :background background))))))
          (border-left-style
           (ebox-native-reflow--compile-border-face-style
            border-left (ebox-get box :border-left-color)))
@@ -1601,15 +1662,19 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
          (border-top-style
           (and (ebox-get box :border-top-p)
                (ebox-native-reflow--compile-add-face-style
-                (list :overline (or (ebox-get box :border-top-color) t)))))
+                (let ((color (ebox-get box :border-top-color)))
+                  (if (tp-paint-slot-p color)
+                      (tp-paint-slot-face color)
+                    (list :overline (or color t)))))))
          (border-bottom-style
           (and (ebox-get box :border-bottom-p)
                (ebox-native-reflow--compile-add-face-style
-                (list :underline
-                      (append (list :position t)
-                              (when (ebox-get box :border-bottom-color)
-                                (list :color
-                                      (ebox-get box :border-bottom-color))))))))
+                (let ((color (ebox-get box :border-bottom-color)))
+                  (if (tp-paint-slot-p color)
+                      (tp-paint-slot-face color)
+                    (list :underline
+                          (append (list :position t)
+                                  (when color (list :color color)))))))))
          (surface-template-id
           (ebox-native-reflow--register-property-template
            (ebox-get box :surface-properties) "surface")))
@@ -1918,7 +1983,14 @@ PROPERTY-TEMPLATES are Emacs-owned plists addressed by opaque native ids."
                 (lambda (descriptor)
                   (list :mode
                         (symbol-name (plist-get descriptor :mode))
-                        :face (plist-get descriptor :face)))
+                        ;; The Rust IR treats this compiler-produced literal
+                        ;; as opaque style data and returns it by numeric id.
+                        ;; `prin1-to-string' preserves every valid Emacs face
+                        ;; form without leaking Lisp symbols into JSON.
+                        :face
+                        (list :lisp
+                              (prin1-to-string
+                               (plist-get descriptor :face)))))
                 styles))
               :root root)
         :styles (vconcat styles)
@@ -2050,20 +2122,191 @@ per call, and no call recursively visits the captured Ebox tree."
                   ebox-native-reflow--compile-property-templates)))))
           (ebox-native-reflow-layout-builder-package builder)))))
 
-(defun ebox-native-reflow--compile-layout-package (node)
-  "Compile NODE to a native document plus its Emacs-owned style registry."
+(defun ebox-native-reflow--compile-layout-package
+    (node &optional retained-styles retained-property-templates)
+  "Compile NODE, extending optional retained native registries."
   (unless (fboundp 'ebox--grapheme-clusters)
     (error "Native reflow layout compiler requires Ebox"))
   (ebox--with-validated-display-cache
-    (let ((ebox-native-reflow--compile-styles nil)
-          (ebox-native-reflow--compile-property-templates nil)
-          (ebox-native-reflow--compile-property-template-ids
-           (make-hash-table :test 'equal))
+    (let* ((ebox-native-reflow--compile-styles
+            (append retained-styles nil))
+           (ebox-native-reflow--compile-property-templates
+            (append retained-property-templates nil))
+           (ebox-native-reflow--compile-property-template-ids
+            (make-hash-table :test 'equal))
+          (ebox-native-reflow--compile-display-signature
+           (ebox-display-signature))
           (ebox-native-reflow--compile-root-node node))
+      (cl-loop
+       for template in ebox-native-reflow--compile-property-templates
+       for index from 0
+       do (puthash template index
+                   ebox-native-reflow--compile-property-template-ids))
       (let ((root (ebox-native-reflow--compile-node node)))
         (ebox-native-reflow--layout-package-from-root
          root ebox-native-reflow--compile-styles
          ebox-native-reflow--compile-property-templates)))))
+
+(defun ebox-native-reflow--retained-layout-children (node)
+  "Return NODE children referenced by one compiled native fragment."
+  (pcase (plist-get node :ebox-type)
+    ('box (when-let ((child (plist-get node :ebox-content-node)))
+            (list child)))
+    ((or 'concat 'stack) (ebox--layout-children node))
+    ('flex
+     (mapcar #'ebox--flex-item-source-node
+             (ebox-tree-layout-children node)))
+    (_ nil)))
+
+(defun ebox-native-reflow--retained-layout-postorder (root)
+  "Return compiler-owned postorder for retained ROOT."
+  (let (nodes)
+    (cl-labels
+        ((visit (node)
+           (dolist (child
+                    (ebox-native-reflow--retained-layout-children node))
+             (visit child))
+           (unless (eq (plist-get node :ebox-type) 'flex-item)
+             (push node nodes))))
+      (visit root))
+    (vconcat (nreverse nodes))))
+
+(defun ebox-native-reflow--retained-layout-signature
+    (node child-revisions flex-content-min-widths)
+  "Return exact retained compiler signature for NODE and CHILD-REVISIONS."
+  (let ((wrapper (and (eq (plist-get node :ebox-type) 'flex)
+                      (plist-get node :box))))
+    (list
+     (plist-get node :ebox-type)
+     (plist-get node :node-id)
+     (or (plist-get node :region-id)
+         (and wrapper (plist-get wrapper :region-id)))
+     (ebox-tree-node-local-source-signature node)
+     (and wrapper (ebox-tree-node-local-source-signature wrapper))
+     child-revisions
+     (and (eq (plist-get node :ebox-type) 'flex)
+          (mapcar
+           (lambda (child)
+             (and (hash-table-p flex-content-min-widths)
+                  (gethash child flex-content-min-widths)))
+           (ebox-native-reflow--retained-layout-children node))))))
+
+(defun ebox-native-reflow--compile-retained-layout-package
+    (session state node)
+  "Compile NODE incrementally into retained native SESSION from STATE."
+  (let ((postorder (plist-get state :native-node-postorder)))
+    (unless (and (vectorp postorder) (> (length postorder) 0))
+      (setq postorder
+            (ebox-native-reflow--retained-layout-postorder node)))
+    (ebox--with-validated-display-cache
+        (let* ((old-cache
+                (or (ebox-native-reflow-session-layout-fragment-cache session)
+                    (make-hash-table :test 'equal)))
+               (fragments (make-hash-table :test 'eq))
+               (revision
+                (or (ebox-native-reflow-session-layout-fragment-revision session)
+                    0))
+               (flex-content-min-widths
+                (plist-get state :flex-content-min-widths))
+               (touched-ids (plist-get state :native-touched-node-ids))
+               (touched-set
+                (and (plist-get state :native-topology-stable-p)
+                     (consp touched-ids)
+                     (make-hash-table :test 'equal)))
+               (retained-fast-p
+                (and touched-set
+                     (= (hash-table-count old-cache) (length postorder))
+                     (gethash (plist-get node :node-id) old-cache)))
+               (new-cache
+                (if retained-fast-p
+                    (copy-hash-table old-cache)
+                  (make-hash-table :test 'equal)))
+               (ebox-native-reflow--compile-styles
+                (append (ebox-native-reflow-session-styles session) nil))
+               (ebox-native-reflow--compile-property-templates
+                (append
+                 (plist-get
+                  (ebox-native-reflow-session-layout-package session)
+                  :property-templates)
+                 nil))
+               (ebox-native-reflow--compile-property-template-ids
+                (make-hash-table :test 'equal))
+               (ebox-native-reflow--compile-display-signature
+                (ebox-display-signature))
+               (ebox-native-reflow--compile-root-node node)
+               (ebox--render-string-pixel-width-cache
+                (make-hash-table :test 'equal))
+               (ebox--render-string-max-pixel-width-cache
+                (make-hash-table :test 'eq)))
+          (dolist (node-id touched-ids)
+            (when touched-set (puthash node-id t touched-set)))
+          (cl-loop
+           for template in ebox-native-reflow--compile-property-templates
+           for index from 0
+           do (puthash template index
+                       ebox-native-reflow--compile-property-template-ids))
+          (cl-labels
+              ((seed-fragment
+                (current)
+                (let ((entry (gethash (plist-get current :node-id)
+                                      new-cache)))
+                  (unless entry
+                    (error "Native retained layout cache lost a stable node"))
+                  (puthash current (plist-get entry :fragment) fragments)
+                  entry))
+               (compile-current
+                (current)
+                (let* ((node-id (plist-get current :node-id))
+                       (cached (gethash node-id old-cache))
+                       (children
+                        (ebox-native-reflow--retained-layout-children current))
+                       (_seeded
+                        (when retained-fast-p
+                          (dolist (child children)
+                            (seed-fragment child))))
+                       (child-revisions
+                        (mapcar
+                         (lambda (child)
+                           (plist-get
+                            (gethash (plist-get child :node-id) new-cache)
+                            :revision))
+                         children))
+                       (signature
+                        (ebox-native-reflow--retained-layout-signature
+                         current child-revisions flex-content-min-widths))
+                       fragment entry)
+                  (if (and cached
+                           (equal signature (plist-get cached :signature)))
+                      (setq fragment (plist-get cached :fragment)
+                            entry cached)
+                    (setq fragment
+                          (ebox-native-reflow--compile-scene-node
+                           current fragments flex-content-min-widths)
+                          revision (1+ revision)
+                          entry (list :signature (copy-tree signature)
+                                      :fragment fragment
+                                      :revision revision)))
+                  (puthash current fragment fragments)
+                  (puthash node-id entry new-cache))))
+            (dotimes (index (length postorder))
+              (let* ((current (aref postorder index))
+                     (node-id (plist-get current :node-id)))
+                (if (and retained-fast-p
+                         (not (gethash node-id touched-set)))
+                    nil
+                  (compile-current current))))
+            (when retained-fast-p
+              (seed-fragment node)))
+          (let ((package
+                 (ebox-native-reflow--layout-package-from-root
+                  (ebox-native-reflow--compiled-scene-child fragments node)
+                  ebox-native-reflow--compile-styles
+                  ebox-native-reflow--compile-property-templates)))
+            (setf (ebox-native-reflow-session-layout-fragment-cache session)
+                  new-cache
+                  (ebox-native-reflow-session-layout-fragment-revision session)
+                  revision)
+            package)))))
 
 (defun ebox-native-reflow-compile-layout-ir (node)
   "Compile NODE to one complete versioned native layout document."
@@ -2193,7 +2436,12 @@ LAYOUT-PACKAGE may reuse a caller-validated document for the same NODE."
   (unless (and (integerp generation) (>= generation 0))
     (error "Native reflow generation must be a nonnegative integer"))
   (let* ((package (or layout-package
-                      (ebox-native-reflow--compile-layout-package node)))
+                      (ebox-native-reflow--compile-layout-package
+                       node
+                       (ebox-native-reflow-session-styles session)
+                       (plist-get
+                        (ebox-native-reflow-session-layout-package session)
+                        :property-templates))))
          (register-layout-p
           (not (eq package
                    (ebox-native-reflow-session-layout-package session))))
@@ -2543,7 +2791,8 @@ plist supplied by the caller."
       (setq position (next-property-change position rendered limit))))))
 
 (defun ebox-native-reflow--patch-payload-metadata
-    (metadata metadata-record-count target-character-count complete-p)
+    (metadata metadata-record-count target-character-count complete-p
+              property-template-count style-count)
   "Validate patch METADATA against its declared record count."
   (cond
    ((null metadata)
@@ -2556,7 +2805,8 @@ plist supplied by the caller."
     (error "Native reflow tape has too many metadata records"))
    (t
     (ebox-native-reflow--validate-root-metadata
-     metadata metadata-record-count target-character-count))))
+     metadata metadata-record-count target-character-count
+     property-template-count style-count))))
 
 (defun ebox-native-reflow--patch-payload-replacements (text descriptors)
   "Split aggregate patch TEXT into replacement strings for DESCRIPTORS."
@@ -2589,7 +2839,7 @@ plist supplied by the caller."
          (payload (car parsed)))
     (unless (= (cdr parsed) (length literal))
       (error "Native reflow patch payload literal has trailing data"))
-    (unless (and (vectorp payload) (= (length payload) 2)
+    (unless (and (vectorp payload) (memq (length payload) '(2 3))
                  (stringp (aref payload 0)))
       (error "Native reflow patch payload shape mismatch"))
     (let* ((text (aref payload 0))
@@ -2608,7 +2858,23 @@ plist supplied by the caller."
        :metadata
        (ebox-native-reflow--patch-payload-metadata
         (aref payload 1) metadata-record-count target-character-count
-        complete-p)))))
+        complete-p (length property-templates) (length styles))
+       :fragment-style-delta
+       (when (= (length payload) 3)
+         (let ((delta (aref payload 2)) (previous -1))
+           (unless (proper-list-p delta)
+             (error "Native fragment style delta is not a list"))
+           (dolist (entry delta)
+             (unless (and (proper-list-p entry) entry
+                          (integerp (car entry)) (> (car entry) previous)
+                          (cl-every
+                           (lambda (style-id)
+                             (and (integerp style-id) (>= style-id 0)
+                                  (< style-id (length styles))))
+                           (cdr entry)))
+               (error "Native fragment style delta is invalid"))
+             (setq previous (car entry)))
+           delta))))))
 
 (defun ebox-native-reflow--root-metadata-point-span-p
     (span character-count)
@@ -2684,8 +2950,69 @@ plist supplied by the caller."
      table)
     count))
 
+(defun ebox-native-reflow--validate-root-fragment-template
+    (template character-count property-template-count style-count)
+  "Validate compact root fragment TEMPLATE and return its record count."
+  (unless (vectorp template)
+    (error "Native reflow tape has an invalid fragment template"))
+  (let ((cursor 0)
+        (previous-line 0)
+        (allowed-roles ebox-native-reflow--tape-metadata-role-symbols))
+    (dotimes (index (length template))
+      (let ((record (aref template index)))
+        (unless (and (vectorp record) (= (length record) 8))
+          (error "Native reflow tape has an invalid fragment record"))
+        (let ((start (aref record 0))
+              (end (aref record 1))
+              (line (aref record 2))
+              (roles (aref record 3))
+              (content-owner (aref record 4))
+              (content-index (aref record 5))
+              (template-ids (aref record 6))
+              (style-ids (aref record 7))
+              (seen (make-hash-table :test #'equal)))
+          (unless (and (integerp start) (integerp end)
+                       (= start cursor) (< start end)
+                       (<= end character-count)
+                       (integerp line) (<= previous-line line))
+            (error "Native reflow tape fragment coordinates are invalid"))
+          (unless (proper-list-p roles)
+            (error "Native reflow tape fragment roles are invalid"))
+          (dolist (role roles)
+            (unless (and (consp role) (memq (car role) allowed-roles)
+                         (integerp (cdr role)) (> (cdr role) 0)
+                         (not (gethash role seen)))
+              (error "Native reflow tape fragment role is invalid"))
+            (puthash role t seen))
+          (unless (or (null content-owner)
+                      (and (integerp content-owner) (> content-owner 0)))
+            (error "Native reflow tape fragment owner is invalid"))
+          (unless (or (null content-index)
+                      (and (integerp content-index) (>= content-index 0)))
+            (error "Native reflow tape fragment content index is invalid"))
+          (unless (and (proper-list-p template-ids)
+                       (cl-every
+                        (lambda (template-id)
+                          (and (integerp template-id) (>= template-id 0)
+                               (< template-id property-template-count)))
+                        template-ids))
+            (error "Native reflow tape fragment property template is invalid"))
+          (unless (and (proper-list-p style-ids)
+                       (cl-every
+                        (lambda (style-id)
+                          (and (integerp style-id) (>= style-id 0)
+                               (< style-id style-count)))
+                        style-ids))
+            (error "Native reflow tape fragment style is invalid"))
+          (setq cursor end
+                previous-line line))))
+    (unless (= cursor character-count)
+      (error "Native reflow tape fragment template is incomplete"))
+    (length template)))
+
 (defun ebox-native-reflow--validate-root-metadata
-    (metadata record-count character-count)
+    (metadata record-count character-count _property-template-count
+              &optional _style-count)
   "Validate precompiled METADATA against its declared dimensions."
   (pcase metadata
     (`(:prepared-p t
@@ -2709,6 +3036,7 @@ plist supplied by the caller."
 
 (defun ebox-native-reflow--tape-read-root-metadata
     (cursor metadata-byte-count record-count character-count complete-p
+            property-template-count style-count
             &optional _trusted-native-encoder-p)
   "Read and validate one precompiled root metadata literal from CURSOR."
   (cond
@@ -2737,10 +3065,174 @@ plist supplied by the caller."
       (unless (= (cdr parsed) (length literal))
         (error "Native reflow root metadata has trailing data"))
       (ebox-native-reflow--validate-root-metadata
-       metadata record-count character-count)))))
+       metadata record-count character-count property-template-count
+       style-count)))))
+
+(defun ebox-native-reflow--fragment-role-symbol (kind)
+  "Return the semantic role symbol encoded by fragment KIND."
+  (and (integerp kind) (<= 1 kind 14)
+       (nth (1- kind) ebox-native-reflow--tape-metadata-role-symbols)))
+
+(defun ebox-native-reflow--fragment-template-from-flat
+    (flat record-count character-count property-template-count style-count)
+  "Validate native-decoded FLAT fragment effects and return compact records."
+  (unless (and (vectorp flat) (integerp record-count)
+               (>= record-count 0))
+    (error "Native reflow decoded fragment tape is invalid"))
+  (let ((cursor 0)
+        (length (length flat))
+        (template (make-vector record-count nil))
+        (none-value (- (ash 1 63))))
+    (dotimes (index record-count)
+      (when (> (+ cursor 8) length)
+        (error "Native reflow decoded fragment record is truncated"))
+      (let* ((start (aref flat cursor))
+             (finish (aref flat (+ cursor 1)))
+             (line (aref flat (+ cursor 2)))
+             (owner-value (aref flat (+ cursor 3)))
+             (content-index-value (aref flat (+ cursor 4)))
+             (role-count (aref flat (+ cursor 5)))
+             (template-count (aref flat (+ cursor 6)))
+             (fragment-style-count (aref flat (+ cursor 7)))
+             roles template-ids style-ids)
+        (setq cursor (+ cursor 8))
+        (unless (and (integerp role-count) (>= role-count 0)
+                     (integerp template-count) (>= template-count 0)
+                     (integerp fragment-style-count)
+                     (>= fragment-style-count 0)
+                     (<= (+ cursor (* role-count 2)
+                            template-count fragment-style-count)
+                         length))
+          (error "Native reflow decoded fragment dimensions are invalid"))
+        (dotimes (_ role-count)
+          (let ((role
+                 (ebox-native-reflow--fragment-role-symbol
+                  (aref flat cursor)))
+                (region-id (aref flat (1+ cursor))))
+            (unless (and role (integerp region-id) (> region-id 0)
+                         (not (member (cons role region-id) roles)))
+              (error "Native reflow decoded fragment role is invalid"))
+            (push (cons role region-id) roles)
+            (setq cursor (+ cursor 2))))
+        (dotimes (_ template-count)
+          (let ((template-id (aref flat cursor)))
+            (unless (and (integerp template-id) (>= template-id 0)
+                         (< template-id property-template-count))
+              (error "Native reflow decoded property template is invalid"))
+            (push template-id template-ids)
+            (setq cursor (1+ cursor))))
+        (dotimes (_ fragment-style-count)
+          (let ((style-id (aref flat cursor)))
+            (unless (and (integerp style-id) (>= style-id 0)
+                         (< style-id style-count))
+              (error "Native reflow decoded fragment style is invalid"))
+            (push style-id style-ids)
+            (setq cursor (1+ cursor))))
+        (aset template index
+              (vector start finish line (nreverse roles)
+                      (unless (= owner-value none-value) owner-value)
+                      (unless (= content-index-value none-value)
+                        content-index-value)
+                      (nreverse template-ids) (nreverse style-ids)))))
+    (unless (= cursor length)
+      (error "Native reflow decoded fragment tape has trailing values"))
+    (ebox-native-reflow--validate-root-fragment-template
+     template character-count property-template-count style-count)
+    template))
+
+(defun ebox-native-reflow--tape-read-fragment-template
+    (cursor byte-count record-count character-count
+            property-template-count style-count
+            &optional flat flat-record-count)
+  "Read and validate one compact binary fragment effect tape from CURSOR."
+  (cond
+   ((and (zerop byte-count) (zerop record-count)) [])
+   ((or (zerop byte-count) (zerop record-count))
+    (error "Native reflow fragment tape has inconsistent dimensions"))
+   ((or (> record-count most-positive-fixnum)
+        (> record-count character-count))
+    (error "Native reflow fragment tape has too many records"))
+   (t
+    (let* ((end (+ (aref cursor 1) byte-count))
+           (fragment-cursor (vector (aref cursor 0) (aref cursor 1) end))
+           (template (make-vector record-count nil))
+           (previous-end 0)
+           (previous-line 0)
+           (none-value (- (ash 1 63))))
+      (when (> end (aref cursor 2))
+        (error "Native reflow fragment tape exceeds its frame"))
+      (if flat
+          (progn
+            (unless (= flat-record-count record-count)
+              (error "Native reflow decoded fragment count mismatch"))
+            (aset cursor 1 end)
+            (ebox-native-reflow--fragment-template-from-flat
+             flat record-count character-count property-template-count
+             style-count))
+        (progn
+          (dotimes (index record-count)
+        (ebox-native-reflow--tape-require fragment-cursor 56)
+        (let* ((start (ebox-native-reflow--tape-read-u64 fragment-cursor))
+               (finish (ebox-native-reflow--tape-read-u64 fragment-cursor))
+               (line (ebox-native-reflow--tape-read-u64 fragment-cursor))
+               (owner-value
+                (ebox-native-reflow--tape-read-i64 fragment-cursor))
+               (content-index-value
+                (ebox-native-reflow--tape-read-i64 fragment-cursor))
+               (role-count
+                (ebox-native-reflow--tape-read-u32 fragment-cursor))
+               (template-count
+                (ebox-native-reflow--tape-read-u32 fragment-cursor))
+               (fragment-style-count
+                (ebox-native-reflow--tape-read-u32 fragment-cursor))
+               (reserved
+                (ebox-native-reflow--tape-read-u32 fragment-cursor))
+               roles template-ids style-ids)
+          (unless (and (= start previous-end) (< start finish)
+                       (<= finish character-count)
+                       (<= previous-line line) (zerop reserved))
+            (error "Native reflow fragment tape has invalid coordinates"))
+          (dotimes (_ role-count)
+            (let ((role
+                   (ebox-native-reflow--fragment-role-symbol
+                    (ebox-native-reflow--tape-read-u8 fragment-cursor)))
+                  (region-id
+                   (ebox-native-reflow--tape-read-i64 fragment-cursor)))
+              (unless (and role (> region-id 0)
+                           (not (member (cons role region-id) roles)))
+                (error "Native reflow fragment tape has an invalid role"))
+              (push (cons role region-id) roles)))
+          (dotimes (_ template-count)
+            (let ((template-id
+                   (ebox-native-reflow--tape-read-u32 fragment-cursor)))
+              (unless (< template-id property-template-count)
+                (error "Native reflow fragment tape has an invalid property template"))
+              (push template-id template-ids)))
+          (dotimes (_ fragment-style-count)
+            (let ((style-id
+                   (ebox-native-reflow--tape-read-u32 fragment-cursor)))
+              (unless (< style-id style-count)
+                (error "Native reflow fragment tape has an invalid style"))
+              (push style-id style-ids)))
+          (aset template index
+                (vector start finish line (nreverse roles)
+                        (unless (= owner-value none-value) owner-value)
+                        (unless (= content-index-value none-value)
+                          content-index-value)
+                        (nreverse template-ids) (nreverse style-ids)))
+            (setq previous-end finish
+                  previous-line line)))
+          (unless (and (= previous-end character-count)
+                       (= (aref fragment-cursor 1) end))
+            (error "Native reflow fragment tape is incomplete"))
+          (aset cursor 1 end)
+          (ebox-native-reflow--validate-root-fragment-template
+           template character-count property-template-count style-count)
+          template))))))
 
 (defun ebox-native-reflow--preflight-layout-patch-tape
-    (cursor header styles trusted-native-encoder-p property-templates)
+    (cursor header styles trusted-native-encoder-p property-templates
+            &optional fragment-flat fragment-flat-count)
   "Decode one Rust-origin minimal patch body from CURSOR.
 HEADER supplies the already validated target identity.  STYLES owns the face
          registry.  TRUSTED-NATIVE-ENCODER-P is retained for full-tape
@@ -2753,15 +3245,34 @@ HEADER supplies the already validated target identity.  STYLES owns the face
          (reserved (ebox-native-reflow--tape-read-u32 cursor))
          (metadata-record-count (ebox-native-reflow--tape-read-u64 cursor))
          (payload-byte-length (ebox-native-reflow--tape-read-u64 cursor))
+         (fragment-byte-length (ebox-native-reflow--tape-read-u64 cursor))
+         (fragment-record-count (ebox-native-reflow--tape-read-u64 cursor))
+         (coordinate-patch-count
+          (ebox-native-reflow--tape-read-u32 cursor))
+         (coordinate-reserved
+          (ebox-native-reflow--tape-read-u32 cursor))
          (target-character-count (plist-get header :character-count))
          (descriptor-bytes
-          (* patch-count ebox-native-reflow--tape-patch-descriptor-length))
-         (required-bytes (+ descriptor-bytes payload-byte-length)))
-    (unless (zerop reserved)
-      (error "Native reflow patch reserved field is nonzero"))
+          (* (+ patch-count coordinate-patch-count)
+             ebox-native-reflow--tape-patch-descriptor-length))
+         (required-bytes
+          (+ descriptor-bytes payload-byte-length fragment-byte-length)))
+    (unless (and (integerp reserved) (<= 0 reserved 15))
+      (error "Native reflow patch flags are invalid"))
+    (unless (zerop coordinate-reserved)
+      (error "Native reflow coordinate patch reserved field is nonzero"))
+    (when (and (/= (logand reserved 1) 0)
+               (not (and (zerop fragment-byte-length)
+                         (zerop fragment-record-count))))
+      (error "Native reflow reused fragment tape has a payload"))
+    (when (and (/= (logand reserved 8) 0)
+               (not (and (zerop fragment-byte-length)
+                         (zerop fragment-record-count))))
+      (error "Native fragment style delta has a full fragment payload"))
     (unless (= required-bytes (- (aref cursor 2) (aref cursor 1)))
       (error "Native reflow patch body length mismatch"))
     (let ((descriptors nil)
+          (coordinate-descriptors nil)
           (previous-old-end 0)
           (previous-new-end 0))
       (dotimes (_ patch-count)
@@ -2786,6 +3297,29 @@ HEADER supplies the already validated target identity.  STYLES owns the face
                  (- target-character-count previous-new-end))
         (error "Native reflow patch target length is inconsistent"))
       (setq descriptors (nreverse descriptors))
+      (setq previous-old-end 0 previous-new-end 0)
+      (dotimes (_ coordinate-patch-count)
+        (let ((old-start (ebox-native-reflow--tape-read-u64 cursor))
+              (old-end (ebox-native-reflow--tape-read-u64 cursor))
+              (new-start (ebox-native-reflow--tape-read-u64 cursor))
+              (new-end (ebox-native-reflow--tape-read-u64 cursor)))
+          (unless (and (<= previous-old-end old-start old-end
+                           base-character-count)
+                       (<= previous-new-end new-start new-end
+                           target-character-count)
+                       (= (- old-start previous-old-end)
+                          (- new-start previous-new-end))
+                       (or (< old-start old-end) (< new-start new-end)))
+            (error "Native reflow coordinate patch is invalid"))
+          (push (list :old-start old-start :old-end old-end
+                      :new-start new-start :new-end new-end)
+                coordinate-descriptors)
+          (setq previous-old-end old-end
+                previous-new-end new-end)))
+      (unless (= (- base-character-count previous-old-end)
+                 (- target-character-count previous-new-end))
+        (error "Native reflow coordinate patch length is inconsistent"))
+      (setq coordinate-descriptors (nreverse coordinate-descriptors))
       (let* ((payload-end (+ (aref cursor 1) payload-byte-length))
              (payload-cursor
               (vector (aref cursor 0) (aref cursor 1) payload-end))
@@ -2798,24 +3332,44 @@ HEADER supplies the already validated target identity.  STYLES owns the face
         (unless (= (aref payload-cursor 1) payload-end)
           (error "Native reflow patch body has trailing bytes"))
         (aset cursor 1 payload-end)
+        (let* ((style-delta (plist-get payload :fragment-style-delta))
+               (_style-delta-contract
+                (unless (eq (/= (logand reserved 8) 0)
+                            (and style-delta t))
+                  (error "Native fragment style delta flag mismatch")))
+               (fragments
+                (unless style-delta
+                  (ebox-native-reflow--tape-read-fragment-template
+                   cursor fragment-byte-length fragment-record-count
+                   target-character-count (length property-templates)
+                   (length styles) fragment-flat fragment-flat-count))))
+          (when style-delta
+            (aset cursor 1 (+ (aref cursor 1) fragment-byte-length)))
         (unless (= (aref cursor 1) (aref cursor 2))
           (error "Native reflow patch tape has trailing bytes"))
         (list :native-patch t
+              :reuse-fragment-template (/= (logand reserved 1) 0)
+              :reuse-ownership-template (/= (logand reserved 2) 0)
+              :reuse-mount-projection (/= (logand reserved 4) 0)
+              :fragment-style-delta style-delta
               :patch-origin 'rust
               :base-character-count base-character-count
               :target-character-count target-character-count
               :target-line-count (plist-get header :line-count)
               :patches descriptors
-              :root-render-metadata (plist-get payload :metadata)
+              :coordinate-patches coordinate-descriptors
+              :root-render-metadata
+              (append (plist-get payload :metadata)
+                      (list :fragment-span-template fragments))
               :metadata-record-count metadata-record-count
               :replacement-bytes
               (cl-loop for replacement in (plist-get payload :replacements)
                        sum (string-bytes replacement))
-              :full-frame-bytes 0)))))
+              :full-frame-bytes 0))))))
 
 (defun ebox-native-reflow--preflight-layout-tape
     (payload styles expected &optional trusted-native-encoder-p
-             property-templates)
+             property-templates fragment-flat fragment-flat-count)
   "Validate and decode one versioned Rust materialization tape PAYLOAD."
   (unless (vectorp styles)
     (error "Native reflow styles must be a vector"))
@@ -2834,18 +3388,22 @@ HEADER supplies the already validated target identity.  STYLES owns the face
                 message-bytes "error message"))))
     (if (plist-get header :patch)
         (ebox-native-reflow--preflight-layout-patch-tape
-         cursor header styles trusted-native-encoder-p property-templates)
+         cursor header styles trusted-native-encoder-p property-templates
+         fragment-flat fragment-flat-count)
       (ebox-native-reflow--tape-require
        cursor ebox-native-reflow--tape-body-preamble-length)
       (let* ((literal-byte-length (ebox-native-reflow--tape-read-u64 cursor))
            (line-width-count (ebox-native-reflow--tape-read-u32 cursor))
            (metadata-byte-length (ebox-native-reflow--tape-read-u32 cursor))
            (metadata-record-count (ebox-native-reflow--tape-read-u64 cursor))
+           (fragment-byte-length (ebox-native-reflow--tape-read-u64 cursor))
+           (fragment-record-count (ebox-native-reflow--tape-read-u64 cursor))
            (line-count (plist-get header :line-count))
            (declared-characters (plist-get header :character-count))
            (required-bytes (+ (* line-width-count 8)
                               literal-byte-length
-                              metadata-byte-length)))
+                              metadata-byte-length
+                              fragment-byte-length)))
       (unless (= line-width-count line-count)
         (error "Native reflow tape body metadata mismatch"))
       (unless (= required-bytes (- (aref cursor 2) (aref cursor 1)))
@@ -2883,14 +3441,22 @@ HEADER supplies the already validated target identity.  STYLES owns the face
                  (ebox-native-reflow--tape-read-root-metadata
                   cursor metadata-byte-length metadata-record-count
                   declared-characters (plist-get header :complete)
+                  (length property-templates)
+                  (length styles)
                   trusted-native-encoder-p)))
+            (let ((fragments
+                   (ebox-native-reflow--tape-read-fragment-template
+                    cursor fragment-byte-length fragment-record-count
+                    declared-characters (length property-templates)
+                    (length styles) fragment-flat fragment-flat-count)))
             (unless (= (aref cursor 1) (aref cursor 2))
               (error "Native reflow tape has trailing bytes"))
-            (vector header rendered line-widths metadata))))))))
+            (vector header rendered line-widths metadata fragments)))))))))
 
 (defun ebox-native-reflow--materialize-layout-tape
     (payload &optional styles expected trusted-native-encoder-p
-             property-templates)
+             property-templates return-frame-p fragment-flat
+             fragment-flat-count)
   "Validate and materialize binary layout tape PAYLOAD.
 STYLES supplies Emacs-owned face templates.  EXPECTED optionally constrains
 the identity header before any result string is allocated.  When
@@ -2899,7 +3465,7 @@ typed line-width and property invariants instead of repeating them in Emacs."
   (let* ((styles (or styles []))
          (decoded (ebox-native-reflow--preflight-layout-tape
                    payload styles expected trusted-native-encoder-p
-                   property-templates)))
+                   property-templates fragment-flat fragment-flat-count)))
     (if (plist-get decoded :native-patch)
         (let* ((patch-count (length (plist-get decoded :patches)))
                (metadata-count
@@ -2914,7 +3480,9 @@ typed line-width and property invariants instead of repeating them in Emacs."
           decoded)
       (let ((header (aref decoded 0))
             (rendered (aref decoded 1))
-            (line-widths (aref decoded 2)))
+            (line-widths (aref decoded 2))
+            (metadata (aref decoded 3))
+            (fragments (aref decoded 4)))
         (unless trusted-native-encoder-p
           (ebox-native-reflow--validate-literal-properties
            rendered styles (plist-get header :complete)
@@ -2927,7 +3495,15 @@ typed line-width and property invariants instead of repeating them in Emacs."
                      unless (= (ebox-string-pixel-width line)
                                (aref line-widths index))
                      do (error "Native reflow tape line width mismatch"))))
-        rendered))))
+        (if return-frame-p
+            (list :native-frame t :rendered rendered
+                  :root-render-metadata metadata
+                  :effect-tape
+                  (append metadata (list :fragment-span-template fragments))
+                  :line-widths line-widths
+                  :styles styles
+                  :property-templates property-templates)
+          rendered)))))
 
 (defun ebox-native-reflow-take-layout
     (session generation key &optional expected)
@@ -2948,44 +3524,223 @@ EXPECTED may add exact tape identity fields beyond GENERATION and KEY."
        (plist-get (ebox-native-reflow-session-layout-package session)
                   :property-templates)))))
 
-(defun ebox-native-reflow-render-proof-sync
+(defun ebox-native-reflow-execute-sync
     (node frame &optional layout-package)
-  "Render NODE once through the native synchronous proof path.
+  "Execute NODE once through the native synchronous frame path.
 FRAME supplies positive viewport geometry and optional `:root-width'.  The
-result is a fully materialized propertized string; native-owned property
-template ids are expanded before returning."
+result contains the fully materialized propertized string plus the validated
+root effect metadata required by a thin host commit."
   (when (and (ebox-native-reflow-layout-ready-p)
-             (fboundp 'ebox-native--module-render-proof))
+             (fboundp 'ebox-native--module-render-frame))
     (let* ((package (or layout-package
                         (ebox-native-reflow--compile-layout-package node)))
            (native-key (or (plist-get frame :key) 1))
            (control-frame (copy-sequence frame)))
       (setq control-frame (plist-put control-frame :key native-key))
-      (let* ((payload
-              (ebox-native--module-render-proof
-               (ebox-native-reflow--layout-control-json
-                (plist-get package :document)
-                (list control-frame))))
-             (expected
-              (list :generation 0
-                    :key native-key
-                    :runtime-revision
-                    (or (plist-get control-frame :runtime-revision) 0)
-                    :context-hash
-                    (or (plist-get control-frame :context-hash) 0)
-                    :viewport-width (plist-get control-frame :viewport-width)
-                    :viewport-height
-                    (plist-get control-frame :viewport-height)
-                    :root-width
-                    (or (plist-get control-frame :root-width)
-                        (plist-get control-frame :viewport-width))
-                    :complete
-                    (if (plist-member control-frame :complete)
-                        (plist-get control-frame :complete)
-                      t))))
-        (ebox-native-reflow--materialize-layout-tape
-         payload (plist-get package :styles) expected t
-         (plist-get package :property-templates))))))
+      (ebox-native-reflow--materialize-module-frame
+       (ebox-native--module-render-frame
+        (ebox-native-reflow--layout-control-json
+         (plist-get package :document)
+         (list control-frame)))
+       package control-frame 0))))
+
+(defun ebox-native-reflow--materialize-module-frame
+    (native-frame package control-frame generation)
+  "Materialize NATIVE-FRAME for PACKAGE and CONTROL-FRAME identity."
+  (let* ((payload (aref native-frame 0))
+         (fragment-flat (aref native-frame 1))
+         (fragment-flat-count (aref native-frame 2))
+         (expected
+          (list :generation generation
+                :key (or (plist-get control-frame :key) 1)
+                :runtime-revision
+                (or (plist-get control-frame :runtime-revision) 0)
+                :context-hash
+                (or (plist-get control-frame :context-hash) 0)
+                :viewport-width (plist-get control-frame :viewport-width)
+                :viewport-height (plist-get control-frame :viewport-height)
+                :root-width
+                (or (plist-get control-frame :root-width)
+                    (plist-get control-frame :viewport-width))
+                :complete
+                (if (plist-member control-frame :complete)
+                    (plist-get control-frame :complete)
+                  t)))
+         (result
+          (ebox-native-reflow--materialize-layout-tape
+           payload (plist-get package :styles) expected t
+           (plist-get package :property-templates) t
+           fragment-flat fragment-flat-count)))
+    (when (plist-get result :native-patch)
+      (plist-put result :styles (plist-get package :styles))
+      (plist-put result :property-templates
+                 (plist-get package :property-templates)))
+    result))
+
+(defun ebox-native-reflow-execute-session-sync
+    (session node frame &optional layout-package state)
+  "Execute NODE synchronously through retained native SESSION."
+  (unless (and (ebox-native-reflow-session-p session)
+               (fboundp 'ebox-native--module-render-session-frame))
+    (error "Native retained frame execution is unavailable"))
+  (let* ((package
+          (or layout-package
+              (if state
+                  (ebox-native-reflow--compile-retained-layout-package
+                   session state node)
+                (ebox-native-reflow--compile-layout-package
+                 node
+                 (ebox-native-reflow-session-styles session)
+                 (plist-get
+                  (ebox-native-reflow-session-layout-package session)
+                  :property-templates)))))
+         (generation (1+ (ebox-native-reflow-session-generation session)))
+         (control-frame (copy-sequence frame))
+         (native-key (or (plist-get control-frame :key) 1)))
+    (setq control-frame (plist-put control-frame :key native-key))
+    (let ((result
+           (ebox-native-reflow--materialize-module-frame
+            (ebox-native--module-render-session-frame
+             (ebox-native-reflow--live-handle session)
+             generation
+             (ebox-native-reflow--layout-control-json
+              (plist-get package :document) (list control-frame)))
+            package control-frame generation)))
+      (setf (ebox-native-reflow-session-generation session) generation
+            (ebox-native-reflow-session-layout-package session) package
+            (ebox-native-reflow-session-styles session)
+            (plist-get package :styles))
+      result)))
+
+(defun ebox-native-reflow-render-proof-sync
+    (node frame &optional layout-package)
+  "Render NODE once through the native synchronous proof path.
+This compatibility entry returns only the rendered string.  New runtime
+callers should consume `ebox-native-reflow-execute-sync' and commit its effect
+metadata together with the text."
+  (when-let ((result
+              (ebox-native-reflow-execute-sync node frame layout-package)))
+    (plist-get result :rendered)))
+
+(defun ebox-native-reflow--face-entries (face)
+  "Return FACE as an ordered list of face entries."
+  (cond ((null face) nil)
+        ((and (listp face) (keywordp (car-safe face))) (list face))
+        ((listp face) (copy-sequence face))
+        (t (list face))))
+
+(defun ebox-native-reflow--face-value (entries)
+  "Return canonical face value represented by ENTRIES."
+  (pcase entries
+    ('() nil)
+    (`(,entry) entry)
+    (_ entries)))
+
+(defun ebox-native-reflow--fragment-style-faces (style-ids styles)
+  "Return effective native face contributions for STYLE-IDS."
+  (let (faces)
+    (dolist (style-id style-ids faces)
+      (let ((style (aref styles style-id)))
+        (pcase (plist-get style :mode)
+          ('set (setq faces (list (plist-get style :face))))
+          ('add (setq faces
+                      (append faces (list (plist-get style :face)))))
+          (_ (error "Native reflow frame has an invalid style mode")))))))
+
+(defun ebox-native-reflow--fragment-face-baseline
+    (rendered start style-ids styles)
+  "Remove native STYLE-IDS from RENDERED's face at START."
+  (let* ((face (get-text-property start 'face rendered))
+         (entries (ebox-native-reflow--face-entries face))
+         (contributions
+          (ebox-native-reflow--fragment-style-faces style-ids styles))
+         (count (length contributions)))
+    (when (and (> count 0)
+               (or (< (length entries) count)
+                   (not (equal (last entries count) contributions))))
+      (error "Native reflow fragment face does not match its style tape"))
+    (ebox-native-reflow--face-value
+     (if (> count 0)
+         (seq-take entries (- (length entries) count))
+       entries))))
+
+(defun ebox-native-reflow-frame-fragments (frame)
+  "Decode FRAME's fragment effect template without scanning rendered text."
+  (unless (plist-get frame :native-frame)
+    (error "Native reflow fragment decode requires a native frame"))
+  (let* ((rendered (plist-get frame :rendered))
+         (metadata (plist-get frame :effect-tape))
+         (template (and metadata
+                        (plist-get metadata :fragment-span-template)))
+         (styles (or (plist-get frame :styles) []))
+         (baseline-cache (make-hash-table :test #'equal))
+         (ordinal-table (make-hash-table :test #'equal))
+         fragments previous-role-ids next-role-ids)
+    (unless (and (stringp rendered) (vectorp template))
+      (error "Native reflow frame has no fragment effect template"))
+    (dotimes (index (length template))
+      (let* ((record (aref template index))
+             (start (aref record 0))
+             (end (aref record 1))
+             (line (aref record 2))
+             (roles (copy-tree (aref record 3)))
+             (content-owner (aref record 4))
+             (content-index (aref record 5))
+             (style-ids (aref record 7))
+             (baseline-key
+              (list (get-text-property start 'face rendered) style-ids))
+             (missing (make-symbol "native-fragment-baseline-missing"))
+             (baseline
+              (gethash baseline-key baseline-cache missing))
+             (prefix
+              (and (or roles content-owner (integerp content-index))
+                   (list :roles (copy-tree roles)
+                         :content-owner content-owner
+                         :content-index content-index)))
+             (ordinal (and prefix (gethash prefix ordinal-table 0)))
+             (address
+              (and prefix
+                   (list :roles (copy-tree roles)
+                         :content-owner content-owner
+                         :content-index content-index
+                         :ordinal ordinal))))
+        (when (eq baseline missing)
+          (setq baseline
+                (ebox-native-reflow--fragment-face-baseline
+                 rendered start style-ids styles))
+          (puthash baseline-key baseline baseline-cache))
+        (when prefix
+          (puthash prefix (1+ ordinal) ordinal-table))
+        (push (list :text rendered :text-source-p t
+                    :start start :end end :line line
+                    :paint-role-ids roles :role-ids roles
+                    :paint-address address
+                    :paint-token
+                    (and address
+                         (list :baseline (copy-tree baseline)
+                               :roles (copy-tree roles)
+                               :content-owner content-owner
+                               :content-index content-index))
+                    :face-baseline (copy-tree baseline)
+                    :face-baseline-known-p t)
+              fragments)))
+    (setq fragments (nreverse fragments))
+    (dolist (fragment fragments)
+      (if-let ((roles (plist-get fragment :role-ids)))
+          (setq previous-role-ids roles)
+        (plist-put fragment :previous-role-ids previous-role-ids)))
+    (dolist (fragment (reverse (copy-sequence fragments)))
+      (if-let ((roles (plist-get fragment :role-ids)))
+          (setq next-role-ids roles)
+        (plist-put fragment :role-ids
+                   (delete-dups
+                    (append (copy-sequence
+                             (plist-get fragment :previous-role-ids))
+                            (copy-sequence next-role-ids))))))
+    (cl-loop for fragment in fragments for index from 0
+             do (plist-put fragment :key (cons 'ebox/fragment index))
+             do (cl-remf fragment :previous-role-ids)
+             collect fragment)))
 
 (defun ebox-native-reflow-submit (session generation frames)
   "Submit FRAMES for SESSION GENERATION without waiting for results."

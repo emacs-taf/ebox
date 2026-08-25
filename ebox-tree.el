@@ -14,12 +14,20 @@
 (require 'ebox-style)
 (require 'ebox-child-range)
 
+(declare-function ebox-get "ebox" (box property))
+(declare-function ebox--ensure-node-id "ebox" (node))
+(declare-function ebox--ensure-region-id "ebox" (box))
+(declare-function ebox--next-runtime-node-id "ebox" ())
+(declare-function ebox--string-region-ids "ebox" (string))
+(declare-function ebox--box-visible-overflow-p "ebox" (box))
+
 (defconst ebox--default-display '(block flow)
   "Default CSS-like display for a plain Ebox box.")
 
 (defvar ebox--node-region-ids-cache nil
   "Dynamic snapshot-detail-local node -> region ids cache.
 This is an optimization for snapshot capture, not buffer runtime state.")
+(defvar ebox--flex-item-prop-keys)
 
 (defun ebox-tree-computed-display (node)
   "Return NODE's canonical CSS-like display pair."

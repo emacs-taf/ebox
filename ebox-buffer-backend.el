@@ -8,6 +8,8 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'ebox-measure)
+(require 'tp-style)
 
 (defvar ebox--propertize-private-content-line-p nil
   "Non-nil allows ownership to be added to fresh content lines in place.")
@@ -116,9 +118,38 @@ Set this to nil to leave `gc-cons-percentage' unchanged.")
 (defvar ebox--deferred-render-gc-depth 0
   "Number of overlapping interactive render bursts that still own GC defer.")
 
+(defvar ebox--deferred-render-gc-generation 0
+  "Generation used to reject callbacks from cancelled GC restore timers.")
+
+(cl-defstruct (ebox--render-burst-record
+               (:constructor ebox--make-render-burst-record))
+  "Private saved state for one public framework render burst."
+  mode
+  saved-threshold
+  saved-percentage)
+
+(defvar ebox--render-burst-records (make-hash-table :test #'eq)
+  "Private render-burst records keyed by opaque public tokens.")
+
+(defvar ebox--render-burst-stack nil
+  "Active public render-burst tokens, innermost first.")
+
+(defun ebox--render-burst-create-record (mode threshold percentage)
+  "Return private burst state for MODE, THRESHOLD, and PERCENTAGE."
+  (ebox--make-render-burst-record
+   :mode mode
+   :saved-threshold threshold
+   :saved-percentage percentage))
+
+(defun ebox--make-deferred-render-gc-state (threshold percentage)
+  "Return private deferred GC state for THRESHOLD and PERCENTAGE."
+  (list :gc-cons-threshold threshold
+        :gc-cons-percentage percentage))
+
 (defun ebox--deferred-render-gc-restore ()
   "Restore GC settings saved by `ebox--with-deferred-render-gc'."
   (let ((state ebox--deferred-render-gc-state))
+    (cl-incf ebox--deferred-render-gc-generation)
     (setq ebox--deferred-render-gc-state nil)
     (setq ebox--deferred-render-gc-timer nil)
     (setq ebox--deferred-render-gc-depth 0)
@@ -131,20 +162,29 @@ Set this to nil to leave `gc-cons-percentage' unchanged.")
 
 (defun ebox--deferred-render-gc-enter ()
   "Raise GC settings for an interactive render transaction."
-  (cl-incf ebox--deferred-render-gc-depth)
-  (unless ebox--deferred-render-gc-state
-    (setq ebox--deferred-render-gc-state
-          (list :gc-cons-threshold gc-cons-threshold
-                :gc-cons-percentage gc-cons-percentage)))
-  (when-let ((threshold
-              (ebox--effective-deferred-render-gc-cons-threshold)))
-    (setq gc-cons-threshold threshold))
-  (when (numberp ebox-render-gc-cons-percentage)
-    (setq gc-cons-percentage
-          (max gc-cons-percentage ebox-render-gc-cons-percentage)))
-  (when (timerp ebox--deferred-render-gc-timer)
-    (cancel-timer ebox--deferred-render-gc-timer)
-    (setq ebox--deferred-render-gc-timer nil)))
+  (let ((saved-threshold gc-cons-threshold)
+        (saved-percentage gc-cons-percentage))
+    ;; Cross a safe allocation boundary before automatic tuning or saved-state
+    ;; construction can allocate.  The original scalar values above require no
+    ;; heap record and remain authoritative for the eventual restore.
+    (when (numberp ebox-render-gc-cons-threshold)
+      (setq gc-cons-threshold
+            (max gc-cons-threshold ebox-render-gc-cons-threshold)))
+    (when (numberp ebox-render-gc-cons-percentage)
+      (setq gc-cons-percentage
+            (max gc-cons-percentage ebox-render-gc-cons-percentage)))
+    (cl-incf ebox--deferred-render-gc-generation)
+    (cl-incf ebox--deferred-render-gc-depth)
+    (when-let ((threshold
+                (ebox--effective-deferred-render-gc-cons-threshold)))
+      (setq gc-cons-threshold threshold))
+    (unless ebox--deferred-render-gc-state
+      (setq ebox--deferred-render-gc-state
+            (ebox--make-deferred-render-gc-state
+             saved-threshold saved-percentage)))
+    (when (timerp ebox--deferred-render-gc-timer)
+      (cancel-timer ebox--deferred-render-gc-timer)
+      (setq ebox--deferred-render-gc-timer nil))))
 
 (defun ebox--deferred-render-gc-raise-threshold (threshold)
   "Raise an active interactive burst allocation budget to THRESHOLD."
@@ -168,8 +208,18 @@ Set this to nil to leave `gc-cons-percentage' unchanged.")
              ebox--deferred-render-gc-state)
     (when (timerp ebox--deferred-render-gc-timer)
       (cancel-timer ebox--deferred-render-gc-timer))
-    (setq ebox--deferred-render-gc-timer
-          (run-at-time 0.2 nil #'ebox--deferred-render-gc-restore))))
+    (let ((generation (cl-incf ebox--deferred-render-gc-generation)))
+      (setq ebox--deferred-render-gc-timer
+            (run-at-time
+             0.2 nil #'ebox--deferred-render-gc-restore-if-current
+             generation)))))
+
+(defun ebox--deferred-render-gc-restore-if-current (generation)
+  "Restore deferred GC state when GENERATION still owns the timer boundary."
+  (when (and (= generation ebox--deferred-render-gc-generation)
+             (zerop ebox--deferred-render-gc-depth)
+             ebox--deferred-render-gc-state)
+    (ebox--deferred-render-gc-restore)))
 
 (defmacro ebox--with-deferred-render-gc (&rest body)
   "Evaluate BODY with render GC settings restored after idle redisplay.
@@ -181,6 +231,92 @@ immediately after BODY can trigger GC before the updated buffer is visible."
      (unwind-protect
          (progn ,@body)
        (ebox--deferred-render-gc-schedule-restore))))
+
+;;;###autoload
+(defun ebox-render-burst-begin ()
+  "Begin a framework render burst and return an opaque ownership token.
+
+Frameworks may enter this boundary at the start of an input callback so
+allocation performed before `ebox-commit' shares the same GC budget as Ebox
+rendering and publication.  Interactive callers reuse Ebox's settling burst:
+the outermost matching end restores settings after 0.2 seconds.  Batch callers
+restore the exact settings captured by this call immediately, without running
+GC at the boundary.
+
+Pass the returned token to `ebox-render-burst-end'.  Bursts may be nested, but
+must be ended in last-in, first-out order.  Prefer
+`ebox-call-with-render-burst' when the complete operation is available as a
+function, because it guarantees cleanup across errors and quits."
+  (let ((saved-threshold gc-cons-threshold)
+        (saved-percentage gc-cons-percentage)
+        token
+        completed)
+    (if noninteractive
+        ;; Do not allocate the opaque token, its private record, or a stack
+        ;; cons until the old threshold can no longer collect at begin itself.
+        (progn
+          (when (numberp ebox-render-gc-cons-threshold)
+            (setq gc-cons-threshold
+                  (max gc-cons-threshold ebox-render-gc-cons-threshold)))
+          (when (numberp ebox-render-gc-cons-percentage)
+            (setq gc-cons-percentage
+                  (max gc-cons-percentage ebox-render-gc-cons-percentage))))
+      (ebox--deferred-render-gc-enter))
+    (unwind-protect
+        (progn
+          (setq token (make-symbol "ebox-render-burst-token"))
+          (puthash
+           token
+           (ebox--render-burst-create-record
+            (if noninteractive 'batch 'interactive)
+            (and noninteractive saved-threshold)
+            (and noninteractive saved-percentage))
+           ebox--render-burst-records)
+          (push token ebox--render-burst-stack)
+          (setq completed t)
+          token)
+      (unless completed
+        (when token
+          (remhash token ebox--render-burst-records))
+        (if noninteractive
+            (setq gc-cons-threshold saved-threshold
+                  gc-cons-percentage saved-percentage)
+          (ebox--deferred-render-gc-schedule-restore))))))
+
+;;;###autoload
+(defun ebox-render-burst-end (token)
+  "End the render burst owned by opaque TOKEN.
+
+TOKEN must be the most recently returned active token from
+`ebox-render-burst-begin'.  Invalid, repeated, or out-of-order ends signal an
+error without changing GC ownership.  Return nil after a successful end."
+  (let ((record (gethash token ebox--render-burst-records)))
+    (unless record
+      (error "Invalid or inactive Ebox render-burst token"))
+    (unless (eq token (car ebox--render-burst-stack))
+      (error "Ebox render bursts must end in last-in, first-out order"))
+    (pop ebox--render-burst-stack)
+    (remhash token ebox--render-burst-records)
+    (if (eq (ebox--render-burst-record-mode record) 'interactive)
+        (ebox--deferred-render-gc-schedule-restore)
+      (setq gc-cons-threshold
+            (ebox--render-burst-record-saved-threshold record)
+            gc-cons-percentage
+            (ebox--render-burst-record-saved-percentage record))))
+  nil)
+
+;;;###autoload
+(defun ebox-call-with-render-burst (function &rest arguments)
+  "Call FUNCTION with ARGUMENTS inside one framework render burst.
+
+The burst is always ended when FUNCTION returns, signals an error, or quits.
+Return FUNCTION's value."
+  (unless (functionp function)
+    (signal 'wrong-type-argument (list 'functionp function)))
+  (let ((token (ebox-render-burst-begin)))
+    (unwind-protect
+        (apply function arguments)
+      (ebox-render-burst-end token))))
 
 ;;; Paint Mapping
 
@@ -243,11 +379,19 @@ buffer-facing paint properties.  Layout-only properties never pass through."
   (let ((face (ebox-buffer--font-face style)))
     (when-let ((foreground (ebox-buffer--paint-color style role)))
       (setq face
-            (if (eq foreground 'ebox/default-foreground)
-                (append (ebox-buffer--default-foreground-face) face)
-              (plist-put face :foreground foreground))))
+            (cond
+             ((tp-paint-slot-p foreground)
+              (let ((slot-face (tp-paint-slot-face foreground)))
+                (if face (list slot-face face) slot-face)))
+             ((eq foreground 'ebox/default-foreground)
+              (append (ebox-buffer--default-foreground-face) face))
+             (t (plist-put face :foreground foreground)))))
     (when-let ((background (ebox-buffer--paint-background-color style role)))
-      (setq face (plist-put face :background background)))
+      (setq face
+            (if (tp-paint-slot-p background)
+                (let ((slot-face (tp-paint-slot-face background)))
+                  (if face (list slot-face face) slot-face))
+              (plist-put face :background background))))
     (when face
       (list 'face face))))
 
@@ -263,9 +407,10 @@ buffer-facing paint properties.  Layout-only properties never pass through."
 
 (defun ebox-buffer-side-border-face (color)
   "Return the canonical Emacs face for a side border with COLOR."
-  (if color
-      `(:background ,color)
-    '(:inverse-video t)))
+  (cond
+   ((tp-paint-slot-p color) (tp-paint-slot-face color))
+   (color `(:background ,color))
+   (t '(:inverse-video t))))
 
 (defun ebox--pixel-border (pixel-width height &optional color)
   "Generate a border line of PIXEL-WIDTH and HEIGHT using optional COLOR."
@@ -284,7 +429,12 @@ buffer-facing paint properties.  Layout-only properties never pass through."
   (let* ((source string)
          (string (copy-sequence source))
          (length (length string)))
-    (ebox--add-render-face! string 0 length `(:background ,bgcolor) t)
+    (ebox--add-render-face!
+     string 0 length
+     (if (tp-paint-slot-p bgcolor)
+         (tp-paint-slot-face bgcolor)
+       `(:background ,bgcolor))
+     t)
     (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-color (string color)
@@ -294,9 +444,11 @@ buffer-facing paint properties.  Layout-only properties never pass through."
          (length (length string)))
     (ebox--add-render-face!
      string 0 length
-     (if (eq color 'ebox/default-foreground)
-         (ebox-buffer--default-foreground-face)
-       `(:foreground ,color))
+     (cond
+      ((tp-paint-slot-p color) (tp-paint-slot-face color))
+      ((eq color 'ebox/default-foreground)
+       (ebox-buffer--default-foreground-face))
+      (t `(:foreground ,color)))
      t)
     (ebox--register-render-owned-face-values source string)))
 
@@ -308,13 +460,19 @@ buffer-facing paint properties.  Layout-only properties never pass through."
     (when color
       (ebox--add-render-face!
        string 0 length
-       (if (eq color 'ebox/default-foreground)
-           (ebox-buffer--default-foreground-face)
-         `(:foreground ,color))
+       (cond
+        ((tp-paint-slot-p color) (tp-paint-slot-face color))
+        ((eq color 'ebox/default-foreground)
+         (ebox-buffer--default-foreground-face))
+        (t `(:foreground ,color)))
        t))
     (when bgcolor
       (ebox--add-render-face!
-       string 0 length `(:background ,bgcolor) t))
+       string 0 length
+       (if (tp-paint-slot-p bgcolor)
+           (tp-paint-slot-face bgcolor)
+         `(:background ,bgcolor))
+       t))
     (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-overline (string &optional color)
@@ -322,7 +480,11 @@ buffer-facing paint properties.  Layout-only properties never pass through."
   (let* ((source string)
          (string (copy-sequence source)))
     (ebox--add-render-face!
-     string 0 (length string) `(:overline ,(or color t)) t)
+     string 0 (length string)
+     (if (tp-paint-slot-p color)
+         (tp-paint-slot-face color)
+       `(:overline ,(or color t)))
+     t)
     (ebox--register-render-owned-face-values source string)))
 
 (defun ebox--propertize-underline (string &optional color)
@@ -331,7 +493,9 @@ buffer-facing paint properties.  Layout-only properties never pass through."
          (string (copy-sequence source)))
     (ebox--add-render-face!
      string 0 (length string)
-     `(:underline (:position t ,@(when color `(:color ,color))))
+     (if (tp-paint-slot-p color)
+         (tp-paint-slot-face color)
+       `(:underline (:position t ,@(when color `(:color ,color)))))
      t)
     (ebox--register-render-owned-face-values source string)))
 

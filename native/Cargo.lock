@@ -17,9 +17,14 @@ name = "ebox-native-reflow"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "etaf-core",
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "etaf-core"
+version = "0.1.0"
 
 [[package]]
 name = "find-msvc-tools"

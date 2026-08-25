@@ -11,6 +11,8 @@
 
 (declare-function ebox--register-render-owned-text-value
                   "ebox-render-context" (property value))
+(declare-function ebox-string-lines "ebox" (string))
+(declare-function ebox--string-repeat-lines "ebox" (string count))
 
 ;; Measurement Cache Model:
 ;; These caches only accelerate display-signature-sensitive pixel measurement.
@@ -115,14 +117,18 @@ of pixel measurements it triggers do not each rebuild the display signature.")
   (fillarray ebox--string-pixel-width-cache-ring nil)
   (setq ebox--string-pixel-width-cache-ring-index 0))
 
-(defun ebox--string-pixel-width-visual-key (line factor)
-  "Return a width cache key for LINE at FACTOR when visual properties are constant."
-  (let ((end (length line)))
+(defun ebox--string-pixel-width-visual-key
+    (line factor &optional start end)
+  "Return a width cache key for LINE slice at FACTOR.
+START and END default to the complete string; visual properties must be
+constant across the selected slice."
+  (let ((start (or start 0))
+        (end (or end (length line))))
     (list factor
-          (substring-no-properties line)
+          (substring-no-properties line start end)
           (cl-loop for property in '(face display)
-                   for value = (and (> end 0)
-                                    (get-text-property 0 property line))
+                   for value = (and (> end start)
+                                    (get-text-property start property line))
                    when value append (list property value)))))
 
 (defun ebox--string-pixel-width-cache-key (line factor)
@@ -140,8 +146,9 @@ of pixel measurements it triggers do not each rebuild the display signature.")
     (and constant-p
          (ebox--string-pixel-width-visual-key line factor))))
 
-(defun ebox--cached-string-pixel-width (line factor key)
-  "Return LINE width at FACTOR through the render and display caches at KEY."
+(defun ebox--cached-string-pixel-width
+    (line factor key &optional start end)
+  "Return LINE slice width at FACTOR through both caches at KEY."
   (let ((cached
          (or (and ebox--render-string-pixel-width-cache
                   (gethash key ebox--render-string-pixel-width-cache))
@@ -151,7 +158,10 @@ of pixel measurements it triggers do not each rebuild the display signature.")
           (when ebox--render-string-pixel-width-cache
             (puthash key cached ebox--render-string-pixel-width-cache))
           cached)
-      (let* ((width (ebox--scaled-string-pixel-width line factor))
+      (let* ((sample (if (or start end)
+                         (substring line (or start 0) (or end (length line)))
+                       line))
+             (width (ebox--scaled-string-pixel-width sample factor))
              (index ebox--string-pixel-width-cache-ring-index)
              (evicted (aref ebox--string-pixel-width-cache-ring index)))
         (when ebox--render-string-pixel-width-cache
@@ -188,21 +198,19 @@ keep their absolute pixel width."
                          minimize (or (next-single-property-change
                                        pos property line end)
                                       end)))
-               (segment (substring line pos next))
-               ;; The segment ends at every visual property change, so its
-               ;; width key can skip the second constant-property scan.
-               (segment-key
-                (ebox--string-pixel-width-visual-key segment factor))
                (space-width (ebox--display-space-width display)))
           (setq total
                 (+ total
                    (if space-width
                        (* space-width (- next pos))
-                     (if segment-key
-                         (ebox--cached-string-pixel-width
-                          segment factor segment-key)
-                       (ebox--scaled-string-pixel-width
-                        segment factor)))))
+                     ;; The segment ends at every visual property change.
+                     ;; Build only its property-free cache key on hits; a
+                     ;; propertized substring is materialized solely on miss.
+                     (let ((segment-key
+                            (ebox--string-pixel-width-visual-key
+                             line factor pos next)))
+                       (ebox--cached-string-pixel-width
+                        line factor segment-key pos next)))))
           (setq pos next)))
       total)))
 

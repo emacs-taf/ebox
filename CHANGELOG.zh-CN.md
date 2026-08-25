@@ -10,6 +10,7 @@ Ebox 的重要变化记录在这里。
 - Box、Flex 与 Grid 节点统一使用 ECSS property schema、selector、stylesheet、inheritance、cascade layer、custom property、computed value 与 provenance。
 - 通过 `ebox-region-resolve` 提供 surface-scoped region handle；`ebox-render-to-buffer` 与 `ebox-display-buffer` 统一使用 retained TP publication；handle、selector、viewport 与 scroll 更新加入同一原子事务。
 - 增加 typography longhand 与继承 foreground 的投影；子盒子覆盖背景色时仍能保持文字可读。
+- 增加公开、可嵌套的 framework render-burst 边界，覆盖 commit 前分配，与 Ebox commit 共用交互 deferred GC ownership，并在 batch 边界不主动 GC 的情况下恢复原设置。
 
 ### 变更
 

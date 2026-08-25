@@ -74,6 +74,9 @@ the render boundary."
         (let* ((next (min end
                           (or (next-single-property-change
                                position ebox--paint-origin-property string end)
+                              end)
+                          (or (next-single-property-change
+                               position 'face string end)
                               end)))
                (origin (get-text-property
                         position ebox--paint-origin-property string)))

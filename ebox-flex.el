@@ -22,9 +22,55 @@
                   "ebox-incremental" (node))
 (declare-function ebox--viewport-height-dependent-subtree-p
                   "ebox-incremental" (node))
+(declare-function ebox--viewport-dependent-subtree-p
+                  "ebox-incremental" (node))
+(declare-function ebox--viewport-dependent-size-value-p
+                  "ebox-incremental" (value &optional nil-dependent))
+(declare-function ebox--render-cacheable-node-p
+                  "ebox-incremental" (node))
+(declare-function ebox--render-cache-node-body-signature
+                  "ebox-incremental" (node))
+(declare-function ebox--render-cache-node-signature
+                  "ebox-incremental" (node))
+(declare-function ebox--render-cache-lookup
+                  "ebox-incremental" (cache-key signature))
+(declare-function ebox--render-cache-store
+                  "ebox-incremental"
+                  (cache-key signature rendered &optional side-effects))
+(declare-function ebox--render-with-cache
+                  "ebox-incremental" (node &optional force cache-probe))
+(declare-function ebox-create "ebox" (&rest plist))
+(declare-function ebox-get "ebox" (box property))
+(declare-function ebox--ensure-node-id "ebox" (node))
+(declare-function ebox--ensure-region-id "ebox" (box))
+(declare-function ebox--runtime-node-ids "ebox" (node))
+(declare-function ebox-region-ids "ebox" (node))
+(declare-function ebox-string-height "ebox" (string))
+(declare-function ebox-string-lines "ebox" (string))
+(declare-function ebox-lines-join "ebox" (lines))
+(declare-function ebox--maplines "ebox" (function string))
+(declare-function ebox--line-has-non-content-properties-p
+                  "ebox" (line))
+(declare-function ebox--lines-concat-horizontal "ebox" (&rest strings))
+(declare-function ebox--lines-stack-vertical "ebox" (&rest strings))
+(declare-function ebox--pixel-border
+                  "ebox-buffer-backend"
+                  (pixel-width height &optional color))
+(declare-function ebox--propertize-colors
+                  "ebox-buffer-backend" (string color bgcolor))
+(declare-function ebox--propertize-overline
+                  "ebox-buffer-backend" (string &optional color))
+(declare-function ebox--propertize-underline
+                  "ebox-buffer-backend" (string &optional color))
+(declare-function ebox--propertize-region
+                  "ebox-buffer-backend" (string property region-id))
+(declare-function ebox--propertize-content-line
+                  "ebox-buffer-backend" (line region-id idx fallback))
 
 (defvar ebox--propertize-private-content-line-p)
 (defvar ebox--flex-content-min-width-table)
+(defvar ebox--render-region-id)
+(defvar ebox--region-box-table)
 (defvar ebox-fragment-flex-retention-rerender-count)
 (defvar ebox--flex-native-size-lines-backend :unknown
   "Cached optional pure geometry backend for batched Flex line sizing.")
@@ -42,6 +88,40 @@
 (defconst ebox--flex-container-neutral-box-prop-keys
   '(:width :height :box-sizing)
   "Flex box properties that do not create visible wrapping by themselves.")
+
+(defun ebox--build-split-attrs (items)
+  "Split constructor ITEMS into (PROPS . CHILDREN)."
+  (let (props children)
+    (while items
+      (let ((item (pop items)))
+        (if (keywordp item)
+            (if items
+                (let ((value (pop items)))
+                  (push item props)
+                  (push value props))
+              (error "ebox-build: missing value for %S" item))
+          (push item children))))
+    (cons (nreverse props) (nreverse children))))
+
+(defun ebox--plist-keep-keys (plist keys)
+  "Return a copy of PLIST containing only entries whose key is in KEYS."
+  (let (result)
+    (while plist
+      (let ((key (pop plist))
+            (value (pop plist)))
+        (when (memq key keys)
+          (setq result (append result (list key value))))))
+    result))
+
+(defun ebox--plist-remove-keys (plist keys)
+  "Return a copy of PLIST without entries whose key is in KEYS."
+  (let (result)
+    (while plist
+      (let ((key (pop plist))
+            (value (pop plist)))
+        (unless (memq key keys)
+          (setq result (append result (list key value))))))
+    result))
 
 (defun ebox--flex-visual-box-props-p (props)
   "Return non-nil when PROPS contains visible box behavior."

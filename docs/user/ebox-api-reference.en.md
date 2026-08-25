@@ -344,6 +344,12 @@ instead of a runtime node id. Both replacement functions accept optional
 reuse. A candidate is sealed by commit and cannot be reused; it also becomes
 stale if the captured buffer runtime or buffer tick changes.
 
+`ebox-candidate-patch-host-paint` compares previous and next declarative Host
+outputs and records a node-local patch only when every changed field is
+paint-only. It retains child/runtime identity, updates inherited foreground
+state in one affected-subtree pass, and returns nil when ordinary subtree
+replacement is required.
+
 `ebox-candidate-replace-root` targets a private candidate-bound root address.
 It accepts exactly one declarative node, clears caller runtime identities, and
 is last-wins. The final root replacement absorbs descendant node and host-ref
@@ -369,6 +375,27 @@ values after any update. Ebox's host-reference table is distinct from logical
 selector ids.
 
 ### Reports and viewport reflow
+
+Frameworks that allocate a new view tree before calling Ebox can include the
+whole input callback in Ebox's render GC budget:
+
+```elisp
+(ebox-call-with-render-burst
+ (lambda ()
+   (let ((next-root (build-framework-view)))
+     (ebox-commit buffer next-root))))
+```
+
+`ebox-call-with-render-burst` is the preferred exception-safe boundary.  When
+the operation cannot be expressed as one function call,
+`ebox-render-burst-begin` returns an opaque token for
+`ebox-render-burst-end`; callers must use `unwind-protect` and end nested
+tokens in last-in, first-out order.  Interactive bursts share Ebox commit's
+deferred state and restore the caller's GC settings 0.2 seconds after the
+outermost end.  A new burst cancels and supersedes the pending restore.  Batch
+bursts restore the exact threshold and percentage immediately and do not run
+GC at the boundary.  These functions only define allocation/GC ownership;
+they do not publish, commit, or expose Ebox runtime state.
 
 `ebox-buffer-update-report` returns a defensive copy of the last successful
 report for a mounted buffer; it signals for a missing/non-Ebox buffer. A fresh
@@ -552,7 +579,7 @@ style-rule functions immediately below are public module-level style APIs.
 | `ebox-render`, `ebox-render-to-buffer`, `ebox-display-buffer` | Pure materialization, retained mount, and display wrapper. |
 | `ebox-commit`, `ebox-buffer-update-report`, `ebox-rerender-buffer-with-context` | Atomic root commit, report lookup, and viewport-context rerender. |
 | `ebox-region-ids`, `ebox-region-resolve`, `ebox-region-update` | Region mapping, logical handle lookup, and direct update. |
-| `ebox-child-range`, `ebox-range-ref-present-p`, `ebox-candidate-begin`, `ebox-candidate-replace`, `ebox-candidate-replace-range-ref`, `ebox-candidate-replace-root`, `ebox-candidate-replace-host-ref` | Persistent material child segments, backend-anchor lookup, and one-shot logical candidate transactions. |
+| `ebox-child-range`, `ebox-range-ref-present-p`, `ebox-candidate-begin`, `ebox-candidate-replace`, `ebox-candidate-replace-range-ref`, `ebox-candidate-replace-root`, `ebox-candidate-replace-host-ref`, `ebox-candidate-patch-host-paint` | Persistent material child segments, backend-anchor lookup, subtree replacement, and retained Host paint transactions. |
 | `ebox-host-ref-bounds`, `ebox-host-ref-position` | Live host-reference bounds and first position. |
 | `ebox-selector-parse`, `ebox-selector-match-node-p`, `ebox-selector-query-all`, `ebox-selector-query-buffer`, `ebox-selector-update-buffer` | ECSS selector compilation, matching, querying, and batch update. |
 | `ebox-select-all`, `ebox-update-selector` | Compatibility aliases for the two buffer selector functions. |

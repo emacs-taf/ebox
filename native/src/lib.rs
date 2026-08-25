@@ -262,6 +262,11 @@ fn flex_size_line(items: &[NativeFlexItem], main_limit: i64, main_gap: i64) -> V
 ///
 /// `line_offsets` contains `line_count + 1` offsets into ITEMS.  The output
 /// is a little-endian i64 stream whose values follow the input line order.
+///
+/// # Safety
+///
+/// Nonempty ITEMS and LINE_OFFSETS must reference their declared readable
+/// lengths, and OUTPUT must point to writable `NativeBytes` storage.
 #[no_mangle]
 pub unsafe extern "C" fn ebox_native_flex_size_lines(
     items: *const NativeFlexItem,
@@ -277,10 +282,8 @@ pub unsafe extern "C" fn ebox_native_flex_size_lines(
         || (line_count > 0 && line_offsets.is_null())
         || item_count > MAX_FLEX_ITEMS
         || line_count > MAX_FLEX_LINES
-        || main_limit < -MAX_LAYOUT_DIMENSION
-        || main_limit > MAX_LAYOUT_DIMENSION
-        || main_gap < 0
-        || main_gap > MAX_LAYOUT_DIMENSION
+        || !(-MAX_LAYOUT_DIMENSION..=MAX_LAYOUT_DIMENSION).contains(&main_limit)
+        || !(0..=MAX_LAYOUT_DIMENSION).contains(&main_gap)
     {
         set_error(
             output,
@@ -396,12 +399,14 @@ struct BaselineIdentity {
 struct ConfirmedBaseline {
     identity: BaselineIdentity,
     tape: LayoutTape,
+    styles: Vec<layout::StyleTemplate>,
 }
 
 #[derive(Debug)]
 struct PendingBaseline {
     confirmed_identity: BaselineIdentity,
     tape: LayoutTape,
+    styles: Vec<layout::StyleTemplate>,
 }
 
 #[derive(Debug)]
@@ -739,6 +744,69 @@ impl Session {
         result.map(|entry| entry.bytes)
     }
 
+    fn render_sync(&self, generation: u64, payload: &[u8]) -> Result<Vec<u8>, String> {
+        if !self.shared.alive.load(Ordering::Acquire) {
+            return Err("Native reflow session is closed".to_owned());
+        }
+        let batch = parse_control_batch(payload)?;
+        let document = batch
+            .document
+            .ok_or_else(|| "Native retained render requires an inline document".to_owned())?;
+        document.validate()?;
+        if batch.frames.len() != 1 {
+            return Err("Native retained render requires exactly one frame".to_owned());
+        }
+        let frame = batch
+            .frames
+            .into_iter()
+            .next()
+            .expect("checked retained frame");
+        if !frame.complete || frame.delay_ms != 0 {
+            return Err("Native retained render requires one immediate complete frame".to_owned());
+        }
+        let document = Arc::new(document);
+        let prepared = prepare_layout_job(&document, frame)?;
+        let confirmed = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .confirmed_baseline
+            .clone();
+        let output = render_layout_payload(
+            prepared.payload,
+            self.shared.id,
+            generation,
+            prepared.key,
+            self.shared.max_result_bytes,
+            confirmed,
+            true,
+        );
+        if output.bytes.len() > self.shared.max_result_bytes {
+            return Err("Native retained render exceeds the result byte limit".to_owned());
+        }
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if output.base_renders > 0 {
+            state.baseline_misses += 1;
+        } else if output.baseline_hit {
+            state.baseline_hits += 1;
+        }
+        state.base_renders += output.base_renders;
+        state.target_renders += output.target_renders;
+        state.pending_baselines.clear();
+        if let Some(pending) = output.pending {
+            state
+                .pending_baselines
+                .insert((generation, prepared.key), pending);
+        }
+        state.completed_jobs += 1;
+        Ok(output.bytes)
+    }
+
     fn confirm(&self, generation: u64, key: i64, confirmed_revision: u64) -> Result<bool, String> {
         let mut state = self
             .shared
@@ -746,7 +814,10 @@ impl Session {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let Some(pending) = state.pending_baselines.remove(&(generation, key)) else {
-            return Ok(false);
+            return Ok(state
+                .confirmed_baseline
+                .as_ref()
+                .is_some_and(|baseline| baseline.identity.runtime_revision == confirmed_revision));
         };
         if confirmed_revision <= pending.confirmed_identity.runtime_revision {
             return Err("Native confirmed frame revision mismatch".to_owned());
@@ -756,6 +827,7 @@ impl Session {
         state.confirmed_baseline = Some(ConfirmedBaseline {
             identity,
             tape: pending.tape,
+            styles: pending.styles,
         });
         Ok(true)
     }
@@ -1050,6 +1122,7 @@ fn render_layout_payload(
     key: i64,
     max_result_bytes: usize,
     confirmed_baseline: Option<ConfirmedBaseline>,
+    require_confirmed_patch_base: bool,
 ) -> RenderedJob {
     match payload {
         JobPayload::Echo(bytes) => RenderedJob {
@@ -1114,9 +1187,21 @@ fn render_layout_payload(
                                 runtime_revision,
                                 context_hash,
                                 complete,
-                            )
+                            ) && baseline.styles == document.styles
                         })
                         .cloned();
+                    if require_confirmed_patch_base && base_hit.is_none() {
+                        let target = document
+                            .layout_tape(context, root_width_override.then_some(root_width))?;
+                        let bytes = layout::encode_layout_tape(
+                            target.clone(),
+                            &document.styles,
+                            identity,
+                            output.root_metadata,
+                            output.max_bytes,
+                        )?;
+                        return Ok((bytes, target, false, 0, 1));
+                    }
                     let (old, baseline_hit, base_renders) = if let Some(baseline) = base_hit {
                         (baseline.tape, true, 0)
                     } else {
@@ -1159,6 +1244,7 @@ fn render_layout_payload(
                     pending: Some(PendingBaseline {
                         confirmed_identity: pending_identity,
                         tape,
+                        styles: document.styles.clone(),
                     }),
                     baseline_hit,
                     base_renders,
@@ -1219,6 +1305,7 @@ fn render_proof(payload: &[u8]) -> Result<Vec<u8>, String> {
         prepared.key,
         SYNC_RENDER_MAX_RESULT_BYTES,
         None,
+        false,
     );
     if output.bytes.len() > SYNC_RENDER_MAX_RESULT_BYTES {
         return Err("Native proof render exceeds the result byte limit".to_owned());
@@ -1284,6 +1371,7 @@ fn worker_loop(shared: Arc<Shared>) {
             job.key,
             shared.max_result_bytes,
             confirmed_baseline,
+            false,
         );
         if output.bytes.len() > shared.max_result_bytes {
             let mut state = shared
@@ -1449,6 +1537,50 @@ pub unsafe extern "C" fn ebox_native_session_submit(
             -1
         }
     }
+}
+
+#[no_mangle]
+/// Render one retained frame synchronously through a live native session.
+///
+/// # Safety
+///
+/// `session` must come from `ebox_native_session_create`.  PAYLOAD and OUTPUT
+/// follow the same validity rules as `ebox_native_render_proof`.
+pub unsafe extern "C" fn ebox_native_session_render_sync(
+    session: *mut c_void,
+    generation: u64,
+    payload: *const u8,
+    payload_len: usize,
+    output: *mut NativeBytes,
+) -> bool {
+    if output.is_null() {
+        return false;
+    }
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let session =
+            session_ref(session).ok_or_else(|| "Native reflow session is null".to_owned())?;
+        if payload.is_null() && payload_len != 0 {
+            return Err("Native retained render payload pointer is null".to_owned());
+        }
+        let bytes = if payload_len == 0 {
+            &[][..]
+        } else {
+            unsafe { slice::from_raw_parts(payload, payload_len) }
+        };
+        session.render_sync(generation, bytes)
+    }));
+    let result = match outcome {
+        Ok(result) => result,
+        Err(_) => Err("Native retained render panicked".to_owned()),
+    };
+    let success = result.is_ok();
+    unsafe {
+        *output = match result {
+            Ok(bytes) => NativeBytes::from_vec(bytes),
+            Err(message) => NativeBytes::from_error(message),
+        };
+    }
+    success
 }
 
 #[no_mangle]
@@ -1684,7 +1816,7 @@ mod tests {
     fn full_tape_line_widths(bytes: &[u8]) -> Vec<u64> {
         let line_count = u32::from_le_bytes(bytes[120..124].try_into().unwrap()) as usize;
         (0..line_count)
-            .map(|index| read_le_u64(bytes, 136 + index * 8))
+            .map(|index| read_le_u64(bytes, 152 + index * 8))
             .collect()
     }
 

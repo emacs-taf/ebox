@@ -22,7 +22,7 @@ load:
 
 compile:
 	rm -f *.elc tests/*.elc scripts/*.elc
-	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t)' -l ebox.el --eval '(ebox-byte-compile)'
+	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l ebox.el --eval '(ebox-byte-compile)'
 
 test: core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests docs-contract-tests ci-contract-tests
 

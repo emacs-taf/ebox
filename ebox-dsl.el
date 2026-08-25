@@ -12,6 +12,8 @@
 (require 'ebox-flex)
 (require 'ebox-grid)
 
+(declare-function ebox-create "ebox" (&rest plist))
+
 (defun ebox--dsl-unquote-value (value)
   "Unquote one static DSL property VALUE when it is quoted data."
   (if (and (consp value)
@@ -35,40 +37,6 @@ keyword properties are normalized."
               (push (ebox--dsl-unquote-value (pop items)) result))
           (push item result))))
     (nreverse result)))
-
-(defun ebox--build-split-attrs (items)
-  "Split DSL ITEMS into (PROPS . CHILDREN)."
-  (let (props children)
-    (while items
-      (let ((item (pop items)))
-        (if (keywordp item)
-            (if items
-                (let ((value (pop items)))
-                  (push item props)
-                  (push value props))
-              (error "ebox-build: missing value for %S" item))
-          (push item children))))
-    (cons (nreverse props) (nreverse children))))
-
-(defun ebox--plist-keep-keys (plist keys)
-  "Return a copy of PLIST containing only entries whose key is in KEYS."
-  (let (result)
-    (while plist
-      (let ((key (pop plist))
-            (value (pop plist)))
-        (when (memq key keys)
-          (setq result (append result (list key value))))))
-    result))
-
-(defun ebox--plist-remove-keys (plist keys)
-  "Return a copy of PLIST without entries whose key is in KEYS."
-  (let (result)
-    (while plist
-      (let ((key (pop plist))
-            (value (pop plist)))
-        (unless (memq key keys)
-          (setq result (append result (list key value))))))
-    result))
 
 (defun ebox--build-children-layout (children)
   "Build a vertical default layout from CHILDREN."

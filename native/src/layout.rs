@@ -1,3 +1,4 @@
+use etaf_core::{diff_commit_batch, CommitBatch, SpanEdit};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -11,7 +12,7 @@ thread_local! {
 }
 
 const LAYOUT_VERSION: u32 = 2;
-pub const TAPE_VERSION: u16 = 9;
+pub const TAPE_VERSION: u16 = 12;
 pub const TAPE_HEADER_LEN: usize = 112;
 pub const MIN_TAPE_BYTES: usize = TAPE_HEADER_LEN + 5;
 const TAPE_MAGIC: &[u8; 4] = b"EBXT";
@@ -76,6 +77,10 @@ enum StyleMode {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct FaceTemplate {
+    #[serde(default)]
+    lisp: Option<String>,
+    #[serde(default)]
+    inherit: Option<String>,
     #[serde(default)]
     inverse_video: Option<bool>,
     #[serde(default)]
@@ -366,13 +371,7 @@ struct FlatLayoutTape {
     characters: Vec<TapeCharacter>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TapePatch {
-    old_start: usize,
-    old_end: usize,
-    new_start: usize,
-    new_end: usize,
-}
+type TapePatch = SpanEdit;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TapeLine {
@@ -961,6 +960,114 @@ struct TapeMetadataRecord {
     end: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FragmentTemplate {
+    start: u64,
+    end: u64,
+    line: u64,
+    roles: Vec<(&'static str, i64)>,
+    content_owner: Option<i64>,
+    content_index: Option<i64>,
+    property_template_ids: Vec<u32>,
+    style_ids: Vec<u32>,
+}
+
+type FragmentRoles = Vec<(&'static str, i64)>;
+type FragmentOwnershipSpan = (u64, u64, FragmentRoles);
+type RegionMountKey = (i64, Vec<&'static str>);
+type RegionMountSpan = (RegionMountKey, u64, u64);
+type FragmentStyleDelta = Vec<(usize, Vec<u32>)>;
+
+fn propagated_fragment_roles(fragments: &[FragmentTemplate]) -> Vec<Vec<(&'static str, i64)>> {
+    let mut propagated = vec![Vec::new(); fragments.len()];
+    let mut previous = Vec::new();
+    for (index, fragment) in fragments.iter().enumerate() {
+        if fragment.roles.is_empty() {
+            propagated[index] = previous.clone();
+        } else {
+            previous = fragment.roles.clone();
+            propagated[index] = previous.clone();
+        }
+    }
+    let mut next = Vec::new();
+    for index in (0..fragments.len()).rev() {
+        if fragments[index].roles.is_empty() {
+            for role in &next {
+                if !propagated[index].contains(role) {
+                    propagated[index].push(*role);
+                }
+            }
+        } else {
+            next = fragments[index].roles.clone();
+        }
+    }
+    propagated
+}
+
+fn fragment_ownership_spans(fragments: &[FragmentTemplate]) -> Vec<FragmentOwnershipSpan> {
+    let mut spans: Vec<FragmentOwnershipSpan> = Vec::new();
+    for (fragment, roles) in fragments.iter().zip(propagated_fragment_roles(fragments)) {
+        if let Some(previous) = spans.last_mut() {
+            if previous.1 == fragment.start && previous.2 == roles {
+                previous.1 = fragment.end;
+                continue;
+            }
+        }
+        spans.push((fragment.start, fragment.end, roles));
+    }
+    spans
+}
+
+fn fragment_region_mount_projection(fragments: &[FragmentTemplate]) -> Vec<RegionMountSpan> {
+    let mut spans: Vec<RegionMountSpan> = Vec::new();
+    let mut active: BTreeMap<RegionMountKey, usize> = BTreeMap::new();
+    for fragment in fragments {
+        let mut roles_by_region: BTreeMap<i64, Vec<&'static str>> = BTreeMap::new();
+        for (role, region_id) in &fragment.roles {
+            roles_by_region.entry(*region_id).or_default().push(*role);
+        }
+        for (region_id, roles) in roles_by_region {
+            let key = (region_id, roles);
+            if let Some(index) = active.get(&key).copied() {
+                if spans[index].2 == fragment.start {
+                    spans[index].2 = fragment.end;
+                    continue;
+                }
+            }
+            let index = spans.len();
+            spans.push((key.clone(), fragment.start, fragment.end));
+            active.insert(key, index);
+        }
+    }
+    spans
+}
+
+fn fragment_style_delta(
+    old: &[FragmentTemplate],
+    target: &[FragmentTemplate],
+) -> Option<FragmentStyleDelta> {
+    if old.len() != target.len() {
+        return None;
+    }
+    let mut delta = Vec::new();
+    for (index, (old, target)) in old.iter().zip(target).enumerate() {
+        if old.start != target.start
+            || old.end != target.end
+            || old.line != target.line
+            || old.roles != target.roles
+            || old.content_owner != target.content_owner
+            || old.content_index != target.content_index
+            || old.property_template_ids != target.property_template_ids
+        {
+            return None;
+        }
+        if old.style_ids != target.style_ids {
+            delta.push((index, target.style_ids.clone()));
+        }
+    }
+    Some(delta)
+}
+
 #[derive(Debug)]
 struct CompiledStyle {
     mode: StyleMode,
@@ -1004,13 +1111,32 @@ fn push_property(output: &mut String, first: &mut bool, name: &str, value: &str)
 
 impl FaceTemplate {
     fn validate(&self) -> Result<(), String> {
-        if self.inverse_video.is_none()
+        if let Some(lisp) = &self.lisp {
+            validate_style_string(lisp, "face literal")?;
+            if self.inherit.is_some()
+                || self.inverse_video.is_some()
+                || self.foreground.is_some()
+                || self.background.is_some()
+                || self.overline.is_some()
+                || self.underline.is_some()
+            {
+                return Err("Native layout literal face cannot mix typed fields".to_owned());
+            }
+            return Ok(());
+        }
+        if self.inherit.is_none()
+            && self.inverse_video.is_none()
             && self.foreground.is_none()
             && self.background.is_none()
             && self.overline.is_none()
             && self.underline.is_none()
         {
             return Err("Native layout face template is empty".to_owned());
+        }
+        if let Some(inherit) = &self.inherit {
+            if inherit != "default" {
+                return Err("Native layout inherit face must be default".to_owned());
+            }
         }
         if self.inverse_video == Some(false) {
             return Err("Native layout inverse-video face must be true".to_owned());
@@ -1044,8 +1170,14 @@ impl FaceTemplate {
     }
 
     fn to_lisp(&self) -> String {
+        if let Some(lisp) = &self.lisp {
+            return lisp.clone();
+        }
         let mut output = String::from("(");
         let mut first = true;
+        if self.inherit.as_deref() == Some("default") {
+            push_property(&mut output, &mut first, ":inherit", "default");
+        }
         if self.inverse_video == Some(true) {
             push_property(&mut output, &mut first, ":inverse-video", "t");
         }
@@ -1777,9 +1909,121 @@ fn build_root_metadata_records(
     Ok(records)
 }
 
+fn push_fragment_role(
+    roles: &mut Vec<(&'static str, i64)>,
+    role: &'static str,
+    region_id: i64,
+) -> Result<(), String> {
+    if region_id <= 0 {
+        return Err("Native layout fragment has an invalid region id".to_owned());
+    }
+    if !roles
+        .iter()
+        .any(|(existing_role, existing_id)| *existing_role == role && *existing_id == region_id)
+    {
+        roles.push((role, region_id));
+    }
+    Ok(())
+}
+
+fn fragment_roles(properties: &AtomProperties) -> Result<Vec<(&'static str, i64)>, String> {
+    let mut roles = Vec::new();
+    for region_id in &properties.owners {
+        push_fragment_role(&mut roles, "content-owner", *region_id)?;
+    }
+    if let Some(region_id) = properties.content {
+        push_fragment_role(&mut roles, "content", region_id)?;
+    }
+    if let Some(region_id) = properties.owner {
+        push_fragment_role(&mut roles, "content-owner", region_id)?;
+    }
+    for role in REGION_ROLES {
+        if let Some(entry) = properties
+            .roles
+            .iter()
+            .rev()
+            .find(|entry| entry.role == role)
+        {
+            let symbol = metadata_role_symbol(role.metadata_kind())
+                .ok_or_else(|| "Native layout fragment has an unknown role".to_owned())?;
+            push_fragment_role(&mut roles, symbol, entry.region_id)?;
+        }
+    }
+    Ok(roles)
+}
+
+fn build_fragment_templates(
+    text: &str,
+    spaces: &[TapeSpaceSpan],
+    property_spans: &[TapePropertySpan],
+) -> Result<Vec<FragmentTemplate>, String> {
+    let character_count = u64::try_from(text.chars().count())
+        .map_err(|_| "Native layout fragment character count overflow".to_owned())?;
+    let mut boundaries = Vec::with_capacity(2 + spaces.len() * 2 + property_spans.len() * 2);
+    boundaries.push(0);
+    boundaries.push(character_count);
+    for space in spaces {
+        boundaries.push(space.start);
+        boundaries.push(space.start + 1);
+    }
+    for span in property_spans {
+        boundaries.push(span.start);
+        boundaries.push(span.end);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut line_prefix = Vec::with_capacity(text.chars().count() + 1);
+    line_prefix.push(0_u64);
+    for character in text.chars() {
+        let previous = *line_prefix.last().unwrap_or(&0);
+        line_prefix.push(previous + u64::from(character == '\n'));
+    }
+
+    let empty = AtomProperties::default();
+    let mut property_index = 0;
+    let mut fragments = Vec::with_capacity(boundaries.len().saturating_sub(1));
+    for boundary in boundaries.windows(2) {
+        let start = boundary[0];
+        let end = boundary[1];
+        if start == end {
+            continue;
+        }
+        while property_index < property_spans.len() && property_spans[property_index].end <= start {
+            property_index += 1;
+        }
+        let properties = property_spans
+            .get(property_index)
+            .filter(|span| span.start <= start && end <= span.end)
+            .map_or(&empty, |span| &span.properties);
+        let line_index = usize::try_from(start)
+            .map_err(|_| "Native layout fragment offset is too large".to_owned())?;
+        let line = *line_prefix
+            .get(line_index)
+            .ok_or_else(|| "Native layout fragment line offset is invalid".to_owned())?;
+        if properties.content_idx.is_some_and(|index| index < 0) {
+            return Err("Native layout fragment has a negative content index".to_owned());
+        }
+        fragments.push(FragmentTemplate {
+            start,
+            end,
+            line,
+            roles: fragment_roles(properties)?,
+            content_owner: properties.owner,
+            content_index: properties.content_idx,
+            property_template_ids: properties.property_template_ids.clone(),
+            style_ids: properties.style_ids.clone(),
+        });
+    }
+    Ok(fragments)
+}
+
 struct RootMetadataPayload {
     literal: String,
     record_count: usize,
+    fragments: Vec<FragmentTemplate>,
+    fragment_bytes: Vec<u8>,
+    fragment_count: usize,
 }
 
 fn metadata_role_symbol(kind: u8) -> Option<&'static str> {
@@ -1889,27 +2133,115 @@ fn metadata_literal_from_records(records: &[TapeMetadataRecord]) -> Result<Strin
     Ok(literal)
 }
 
+fn push_fragment_u32(output: &mut Vec<u8>, value: usize, label: &str) -> Result<(), String> {
+    output.extend_from_slice(
+        &u32::try_from(value)
+            .map_err(|_| format!("Native layout fragment has too many {label}"))?
+            .to_le_bytes(),
+    );
+    Ok(())
+}
+
+fn encode_fragment_templates(fragments: &[FragmentTemplate]) -> Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    for fragment in fragments {
+        output.extend_from_slice(&fragment.start.to_le_bytes());
+        output.extend_from_slice(&fragment.end.to_le_bytes());
+        output.extend_from_slice(&fragment.line.to_le_bytes());
+        output.extend_from_slice(&fragment.content_owner.unwrap_or(i64::MIN).to_le_bytes());
+        output.extend_from_slice(&fragment.content_index.unwrap_or(i64::MIN).to_le_bytes());
+        push_fragment_u32(&mut output, fragment.roles.len(), "roles")?;
+        push_fragment_u32(
+            &mut output,
+            fragment.property_template_ids.len(),
+            "property templates",
+        )?;
+        push_fragment_u32(&mut output, fragment.style_ids.len(), "styles")?;
+        output.extend_from_slice(&0_u32.to_le_bytes());
+        for (role, region_id) in &fragment.roles {
+            let kind = match *role {
+                "content" => METADATA_ROLE_CONTENT,
+                "content-owner" => METADATA_ROLE_CONTENT_OWNER,
+                "pt" => METADATA_ROLE_PADDING_TOP,
+                "pb" => METADATA_ROLE_PADDING_BOTTOM,
+                "pl" => METADATA_ROLE_PADDING_LEFT,
+                "pr" => METADATA_ROLE_PADDING_RIGHT,
+                "mt" => METADATA_ROLE_MARGIN_TOP,
+                "mb" => METADATA_ROLE_MARGIN_BOTTOM,
+                "ml" => METADATA_ROLE_MARGIN_LEFT,
+                "mr" => METADATA_ROLE_MARGIN_RIGHT,
+                "bt" => METADATA_ROLE_BORDER_TOP,
+                "bb" => METADATA_ROLE_BORDER_BOTTOM,
+                "bl" => METADATA_ROLE_BORDER_LEFT,
+                "br" => METADATA_ROLE_BORDER_RIGHT,
+                _ => return Err("Native layout fragment has an unknown role".to_owned()),
+            };
+            output.push(kind);
+            output.extend_from_slice(&region_id.to_le_bytes());
+        }
+        for template_id in &fragment.property_template_ids {
+            output.extend_from_slice(&template_id.to_le_bytes());
+        }
+        for style_id in &fragment.style_ids {
+            output.extend_from_slice(&style_id.to_le_bytes());
+        }
+    }
+    Ok(output)
+}
+
 fn root_metadata_payload(
     text: &str,
+    spaces: &[TapeSpaceSpan],
     property_spans: &[TapePropertySpan],
     complete: bool,
     root_metadata: bool,
     max_bytes: usize,
 ) -> Result<Option<RootMetadataPayload>, String> {
-    if !complete || !root_metadata {
+    if !complete {
         return Ok(None);
     }
-    let records = build_root_metadata_records(text, property_spans)?;
-    if records.is_empty() {
+    let records = if root_metadata {
+        build_root_metadata_records(text, property_spans)?
+    } else {
+        property_spans
+            .iter()
+            .find_map(|span| {
+                span.properties.scroll_window.map(|region_id| {
+                    vec![TapeMetadataRecord {
+                        kind: METADATA_SCROLL_WINDOW,
+                        region_id,
+                        index: 0,
+                        start: span.start,
+                        end: span.end,
+                    }]
+                })
+            })
+            .unwrap_or_default()
+    };
+    let mut fragments = build_fragment_templates(text, spaces, property_spans)?;
+    let propagated_roles = propagated_fragment_roles(&fragments);
+    for (fragment, roles) in fragments.iter_mut().zip(propagated_roles) {
+        fragment.roles = roles;
+    }
+    if records.is_empty() && fragments.is_empty() {
         return Ok(None);
     }
     let literal = metadata_literal_from_records(&records)?;
-    if literal.len() > max_bytes {
+    let fragment_bytes = encode_fragment_templates(&fragments)?;
+    let fragment_count = fragments.len();
+    if literal
+        .len()
+        .checked_add(fragment_bytes.len())
+        .is_none_or(|length| length > max_bytes)
+    {
         return Err("Native layout tape metadata exceeds its byte limit".to_owned());
     }
     Ok(Some(RootMetadataPayload {
         literal,
         record_count: records.len(),
+        fragments,
+        fragment_bytes,
+        fragment_count,
     }))
 }
 
@@ -1981,249 +2313,21 @@ fn flatten_layout_tape(tape: LayoutTape, complete: bool) -> Result<FlatLayoutTap
     })
 }
 
-fn myers_trace_value(trace: &[isize], distance: usize, diagonal: isize) -> isize {
-    let distance = distance as isize;
-    if diagonal < -distance || diagonal > distance {
-        -1
-    } else {
-        trace[(diagonal + distance) as usize]
-    }
+fn tape_commit_batch(old: &[TapeCharacter], new: &[TapeCharacter]) -> CommitBatch {
+    diff_commit_batch(
+        0,
+        1,
+        old,
+        new,
+        |left, right| left.value == right.value,
+        |left, right| left.pixel_width == right.pixel_width && left.properties == right.properties,
+    )
+    .expect("fixed consecutive adapter revisions")
 }
 
-const MYERS_MAX_SEARCH_DISTANCE: usize = 1024;
-
-fn myers_text_matches(old: &[TapeCharacter], new: &[TapeCharacter]) -> Vec<(usize, usize, usize)> {
-    let prefix = old
-        .iter()
-        .zip(new.iter())
-        .take_while(|(left, right)| left.value == right.value)
-        .count();
-    let old_rest = &old[prefix..];
-    let new_rest = &new[prefix..];
-    let suffix = old_rest
-        .iter()
-        .rev()
-        .zip(new_rest.iter().rev())
-        .take_while(|(left, right)| left.value == right.value)
-        .count();
-    let old_core = &old_rest[..old_rest.len() - suffix];
-    let new_core = &new_rest[..new_rest.len() - suffix];
-    let mut matches = Vec::new();
-    if prefix > 0 {
-        matches.push((0, 0, prefix));
-    }
-    // The trace history retains O(distance^2) memory, so an unbounded
-    // search over two dissimilar full frames can exhaust the process.
-    // A capped core simply degrades into one replacement patch.
-    if let Some(core) = myers_core_matches(old_core, new_core, MYERS_MAX_SEARCH_DISTANCE) {
-        for (old_start, new_start, length) in core {
-            matches.push((old_start + prefix, new_start + prefix, length));
-        }
-    }
-    if suffix > 0 {
-        matches.push((old.len() - suffix, new.len() - suffix, suffix));
-    }
-    matches
-}
-
-fn myers_core_matches(
-    old: &[TapeCharacter],
-    new: &[TapeCharacter],
-    max_distance: usize,
-) -> Option<Vec<(usize, usize, usize)>> {
-    let old_length = old.len();
-    let new_length = new.len();
-    let maximum = old_length.saturating_add(new_length);
-    let bounded = maximum.min(max_distance);
-    let mut traces: Vec<Vec<isize>> = Vec::with_capacity(bounded.saturating_add(1));
-    let mut final_distance = maximum;
-    let mut found = false;
-
-    'search: for distance in 0..=bounded {
-        let previous = distance.checked_sub(1).and_then(|index| traces.get(index));
-        let mut current = vec![-1; 1 + 2 * distance];
-        let mut diagonal = -(distance as isize);
-        while diagonal <= distance as isize {
-            let down = previous.map(|trace| myers_trace_value(trace, distance - 1, diagonal + 1));
-            let right = previous.map(|trace| myers_trace_value(trace, distance - 1, diagonal - 1));
-            let mut old_position = if distance == 0 {
-                0
-            } else if diagonal == -(distance as isize) {
-                down.unwrap_or(-1)
-            } else if diagonal == distance as isize {
-                right.unwrap_or(-1) + 1
-            } else if right.unwrap_or(-1) < down.unwrap_or(-1) {
-                down.unwrap_or(-1)
-            } else {
-                right.unwrap_or(-1) + 1
-            };
-            let mut new_position = old_position - diagonal;
-            while old_position >= 0
-                && new_position >= 0
-                && (old_position as usize) < old_length
-                && (new_position as usize) < new_length
-                && old[old_position as usize].value == new[new_position as usize].value
-            {
-                old_position += 1;
-                new_position += 1;
-            }
-            current[(diagonal + distance as isize) as usize] = old_position;
-            if old_position >= old_length as isize && new_position >= new_length as isize {
-                traces.push(current);
-                final_distance = distance;
-                found = true;
-                break 'search;
-            }
-            diagonal += 2;
-        }
-        traces.push(current);
-    }
-    if !found {
-        return None;
-    }
-
-    let mut old_position = old_length as isize;
-    let mut new_position = new_length as isize;
-    let mut matches = Vec::new();
-    for distance in (1..=final_distance).rev() {
-        let previous_distance = distance - 1;
-        let previous = &traces[previous_distance];
-        let diagonal = old_position - new_position;
-        let previous_diagonal = if diagonal == -(distance as isize)
-            || (diagonal != distance as isize
-                && myers_trace_value(previous, previous_distance, diagonal - 1)
-                    < myers_trace_value(previous, previous_distance, diagonal + 1))
-        {
-            diagonal + 1
-        } else {
-            diagonal - 1
-        };
-        let previous_old = myers_trace_value(previous, previous_distance, previous_diagonal);
-        let previous_new = previous_old - previous_diagonal;
-        if old_position > previous_old && new_position > previous_new {
-            let length = (old_position - previous_old).min(new_position - previous_new) as usize;
-            matches.push((
-                (old_position as usize) - length,
-                (new_position as usize) - length,
-                length,
-            ));
-        }
-        old_position = previous_old;
-        new_position = previous_new;
-    }
-    if old_position > 0 && new_position > 0 {
-        let length = old_position.min(new_position) as usize;
-        matches.push((
-            old_position as usize - length,
-            new_position as usize - length,
-            length,
-        ));
-    }
-    matches.reverse();
-    Some(matches)
-}
-
-fn push_tape_patch(
-    patches: &mut Vec<TapePatch>,
-    old_start: usize,
-    old_end: usize,
-    new_start: usize,
-    new_end: usize,
-) {
-    if old_start == old_end && new_start == new_end {
-        return;
-    }
-    if let Some(previous) = patches.last_mut() {
-        if previous.old_end == old_start && previous.new_end == new_start {
-            previous.old_end = old_end;
-            previous.new_end = new_end;
-            return;
-        }
-    }
-    patches.push(TapePatch {
-        old_start,
-        old_end,
-        new_start,
-        new_end,
-    });
-}
-
-fn push_semantic_run_patches(
-    old: &[TapeCharacter],
-    new: &[TapeCharacter],
-    old_start: usize,
-    new_start: usize,
-    length: usize,
-    patches: &mut Vec<TapePatch>,
-) {
-    let mut run_start = None;
-    for offset in 0..length {
-        let old_character = &old[old_start + offset];
-        let new_character = &new[new_start + offset];
-        let equal = old_character.pixel_width == new_character.pixel_width
-            && old_character.properties == new_character.properties;
-        match (run_start, equal) {
-            (None, false) => run_start = Some(offset),
-            (Some(start), true) => {
-                push_tape_patch(
-                    patches,
-                    old_start + start,
-                    old_start + offset,
-                    new_start + start,
-                    new_start + offset,
-                );
-                run_start = None;
-            }
-            _ => {}
-        }
-    }
-    if let Some(start) = run_start {
-        push_tape_patch(
-            patches,
-            old_start + start,
-            old_start + length,
-            new_start + start,
-            new_start + length,
-        );
-    }
-}
-
+#[cfg(test)]
 fn minimal_tape_patches(old: &[TapeCharacter], new: &[TapeCharacter]) -> Vec<TapePatch> {
-    let text_equal = old.len() == new.len()
-        && old
-            .iter()
-            .zip(new)
-            .all(|(left, right)| left.value == right.value);
-    let matches = if text_equal {
-        vec![(0, 0, old.len())]
-    } else {
-        myers_text_matches(old, new)
-    };
-    let mut old_position = 0;
-    let mut new_position = 0;
-    let mut patches = Vec::new();
-    for (matched_old, matched_new, length) in matches {
-        if old_position < matched_old || new_position < matched_new {
-            push_tape_patch(
-                &mut patches,
-                old_position,
-                matched_old,
-                new_position,
-                matched_new,
-            );
-        }
-        push_semantic_run_patches(old, new, matched_old, matched_new, length, &mut patches);
-        old_position = matched_old + length;
-        new_position = matched_new + length;
-    }
-    push_tape_patch(
-        &mut patches,
-        old_position,
-        old.len(),
-        new_position,
-        new.len(),
-    );
-    patches
+    tape_commit_batch(old, new).semantic_edits
 }
 
 fn tape_character_encoding_parts(
@@ -2283,13 +2387,38 @@ fn encode_patch_replacement_body(
 fn encode_patch_combined_payload(
     replacement: &[u8],
     metadata: Option<&RootMetadataPayload>,
+    fragment_style_delta: Option<&FragmentStyleDelta>,
     max_bytes: usize,
 ) -> Result<Vec<u8>, String> {
     let metadata_literal = metadata.map_or("nil", |payload| payload.literal.as_str());
+    let style_delta_literal = fragment_style_delta.map(|delta| {
+        let entries = delta
+            .iter()
+            .map(|(index, style_ids)| {
+                let ids = style_ids
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if ids.is_empty() {
+                    format!("({index})")
+                } else {
+                    format!("({index} {ids})")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("({entries})")
+    });
     let payload_len = 1_usize
         .checked_add(replacement.len())
         .and_then(|size| size.checked_add(1))
         .and_then(|size| size.checked_add(metadata_literal.len()))
+        .and_then(|size| {
+            style_delta_literal
+                .as_ref()
+                .map_or(Some(size), |literal| size.checked_add(1 + literal.len()))
+        })
         .and_then(|size| size.checked_add(1))
         .ok_or_else(|| "Native layout patch payload size overflow".to_owned())?;
     if payload_len > max_bytes {
@@ -2300,8 +2429,137 @@ fn encode_patch_combined_payload(
     payload.extend_from_slice(replacement);
     payload.push(b' ');
     payload.extend_from_slice(metadata_literal.as_bytes());
+    if let Some(literal) = style_delta_literal {
+        payload.push(b' ');
+        payload.extend_from_slice(literal.as_bytes());
+    }
     payload.push(b']');
     Ok(payload)
+}
+
+/// Emacs adapter payload built on the editor-independent core batch.
+struct EmacsCommitBatch {
+    core: CommitBatch,
+    combined_payload: Vec<u8>,
+    metadata_records: usize,
+    fragment_bytes: Vec<u8>,
+    fragment_records: usize,
+    reuse_fragment_template: bool,
+    reuse_ownership_template: bool,
+    reuse_mount_projection: bool,
+    fragment_style_delta: Option<FragmentStyleDelta>,
+}
+
+fn build_emacs_commit_batch(
+    old: &FlatLayoutTape,
+    target: &FlatLayoutTape,
+    compiled_styles: &[CompiledStyle],
+    complete: bool,
+    root_metadata: bool,
+    max_bytes: usize,
+) -> Result<EmacsCommitBatch, String> {
+    let core = tape_commit_batch(&old.characters, &target.characters);
+    let descriptor_bytes = core
+        .semantic_edits
+        .len()
+        .checked_add(core.coordinate_edits.len())
+        .ok_or_else(|| "Native layout patch descriptor count overflow".to_owned())?
+        .checked_mul(32)
+        .ok_or_else(|| "Native layout patch size overflow".to_owned())?;
+    let fixed_body_bytes = 56_usize
+        .checked_add(descriptor_bytes)
+        .ok_or_else(|| "Native layout patch size overflow".to_owned())?;
+    let payload_limit = max_bytes
+        .checked_sub(TAPE_HEADER_LEN)
+        .and_then(|remaining| remaining.checked_sub(fixed_body_bytes))
+        .ok_or_else(|| "Native layout patch exceeds its byte limit".to_owned())?;
+    let (target_text, target_spaces, target_property_spans) =
+        tape_character_encoding_parts(&target.characters)?;
+    let mut metadata_payload = root_metadata_payload(
+        &target_text,
+        &target_spaces,
+        &target_property_spans,
+        complete,
+        root_metadata,
+        payload_limit,
+    )?;
+    let old_fragments = if metadata_payload.is_some() {
+        let (old_text, old_spaces, old_property_spans) =
+            tape_character_encoding_parts(&old.characters)?;
+        let mut fragments = build_fragment_templates(&old_text, &old_spaces, &old_property_spans)?;
+        let roles = propagated_fragment_roles(&fragments);
+        for (fragment, roles) in fragments.iter_mut().zip(roles) {
+            fragment.roles = roles;
+        }
+        Some(fragments)
+    } else {
+        None
+    };
+    let reuse_fragment_template = old_fragments
+        .as_ref()
+        .zip(metadata_payload.as_ref())
+        .is_some_and(|(old, target)| *old == target.fragments);
+    let reuse_ownership_template = old_fragments
+        .as_ref()
+        .zip(metadata_payload.as_ref())
+        .is_some_and(|(old, target)| {
+            fragment_ownership_spans(old) == fragment_ownership_spans(&target.fragments)
+        });
+    let reuse_mount_projection = old_fragments
+        .as_ref()
+        .zip(metadata_payload.as_ref())
+        .is_some_and(|(old, target)| {
+            fragment_region_mount_projection(old)
+                == fragment_region_mount_projection(&target.fragments)
+        });
+    let fragment_style_delta = if reuse_fragment_template {
+        None
+    } else {
+        old_fragments
+            .as_ref()
+            .zip(metadata_payload.as_ref())
+            .and_then(|(old, target)| fragment_style_delta(old, &target.fragments))
+    };
+    let replacements = encode_patch_replacement_body(
+        &target.characters,
+        &core.semantic_edits,
+        compiled_styles,
+        payload_limit,
+    )?;
+    let combined_payload = encode_patch_combined_payload(
+        &replacements,
+        metadata_payload.as_ref(),
+        fragment_style_delta.as_ref(),
+        payload_limit,
+    )?;
+    let metadata_records = metadata_payload
+        .as_ref()
+        .map_or(0, |payload| payload.record_count);
+    let fragment_records = if reuse_fragment_template || fragment_style_delta.is_some() {
+        0
+    } else {
+        metadata_payload
+            .as_ref()
+            .map_or(0, |payload| payload.fragment_count)
+    };
+    let fragment_bytes = if reuse_fragment_template || fragment_style_delta.is_some() {
+        Vec::new()
+    } else {
+        metadata_payload.as_mut().map_or_else(Vec::new, |payload| {
+            std::mem::take(&mut payload.fragment_bytes)
+        })
+    };
+    Ok(EmacsCommitBatch {
+        core,
+        combined_payload,
+        metadata_records,
+        fragment_bytes,
+        fragment_records,
+        reuse_fragment_template,
+        reuse_ownership_template,
+        reuse_mount_projection,
+        fragment_style_delta,
+    })
 }
 
 pub(crate) fn encode_layout_patch_tape(
@@ -2321,66 +2579,65 @@ pub(crate) fn encode_layout_patch_tape(
         .iter()
         .map(StyleTemplate::compile)
         .collect::<Result<Vec<_>, _>>()?;
-    let patches = minimal_tape_patches(&old.characters, &target.characters);
-    let patch_count = count_u32(patches.len(), "patches")?;
+    let batch = build_emacs_commit_batch(
+        &old,
+        &target,
+        &compiled_styles,
+        identity.complete,
+        root_metadata,
+        max_bytes,
+    )?;
+    let patch_count = count_u32(batch.core.semantic_edits.len(), "patches")?;
+    let coordinate_patch_count =
+        count_u32(batch.core.coordinate_edits.len(), "coordinate patches")?;
     let target_character_count = u64::try_from(target.characters.len())
         .map_err(|_| "Native layout patch character count overflow".to_owned())?;
     let base_character_count = u64::try_from(old.characters.len())
         .map_err(|_| "Native layout patch base character count overflow".to_owned())?;
-    let descriptor_bytes = patches
-        .len()
-        .checked_mul(32)
-        .ok_or_else(|| "Native layout patch size overflow".to_owned())?;
-    let fixed_body_bytes = 32_usize
-        .checked_add(descriptor_bytes)
-        .ok_or_else(|| "Native layout patch size overflow".to_owned())?;
-    let payload_limit = max_bytes
-        .checked_sub(TAPE_HEADER_LEN)
-        .and_then(|remaining| remaining.checked_sub(fixed_body_bytes))
-        .ok_or_else(|| "Native layout patch exceeds its byte limit".to_owned())?;
-    let (target_text, _, target_property_spans) =
-        tape_character_encoding_parts(&target.characters)?;
-    let metadata_payload = root_metadata_payload(
-        &target_text,
-        &target_property_spans,
-        identity.complete,
-        root_metadata,
-        payload_limit,
-    )?;
-    let metadata_records = metadata_payload
-        .as_ref()
-        .map_or(0, |payload| payload.record_count);
-    let replacements = encode_patch_replacement_body(
-        &target.characters,
-        &patches,
-        &compiled_styles,
-        payload_limit,
-    )?;
-    let combined_payload =
-        encode_patch_combined_payload(&replacements, metadata_payload.as_ref(), payload_limit)?;
-
     let mut writer = TapeWriter::new(max_bytes)?;
     writer.push_u64(base_character_count)?;
     writer.push_u32(patch_count)?;
     // Publication remains a minimal text/property patch.  The compact target
     // role sidecar lets Emacs swap exact runtime indexes without synchronously
     // rescanning the page or rebuilding thousands of markers per frame.
-    writer.push_u32(0)?;
+    writer.push_u32(
+        u32::from(batch.reuse_fragment_template)
+            | (u32::from(batch.reuse_ownership_template) << 1)
+            | (u32::from(batch.reuse_mount_projection) << 2)
+            | (u32::from(batch.fragment_style_delta.is_some()) << 3),
+    )?;
     writer.push_u64(
-        u64::try_from(metadata_records)
+        u64::try_from(batch.metadata_records)
             .map_err(|_| "Native layout patch has too many metadata records".to_owned())?,
     )?;
     writer.push_u64(
-        u64::try_from(combined_payload.len())
+        u64::try_from(batch.combined_payload.len())
             .map_err(|_| "Native layout patch body is too large".to_owned())?,
     )?;
-    for patch in &patches {
+    writer.push_u64(
+        u64::try_from(batch.fragment_bytes.len())
+            .map_err(|_| "Native layout fragment tape is too large".to_owned())?,
+    )?;
+    writer.push_u64(
+        u64::try_from(batch.fragment_records)
+            .map_err(|_| "Native layout fragment tape has too many records".to_owned())?,
+    )?;
+    writer.push_u32(coordinate_patch_count)?;
+    writer.push_u32(0)?;
+    for patch in &batch.core.semantic_edits {
         writer.push_u64(patch.old_start as u64)?;
         writer.push_u64(patch.old_end as u64)?;
         writer.push_u64(patch.new_start as u64)?;
         writer.push_u64(patch.new_end as u64)?;
     }
-    writer.push_bytes(&combined_payload)?;
+    for patch in &batch.core.coordinate_edits {
+        writer.push_u64(patch.old_start as u64)?;
+        writer.push_u64(patch.old_end as u64)?;
+        writer.push_u64(patch.new_start as u64)?;
+        writer.push_u64(patch.new_end as u64)?;
+    }
+    writer.push_bytes(&batch.combined_payload)?;
+    writer.push_bytes(&batch.fragment_bytes)?;
     Ok(writer.finish_header(
         identity,
         true,
@@ -2495,7 +2752,7 @@ pub(crate) fn encode_layout_tape(
         }
     }
 
-    let fixed_body_bytes = 24_usize
+    let fixed_body_bytes = 40_usize
         .checked_add(
             (line_count as usize)
                 .checked_mul(8)
@@ -2508,6 +2765,7 @@ pub(crate) fn encode_layout_tape(
         .ok_or_else(|| "Native layout tape exceeds its byte limit".to_owned())?;
     let metadata_payload = root_metadata_payload(
         &text,
+        &spaces,
         &property_spans,
         identity.complete,
         root_metadata,
@@ -2519,10 +2777,17 @@ pub(crate) fn encode_layout_tape(
     let metadata_records = metadata_payload
         .as_ref()
         .map_or(0, |payload| payload.record_count);
+    let fragment_bytes = metadata_payload
+        .as_ref()
+        .map_or(0, |payload| payload.fragment_bytes.len());
+    let fragment_records = metadata_payload
+        .as_ref()
+        .map_or(0, |payload| payload.fragment_count);
     let literal_limit = max_bytes
         .checked_sub(TAPE_HEADER_LEN)
         .and_then(|remaining| remaining.checked_sub(fixed_body_bytes))
         .and_then(|remaining| remaining.checked_sub(metadata_bytes))
+        .and_then(|remaining| remaining.checked_sub(fragment_bytes))
         .ok_or_else(|| "Native layout tape exceeds its byte limit".to_owned())?;
     let literal = encode_lisp_literal(
         &text,
@@ -2547,12 +2812,21 @@ pub(crate) fn encode_layout_tape(
         u64::try_from(metadata_records)
             .map_err(|_| "Native layout tape has too many metadata records".to_owned())?,
     )?;
+    writer.push_u64(
+        u64::try_from(fragment_bytes)
+            .map_err(|_| "Native layout fragment tape is too large".to_owned())?,
+    )?;
+    writer.push_u64(
+        u64::try_from(fragment_records)
+            .map_err(|_| "Native layout fragment tape has too many records".to_owned())?,
+    )?;
     for width in line_widths {
         writer.push_u64(width)?;
     }
     writer.push_bytes(literal.as_bytes())?;
     if let Some(payload) = metadata_payload {
         writer.push_bytes(payload.literal.as_bytes())?;
+        writer.push_bytes(&payload.fragment_bytes)?;
     }
 
     Ok(writer.finish_header(
@@ -5645,7 +5919,7 @@ mod tests {
     fn literal_from_full_tape(tape: &[u8]) -> &str {
         let literal_length = u64::from_le_bytes(tape[112..120].try_into().unwrap()) as usize;
         let line_count = u32::from_le_bytes(tape[120..124].try_into().unwrap()) as usize;
-        let literal_start = 136 + line_count * 8;
+        let literal_start = 152 + line_count * 8;
         std::str::from_utf8(&tape[literal_start..literal_start + literal_length]).unwrap()
     }
 
@@ -5653,7 +5927,7 @@ mod tests {
         let literal_length = u64::from_le_bytes(tape[112..120].try_into().unwrap()) as usize;
         let line_count = u32::from_le_bytes(tape[120..124].try_into().unwrap()) as usize;
         let metadata_length = u32::from_le_bytes(tape[124..128].try_into().unwrap()) as usize;
-        let literal_start = 136 + line_count * 8;
+        let literal_start = 152 + line_count * 8;
         let metadata_start = literal_start + literal_length;
         std::str::from_utf8(&tape[metadata_start..metadata_start + metadata_length]).unwrap()
     }
@@ -6176,6 +6450,8 @@ mod tests {
             StyleTemplate {
                 mode: StyleMode::Add,
                 face: FaceTemplate {
+                    lisp: None,
+                    inherit: None,
                     inverse_video: None,
                     foreground: Some("red".to_owned()),
                     background: None,
@@ -6186,6 +6462,8 @@ mod tests {
             StyleTemplate {
                 mode: StyleMode::Add,
                 face: FaceTemplate {
+                    lisp: None,
+                    inherit: None,
                     inverse_video: None,
                     foreground: None,
                     background: Some("blue".to_owned()),
@@ -6196,6 +6474,8 @@ mod tests {
             StyleTemplate {
                 mode: StyleMode::Set,
                 face: FaceTemplate {
+                    lisp: None,
+                    inherit: None,
                     inverse_video: Some(true),
                     foreground: Some("white".to_owned()),
                     background: None,
@@ -6235,12 +6515,17 @@ mod tests {
         assert_eq!(u32::from_le_bytes(full[120..124].try_into().unwrap()), 2);
         let metadata_length = u32::from_le_bytes(full[124..128].try_into().unwrap()) as usize;
         let metadata_records = u64::from_le_bytes(full[128..136].try_into().unwrap()) as usize;
+        let fragment_length = u64::from_le_bytes(full[136..144].try_into().unwrap()) as usize;
+        let fragment_records = u64::from_le_bytes(full[144..152].try_into().unwrap()) as usize;
         assert!(metadata_length > 0);
         assert!(metadata_records > 0);
-        assert_eq!(u64::from_le_bytes(full[136..144].try_into().unwrap()), 8);
-        assert_eq!(u64::from_le_bytes(full[144..152].try_into().unwrap()), 8);
-        let literal_end = 152 + literal_length;
-        let literal = std::str::from_utf8(&full[152..literal_end]).unwrap();
+        assert!(fragment_length > 0);
+        assert!(fragment_records > 0);
+        assert_eq!(u64::from_le_bytes(full[152..160].try_into().unwrap()), 8);
+        assert_eq!(u64::from_le_bytes(full[160..168].try_into().unwrap()), 8);
+        let literal_start = 168;
+        let literal_end = literal_start + literal_length;
+        let literal = std::str::from_utf8(&full[literal_start..literal_end]).unwrap();
         assert_eq!(literal.len(), literal_length);
         assert!(literal.starts_with("#(\" \\n \""));
         assert!(literal.contains("face #3=(:inverse-video t :foreground \"white\")"));
@@ -6248,7 +6533,7 @@ mod tests {
         assert!(literal.contains("ebox-content 11"));
         assert!(literal.contains("ebox-native-property-template-ids (4)"));
         assert!(literal.contains("display (space :width (8))"));
-        let metadata = &full[literal_end..];
+        let metadata = &full[literal_end..literal_end + metadata_length];
         assert_eq!(metadata.len(), metadata_length);
         let metadata_literal = metadata_from_full_tape(&full);
         assert!(metadata_literal.starts_with("(:prepared-p t"));
@@ -6257,6 +6542,7 @@ mod tests {
         assert!(metadata_literal.contains("(11 pl) ((1 . 4))"));
         assert!(metadata_literal.contains("data (11 (1 . 4))"));
         assert!(metadata_literal.contains("data (11 ((0 0 . 3)"));
+        assert!(metadata_literal.contains(":scroll-window-p t"));
         assert!(metadata_literal.ends_with(":scroll-window-p t)"));
 
         let full_without_root_metadata =
@@ -6265,14 +6551,13 @@ mod tests {
             u16::from_le_bytes(full_without_root_metadata[6..8].try_into().unwrap()),
             3
         );
-        assert_eq!(
-            u32::from_le_bytes(full_without_root_metadata[124..128].try_into().unwrap()),
-            0
-        );
+        assert!(u32::from_le_bytes(full_without_root_metadata[124..128].try_into().unwrap()) > 0);
         assert_eq!(
             u64::from_le_bytes(full_without_root_metadata[128..136].try_into().unwrap()),
-            0
+            1
         );
+        assert!(u64::from_le_bytes(full_without_root_metadata[136..144].try_into().unwrap()) > 0);
+        assert!(u64::from_le_bytes(full_without_root_metadata[144..152].try_into().unwrap()) > 0);
         let full_without_root_metadata_literal =
             literal_from_full_tape(&full_without_root_metadata);
         assert!(full_without_root_metadata_literal.contains("ebox-content 11"));
@@ -6294,6 +6579,8 @@ mod tests {
         assert_eq!(u16::from_le_bytes(light[6..8].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(light[124..128].try_into().unwrap()), 0);
         assert_eq!(u64::from_le_bytes(light[128..136].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(light[136..144].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(light[144..152].try_into().unwrap()), 0);
         assert!(light.len() < full.len());
         assert!(encode_layout_tape(tape, &styles, identity, true, TAPE_HEADER_LEN).is_err());
 
@@ -6366,8 +6653,12 @@ mod tests {
 
     #[test]
     fn root_metadata_literal_preserves_zero_metadata_and_byte_limit() {
-        let empty_payload = root_metadata_payload("x", &[], true, true, 4096).unwrap();
-        assert!(empty_payload.is_none());
+        let fragment_only_payload = root_metadata_payload("x", &[], &[], true, true, 4096)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fragment_only_payload.record_count, 0);
+        assert_eq!(fragment_only_payload.fragment_count, 1);
+        assert!(!fragment_only_payload.fragment_bytes.is_empty());
 
         let property_spans = vec![TapePropertySpan {
             start: 0,
@@ -6378,17 +6669,23 @@ mod tests {
                 ..AtomProperties::default()
             },
         }];
-        let payload = root_metadata_payload("x", &property_spans, true, true, 4096)
+        let payload = root_metadata_payload("x", &[], &property_spans, true, true, 4096)
             .unwrap()
             .unwrap();
         assert_eq!(payload.record_count, 4);
+        assert_eq!(payload.fragment_count, 1);
         assert!(payload.literal.contains("(42 content) ((1 . 2))"));
         assert!(payload.literal.contains("data (42 (1 . 2))"));
         assert!(payload.literal.contains("data (42 ((0 0 . 1)))"));
-        assert!(
-            root_metadata_payload("x", &property_spans, true, true, payload.literal.len() - 1)
-                .is_err()
-        );
+        assert!(root_metadata_payload(
+            "x",
+            &[],
+            &property_spans,
+            true,
+            true,
+            payload.literal.len() - 1,
+        )
+        .is_err());
     }
 
     #[test]
@@ -6757,7 +7054,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(u16::from_le_bytes(encoded[6..8].try_into().unwrap()), 7);
-        assert_eq!(u16::from_le_bytes(encoded[4..6].try_into().unwrap()), 9);
+        assert_eq!(
+            u16::from_le_bytes(encoded[4..6].try_into().unwrap()),
+            TAPE_VERSION
+        );
         assert_eq!(u64::from_le_bytes(encoded[92..100].try_into().unwrap()), 7);
         assert_eq!(u64::from_le_bytes(encoded[112..120].try_into().unwrap()), 6);
         let patch_count = u32::from_le_bytes(encoded[120..124].try_into().unwrap()) as usize;
@@ -6765,18 +7065,60 @@ mod tests {
         let reserved = u32::from_le_bytes(encoded[124..128].try_into().unwrap());
         let metadata_records = u64::from_le_bytes(encoded[128..136].try_into().unwrap());
         let payload_length = u64::from_le_bytes(encoded[136..144].try_into().unwrap()) as usize;
-        let payload_start = 144 + patch_count * 32;
+        let fragment_length = u64::from_le_bytes(encoded[144..152].try_into().unwrap()) as usize;
+        let fragment_records = u64::from_le_bytes(encoded[152..160].try_into().unwrap()) as usize;
+        let coordinate_patch_count =
+            u32::from_le_bytes(encoded[160..164].try_into().unwrap()) as usize;
+        assert!(coordinate_patch_count > 0);
+        let payload_start = 168 + (patch_count + coordinate_patch_count) * 32;
         let payload_end = payload_start + payload_length;
         let payload = std::str::from_utf8(&encoded[payload_start..payload_end]).unwrap();
         assert_eq!(reserved, 0);
         assert!(metadata_records > 0);
-        assert_eq!(encoded.len(), payload_end);
+        assert!(fragment_length > 0);
+        assert!(fragment_records > 0);
+        assert_eq!(encoded.len(), payload_end + fragment_length);
         assert!(payload.starts_with("[#(\"Xe \""));
         assert!(payload.contains("1 2 (ebox-content 9 ebox-native-property-template-ids (4))"));
         assert!(payload.contains("2 3 (display (space :width (7)))"));
         assert!(payload.contains("(:prepared-p t"));
         assert!(payload.contains("(9 content) ((5 . 6))"));
         assert!(payload.contains("data (9 (5 . 6))"));
+        assert!(payload.contains(":scroll-window-p nil"));
         assert!(payload.ends_with(":scroll-window-p nil)]"));
+    }
+
+    #[test]
+    fn mount_projection_reuse_ignores_fragment_splits_but_not_roles() {
+        fn fragment(start: u64, end: u64, region_id: i64) -> FragmentTemplate {
+            FragmentTemplate {
+                start,
+                end,
+                line: 0,
+                roles: vec![("content", region_id), ("content-owner", region_id)],
+                content_owner: Some(region_id),
+                content_index: None,
+                property_template_ids: Vec::new(),
+                style_ids: Vec::new(),
+            }
+        }
+        let old = vec![fragment(0, 2, 7)];
+        let target = vec![fragment(0, 1, 7), fragment(1, 2, 7)];
+        assert_eq!(
+            fragment_region_mount_projection(&old),
+            fragment_region_mount_projection(&target)
+        );
+        let mut styled = target.clone();
+        styled[1].style_ids = vec![3, 5];
+        assert_eq!(
+            fragment_style_delta(&target, &styled),
+            Some(vec![(1, vec![3, 5])])
+        );
+        let changed = vec![fragment(0, 2, 8)];
+        assert_ne!(
+            fragment_region_mount_projection(&old),
+            fragment_region_mount_projection(&changed)
+        );
+        assert!(fragment_style_delta(&old, &changed).is_none());
     }
 }

@@ -16,6 +16,24 @@
 (declare-function ebox-create "ebox" (&rest plist))
 (declare-function ebox--flex-normalize-container-props
                   "ebox-flex" (props))
+(declare-function ebox--normalize-horizontal-size-value
+                  "ebox-flex" (value allowed-keywords))
+(declare-function ebox--nonnegative-horizontal-size-pixels
+                  "ebox-layout" (value &optional default))
+(declare-function ecss-schema-set-create "ecss" ())
+(declare-function ecss-stylesheet-create "ecss" ())
+
+(defvar ebox--preferred-size-keywords)
+(defvar ebox--min-size-keywords)
+(defvar ebox--max-size-keywords)
+
+(defun ebox-style--create-schema-set ()
+  "Return one private ECSS schema set for Ebox style state."
+  (ecss-schema-set-create))
+
+(defun ebox-style--create-stylesheet ()
+  "Return one private ECSS stylesheet for Ebox style state."
+  (ecss-stylesheet-create))
 
 (defconst ebox-style--border-styles
   '(none hidden dotted dashed solid double groove ridge inset outset)
@@ -224,7 +242,7 @@
 (defvar ebox-style--property-table nil
   "Hash table from canonical property names and aliases to metadata.")
 
-(defvar ebox-style-schemas (ecss-schema-set-create)
+(defvar ebox-style-schemas (ebox-style--create-schema-set)
   "ECSS property schemas for the isolated Ebox style domain.")
 
 (defvar ebox-style--registered-schemas nil
@@ -597,12 +615,26 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
       (setq options (plist-put options :shorthand shorthand)))
     options))
 
+(defvar ebox-style--closed-computed-cache (make-hash-table :test #'equal)
+  "Bounded cache of selector-free, dependency-free computed styles.")
+
+(defconst ebox-style--closed-computed-cache-limit 512
+  "Maximum selector-free computed styles retained across projections.")
+
+(declare-function tp-computed-p "tp-style" (value))
+
+(defun ebox-style--closed-declarations-p (declarations)
+  "Return non-nil when DECLARATIONS contain no computed value source."
+  (cl-loop for (_property value) on declarations by #'cddr
+           never (tp-computed-p value)))
+
 (defun ebox-style-register-properties ()
   "Register the complete namespaced Ebox property domain with ECSS."
   (dolist (property ebox-style--property-definitions)
     (apply #'ecss-schema-set-define
            ebox-style-schemas (plist-get property :id)
            (ebox-style--schema-options property)))
+  (clrhash ebox-style--closed-computed-cache)
   (setq ebox-style--registered-schemas ebox-style-schemas))
 
 (defun ebox-style--ensure-properties ()
@@ -615,7 +647,7 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
         (setq ebox-style--registered-schemas ebox-style-schemas)
       (ebox-style-register-properties))))
 
-(defvar ebox-style-stylesheet (ecss-stylesheet-create)
+(defvar ebox-style-stylesheet (ebox-style--create-stylesheet)
   "Isolated ECSS stylesheet containing Ebox layout and paint rules.")
 
 (defun ebox-style-cascade-active-p ()
@@ -733,10 +765,26 @@ ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
 (defun ebox-style-compute-subject (subject declarations &optional parent-style)
   "Compute SUBJECT style from DECLARATIONS and optional PARENT-STYLE via ECSS."
   (ebox-style--ensure-properties)
-  (ecss-compute-style
-   ebox-style-schemas subject :declarations declarations
-   :stylesheet ebox-style-stylesheet :parent-style parent-style
-   :value-resolver #'tp-resolve-value))
+  (let* ((closed-p
+          (and (not (ebox-style-cascade-active-p))
+               (ebox-style--closed-declarations-p declarations)))
+         (key (and closed-p (list declarations parent-style)))
+         (missing (make-symbol "ebox-closed-style-cache-missing"))
+         (cached (and key (gethash key ebox-style--closed-computed-cache
+                                   missing))))
+    (if (and key (not (eq cached missing)))
+        cached
+      (let ((style
+             (ecss-compute-style
+              ebox-style-schemas subject :declarations declarations
+              :stylesheet ebox-style-stylesheet :parent-style parent-style
+              :value-resolver #'tp-resolve-value)))
+        (when key
+          (when (>= (hash-table-count ebox-style--closed-computed-cache)
+                    ebox-style--closed-computed-cache-limit)
+            (clrhash ebox-style--closed-computed-cache))
+          (puthash key style ebox-style--closed-computed-cache))
+        style))))
 
 (defconst ebox-style--theme-delta-properties
   '(ebox/color ebox/background-color)

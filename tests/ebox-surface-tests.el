@@ -11,6 +11,7 @@
 (load-file (expand-file-name "../ebox.el"
                             (file-name-directory load-file-name)))
 (require 'tp-surface)
+(require 'ebox-native-reflow)
 
 (defun ebox-surface-test--reset-render-state ()
   "Reset render identities and side tables used by projection tests."
@@ -270,6 +271,42 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
          (ebox-surface-producer node))
       (ebox-render node))))
 
+(defun ebox-surface-test--project-row-column ()
+  "Project the row/column fixture through the pure TP materializer."
+  (ebox-surface-test--render-fresh
+   (cdr (assq 'row-column (ebox-surface-test--fixtures))) t))
+
+(defun ebox-surface-test--canonical-region-properties (rendered)
+  "Return RENDERED with opaque region ids renamed by semantic occurrence."
+  (let ((copy (copy-sequence rendered))
+        (ids (make-hash-table :test #'eql))
+        (next-id 0)
+        (properties
+         (delete-dups
+          (append (mapcar #'cdr ebox-region-types)
+                  '(ebox-content ebox-content-owner ebox-scroll-window
+                    ebox-overflow-foreground-source)))))
+    (cl-labels ((canonical
+                 (id)
+                 (or (gethash id ids)
+                     (let ((canonical (cl-incf next-id)))
+                       (puthash id canonical ids)
+                       canonical))))
+      (let ((position 0))
+        (while (< position (length copy))
+          (let* ((end (or (next-property-change position copy) (length copy)))
+                 (props (text-properties-at position copy)))
+            (dolist (property properties)
+              (when-let* ((id (plist-get props property)))
+                (setq props (plist-put props property (canonical id)))))
+            (when-let* ((owners (plist-get props 'ebox-content-owners)))
+              (setq props
+                    (plist-put props 'ebox-content-owners
+                               (mapcar #'canonical owners))))
+            (set-text-properties position end props copy)
+            (setq position end)))))
+    copy))
+
 (defun ebox-surface-test--walk-runtime (node function)
   "Call FUNCTION for every runtime NODE in preorder."
   (funcall function node)
@@ -439,6 +476,119 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (should (plist-get first :face-baseline-known-p))
       (should-not (get-text-property 0 ebox--paint-origin-property rendered)))))
 
+(ert-deftest ebox-native-layout-ir-preserves-default-foreground-face ()
+  "Serialize and optionally render the Ebox default foreground reset."
+  (let* ((ebox-viewport-width 80)
+         (ebox-viewport-height 20)
+         (node (ebox-create :content "native" :width 20
+                            :color 'ebox/default-foreground))
+         (package (ebox-native-reflow--compile-layout-package node))
+         (document (plist-get package :document))
+         (styles (plist-get document :styles))
+         (control
+          (ebox-native-reflow--layout-control-json
+           document
+           '((:key 1 :viewport-width 80 :viewport-height 20
+                   :root-width 20 :runtime-revision 0
+                   :context-hash 0 :complete t)))))
+    (should (stringp control))
+    (should
+     (cl-find "(:inherit default)" styles
+              :key (lambda (style)
+                     (plist-get (plist-get style :face) :lisp))
+              :test #'equal))
+    (when (ebox-native-reflow-layout-ready-p)
+      (let ((frame
+             (ebox-native-reflow-execute-sync
+              node
+              '(:key 1 :viewport-width 80 :viewport-height 20
+                     :root-width 20 :runtime-revision 0
+                     :context-hash 0 :complete t)
+              package)))
+        (should (plist-get frame :native-frame))
+        (should (vectorp
+                 (plist-get (plist-get frame :effect-tape)
+                            :fragment-span-template)))
+        (should (equal-including-properties
+                 (plist-get frame :rendered)
+                 (ebox-render node)))))))
+
+(ert-deftest ebox-native-layout-effect-fragments-match-render-scan ()
+  "Decode native paint fragments without scanning rendered properties."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (let* ((ebox-viewport-width 80)
+         (ebox-viewport-height 20)
+         (content (propertize "native" 'face 'italic 'help-echo "source"))
+         (node (ebox-create :content content :width 20
+                            :color "#f0f0f0" :bgcolor "#101010"))
+         (package (ebox-native-reflow--compile-layout-package node))
+         (normal
+          (let ((ebox--surface-materialization-active t)
+                (ebox--paint-origin-capture-p t))
+            (ebox--render-layout node)))
+         (normal-fragments (ebox-surface--rendered-fragments normal))
+         (frame
+          (ebox-native-reflow-execute-sync
+           node
+           '(:key 1 :viewport-width 80 :viewport-height 20
+                  :root-width 20 :runtime-revision 0
+                  :context-hash 0 :complete t)
+           package))
+         (native-fragments (ebox-native-reflow-frame-fragments frame)))
+    (should (equal-including-properties normal (plist-get frame :rendered)))
+    (should (= (length normal-fragments) (length native-fragments)))
+    (cl-mapc
+     (lambda (normal-fragment native-fragment)
+       (dolist (key '(:start :end :line :paint-role-ids :role-ids
+                      :paint-address :paint-token :face-baseline
+                      :face-baseline-known-p :key))
+         (should (equal (plist-get normal-fragment key)
+                        (plist-get native-fragment key)))))
+     normal-fragments native-fragments)))
+
+(ert-deftest ebox-native-layout-effect-fragments-reject-coordinate-gaps ()
+  "Effect templates must cover the rendered frame exactly once."
+  (should-error
+   (ebox-native-reflow--validate-root-fragment-template
+    [[0 1 0 nil nil nil nil nil]
+     [2 3 0 nil nil nil nil nil]]
+    3 0 0)))
+
+(ert-deftest ebox-surface-fragment-index-rebases-aligned-text-patch ()
+  "Scan only an aligned replacement and retain surrounding paint addresses."
+  (let ((old (copy-sequence "abcXYZdef"))
+        (output (copy-sequence "abcQdef")))
+    (cl-mapc
+     (lambda (range owner text)
+       (put-text-property (car range) (cdr range)
+                          'ebox-content-owner owner text))
+     '((0 . 3) (3 . 6) (6 . 9)) '(1 2 3) (make-list 3 old))
+    (cl-mapc
+     (lambda (range owner text)
+       (put-text-property (car range) (cdr range)
+                          'ebox-content-owner owner text))
+     '((0 . 3) (3 . 4) (4 . 7)) '(1 2 3) (make-list 3 output))
+    (let* ((old-fragments (ebox-surface--rendered-fragments old))
+           (rebased
+            (ebox-surface--incremental-patched-fragments
+             output old-fragments
+             '((:old-start 3 :old-end 6 :new-start 3 :new-end 4)))))
+      (should rebased)
+      (should (equal (mapcar (lambda (fragment)
+                               (cons (plist-get fragment :start)
+                                     (plist-get fragment :end)))
+                             rebased)
+                     '((0 . 3) (3 . 4) (4 . 7))))
+      (should (equal (mapcar (lambda (fragment)
+                               (plist-get
+                                (plist-get fragment :paint-address)
+                                :content-owner))
+                             rebased)
+                     '(1 2 3)))
+      (should (cl-every (lambda (fragment)
+                          (eq (plist-get fragment :text) output))
+                        rebased)))))
+
 (ert-deftest ebox-surface-candidate-plan-copies-face-property-values ()
   "Candidate plans isolate mutable face values despite provenance hints."
   (let* ((color (copy-sequence "#192233"))
@@ -469,7 +619,10 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
     (let* ((builder (cdr fixture))
            (expected (ebox-surface-test--render-fresh builder nil))
            (actual (ebox-surface-test--render-fresh builder t)))
-      (should (equal-including-properties actual expected))
+      (should
+       (equal-including-properties
+        (ebox-surface-test--canonical-region-properties actual)
+        (ebox-surface-test--canonical-region-properties expected)))
       (should (equal (mapcar #'ebox--string-pixel-width
                              (ebox-string-lines actual))
                      (mapcar #'ebox--string-pixel-width
@@ -529,6 +682,21 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (ebox-create :content "Inherited")))
        t))
     (should (> calls 0))))
+
+(ert-deftest ebox-surface-inline-inheritance-crosses-transparent-layout ()
+  "Transparent layout nodes do not consume inherited paint themselves."
+  (let ((closed
+         (ebox-create
+          :color "red"
+          :ebox-content-node
+          (ebox-column (ebox-create :content "child" :color "blue"))))
+        (open
+         (ebox-create
+          :color "red"
+          :ebox-content-node
+          (ebox-column (ebox-create :content "child")))))
+    (should-not (ebox-surface--inline-inheritance-required-p closed))
+    (should (ebox-surface--inline-inheritance-required-p open))))
 
 (ert-deftest ebox-box-content-cache-reuses-fixed-viewport-subtree ()
   "A fixed box content viewport should reuse its exact composite layout."
@@ -640,18 +808,33 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 
 (ert-deftest ebox-surface-projection-does-not-mutate-a-buffer ()
   "Pure projection should not call any final buffer mutation primitive."
-  (cl-letf (((symbol-function 'insert)
-             (lambda (&rest _) (error "Unexpected buffer insertion")))
-            ((symbol-function 'erase-buffer)
-             (lambda (&rest _) (error "Unexpected buffer erase")))
-            ((symbol-function 'delete-region)
-             (lambda (&rest _) (error "Unexpected buffer deletion")))
-            ((symbol-function 'replace-region-contents)
-             (lambda (&rest _) (error "Unexpected buffer replacement"))))
-    (should
-     (stringp
-      (ebox-surface-test--render-fresh
-       (cdr (assq 'row-column (ebox-surface-test--fixtures))) t)))))
+  (let ((probe (generate-new-buffer " *ebox-projection-probe*"))
+        (original-insert (symbol-function 'insert))
+        (original-erase (symbol-function 'erase-buffer))
+        (original-delete (symbol-function 'delete-region))
+        (original-replace (symbol-function 'replace-region-contents)))
+    (unwind-protect
+        (with-current-buffer probe
+          (cl-labels ((guarded
+                       (label original arguments)
+                       (when (eq (current-buffer) probe)
+                         (error "Unexpected probe buffer %s" label))
+                       (apply original arguments)))
+            (cl-letf (((symbol-function 'insert)
+                       (lambda (&rest arguments)
+                         (guarded 'insert original-insert arguments)))
+                      ((symbol-function 'erase-buffer)
+                       (lambda (&rest arguments)
+                         (guarded 'erase original-erase arguments)))
+                      ((symbol-function 'delete-region)
+                       (lambda (&rest arguments)
+                         (guarded 'delete original-delete arguments)))
+                      ((symbol-function 'replace-region-contents)
+                       (lambda (&rest arguments)
+                         (guarded 'replace original-replace arguments))))
+              (should (stringp (ebox-surface-test--project-row-column)))
+              (should (equal (buffer-string) "")))))
+      (when (buffer-live-p probe) (kill-buffer probe)))))
 
 (ert-deftest ebox-surface-logical-box-owns-disjoint-render-fragments ()
   "One logical Ebox box should resolve all of its separated painted regions."

@@ -313,6 +313,10 @@ node id。两个 replacement 函数都接受可选的 `old-semantic-key` 与
 `new-semantic-key`，用于有限的 detached identity 复用。Candidate 在 commit
 时 sealed，不能复用；若捕获的 runtime 或 buffer tick 发生变化，它也会 stale。
 
+`ebox-candidate-patch-host-paint` 比较前后 declarative Host 输出；只有全部变化
+都属于 node-local paint 时才记录属性 patch。它保留子树与 runtime identity，
+并在一次受影响子树遍历中更新继承前景；需要普通子树替换时返回 nil。
+
 `ebox-candidate-replace-root` 使用私有且绑定 candidate 的 root 地址。它只接受
 一个声明式节点、清除调用方 runtime identity，并采用 last-wins 语义。最终 root
 replacement 会吸收其前后记录的 descendant node/host-ref operation，不添加
@@ -336,6 +340,25 @@ node list，只替换该 base payload；empty payload 仍可寻址。
 Host-reference table 与 logical selector id 是两套不同的机制。
 
 ### Report 与 viewport reflow
+
+如果上层框架在调用 Ebox 前需要先分配新的 view tree，可以把整个输入 callback
+纳入 Ebox 的 render GC budget：
+
+```elisp
+(ebox-call-with-render-burst
+ (lambda ()
+   (let ((next-root (build-framework-view)))
+     (ebox-commit buffer next-root))))
+```
+
+优先使用能保证异常清理的 `ebox-call-with-render-burst`。如果操作无法表达为
+一次函数调用，`ebox-render-burst-begin` 会返回交给
+`ebox-render-burst-end` 的不透明 token；调用方必须使用 `unwind-protect`，并按
+后进先出顺序结束嵌套 token。交互 burst 与 Ebox commit 共用 deferred state，
+在最外层 end 后 0.2 秒恢复调用方 GC 设置；新 burst 会取消并取代待执行的
+restore。Batch burst 立即精确恢复 threshold 与 percentage，且不会在边界主动
+执行 GC。这些函数只定义 allocation/GC ownership，不会 publish、commit，也
+不会暴露 Ebox runtime state。
 
 `ebox-buffer-update-report` 返回 mounted buffer 上一次成功报告的 defensive
 copy；目标缺失或不是 Ebox runtime 时会报错。首次 mount 在第一次 update
@@ -504,7 +527,7 @@ style API。
 | `ebox-render`、`ebox-render-to-buffer`、`ebox-display-buffer` | 纯 materialization、retained mount 与展示包装。 |
 | `ebox-commit`、`ebox-buffer-update-report`、`ebox-rerender-buffer-with-context` | 原子根提交、报告查询和 viewport-context rerender。 |
 | `ebox-region-ids`、`ebox-region-resolve`、`ebox-region-update` | Region 映射、logical handle 查询与直接更新。 |
-| `ebox-child-range`、`ebox-range-ref-present-p`、`ebox-candidate-begin`、`ebox-candidate-replace`、`ebox-candidate-replace-range-ref`、`ebox-candidate-replace-root`、`ebox-candidate-replace-host-ref` | 持久 material child segment、backend anchor 查询与一次性 logical candidate transaction。 |
+| `ebox-child-range`、`ebox-range-ref-present-p`、`ebox-candidate-begin`、`ebox-candidate-replace`、`ebox-candidate-replace-range-ref`、`ebox-candidate-replace-root`、`ebox-candidate-replace-host-ref`、`ebox-candidate-patch-host-paint` | 持久 material child segment、backend anchor 查询、子树替换与 retained Host paint transaction。 |
 | `ebox-host-ref-bounds`、`ebox-host-ref-position` | Host-reference 的 live bounds 与首位置。 |
 | `ebox-selector-parse`、`ebox-selector-match-node-p`、`ebox-selector-query-all`、`ebox-selector-query-buffer`、`ebox-selector-update-buffer` | ECSS selector 编译、匹配、查询与批量更新。 |
 | `ebox-select-all`、`ebox-update-selector` | 两个 buffer selector 函数的兼容别名。 |

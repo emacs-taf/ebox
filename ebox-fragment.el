@@ -12,6 +12,10 @@
 (require 'ebox-measure)
 
 (declare-function ebox--current-display-signature "ebox-measure" ())
+(declare-function ebox--ensure-node-id "ebox" (node))
+(declare-function ebox--complete-layout-snapshot
+                  "ebox-incremental"
+                  (buffer node snapshot &optional copy))
 
 (defvar ebox--layout-fragments-table nil
   "Dynamic published-generation layout fragment retention table.")

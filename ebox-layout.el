@@ -13,14 +13,56 @@
 (require 'ebox-measure)
 (require 'ebox-fragment)
 (require 'ebox-render-context)
+(require 'ebox-buffer-backend)
 
 (declare-function ebox--render-grid "ebox-grid" (node))
+(declare-function ebox--render-flex "ebox-flex" (node))
+(declare-function ebox--render-with-cache
+                  "ebox-incremental" (node &optional force cache-probe))
+(declare-function ebox-create "ebox" (&rest plist))
+(declare-function ebox-get "ebox" (box property))
+(declare-function ebox--ensure-node-id "ebox" (node))
+(declare-function ebox--ensure-region-id "ebox" (box))
+(declare-function ebox--scroll-clear-state "ebox" (region-id))
+(declare-function ebox--scroll-set-state "ebox" (region-id state))
+(declare-function ebox--apply-hidden-visibility "ebox" (string))
+(declare-function ebox-string-lines "ebox" (string))
+(declare-function ebox-string-height "ebox" (string))
+(declare-function ebox-lines-join "ebox" (lines))
+(declare-function ebox--maplines "ebox" (function string))
+(declare-function ebox--line-has-non-content-properties-p "ebox" (line))
+(declare-function ebox--lines-align-vertical
+                  "ebox" (string height align))
+(declare-function ebox--lines-concat-horizontal "ebox" (&rest strings))
+(declare-function ebox--lines-stack-vertical "ebox" (&rest strings))
+(declare-function ebox--add-content-owner
+                  "ebox-buffer-backend" (string region-id))
+(declare-function ebox--pixel-border
+                  "ebox-buffer-backend"
+                  (pixel-width height &optional color))
+(declare-function ebox--propertize-color
+                  "ebox-buffer-backend" (string color))
+(declare-function ebox--propertize-colors
+                  "ebox-buffer-backend" (string color bgcolor))
+(declare-function ebox--propertize-content-line
+                  "ebox-buffer-backend" (line region-id idx fallback))
+(declare-function ebox--propertize-overline
+                  "ebox-buffer-backend" (string &optional color))
+(declare-function ebox--propertize-region
+                  "ebox-buffer-backend" (string property region-id))
+(declare-function ebox--propertize-typography
+                  "ebox-buffer-backend" (string style))
+(declare-function ebox--propertize-underline
+                  "ebox-buffer-backend" (string &optional color))
 
 (defvar ebox--render-runtime-revision nil
   "Current buffer runtime revision for render-local cache validation.")
 
 (defvar ebox--region-id-counter)
 (defvar ebox--runtime-node-id-counter)
+(defvar ebox--region-box-table)
+(defvar ebox--render-region-id)
+(defvar ebox--defer-scroll-content-index)
 
 (defvar ebox--intrinsic-layout-measurement nil
   "Non-nil while measuring intrinsic layout contributions.

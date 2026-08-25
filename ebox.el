@@ -26,7 +26,7 @@
   '("ebox-cache.el" "ebox-style.el" "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
     "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
-    "ebox-surface.el" "ebox-dsl.el" "ebox-selector.el" "ebox.el"
+    "ebox-native-commit.el" "ebox-surface.el" "ebox-dsl.el" "ebox-selector.el" "ebox.el"
     "ebox-native-reflow.el")
   "Active Ebox Lisp sources compiled by `ebox-byte-compile'.")
 
@@ -4520,10 +4520,22 @@ Return CANDIDATE."
    candidate host-ref next-subtree old-semantic-key new-semantic-key))
 
 ;;;###autoload
-(defun ebox-candidate-replace-range-ref (candidate range-ref next-items)
-  "Replace base child RANGE-REF in CANDIDATE with proper node NEXT-ITEMS."
+(defun ebox-candidate-patch-host-paint
+    (candidate host-ref previous-subtree next-subtree)
+  "Patch HOST-REF paint from declarative OLD/NEW subtrees in CANDIDATE.
+Only node-local paint fields may differ.  The Host's children and runtime
+identities are retained instead of being copied as a replacement subtree.
+Return CANDIDATE when accepted, or nil when the delta needs ordinary subtree
+replacement."
+  (ebox-incremental-candidate-patch-host-paint
+   candidate host-ref previous-subtree next-subtree))
+
+;;;###autoload
+(defun ebox-candidate-replace-range-ref
+    (candidate range-ref next-items &optional reuse-map)
+  "Replace RANGE-REF, retaining slots named by proven REUSE-MAP."
   (ebox-incremental-candidate-replace-range-ref
-   candidate range-ref next-items))
+   candidate range-ref next-items reuse-map))
 
 ;;;###autoload
 (defun ebox-candidate-replace-root (candidate next-root)
@@ -4648,12 +4660,14 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-buffer-update-report
     ebox-build
     ebox-byte-compile
+    ebox-call-with-render-burst
     ebox-candidate-begin
     ebox-child-range
     ebox-candidate-replace
     ebox-candidate-replace-range-ref
     ebox-candidate-replace-root
     ebox-candidate-replace-host-ref
+    ebox-candidate-patch-host-paint
     ebox-clear-cache
     ebox-column
     ebox-commit
@@ -4674,6 +4688,8 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-region-resolve
     ebox-region-update
     ebox-render
+    ebox-render-burst-begin
+    ebox-render-burst-end
     ebox-render-to-buffer
     ebox-rerender-buffer-with-context
     ebox-row
@@ -4707,6 +4723,7 @@ and are documented separately in the public API reference.")
     direct-region-update
     dsl
     failure-atomic-rollback
+    framework-render-burst
     flex-layout
     host-reference
     intrinsic-and-viewport-sizing
@@ -4763,6 +4780,8 @@ and are documented separately in the public API reference.")
 ;;                                → replace one runtime node logically
 ;;   ebox-candidate-replace-host-ref cand ref root &optional old-key new-key
 ;;                                → replace one semantic host boundary
+;;   ebox-candidate-patch-host-paint cand ref old-root new-root
+;;                                → patch paint without replacing its subtree
 ;;   ebox-display-buffer buf box   → render through TP and display the buffer
 ;;   ebox-host-ref-position buf ref → first live position for :host-ref
 ;;   ebox-host-ref-bounds buf ref   → live (START . END) bounds for :host-ref
