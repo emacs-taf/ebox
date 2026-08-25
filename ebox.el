@@ -4626,18 +4626,25 @@ When VIEWPORT-HEIGHT is non-nil, height values using `(viewport-height)' are
 resolved against that line count.
 This preserves node and region identity and routes viewport-dependent changes
 through dirty-set and patch-set execution before falling back to root rerender."
-  (let* ((state (ebox--buffer-render-state buffer))
-         (old-viewport-width (and state
-                                  (plist-get state :viewport-width))))
-    (unless (ebox-surface-buffer-mounted-p buffer)
-      (user-error "Ebox buffer has no mounted TP surface: %S" buffer))
-    (ebox--cancel-buffer-runtime-prewarm buffer)
-    (prog1
-        (ebox-surface-update-buffer-viewport
-         buffer viewport-width viewport-height)
-      (ebox--schedule-buffer-runtime-prewarm buffer nil t)
-      (ebox--schedule-buffer-reflow-cache-prewarm
-       buffer old-viewport-width viewport-width))))
+  (let ((execute
+         (lambda ()
+           (let* ((state (ebox--buffer-render-state buffer))
+                  (old-viewport-width
+                   (and state (plist-get state :viewport-width))))
+             (unless (ebox-surface-buffer-mounted-p buffer)
+               (user-error "Ebox buffer has no mounted TP surface: %S" buffer))
+             (ebox--cancel-buffer-runtime-prewarm buffer)
+             (prog1
+                 (ebox-surface-update-buffer-viewport
+                  buffer viewport-width viewport-height)
+               (ebox--schedule-buffer-runtime-prewarm buffer nil t)
+               (ebox--schedule-buffer-reflow-cache-prewarm
+                buffer old-viewport-width viewport-width))))))
+    (if noninteractive
+        (ebox--with-render-gc
+          (funcall execute))
+      (ebox--with-deferred-render-gc
+        (funcall execute)))))
 
 (defun ebox--rerender-buffer-preserving-runtime (buffer)
   "Rerender BUFFER from stored runtime state without rebuilding identity."

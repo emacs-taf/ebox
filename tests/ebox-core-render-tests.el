@@ -3277,6 +3277,103 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-interactive-viewport-rerender-owns-deferred-render-gc ()
+  "Keep GC outside an interactive viewport transaction until it settles."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-runtime-idle-prewarm nil)
+        (ebox-runtime-idle-reflow-cache-prewarm nil)
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (setq buffer
+                (ebox-render-to-buffer
+                 (generate-new-buffer-name " *ebox-test*")
+                 (ebox-create :width '(viewport) :content "resize")))
+          (let ((noninteractive nil)
+                (gc-cons-threshold 1000)
+                (gc-cons-percentage 0.1)
+                (ebox-deferred-render-gc-cons-threshold 4000)
+                (ebox-render-gc-cons-percentage 0.8)
+                (ebox--deferred-render-gc-state nil)
+                (ebox--deferred-render-gc-timer nil)
+                (ebox--deferred-render-gc-depth 0)
+                (original-update
+                 (symbol-function 'ebox-surface-update-buffer-viewport))
+                observed-threshold
+                observed-depth
+                scheduled
+                (gc-count 0))
+            (cl-letf (((symbol-function 'ebox-surface-update-buffer-viewport)
+                       (lambda (&rest arguments)
+                         (setq observed-threshold gc-cons-threshold
+                               observed-depth ebox--deferred-render-gc-depth)
+                         (apply original-update arguments)))
+                      ((symbol-function 'run-at-time)
+                       (lambda (delay _repeat function &rest arguments)
+                         (setq scheduled (list delay function arguments))
+                         'ebox-test-viewport-gc-timer))
+                      ((symbol-function 'timerp)
+                       (lambda (value)
+                         (eq value 'ebox-test-viewport-gc-timer)))
+                      ((symbol-function 'cancel-timer) #'ignore)
+                      ((symbol-function 'garbage-collect)
+                       (lambda () (cl-incf gc-count))))
+              (ebox-rerender-buffer-with-context buffer 320)
+              (should (= observed-threshold 4000))
+              (should (= observed-depth 1))
+              (should (= (plist-get (ebox--buffer-render-state buffer)
+                                    :viewport-width)
+                         320))
+              (should (= ebox--deferred-render-gc-depth 0))
+              (should ebox--deferred-render-gc-state)
+              (should (eq ebox--deferred-render-gc-timer
+                          'ebox-test-viewport-gc-timer))
+              (should (= (car scheduled) 0.2))
+              (apply (nth 1 scheduled) (nth 2 scheduled))
+              (should (= gc-cons-threshold 1000))
+              (should (= gc-cons-percentage 0.1))
+              (should (= gc-count 1)))))
+      (ebox-test--reset-runtime-state)
+      (when (and buffer (buffer-live-p buffer))
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-batch-viewport-rerender-uses-render-gc-boundary ()
+  "Raise GC only during a batch viewport transaction and restore on return."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-runtime-idle-prewarm nil)
+        (ebox-runtime-idle-reflow-cache-prewarm nil)
+        (buffer nil))
+    (unwind-protect
+        (progn
+          (setq buffer
+                (ebox-render-to-buffer
+                 (generate-new-buffer-name " *ebox-test*")
+                 (ebox-create :width '(viewport) :content "resize")))
+          (let ((noninteractive t)
+                (gc-cons-threshold 1000)
+                (gc-cons-percentage 0.1)
+                (ebox-render-gc-cons-threshold 4000)
+                (ebox-render-gc-cons-percentage 0.8)
+                (original-update
+                 (symbol-function 'ebox-surface-update-buffer-viewport))
+                observed-threshold
+                observed-percentage)
+            (cl-letf (((symbol-function 'ebox-surface-update-buffer-viewport)
+                       (lambda (&rest arguments)
+                         (setq observed-threshold gc-cons-threshold
+                               observed-percentage gc-cons-percentage)
+                         (apply original-update arguments))))
+              (ebox-rerender-buffer-with-context buffer 320))
+            (should (= observed-threshold 4000))
+            (should (= observed-percentage 0.8))
+            (should (= gc-cons-threshold 1000))
+            (should (= gc-cons-percentage 0.1))
+            (should-not ebox--deferred-render-gc-state)
+            (should-not ebox--deferred-render-gc-timer)))
+      (ebox-test--reset-runtime-state)
+      (when (and buffer (buffer-live-p buffer))
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-deferred-render-gc-can-raise-an-active-burst-budget ()
   "Measured layout pressure should only raise an active burst budget."
   (let ((gc-cons-threshold 1000)
