@@ -392,6 +392,11 @@ report；若后续 phase 失败，rollback 最多一次接收同一个 report，
 render 外部动态绑定 `ebox-viewport-width`（像素）与 `ebox-viewport-height`
 （行数）。不要原地修改已经发布的 node tree。
 
+可见的 mounted buffer 会自动跟随展示它的 window。Ebox 合并连续 size event，
+并在 `ebox-viewport-resize-delay`（默认 0.05 秒）后只发布最新 sample。
+`ebox-viewport-window-width` 返回 controller 使用的同一个显示安全像素宽度；
+宿主不应再安装第二套 resize hook 或宽度算法。
+
 ## 7. Selector
 
 `ebox-selector-parse` 委托 ECSS 并返回结构化 AST；
@@ -468,6 +473,7 @@ text scale 和固定 `display` space；它也是布局使用的公共测量原�
 | Lazy scroll | `ebox-scroll-lazy-prefix-lookahead-lines` 8；`ebox-scroll-lazy-idle-prefetch-lines` 128；`ebox-scroll-lazy-idle-prefetch-slice-lines` 16；`ebox-scroll-lazy-idle-prefetch-delay` 0.15 |
 | Runtime prewarm | `ebox-runtime-idle-prewarm` t；`ebox-runtime-idle-prewarm-delay` 0.1；`ebox-runtime-idle-prewarm-prefix-resume-delay` 2.0；`ebox-runtime-idle-prewarm-slice-size` 32；`ebox-native-buffer-scroll` t（仅 initial/visible-window handoff；严格 root-owner proof） |
 | 预测 reflow | `ebox-runtime-idle-reflow-cache-prewarm` t；`ebox-runtime-idle-reflow-cache-prewarm-delay` 0.15 |
+| Viewport delivery | `ebox-viewport-resize-delay` 0.05；连续 window event 对每个 mounted buffer 只保留一个最新 sample |
 | Reflow GC | `ebox-reflow-cache-prewarm-gc-cons-threshold` `auto`；`ebox-reflow-cache-prewarm-gc-auto-frame-budget` 0.2；`ebox-reflow-cache-prewarm-gc-auto-min-threshold` 64 MiB；`ebox-reflow-cache-prewarm-gc-auto-max-threshold` 1 GiB；`ebox-reflow-cache-prewarm-gc-auto-initial-threshold` 512 MiB；`ebox-reflow-cache-prewarm-gc-auto-target-layouts` 24；`ebox-reflow-cache-prewarm-gc-cons-percentage` 0.1 |
 | Visual verification | `ebox-visual-check-output-dir` 指向可选 screenshot/report 使用的临时目录。 |
 
@@ -531,7 +537,7 @@ style API。
 | `ebox-flex`、`ebox-flex-item` | 构建 Flex 容器与 item metadata。 |
 | `ebox-grid`、`ebox-grid-fr`、`ebox-grid-item` | 构建 Grid、分数轨道和 placement metadata。 |
 | `ebox-render`、`ebox-render-to-buffer`、`ebox-display-buffer` | 纯 materialization、retained mount 与展示包装。 |
-| `ebox-commit`、`ebox-buffer-update-report`、`ebox-rerender-buffer-with-context` | 原子根提交、报告查询和 viewport-context rerender。 |
+| `ebox-commit`、`ebox-buffer-update-report`、`ebox-rerender-buffer-with-context`、`ebox-viewport-window-width` | 原子根提交、报告查询、viewport-context rerender 与统一的显示安全宽度采样。 |
 | `ebox-region-ids`、`ebox-region-resolve`、`ebox-region-update` | Region 映射、logical handle 查询与直接更新。 |
 | `ebox-child-range`、`ebox-range-ref-present-p`、`ebox-candidate-begin`、`ebox-candidate-replace`、`ebox-candidate-replace-range-ref`、`ebox-candidate-replace-root`、`ebox-candidate-replace-host-ref`、`ebox-candidate-patch-host-paint` | 持久 material child segment、backend anchor 查询、子树替换与 retained Host paint transaction。 |
 | `ebox-host-ref-bounds`、`ebox-host-ref-position` | Host-reference 的 live bounds 与首位置。 |

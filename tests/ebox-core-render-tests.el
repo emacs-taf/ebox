@@ -10,6 +10,11 @@
 
 (load-file (expand-file-name "../ebox.el" (file-name-directory load-file-name)))
 
+;; Core tests assert named Elisp render/patch strategies.  Keep optional local
+;; native artifacts from replacing those strategies; native execution has
+;; separate module and integration gates.
+(setq ebox-native-reflow-module-path nil)
+
 (defvar ebox--scroll-window-initial-lookahead-lines-override nil)
 
 (defun ebox-test--reset-runtime-state ()

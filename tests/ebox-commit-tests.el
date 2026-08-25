@@ -5,6 +5,12 @@
 (require 'ebox)
 (require 'ebox-native-commit)
 
+;; These tests lock the named Elisp projection proofs.  Native commit has its
+;; own focused contract tests below; disable runtime module discovery here so
+;; a locally built optional module cannot silently replace paint/span/mixed
+;; plans with `native-frame' and make this suite environment-dependent.
+(setq ebox-native-reflow-module-path nil)
+
 (defun ebox-commit-test--buffer-string (buffer)
   "Return BUFFER's complete propertized contents."
   (with-current-buffer buffer

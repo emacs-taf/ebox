@@ -171,11 +171,15 @@
       (when (get-buffer " *other-window*")
         (kill-buffer " *other-window*")))))
 
-(ert-deftest ebox-window-size-change-publishes-visible-viewport ()
-  "A live frame resize updates the mounted surface's containing block."
+(ert-deftest ebox-window-size-change-coalesces-to-latest-visible-viewport ()
+  "Continuous frame changes publish only the latest sampled viewport."
   (let* ((buffer (generate-new-buffer " *ebox-window-size-change*"))
          (window (selected-window))
          (old-buffer (window-buffer window))
+         (sampled-height (window-body-height window))
+         (sampled-widths (number-sequence 240 430 10))
+         scheduled
+         cancelled
          calls)
     (unwind-protect
         (progn
@@ -186,17 +190,57 @@
                     ((symbol-function 'ebox-surface-buffer-mounted-p)
                      (lambda (_buffer) t))
                     ((symbol-function 'ebox-surface--window-content-width)
-                     (lambda (_window) 240))
-                    ((symbol-function 'window-body-height)
-                     (lambda (_window &optional _pixelwise) 20))
+                     (lambda (_window) (pop sampled-widths)))
                     ((symbol-function 'ebox-rerender-buffer-with-context)
                      (lambda (target width height)
-                       (setq calls (list target width height))))
+                       (push (list target width height) calls)))
+                    ((symbol-function 'run-at-time)
+                     (lambda (delay _repeat function &rest arguments)
+                       (let ((timer (intern (format "ebox-resize-timer-%d"
+                                                    (1+ (length scheduled))))))
+                         (push (list timer delay function arguments) scheduled)
+                         timer)))
+                    ((symbol-function 'timerp)
+                     (lambda (value)
+                       (string-prefix-p "ebox-resize-timer-"
+                                        (symbol-name value))))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (timer) (push timer cancelled)))
                     (noninteractive nil))
-            (ebox--window-size-change (selected-frame))
-            (should (equal calls (list buffer 240 20)))))
+            (dotimes (_index 20)
+              (ebox--window-size-change (selected-frame)))
+            (should-not calls)
+            (should (= (length scheduled) 20))
+            (should (= (length cancelled) 19))
+            (pcase-let ((`(,_timer ,delay ,function ,arguments)
+                         (car scheduled)))
+              (should (= delay ebox-viewport-resize-delay))
+              (apply function arguments))
+            (should (equal calls
+                           (list (list buffer 430 sampled-height))))))
       (set-window-buffer window old-buffer)
+      (when (boundp 'ebox--viewport-resize-pending-table)
+        (clrhash ebox--viewport-resize-pending-table))
       (kill-buffer buffer))))
+
+(ert-deftest ebox-buffer-cleanup-cancels-pending-viewport-resize ()
+  "A dead mounted buffer cannot retain a viewport timer or pending sample."
+  (let ((buffer (generate-new-buffer " *ebox-viewport-cleanup*"))
+        (timer 'ebox-test-viewport-cleanup-timer)
+        cancelled)
+    (unwind-protect
+        (progn
+          (puthash buffer (vector 1 (selected-window) 400 20 timer)
+                   ebox--viewport-resize-pending-table)
+          (cl-letf (((symbol-function 'timerp)
+                     (lambda (value) (eq value timer)))
+                    ((symbol-function 'cancel-timer)
+                     (lambda (value) (setq cancelled value))))
+            (with-current-buffer buffer (ebox--cleanup-current-buffer)))
+          (should (eq cancelled timer))
+          (should-not (gethash buffer ebox--viewport-resize-pending-table)))
+      (remhash buffer ebox--viewport-resize-pending-table)
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (defun ebox-surface-test--hash-fingerprint (table)
   "Return a stable content fingerprint for hash TABLE.
@@ -732,10 +776,13 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 
 (ert-deftest ebox-surface-plan-stays-free-of-runtime-state ()
   "The surface plan should not contain markers or runtime handles."
+  (require 'ebox-native-commit)
   (let ((original (symbol-function 'tp-surface-result-create))
         (original-owned (symbol-function 'tp-surface-result-create-owned))
         captured client-state)
-    (cl-letf (((symbol-function 'tp-surface-result-create)
+    (cl-letf (((symbol-function 'ebox-native-commit-render)
+               (lambda (&rest _) nil))
+              ((symbol-function 'tp-surface-result-create)
                (lambda (plan &optional state)
                  (setq captured plan
                        client-state state)
@@ -753,7 +800,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
     (let* ((fragments-plan (car (tp-surface-plan-children captured)))
            (text-plan (car (tp-surface-plan-children fragments-plan)))
            (plan-text (tp-surface-plan-text text-plan))
-           (state-fragments (plist-get client-state :surface-fragments))
+           (state-fragments
+            (ebox-surface--materialized-fragment-ledger client-state))
            (owner-position
             (cl-loop for position from 0 below (length plan-text)
                      when (get-text-property position
@@ -1323,7 +1371,9 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                   (plist-put node :key 'growing-source)
                   node))
           (let ((original-render (symbol-function 'ebox-render)))
-            (cl-letf (((symbol-function 'ebox-render)
+            (cl-letf (((symbol-function 'ebox-native-commit-render)
+                       (lambda (&rest _) nil))
+                      ((symbol-function 'ebox-render)
                        (lambda (node)
                          (cond
                           ((equal (plist-get node :key) 'stable-source)

@@ -26,7 +26,8 @@
   '("ebox-cache.el" "ebox-style.el" "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
     "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
-    "ebox-native-commit.el" "ebox-surface.el" "ebox-dsl.el" "ebox-selector.el" "ebox.el"
+    "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
+    "ebox-dsl.el" "ebox-selector.el" "ebox.el"
     "ebox-native-reflow.el")
   "Active Ebox Lisp sources compiled by `ebox-byte-compile'.")
 
@@ -49,6 +50,7 @@
 (require 'ebox-buffer-backend)
 (require 'ebox-incremental)
 (require 'ebox-surface)
+(require 'ebox-viewport)
 (require 'ebox-dsl)
 (require 'ebox-selector)
 
@@ -2742,42 +2744,6 @@ that was rendered off-window cannot miss the native-scroll handoff."
 (when (boundp 'window-state-change-functions)
   (add-hook 'window-state-change-functions #'ebox--window-state-change))
 
-(defvar ebox--window-size-change-in-progress nil
-  "Non-nil while visible Ebox buffers are synchronizing their viewport.")
-
-(defun ebox--window-size-change (frame)
-  "Synchronize visible Ebox buffers after FRAME changes size.
-
-Ebox stores the containing-block viewport in its mounted surface.  A frame
-resize must publish the new window content width before the next render;
-otherwise responsive Flex/Grid trees keep using the width from mount time.
-One mounted surface represents one viewport, so when a buffer is visible in
-multiple windows the first window in FRAME supplies the shared dimensions."
-  (when (and (frame-live-p frame)
-             (not noninteractive)
-             (not ebox--window-size-change-in-progress))
-    (let ((ebox--window-size-change-in-progress t)
-          (seen (make-hash-table :test #'eq)))
-      (dolist (window (window-list frame 'no-minibuf))
-        (when (and (window-live-p window)
-                   (not (gethash (window-buffer window) seen)))
-          (let ((buffer (window-buffer window)))
-            (puthash buffer t seen)
-            (when (and (buffer-live-p buffer)
-                       (ebox--buffer-render-state buffer)
-                       (ebox-surface-buffer-mounted-p buffer))
-              (let* ((state (ebox--buffer-render-state buffer))
-                     (width (ebox-surface--window-content-width window))
-                     (height (window-body-height window)))
-                (unless (and (= width (or (plist-get state :viewport-width)
-                                           -1))
-                             (= height (or (plist-get state :viewport-height)
-                                           -1)))
-                  (ebox-rerender-buffer-with-context buffer width height))))))))))
-
-(when (boundp 'window-size-change-functions)
-  (add-hook 'window-size-change-functions #'ebox--window-size-change))
-
 (defun ebox--runtime-prewarm-record-viewport-node
     (job node width-allowed)
   "Record NODE's direct viewport dependencies in JOB.
@@ -3882,6 +3848,7 @@ With prefix ARG, scroll by that many content lines."
   "Remove all runtime caches owned by BUFFER.
 Defaults to the current buffer."
   (let ((buffer (or buffer (current-buffer))))
+    (ebox--cancel-buffer-viewport-resize buffer)
     (ebox--cancel-buffer-runtime-prewarm buffer)
     (when-let ((root (ebox--buffer-root-node buffer)))
       (ebox--clear-region-runtime-caches
@@ -4716,6 +4683,7 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-stack
     ebox-string-pixel-width
     ebox-update-selector
+    ebox-viewport-window-width
     ebox-wheel-scroll-down
     ebox-wheel-scroll-up)
   "Stable core Ebox entry points available to applications and tooling.

@@ -51,7 +51,8 @@
   (dolist (feature '(ebox-cache ebox-style ebox-tree ebox-measure
                                 ebox-fragment ebox-layout ebox-flex ebox-grid
                                 ebox-buffer-backend ebox-incremental
-                                ebox-surface ebox-dsl ebox-selector))
+                                ebox-surface ebox-viewport ebox-dsl
+                                ebox-selector))
     (should (featurep feature))))
 
 (ert-deftest ebox-facade-exposes-native-workflow-without-loading-it ()
@@ -70,8 +71,8 @@
             "ebox-tree.el" "ebox-measure.el"
             "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
             "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
-            "ebox-native-commit.el" "ebox-surface.el" "ebox-dsl.el"
-            "ebox-selector.el" "ebox.el"
+            "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
+            "ebox-dsl.el" "ebox-selector.el" "ebox.el"
             "ebox-native-reflow.el"))))
 
 (ert-deftest ebox-surface-depends-only-on-public-tp-api ()

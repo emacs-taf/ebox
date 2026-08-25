@@ -4,6 +4,11 @@
 (require 'ebox-child-range)
 (require 'ebox)
 
+;; This suite locks child-range and Elisp projection semantics.  Native frame
+;; execution is verified separately and must not replace the named fallback
+;; strategies merely because a developer has built the optional module.
+(setq ebox-native-reflow-module-path nil)
+
 (defconst ebox-child-range-test--root
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name)))
   "Ebox repository root for source audits.")
