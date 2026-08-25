@@ -110,7 +110,7 @@
                   ((symbol-function 'message) #'ignore))
           (should (ebox-byte-compile))
           (should (equal (nreverse compiled) ebox--compile-sources)))
-      (when-let ((buffer (get-buffer "*Ebox Byte Compile*")))
+      (when-let* ((buffer (get-buffer "*Ebox Byte Compile*")))
         (kill-buffer buffer)))))
 
 (ert-deftest ebox-package-includes-native-build-source ()

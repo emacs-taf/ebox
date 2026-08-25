@@ -170,7 +170,7 @@ That text is preformatted and must not be sent through the default wrapper."
       (when (or (plist-member raw-props :width)
                 (and (null (plist-get props :width))
                      (ebox--viewport-pixel-width nil)))
-        (when-let ((content-viewport
+        (when-let* ((content-viewport
                     (ebox--wrapper-content-viewport-pixel wrapper-box)))
           (plist-put props :width (list content-viewport))))
       (when (and (plist-member raw-props :height)
@@ -204,7 +204,7 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
     (ebox--normalize-horizontal-size-value (car value) allowed-keywords))
    ((memq value allowed-keywords) value)
    ((and (consp value) (eq (car value) 'fit-content))
-    (if-let ((limit (cadr value)))
+    (if-let* ((limit (cadr value)))
         (let ((pixels (if (ebox--viewport-size-value-p limit)
                           'viewport
                         (ebox--nonnegative-horizontal-size-pixels limit nil))))
@@ -502,11 +502,11 @@ grapheme."
   "Return BOX's total main-axis size constraint from PROPERTY."
   (when (plist-member box property)
     (if (eq axis 'row)
-        (when-let ((content-size
+        (when-let* ((content-size
                     (ebox--resolve-size-content-pixel
                      box (ebox-get box property) nil)))
           (+ (ebox--side-pixel box) content-size))
-      (when-let ((block-size
+      (when-let* ((block-size
                   (ebox--box-sizing-content-height
                    box (ebox-get box property))))
         (+ (ebox--side-height box) block-size)))))
@@ -568,7 +568,7 @@ grapheme."
         (puthash node t ebox--render-recached-source-node-cache))
       (pcase (plist-get node :ebox-type)
         ('box
-         (when-let ((region-id (ebox-get node :region-id)))
+         (when-let* ((region-id (ebox-get node :region-id)))
            (puthash region-id node ebox--region-box-table))
          (ebox--flex-recache-source-boxes
           (plist-get node :ebox-content-node)))
@@ -656,7 +656,7 @@ caller can pass the same miss context to the renderer."
 
 (defun ebox--flex-measure-cache-value (probe)
   "Return a copied cached measurement from PROBE, or nil on a miss."
-  (when-let ((cached (plist-get probe :cached)))
+  (when-let* ((cached (plist-get probe :cached)))
     (copy-sequence cached)))
 
 (defun ebox--flex-render-cache-signature (node)
@@ -1204,7 +1204,7 @@ Return a sized render entry containing the rendered string and dimensions."
 The Elisp scalar algorithm remains the exact fallback and owns all item
 metadata and rendering decisions."
   (or (when (and main-limit (integerp main-gap))
-        (when-let ((backend (ebox--flex-native-size-lines-backend)))
+        (when-let* ((backend (ebox--flex-native-size-lines-backend)))
           (funcall backend lines main-limit main-gap)))
       (mapcar (lambda (line)
                 (ebox--flex-size-line line main-limit main-gap))
@@ -1546,7 +1546,7 @@ its child."
 
 (defun ebox--render-flex-box (node rendered)
   "Render flex NODE's container box around RENDERED, when present."
-  (if-let ((box (plist-get node :box)))
+  (if-let* ((box (plist-get node :box)))
       (let ((copy (copy-sequence box))
             (region-id (ebox--ensure-region-id box)))
         (plist-put copy :region-id region-id)
@@ -1735,7 +1735,7 @@ a prefix of the eventual full wrapper render."
 (defun ebox--flex-window-render-box-lines (node content complete limit)
   "Return NODE flex wrapper lines around CONTENT up to LIMIT."
   (let* ((rendered
-          (if-let ((box (plist-get node :box)))
+          (if-let* ((box (plist-get node :box)))
               (let ((copy (ebox--flex-window-wrapper-copy box complete))
                     (region-id (ebox--ensure-region-id box)))
                 (plist-put copy :region-id region-id)
@@ -1968,7 +1968,7 @@ the chunk begins at the wrapper top and should include top chrome."
 
 (defun ebox--flex-window-cache-lookup (node limit &optional cache-context)
   "Return cached flex window render for NODE and LIMIT, or nil."
-  (when-let ((cache-context
+  (when-let* ((cache-context
               (or cache-context (ebox--flex-window-cache-context node))))
     (let* ((node-id (plist-get cache-context :node-id))
            (signature (plist-get cache-context :signature))
@@ -1992,7 +1992,7 @@ the chunk begins at the wrapper top and should include top chrome."
                     :completion-prefix-tail-rewrite-count
                     (plist-get
                      complete :completion-prefix-tail-rewrite-count))))
-          (when-let ((prefix (ebox--render-cache-lookup
+          (when-let* ((prefix (ebox--render-cache-lookup
                               (list node-id 'flex-window 'prefix)
                               signature)))
             (let* ((lines (plist-get prefix :lines))
@@ -2010,7 +2010,7 @@ the chunk begins at the wrapper top and should include top chrome."
                                            (last lines))
                                      (last result-lines))
                         :complete nil)))))
-          (when-let ((exact
+          (when-let* ((exact
                       (ebox--render-cache-lookup
                        (list node-id 'flex-window limit)
                        signature)))
@@ -2026,7 +2026,7 @@ the chunk begins at the wrapper top and should include top chrome."
 
 (defun ebox--flex-window-prefix-cache-lookup (node &optional cache-context)
   "Return NODE's cached incomplete flex prefix state, or nil."
-  (when-let ((cache-context
+  (when-let* ((cache-context
               (or cache-context (ebox--flex-window-cache-context node))))
     (let* ((node-id (plist-get cache-context :node-id))
            (signature (plist-get cache-context :signature)))
@@ -2037,7 +2037,7 @@ the chunk begins at the wrapper top and should include top chrome."
 (defun ebox--flex-window-prefix-cache-store
     (node pieces next-index result &optional cache-context)
   "Store NODE incomplete flex prefix PIECES through NEXT-INDEX."
-  (when-let ((cache-context
+  (when-let* ((cache-context
               (and result
                    (or cache-context
                        (ebox--flex-window-cache-context node)))))
@@ -2064,7 +2064,7 @@ the chunk begins at the wrapper top and should include top chrome."
 (defun ebox--flex-window-cache-store
     (node limit result &optional cache-context)
   "Store NODE flex window RESULT for LIMIT when possible."
-  (when-let ((cache-context
+  (when-let* ((cache-context
               (and result
                    (or cache-context
                        (ebox--flex-window-cache-context node)))))
@@ -2498,7 +2498,7 @@ Return nil when NODE's flex configuration needs a full rerender."
              (lines (ebox--flex-break-lines items main-size main-gap wrap)))
         (when (eq wrap 'wrap-reverse)
           (setq lines (nreverse lines)))
-        (when-let ((line
+        (when-let* ((line
                     (cl-find-if
                      (lambda (candidate)
                        (cl-some

@@ -4436,7 +4436,7 @@
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
-          (when-let ((cache
+          (when-let* ((cache
                       (plist-get (ebox--buffer-render-state buffer)
                                  :render-signature-cache)))
             (clrhash cache))
@@ -8150,7 +8150,7 @@
                                        (length (plist-get state
                                                           :rendered-content-lines)))))
                 (should (= (plist-get state :content-height) 12)))
-              (when-let ((materialize
+              (when-let* ((materialize
                           (plist-get state :materialize-content-lines)))
                 (plist-put
                  state :materialize-content-lines
@@ -8481,7 +8481,7 @@
               (ebox-scroll-lazy-prefix-lookahead-lines 0))
           (cl-letf (((symbol-function 'ebox--render-box)
                      (lambda (box)
-                       (when-let ((id (and (listp box) (ebox-get box :id))))
+                       (when-let* ((id (and (listp box) (ebox-get box :id))))
                          (when (and (string-prefix-p "item-" id)
                                     (>= (string-to-number
                                          (substring id (length "item-")))

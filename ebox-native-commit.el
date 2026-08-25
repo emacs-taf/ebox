@@ -112,7 +112,7 @@
                   do (puthash (plist-get child :node-id)
                               (cons parent-id position) table)))
        nodes)
-      (when-let ((root (plist-get state :root-node)))
+      (when-let* ((root (plist-get state :root-node)))
         (puthash (plist-get root :node-id) (cons nil 0) table)))
     table))
 
@@ -391,7 +391,7 @@ type, key, parent, and sibling position are identical."
 
 (defun ebox-native-commit--promote-pending-frame (state session)
   "Promote STATE's previously published pending frame in SESSION."
-  (when-let ((pending (plist-get state :native-sync-pending)))
+  (when-let* ((pending (plist-get state :native-sync-pending)))
     (ebox-native-reflow-confirm-native-frame
      session (plist-get pending :generation) (plist-get pending :key)
      (plist-get pending :confirmed-revision))
@@ -485,7 +485,7 @@ Return nil without mutating STATE when the native capability proof is absent."
              (memq (plist-get state :projection-kind) '(nil native-frame))
              (ebox-native-commit--runtime-types-supported-p state)
              (ebox-native-commit--region-index-safe-p state))
-    (when-let ((frame-spec (ebox-native-commit--frame-spec state node)))
+    (when-let* ((frame-spec (ebox-native-commit--frame-spec state node)))
       (condition-case err
           (let* ((frame (ebox-native-commit--retained-frame
                          state node frame-spec))

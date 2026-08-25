@@ -381,7 +381,7 @@ letting the grid fall back to each child's intrinsic width."
 
 (defun ebox-grid--clamp-track-size (track size)
   "Clamp SIZE to TRACK's fixed maximum when one exists."
-  (if-let ((maximum (ebox-grid--track-max track)))
+  (if-let* ((maximum (ebox-grid--track-max track)))
       (min size maximum)
     size))
 
@@ -607,7 +607,7 @@ size for start/center/end alignment unless it would overflow its track."
 
 (defun ebox--render-grid-box (node rendered)
   "Render grid NODE's optional visual wrapper around RENDERED."
-  (if-let ((box (plist-get node :box)))
+  (if-let* ((box (plist-get node :box)))
       (let ((copy (copy-sequence box))
             (region-id (ebox--ensure-region-id box)))
         (plist-put copy :region-id region-id)

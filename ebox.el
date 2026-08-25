@@ -440,7 +440,7 @@ PLIST is a property list that overrides the defaults."
   "Set PROPERTY to VALUE in BOX and return the modified box.
 Registered style properties also update BOX's canonical ECSS declarations so a
 later cascade computes from the public mutation instead of stale source data."
-  (when-let ((declaration
+  (when-let* ((declaration
               (ebox-style-compile-declarations (list property value))))
     (plist-put
      box :ebox-style-declarations
@@ -648,7 +648,7 @@ ALIGN can be `top', `center', or `bottom'."
         (len (length string)))
     (catch 'found
       (while (< pos len)
-        (when-let ((id (get-text-property pos 'ebox-content string)))
+        (when-let* ((id (get-text-property pos 'ebox-content string)))
           (throw 'found id))
         (setq pos (or (next-single-property-change
                        pos 'ebox-content string)
@@ -660,7 +660,7 @@ ALIGN can be `top', `center', or `bottom'."
         (len (length string))
         ids)
     (while (< pos len)
-      (when-let ((id (get-text-property pos 'ebox-content string)))
+      (when-let* ((id (get-text-property pos 'ebox-content string)))
         (unless (memq id ids)
           (setq ids (append ids (list id)))))
       (setq pos (1+ pos)))
@@ -702,13 +702,13 @@ Use this to capture ids *before* inserting into a buffer:
                (mapcar #'ebox-region-ids
                        (ebox--layout-children node))))
        ((eq type 'flex)
-        (if-let ((box (plist-get node :box)))
+        (if-let* ((box (plist-get node :box)))
             (list (ebox--ensure-region-id box))
           (apply #'append
                  (mapcar #'ebox-region-ids
                          (ebox-tree-layout-children node)))))
        ((eq type 'grid)
-        (if-let ((box (plist-get node :box)))
+        (if-let* ((box (plist-get node :box)))
             (list (ebox--ensure-region-id box))
           (apply #'append
                  (mapcar #'ebox-region-ids
@@ -760,7 +760,7 @@ Use this to capture ids *before* inserting into a buffer:
   "Return a KEY -> child hash table for explicitly keyed CHILDREN."
   (let ((table (make-hash-table :test 'equal)))
     (dolist (child children)
-      (when-let ((key (ebox--runtime-node-key child)))
+      (when-let* ((key (ebox--runtime-node-key child)))
         (puthash key child table)))
     table))
 
@@ -773,7 +773,7 @@ Use this to capture ids *before* inserting into a buffer:
 
 (defun ebox--runtime-keyed-match (old-keyed new-child)
   "Return the keyed old child that should match NEW-CHILD."
-  (when-let ((key (ebox--runtime-node-key new-child)))
+  (when-let* ((key (ebox--runtime-node-key new-child)))
     (let ((old-child (gethash key old-keyed)))
       (when (ebox--runtime-same-type-p old-child new-child)
         old-child))))
@@ -910,7 +910,7 @@ Properties are expanded recursively according to `ebox-property-rules'."
 
 (defun ebox--scroll-cancel-idle-prefetch (region-id)
   "Cancel any pending idle prefix prefetch for REGION-ID."
-  (when-let ((timer (gethash region-id ebox--scroll-idle-prefetch-timers)))
+  (when-let* ((timer (gethash region-id ebox--scroll-idle-prefetch-timers)))
     (when (timerp timer)
       (cancel-timer timer))
     (remhash region-id ebox--scroll-idle-prefetch-timers)))
@@ -948,7 +948,7 @@ Properties are expanded recursively according to `ebox-property-rules'."
 
 (defun ebox--idle-continuation-delay (delay)
   "Return an idle-timer threshold one fresh DELAY beyond current idle time."
-  (+ (or (when-let ((idle (current-idle-time)))
+  (+ (or (when-let* ((idle (current-idle-time)))
            (float-time idle))
          0)
      (max 0 (or delay 0))))
@@ -956,7 +956,7 @@ Properties are expanded recursively according to `ebox-property-rules'."
 (defun ebox--scroll-schedule-idle-prefetch (region-id &optional delay)
   "Schedule input-yielding lazy prefix prefetch for REGION-ID when useful."
   (ebox--scroll-cancel-idle-prefetch region-id)
-  (when-let ((state (and (or (not noninteractive)
+  (when-let* ((state (and (or (not noninteractive)
                              ebox--scroll-allow-noninteractive-prefetch)
                          (ebox--scroll-get-state region-id))))
     (when (and (ebox--scroll-idle-prefetch-needed-p state)
@@ -1040,13 +1040,13 @@ request; callers that represent GUI animation ticks pass their tick size."
 
 (defun ebox--smooth-scroll-active-p (region-id)
   "Return non-nil when REGION-ID has an active smooth scroll timer."
-  (when-let ((entry (gethash region-id ebox--smooth-scroll-state-table)))
+  (when-let* ((entry (gethash region-id ebox--smooth-scroll-state-table)))
     (and (timerp (plist-get entry :timer))
          (not (plist-get entry :waiting-prefetch)))))
 
 (defun ebox--smooth-scroll-resume-after-prefetch (region-id)
   "Resume REGION-ID smooth scrolling after a paused lazy prefetch."
-  (when-let ((entry (gethash region-id ebox--smooth-scroll-state-table)))
+  (when-let* ((entry (gethash region-id ebox--smooth-scroll-state-table)))
     (when (plist-get entry :waiting-prefetch)
       (plist-put entry :waiting-prefetch nil)
       (unless (timerp (plist-get entry :timer))
@@ -1065,7 +1065,7 @@ request; callers that represent GUI animation ticks pass their tick size."
        region-id
        (ebox--idle-continuation-delay
         ebox-scroll-lazy-idle-prefetch-delay))
-    (when-let ((state (ebox--scroll-get-state region-id)))
+    (when-let* ((state (ebox--scroll-get-state region-id)))
       (let ((buffer (ebox--scroll-state-buffer state))
             (cache-miss-target
              (plist-get state :cache-miss-prefetch-target-lines)))
@@ -1215,7 +1215,7 @@ owns the exact continuation cache for the captured viewport context."
       (maphash
        (lambda (region-id _)
          (cl-incf retained-cost 48)
-         (if-let ((state (ebox--scroll-get-state region-id)))
+         (if-let* ((state (ebox--scroll-get-state region-id)))
              (let ((template (ebox--scroll-cache-state-template state)))
                (cl-incf
                 retained-cost
@@ -1318,7 +1318,7 @@ remain transaction-local."
          ebox--collect-rebuilt-scroll-state-region-ids)
     (cl-pushnew region-id ebox--rebuilt-scroll-state-region-ids
                 :test #'equal))
-  (when-let ((content-lines (plist-get state :content-lines)))
+  (when-let* ((content-lines (plist-get state :content-lines)))
     (let ((ebox--defer-scroll-content-index
            (or ebox--defer-scroll-content-index
                (plist-get state :render-content-prefix)
@@ -1355,7 +1355,7 @@ remain transaction-local."
            (= (length native-lines) content-height))
       (list offset native-lines))
      ((and (integerp content-height) (>= content-height 0))
-      (when-let ((lines (plist-get state :rendered-content-lines)))
+      (when-let* ((lines (plist-get state :rendered-content-lines)))
         (let* ((max-offset (max 0 (- (length lines) content-height)))
                (offset (max 0 (min max-offset offset)))
                (end (min (+ offset content-height) (length lines))))
@@ -1628,7 +1628,7 @@ the currently displayed rendered slice actually changed."
 
 (defun ebox--scroll-state-materialize-lines (region-id state)
   "Return STATE after materializing lazy scroll content for REGION-ID."
-  (if-let ((materialize (plist-get state :materialize-content-lines)))
+  (if-let* ((materialize (plist-get state :materialize-content-lines)))
       (let* ((old-visible
               (ebox--scroll-state-rendered-visible-window state))
              (old-refresh-required
@@ -1810,9 +1810,9 @@ object.  Unrelated ownerless and foreign-buffer states remain isolated."
          (plist-get (ebox--buffer-render-state buffer) :scroll-region-ids))
         region-ids)
     (dolist (node-id node-ids)
-      (when-let ((node (ebox--buffer-runtime-node buffer node-id)))
+      (when-let* ((node (ebox--buffer-runtime-node buffer node-id)))
         (dolist (region-id buffer-region-ids)
-          (when-let ((state (ebox--scroll-get-state region-id)))
+          (when-let* ((state (ebox--scroll-get-state region-id)))
             (when (ebox--scroll-state-covers-node-p buffer state node)
               (cl-pushnew region-id region-ids :test #'equal))))))
     (nreverse region-ids)))
@@ -1830,7 +1830,7 @@ object.  Unrelated ownerless and foreign-buffer states remain isolated."
   "Return ebox role/id pairs at POS in STRING."
   (let (role-ids)
     (dolist (entry ebox-region-types)
-      (when-let ((region-id (get-text-property pos (cdr entry) string)))
+      (when-let* ((region-id (get-text-property pos (cdr entry) string)))
         (push (cons (car entry) region-id) role-ids)))
     role-ids))
 
@@ -1840,7 +1840,7 @@ object.  Unrelated ownerless and foreign-buffer states remain isolated."
     (dolist (region-id (get-text-property pos 'ebox-content-owners string))
       (cl-pushnew region-id ids :test #'equal))
     (dolist (entry ebox-region-types)
-      (when-let ((region-id (get-text-property pos (cdr entry) string)))
+      (when-let* ((region-id (get-text-property pos (cdr entry) string)))
         (cl-pushnew region-id ids :test #'equal)))
     ids))
 
@@ -1902,7 +1902,7 @@ object.  Unrelated ownerless and foreign-buffer states remain isolated."
     (cl-loop for line in lines
              for idx from 0
              do (when (ebox--scroll-line-region-present-p line region-ids)
-                  (when-let ((span (ebox--scroll-line-region-span
+                  (when-let* ((span (ebox--scroll-line-region-span
                                     line region-set)))
                     (push (cons idx span) spans))))
     (nreverse spans)))
@@ -1931,7 +1931,7 @@ Decoration-only legacy lines fall back to the complete role scanner."
         (setq topology-seen t)
         (cl-pushnew region-id ids :test #'equal))
       (dolist (property '(ebox-content ebox-content-owner))
-        (when-let ((region-id (get-text-property pos property line)))
+        (when-let* ((region-id (get-text-property pos property line)))
           (setq topology-seen t)
           (cl-pushnew region-id ids :test #'equal)))
       (setq pos
@@ -1960,7 +1960,7 @@ uses their rendered descendants."
         (limit (length line))
         ids)
     (while (< pos limit)
-      (when-let ((region-id (get-text-property pos 'ebox-content line)))
+      (when-let* ((region-id (get-text-property pos 'ebox-content line)))
         (cl-pushnew region-id ids :test #'equal))
       (setq pos
             (max (1+ pos)
@@ -1972,7 +1972,7 @@ uses their rendered descendants."
 (defun ebox--scroll-line-bounds-index-add (index line-index line)
   "Add LINE at LINE-INDEX to lightweight region bounds INDEX."
   (dolist (region-id (ebox--scroll-line-direct-content-region-ids line))
-    (if-let ((bounds (gethash region-id index)))
+    (if-let* ((bounds (gethash region-id index)))
         (setcdr bounds line-index)
       (puthash region-id (cons line-index line-index) index)))
   index)
@@ -2015,7 +2015,7 @@ uses their rendered descendants."
              for line-index from 0
              do
              (dolist (region-id (ebox--scroll-line-region-ids line))
-               (when-let ((span (ebox--scroll-line-region-span
+               (when-let* ((span (ebox--scroll-line-region-span
                                  line (ebox--region-id-set
                                        (list region-id)))))
                  (puthash region-id
@@ -2076,7 +2076,7 @@ fall back to the complete role scanner."
 (defun ebox--scroll-index-add-line (index line-index line)
   "Add LINE at LINE-INDEX to INDEX."
   (dolist (region-id (ebox--scroll-line-region-ids line))
-    (when-let ((span (ebox--scroll-line-region-span
+    (when-let* ((span (ebox--scroll-line-region-span
                       line (ebox--region-id-set (list region-id)))))
       (puthash region-id
                (cons (cons line-index span)
@@ -2146,7 +2146,7 @@ fall back to the complete role scanner."
 Dynamic updates reuse an already prepared index.  When no ready index exists,
 scan for only REGION-IDS; building the all-region index synchronously is much
 more expensive than the targeted fallback on a long lazy prefix."
-  (if-let ((index (plist-get state :region-line-span-index)))
+  (if-let* ((index (plist-get state :region-line-span-index)))
       ;; A ready exact index already proves both membership and spans.  Building
       ;; the prefix-wide membership set first adds an O(prefix) tax to visible
       ;; updates after scrolling.
@@ -2156,7 +2156,7 @@ more expensive than the targeted fallback on a long lazy prefix."
       (when (ebox--scroll-region-id-set-intersects-p
              content-region-id-set region-ids)
         (let ((hints (plist-get state :region-line-span-hints)))
-          (if-let ((hint-spans
+          (if-let* ((hint-spans
                     (and hints
                          (cl-loop for region-id in region-ids
                                   for spans = (gethash region-id hints)
@@ -2187,7 +2187,7 @@ bound rendered-line inspection without scanning or indexing the whole prefix."
               ((< line-index (car indices)))
               ((= line-index (car indices))
                (when (ebox--scroll-line-region-present-p line region-ids)
-                 (when-let ((span (ebox--scroll-line-region-span
+                 (when-let* ((span (ebox--scroll-line-region-span
                                    line region-set)))
                    (push (cons line-index span) spans)))
                (setq indices (cdr indices)))))
@@ -2196,7 +2196,7 @@ bound rendered-line inspection without scanning or indexing the whole prefix."
 
 (defun ebox--cancel-buffer-reflow-cache-prewarm (buffer)
   "Cancel pending predicted reflow-cache warming for BUFFER."
-  (when-let ((timer (gethash buffer ebox--reflow-cache-prewarm-timers)))
+  (when-let* ((timer (gethash buffer ebox--reflow-cache-prewarm-timers)))
     (when (timerp timer)
       (cancel-timer timer)))
   (remhash buffer ebox--reflow-cache-prewarm-timers))
@@ -2204,7 +2204,7 @@ bound rendered-line inspection without scanning or indexing the whole prefix."
 (defun ebox--cancel-buffer-runtime-prewarm (buffer)
   "Cancel and discard pending runtime prewarming for BUFFER."
   (ebox--cancel-buffer-reflow-cache-prewarm buffer)
-  (when-let ((timer (gethash buffer ebox--runtime-prewarm-timers)))
+  (when-let* ((timer (gethash buffer ebox--runtime-prewarm-timers)))
     (when (timerp timer)
       (cancel-timer timer)))
   (remhash buffer ebox--runtime-prewarm-timers)
@@ -2450,7 +2450,7 @@ published or mutated.  Return non-nil when the isolated render ran."
 
 (defun ebox--root-region-box (root region-id)
   "Return ROOT's box carrying REGION-ID, including a flex wrapper box."
-  (when-let ((owner (car (ebox--node-path-to-region root region-id))))
+  (when-let* ((owner (car (ebox--node-path-to-region root region-id))))
     (cond
      ((eq (plist-get owner :ebox-type) 'box) owner)
      ((and (eq (plist-get owner :ebox-type) 'flex)
@@ -2607,7 +2607,7 @@ OLD-VIEWPORT-WIDTH and VIEWPORT-WIDTH describe the completed reflow.  One job
 is scheduled for the next width at the same nonzero delta; invalid nonpositive
 predictions are skipped."
   (ebox--cancel-buffer-reflow-cache-prewarm buffer)
-  (when-let ((state (and (ebox--reflow-cache-prewarm-enabled-p)
+  (when-let* ((state (and (ebox--reflow-cache-prewarm-enabled-p)
                          (buffer-live-p buffer)
                          (ebox--buffer-render-state buffer))))
     (let* ((delta (and (numberp old-viewport-width)
@@ -2660,7 +2660,7 @@ scroll surface."
           :phase (if native-ready-p 'native-scroll 'snapshots)
           :snapshot-stack
           (unless native-ready-p
-            (when-let ((root (plist-get state :root-node)))
+            (when-let* ((root (plist-get state :root-node)))
               (list (vector root :uninitialized t t))))
           :node-region-ids-cache (make-hash-table :test 'eq)
           :viewport-width-ids-rev nil
@@ -2675,7 +2675,7 @@ scroll surface."
   "Schedule BUFFER's next runtime prewarm slice after DELAY."
   (when (and (buffer-live-p buffer)
              (gethash buffer ebox--runtime-prewarm-jobs))
-    (when-let ((old (gethash buffer ebox--runtime-prewarm-timers)))
+    (when-let* ((old (gethash buffer ebox--runtime-prewarm-timers)))
       (when (timerp old)
         (cancel-timer old)))
     (puthash buffer
@@ -2690,7 +2690,7 @@ scroll surface."
 RETAINED-ONLY-P is deliberately true after ordinary commits and resizes; the
 initial mount and visible-window handoff leave it nil."
   (ebox--cancel-buffer-runtime-prewarm buffer)
-  (when-let ((state (and (ebox--runtime-prewarm-enabled-p)
+  (when-let* ((state (and (ebox--runtime-prewarm-enabled-p)
                          (buffer-live-p buffer)
                          (ebox--buffer-render-state buffer))))
     (puthash buffer (ebox--runtime-prewarm-new-job
@@ -2794,7 +2794,7 @@ Return non-nil when descendant width dependencies remain relevant."
                (ebox--node-layout-snapshot buffer node nil))))))
         (setq count (1+ count))))
     (unless (plist-get job :snapshot-stack)
-      (when-let ((state (ebox--buffer-render-state buffer)))
+      (when-let* ((state (ebox--buffer-render-state buffer)))
         (let ((width-ids (nreverse
                           (plist-get job :viewport-width-ids-rev)))
               (height-ids (nreverse
@@ -2814,7 +2814,7 @@ Return non-nil when descendant width dependencies remain relevant."
         (tails (plist-get task :tails))
         (line-index (plist-get task :line-index)))
     (dolist (region-id (ebox--scroll-line-region-ids line))
-      (when-let ((span (ebox--scroll-line-region-span
+      (when-let* ((span (ebox--scroll-line-region-span
                         line (ebox--region-id-set (list region-id)))))
         (let* ((cell (list (cons line-index span)))
                (tail (gethash region-id tails)))
@@ -2893,7 +2893,7 @@ Return non-nil when descendant width dependencies remain relevant."
         (let* ((sources (plist-get job :scroll-sources))
                (source (car sources)))
           (plist-put job :scroll-sources (cdr sources))
-          (when-let ((task
+          (when-let* ((task
                       (ebox--runtime-prewarm-scroll-source-task
                        buffer source)))
             (plist-put job :scroll-task task)))
@@ -2956,7 +2956,7 @@ events use the native window afterwards and never enter the TP surface plan."
                (list :result 0 :state state
                      :offset (or (plist-get state :scroll-offset) 0)
                      :native-materialize-p t)))
-            (when-let ((window (get-buffer-window buffer t)))
+            (when-let* ((window (get-buffer-window buffer t)))
               (with-current-buffer buffer
                 (goto-char (min old-point (point-max))))
               (set-window-point window (point))
@@ -2970,7 +2970,7 @@ events use the native window afterwards and never enter the TP surface plan."
 (defun ebox--runtime-prewarm-step (buffer)
   "Run one bounded runtime prewarm slice for BUFFER.
 Return non-nil while more work remains."
-  (when-let ((job (gethash buffer ebox--runtime-prewarm-jobs)))
+  (when-let* ((job (gethash buffer ebox--runtime-prewarm-jobs)))
     (let ((state (ebox--buffer-render-state buffer)))
       (if (or (not (buffer-live-p buffer))
               (not (eq state (plist-get job :render-state)))
@@ -3004,7 +3004,7 @@ Return non-nil while more work remains."
 
 (defun ebox--runtime-prewarm-drain (buffer)
   "Synchronously drain BUFFER's scheduled prewarm job for tests and profiling."
-  (when-let ((timer (gethash buffer ebox--runtime-prewarm-timers)))
+  (when-let* ((timer (gethash buffer ebox--runtime-prewarm-timers)))
     (when (timerp timer)
       (cancel-timer timer))
     (remhash buffer ebox--runtime-prewarm-timers))
@@ -3012,7 +3012,7 @@ Return non-nil while more work remains."
         completed)
     (while (and (> limit 0) (not completed))
       (unless (gethash buffer ebox--runtime-prewarm-jobs)
-        (when-let ((state (and (buffer-live-p buffer)
+        (when-let* ((state (and (buffer-live-p buffer)
                                (ebox--buffer-render-state buffer))))
           (puthash buffer (ebox--runtime-prewarm-new-job buffer state)
                    ebox--runtime-prewarm-jobs)))
@@ -3031,7 +3031,7 @@ Return non-nil while more work remains."
   (let (candidates)
     (maphash
      (lambda (region-id _state)
-       (when-let ((bounds
+       (when-let* ((bounds
                    (ebox-surface-region-bounds
                     (current-buffer) region-id)))
          (when (and (<= (car bounds) pos) (< pos (cdr bounds)))
@@ -3061,7 +3061,7 @@ nested owners may render equal-sized clipped spans."
   (let (candidates)
     (maphash
      (lambda (region-id _state)
-       (when-let ((bounds
+       (when-let* ((bounds
                    (ebox-surface-region-bounds
                     (current-buffer) region-id)))
          (push (cons region-id
@@ -3502,7 +3502,7 @@ NATIVE-RESIDUAL; refresh-only publication never consumes user input."
 
 (defun ebox--scrollable-region-p (region-id delta)
   "Return non-nil when REGION-ID can consume DELTA lines."
-  (when-let ((state (and region-id (ebox--scroll-get-state region-id))))
+  (when-let* ((state (and region-id (ebox--scroll-get-state region-id))))
     (let* ((scroll-offset (or (plist-get state :scroll-offset) 0))
            (content-lines (plist-get state :content-lines))
            (content-height (plist-get state :content-height))
@@ -3524,8 +3524,8 @@ NATIVE-RESIDUAL; refresh-only publication never consumes user input."
 
 (defun ebox--smooth-scroll-stop (region-id)
   "Stop pending smooth wheel scroll animation for REGION-ID."
-  (when-let ((entry (gethash region-id ebox--smooth-scroll-state-table)))
-    (when-let ((timer (plist-get entry :timer)))
+  (when-let* ((entry (gethash region-id ebox--smooth-scroll-state-table)))
+    (when-let* ((timer (plist-get entry :timer)))
       (cancel-timer timer))
     (remhash region-id ebox--smooth-scroll-state-table)
     (ebox--deferred-render-gc-schedule-restore)
@@ -3534,7 +3534,7 @@ NATIVE-RESIDUAL; refresh-only publication never consumes user input."
 (defun ebox--smooth-scroll-pause-for-prefetch
     (region-id entry pending)
   "Pause REGION-ID smooth scroll ENTRY until lazy prefetch extends the cache."
-  (when-let ((timer (plist-get entry :timer)))
+  (when-let* ((timer (plist-get entry :timer)))
     (when (timerp timer)
       (cancel-timer timer)))
   (plist-put entry :timer nil)
@@ -3544,7 +3544,7 @@ NATIVE-RESIDUAL; refresh-only publication never consumes user input."
 
 (defun ebox--smooth-scroll-clamp-pending (region-id pending)
   "Clamp PENDING lines to REGION-ID's remaining scrollable range."
-  (if-let ((state (and region-id (ebox--scroll-get-state region-id))))
+  (if-let* ((state (and region-id (ebox--scroll-get-state region-id))))
       (let* ((scroll-offset (or (plist-get state :scroll-offset) 0))
              (lazy-forward
               (and (> pending 0)
@@ -3570,7 +3570,7 @@ NATIVE-RESIDUAL; refresh-only publication never consumes user input."
 
 (defun ebox--smooth-scroll-lazy-boundary-p (region-id delta)
   "Return non-nil when DELTA would cross REGION-ID's lazy prefix boundary."
-  (when-let ((state (and (> delta 0)
+  (when-let* ((state (and (> delta 0)
                          (ebox--scroll-get-state region-id))))
     (let* ((scroll-offset (or (plist-get state :scroll-offset) 0))
            (content-lines (plist-get state :content-lines))
@@ -3660,7 +3660,7 @@ animation was admitted because one owner can consume the complete intent."
       ;; pending distance; the timer coalesces them into frame-sized edits.
       (unless had-timer
         (ebox--smooth-scroll-tick region-id))
-      (when-let ((entry (gethash region-id ebox--smooth-scroll-state-table)))
+      (when-let* ((entry (gethash region-id ebox--smooth-scroll-state-table)))
         (unless (timerp (plist-get entry :timer))
           (plist-put
            entry :timer
@@ -3720,7 +3720,7 @@ FALLBACK is the Emacs scroll command to call when ebox cannot scroll."
 
 (defun ebox--scroll-region-can-consume-complete-p (region-id delta)
   "Return non-nil when REGION-ID can consume all signed DELTA now."
-  (when-let ((state (and region-id (ebox--scroll-get-state region-id))))
+  (when-let* ((state (and region-id (ebox--scroll-get-state region-id))))
     (let* ((offset (or (plist-get state :scroll-offset) 0))
            (height (or (plist-get state :content-height) 0))
            (maximum (max 0 (- (length (plist-get state :content-lines))
@@ -3848,9 +3848,8 @@ With prefix ARG, scroll by that many content lines."
   "Remove all runtime caches owned by BUFFER.
 Defaults to the current buffer."
   (let ((buffer (or buffer (current-buffer))))
-    (ebox--cancel-buffer-viewport-resize buffer)
     (ebox--cancel-buffer-runtime-prewarm buffer)
-    (when-let ((root (ebox--buffer-root-node buffer)))
+    (when-let* ((root (ebox--buffer-root-node buffer)))
       (ebox--clear-region-runtime-caches
        (ebox--node-all-region-ids root)))
     (ebox--clear-buffer-render-state buffer)))
@@ -3992,7 +3991,7 @@ cannot be changed through the unpublished batch root."
 
 (defun ebox--surface-region-scroll-context (buffer region-id)
   "Return read-only scroll publication context for REGION-ID in BUFFER."
-  (when-let ((node (ebox--buffer-region-render-owner-node buffer region-id)))
+  (when-let* ((node (ebox--buffer-region-render-owner-node buffer region-id)))
     (let ((region-ids (ebox--node-all-region-ids node))
           states)
       (maphash
@@ -4017,7 +4016,7 @@ cannot be changed through the unpublished batch root."
 
 (defun ebox--surface-region-scroll-report (context changed-keys)
   "Return TP-era scroll report fields for CONTEXT and CHANGED-KEYS."
-  (when-let ((node (plist-get context :node)))
+  (when-let* ((node (plist-get context :node)))
     (let* ((count (length (plist-get context :states)))
            (paint-p
            (eq (ebox--region-update-dirty-kind changed-keys) 'paint))
@@ -4060,7 +4059,7 @@ cannot be changed through the unpublished batch root."
            (plist-get (plist-get commit-input :state-overrides)
                       :scroll-state-table)))
       (dolist (entry (plist-get context :states))
-        (when-let ((state (gethash (car entry) table)))
+        (when-let* ((state (gethash (car entry) table)))
           (plist-put state :lazy-scroll-prefix-dirty t)
           (puthash (car entry) state table)))))
   commit-input)
@@ -4380,7 +4379,7 @@ NODE can be any box/concat/stack node created by `ebox-create',
   "Return NODE's margin-free role bounds in BUFFER, or nil."
   (let (start end)
     (dolist (region-id (ebox--node-all-region-ids node))
-      (when-let ((bounds
+      (when-let* ((bounds
                   (ebox-surface-region-bounds
                    buffer region-id ebox--horizontal-border-anchor-roles)))
         (setq start (if start (min start (car bounds)) (car bounds))
@@ -4391,7 +4390,7 @@ NODE can be any box/concat/stack node created by `ebox-create',
   "Return fallback TP mount bounds for NODE in BUFFER, or nil."
   (let (start end)
     (dolist (region-id (ebox--node-all-region-ids node))
-      (when-let ((bounds (ebox-surface-region-bounds buffer region-id)))
+      (when-let* ((bounds (ebox-surface-region-bounds buffer region-id)))
         (setq start (if start (min start (car bounds)) (car bounds))
               end (if end (max end (cdr bounds)) (cdr bounds)))))
     (and start end (< start end) (cons start end))))
@@ -4560,7 +4559,7 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
                       :publish callback :rollback framework-rollback
                       :state 'unpublished :diagnostics nil))
                     (_surface
-                     (if-let ((scope-node-ids
+                     (if-let* ((scope-node-ids
                                (plist-get commit-input :scope-node-ids)))
                          (ebox-surface-update-buffer-scoped
                           buffer source scope-node-ids

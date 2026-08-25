@@ -122,9 +122,9 @@ This is an optimization for snapshot capture, not buffer runtime state.")
   (when (listp node)
     (let ((attributes
            (delq nil
-                 (list (when-let ((id (ebox-tree-node-id node)))
+                 (list (when-let* ((id (ebox-tree-node-id node)))
                          (cons :id id))
-                       (when-let ((key (ebox-tree-node-key node)))
+                       (when-let* ((key (ebox-tree-node-key node)))
                          (cons :key key))))))
       (dolist (attribute (plist-get node :selector-attributes))
         (unless (consp attribute)
@@ -145,11 +145,11 @@ This is an optimization for snapshot capture, not buffer runtime state.")
     ('stack
      (ebox-tree-layout-children node))
     ('flex
-     (append (when-let ((box (plist-get node :box)))
+     (append (when-let* ((box (plist-get node :box)))
                (list box))
              (ebox-tree-layout-children node)))
     ('grid
-     (append (when-let ((box (plist-get node :box)))
+     (append (when-let* ((box (plist-get node :box)))
                (list box))
              (ebox-tree-layout-children node)))
     ('flex-item
@@ -182,7 +182,7 @@ New row/column containers store flat `:children'.  Legacy `ebox-concat' and
   "Return CHILD's identity replacement from REPLACEMENTS, when present.
 REPLACEMENTS is an alist whose keys are compared with `eq'.  Nil is not a
 child and is therefore never used as a replacement key."
-  (if-let ((replacement (and child (assq child replacements))))
+  (if-let* ((replacement (and child (assq child replacements))))
       (cdr replacement)
     child))
 
@@ -253,7 +253,7 @@ still copied while every nested value remains shared."
               (ebox-tree--replace-direct-child-list children replacements)))
         (unless (eq replaced children)
           (setq copy (plist-put copy :children replaced)))))
-    (when-let ((sequence (and (memq type '(concat stack flex grid))
+    (when-let* ((sequence (and (memq type '(concat stack flex grid))
                               (plist-get copy :ebox-child-sequence))))
       (let ((updated sequence) changed fallback)
         (dolist (replacement replacements)
@@ -349,7 +349,7 @@ original object identity."
                   (setq copy (without copy :children))
                   (pcase type
                     ((or 'flex 'grid)
-                     (when-let ((box (plist-get node :box)))
+                     (when-let* ((box (plist-get node :box)))
                        (setq copy (plist-put copy :box (copy-node box)))))
                     ('concat
                      (setq copy (without (without copy :left) :right)))
@@ -393,7 +393,7 @@ Record its identities in NODE-ID-SET and REGION-ID-SET."
           node node-id-set region-id-set)))
     (pcase (plist-get node :ebox-type)
       ('box
-       (when-let ((child (plist-get node :ebox-content-node)))
+       (when-let* ((child (plist-get node :ebox-content-node)))
          (plist-put shell :ebox-content-node
                     (ebox-tree--runtime-identity-skeleton
                      child node-id-set region-id-set))))
@@ -405,7 +405,7 @@ Record its identities in NODE-ID-SET and REGION-ID-SET."
                       child node-id-set region-id-set))
                    (ebox-tree-layout-children node))))
       ((or 'flex 'grid)
-       (when-let ((box (plist-get node :box)))
+       (when-let* ((box (plist-get node :box)))
          (plist-put shell :box
                     (ebox-tree--runtime-identity-skeleton
                      box node-id-set region-id-set)))
@@ -416,7 +416,7 @@ Record its identities in NODE-ID-SET and REGION-ID-SET."
                       child node-id-set region-id-set))
                    (ebox-tree-layout-children node))))
       ('flex-item
-       (when-let ((child (plist-get node :node)))
+       (when-let* ((child (plist-get node :node)))
          (plist-put shell :node
                     (ebox-tree--runtime-identity-skeleton
                      child node-id-set region-id-set)))))
@@ -459,7 +459,7 @@ Host references are root-global opaque metadata and are compared with `equal'."
              ;; focused preflight is also used by initial buffer mounting,
              ;; where it must remain finite for malformed graphs.
              (unless (gethash node active)
-               (when-let ((host-ref (plist-get node :host-ref)))
+               (when-let* ((host-ref (plist-get node :host-ref)))
                  (let ((count (hash-table-count host-refs)))
                    (puthash host-ref t host-refs)
                    (when (= count (hash-table-count host-refs))
@@ -530,7 +530,7 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
                        (error "Ebox child Range descriptor is invalid here"))
                      (push entry children))))
                (dolist (child (nreverse children))
-                 (when-let ((key (and (listp child)
+                 (when-let* ((key (and (listp child)
                                       (not (stringp child))
                                       (plist-get child :key))))
                      (when (gethash key keys)
@@ -647,7 +647,7 @@ look like a geometry mutation."
                          (memq (plist-get node :ebox-type) '(grid flex))))
           (push key signature)
           (push value signature))))
-    (when-let ((layout (ebox-tree--layout-props-source-signature node)))
+    (when-let* ((layout (ebox-tree--layout-props-source-signature node)))
       (push :ebox-layout-props signature)
       (push layout signature))
     (nreverse signature)))
@@ -751,11 +751,11 @@ candidate runtime index agree."
         (children)
         (let ((table (make-hash-table :test 'equal)))
           (dolist (child children table)
-            (when-let ((key (node-key child)))
+            (when-let* ((key (node-key child)))
               (puthash key child table)))))
        (match-child
         (old-children old-keyed new-child index)
-        (if-let ((key (node-key new-child)))
+        (if-let* ((key (node-key new-child)))
             (let ((old-child (gethash key old-keyed)))
               (and (same-type-p old-child new-child) old-child))
           (let ((old-child (nth index old-children)))
@@ -809,7 +809,7 @@ candidate runtime index agree."
   "Return NODE's logical children without internal layout adapters."
   (pcase (and (listp node) (plist-get node :ebox-type))
     ('box
-     (when-let ((content-node (plist-get node :ebox-content-node)))
+     (when-let* ((content-node (plist-get node :ebox-content-node)))
        (ebox-tree--semantic-layout-leaves content-node)))
     ((or 'concat 'stack)
      (ebox-tree--semantic-layout-leaves node))
@@ -831,11 +831,11 @@ candidate runtime index agree."
            (when (and (listp node) (not (stringp node)))
              (let* ((current-path (append path (list node)))
                     (entry (cons node current-path)))
-               (when-let ((id (ebox-tree-node-id node)))
+               (when-let* ((id (ebox-tree-node-id node)))
                  (prepend id-table id entry))
                (dolist (class (ebox-tree-node-classes node))
                  (prepend class-table class entry))
-               (when-let ((type (ebox-tree-node-selector-type node)))
+               (when-let* ((type (ebox-tree-node-selector-type node)))
                  (prepend type-table type entry))
                (dolist (child (ebox-tree-semantic-children node))
                  (visit child current-path))))))
@@ -937,14 +937,14 @@ not only the public update ids."
                                  (ebox-tree-layout-children node))))
                  ('flex
                   (append
-                   (when-let ((box (plist-get node :box)))
+                   (when-let* ((box (plist-get node :box)))
                      (list (ebox--ensure-region-id box)))
                    (apply #'append
                           (mapcar #'ebox-tree-node-all-region-ids
                                   (ebox-tree-layout-children node)))))
                  ('grid
                   (append
-                   (when-let ((box (plist-get node :box)))
+                   (when-let* ((box (plist-get node :box)))
                      (list (ebox--ensure-region-id box)))
                    (apply #'append
                           (mapcar #'ebox-tree-node-all-region-ids
@@ -981,14 +981,14 @@ cannot be inspected and reports no conflict."
                 (ebox-tree-layout-children node)))
       ('flex
        (or (and inherited
-                (when-let ((box (plist-get node :box)))
+                (when-let* ((box (plist-get node :box)))
                   (and (plist-get box paint-key) t)))
            (cl-some (lambda (child)
                       (ebox-tree-node-paint-conflict-p child paint-key t))
                     (ebox-tree-layout-children node))))
       ('grid
        (or (and inherited
-                (when-let ((box (plist-get node :box)))
+                (when-let* ((box (plist-get node :box)))
                   (and (plist-get box paint-key) t)))
            (cl-some (lambda (child)
                       (ebox-tree-node-paint-conflict-p child paint-key t))
@@ -1010,20 +1010,20 @@ wrapper's visible content is produced by the flex renderer."
       ('box
        (or (when (equal (ebox-get node :region-id) region-id)
              (list node))
-           (when-let ((path (ebox-tree-node-path-to-region
+           (when-let* ((path (ebox-tree-node-path-to-region
                              (plist-get node :ebox-content-node)
                              region-id)))
              (append path (list node)))))
       ('concat
        (catch 'found
          (dolist (child (ebox-tree-layout-children node))
-           (when-let ((path (ebox-tree-node-path-to-region child region-id)))
+           (when-let* ((path (ebox-tree-node-path-to-region child region-id)))
              (throw 'found (append path (list node)))))
          nil))
       ('stack
        (catch 'found
          (dolist (child (ebox-tree-layout-children node))
-           (when-let ((path (ebox-tree-node-path-to-region child region-id)))
+           (when-let* ((path (ebox-tree-node-path-to-region child region-id)))
              (throw 'found (append path (list node)))))
          nil))
       ('flex
@@ -1034,7 +1034,7 @@ wrapper's visible content is produced by the flex renderer."
         (t
          (catch 'found
            (dolist (child (ebox-tree-layout-children node))
-             (when-let ((path (ebox-tree-node-path-to-region child region-id)))
+             (when-let* ((path (ebox-tree-node-path-to-region child region-id)))
                (throw 'found (append path (list node)))))
            nil))))
       ('grid
@@ -1045,7 +1045,7 @@ wrapper's visible content is produced by the flex renderer."
         (t
          (catch 'found
            (dolist (child (ebox-tree-layout-children node))
-             (when-let ((path (ebox-tree-node-path-to-region child region-id)))
+             (when-let* ((path (ebox-tree-node-path-to-region child region-id)))
                (throw 'found (append path (list node)))))
            nil))))
       ('flex-item

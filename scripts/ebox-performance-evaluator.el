@@ -541,7 +541,7 @@
                      (if (plist-get check :ok) "PASS" "FAIL")
                      (plist-get check :name)
                      (plist-get check :detail))))
-    (when-let ((tp-report (plist-get report :tp-report)))
+    (when-let* ((tp-report (plist-get report :tp-report)))
       (princ (format "TP-REPORT %S\n" tp-report)))
     (princ "\n")))
 

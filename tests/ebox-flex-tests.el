@@ -79,7 +79,7 @@
         (len (length string))
         values)
     (while (< pos len)
-      (when-let ((value (get-text-property pos property string)))
+      (when-let* ((value (get-text-property pos property string)))
         (unless (memq value values)
           (setq values (append values (list value)))))
       (setq pos (1+ pos)))

@@ -164,19 +164,19 @@ Backend marker and buffer span data are intentionally excluded."
   "Return NODE's display, layout, flex, and paint style signature."
   (when (listp node)
     (let ((signature (list :display (ebox--computed-display node))))
-      (when-let ((style-node (ebox-fragment-style-source-node node)))
+      (when-let* ((style-node (ebox-fragment-style-source-node node)))
         (dolist (key ebox--style-signature-keys)
           (when (plist-member style-node key)
             (setq signature
                   (plist-put signature key (plist-get style-node key)))))
-        (when-let ((participation (ebox--flex-participation-props style-node)))
+        (when-let* ((participation (ebox--flex-participation-props style-node)))
           (setq signature
                 (plist-put signature :flex-participation participation))))
       (when (eq (ebox--display-inner node) 'flex)
         (setq signature
               (plist-put signature :flex-props
                          (plist-get node :props))))
-      (when-let ((participation (ebox--flex-participation-props node)))
+      (when-let* ((participation (ebox--flex-participation-props node)))
         (setq signature
               (plist-put signature :flex-participation participation)))
       signature)))

@@ -106,10 +106,10 @@
   (pcase (and (listp node) (plist-get node :ebox-type))
     ('box (ebox--ensure-region-id node))
     ('flex
-     (when-let ((box (plist-get node :box)))
+     (when-let* ((box (plist-get node :box)))
        (ebox--ensure-region-id box)))
     ('grid
-     (when-let ((box (plist-get node :box)))
+     (when-let* ((box (plist-get node :box)))
        (ebox--ensure-region-id box)))
     ('flex-item
      (ebox-selector--node-region-id (plist-get node :node)))
@@ -254,7 +254,7 @@
 (defun ebox-selector--query-buffer-index (buffer selector ast)
   "Return `(SUPPORTED . HANDLES)' for an indexed AST query in BUFFER."
   (when (ebox-selector--descendant-indexable-p ast)
-    (when-let ((indexed (ebox-selector--indexed-candidates buffer ast)))
+    (when-let* ((indexed (ebox-selector--indexed-candidates buffer ast)))
       (cons
        t
        (ebox-selector--entries-to-buffer-handles

@@ -175,13 +175,13 @@
   "Return distinct scopes for CACHE-NAMES."
   (let (scopes)
     (dolist (name cache-names)
-      (when-let ((spec (ebox-cache-spec name)))
+      (when-let* ((spec (ebox-cache-spec name)))
         (cl-pushnew (ebox-cache-spec-scope spec) scopes :test #'equal)))
     scopes))
 
 (defun ebox-cache-record-hit (buffer cache-name)
   "Record a CACHE-NAME hit for BUFFER's current update report."
-  (when-let ((state (ebox-cache--report-state buffer)))
+  (when-let* ((state (ebox-cache--report-state buffer)))
     (plist-put state :cache-hit-count
                (1+ (or (plist-get state :cache-hit-count) 0)))
     (ebox-cache--push-unique-values
@@ -189,7 +189,7 @@
 
 (defun ebox-cache-record-miss (buffer cache-name)
   "Record a CACHE-NAME miss for BUFFER's current update report."
-  (when-let ((state (ebox-cache--report-state buffer)))
+  (when-let* ((state (ebox-cache--report-state buffer)))
     (plist-put state :cache-miss-count
                (1+ (or (plist-get state :cache-miss-count) 0)))
     (ebox-cache--push-unique-values
@@ -197,7 +197,7 @@
 
 (defun ebox-cache-record-invalidation (buffer cache-names reason)
   "Record invalidated CACHE-NAMES and REASON for BUFFER."
-  (when-let ((state (ebox-cache--report-state buffer)))
+  (when-let* ((state (ebox-cache--report-state buffer)))
     (ebox-cache--push-unique-values state :cache-invalidated cache-names)
     (ebox-cache--push-unique-values
      state :cache-scope (ebox-cache--spec-scopes cache-names))

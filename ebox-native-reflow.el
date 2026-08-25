@@ -103,7 +103,7 @@
 
 (defun ebox-native-reflow--rust-target ()
   "Return the Rust target triple matching the current Emacs binary."
-  (when-let ((architecture (ebox-native-reflow--rust-architecture)))
+  (when-let* ((architecture (ebox-native-reflow--rust-architecture)))
     (pcase system-type
       ('darwin (format "%s-apple-darwin" architecture))
       ('gnu/linux (format "%s-unknown-linux-gnu" architecture))
@@ -339,7 +339,7 @@ validation.")
 
 (defun ebox-native-reflow--candidate-paths ()
   "Return the sole configured native module candidate path."
-  (when-let ((candidate
+  (when-let* ((candidate
               (ebox-native-reflow--expand-candidate
                ebox-native-reflow-module-path)))
     (list candidate)))
@@ -429,7 +429,7 @@ fails after moving the current module aside, restore that previous module."
 
 (defun ebox-native-reflow--tool-release (output)
   "Return the numeric Cargo or rustc release parsed from OUTPUT."
-  (when-let ((line (ebox-native-reflow--tool-version output)))
+  (when-let* ((line (ebox-native-reflow--tool-version output)))
     (when (string-match
            "\\`\\(?:cargo\\|rustc\\) \\([0-9]+\\(?:\\.[0-9]+\\)+\\)"
            line)
@@ -449,7 +449,7 @@ fails after moving the current module aside, restore that previous module."
 
 (defun ebox-native-reflow--rustup-toolchains (rustup)
   "Return installed toolchain names reported by RUSTUP."
-  (when-let ((output
+  (when-let* ((output
               (ebox-native-reflow--command-output rustup "toolchain" "list")))
     (mapcar (lambda (line) (car (split-string line " " t)))
             (split-string output "\n" t))))
@@ -850,7 +850,7 @@ next Emacs start."
 
 (defun ebox-native-reflow--append-build-log (format-string &rest arguments)
   "Append FORMAT-STRING and ARGUMENTS to the native build buffer."
-  (when-let ((buffer (get-buffer ebox-native-reflow--build-buffer-name)))
+  (when-let* ((buffer (get-buffer ebox-native-reflow--build-buffer-name)))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (goto-char (point-max))
@@ -858,7 +858,7 @@ next Emacs start."
 
 (defun ebox-native-reflow--refresh-status-buffer ()
   "Refresh an existing native status buffer without selecting it."
-  (when-let ((buffer (get-buffer "*Ebox Native Status*")))
+  (when-let* ((buffer (get-buffer "*Ebox Native Status*")))
     (with-current-buffer buffer
       (let ((inhibit-read-only t)
             (diagnosis (ebox-native--diagnose)))
@@ -1917,7 +1917,7 @@ backend has a matching two-dimensional layout contract."
               (ebox--layout-children node)))
    ((eq (plist-get node :ebox-type) 'flex)
     (cl-every #'ebox-native-reflow--native-node-supported-p
-              (append (when-let ((box (plist-get node :box)))
+              (append (when-let* ((box (plist-get node :box)))
                         (list box))
                       (ebox-tree-layout-children node))))
    ((eq (plist-get node :ebox-type) 'flex-item)
@@ -2150,7 +2150,7 @@ per call, and no call recursively visits the captured Ebox tree."
 (defun ebox-native-reflow--retained-layout-children (node)
   "Return NODE children referenced by one compiled native fragment."
   (pcase (plist-get node :ebox-type)
-    ('box (when-let ((child (plist-get node :ebox-content-node)))
+    ('box (when-let* ((child (plist-get node :ebox-content-node)))
             (list child)))
     ((or 'concat 'stack) (ebox--layout-children node))
     ('flex
@@ -3509,7 +3509,7 @@ typed line-width and property invariants instead of repeating them in Emacs."
     (session generation key &optional expected)
   "Take and materialize SESSION's semantic layout result.
 EXPECTED may add exact tape identity fields beyond GENERATION and KEY."
-  (when-let ((payload
+  (when-let* ((payload
               (ebox-native--module-take
                (ebox-native-reflow--live-handle session) generation key)))
     (let ((identity (copy-sequence expected)))
@@ -3618,7 +3618,7 @@ root effect metadata required by a thin host commit."
 This compatibility entry returns only the rendered string.  New runtime
 callers should consume `ebox-native-reflow-execute-sync' and commit its effect
 metadata together with the text."
-  (when-let ((result
+  (when-let* ((result
               (ebox-native-reflow-execute-sync node frame layout-package)))
     (plist-get result :rendered)))
 
@@ -3726,11 +3726,11 @@ metadata together with the text."
               fragments)))
     (setq fragments (nreverse fragments))
     (dolist (fragment fragments)
-      (if-let ((roles (plist-get fragment :role-ids)))
+      (if-let* ((roles (plist-get fragment :role-ids)))
           (setq previous-role-ids roles)
         (plist-put fragment :previous-role-ids previous-role-ids)))
     (dolist (fragment (reverse (copy-sequence fragments)))
-      (if-let ((roles (plist-get fragment :role-ids)))
+      (if-let* ((roles (plist-get fragment :role-ids)))
           (setq next-role-ids roles)
         (plist-put fragment :role-ids
                    (delete-dups
@@ -3771,7 +3771,7 @@ metadata together with the text."
 
 (defun ebox-native-reflow-take (session generation key)
   "Take SESSION's GENERATION KEY result as a UTF-8 string, or nil."
-  (when-let ((bytes
+  (when-let* ((bytes
               (ebox-native--module-take
                (ebox-native-reflow--live-handle session) generation key)))
     (decode-coding-string bytes 'utf-8 t)))
@@ -3882,7 +3882,7 @@ published frame has been installed."
 (defun ebox-native-reflow--preparation-key
     (preparation logical-key full-p)
   "Return PREPARATION's native key for LOGICAL-KEY and FULL-P."
-  (when-let ((keys
+  (when-let* ((keys
               (gethash logical-key
                        (ebox-native-reflow-preparation-key-table
                         preparation))))
@@ -3900,7 +3900,7 @@ published frame has been installed."
 
 (defun ebox-native-reflow--stop-preparation-ready-watch (preparation)
   "Stop PREPARATION's main-thread readiness timer."
-  (when-let ((timer
+  (when-let* ((timer
               (ebox-native-reflow-preparation-ready-timer preparation)))
     (when (timerp timer)
       (cancel-timer timer))
@@ -3934,7 +3934,7 @@ published frame has been installed."
 
 (defun ebox-native-reflow--readiness-sentinel (process _event)
   "Surface an unexpected native readiness channel close for PROCESS."
-  (when-let ((session
+  (when-let* ((session
               (process-get process 'ebox-native-reflow-session)))
     (when (and (eq process
                    (ebox-native-reflow-session-readiness-process session))
@@ -3991,7 +3991,7 @@ published frame has been installed."
   (when-let* ((session
                (ebox-native-reflow-preparation-native-session preparation))
               ((ebox-native-reflow--ensure-session-readiness session)))
-    (when-let ((current
+    (when-let* ((current
                 (ebox-native-reflow-session-readiness-preparation session)))
       (unless (eq current preparation)
         (error "Native reflow session already routes another preparation")))
@@ -4001,7 +4001,7 @@ published frame has been installed."
 
 (defun ebox-native-reflow--clear-preparation-readiness (preparation)
   "Clear PREPARATION's route without closing its session channel."
-  (when-let ((session
+  (when-let* ((session
               (ebox-native-reflow-preparation-native-session preparation)))
     (when (eq preparation
               (ebox-native-reflow-session-readiness-preparation session))
@@ -4009,7 +4009,7 @@ published frame has been installed."
 
 (defun ebox-native-reflow--idle-continuation-delay (delay)
   "Return a fresh idle threshold DELAY beyond the current idle duration."
-  (+ (or (when-let ((idle (current-idle-time)))
+  (+ (or (when-let* ((idle (current-idle-time)))
            (float-time idle))
          0)
      (max 0 (or delay 0))))
@@ -4059,7 +4059,7 @@ published frame has been installed."
   (unless (or (ebox-native-reflow-preparation-stopped-p preparation)
               (ebox-native-reflow-preparation-error preparation))
     (setf (ebox-native-reflow-preparation-error preparation) message)
-    (when-let ((function
+    (when-let* ((function
                 (ebox-native-reflow-preparation-error-function preparation)))
       (funcall function preparation message))))
 
@@ -4079,7 +4079,7 @@ published frame has been installed."
         (let ((materialized-p
                (ebox-native-reflow--materialize-next-ready-frame
                 preparation)))
-          (when-let ((function
+          (when-let* ((function
                       (ebox-native-reflow-preparation-ready-function
                        preparation)))
             (funcall function preparation nil))
@@ -4202,7 +4202,7 @@ creating and releasing a session for this preparation."
              :error-function error-function
              :idle-watch-p idle-watch-p
              :window-start-line
-             (when-let ((window (get-buffer-window buffer t)))
+             (when-let* ((window (get-buffer-window buffer t)))
                (with-current-buffer buffer
                  (save-restriction
                    (widen)
@@ -4247,7 +4247,7 @@ When FULL-P is non-nil, query the complete restoration job."
                 (ebox-native-reflow--preparation-cache-key
                  logical-key full-p)
                 cache))
-          (when-let ((native-key
+          (when-let* ((native-key
                       (ebox-native-reflow--preparation-key
                        preparation logical-key full-p)))
             (ebox-native-reflow-ready-p
@@ -4479,7 +4479,7 @@ NATIVE-FULL-P selects the native key that produced the published frame."
                    (ebox-native-reflow-preparation-source-root preparation))))
     (let ((confirmed-revision (or (plist-get state :runtime-revision) 0)))
       (when (and complete-p spec)
-        (when-let ((native-key
+        (when-let* ((native-key
                     (ebox-native-reflow--preparation-key
                      preparation (plist-get spec :key) native-full-p)))
           (ebox-native-reflow-confirm-native-frame
@@ -4495,7 +4495,7 @@ NATIVE-FULL-P selects the native key that produced the published frame."
 (defun ebox-native-reflow-preparation-stats (preparation)
   "Return PREPARATION's native bounded-runtime statistics."
   (or (ebox-native-reflow-preparation-final-stats preparation)
-      (when-let ((session
+      (when-let* ((session
                   (ebox-native-reflow-preparation-native-session
                    preparation)))
         (unless (ebox-native-reflow-session-released-p session)
@@ -4508,12 +4508,12 @@ NATIVE-FULL-P selects the native key that produced the published frame."
     (setf (ebox-native-reflow-preparation-stopped-p preparation) t)
     (ebox-native-reflow--stop-preparation-ready-watch preparation)
     (ebox-native-reflow--clear-preparation-readiness preparation)
-    (when-let ((cache
+    (when-let* ((cache
                 (ebox-native-reflow-preparation-frame-cache preparation)))
       (clrhash cache))
     (setf (ebox-native-reflow-preparation-materialization-queue preparation)
           nil)
-    (when-let ((session
+    (when-let* ((session
                 (ebox-native-reflow-preparation-native-session preparation)))
       (unless (ebox-native-reflow-session-released-p session)
         (ignore-errors
@@ -4525,7 +4525,7 @@ NATIVE-FULL-P selects the native key that produced the published frame."
                preparation)
           (unwind-protect
               (ebox-native-reflow-release-session session)
-            (when-let ((stats
+            (when-let* ((stats
                         (ebox-native-reflow-preparation-final-stats
                          preparation)))
               (plist-put stats :alive nil)))))))

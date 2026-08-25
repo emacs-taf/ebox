@@ -49,7 +49,7 @@
 (defun ebox--register-render-owned-text-value (property value)
   "Register Ebox-created VALUE for PROPERTY in the active render candidate."
   (when value
-    (when-let ((values (ebox--render-owned-text-values-for property t)))
+    (when-let* ((values (ebox--render-owned-text-values-for property t)))
       (puthash value t values)))
   value)
 
@@ -58,7 +58,7 @@
 REGISTRY defaults to the active render candidate."
   (let ((ebox--render-owned-text-values
          (or registry ebox--render-owned-text-values)))
-    (when-let ((values (ebox--render-owned-text-values-for property)))
+    (when-let* ((values (ebox--render-owned-text-values-for property)))
       (gethash value values))))
 
 (defun ebox--capture-paint-origins! (string start end)
@@ -155,7 +155,7 @@ including strings returned from a render-cache hit."
   "Replay owned property identities recorded for RENDERED into this candidate."
   (when (and (stringp rendered)
              (hash-table-p ebox--render-owned-text-values))
-    (when-let ((provenance
+    (when-let* ((provenance
                 (gethash rendered ebox--render-output-provenance-table)))
       (maphash
        (lambda (property values)

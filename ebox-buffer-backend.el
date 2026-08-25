@@ -54,7 +54,7 @@ Set this to a byte count for a fixed budget, or nil to leave the setting alone."
 (defun ebox--darwin-physical-memory-bytes ()
   "Return macOS physical memory in bytes, or nil when unavailable."
   (when (eq system-type 'darwin)
-    (when-let ((sysctl (executable-find "sysctl")))
+    (when-let* ((sysctl (executable-find "sysctl")))
       (with-temp-buffer
         (when (zerop (call-process sysctl nil t nil "-n" "hw.memsize"))
           (goto-char (point-min))
@@ -65,7 +65,7 @@ Set this to a byte count for a fixed budget, or nil to leave the setting alone."
   "Return local physical memory in bytes, or nil when unavailable."
   (when (eq ebox--physical-memory-bytes 'unknown)
     (setq ebox--physical-memory-bytes
-          (or (when-let ((info
+          (or (when-let* ((info
                           (and (fboundp 'memory-info)
                                (let ((default-directory
                                       temporary-file-directory))
@@ -175,7 +175,7 @@ Set this to nil to leave `gc-cons-percentage' unchanged.")
             (max gc-cons-percentage ebox-render-gc-cons-percentage)))
     (cl-incf ebox--deferred-render-gc-generation)
     (cl-incf ebox--deferred-render-gc-depth)
-    (when-let ((threshold
+    (when-let* ((threshold
                 (ebox--effective-deferred-render-gc-cons-threshold)))
       (setq gc-cons-threshold threshold))
     (unless ebox--deferred-render-gc-state
@@ -327,7 +327,7 @@ Return FUNCTION's value."
                      (:font-height . :height)
                      (:font-weight . :weight)
                      (:font-slant . :slant)))
-      (when-let ((value (plist-get style (car entry))))
+      (when-let* ((value (plist-get style (car entry))))
         (setq face (plist-put face (cdr entry) value))))
     face))
 
@@ -377,7 +377,7 @@ foreground color."
 This backend mapper intentionally accepts computed style facts and emits only
 buffer-facing paint properties.  Layout-only properties never pass through."
   (let ((face (ebox-buffer--font-face style)))
-    (when-let ((foreground (ebox-buffer--paint-color style role)))
+    (when-let* ((foreground (ebox-buffer--paint-color style role)))
       (setq face
             (cond
              ((tp-paint-slot-p foreground)
@@ -386,7 +386,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
              ((eq foreground 'ebox/default-foreground)
               (append (ebox-buffer--default-foreground-face) face))
              (t (plist-put face :foreground foreground)))))
-    (when-let ((background (ebox-buffer--paint-background-color style role)))
+    (when-let* ((background (ebox-buffer--paint-background-color style role)))
       (setq face
             (if (tp-paint-slot-p background)
                 (let ((slot-face (tp-paint-slot-face background)))
@@ -397,7 +397,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
 
 (defun ebox--propertize-typography (string style)
   "Apply STYLE's typography to one copy of STRING."
-  (if-let ((face (ebox-buffer--font-face style)))
+  (if-let* ((face (ebox-buffer--font-face style)))
       (let ((copy (copy-sequence string)))
         (ebox--add-render-face! copy 0 (length copy) face t)
         (ebox--register-render-owned-face-values string copy))
@@ -813,7 +813,7 @@ parent layout change."
         (setq ok t)
         (cl-loop for width in slot-widths
                  for line = (or (pop lines) (ebox-pixel-space 0))
-                 do (if-let ((padded-line
+                 do (if-let* ((padded-line
                               (ebox-buffer--pad-line-to-slot-width
                                line width)))
                         (push padded-line padded)

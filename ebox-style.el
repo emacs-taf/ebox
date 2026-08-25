@@ -274,12 +274,12 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
 
 (defun ebox-style-canonical-name (name)
   "Return canonical CSS-like longhand property name for NAME."
-  (when-let ((property (ebox-style-property name)))
+  (when-let* ((property (ebox-style-property name)))
     (plist-get property :name)))
 
 (defun ebox-style-schema-id (name)
   "Return namespaced ECSS schema id for Ebox property NAME."
-  (when-let ((property (ebox-style-property name)))
+  (when-let* ((property (ebox-style-property name)))
     (plist-get property :id)))
 
 (defun ebox-style--put (plist key value)
@@ -610,7 +610,7 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
                        :validator (ebox-style--validator
                                    (plist-get property :validator))
                        :equality #'equal)))
-    (when-let ((shorthand (ebox-style--shorthand
+    (when-let* ((shorthand (ebox-style--shorthand
                            (plist-get property :shorthand))))
       (setq options (plist-put options :shorthand shorthand)))
     options))
@@ -980,7 +980,7 @@ child colors are handled by `ebox-style--theme-parent-delta-computed'."
 (defun ebox-style--add-border-aggregates (style)
   "Add uniform border shorthand facts to public computed STYLE."
   (dolist (component '(width style color) style)
-    (when-let ((value (ebox-style--common-border-value style component)))
+    (when-let* ((value (ebox-style--common-border-value style component)))
       (setq style
             (plist-put style (intern (format ":border-%s" component)) value)))))
 
@@ -1130,7 +1130,7 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
 
 (defun ebox-style--apply-container-wrapper (node style &optional snapshot)
   "Apply computed STYLE to NODE's internal visual wrapper."
-  (when-let ((wrapper (ebox-style--container-wrapper node style snapshot)))
+  (when-let* ((wrapper (ebox-style--container-wrapper node style snapshot)))
     (ebox-style--apply-engine-values
      wrapper
      (ebox-style--box-values style snapshot))
@@ -1220,7 +1220,7 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
     (when-let* ((source (plist-get item :node)))
       (let* ((source-style (plist-get source :ebox-computed-style))
              (child-style
-              (when-let ((child (plist-get source :ebox-content-node)))
+              (when-let* ((child (plist-get source :ebox-content-node)))
                 (plist-get child :ebox-computed-style)))
              (values
               (append
@@ -1234,7 +1234,7 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
 
 (defun ebox-style-dirty-kind (name)
   "Return dirty kind for canonical property or alias NAME."
-  (when-let ((property (ebox-style-property name)))
+  (when-let* ((property (ebox-style-property name)))
     (plist-get property :dirty-kind)))
 
 (defun ebox-style-signature (computed-style groups)

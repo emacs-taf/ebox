@@ -432,10 +432,13 @@ in pixels and `ebox-viewport-height` in lines around the render. Do not mutate
 a published node tree in place.
 
 Visible mounted buffers follow their displaying window automatically. Ebox
-coalesces continuous size events and publishes only the latest sample after
-`ebox-viewport-resize-delay` (0.05 seconds by default).
+publishes every size event immediately through its retained incremental path.
+The Emacs hook is serialized and reentrant calls are rejected; there is no
+second host hook, timer, or viewport queue.
 `ebox-viewport-window-width` returns the same display-safe pixel width used by
 that controller, so hosts must not install a second resize hook or width rule.
+The former `ebox-viewport-resize-delay` setting has been removed; immediate
+delivery has no timer setting to migrate.
 
 ## 7. Selectors
 
@@ -522,7 +525,6 @@ The main customization variables are:
 | Lazy scroll | `ebox-scroll-lazy-prefix-lookahead-lines` 8; `ebox-scroll-lazy-idle-prefetch-lines` 128; `ebox-scroll-lazy-idle-prefetch-slice-lines` 16; `ebox-scroll-lazy-idle-prefetch-delay` 0.15 |
 | Runtime prewarm | `ebox-runtime-idle-prewarm` t; `ebox-runtime-idle-prewarm-delay` 0.1; `ebox-runtime-idle-prewarm-prefix-resume-delay` 2.0; `ebox-runtime-idle-prewarm-slice-size` 32; `ebox-native-buffer-scroll` t (initial/visible-window handoff only; strict root-owner proof) |
 | Predicted reflow | `ebox-runtime-idle-reflow-cache-prewarm` t; `ebox-runtime-idle-reflow-cache-prewarm-delay` 0.15 |
-| Viewport delivery | `ebox-viewport-resize-delay` 0.05; continuous window events replace one pending sample per mounted buffer |
 | Reflow GC | `ebox-reflow-cache-prewarm-gc-cons-threshold` `auto`; `ebox-reflow-cache-prewarm-gc-auto-frame-budget` 0.2; `ebox-reflow-cache-prewarm-gc-auto-min-threshold` 64 MiB; `ebox-reflow-cache-prewarm-gc-auto-max-threshold` 1 GiB; `ebox-reflow-cache-prewarm-gc-auto-initial-threshold` 512 MiB; `ebox-reflow-cache-prewarm-gc-auto-target-layouts` 24; `ebox-reflow-cache-prewarm-gc-cons-percentage` 0.1 |
 | Visual verification | `ebox-visual-check-output-dir` points to the temporary directory used for optional screenshots and reports. |
 

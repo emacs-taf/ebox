@@ -865,7 +865,7 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
         (and (consp value)
              (or (eq (car value) 'viewport-height)
                  (memq (car value) '(+ -)))))
-    (if-let ((height (ebox--resolve-height-expression-lines value)))
+    (if-let* ((height (ebox--resolve-height-expression-lines value)))
         (ebox--box-sizing-content-height box (max 0 height))
       fallback))
    (t
@@ -925,7 +925,7 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
 (defun ebox--box-content (box)
   "Return BOX content, rendering any lazy child layout content if present."
   (ebox--propertize-typography
-   (or (when-let ((node (ebox--box-content-node box)))
+   (or (when-let* ((node (ebox--box-content-node box)))
          (ebox--render-box-content-node box node))
        (ebox-get box :content))
    box))
@@ -980,7 +980,7 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
 
 (defun ebox--stretch-content-pixel (box)
   "Return BOX's stretch-fit content width, or nil without a viewport."
-  (when-let ((viewport (ebox--viewport-pixel-width nil)))
+  (when-let* ((viewport (ebox--viewport-pixel-width nil)))
     (max 0 (- viewport (ebox--side-pixel box)))))
 
 (defun ebox--fit-content-pixel (box limit)
@@ -1000,7 +1000,7 @@ Return nil for intrinsic sizes such as min-content and max-content."
   (cond
    ((null value) nil)
    ((ebox--viewport-size-value-p value)
-    (when-let ((viewport (ebox--viewport-pixel-width nil)))
+    (when-let* ((viewport (ebox--viewport-pixel-width nil)))
       (ebox--box-sizing-content-pixel box viewport)))
    ((numberp value)
     (ebox--box-sizing-content-pixel box value))
@@ -1010,7 +1010,7 @@ Return nil for intrinsic sizes such as min-content and max-content."
     (let ((limit (cadr value)))
       (cond
        ((ebox--viewport-size-value-p limit)
-        (when-let ((viewport (ebox--viewport-pixel-width nil)))
+        (when-let* ((viewport (ebox--viewport-pixel-width nil)))
           (ebox--box-sizing-content-pixel box viewport)))
        ((numberp limit)
         (ebox--box-sizing-content-pixel box limit))
@@ -1087,7 +1087,7 @@ FALLBACK is used for nil and auto values."
   (cond
    ((null value) fallback)
    ((eq value 'viewport)
-    (if-let ((viewport (ebox--viewport-pixel-width nil)))
+    (if-let* ((viewport (ebox--viewport-pixel-width nil)))
         (ebox--box-sizing-content-pixel box viewport)
       fallback))
    ((numberp value)
@@ -2153,7 +2153,7 @@ last cached leaf instead of walking the stack from the beginning."
 
 (defun ebox--scroll-window-content-height (box)
   "Return BOX's definite scroll content height, or nil."
-  (when-let ((fixed-height
+  (when-let* ((fixed-height
               (ebox--resolve-size-content-height
                box (ebox-get box :height) nil)))
     (ebox--content-height box fixed-height)))
@@ -2706,7 +2706,7 @@ no included vertical margin."
                    (ebox--propertize-underline
                     (car tail) border-bottom-color)
                    'ebox-bb region-id))))
-      (when-let ((properties (ebox-get box :surface-properties)))
+      (when-let* ((properties (ebox-get box :surface-properties)))
         (setq lines
               (mapcar (lambda (line)
                         (ebox--apply-surface-properties line properties))

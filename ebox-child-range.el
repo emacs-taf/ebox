@@ -302,14 +302,14 @@ those NEW items already name canonical published objects and are not copied."
         (let ((payload (ebox-child-range--segment-payload (nth 2 record))))
           (dotimes (offset (length payload))
             (ebox-child-range--metric-add metrics 'old-affected-payload-visits)
-            (when-let ((key (plist-get (aref payload offset) :key)))
+            (when-let* ((key (plist-get (aref payload offset) :key)))
               (setq key-root
                     (ebox-child-range--hash-change
                      key-root key nil (funcall hash-function key) 0 t metrics))))))
       (dolist (record records)
         (let ((index (nth 1 record)) (payload (nth 3 record)))
           (dotimes (offset (length payload))
-            (when-let ((key (plist-get (aref payload offset) :key)))
+            (when-let* ((key (plist-get (aref payload offset) :key)))
               (setq key-root
                     (ebox-child-range--hash-change
                      key-root key (cons index offset)
@@ -365,7 +365,7 @@ SEGMENT-INDEX and OFFSET identify its exact material-child location."
       (let* ((children (ebox-child-range--segment-node-children node))
              (slot (ebox-child-range--digit index (1- height))))
         (dotimes (cursor slot)
-          (when-let ((child (aref children cursor)))
+          (when-let* ((child (aref children cursor)))
             (setq weight (+ weight
                             (ebox-child-range--segment-node-weight child)))))
         (setq node (aref children slot)
@@ -389,7 +389,7 @@ SEGMENT-INDEX and OFFSET identify its exact material-child location."
   (let (records)
     (dotimes (index (ebox-child-range--sequence-count sequence))
       (let ((segment (ebox-child-range--segment-at sequence index)))
-        (when-let ((ref (ebox-child-range--segment-ref segment)))
+        (when-let* ((ref (ebox-child-range--segment-ref segment)))
           (push (list ref index) records))))
     (nreverse records)))
 
@@ -398,10 +398,10 @@ SEGMENT-INDEX and OFFSET identify its exact material-child location."
   (let ((nodes 0) (edges 0))
     (cl-labels ((walk (node)
                   (setq nodes (1+ nodes))
-                  (when-let ((children
+                  (when-let* ((children
                               (ebox-child-range--segment-node-children node)))
                     (dotimes (slot 32)
-                      (when-let ((child (aref children slot)))
+                      (when-let* ((child (aref children slot)))
                         (setq edges (1+ edges))
                         (walk child))))))
       (walk (ebox-child-range--sequence-root sequence)))
@@ -411,11 +411,11 @@ SEGMENT-INDEX and OFFSET identify its exact material-child location."
   "Return `(VECTORS . SLOTS)' allocated by SEQUENCE's segment trie."
   (let ((vectors 0))
     (cl-labels ((walk (node)
-                  (when-let ((children
+                  (when-let* ((children
                               (ebox-child-range--segment-node-children node)))
                     (setq vectors (1+ vectors))
                     (dotimes (slot 32)
-                      (when-let ((child (aref children slot))) (walk child))))))
+                      (when-let* ((child (aref children slot))) (walk child))))))
       (walk (ebox-child-range--sequence-root sequence)))
     (cons vectors (* 32 vectors))))
 

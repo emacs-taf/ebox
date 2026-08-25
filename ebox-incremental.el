@@ -730,7 +730,7 @@ This normally does no work.  It rebuilds metadata only after a defensive
 
 (defun ebox--render-cache-replay-entry-side-effects (entry)
   "Replay ENTRY's scroll side effects before its rendered output is reused."
-  (when-let ((metadata
+  (when-let* ((metadata
               (gethash entry ebox--render-cache-entry-side-effects-table)))
     (ebox--replay-scroll-cache-actions
      (plist-get metadata :scroll-actions)
@@ -788,7 +788,7 @@ This normally does no work.  It rebuilds metadata only after a defensive
          (pcase kind
            ('viewport t)
            ('root-width
-            (when-let ((box (ebox--root-region-box node region-id)))
+            (when-let* ((box (ebox--root-region-box node region-id)))
               (equal (ebox--literal-root-pixel-width box)
                      (plist-get prepared :root-width))))
            (_ nil)))))
@@ -848,7 +848,7 @@ This normally does no work.  It rebuilds metadata only after a defensive
   "Return NODE's exact cache context, with `:rendered' when reusable.
 FORCE includes the complete viewport context in the cache signature.
 EXTERNAL-SIGNATURE may prove a viewport-dependent non-root context."
-  (when-let ((context
+  (when-let* ((context
               (ebox--render-cache-context
                node force external-signature)))
     (let* ((ebox--render-cache-table (plist-get context :cache))
@@ -883,7 +883,7 @@ EXTERNAL-SIGNATURE may prove a viewport-dependent non-root context."
 When FORCE is non-nil, cache NODE even when its output is viewport-dependent;
 the complete viewport context remains part of the render signature.
 CACHE-PROBE may supply a prior exact miss from an accelerator boundary."
-  (if-let ((prepared (and force
+  (if-let* ((prepared (and force
                           (ebox--take-prepared-root-render node))))
       (prog1 prepared
         (ebox--replay-render-output-provenance prepared)
@@ -981,7 +981,7 @@ Keys are region-id, values are plists with :scroll-offset, :content-lines, etc."
 
 (defun ebox--buffer-root-node-id (buffer)
   "Return BUFFER's root runtime node id."
-  (when-let ((root (ebox--buffer-root-node buffer)))
+  (when-let* ((root (ebox--buffer-root-node buffer)))
     (ebox--ensure-node-id root)))
 
 (defun ebox--runtime-region-id-conflict (region-id-set target-buffer)
@@ -992,7 +992,7 @@ Keys are region-id, values are plists with :scroll-offset, :content-lines, etc."
       (maphash
        (lambda (buffer state)
          (unless (eq buffer target)
-           (when-let ((owner-set (plist-get state :region-id-set)))
+           (when-let* ((owner-set (plist-get state :region-id-set)))
              (maphash
               (lambda (region-id _present)
                 (when (gethash region-id owner-set)
@@ -1004,7 +1004,7 @@ Keys are region-id, values are plists with :scroll-offset, :content-lines, etc."
 
 (defun ebox-incremental--adjust-runtime-type-count (table node delta)
   "Adjust NODE's raw selector-type count in TABLE by DELTA."
-  (when-let ((type (ebox-tree-node-selector-type node)))
+  (when-let* ((type (ebox-tree-node-selector-type node)))
     (let ((count (+ (or (gethash type table) 0) delta)))
       (cond
        ((< count 0)
@@ -1028,7 +1028,7 @@ same traversal in complete-render overwrite order."
         (runtime-type-count-table (make-hash-table :test 'eq))
         native-node-postorder range-sequence-p)
     (cl-labels ((index-host-ref (node node-id)
-                  (when-let ((host-ref (plist-get node :host-ref)))
+                  (when-let* ((host-ref (plist-get node :host-ref)))
                     (let ((count (hash-table-count host-ref-table)))
                       (puthash host-ref node-id host-ref-table)
                       (when (= count (hash-table-count host-ref-table))
@@ -1051,7 +1051,7 @@ same traversal in complete-render overwrite order."
                        (unless (gethash region-id region-node-table)
                          (puthash region-id node-id region-node-table))))
                     ('flex
-                     (when-let ((box (plist-get node :box)))
+                     (when-let* ((box (plist-get node :box)))
                        (let ((region-id (ebox--ensure-region-id box)))
                          (puthash region-id t region-id-set)
                          ;; Preserve the recursive lookup's first-match
@@ -1070,7 +1070,7 @@ same traversal in complete-render overwrite order."
                        (puthash (ebox--ensure-region-id node)
                                 node region-box-table))
                       ('flex
-                       (when-let ((box (plist-get node :box)))
+                       (when-let* ((box (plist-get node :box)))
                          (puthash (ebox--ensure-region-id box)
                                   box region-box-table))))))
                 (visit (node parent-id native-layout-p)
@@ -1085,7 +1085,7 @@ same traversal in complete-render overwrite order."
                         (puthash node-id parent-id parent-table))
                       (index-region-id node node-id)
                       (index-host-ref node node-id)
-                      (when-let ((sequence (plist-get node :ebox-child-sequence)))
+                      (when-let* ((sequence (plist-get node :ebox-child-sequence)))
                         (setq range-sequence-p t)
                         (dotimes
                             (segment-index
@@ -1242,7 +1242,7 @@ same traversal in complete-render overwrite order."
   "Return REGION-ID's smallest render-owner node id in BUFFER.
 Use the persistent runtime index when available.  Legacy runtime states that
 lack the index, or an indexed entry, fall back to a recursive tree lookup."
-  (or (when-let ((table (ebox--buffer-region-node-table buffer)))
+  (or (when-let* ((table (ebox--buffer-region-node-table buffer)))
         (gethash region-id table))
       (when-let* ((root (ebox--buffer-root-node buffer))
                   (path (ebox--node-path-to-region root region-id)))
@@ -1252,7 +1252,7 @@ lack the index, or an indexed entry, fall back to a recursive tree lookup."
   "Return REGION-ID's smallest render-owner node in BUFFER.
 Use both persistent runtime indexes in the normal path.  Fall back to the
 recursive region path only for legacy or incomplete runtime state."
-  (when-let ((node-id
+  (when-let* ((node-id
               (ebox--buffer-region-render-owner-node-id buffer region-id)))
     (ebox--buffer-runtime-node buffer node-id)))
 
@@ -1286,7 +1286,7 @@ recursive region path only for legacy or incomplete runtime state."
 Discard the isolated reflow scratch tree unless
 PRESERVE-REFLOW-PREWARM-SCRATCH is non-nil.  Callers may preserve it only
 while validating one predicted root-width mutation against the new revision."
-  (when-let ((state (ebox--buffer-render-state buffer)))
+  (when-let* ((state (ebox--buffer-render-state buffer)))
     (let ((revision
            (1+ (or (plist-get state :runtime-revision) 0))))
       (plist-put state :runtime-revision revision)
@@ -1296,7 +1296,7 @@ while validating one predicted root-width mutation against the new revision."
 
 (defun ebox--buffer-viewport-dependent-node-id-axes (buffer)
   "Return cached viewport-dependent node ids by axis for BUFFER."
-  (when-let ((state (ebox--buffer-render-state buffer)))
+  (when-let* ((state (ebox--buffer-render-state buffer)))
     (if (and (plist-get state :viewport-dependent-node-ids-ready)
              (plist-member state :viewport-dependent-node-id-axes))
         (plist-get state :viewport-dependent-node-id-axes)
@@ -1320,13 +1320,13 @@ while validating one predicted root-width mutation against the new revision."
 
 (defun ebox--buffer-viewport-dependent-node-ids (buffer)
   "Return cached viewport-dependent node ids for BUFFER."
-  (when-let ((state (ebox--buffer-render-state buffer)))
+  (when-let* ((state (ebox--buffer-render-state buffer)))
     (ebox--buffer-viewport-dependent-node-id-axes buffer)
     (plist-get state :viewport-dependent-node-ids)))
 
 (defun ebox--invalidate-buffer-viewport-dependencies (buffer)
   "Invalidate BUFFER's cached viewport dependency list."
-  (when-let ((state (ebox--buffer-render-state buffer)))
+  (when-let* ((state (ebox--buffer-render-state buffer)))
     (plist-put state :viewport-dependent-node-ids nil)
     (plist-put state :viewport-dependent-node-id-axes nil)
     (plist-put state :viewport-dependent-node-ids-ready nil)))
@@ -1380,9 +1380,9 @@ while validating one predicted root-width mutation against the new revision."
 
 (defun ebox--layout-snapshot (buffer node-id)
   "Return BUFFER's layout snapshot for NODE-ID."
-  (when-let ((snapshots (ebox--ensure-buffer-layout-snapshots buffer)))
+  (when-let* ((snapshots (ebox--ensure-buffer-layout-snapshots buffer)))
     (let ((snapshot (or (gethash node-id snapshots)
-                        (when-let ((node (ebox--snapshot-published-node
+                        (when-let* ((node (ebox--snapshot-published-node
                                           buffer node-id)))
                           (let ((created
                                  (ebox--node-layout-snapshot
@@ -1439,12 +1439,12 @@ Use `ebox--with-layout-snapshot-index-context' for batch snapshot capture."
   "Return a copy of BUFFER's current layout snapshot table.
 When DETAILS is non-nil, include derived buffer spans and line signatures in
 the returned copy without mutating BUFFER's stored snapshot table."
-  (when-let ((state (ebox--buffer-render-state buffer)))
+  (when-let* ((state (ebox--buffer-render-state buffer)))
     (when (and (plist-get state :root-node)
                (not (plist-get state :layout-snapshots-complete-p)))
       (ebox--refresh-buffer-layout-snapshots buffer details)))
   (let ((copy (make-hash-table :test 'equal)))
-    (when-let ((snapshots (ebox--ensure-buffer-layout-snapshots buffer)))
+    (when-let* ((snapshots (ebox--ensure-buffer-layout-snapshots buffer)))
       (let (entries)
         (maphash (lambda (node-id snapshot)
                    (push (cons node-id
@@ -1479,9 +1479,9 @@ the returned copy without mutating BUFFER's stored snapshot table."
 
 (defun ebox--clear-layout-snapshots (buffer)
   "Clear BUFFER's layout snapshots."
-  (when-let ((state (ebox--buffer-render-state buffer)))
+  (when-let* ((state (ebox--buffer-render-state buffer)))
     (plist-put state :layout-snapshots-complete-p nil))
-  (when-let ((snapshots (ebox--ensure-buffer-layout-snapshots buffer)))
+  (when-let* ((snapshots (ebox--ensure-buffer-layout-snapshots buffer)))
     (clrhash snapshots)))
 
 (defun ebox--plist-remove-key (plist key)
@@ -1505,8 +1505,8 @@ the returned copy without mutating BUFFER's stored snapshot table."
   "Remove stored buffer-owned runtime state for BUFFER.
 Defaults to the current buffer."
   (let ((buffer (or buffer (current-buffer))))
-    (when-let ((cache (ebox--buffer-render-cache buffer)))
-      (when-let ((root-cache
+    (when-let* ((cache (ebox--buffer-render-cache buffer)))
+      (when-let* ((root-cache
                   (gethash cache ebox--render-root-cache-table-table)))
         (remhash root-cache ebox--render-cache-ring-table))
       (remhash cache ebox--render-root-cache-table-table)
@@ -1543,7 +1543,7 @@ Defaults to the current buffer."
     (dolist (region-id (get-text-property pos 'ebox-content-owners))
       (cl-pushnew region-id ids :test #'equal))
     (dolist (entry ebox-region-types)
-      (when-let ((region-id (get-text-property pos (cdr entry))))
+      (when-let* ((region-id (get-text-property pos (cdr entry))))
         (cl-pushnew region-id ids :test #'equal)))
     ids))
 
@@ -1551,7 +1551,7 @@ Defaults to the current buffer."
   "Return all ebox region role/id pairs present at POS."
   (let (role-ids)
     (dolist (entry ebox-region-types)
-      (when-let ((region-id (get-text-property pos (cdr entry))))
+      (when-let* ((region-id (get-text-property pos (cdr entry))))
         (push (cons (car entry) region-id) role-ids)))
     role-ids))
 
@@ -1572,7 +1572,7 @@ Defaults to the current buffer."
                       (let ((map (make-hash-table :test 'eql)))
                         (puthash region-id map region-lines)
                         map))))
-    (if-let ((range (gethash line-number line-map)))
+    (if-let* ((range (gethash line-number line-map)))
         (setcdr range (max (cdr range) end))
       (puthash line-number (cons start end) line-map))))
 
@@ -1681,10 +1681,10 @@ therefore unsafe."
         (candidate-lines (make-hash-table :test 'eql))
         spans)
     (dolist (region-id region-ids)
-      (when-let ((line-map (gethash region-id region-lines)))
+      (when-let* ((line-map (gethash region-id region-lines)))
         (maphash
          (lambda (line-number range)
-           (if-let ((existing (gethash line-number candidate-lines)))
+           (if-let* ((existing (gethash line-number candidate-lines)))
                (progn
                  (setcar existing (min (car existing) (car range)))
                  (setcdr existing (max (cdr existing) (cdr range))))
@@ -1728,7 +1728,7 @@ therefore unsafe."
                (range-start (max (point) line-start))
                (range-end (min end line-end)))
           (when (< range-start range-end)
-            (if-let ((existing (gethash line-start line-ranges)))
+            (if-let* ((existing (gethash line-start line-ranges)))
                 (progn
                   (setcar existing (min (car existing) range-start))
                   (setcdr existing (max (cdr existing) range-end)))
@@ -2032,10 +2032,10 @@ the planning pass has one for this buffer."
 
 (defun ebox--ensure-layout-snapshot-spans (buffer node-id)
   "Ensure BUFFER's stored snapshot for NODE-ID has buffer span details."
-  (when-let ((snapshot (ebox--layout-snapshot buffer node-id)))
+  (when-let* ((snapshot (ebox--layout-snapshot buffer node-id)))
     (if (ebox--layout-snapshot-spans-p snapshot)
         snapshot
-      (when-let ((node (ebox--snapshot-published-node buffer node-id)))
+      (when-let* ((node (ebox--snapshot-published-node buffer node-id)))
         (let ((detailed
                (ebox--with-layout-snapshot-detail-context buffer
                  (ebox--complete-layout-snapshot-spans
@@ -2045,10 +2045,10 @@ the planning pass has one for this buffer."
 
 (defun ebox--ensure-layout-snapshot-details (buffer node-id)
   "Ensure BUFFER's stored snapshot for NODE-ID has expensive detail fields."
-  (when-let ((snapshot (ebox--layout-snapshot buffer node-id)))
+  (when-let* ((snapshot (ebox--layout-snapshot buffer node-id)))
     (if (ebox--layout-snapshot-detailed-p snapshot)
         snapshot
-      (when-let ((node (ebox--snapshot-published-node buffer node-id)))
+      (when-let* ((node (ebox--snapshot-published-node buffer node-id)))
         (let ((detailed
                (ebox--with-layout-snapshot-detail-context buffer
                  (ebox--complete-layout-snapshot buffer node snapshot))))
@@ -2069,14 +2069,14 @@ When DETAILS is non-nil, include expensive per-line detail fields."
 (defun ebox--refresh-buffer-layout-snapshots (buffer &optional details)
   "Recapture BUFFER's layout snapshots from its stored runtime root.
 When DETAILS is non-nil, include expensive per-line detail fields."
-  (when-let ((root (ebox--buffer-root-node buffer)))
+  (when-let* ((root (ebox--buffer-root-node buffer)))
     (ebox--clear-layout-snapshots buffer)
     (let ((ebox--node-region-ids-cache (make-hash-table :test 'eq)))
       (if details
           (ebox--with-layout-snapshot-index-context buffer
             (ebox--capture-layout-snapshots buffer root t))
         (ebox--capture-layout-snapshots buffer root)))
-    (when-let ((state (ebox--buffer-render-state buffer)))
+    (when-let* ((state (ebox--buffer-render-state buffer)))
       (plist-put state :layout-snapshots-complete-p t))))
 
 (defconst ebox--dirty-kind-order
@@ -2170,14 +2170,14 @@ When DETAILS is non-nil, include expensive per-line detail fields."
                (car ebox-incremental--candidate-proof-node-table))
            (gethash node-id
                     (cdr ebox-incremental--candidate-proof-node-table)))
-      (when-let ((node-table (ebox--buffer-node-table buffer)))
+      (when-let* ((node-table (ebox--buffer-node-table buffer)))
         (gethash node-id node-table))
-      (when-let ((root (ebox--buffer-root-node buffer)))
+      (when-let* ((root (ebox--buffer-root-node buffer)))
         (ebox--runtime-node-by-id root node-id))))
 
 (defun ebox--runtime-parent-id (buffer node-id)
   "Return NODE-ID's parent id in BUFFER runtime state."
-  (when-let ((parent-table (ebox--buffer-parent-table buffer)))
+  (when-let* ((parent-table (ebox--buffer-parent-table buffer)))
     (gethash node-id parent-table)))
 
 (defun ebox--invalidate-runtime-render-signature-path
@@ -2188,7 +2188,7 @@ When DETAILS is non-nil, include expensive per-line detail fields."
         (when signature-cache (clrhash signature-cache))
         (when height-cache (clrhash height-cache)))
     (while node-id
-      (when-let ((node (gethash node-id node-table)))
+      (when-let* ((node (gethash node-id node-table)))
         (when signature-cache (remhash node signature-cache))
         (when height-cache (remhash node height-cache)))
       (setq node-id (gethash node-id parent-table)))))
@@ -2303,7 +2303,7 @@ checks pays one walk per distinct node instead of one walk per pair."
 (defun ebox--dirty-provenance-node-ids (dirty)
   "Return the distinct source node ids recorded by DIRTY provenance."
   (delete-dups
-   (append (when-let ((node-id (plist-get dirty :node-id)))
+   (append (when-let* ((node-id (plist-get dirty :node-id)))
              (list node-id))
            (copy-sequence (or (plist-get dirty :node-ids) nil)))))
 
@@ -2412,7 +2412,7 @@ checks pays one walk per distinct node instead of one walk per pair."
          (remaining (if same-owner
                         (delq same-owner (copy-sequence ops))
                       (copy-sequence ops))))
-    (if-let ((dominator
+    (if-let* ((dominator
               (cl-find-if
                (lambda (op)
                  (ebox--patch-op-dominates-p buffer op candidate))
@@ -2684,7 +2684,7 @@ When BUFFER is non-nil, non-paint entries promote to patchable owners."
        (ebox--patch-op 'paint-patch node-id
                        :dirty entry))
       (_
-       (if-let ((span-owner-id
+       (if-let* ((span-owner-id
                  (and buffer
                       (ebox--span-patch-owner-id-for-dirty-entry
                        entry buffer))))
@@ -2909,7 +2909,7 @@ cross-axis keys change its row footprint, exactly the pair
   "Return FLEX-NODE's child whose source owns NODE-ID."
   (cl-find-if
    (lambda (child)
-     (when-let ((source (ebox--flex-item-source-node child)))
+     (when-let* ((source (ebox--flex-item-source-node child)))
        (equal (plist-get source :node-id) node-id)))
    (ebox-tree-layout-children flex-node)))
 
@@ -2969,7 +2969,7 @@ is still verified by the existing rendered slot-footprint proof."
 Unknown changes fail closed.  A fixed outer size is insufficient for content
 updates unless the auto flex basis stays fixed and the new minimum still fits
 the already published slot."
-  (when-let ((style-node (ebox-fragment-style-source-node node)))
+  (when-let* ((style-node (ebox-fragment-style-source-node node)))
     (let* ((item-props (ebox--flex-item-props child))
            (fixed-basis-p
             (ebox--flex-fixed-basis-content-allocation-stable-p
@@ -3223,7 +3223,7 @@ running expensive span and snapshot checks."
 
 (defun ebox--span-patchable-owner-p (buffer node-id)
   "Return non-nil when NODE-ID can attempt verified span patching."
-  (when-let ((node (ebox--buffer-runtime-node buffer node-id)))
+  (when-let* ((node (ebox--buffer-runtime-node buffer node-id)))
     (and ;; Planning only needs to reject an explicitly visible overflow
          ;; owner.  Content-dependent overflow remains part of the final
          ;; span/role validator; formatting it here for every ancestor made
@@ -3233,7 +3233,7 @@ running expensive span and snapshot checks."
           ;; Allocation shape is coordinate-independent and survives a
           ;; detail-generation bump.  The later owner/surface proof still
           ;; resolves exact current spans before publication.
-          (when-let ((snapshot (ebox--layout-snapshot buffer node-id)))
+          (when-let* ((snapshot (ebox--layout-snapshot buffer node-id)))
             (plist-get snapshot :allocation-shape))
           (when-let* ((snapshot
                        (ebox--ensure-layout-snapshot-spans buffer node-id))
@@ -3424,7 +3424,7 @@ hash lookups instead of a scan of the whole set."
            (dominator nil))
       (maphash
        (lambda (ancestor-id _present)
-         (when-let ((entry (gethash ancestor-id owner-table)))
+         (when-let* ((entry (gethash ancestor-id owner-table)))
            (when (and (>= (ebox--patch-operation-strength
                            (plist-get (aref entry 0) :op))
                           (ebox--patch-operation-strength 'span-patch))
@@ -3561,7 +3561,7 @@ When NIL-DEPENDENT is non-nil, nil is treated as viewport-dependent auto width."
 
 (defun ebox--flex-participation-viewport-dependent-p (node)
   "Return non-nil when NODE's flex item metadata depends on viewport context."
-  (when-let ((participation (ebox--flex-participation-props node)))
+  (when-let* ((participation (ebox--flex-participation-props node)))
     (ebox--viewport-dependent-size-value-p
      (plist-get participation :flex-basis))))
 
@@ -3674,7 +3674,7 @@ Definite width contains descendant width ids, but not height ids."
 
 (defun ebox--viewport-dependent-node-ids (node)
   "Return runtime node ids under NODE that depend on viewport context."
-  (when-let ((axes (ebox--viewport-dependent-node-id-axes node)))
+  (when-let* ((axes (ebox--viewport-dependent-node-id-axes node)))
     (delete-dups (copy-sequence (append (car axes) (cdr axes))))))
 
 (defun ebox--viewport-dirty-set (root)
@@ -3688,7 +3688,7 @@ Definite width contains descendant width ids, but not height ids."
   "Return the implicit viewport constraint change for BUFFER.
 AXES may be `width', `height', `both', or `none'.  Nil means both axes for
 legacy callers."
-  (when-let ((root (ebox--buffer-root-node buffer)))
+  (when-let* ((root (ebox--buffer-root-node buffer)))
     (let* ((node-ids
             (pcase axes
               ('width
@@ -3860,7 +3860,7 @@ during `ebox-incremental-flush'."
 
 (defun ebox-incremental--batch-change (buffer pending)
   "Return a normalized batch constraint change for BUFFER and PENDING."
-  (when-let ((root (ebox--buffer-root-node buffer)))
+  (when-let* ((root (ebox--buffer-root-node buffer)))
     (ebox--constraint-change
      'batch 'batch 'batch
      (ebox--ensure-node-id root)
@@ -4624,7 +4624,7 @@ Cost is proportional to the replacements, never to the page."
                 (when (and sibling-id
                            (not (equal sibling-id node-id))
                            (equal (plist-get
-                                   (if-let
+                                   (if-let*
                                        ((sibling-replacement
                                          (ebox-incremental--candidate-replacement-for-anchor
                                           entries sibling-id)))
@@ -4639,14 +4639,14 @@ Cost is proportional to the replacements, never to the page."
           ;; Host refs must be fresh or freed by this same commit.
           (when host-ref-table
             (dolist (ref (collect-host-refs replacement nil))
-              (when-let ((existing-anchor
+              (when-let* ((existing-anchor
                           (gethash ref replacement-host-refs)))
                 (unless (or (ancestor-p existing-anchor node-id)
                             (ancestor-p node-id existing-anchor))
                   (error "Ebox declarative host reference %S is not unique"
                          ref)))
               (puthash ref node-id replacement-host-refs)
-              (when-let ((owner-id (gethash ref host-ref-table)))
+              (when-let* ((owner-id (gethash ref host-ref-table)))
                 (unless (inside-replaced-anchor-p owner-id)
                   (error
                    "Ebox declarative host reference %S is not unique"
@@ -4654,7 +4654,7 @@ Cost is proportional to the replacements, never to the page."
 
 (defun ebox-incremental--copy-detached-history (state)
   "Return an unpublished detached identity history copied from STATE."
-  (if-let ((history (plist-get state :detached-identity-history)))
+  (if-let* ((history (plist-get state :detached-identity-history)))
       (ebox-incremental--make-detached-history
        :table
        (copy-hash-table
@@ -4932,13 +4932,13 @@ but must re-enter the candidate indexes as a new object."
         (let ((table (copy-hash-table (plist-get old-state :range-ref-table))))
           (cl-labels
               ((walk (node function)
-                 (when-let ((sequence (plist-get node :ebox-child-sequence)))
+                 (when-let* ((sequence (plist-get node :ebox-child-sequence)))
                    (dolist (record (ebox-child-range--range-records sequence))
                      (funcall function node record)))
                  (dolist (child (ebox-tree--children-raw node))
                    (walk child function))))
             (dolist (anchor anchors)
-              (when-let ((old (gethash (car anchor)
+              (when-let* ((old (gethash (car anchor)
                                        (plist-get old-state :node-table))))
                 (walk old
                       (lambda (_parent record)
@@ -5424,13 +5424,13 @@ Return the same pure surface-input shape as
     (when (hash-table-p old-snapshots)
       (maphash
        (lambda (node-id _node)
-         (when-let ((snapshot (gethash node-id old-snapshots)))
+         (when-let* ((snapshot (gethash node-id old-snapshots)))
            (puthash node-id (copy-sequence snapshot) snapshots)))
        candidate-node-table)
       ;; A root type replacement receives a fresh runtime id, but its patch
       ;; owner still covers the currently published complete-buffer geometry.
       (unless (equal old-root-id candidate-root-id)
-        (when-let ((snapshot (gethash old-root-id old-snapshots)))
+        (when-let* ((snapshot (gethash old-root-id old-snapshots)))
           (setq snapshot (copy-sequence snapshot))
           (setq snapshot (plist-put snapshot :node-id candidate-root-id))
           (puthash candidate-root-id snapshot snapshots))))
@@ -5536,14 +5536,14 @@ Return the same pure surface-input shape as
 (defun ebox-incremental--simple-new-child-splice-p
     (buffer owner-id dirty)
   "Return non-nil when DIRTY is a cheap vertical child splice."
-  (when-let ((owner (ebox--buffer-runtime-node buffer owner-id)))
+  (when-let* ((owner (ebox--buffer-runtime-node buffer owner-id)))
     (pcase-let* ((old-ids (plist-get dirty :old-child-ids))
                  (new-ids (plist-get dirty :new-child-ids))
                  (`(,_old-middle ,new-middle)
                   (ebox-incremental--child-list-middle old-ids new-ids)))
       (and (eq (plist-get owner :ebox-type) 'stack)
            (eq (ebox-tree-display-inner owner) 'column)
-           (when-let ((snapshot
+           (when-let* ((snapshot
                        (ebox--ensure-layout-snapshot-spans
                         buffer owner-id)))
              (unless (with-current-buffer buffer
@@ -5593,10 +5593,10 @@ Return the same pure surface-input shape as
             ((hash-table-p owned-table)))
       (copy-hash-table owned-table)
     (let ((table (make-hash-table :test 'equal)))
-      (when-let ((region-id-set (plist-get state :region-id-set)))
+      (when-let* ((region-id-set (plist-get state :region-id-set)))
         (maphash
          (lambda (region-id _present)
-           (when-let ((box (gethash region-id ebox--region-box-table)))
+           (when-let* ((box (gethash region-id ebox--region-box-table)))
              (puthash region-id box table)))
          region-id-set))
       table)))
@@ -5636,7 +5636,7 @@ Return the same pure surface-input shape as
            (ebox--ensure-node-id node)
            node))
     ('flex
-     (when-let ((box (plist-get node :box)))
+     (when-let* ((box (plist-get node :box)))
        (list (ebox--ensure-region-id box)
              (ebox--ensure-node-id node)
              box)))))
@@ -5680,7 +5680,7 @@ complete preorder first-owner and postorder last-box semantics."
   (cl-labels
       ((visit (node)
          (when (and (listp node) (not (stringp node)))
-           (when-let ((record
+           (when-let* ((record
                        (ebox-incremental--candidate-node-region-record node)))
              (pcase-let ((`(,region-id ,owner-id ,_box) record))
                (when (gethash region-id region-ids)
@@ -5689,7 +5689,7 @@ complete preorder first-owner and postorder last-box semantics."
                    (puthash region-id owner-id region-node-table)))))
            (dolist (child (ebox--node-children node))
              (visit child))
-           (when-let ((record
+           (when-let* ((record
                        (ebox-incremental--candidate-node-region-record node)))
              (pcase-let ((`(,region-id ,_owner-id ,box) record))
                (when (gethash region-id region-ids)
@@ -6009,10 +6009,10 @@ replace those O(n) table copies without changing this delta contract."
                runtime-type-count-table node -1)
               (remhash node-id node-table)
               (remhash node-id parent-table)
-              (when-let ((host-ref (plist-get node :host-ref)))
+              (when-let* ((host-ref (plist-get node :host-ref)))
                 (when (equal (gethash host-ref host-ref-table) node-id)
                   (remhash host-ref host-ref-table)))
-              (when-let ((record
+              (when-let* ((record
                           (ebox-incremental--candidate-node-region-record node)))
                 (puthash (car record) t affected-region-ids))
               (when (hash-table-p old-region-box-count-table)
@@ -6035,7 +6035,7 @@ replace those O(n) table copies without changing this delta contract."
                 (when old-node
                   (ebox-incremental--adjust-runtime-type-count
                    runtime-type-count-table old-node -1)
-                  (when-let ((record
+                  (when-let* ((record
                               (ebox-incremental--candidate-node-region-record
                                old-node)))
                     (puthash (car record) t affected-region-ids))
@@ -6050,9 +6050,9 @@ replace those O(n) table copies without changing this delta contract."
                   (remhash node-id parent-table))
                 ;; Replacement subtrees were validated before recording and
                 ;; checked against untouched Host refs before path copying.
-                (when-let ((new-host-ref (plist-get new-node :host-ref)))
+                (when-let* ((new-host-ref (plist-get new-node :host-ref)))
                   (puthash new-host-ref node-id host-ref-table))
-                (when-let ((record
+                (when-let* ((record
                             (ebox-incremental--candidate-node-region-record
                              new-node)))
                   (puthash (car record) t affected-region-ids))
@@ -6080,7 +6080,7 @@ replace those O(n) table copies without changing this delta contract."
           ;; TOUCHED is preorder, matching `ebox--runtime-index' ownership:
           ;; a flex owner claims its wrapper before the wrapper box is visited.
           (dolist (entry touched)
-            (when-let ((record
+            (when-let* ((record
                         (ebox-incremental--candidate-node-region-record
                          (nth 1 entry))))
               (pcase-let ((`(,region-id ,owner-id ,box) record))
@@ -6221,7 +6221,7 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
               dirty)
       (maphash
        (lambda (node-id new-node)
-         (when-let ((old-node (gethash node-id old-table)))
+         (when-let* ((old-node (gethash node-id old-table)))
            (let* ((changed-keys
                    (ebox-tree-node-local-changed-keys
                     old-node new-node))
@@ -6367,7 +6367,7 @@ candidate therefore owns its cache tables until TP commits the generation."
                (hash-table-p candidate-node-table))
       (maphash
        (lambda (node-id candidate-node)
-         (when-let ((old-node (gethash node-id old-node-table)))
+         (when-let* ((old-node (gethash node-id old-node-table)))
            (let ((cached (gethash old-node old-cache missing)))
              (unless (eq cached missing)
                (puthash candidate-node cached candidate-cache)))))
@@ -6391,7 +6391,7 @@ must be recomputed in the next publication."
        old-node-table old-parent-table
        candidate-cache nil))
     (dolist (node-id (append touched-node-ids removed-node-ids))
-      (when-let ((old-node (gethash node-id old-node-table)))
+      (when-let* ((old-node (gethash node-id old-node-table)))
         (remhash old-node candidate-cache)))
     candidate-cache))
 
@@ -6606,7 +6606,7 @@ must be recomputed in the next publication."
         ('geometry
          (ebox--patch-op-from-dirty-entry entry buffer))
         (_
-         (if-let ((span-owner-id
+         (if-let* ((span-owner-id
                    (ebox--span-patch-owner-id-for-dirty-entry entry buffer)))
              (ebox--patch-op 'span-patch span-owner-id :dirty entry)
            (when (and (eq dirty-kind 'structure)
@@ -6898,7 +6898,7 @@ It never partitions larger dirty sets, preserving their existing coalescing."
                 ;; One dirty entry needs no dominance/coalescing pass.  Build
                 ;; its tentative operation directly; the exact span or
                 ;; allocation proof below still owns authorization.
-                (when-let ((op
+                (when-let* ((op
                             (ebox-incremental--declarative-tentative-op
                              buffer dirty)))
                   (list op)))
@@ -7500,7 +7500,7 @@ rendered into its retained slot and must pass the complete footprint proof."
         (index (ebox--make-patch-op-merge-index))
         ops)
     (ebox--with-layout-snapshot-detail-context buffer
-      (if-let ((coalesced-op
+      (if-let* ((coalesced-op
                 (and (not
                       (ebox-incremental--dirty-set-has-child-splice-p
                        buffer render-dirty-set))
@@ -7555,7 +7555,7 @@ rendered into its retained slot and must pass the complete footprint proof."
 (defun ebox-incremental--layout-owner-plan
     (buffer old-state candidate-state dirty-set)
   "Return BUFFER layout-owner plan from OLD-STATE to CANDIDATE-STATE for DIRTY-SET."
-  (when-let ((render-dirty-set
+  (when-let* ((render-dirty-set
               (cl-remove-if
                (lambda (entry)
                  (eq (plist-get entry :dirty-kind) 'metadata))
@@ -7591,7 +7591,7 @@ closure may still plan one for a later owner-scoped surface projection."
                (cl-some
                 (lambda (entry)
                   (and (eq (plist-get entry :dirty-kind) 'structure)
-                       (when-let ((object
+                       (when-let* ((object
                                    (gethash (plist-get entry :node-id)
                                             objects)))
                          (null (gethash object style-states)))))
@@ -7636,7 +7636,7 @@ closure may still plan one for a later owner-scoped surface projection."
 
 (defun ebox-incremental--root-owner-plan (buffer dirty-set)
   "Return one conservative root owner operation for DIRTY-SET."
-  (when-let ((root-id (ebox--buffer-root-node-id buffer)))
+  (when-let* ((root-id (ebox--buffer-root-node-id buffer)))
     (list
      (ebox--patch-op
       'owner-rerender root-id
@@ -7645,7 +7645,7 @@ closure may still plan one for a later owner-scoped surface projection."
 
 (defun ebox-incremental--native-frame-plan (buffer dirty-set)
   "Return the bounded publication plan for a complete native frame."
-  (when-let ((root-id (ebox--buffer-root-node-id buffer)))
+  (when-let* ((root-id (ebox--buffer-root-node-id buffer)))
     (list
      (ebox--patch-op
       'native-frame root-id

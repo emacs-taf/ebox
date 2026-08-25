@@ -183,7 +183,7 @@ owned; no per-fragment substring is allocated."
 (defun ebox-surface--style-state-table (previous-state)
   "Copy retained style state from PREVIOUS-STATE into a weak table."
   (let ((table (make-hash-table :test 'eq :weakness 'key)))
-    (when-let ((previous (plist-get previous-state :style-binding-states)))
+    (when-let* ((previous (plist-get previous-state :style-binding-states)))
       (maphash (lambda (object state) (puthash object state table)) previous))
     table))
 
@@ -294,7 +294,7 @@ construction time and can use the static projection path."
                    (ebox-surface--signals-scroll signals)))
       (when (tp-signal-live-p signal)
         (tp-signal-dispose signal)))
-    (when-let ((buffer (ebox-surface--signals-buffer signals)))
+    (when-let* ((buffer (ebox-surface--signals-buffer signals)))
       (when (buffer-live-p buffer)
         (with-current-buffer buffer
           (when (eq ebox-surface--context-signals signals)
@@ -311,6 +311,18 @@ construction time and can use the static projection path."
        table))
     (sort offsets (lambda (left right) (< (car left) (car right))))))
 
+(defun ebox-surface--buffer-display-window (buffer)
+  "Return the canonical live display window for BUFFER.
+Prefer the window the user is interacting with, then the selected frame, then
+another visible frame.  One mounted surface owns one viewport, so all context
+and resize paths must consume this same choice."
+  (or (and (window-live-p (selected-window))
+           (eq (window-buffer (selected-window)) buffer)
+           (selected-window))
+      (get-buffer-window buffer (selected-frame))
+      (get-buffer-window buffer t)
+      (and (not noninteractive) (selected-window))))
+
 (defun ebox-surface--context-values
     (buffer old-state state-overrides)
   "Return BUFFER context values after OLD-STATE and STATE-OVERRIDES."
@@ -324,17 +336,7 @@ construction time and can use the static projection path."
     (let ((scroll-table
            (value :scroll-state-table
                   (plist-get old-state :scroll-state-table)))
-          ;; Prefer the window the user is actually interacting with.  A
-          ;; buffer may also be visible in an older client frame; choosing
-          ;; that arbitrary window would silently resize a live surface on a
-          ;; later incremental commit.
-          (window
-           (or (and (window-live-p (selected-window))
-                    (eq (window-buffer (selected-window)) buffer)
-                    (selected-window))
-               (get-buffer-window buffer (selected-frame))
-               (get-buffer-window buffer t)
-               (and (not noninteractive) (selected-window)))))
+          (window (ebox-surface--buffer-display-window buffer)))
       (list :viewport-width
             (value :viewport-width
                    (or ebox-viewport-width
@@ -448,18 +450,18 @@ The returned ranges are numeric snapshots; TP retains marker ownership."
 (defun ebox-surface-region-bounds (buffer region-id &optional roles)
   "Return numeric bounds for REGION-ID's TP mounts in BUFFER.
 ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
-  (when-let ((mounts (ebox-surface-region-mounts buffer region-id roles)))
+  (when-let* ((mounts (ebox-surface-region-mounts buffer region-id roles)))
     (cons (apply #'min (mapcar (lambda (mount) (plist-get mount :start)) mounts))
           (apply #'max (mapcar (lambda (mount) (plist-get mount :end)) mounts)))))
 
 (defun ebox-surface--runtime-keys (state key)
   "Return hash keys stored under KEY in runtime STATE."
-  (when-let ((table (plist-get state key)))
+  (when-let* ((table (plist-get state key)))
     (ebox-surface--hash-keys table)))
 
 (defun ebox-surface--bind-scroll-states-to-buffer (state buffer)
   "Bind every semantic scroll state in STATE to its owning BUFFER."
-  (when-let ((table (plist-get state :scroll-state-table)))
+  (when-let* ((table (plist-get state :scroll-state-table)))
     (maphash
      (lambda (region-id scroll-state)
        (puthash region-id (plist-put scroll-state :buffer buffer) table))
@@ -546,7 +548,7 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
     (error "Ebox framework participant is not unpublished"))
   (setf (ebox-surface--framework-participant-state participant) 'published)
   (setq report (ebox-surface--participant-report participant report 'published))
-  (when-let ((publish (ebox-surface--framework-participant-publish participant)))
+  (when-let* ((publish (ebox-surface--framework-participant-publish participant)))
     (funcall publish report))
   report)
 
@@ -559,7 +561,7 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
     (ebox-surface--participant-report
      participant (ebox-surface--framework-participant-report participant)
      'rolled-back)
-    (when-let ((rollback
+    (when-let* ((rollback
                 (ebox-surface--framework-participant-rollback participant)))
       (let ((inhibit-quit t)
             (quit-flag nil))
@@ -633,11 +635,11 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
          ;; not the now-committed TP mounts.  Drop only those owners' derived
          ;; geometry so the next transaction lazily captures the committed
          ;; spans and cannot drift across a repeated selection round trip.
-         (when-let ((snapshots (plist-get new-state :layout-snapshots)))
+         (when-let* ((snapshots (plist-get new-state :layout-snapshots)))
            (dolist (proof (plist-get new-state :owner-scoped-proofs))
              (when (plist-get proof :role-owned-lines-p)
                (let ((owner-id (plist-get proof :owner-id)))
-                 (when-let ((snapshot (gethash owner-id snapshots)))
+                 (when-let* ((snapshot (gethash owner-id snapshots)))
                    (puthash owner-id
                             (ebox--layout-snapshot-strip-details snapshot)
                             snapshots))))))
@@ -1391,7 +1393,7 @@ published generation so a failed transaction has no cache state to restore."
 
 (defun ebox-surface--reconcile-candidate (root previous-state)
   "Reconcile styled ROOT with PREVIOUS-STATE runtime identities."
-  (when-let ((previous-root (plist-get previous-state :root-node)))
+  (when-let* ((previous-root (plist-get previous-state :root-node)))
     (ebox-tree-reconcile-runtime previous-root root))
   root)
 
@@ -1401,7 +1403,7 @@ published generation so a failed transaction has no cache state to restore."
     (cl-labels
         ((visit (node)
            (when (and (listp node) (not (stringp node)))
-             (when-let ((region-id (plist-get node :region-id)))
+             (when-let* ((region-id (plist-get node :region-id)))
                (puthash region-id t ids))
              (dolist (child (ebox-tree--children-raw node))
                (visit child)))))
@@ -1416,7 +1418,7 @@ published generation so a failed transaction has no cache state to restore."
 
 (defun ebox-surface--node-key (node)
   "Return NODE's namespaced sibling key, or nil for positional identity."
-  (when-let ((key (plist-get node :key)))
+  (when-let* ((key (plist-get node :key)))
     (list 'ebox/key key)))
 
 (defun ebox-surface--node-kind (node)
@@ -1593,13 +1595,13 @@ published generation so a failed transaction has no cache state to restore."
             stylesheet-signature selector-tree-token
             stylesheet-subject-local-p)
   "Compute and apply NODE style using retained OBJECT and SUBJECT-TABLE."
-  (when-let ((subject (gethash node subject-table)))
+  (when-let* ((subject (gethash node subject-table)))
     (if (and (hash-table-p ebox-surface--inline-style-value-cache)
              (not (ebox-surface--node-style-binding-required-p node)))
         (when-let* ((parent (ecss-subject-parent subject))
                     (binding (gethash parent bindings-by-subject)))
           (puthash subject binding bindings-by-subject)
-          (when-let ((state (gethash parent states-by-subject)))
+          (when-let* ((state (gethash parent states-by-subject)))
             (puthash subject state states-by-subject)))
       (ebox-style-apply-computed
        node
@@ -1787,7 +1789,7 @@ dependencies, or any malformed index conservatively preserves root planning."
 
 (defun ebox-surface--retained-scroll-lookahead (state)
   "Return lookahead needed to retain STATE's prepared lazy prefixes."
-  (when-let ((table (plist-get state :scroll-state-table)))
+  (when-let* ((table (plist-get state :scroll-state-table)))
     (let ((maximum 0))
       (maphash
        (lambda (_region-id scroll-state)
@@ -1838,7 +1840,7 @@ valid because their declarative layout and viewport did not change."
   "Restore reusable lazy-scroll SNAPSHOT fields into TABLE."
   (maphash
    (lambda (region-id metadata)
-     (when-let ((state (gethash region-id table)))
+     (when-let* ((state (gethash region-id table)))
        (while metadata
          (setq state
                (plist-put state (pop metadata) (pop metadata))))
@@ -1926,7 +1928,7 @@ valid because their declarative layout and viewport did not change."
     (when (and (hash-table-p nodes) (hash-table-p objects))
       (maphash
        (lambda (node-id object)
-         (when-let ((node (gethash node-id nodes)))
+         (when-let* ((node (gethash node-id nodes)))
            (plist-put node :surface-object object)))
        objects))
     state))
@@ -2251,7 +2253,7 @@ old allocated width while the owner changes its natural content length."
               (if (or allocation-closure-p
                       retain-external-owner-suffix-p)
                   (and owned-rendered
-                       (when-let ((owners
+                       (when-let* ((owners
                                    (ebox-surface--retained-external-owner-suffix
                                     buffer spans region-ids)))
                          (ebox--add-content-owners owned-rendered owners)))
@@ -2366,7 +2368,7 @@ old allocated width while the owner changes its natural content length."
                   (sort pairs
                         (lambda (left right)
                           (< (car (car left)) (car (car right))))))
-            (when-let ((output
+            (when-let* ((output
                         (ebox-surface--replace-buffer-spans
                          source origin (mapcar #'car pairs)
                          (mapcar #'cdr pairs))))
@@ -2607,7 +2609,7 @@ causes the caller to use the ordinary full projection."
           (make-hash-table :test #'equal)))
     (when (and output old-fragments paint-owner-ids)
       (dolist (fragment old-fragments)
-        (when-let ((address (plist-get fragment :paint-address)))
+        (when-let* ((address (plist-get fragment :paint-address)))
           (puthash address fragment old-by-address)
           (let* ((roles (plist-get fragment :paint-role-ids))
                  (owner (cdr (assq 'content roles)))
@@ -2789,13 +2791,13 @@ box with wrapper chrome falls back to the retained wrapper renderer."
 (defun ebox-surface--role-ids-from-properties (properties)
   "Return namespaced Ebox role/id pairs from PROPERTIES."
   (let (roles)
-    (when-let ((region-id
+    (when-let* ((region-id
                 (plist-get properties 'ebox-overflow-foreground-source)))
       (push (cons 'overflow-foreground region-id) roles))
     (dolist (region-id (plist-get properties 'ebox-content-owners))
       (cl-pushnew (cons 'content-owner region-id) roles :test #'equal))
     (dolist (entry ebox-region-types)
-      (when-let ((region-id (plist-get properties (cdr entry))))
+      (when-let* ((region-id (plist-get properties (cdr entry))))
             (cl-pushnew (cons (car entry) region-id) roles :test #'equal)))
     (nreverse roles)))
 
@@ -2934,11 +2936,11 @@ when it needs to mutate them."
         (setq position (max next (1+ position)))))
     (setq fragments (nreverse fragments))
     (dolist (fragment fragments)
-      (if-let ((roles (plist-get fragment :role-ids)))
+      (if-let* ((roles (plist-get fragment :role-ids)))
           (setq previous-role-ids roles)
         (plist-put fragment :previous-role-ids previous-role-ids)))
     (dolist (fragment (reverse (copy-sequence fragments)))
-      (if-let ((roles (plist-get fragment :role-ids)))
+      (if-let* ((roles (plist-get fragment :role-ids)))
           (setq next-role-ids roles)
         (plist-put fragment :role-ids
                    (delete-dups
@@ -3046,7 +3048,7 @@ and shifted without inspecting its text properties."
                        (plist-put copy :paint-address
                                   (copy-tree
                                    (plist-get old :paint-address)))
-                       (when-let ((chain (plist-get old :paint-node-chain)))
+                       (when-let* ((chain (plist-get old :paint-node-chain)))
                          (plist-put copy :paint-node-chain
                                     (copy-sequence chain)))
                        (plist-put copy :text output)
@@ -3251,7 +3253,7 @@ Adjacent ranges merge only when both their owner and opaque tags match."
 (defun ebox-surface--materialized-fragment-ledger (state)
   "Return STATE's paint ledger, expanding a native frame only on demand."
   (let ((ledger (plist-get state :surface-fragments)))
-    (if-let ((frame (and (listp ledger)
+    (if-let* ((frame (and (listp ledger)
                          (plist-get ledger :native-frame))))
         (ebox-native-reflow-frame-fragments frame)
       ledger)))
@@ -3472,7 +3474,7 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
       (let ((region-nodes (plist-get state :region-node-table))
             (parents (plist-get state :parent-table)) deepest deepest-depth)
         (dolist (entry role-ids)
-          (when-let ((node-id (gethash (cdr entry) region-nodes)))
+          (when-let* ((node-id (gethash (cdr entry) region-nodes)))
             (let ((depth (ebox-surface--node-depth state node-id)))
               (when (or (null deepest-depth) (> depth deepest-depth))
                 (setq deepest node-id deepest-depth depth)))))
@@ -3494,11 +3496,11 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
 (defun ebox-surface--box-face-contributions (box)
   "Return BOX typography and color contributions in render order."
   (let (faces)
-    (when-let ((font (ebox-buffer--font-face box)))
+    (when-let* ((font (ebox-buffer--font-face box)))
       (push font faces))
-    (when-let ((color (plist-get box :color)))
+    (when-let* ((color (plist-get box :color)))
       (push (ebox-surface--foreground-face color) faces))
-    (when-let ((background (plist-get box :bgcolor)))
+    (when-let* ((background (plist-get box :bgcolor)))
       (push (list :background background) faces))
     (nreverse faces)))
 
@@ -3508,7 +3510,7 @@ ANCESTOR-P means BOX wraps a more specific rendered surface."
   (let (faces)
     (cond
      ((memq 'overflow-foreground roles)
-      (when-let ((color (plist-get box :color)))
+      (when-let* ((color (plist-get box :color)))
         (push (ebox-surface--foreground-face color) faces)))
      ((memq 'bl roles)
       (push (ebox-buffer-side-border-face
@@ -3531,7 +3533,7 @@ ANCESTOR-P means BOX wraps a more specific rendered surface."
              (list
               (list :underline
                     (append '(:position t)
-                            (when-let ((color
+                            (when-let* ((color
                                         (plist-get box :border-bottom-color)))
                               (list :color color))))))))
     faces))
@@ -3661,7 +3663,7 @@ relative face contributions and performs the final merge during prepare."
           (if baseline
               (put-text-property 0 length 'face baseline text)
             (remove-text-properties 0 length '(face nil) text))
-          (when-let ((face (ebox-surface--face-value faces)))
+          (when-let* ((face (ebox-surface--face-value faces)))
             (let ((props (list 'face (copy-tree face))))
               (if (and contributions
                        (= (plist-get (car contributions) :end) offset)
@@ -3717,7 +3719,7 @@ relative face contributions and performs the final merge during prepare."
           (let ((roles (cl-remove pair (plist-get fragment key) :test #'equal)))
             (plist-put fragment key (if anchor-p (append roles (list pair)) roles))))
         (when (> (length (plist-get fragment :text)) 0)
-          (if-let ((owner
+          (if-let* ((owner
                     (cdr (cl-find role
                                   (plist-get fragment :paint-role-ids)
                                   :key #'car :test #'eq :from-end t))))
@@ -3854,7 +3856,7 @@ but cannot introduce or remove a viewport expression or node identity."
   (and (eq projection-kind 'mixed-owner-reflow)
        (plist-get previous-state :viewport-dependent-node-ids-ready)
        (plist-member previous-state :viewport-dependent-node-id-axes)
-       (when-let ((proof (plist-get state-overrides :mixed-owner-proof)))
+       (when-let* ((proof (plist-get state-overrides :mixed-owner-proof)))
          (cl-every
           (lambda (entry)
             (cl-every
@@ -4079,7 +4081,7 @@ published runtime and must be consumed without clearing those shared nodes."
                         previous-state state)
                        (ebox-surface--render-candidate state)))
                   ((memq projection-kind '(span-patch owner-scoped))
-                   (if-let ((span-output
+                   (if-let* ((span-output
                              (ebox-surface--span-patch-output
                               (ebox-surface--signals-buffer signals) state)))
                        span-output
