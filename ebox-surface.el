@@ -242,7 +242,7 @@ Scoped rules remain tree-dependent because scope distance reads ancestors."
 (defun ebox-surface--style-consuming-node-p (node)
   "Return non-nil when NODE owns a paintable style surface."
   (and (eq (plist-get node :ebox-type) 'box)
-       (null (plist-get node :ebox-content-node))
+       (null (ebox-tree-node-children node))
        (> (length (or (plist-get node :content) "")) 0)))
 
 (defun ebox-surface--inline-inheritance-required-p (root)

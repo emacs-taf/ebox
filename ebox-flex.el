@@ -570,8 +570,8 @@ grapheme."
         ('box
          (when-let* ((region-id (ebox-get node :region-id)))
            (puthash region-id node ebox--region-box-table))
-         (ebox--flex-recache-source-boxes
-          (plist-get node :ebox-content-node)))
+         (dolist (child (ebox-tree-node-children node))
+           (ebox--flex-recache-source-boxes child)))
         ('concat
          (dolist (child (ebox--layout-children node))
            (ebox--flex-recache-source-boxes child)))

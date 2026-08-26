@@ -139,7 +139,9 @@ This is an optimization for snapshot capture, not buffer runtime state.")
   "Return NODE's direct child nodes without assigning runtime ids."
   (pcase (and (listp node) (plist-get node :ebox-type))
     ('box
-     (delq nil (list (plist-get node :ebox-content-node))))
+     (if (plist-member node :children)
+         (plist-get node :children)
+       (delq nil (list (plist-get node :ebox-content-node)))))
     ('concat
      (ebox-tree-layout-children node))
     ('stack
@@ -246,7 +248,8 @@ still copied while every nested value remains shared."
       (setq copy
             (ebox-tree--replace-direct-child-property
              copy property replacements)))
-    (when (and (memq type '(concat stack flex grid))
+    (when (and (or (memq type '(concat stack flex grid))
+                   (and (eq type 'box) (plist-member copy :children)))
                (plist-member copy :children))
       (let* ((children (plist-get copy :children))
              (replaced
@@ -393,10 +396,17 @@ Record its identities in NODE-ID-SET and REGION-ID-SET."
           node node-id-set region-id-set)))
     (pcase (plist-get node :ebox-type)
       ('box
-       (when-let* ((child (plist-get node :ebox-content-node)))
-         (plist-put shell :ebox-content-node
-                    (ebox-tree--runtime-identity-skeleton
-                     child node-id-set region-id-set))))
+       (if (plist-member node :children)
+           (plist-put shell :children
+                      (mapcar
+                       (lambda (child)
+                         (ebox-tree--runtime-identity-skeleton
+                          child node-id-set region-id-set))
+                       (plist-get node :children)))
+         (when-let* ((child (plist-get node :ebox-content-node)))
+           (plist-put shell :ebox-content-node
+                      (ebox-tree--runtime-identity-skeleton
+                       child node-id-set region-id-set)))))
       ((or 'concat 'stack)
        (plist-put shell :children
                   (mapcar
@@ -809,8 +819,10 @@ candidate runtime index agree."
   "Return NODE's logical children without internal layout adapters."
   (pcase (and (listp node) (plist-get node :ebox-type))
     ('box
-     (when-let* ((content-node (plist-get node :ebox-content-node)))
-       (ebox-tree--semantic-layout-leaves content-node)))
+     (if (plist-member node :children)
+         (plist-get node :children)
+       (when-let* ((content-node (plist-get node :ebox-content-node)))
+         (ebox-tree--semantic-layout-leaves content-node))))
     ((or 'concat 'stack)
      (ebox-tree--semantic-layout-leaves node))
     ('flex
@@ -924,9 +936,11 @@ not only the public update ids."
         (let ((region-ids
                (pcase (plist-get node :ebox-type)
                  ('box
-                  (cons (ebox--ensure-region-id node)
-                        (ebox-tree-node-all-region-ids
-                         (plist-get node :ebox-content-node))))
+                  (cons
+                   (ebox--ensure-region-id node)
+                   (apply #'append
+                          (mapcar #'ebox-tree-node-all-region-ids
+                                  (ebox-tree-node-children node)))))
                  ('concat
                   (apply #'append
                          (mapcar #'ebox-tree-node-all-region-ids
@@ -969,8 +983,10 @@ cannot be inspected and reports no conflict."
     (pcase (plist-get node :ebox-type)
       ('box
        (or (and inherited (plist-get node paint-key) t)
-           (ebox-tree-node-paint-conflict-p
-            (plist-get node :ebox-content-node) paint-key t)))
+           (cl-some
+            (lambda (child)
+              (ebox-tree-node-paint-conflict-p child paint-key t))
+            (ebox-tree-node-children node))))
       ('concat
        (cl-some (lambda (child)
                   (ebox-tree-node-paint-conflict-p child paint-key t))
@@ -1010,10 +1026,12 @@ wrapper's visible content is produced by the flex renderer."
       ('box
        (or (when (equal (ebox-get node :region-id) region-id)
              (list node))
-           (when-let* ((path (ebox-tree-node-path-to-region
-                             (plist-get node :ebox-content-node)
-                             region-id)))
-             (append path (list node)))))
+           (catch 'found
+             (dolist (child (ebox-tree-node-children node))
+               (when-let* ((path
+                            (ebox-tree-node-path-to-region child region-id)))
+                 (throw 'found (append path (list node)))))
+             nil)))
       ('concat
        (catch 'found
          (dolist (child (ebox-tree-layout-children node))
@@ -1060,8 +1078,8 @@ wrapper's visible content is produced by the flex renderer."
     (pcase (plist-get node :ebox-type)
       ('box
        (or (ebox--box-visible-overflow-p node)
-           (ebox-tree-node-visible-overflow-p
-            (plist-get node :ebox-content-node))))
+           (cl-some #'ebox-tree-node-visible-overflow-p
+                    (ebox-tree-node-children node))))
       ('concat
        (cl-some #'ebox-tree-node-visible-overflow-p
                 (ebox-tree-layout-children node)))

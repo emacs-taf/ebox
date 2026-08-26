@@ -170,6 +170,8 @@
                      ("ebox-grid-item" . "defun")
                      ("ebox-grid" . "defun")
                      ("ebox-normal-layout-create" . "defun")
+                     ("ebox-row-layout-create" . "defun")
+                     ("ebox-column-layout-create" . "defun")
                      ("ebox-text-create" . "defun")
                      ("ebox-box-create" . "defun")
                      ("ebox-build" . "defun")
@@ -208,6 +210,8 @@
                    ebox-clear-cache
                    ebox-column
                    ebox-normal-layout-create
+                   ebox-row-layout-create
+                   ebox-column-layout-create
                    ebox-text-create
                    ebox-box-create
                    ebox-commit

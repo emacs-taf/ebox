@@ -73,8 +73,8 @@
   "Return non-nil when PROPERTY belongs to canonical Text measurement."
   (eq (plist-get property :group) 'typography))
 
-(defun ebox-canonical--normal-box-property-p (property)
-  "Return non-nil when PROPERTY belongs to Normal Box geometry/participation."
+(defun ebox-canonical--box-frame-property-p (property)
+  "Return non-nil when PROPERTY belongs to Box geometry or participation."
   (let ((contexts (plist-get property :contexts))
         (group (plist-get property :group))
         (name (plist-get property :name)))
@@ -95,6 +95,16 @@
 (defun ebox-normal-layout-create ()
   "Return the canonical Normal layout config."
   (ebox-layout-config--create :kind 'normal :props nil))
+
+;;;###autoload
+(defun ebox-row-layout-create ()
+  "Return the canonical Row layout config."
+  (ebox-layout-config--create :kind 'row :props nil))
+
+;;;###autoload
+(defun ebox-column-layout-create ()
+  "Return the canonical Column layout config."
+  (ebox-layout-config--create :kind 'column :props nil))
 
 (defun ebox-node-kind (node)
   "Return canonical NODE kind, or nil for a legacy runtime node."
@@ -128,7 +138,7 @@
   "Return canonical BoxNode NODE's retained canonical children."
   (unless (ebox-box-node-p node)
     (error "Expected canonical BoxNode, got %S" node))
-  (plist-get node :ebox-canonical-children))
+  (plist-get node :children))
 
 ;;;###autoload
 (defun ebox-text-create (&rest plist)
@@ -159,9 +169,8 @@
   "Create a canonical BoxNode from evaluated PLIST.
 
 `:layout' must occur exactly once as an `ebox-layout-config'.
-`:children' is a list of canonical nodes.  This first vertical slice supports
-Normal layout with zero or one child; later slices extend the same typed port
-to the other Layout variants."
+`:children' is a list of canonical nodes.  Normal layout accepts zero or one
+child.  Row and Column layouts accept any number of children."
   (ebox-canonical--validate-plist plist "ebox-box-create")
   (let* ((layout (ebox-canonical--required-field
                   plist :layout "Ebox Box"))
@@ -189,23 +198,30 @@ to the other Layout variants."
                       children)
       (error "Ebox Box children must be canonical Text/Box nodes: %S"
              children))
-    (unless (eq (ebox-layout-config-kind layout) 'normal)
-      (error "Ebox Box Layout is not implemented in this slice: %S"
+    (unless (memq (ebox-layout-config-kind layout) '(normal row column))
+      (error "Ebox Box Layout is not implemented: %S"
              (ebox-layout-config-kind layout)))
-    (when (> (length children) 1)
+    (unless (null (ebox-layout-config-props layout))
+      (error "Ebox Box Layout properties are not implemented: %S"
+             (ebox-layout-config-props layout)))
+    (when (and (eq (ebox-layout-config-kind layout) 'normal)
+               (> (length children) 1))
       (error "Ebox Box Normal layout currently accepts at most one child"))
     (ebox-canonical--assert-property-role
-     props #'ebox-canonical--normal-box-property-p "Ebox Box")
-    (let ((node
-           (apply #'ebox-create
-                  (append props
-                          (when children
-                            (list :ebox-content-node (car children)))))))
+     props #'ebox-canonical--box-frame-property-p "Ebox Box")
+    (let ((node (apply #'ebox-create props)))
       (plist-put node :ebox-kind 'box)
       (plist-put node :ebox-layout-config layout)
-      (plist-put node :ebox-canonical-children children)
+      (plist-put node :children children)
       (plist-put node :ebox-source-handle source-handle)
-      (plist-put node :display (list outer 'flow))
+      ;; Children own their text formatting.  The Box frame consumes their
+      ;; already-laid-out output and must not wrap or justify it a second time.
+      (plist-put node :wrap-mode nil)
+      (plist-put node :display
+                 (list outer
+                       (pcase (ebox-layout-config-kind layout)
+                         ('normal 'flow)
+                         (kind kind))))
       node)))
 
 (provide 'ebox-canonical)

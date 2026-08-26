@@ -16,6 +16,14 @@
   "Return rendered display pixel widths for NODE line by line."
   (mapcar #'ebox--string-pixel-width (ebox-string-lines (ebox-render node))))
 
+(defun ebox-dsl-test--tree-count (node predicate)
+  "Count nodes below NODE for which PREDICATE returns non-nil."
+  (if (or (stringp node) (not (listp node)))
+      0
+    (+ (if (funcall predicate node) 1 0)
+       (cl-loop for child in (ebox-tree-node-children node)
+                sum (ebox-dsl-test--tree-count child predicate)))))
+
 (ert-deftest ebox-style-expands-ebox-aliases-to-canonical-longhands ()
   "Existing Ebox aliases should normalize to CSS-like longhand properties."
   (let ((style (ebox-style-compute
@@ -171,6 +179,86 @@
                 'normal))
     (should (equal (ebox-box-node-children box) (list text)))
     (should (string= (ebox-dsl-test--plain box) "A"))))
+
+(ert-deftest ebox-canonical-row-box-retains-and-renders-typed-children ()
+  "A Row Box should retain one Box identity around all typed children."
+  (let* ((left (ebox-text-create :value "A" :source-handle 'left))
+         (right (ebox-text-create :value "B" :source-handle 'right))
+         (box (ebox-box-create :layout (ebox-row-layout-create)
+                               :children (list left right)
+                               :source-handle 'row)))
+    (should (ebox-box-node-p box))
+    (should (eq (ebox-node-source-handle box) 'row))
+    (should (eq (ebox-layout-config-kind (ebox-box-node-layout box)) 'row))
+    (should (equal (ebox-box-node-children box) (list left right)))
+    (should (eq (ebox-tree-node-children box)
+                (ebox-box-node-children box)))
+    (should (= (ebox-dsl-test--tree-count box (lambda (_node) t)) 3))
+    (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 3))
+    (should-not (plist-member box :ebox-content-node))
+    (should (equal (ebox--computed-display box) '(block row)))
+    (should (string= (ebox-dsl-test--plain box) "AB"))))
+
+(ert-deftest ebox-canonical-column-box-retains-and-renders-typed-children ()
+  "A Column Box should retain one Box identity around all typed children."
+  (let* ((top (ebox-text-create :value "A"))
+         (bottom (ebox-text-create :value "B"))
+         (box (ebox-box-create :layout (ebox-column-layout-create)
+                               :children (list top bottom))))
+    (should (ebox-box-node-p box))
+    (should (eq (ebox-layout-config-kind (ebox-box-node-layout box)) 'column))
+    (should (equal (ebox-box-node-children box) (list top bottom)))
+    (should (eq (ebox-tree-node-children box)
+                (ebox-box-node-children box)))
+    (should (= (ebox-dsl-test--tree-count box (lambda (_node) t)) 3))
+    (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 3))
+    (should-not (plist-member box :ebox-content-node))
+    (should (equal (ebox--computed-display box) '(block column)))
+    (should (string= (ebox-dsl-test--plain box) "A\nB"))))
+
+(ert-deftest ebox-canonical-row-and-column-never-collapse-single-child-boxes ()
+  "A one-child Row or Column should preserve its canonical Box boundary."
+  (let* ((child (ebox-text-create :value "A"))
+         (row (ebox-box-create :layout (ebox-row-layout-create)
+                               :children (list child)))
+         (column (ebox-box-create :layout (ebox-column-layout-create)
+                                  :children (list child))))
+    (should (ebox-box-node-p row))
+    (should (ebox-box-node-p column))
+    (should-not (eq row child))
+    (should-not (eq column child))
+    (should (equal (ebox-tree-node-children row) (list child)))
+    (should (equal (ebox-tree-node-children column) (list child)))
+    (should (= (ebox-dsl-test--tree-count row (lambda (_node) t)) 2))
+    (should (= (ebox-dsl-test--tree-count column (lambda (_node) t)) 2))
+    (should (string= (ebox-dsl-test--plain row) "A"))
+    (should (string= (ebox-dsl-test--plain column) "A"))))
+
+(ert-deftest ebox-canonical-empty-row-and-column-have-no-runtime-child ()
+  "Empty Row and Column Boxes should not synthesize layout identities."
+  (dolist (layout (list (ebox-row-layout-create)
+                        (ebox-column-layout-create)))
+    (let ((box (ebox-box-create :layout layout :children nil)))
+      (should (ebox-box-node-p box))
+      (should-not (ebox-tree-node-children box))
+      (should (= (ebox-dsl-test--tree-count box (lambda (_node) t)) 1))
+      (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 1))
+      (should (string= (ebox-dsl-test--plain box) "")))))
+
+(ert-deftest ebox-canonical-box-copy-keeps-one-authoritative-child-list ()
+  "A copied Box should expose exactly its copied runtime children."
+  (let* ((left (ebox-text-create :value "A"))
+         (right (ebox-text-create :value "B"))
+         (source (ebox-box-create :layout (ebox-row-layout-create)
+                                  :children (list left right)))
+         (copy (ebox-tree-copy-node-structure source))
+         (copied-children (ebox-tree-node-children copy)))
+    (should (eq copied-children (ebox-box-node-children copy)))
+    (should-not (eq copied-children (ebox-box-node-children source)))
+    (should-not (eq (car copied-children) left))
+    (should-not (eq (cadr copied-children) right))
+    (should (= (ebox-dsl-test--tree-count copy (lambda (_node) t)) 3))
+    (should (= (ebox-dsl-test--tree-count copy #'ebox-node-kind) 3))))
 
 (ert-deftest ebox-canonical-box-rejects-paint-only-properties ()
   "Canonical Box geometry should not duplicate paint-only state."

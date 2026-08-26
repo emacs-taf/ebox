@@ -17,6 +17,7 @@
 
 (declare-function ebox--render-grid "ebox-grid" (node))
 (declare-function ebox--render-flex "ebox-flex" (node))
+(declare-function ebox-layout-config-kind "ebox-canonical" (config))
 (declare-function ebox--render-with-cache
                   "ebox-incremental" (node &optional force cache-probe))
 (declare-function ebox-create "ebox" (&rest plist))
@@ -236,6 +237,7 @@ and its formatted content exactly fills the used height."
   (when (and (not ebox--flat-preformatted-box-fast-path-disabled)
              (not (eq (ebox-get box :visibility) 'hidden))
              (null (ebox--box-content-node box))
+             (not (plist-member box :children))
              (stringp (ebox-get box :content))
              (eq (ebox-get box :vertical-align) 'top)
              (equal (or (ebox-get box :min-height) 0) 0)
@@ -883,6 +885,11 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
   "Return BOX's lazy child layout node, if any."
   (plist-get box :ebox-content-node))
 
+(defun ebox--box-layout-kind (box)
+  "Return canonical BOX's typed layout kind, or nil for a legacy box."
+  (when-let* ((config (plist-get box :ebox-layout-config)))
+    (ebox-layout-config-kind config)))
+
 (defun ebox--box-content-cache-context ()
   "Return the current render context for lazy box content caching."
   (list ebox-viewport-width
@@ -891,43 +898,79 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
         ebox--inline-auto-width-intrinsic-p
         ebox--render-region-id))
 
+(defun ebox--render-box-content-cached (box renderer)
+  "Return BOX content from RENDERER, reusing the render-pass cache."
+  (if (null ebox--box-content-render-cache)
+      (funcall renderer)
+    (let* ((context (ebox--box-content-cache-context))
+           (entries (gethash box ebox--box-content-render-cache))
+           (cached (assoc context entries)))
+      (if cached
+          (cdr cached)
+        (let ((rendered (funcall renderer)))
+          (puthash box
+                   (cons (cons context rendered) entries)
+                   ebox--box-content-render-cache)
+          rendered)))))
+
+(defun ebox--record-box-content-width-exact (box content composite-p)
+  "Record exact width for BOX CONTENT when COMPOSITE-P is non-nil."
+  (let ((content-viewport (ebox--wrapper-content-viewport-pixel box)))
+    (when (and content-viewport
+               composite-p
+               (not ebox--intrinsic-layout-measurement)
+               (equal (gethash content ebox--rendered-uniform-width-table)
+                      content-viewport))
+      (plist-put box :ebox-content-width-exact-p t))))
+
 (defun ebox--render-box-content-node (box node)
   "Render NODE as BOX content, using the render-pass cache when available."
-  (let* ((content-viewport (ebox--wrapper-content-viewport-pixel box))
-         (content
-          (if (null ebox--box-content-render-cache)
-              (ebox--render-node-as-box-content node box)
-            (let* ((context (ebox--box-content-cache-context))
-                   (entries (gethash box ebox--box-content-render-cache))
-                   (cached (assoc context entries)))
-              (if cached
-                  (cdr cached)
-                (let ((rendered
-                       (ebox--render-node-as-box-content node box)))
-                  (puthash box
-                           (cons (cons context rendered) entries)
-                           ebox--box-content-render-cache)
-                  rendered))))))
+  (let ((content
+         (ebox--render-box-content-cached
+          box (lambda () (ebox--render-node-as-box-content node box)))))
     ;; A child layout has already resolved wrapping, alignment, and overflow
     ;; against CONTENT-VIEWPORT.  Preserve that fact on the owning box so the
     ;; generic string formatter does not traverse the same propertized output
     ;; a second time.  Intrinsic measurement is deliberately excluded: it
     ;; produces a natural-width probe, not final box content.
-    (when (and content-viewport
-               (not (eq (and (listp node) (plist-get node :ebox-type))
-                        'box))
-               (not ebox--intrinsic-layout-measurement)
-               (equal (gethash content ebox--rendered-uniform-width-table)
-                      content-viewport))
-      (plist-put box :ebox-content-width-exact-p t))
+    (ebox--record-box-content-width-exact
+     box content
+     (not (eq (and (listp node) (plist-get node :ebox-type)) 'box)))
+    content))
+
+(defun ebox--render-box-layout-children (box)
+  "Render canonical BOX children through its typed LayoutConfig."
+  (let* ((kind (ebox--box-layout-kind box))
+         (children (plist-get box :children))
+         (content
+          (ebox--render-box-content-cached
+           box
+           (lambda ()
+             (pcase kind
+               ('normal
+                (if children
+                    (ebox--render-node-as-box-content (car children) box)
+                  ""))
+               ('row
+                (ebox--call-with-box-content-context
+                 box (lambda () (ebox--render-row-children children))))
+               ('column
+                (ebox--call-with-box-content-context
+                 box (lambda () (ebox--render-column-children children))))
+               (_ (error "Ebox Box has unsupported LayoutConfig: %S" kind)))))))
+    (ebox--record-box-content-width-exact
+     box content (memq kind '(row column)))
     content))
 
 (defun ebox--box-content (box)
   "Return BOX content, rendering any lazy child layout content if present."
   (ebox--propertize-typography
-   (or (when-let* ((node (ebox--box-content-node box)))
-         (ebox--render-box-content-node box node))
-       (ebox-get box :content))
+   (cond
+    ((plist-member box :children)
+     (ebox--render-box-layout-children box))
+    ((when-let* ((node (ebox--box-content-node box)))
+       (ebox--render-box-content-node box node)))
+    (t (ebox-get box :content)))
    box))
 
 (defun ebox--line-min-content-pixel (line)
@@ -1039,6 +1082,21 @@ property parsers."
            (min (or max-width 999999999)
                 (max 0 preferred-width))))))
 
+(defun ebox--call-with-box-content-context (props function)
+  "Call FUNCTION in the content viewport established by box PROPS."
+  (let ((content-viewport (ebox--wrapper-content-viewport-pixel props)))
+    (cond
+     ((eq (ebox-get props :width) 'max-content)
+      (let ((ebox-viewport-width nil)
+            (ebox--intrinsic-layout-measurement t)
+            (ebox--inline-auto-width-intrinsic-p nil))
+        (funcall function)))
+     (content-viewport
+      (let ((ebox-viewport-width content-viewport)
+            (ebox--inline-auto-width-intrinsic-p nil))
+        (funcall function)))
+     (t (funcall function)))))
+
 (defun ebox--render-node-as-box-content (node props)
   "Render NODE as preformatted content for a box with PROPS.
 When PROPS establish a content-box viewport, nested auto and `(viewport)'
@@ -1046,40 +1104,30 @@ widths resolve against that inner content box instead of the outer caller
 viewport.  A max-content wrapper instead measures the composite NODE without
 an inherited viewport."
   (let ((content-viewport (ebox--wrapper-content-viewport-pixel props)))
-    (cond
-     ((eq (ebox-get props :width) 'max-content)
-      (let ((ebox-viewport-width nil)
-            (ebox--intrinsic-layout-measurement t)
-            (ebox--inline-auto-width-intrinsic-p nil))
-        (ebox-render node)))
-     (content-viewport
-      (let ((ebox-viewport-width content-viewport)
-            ;; A definite wrapper establishes a new containing block.  Its
-            ;; child layout must resume normal cross-axis stretch semantics,
-            ;; even when the wrapper itself is an item of an intrinsic row.
-            (ebox--inline-auto-width-intrinsic-p nil))
-        (if (and (hash-table-p ebox--render-cache-table)
-                 (not ebox--intrinsic-layout-measurement)
-                 (null ebox--render-region-id)
-                 (fboundp 'ebox--render-cache-probe)
-                 (fboundp 'ebox--render-with-cache))
-            (ebox--render-with-cache
+    (ebox--call-with-box-content-context
+     props
+     (lambda ()
+       (if (and content-viewport
+                (hash-table-p ebox--render-cache-table)
+                (not ebox--intrinsic-layout-measurement)
+                (null ebox--render-region-id)
+                (fboundp 'ebox--render-cache-probe)
+                (fboundp 'ebox--render-with-cache))
+           (ebox--render-with-cache
+            node nil
+            (ebox--render-cache-probe
              node nil
-             (ebox--render-cache-probe
-              node nil
-              (list :box-content t
-                    :content-viewport content-viewport
-                    :viewport-height ebox-viewport-height
-                    :intrinsic ebox--intrinsic-layout-measurement
-                    :auto-width-intrinsic
-                    ebox--inline-auto-width-intrinsic-p
-                    :render-region-id ebox--render-region-id
-                    :scroll-lookahead
-                    ebox--scroll-window-initial-lookahead-lines-override
-                    :scroll-disabled ebox--scroll-window-render-disabled)))
-          (ebox-render node))))
-     (t
-      (ebox-render node)))))
+             (list :box-content t
+                   :content-viewport content-viewport
+                   :viewport-height ebox-viewport-height
+                   :intrinsic ebox--intrinsic-layout-measurement
+                   :auto-width-intrinsic
+                   ebox--inline-auto-width-intrinsic-p
+                   :render-region-id ebox--render-region-id
+                   :scroll-lookahead
+                   ebox--scroll-window-initial-lookahead-lines-override
+                   :scroll-disabled ebox--scroll-window-render-disabled)))
+         (ebox-render node))))))
 
 (defun ebox--resolve-size-content-pixel (box value fallback)
   "Resolve a horizontal size VALUE to BOX content pixels.
@@ -1702,8 +1750,8 @@ A sole child Range keeps a material row parent so the Range stays addressable."
             :display '(block row)
             :children nodes))))
 
-(defun ebox--render-concat (node)
-  "Render a concat NODE to a string (internal, called by `ebox-render').
+(defun ebox--render-row-children (children)
+  "Render flat row CHILDREN to one multi-line string.
 Auto-width children are rendered at intrinsic inline size while explicit
 viewport/definite widths keep their containing-block semantics.  Shorter
 children are padded with blank lines so all reach the same height before
@@ -1716,7 +1764,7 @@ horizontal concatenation."
                     ;; the ambient containing block.
                     (let ((ebox--inline-auto-width-intrinsic-p t))
                       (ebox--render-with-cache child)))
-                  (ebox--layout-children node)))
+                  children))
          (max-h (if rendered
                     (apply #'max (mapcar #'ebox-string-height rendered))
                   0))
@@ -1728,6 +1776,10 @@ horizontal concatenation."
     (if line-lists
         (ebox-lines-join (apply #'cl-mapcar #'concat line-lists))
       "")))
+
+(defun ebox--render-concat (node)
+  "Render a legacy concat NODE to a string."
+  (ebox--render-row-children (ebox--layout-children node)))
 
 ;;;###autoload
 (defun ebox-stack (node1 node2)
@@ -3074,8 +3126,8 @@ only used for incomplete lazy prefixes."
                  formatted-lines
                (seq-take formatted-lines target-lines))))))))))
 
-(defun ebox--render-stack (node)
-  "Render a stack NODE to a string (internal, called by `ebox-render').
+(defun ebox--render-column-children (children)
+  "Render flat column CHILDREN to one multi-line string.
 
 Stack leaves are rendered independently.  When a containing-block viewport is
 bound, narrower rows are padded to that available width, while wider definite
@@ -3089,7 +3141,7 @@ ambient horizontal viewport."
                     (let ((rendered (ebox--render-with-cache leaf)))
                       (cons rendered
                             (ebox--string-max-pixel-width rendered))))
-                  (ebox--stack-leaves node)))
+                  children))
          (max-w (if rendered-items
                     (apply #'max (mapcar #'cdr rendered-items))
                   0))
@@ -3114,6 +3166,10 @@ ambient horizontal viewport."
       (if (<= max-w target-w)
           (ebox--record-rendered-uniform-width rendered target-w)
         rendered))))
+
+(defun ebox--render-stack (node)
+  "Render a legacy stack NODE to a string."
+  (ebox--render-column-children (ebox--stack-leaves node)))
 
 (provide 'ebox-layout)
 

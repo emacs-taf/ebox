@@ -1621,6 +1621,8 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
 (defun ebox-native-reflow--compile-box
     (box &optional child-override child-override-p child-resolved-p)
   "Compile normalized Ebox BOX to strict layout IR."
+  (when (plist-member box :children)
+    (error "Native reflow does not yet compile typed Box children"))
   (let* ((source-child (plist-get box :ebox-content-node))
          (child (if (or child-override-p child-resolved-p)
                     child-override
@@ -1910,8 +1912,9 @@ backend has a matching two-dimensional layout contract."
    ((plist-get node :ebox-child-sequence) nil)
    ((eq (plist-get node :ebox-type) 'grid) nil)
    ((eq (plist-get node :ebox-type) 'box)
-    (ebox-native-reflow--native-node-supported-p
-     (plist-get node :ebox-content-node)))
+    (and (not (plist-member node :children))
+         (ebox-native-reflow--native-node-supported-p
+          (plist-get node :ebox-content-node))))
    ((memq (plist-get node :ebox-type) '(concat stack))
     (cl-every #'ebox-native-reflow--native-node-supported-p
               (ebox--layout-children node)))

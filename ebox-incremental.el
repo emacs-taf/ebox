@@ -7744,7 +7744,7 @@ the surface is allowed to reuse retained TP objects."
   "Return non-nil when path-copied NODE keeps the published line count."
   (and (eq (plist-get node :ebox-type) 'box)
        (numberp (ebox-get node :width))
-       (null (plist-get node :ebox-content-node))
+       (null (ebox-tree-node-children node))
        (= (length spans)
           (with-current-buffer buffer
             (length (ebox-string-lines (ebox--format-content node)))))))

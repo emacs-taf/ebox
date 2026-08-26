@@ -650,8 +650,11 @@ Use this to capture ids *before* inserting into a buffer:
     (let ((type (plist-get node :ebox-type)))
       (cond
        ((eq type 'box)
-        (cons (ebox--ensure-region-id node)
-              (ebox-region-ids (plist-get node :ebox-content-node))))
+        (cons
+         (ebox--ensure-region-id node)
+         (apply #'append
+                (mapcar #'ebox-region-ids
+                        (ebox-tree-node-children node)))))
        ((eq type 'concat)
         (apply #'append
                (mapcar #'ebox-region-ids
@@ -4171,7 +4174,7 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
                          :content)
                      (stringp (cadr expanded))
                      (numberp (ebox-get candidate-box :width))
-                     (null (plist-get candidate-box :ebox-content-node))
+                     (null (ebox-tree-node-children candidate-box))
                      (not (ebox-style-cascade-active-p))
                      (not (plist-get state :cascade-required-p))
                      (null (plist-get state :scroll-region-ids))))
@@ -4587,7 +4590,9 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-candidate-patch-host-paint
     ebox-clear-cache
     ebox-column
+    ebox-column-layout-create
     ebox-normal-layout-create
+    ebox-row-layout-create
     ebox-text-create
     ebox-box-create
     ebox-commit
