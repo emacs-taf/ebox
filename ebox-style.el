@@ -1312,23 +1312,30 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
 
 (defun ebox-style--apply-display-axes (node style snapshot)
   "Apply computed display and public axes from STYLE SNAPSHOT to NODE."
-  (when (ebox-style--snapshot-active-p snapshot :display)
-    (plist-put node :display
-               (ebox-style-computed-value style :display)))
-  (let* ((outer-specified-p
+  (let* ((display-specified-p
+          (ebox-style--specified-property-p style 'ebox/display))
+         (outer-specified-p
           (ebox-style--specified-property-p style 'ebox/outer))
          (layout-specified-p
           (ebox-style--specified-property-p style 'ebox/layout)))
-    (when (or outer-specified-p layout-specified-p)
-      (let* ((display (or (plist-get node :display) '(block flow)))
-             (outer (if outer-specified-p
-                        (ebox-style-computed-value style :outer)
-                      (car display)))
-             (layout (if layout-specified-p
-                         (ebox-style-computed-value style :layout)
-                       (cadr display))))
+    (if (eq (plist-get node :ebox-kind) 'text)
+        (progn
+          (when (or display-specified-p outer-specified-p layout-specified-p)
+            (error "Ebox Text is fixed inline and rejects display axes"))
+          (plist-put node :display '(inline flow)))
+      (when (ebox-style--snapshot-active-p snapshot :display)
         (plist-put node :display
-                   (list outer (if (eq layout 'normal) 'flow layout))))))
+                   (ebox-style-computed-value style :display)))
+      (when (or outer-specified-p layout-specified-p)
+        (let* ((display (or (plist-get node :display) '(block flow)))
+               (outer (if outer-specified-p
+                          (ebox-style-computed-value style :outer)
+                        (car display)))
+               (layout (if layout-specified-p
+                           (ebox-style-computed-value style :layout)
+                         (cadr display))))
+          (plist-put node :display
+                     (list outer (if (eq layout 'normal) 'flow layout)))))))
   node)
 
 (defun ebox-style-apply-computed (node style)

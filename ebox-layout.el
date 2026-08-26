@@ -942,6 +942,142 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
      (not (eq (and (listp node) (plist-get node :ebox-type)) 'box)))
     content))
 
+(defun ebox--normal-text-units (string)
+  "Return word/space/break units for inline Text STRING."
+  (let ((lines (ebox-string-lines string)) units)
+    (cl-loop for line in lines
+             for line-tail on lines
+             do (let ((position 0)
+                      (limit (length line)))
+                  (while (< position limit)
+                    (let* ((space-p
+                            (not (null
+                                  (memq (aref line position) '(?\s ?\t)))))
+                           (end position))
+                      (while (and (< end limit)
+                                  (eq (not (null
+                                            (memq (aref line end)
+                                                  '(?\s ?\t))))
+                                      space-p))
+                        (setq end (1+ end)))
+                      (let ((part (substring line position end)))
+                        (push (list :kind (if space-p 'space 'word)
+                                    :rendered part
+                                    :width (ebox--string-pixel-width part))
+                              units))
+                      (setq position end))))
+             unless (null (cdr line-tail))
+             do (push '(:kind break) units))
+    (nreverse units)))
+
+(defun ebox--render-normal-box-children (box children)
+  "Render canonical CHILDREN without flattening inline Box boundaries."
+  (let* ((resolved-width (ebox--wrapper-content-viewport-pixel box))
+         (content-width (and resolved-width (> resolved-width 0)
+                             resolved-width))
+        (line-width 0)
+        pending-empty-line
+        line-parts segments)
+    (cl-labels
+        ((flush-line
+          ()
+          (when line-parts
+            (push (apply #'ebox--lines-concat-horizontal
+                         (nreverse line-parts))
+                  segments)
+            (setq line-parts nil line-width 0)))
+         (append-atomic
+          (rendered width)
+          (when (and content-width line-parts
+                     (> (+ line-width width) content-width))
+            (flush-line))
+          (push rendered line-parts)
+          (setq line-width (+ line-width width)
+                pending-empty-line nil))
+         (append-word
+          (rendered width)
+          (if (or (null content-width) (<= width content-width))
+              (append-atomic rendered width)
+            (let ((parts (ebox--wrap-line rendered content-width 'char)))
+              (cl-loop for part in parts
+                       for tail on parts
+                       do (append-atomic
+                           part (ebox--string-pixel-width part))
+                       unless (null (cdr tail)) do (flush-line)))))
+         (append-display-space
+          (rendered width)
+          (let ((remaining width)
+                (properties
+                 (cl-loop for (key value) on (text-properties-at 0 rendered)
+                          by #'cddr
+                          unless (eq key 'display)
+                          append (list key value))))
+            (while (> remaining 0)
+              (let* ((chunk (min remaining content-width))
+                     (piece (ebox-pixel-space chunk)))
+                (when properties
+                  (add-text-properties 0 (length piece) properties piece))
+                (append-atomic piece chunk)
+                (setq remaining (- remaining chunk))
+                (when (> remaining 0) (flush-line))))))
+         (force-break
+          ()
+          (if line-parts
+              (flush-line)
+            (push "" segments))
+          (setq pending-empty-line t))
+         (append-unit
+          (unit)
+          (pcase (plist-get unit :kind)
+            ('break (force-break))
+            ('space
+             (let ((width (plist-get unit :width)))
+               (cond
+                ((and content-width (> width content-width))
+                 (let ((rendered (plist-get unit :rendered)))
+                   (if (and (= (length rendered) 1)
+                            (get-text-property 0 'display rendered))
+                       (append-display-space rendered width)
+                     (append-word rendered width))))
+                ((null line-parts)
+                 (append-atomic (plist-get unit :rendered) width))
+                ((and content-width (> (+ line-width width) content-width))
+                 (flush-line))
+                (t (append-atomic (plist-get unit :rendered) width)))))
+            ('word
+             (append-word (plist-get unit :rendered)
+                          (plist-get unit :width)))
+            ('box
+             (append-atomic (plist-get unit :rendered)
+                            (plist-get unit :width)))))
+         (render-child
+          (child)
+          (let ((inline-p (eq (ebox-tree-display-outer child) 'inline))
+                (rendered
+                 (let ((ebox--inline-auto-width-intrinsic-p
+                        (eq (ebox-tree-display-outer child) 'inline)))
+                   (ebox--render-with-cache child))))
+            (if (not inline-p)
+                (progn
+                  (flush-line)
+                  (setq pending-empty-line nil)
+                  (push rendered segments))
+              (if (eq (plist-get child :ebox-kind) 'text)
+                  (dolist (unit (ebox--normal-text-units rendered))
+                    (append-unit unit))
+                (append-unit
+                 (list :kind 'box :rendered rendered
+                       :width (ebox--string-max-pixel-width rendered))))))))
+      (ebox--call-with-box-content-context
+       box (lambda () (dolist (child children) (render-child child))))
+      (when pending-empty-line
+        (push "" segments)
+        (setq pending-empty-line nil))
+      (flush-line))
+    (if segments
+        (apply #'ebox--lines-stack-vertical (nreverse segments))
+      "")))
+
 (defun ebox--render-box-layout-children (box)
   "Render canonical BOX children through its typed LayoutConfig."
   (let* ((kind (ebox--box-layout-kind box))
@@ -952,15 +1088,21 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
            (lambda ()
              (pcase kind
                ('normal
-                (if children
-                    (ebox--render-node-as-box-content (car children) box)
-                  ""))
+                (ebox--render-normal-box-children box children))
                ('row
                 (ebox--call-with-box-content-context
-                 box (lambda () (ebox--render-row-children children))))
+                 box (lambda ()
+                       (ebox--render-row-children
+                        children
+                        (ebox-layout-config-props
+                         (plist-get box :ebox-layout-config))))))
                ('column
                 (ebox--call-with-box-content-context
-                 box (lambda () (ebox--render-column-children children))))
+                 box (lambda ()
+                       (ebox--render-column-children
+                        children
+                        (ebox-layout-config-props
+                         (plist-get box :ebox-layout-config))))))
                ('flex
                 (ebox--render-flex-box-children
                  box
@@ -975,7 +1117,8 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
                  children))
                (_ (error "Ebox Box has unsupported LayoutConfig: %S" kind)))))))
     (ebox--record-box-content-width-exact
-     box content (memq kind '(row column flex grid)))
+     box content (or (memq kind '(row column flex grid))
+                     (consp (cdr children))))
     content))
 
 (defun ebox--box-content (box)
@@ -1769,13 +1912,19 @@ A sole child Range keeps a material row parent so the Range stays addressable."
             :display '(block row)
             :children nodes))))
 
-(defun ebox--render-row-children (children)
-  "Render flat row CHILDREN to one multi-line string.
+(defun ebox--render-row-children (children &optional config)
+  "Render flat row CHILDREN with optional typed Row CONFIG.
 Auto-width children are rendered at intrinsic inline size while explicit
 viewport/definite widths keep their containing-block semantics.  Shorter
 children are padded with blank lines so all reach the same height before
 horizontal concatenation."
-  (let* ((rendered
+  (let* ((gap (or (plist-get config :item-gap) 0))
+         (cross-align (or (plist-get config :cross-align) 'stretch))
+         (vertical-align (pcase cross-align
+                           ('center 'center)
+                           ('end 'bottom)
+                           (_ 'top)))
+         (rendered
           (mapcar (lambda (child)
                     ;; A row owns the horizontal concatenation.  Its auto
                     ;; width children must therefore measure intrinsically;
@@ -1787,13 +1936,17 @@ horizontal concatenation."
          (max-h (if rendered
                     (apply #'max (mapcar #'ebox-string-height rendered))
                   0))
-         (line-lists
-          (mapcar (lambda (string)
-                    (ebox-string-lines
-                     (ebox--height-pad string max-h)))
-                  rendered)))
-    (if line-lists
-        (ebox-lines-join (apply #'cl-mapcar #'concat line-lists))
+         pieces)
+    (cl-loop for string in rendered
+             for tail on rendered
+             do (push (ebox--lines-align-vertical
+                       string max-h vertical-align)
+                      pieces)
+             unless (null (cdr tail))
+             do (when (> gap 0)
+                  (push (ebox--pixel-blank gap max-h) pieces)))
+    (if pieces
+        (apply #'ebox--lines-concat-horizontal (nreverse pieces))
       "")))
 
 (defun ebox--render-concat (node)
@@ -3145,8 +3298,8 @@ only used for incomplete lazy prefixes."
                  formatted-lines
                (seq-take formatted-lines target-lines))))))))))
 
-(defun ebox--render-column-children (children)
-  "Render flat column CHILDREN to one multi-line string.
+(defun ebox--render-column-children (children &optional config)
+  "Render flat column CHILDREN with optional typed Column CONFIG.
 
 Stack leaves are rendered independently.  When a containing-block viewport is
 bound, narrower rows are padded to that available width, while wider definite
@@ -3155,7 +3308,13 @@ intrinsic measurement, descendants still receive the containing block but the
 stack itself uses its natural max child width.  A stack used as an intrinsic
 inline child follows the same natural-width rule and does not consume the
 ambient horizontal viewport."
-  (let* ((rendered-items
+  (let* ((gap (or (plist-get config :item-gap) 0))
+         (cross-align (or (plist-get config :cross-align) 'stretch))
+         (horizontal-align (pcase cross-align
+                             ('center 'center)
+                             ('end 'right)
+                             (_ 'left)))
+         (rendered-items
           (mapcar (lambda (leaf)
                     (let ((rendered (ebox--render-with-cache leaf)))
                       (cons rendered
@@ -3168,15 +3327,23 @@ ambient horizontal viewport."
                          ebox--inline-auto-width-intrinsic-p)
                        max-w
                      (or (ebox--viewport-pixel-width nil) max-w))))
-    (let ((rendered
-           (apply #'ebox--lines-stack-vertical
-                  (mapcar (lambda (item)
-                            (let ((rendered (car item))
-                                  (width (cdr item)))
-                              (if (< width target-w)
-                                  (ebox--width-pad rendered (- target-w width))
-                                rendered)))
-                          rendered-items))))
+    (let (pieces)
+      (cl-loop for item in rendered-items
+               for tail on rendered-items
+               do (push (let ((rendered (car item))
+                              (width (cdr item)))
+                          (if (< width target-w)
+                              (ebox--lines-justify
+                               rendered target-w horizontal-align)
+                            rendered))
+                        pieces)
+               unless (null (cdr tail))
+               do (when (> gap 0)
+                    (push (ebox--pixel-blank target-w gap) pieces)))
+      (let ((rendered
+             (if pieces
+                 (apply #'ebox--lines-stack-vertical (nreverse pieces))
+               "")))
       ;; When no child overflows the containing block, stack padding proves
       ;; every output line already has the exact target width.  A wrapping box
       ;; can then preserve this preformatted content without measuring every
@@ -3184,7 +3351,7 @@ ambient horizontal viewport."
       ;; and therefore must not publish uniform-width metadata.
       (if (<= max-w target-w)
           (ebox--record-rendered-uniform-width rendered target-w)
-        rendered))))
+        rendered)))))
 
 (defun ebox--render-stack (node)
   "Render a legacy stack NODE to a string."

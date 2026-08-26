@@ -141,6 +141,7 @@
       (plist-put node :ebox-kind 'text)
       (plist-put node :ebox-text-value value)
       (plist-put node :ebox-source-handle source-handle)
+      (plist-put node :display '(inline flow))
       node)))
 
 ;;;###autoload
@@ -148,8 +149,8 @@
   "Create a canonical BoxNode from evaluated PLIST.
 
 `:layout' must occur exactly once as an `ebox-layout-config'.
-`:children' is a list of canonical nodes.  Normal layout accepts zero or one
-child.  Row and Column layouts accept any number of children."
+`:children' is a list of canonical nodes.  Every Layout accepts zero or more
+children according to its own formatting algorithm."
   (ebox-canonical--validate-plist plist "ebox-box-create")
   (let* ((layout (ebox-canonical--required-field
                   plist :layout "Ebox Box"))
@@ -182,9 +183,6 @@ child.  Row and Column layouts accept any number of children."
                   '(normal row column flex grid))
       (error "Ebox Box Layout is not implemented: %S"
              (ebox-layout-config-kind layout)))
-    (when (and (eq (ebox-layout-config-kind layout) 'normal)
-               (> (length children) 1))
-      (error "Ebox Box Normal layout currently accepts at most one child"))
     (ebox-canonical--assert-property-role
      props #'ebox-canonical--box-frame-property-p "Ebox Box")
     (let ((node (apply #'ebox-create props)))

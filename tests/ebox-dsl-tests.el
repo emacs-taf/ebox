@@ -164,32 +164,104 @@
    (ebox-text-create :value "A" :source-handle 'a :source-handle 'b)
    :type 'error))
 
-(ert-deftest ebox-canonical-normal-box-renders-one-typed-text-child ()
-  "A canonical BoxNode should retain typed Layout and child source facts."
+(ert-deftest ebox-canonical-normal-box-renders-inline-runs-and-blocks ()
+  "Normal should retain typed children and honor inline/block boundaries."
   (let* ((text (ebox-text-create :value "A" :source-handle 'source-text))
+         (second-text (ebox-text-create :value "B"))
+         (inline
+          (ebox-box-create
+           :layout (ebox-normal-layout-create) :outer 'inline
+           :width '(100)
+           :children (list (ebox-text-create :value "A B"))))
+         (block
+          (ebox-box-create
+           :layout (ebox-normal-layout-create)
+           :children (list (ebox-text-create :value "C"))))
+         (tail (ebox-text-create :value "D"))
          (layout (ebox-normal-layout-create))
          (box (ebox-box-create :layout layout
-                               :children (list text)
-                               :source-handle 'source-box)))
+                               :children (list text second-text inline block tail)
+                               :source-handle 'source-box
+                               :width '(50) :overflow 'visible))
+         (rendered (ebox-render box))
+         (rendered-lines (ebox-string-lines rendered))
+         (lines (mapcar (lambda (line)
+                          (string-trim-right
+                           (substring-no-properties line)))
+                        rendered-lines)))
     (should (ebox-box-node-p box))
     (should-not (ebox-text-node-p box))
     (should (eq (ebox-node-source-handle box) 'source-box))
     (should (eq (ebox-layout-config-kind
                  (ebox-box-node-layout box))
                 'normal))
-    (should (equal (ebox-box-node-children box) (list text)))
-    (should (string= (ebox-dsl-test--plain box) "A"))))
+    (should (equal (ebox-box-node-children box)
+                   (list text second-text inline block tail)))
+    (should (equal (ebox--computed-display text) '(inline flow)))
+    (should (equal lines '("AB" "A B" "C" "D")))
+    (should (>= (ebox--string-pixel-width (nth 1 rendered-lines)) 100))
+    (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+      (plist-put text :class "fixed-inline-text")
+      (ebox-style-add-rule ".fixed-inline-text" (list :outer 'block))
+      (should-error (ebox-render box) :type 'error))
+    (cl-labels
+        ((normal-lines
+          (value &optional width)
+          (mapcar #'substring-no-properties
+                  (ebox-string-lines
+                   (ebox-render
+                    (apply #'ebox-box-create
+                           :layout (ebox-normal-layout-create)
+                           :children (list (ebox-text-create :value value))
+                           (when width
+                             (list :width (list width)
+                                   :overflow 'visible))))))))
+      (dolist (case '(("A\n\nB" ("A" "" "B"))
+                      ("\nA" ("" "A"))
+                      ("A\n" ("A" ""))
+                      ("\n" ("" ""))))
+        (should (equal (mapcar #'string-trim-right
+                               (normal-lines (car case)))
+                       (cadr case))))
+      (should (equal (normal-lines "  A") '("  A")))
+      (should (equal (normal-lines " ") '(" ")))
+      (should
+       (equal (mapcar #'string-trim-right
+                      (normal-lines
+                       "abcdef x" (* 5 (ebox--string-pixel-width "a"))))
+              '("abcde" "f x")))
+      (should
+       (= (length
+           (normal-lines
+            (make-string 10 ?\s)
+            (* 5 (ebox--string-pixel-width " "))))
+          2))
+      (should (= (length (normal-lines "word" 0)) 1))
+      (should (= (length (normal-lines " " 0)) 1))
+      (let* ((inline-zero
+              (ebox-box-create
+               :layout (ebox-normal-layout-create) :outer 'inline
+               :width '(10)
+               :children (list (ebox-text-create :value "I"))))
+             (zero-parent
+              (ebox-box-create
+               :layout (ebox-normal-layout-create) :width '(0)
+               :overflow 'visible :children (list inline-zero))))
+        (should (= (ebox-string-height (ebox-render zero-parent)) 1))))))
 
 (ert-deftest ebox-canonical-row-box-retains-and-renders-typed-children ()
   "A Row Box should retain one Box identity around all typed children."
   (let* ((left (ebox-text-create :value "A" :source-handle 'left))
-         (right (ebox-text-create :value "B" :source-handle 'right))
-         (box (ebox-box-create :layout (ebox-row-layout-create)
+         (right (ebox-text-create :value "B\nB\nB" :source-handle 'right))
+         (box (ebox-box-create :layout (ebox-row-layout-create
+                                        :item-gap 5 :cross-align 'center)
                                :children (list left right)
                                :source-handle 'row)))
     (should (ebox-box-node-p box))
     (should (eq (ebox-node-source-handle box) 'row))
     (should (eq (ebox-layout-config-kind (ebox-box-node-layout box)) 'row))
+    (should (equal (ebox-layout-config-props (ebox-box-node-layout box))
+                   '(:item-gap 5 :cross-align center)))
     (should (equal (ebox-box-node-children box) (list left right)))
     (should (eq (ebox-tree-node-children box)
                 (ebox-box-node-children box)))
@@ -197,16 +269,26 @@
     (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 3))
     (should-not (plist-member box :ebox-content-node))
     (should (equal (ebox--computed-display box) '(block row)))
-    (should (string= (ebox-dsl-test--plain box) "AB"))))
+    (let* ((rendered (ebox-render box))
+           (lines (ebox-string-lines rendered))
+           (middle (nth 1 lines)))
+      (should-not (string-match-p "A" (substring-no-properties (car lines))))
+      (should (string-match-p "A.*B" (substring-no-properties middle)))
+      (should (= (ebox--string-pixel-width middle)
+                 (+ (ebox--string-pixel-width "A") 5
+                    (ebox--string-pixel-width "B")))))))
 
 (ert-deftest ebox-canonical-column-box-retains-and-renders-typed-children ()
   "A Column Box should retain one Box identity around all typed children."
   (let* ((top (ebox-text-create :value "A"))
-         (bottom (ebox-text-create :value "B"))
-         (box (ebox-box-create :layout (ebox-column-layout-create)
+         (bottom (ebox-text-create :value "BBB"))
+         (box (ebox-box-create :layout (ebox-column-layout-create
+                                        :item-gap 1 :cross-align 'end)
                                :children (list top bottom))))
     (should (ebox-box-node-p box))
     (should (eq (ebox-layout-config-kind (ebox-box-node-layout box)) 'column))
+    (should (equal (ebox-layout-config-props (ebox-box-node-layout box))
+                   '(:item-gap 1 :cross-align end)))
     (should (equal (ebox-box-node-children box) (list top bottom)))
     (should (eq (ebox-tree-node-children box)
                 (ebox-box-node-children box)))
@@ -214,7 +296,21 @@
     (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 3))
     (should-not (plist-member box :ebox-content-node))
     (should (equal (ebox--computed-display box) '(block column)))
-    (should (string= (ebox-dsl-test--plain box) "A\nB"))))
+    (should (= (ebox-string-height (ebox-render box)) 3))
+    (let ((lines (ebox-string-lines (ebox-render box))))
+      (should (string-prefix-p " " (substring-no-properties (car lines))))
+      (should (= (ebox--string-pixel-width (car lines))
+                 (ebox--string-pixel-width (nth 2 lines)))))))
+
+(ert-deftest ebox-canonical-simple-axis-config-validates-closed-schema ()
+  "Row/Column configs should distinguish defaults from invalid explicit values."
+  (dolist (constructor '(ebox-row-layout-create ebox-column-layout-create))
+    (should (equal (ebox-layout-config-props (funcall constructor))
+                   '(:item-gap 0 :cross-align stretch)))
+    (dolist (plist '((:item-gap nil) (:item-gap -1)
+                     (:cross-align nil) (:cross-align bogus)
+                     (:gap 1) (:item-gap 1 :item-gap 2)))
+      (should-error (apply constructor plist) :type 'error))))
 
 (ert-deftest ebox-canonical-flex-box-uses-one-box-identity-and-child-list ()
   "A FlexConfig should select the Box algorithm without a Flex runtime node."

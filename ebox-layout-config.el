@@ -8,6 +8,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 
 (declare-function ebox-flex-layout-config-props-p
                   "ebox-flex" (props))
@@ -21,6 +22,41 @@
   kind
   props)
 
+(defconst ebox-layout-config--simple-cross-align-values
+  '(start center end stretch)
+  "Canonical Row/Column cross-axis alignment values.")
+
+(defun ebox-layout-config--simple-axis-props-p (props)
+  "Return non-nil when PROPS is canonical Row/Column config data."
+  (and (equal (mapcar #'car (seq-partition props 2))
+              '(:item-gap :cross-align))
+       (let ((gap (plist-get props :item-gap))
+             (align (plist-get props :cross-align)))
+         (and (integerp gap) (>= gap 0)
+              (memq align ebox-layout-config--simple-cross-align-values)))))
+
+(defun ebox-layout-config--simple-axis-create (kind plist)
+  "Return validated simple-axis KIND LayoutConfig from PLIST."
+  (unless (and (proper-list-p plist) (zerop (% (length plist) 2)))
+    (error "Ebox %S LayoutConfig requires an even plist: %S" kind plist))
+  (let ((seen (make-hash-table :test #'eq)))
+    (cl-loop for (key _value) on plist by #'cddr
+             unless (memq key '(:item-gap :cross-align))
+             do (error "Ebox %S LayoutConfig does not accept %S" kind key)
+             do (when (gethash key seen)
+                  (error "Duplicate Ebox %S LayoutConfig property: %S" kind key))
+             do (puthash key t seen)))
+  (let ((props
+         (list :item-gap (if (plist-member plist :item-gap)
+                             (plist-get plist :item-gap)
+                           0)
+               :cross-align (if (plist-member plist :cross-align)
+                                (plist-get plist :cross-align)
+                              'stretch))))
+    (unless (ebox-layout-config--simple-axis-props-p props)
+      (error "Invalid Ebox %S LayoutConfig properties: %S" kind props))
+    (ebox-layout-config--create :kind kind :props props)))
+
 (defun ebox-layout-config-validate (config)
   "Return CONFIG after revalidating its variant-owned properties."
   (unless (ebox-layout-config-p config)
@@ -29,7 +65,9 @@
          (props (ebox-layout-config-props config))
          (valid-p
           (pcase kind
-            ((or 'normal 'row 'column) (null props))
+            ('normal (null props))
+            ((or 'row 'column)
+             (ebox-layout-config--simple-axis-props-p props))
             ('flex
              (and (fboundp 'ebox-flex-layout-config-props-p)
                   (ebox-flex-layout-config-props-p props)))
@@ -55,14 +93,14 @@
   (ebox-layout-config--create :kind 'normal :props nil))
 
 ;;;###autoload
-(defun ebox-row-layout-create ()
-  "Return the canonical Row layout config."
-  (ebox-layout-config--create :kind 'row :props nil))
+(defun ebox-row-layout-create (&rest plist)
+  "Return canonical RowConfig from evaluated PLIST."
+  (ebox-layout-config--simple-axis-create 'row plist))
 
 ;;;###autoload
-(defun ebox-column-layout-create ()
-  "Return the canonical Column layout config."
-  (ebox-layout-config--create :kind 'column :props nil))
+(defun ebox-column-layout-create (&rest plist)
+  "Return canonical ColumnConfig from evaluated PLIST."
+  (ebox-layout-config--simple-axis-create 'column plist))
 
 (provide 'ebox-layout-config)
 
