@@ -229,7 +229,7 @@
      (equal (ebox-layout-config-props layout)
             '(:flex-direction row :flex-wrap nowrap
               :justify-content flex-start :align-items stretch
-              :align-content stretch :row-gap nil :column-gap nil)))
+              :align-content stretch :row-gap 0 :column-gap 0)))
     (should-not (plist-member (ebox-layout-config-props layout) :width))
     (should-not (plist-member (ebox-layout-config-props layout) :height))
     (should (ebox-box-node-p box))
@@ -257,7 +257,7 @@
     (setf (ebox-layout-config-props invalid-direction)
           '(:flex-direction bogus :flex-wrap nowrap
             :justify-content flex-start :align-items stretch
-            :align-content stretch :row-gap nil :column-gap nil))
+            :align-content stretch :row-gap 0 :column-gap 0))
     (setf (ebox-layout-config-props extra-frame-prop)
           (append (ebox-layout-config-props extra-frame-prop)
                   '(:width 999)))
@@ -288,6 +288,63 @@
                      "AB"))
     (should (equal (ebox-layout-config-props (ebox-box-node-layout box))
                    ebox--flex-default-config-props))))
+
+(ert-deftest ebox-flex-layout-create-normalizes-the-complete-config-schema ()
+  "The typed Flex constructor should emit one canonical closed property set."
+  (let ((layout
+         (ebox-flex-layout-create
+          :flex-direction 'column-reverse
+          :flex-wrap 'wrap
+          :justify-content 'space-between
+          :align-items 'center
+          :align-content 'end
+          :row-gap '(2)
+          :column-gap '(8))))
+    (should
+     (equal (ebox-layout-config-props layout)
+            '(:flex-direction column-reverse :flex-wrap wrap
+              :justify-content space-between :align-items center
+              :align-content end :row-gap 2 :column-gap 8)))
+    (should (ebox-flex-layout-config-props-p
+             (ebox-layout-config-props layout)))
+    (should (ebox-box-node-p
+             (ebox-box-create :layout layout :children nil)))))
+
+(ert-deftest ebox-flex-layout-create-validates-values-and-rejects-author-sugar ()
+  "FlexConfig should accept its value domain and reject sugar or foreign props."
+  (dolist (direction ebox--flex-direction-values)
+    (should (ebox-flex-layout-create :flex-direction direction)))
+  (dolist (wrap ebox--flex-wrap-values)
+    (should (ebox-flex-layout-create :flex-wrap wrap)))
+  (dolist (justify ebox--flex-justify-content-values)
+    (should (ebox-flex-layout-create :justify-content justify)))
+  (dolist (align ebox--flex-align-items-values)
+    (should (ebox-flex-layout-create :align-items align)))
+  (dolist (align ebox--flex-align-content-values)
+    (should (ebox-flex-layout-create :align-content align)))
+  (dolist (plist '((:flex-direction bogus)
+                   (:flex-wrap reverse)
+                   (:justify-content bogus)
+                   (:align-items bogus)
+                   (:align-content bogus)
+                   (:row-gap -1)
+                   (:column-gap (-1))
+                   (:flex-flow (row wrap))
+                   (:gap 1)
+                   (:width 100)
+                   (:flex-direction row :flex-direction column)))
+    (should-error (apply #'ebox-flex-layout-create plist) :type 'error)))
+
+(ert-deftest ebox-flex-config-validation-does-not-reparse-canonical-pixels ()
+  "Boundary validation should preserve physical pixels under non-unit fonts."
+  (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 8)))
+    (let* ((layout (ebox-flex-layout-create :column-gap '(8)))
+           (box (ebox-box-create :layout layout :children nil)))
+      (should (= (plist-get (ebox-layout-config-props layout) :column-gap) 8))
+      (should (= (plist-get
+                  (ebox-layout-config-props (ebox-box-node-layout box))
+                  :column-gap)
+                 8)))))
 
 (ert-deftest ebox-canonical-flex-projects-one-box-frame-constraint ()
   "Typed and legacy Flex should derive the same content size from BoxFrame."

@@ -86,6 +86,34 @@
     :gap :row-gap :column-gap)
   "Properties that belong only to flex container layout.")
 
+(defconst ebox--flex-config-prop-keys
+  '(:flex-direction :flex-wrap :justify-content
+    :align-items :align-content :row-gap :column-gap)
+  "Canonical property order stored in a typed FlexConfig.")
+
+(defconst ebox--flex-direction-values
+  '(row row-reverse column column-reverse)
+  "Supported canonical FlexConfig direction values.")
+
+(defconst ebox--flex-wrap-values
+  '(nowrap wrap wrap-reverse)
+  "Supported canonical FlexConfig wrapping values.")
+
+(defconst ebox--flex-justify-content-values
+  '(flex-start flex-end center space-between space-around space-evenly
+    start end left right normal)
+  "Supported canonical FlexConfig main-axis alignment values.")
+
+(defconst ebox--flex-align-items-values
+  '(stretch flex-start flex-end center baseline normal
+    start end self-start self-end)
+  "Supported canonical FlexConfig item alignment values.")
+
+(defconst ebox--flex-align-content-values
+  '(stretch flex-start flex-end center space-between space-around space-evenly
+    baseline normal start end)
+  "Supported canonical FlexConfig line alignment values.")
+
 (defconst ebox--flex-container-neutral-box-prop-keys
   '(:width :height :box-sizing)
   "Flex box properties that do not create visible wrapping by themselves.")
@@ -267,6 +295,27 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
     (cons (nth 0 gap) (nth 1 gap)))
    (t (cons gap gap))))
 
+(defun ebox--flex-enum-value (value default allowed property)
+  "Return VALUE or DEFAULT after checking ALLOWED values for PROPERTY."
+  (let ((resolved (or value default)))
+    (unless (memq resolved allowed)
+      (error "Ebox FlexConfig %S has invalid value: %S" property resolved))
+    resolved))
+
+(defun ebox--flex-row-gap-value (value)
+  "Return canonical nonnegative line count for FlexConfig row gap VALUE."
+  (unless (or (null value)
+              (numberp value)
+              (and (consp value)
+                   (numberp (car value))
+                   (null (cdr value))))
+    (error "Ebox FlexConfig :row-gap is invalid: %S" value))
+  (or (ebox--flex-line-value value 0) 0))
+
+(defun ebox--flex-column-gap-value (value)
+  "Return canonical nonnegative pixels for FlexConfig column gap VALUE."
+  (or (ebox--nonnegative-horizontal-size-pixels value 0) 0))
+
 (defun ebox--flex-normalize-config-props (props)
   "Normalize FlexConfig PROPS to explicit layout-owned fields."
   (let* ((flow (plist-get props :flex-flow))
@@ -280,23 +329,41 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
                        (memq value '(nowrap wrap wrap-reverse)))
                      flow-values))
          (gap-pair (ebox--flex-gap-pair (plist-get props :gap)))
-         (direction (or (plist-get props :flex-direction)
-                        flow-direction
-                        'row))
-         (wrap (or (plist-get props :flex-wrap)
-                   flow-wrap
-                   'nowrap)))
+         (direction
+          (ebox--flex-enum-value
+           (or (plist-get props :flex-direction) flow-direction)
+           'row ebox--flex-direction-values :flex-direction))
+         (wrap
+          (ebox--flex-enum-value
+           (or (plist-get props :flex-wrap) flow-wrap)
+           'nowrap ebox--flex-wrap-values :flex-wrap))
+         (justify
+          (ebox--flex-enum-value
+           (plist-get props :justify-content) 'flex-start
+           ebox--flex-justify-content-values :justify-content))
+         (align-items
+          (ebox--flex-enum-value
+           (plist-get props :align-items) 'stretch
+           ebox--flex-align-items-values :align-items))
+         (align-content
+          (ebox--flex-enum-value
+           (plist-get props :align-content) 'stretch
+           ebox--flex-align-content-values :align-content))
+         (row-gap
+          (if (plist-member props :row-gap)
+              (plist-get props :row-gap)
+            (car gap-pair)))
+         (column-gap
+          (if (plist-member props :column-gap)
+              (plist-get props :column-gap)
+            (cdr gap-pair))))
     (list :flex-direction direction
           :flex-wrap wrap
-          :justify-content (or (plist-get props :justify-content) 'flex-start)
-          :align-items (or (plist-get props :align-items) 'stretch)
-          :align-content (or (plist-get props :align-content) 'stretch)
-          :row-gap (if (plist-member props :row-gap)
-                       (plist-get props :row-gap)
-                     (car gap-pair))
-          :column-gap (if (plist-member props :column-gap)
-                          (plist-get props :column-gap)
-                        (cdr gap-pair)))))
+          :justify-content justify
+          :align-items align-items
+          :align-content align-content
+          :row-gap (ebox--flex-row-gap-value row-gap)
+          :column-gap (ebox--flex-column-gap-value column-gap))))
 
 (defun ebox--flex-normalize-container-props (props)
   "Normalize legacy flex container PROPS to config plus frame constraints."
@@ -306,18 +373,59 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
 
 (defconst ebox--flex-default-config-props
   (ebox--flex-normalize-config-props nil)
-  "Validated property set for the first default FlexConfig slice.")
+  "Computed default property set for FlexConfig.")
+
+(defun ebox--flex-validate-config-input (plist)
+  "Return canonical FlexConfig input PLIST after surface validation."
+  (unless (and (proper-list-p plist) (zerop (% (length plist) 2)))
+    (error "Ebox FlexConfig properties must be an even plist: %S" plist))
+  (let ((seen (make-hash-table :test 'eq)))
+    (cl-loop for (key _value) on plist by #'cddr
+             unless (memq key ebox--flex-config-prop-keys)
+             do (error "Ebox FlexConfig does not accept %S" key)
+             do (when (gethash key seen)
+                  (error "Duplicate Ebox FlexConfig property: %S" key))
+             do (puthash key t seen)))
+  plist)
 
 (defun ebox-flex-layout-config-props-p (props)
-  "Return non-nil when PROPS are the validated default FlexConfig."
-  (equal props ebox--flex-default-config-props))
+  "Return non-nil when PROPS are canonical validated FlexConfig data."
+  (and (proper-list-p props)
+       (zerop (% (length props) 2))
+       (let ((cursor props)
+             (keys ebox--flex-config-prop-keys)
+             valid)
+         (setq valid t)
+         (while (and valid keys)
+           (setq valid (eq (car cursor) (car keys))
+                 cursor (cddr cursor)
+                 keys (cdr keys)))
+         (and valid (null cursor)))
+       (memq (plist-get props :flex-direction)
+             ebox--flex-direction-values)
+       (memq (plist-get props :flex-wrap)
+             ebox--flex-wrap-values)
+       (memq (plist-get props :justify-content)
+             ebox--flex-justify-content-values)
+       (memq (plist-get props :align-items)
+             ebox--flex-align-items-values)
+       (memq (plist-get props :align-content)
+             ebox--flex-align-content-values)
+       (let ((row-gap (plist-get props :row-gap))
+             (column-gap (plist-get props :column-gap)))
+         (and (integerp row-gap) (>= row-gap 0)
+              (numberp column-gap) (>= column-gap 0)))))
 
 ;;;###autoload
-(defun ebox-flex-layout-create ()
-  "Return the canonical Flex layout config with computed defaults."
+(defun ebox-flex-layout-create (&rest plist)
+  "Return a typed FlexConfig from canonical evaluated PLIST.
+PLIST accepts direction, wrap, alignment, and row/column gap longhands.
+Author shorthands such as `:flex-flow' and `:gap' are normalized before this
+programmatic port and are therefore rejected here."
+  (ebox--flex-validate-config-input plist)
   (ebox-layout-config--create
    :kind 'flex
-   :props (copy-sequence ebox--flex-default-config-props)))
+   :props (ebox--flex-normalize-config-props plist)))
 
 (defun ebox--flex-axis (props)
   "Return main axis for normalized flex PROPS."
