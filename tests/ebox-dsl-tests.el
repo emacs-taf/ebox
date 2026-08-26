@@ -37,7 +37,20 @@
   (should (eq (ebox-style-dirty-kind :border-color) 'paint))
   (should (eq (ebox-style-dirty-kind :padding-inline-start) 'geometry))
   (should (eq (ebox-style-dirty-kind :width) 'geometry))
+  (should (eq (ebox-style-dirty-kind :outer) 'structure))
+  (should (eq (ebox-style-dirty-kind :layout) 'structure))
   (should (eq (ebox-style-dirty-kind :display) 'structure)))
+
+(ert-deftest ebox-style-projects-public-box-axes-to-internal-display ()
+  "Computed outer/layout properties should project to one display pair."
+  (let* ((style
+          (ebox-style-compute-subject
+           (ecss-subject-create :type "box")
+           (ebox-style-compile-declarations
+            '(:outer inline :layout flex))))
+         (node (ebox-build '(box "A"))))
+    (ebox-style-apply-computed node style)
+    (should (equal (ebox--computed-display node) '(inline flex)))))
 
 (ert-deftest ebox-dsl-module-preserves-public-build-syntax ()
   "Extracted DSL compiler should preserve existing ebox-build syntax."

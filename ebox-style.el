@@ -161,6 +161,12 @@
     (:name :display :id ebox/display :initial nil :contexts (node)
      :group structure :dirty-kind structure :signature structure
      :validator display)
+    (:name :outer :id ebox/outer :initial block :contexts (node)
+     :group structure :dirty-kind structure :signature structure
+     :validator outer)
+    (:name :layout :id ebox/layout :initial normal :contexts (node)
+     :group structure :dirty-kind structure :signature structure
+     :validator layout)
     (:name :flex-direction :id ebox/flex-direction :initial nil
      :contexts (flex) :group geometry :dirty-kind geometry :signature layout)
     (:name :flex-wrap :id ebox/flex-wrap :initial nil :contexts (flex)
@@ -548,6 +554,14 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
       (and (listp value) (= (length value) 2)
            (cl-every #'symbolp value))))
 
+(defun ebox-style--outer-p (value)
+  "Return non-nil when VALUE is an Ebox outer participation value."
+  (memq value '(inline block)))
+
+(defun ebox-style--layout-p (value)
+  "Return non-nil when VALUE is an Ebox child layout value."
+  (memq value '(normal row column flex grid)))
+
 (defun ebox-style--font-p (value)
   "Return non-nil when VALUE is an Ebox font face specification."
   (or (null value) (symbolp value) (stringp value) (proper-list-p value)))
@@ -573,6 +587,8 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
     ('positive-integer #'ebox-style--positive-integer-p)
     ('grid-placement #'ebox-style--grid-placement-p)
     ('display #'ebox-style--display-p)
+    ('outer #'ebox-style--outer-p)
+    ('layout #'ebox-style--layout-p)
     ('font #'ebox-style--font-p)
     ('font-family #'ebox-style--font-family-p)
     ('font-height #'ebox-style--font-height-p)
@@ -1193,6 +1209,27 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
              do (plist-put node property value)))
   node)
 
+(defun ebox-style--apply-display-axes (node style snapshot)
+  "Apply computed display and public axes from STYLE SNAPSHOT to NODE."
+  (when (ebox-style--snapshot-active-p snapshot :display)
+    (plist-put node :display
+               (ebox-style-computed-value style :display)))
+  (let* ((outer-specified-p
+          (ebox-style--specified-property-p style 'ebox/outer))
+         (layout-specified-p
+          (ebox-style--specified-property-p style 'ebox/layout)))
+    (when (or outer-specified-p layout-specified-p)
+      (let* ((display (or (plist-get node :display) '(block flow)))
+             (outer (if outer-specified-p
+                        (ebox-style-computed-value style :outer)
+                      (car display)))
+             (layout (if layout-specified-p
+                         (ebox-style-computed-value style :layout)
+                       (cadr display))))
+        (plist-put node :display
+                   (list outer (if (eq layout 'normal) 'flow layout))))))
+  node)
+
 (defun ebox-style-apply-computed (node style)
   "Apply ECSS computed STYLE consequences to semantic Ebox NODE."
   (unless (ecss-computed-style-p style)
@@ -1201,9 +1238,7 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
          (snapshot
           (ebox-style--computed-snapshot style (memq type '(flex grid)))))
     (plist-put node :ebox-computed-style style)
-    (when (ebox-style--snapshot-active-p snapshot :display)
-      (plist-put node :display
-                 (ebox-style-computed-value style :display)))
+    (ebox-style--apply-display-axes node style snapshot)
     (pcase type
       ('box
        (ebox-style--apply-engine-values
