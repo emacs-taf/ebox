@@ -14,6 +14,12 @@
 
 (declare-function ebox-create "ebox" (&rest plist))
 
+(defconst ebox-dsl--outer-values '(inline block)
+  "Valid outer participation values for the canonical Box DSL.")
+
+(defconst ebox-dsl--layout-values '(normal row column flex grid)
+  "Valid child layout values for the canonical Box DSL.")
+
 (defun ebox--dsl-unquote-value (value)
   "Unquote one static DSL property VALUE when it is quoted data."
   (if (and (consp value)
@@ -37,6 +43,22 @@ keyword properties are normalized."
               (push (ebox--dsl-unquote-value (pop items)) result))
           (push item result))))
     (nreverse result)))
+
+(defun ebox-dsl--axis-value (props property default allowed)
+  "Return PROPS PROPERTY or DEFAULT after validating it against ALLOWED."
+  (let ((value (if (plist-member props property)
+                   (plist-get props property)
+                 default)))
+    (unless (memq value allowed)
+      (error "ebox-build: invalid %S value %S" property value))
+    value))
+
+(defun ebox-dsl--with-display (node outer layout)
+  "Return a shallow copy of NODE with canonical OUTER and LAYOUT display."
+  (let ((copy (copy-sequence node)))
+    (plist-put copy :display
+               (list outer (if (eq layout 'normal) 'flow layout)))
+    copy))
 
 (defun ebox--build-children-layout (children)
   "Build a vertical default layout from CHILDREN."
@@ -134,6 +156,13 @@ The first value is string content.  The second value is a lazy child node."
            (ebox-dsl-build (car children))
            props)))
 
+(defun ebox--build-grid (items)
+  "Build a grid node from DSL ITEMS."
+  (let* ((split (ebox-grid--split-attrs items))
+         (props (car split))
+         (children (mapcar #'ebox-dsl-build (delq nil (cdr split)))))
+    (apply #'ebox-grid (append props children))))
+
 (defun ebox--build-spacer (items)
   "Build a spacer node from DSL ITEMS."
   (let* ((split (ebox--build-split-attrs items))
@@ -144,6 +173,33 @@ The first value is string content.  The second value is a lazy child node."
     (when (plist-member props :content)
       (error "ebox-build: spacer cannot set :content"))
     (apply #'ebox-spacer props)))
+
+(defun ebox--build-canonical-box (items)
+  "Build canonical Box ITEMS with orthogonal outer and layout axes."
+  (let* ((split (ebox--build-split-attrs items))
+         (props (car split))
+         (children (cdr split))
+         (outer (ebox-dsl--axis-value
+                 props :outer 'block ebox-dsl--outer-values))
+         (layout (ebox-dsl--axis-value
+                  props :layout 'normal ebox-dsl--layout-values))
+         (box-props (ebox--plist-remove-keys props '(:outer :layout)))
+         node)
+    (setq node
+          (pcase layout
+            ('normal
+             (ebox--build-box (append box-props children)))
+            ('row
+             (ebox--build-layout
+              'box #'ebox-row (append box-props children)))
+            ('column
+             (ebox--build-layout
+              'box #'ebox-column (append box-props children)))
+            ('flex
+             (ebox--build-flex (append box-props children)))
+            ('grid
+             (ebox--build-grid (append box-props children)))))
+    (ebox-dsl--with-display node outer layout)))
 
 (defun ebox-dsl-build (dsl)
   "Build an Ebox node from an ETML-style list DSL.
@@ -171,18 +227,15 @@ the child layout in a box using the rendered child layout as content."
     (let ((tag (car dsl))
           (items (ebox--dsl-unquote-properties (cdr dsl))))
       (pcase tag
-        ((or 'box 'ebox) (ebox--build-box items))
+        ('box (ebox--build-canonical-box items))
+        ('ebox (ebox--build-box items))
         ('row (ebox--build-layout tag #'ebox-row items))
         ('column (ebox--build-layout tag #'ebox-column items))
         ('flex (ebox--build-flex items))
         ('item (ebox--build-flex-item items))
         ('grid-item (ebox--build-grid-item items))
         ('spacer (ebox--build-spacer items))
-        ('grid
-         (let* ((split (ebox-grid--split-attrs items))
-                (props (car split))
-                (children (mapcar #'ebox-dsl-build (delq nil (cdr split)))))
-           (apply #'ebox-grid (append props children))))
+        ('grid (ebox--build-grid items))
         (_ (error "ebox-build: unknown DSL tag %S" tag)))))))
 
 (provide 'ebox-dsl)

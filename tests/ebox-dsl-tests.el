@@ -358,6 +358,51 @@
     (should (equal (ebox--computed-display column-node) '(block column)))
     (should (equal (ebox--computed-display flex-node) '(block flex)))))
 
+(ert-deftest ebox-build-box-uses-orthogonal-outer-and-layout-axes ()
+  "Canonical Box DSL should select outer participation and child layout."
+  (let ((normal (ebox-build '(box :outer inline :layout normal "A")))
+        (row (ebox-build
+              '(box :outer inline :layout row
+                (box "A")
+                (box "B"))))
+        (column (ebox-build
+                 '(box :outer block :layout column
+                   (box "A")
+                   (box "B")))))
+    (should (equal (ebox--computed-display normal) '(inline flow)))
+    (should (equal (ebox--computed-display row) '(inline row)))
+    (should (equal (ebox--computed-display column) '(block column)))
+    (should (string= (ebox-dsl-test--plain row) "AB"))
+    (should (string= (ebox-dsl-test--plain column) "A\nB"))))
+
+(ert-deftest ebox-build-box-rejects-invalid-axis-values ()
+  "Canonical Box DSL should reject unknown outer and layout values."
+  (should-error (ebox-build '(box :outer floating "A")) :type 'error)
+  (should-error (ebox-build '(box :layout masonry "A")) :type 'error))
+
+(ert-deftest ebox-build-box-layout-consumes-direct-flex-item-properties ()
+  "Canonical Flex Box should consume participation props from child Boxes."
+  (let* ((node (ebox-build
+                '(box :layout flex :width (300)
+                  (box :flex-grow 1 :flex-basis (80) "A")
+                  (box :flex-grow 2 :flex-basis (80) "B"))))
+         (children (plist-get node :children)))
+    (should (equal (ebox--computed-display node) '(block flex)))
+    (should (= (plist-get (car children) :flex-grow) 1))
+    (should (= (plist-get (cadr children) :flex-grow) 2))
+    (should (string-match-p "A" (ebox-dsl-test--plain node)))
+    (should (string-match-p "B" (ebox-dsl-test--plain node)))))
+
+(ert-deftest ebox-build-box-layout-consumes-direct-grid-item-properties ()
+  "Canonical Grid Box should consume placement props from child Boxes."
+  (let* ((node (ebox-build
+                '(box :layout grid :grid-template-columns ((20) (20))
+                  (box :grid-column (1 :span 2) "Header"))))
+         (child (car (plist-get node :children))))
+    (should (equal (ebox--computed-display node) '(block grid)))
+    (should (equal (plist-get child :grid-column) '(1 :span 2)))
+    (should (string-match-p "Header" (ebox-dsl-test--plain node)))))
+
 (ert-deftest ebox-build-wrapper-child-layout-rerenders-on-runtime-viewport-change ()
   "A DSL wrapper box should rerender child layout content on viewport resize."
   (let ((node (let ((ebox-viewport-width 96))
