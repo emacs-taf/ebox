@@ -585,6 +585,7 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
   (append ebox-tree--runtime-source-keys
           ebox-tree--child-source-keys
           '(:ebox-style-declarations :ebox-style-overrides
+            :ebox-grid-config
             :ebox-computed-style :ebox-style-wrapper
             :ebox-style-generated-wrapper))
   "Non-rendering keys excluded from node-local source comparison.

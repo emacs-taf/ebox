@@ -460,6 +460,99 @@
               (mapcar #'ebox--string-pixel-width
                       (ebox-string-lines legacy-rendered)))))))
 
+(ert-deftest ebox-grid-layout-create-normalizes-the-complete-config-schema ()
+  "The typed Grid constructor should emit one canonical closed property set."
+  (let* ((layout
+          (ebox-grid-layout-create
+           :grid-template-columns '((20) 1fr)
+           :grid-template-rows '(1 auto)
+           :grid-auto-columns '((30))
+           :grid-auto-rows '(2)
+           :grid-auto-flow 'column
+           :row-gap '(2) :column-gap '(8)
+           :justify-items 'center :align-items 'end
+           :justify-content 'space-between :align-content 'center))
+         (props (ebox-layout-config-props layout)))
+    (should (equal (plist-get props :grid-template-columns)
+                   '((:kind fixed :size 20) (:kind fr :factor 1))))
+    (should (equal (plist-get props :grid-template-rows)
+                   '((:kind fixed :size 1) (:kind auto :factor 0))))
+    (should (equal (plist-get props :grid-auto-columns)
+                   '(:kind fixed :size 30)))
+    (should (equal (plist-get props :grid-auto-rows)
+                   '(:kind fixed :size 2)))
+    (should (= (plist-get props :row-gap) 2))
+    (should (= (plist-get props :column-gap) 8))
+    (should (ebox-grid-layout-config-props-p props))
+    (should (ebox-box-node-p
+             (ebox-box-create :layout layout :children nil)))))
+
+(ert-deftest ebox-grid-layout-create-validates-values-and-rejects-author-sugar ()
+  "GridConfig should accept its value domain and reject sugar or foreign props."
+  (dolist (flow '(row column))
+    (should (ebox-grid-layout-create :grid-auto-flow flow)))
+  (dolist (value ebox--grid-justify-items-values)
+    (should (ebox-grid-layout-create :justify-items value)))
+  (dolist (value ebox--grid-align-items-values)
+    (should (ebox-grid-layout-create :align-items value)))
+  (dolist (value ebox--grid-content-alignment-values)
+    (should (ebox-grid-layout-create :justify-content value))
+    (should (ebox-grid-layout-create :align-content value)))
+  (dolist (plist '((:grid-auto-flow diagonal)
+                   (:grid-template-columns (bogus))
+                   (:grid-template-rows (bogus))
+                   (:grid-template-columns (0fr))
+                   (:grid-template-columns (0.0fr))
+                   (:grid-template-columns ((fr 0)))
+                   (:grid-template-columns ((minmax (fr 1) auto)))
+                   (:grid-template-columns
+                    ((minmax (minmax (10) (20)) auto)))
+                   (:grid-auto-columns ((10) (20)))
+                   (:row-gap -1)
+                   (:column-gap (-1))
+                   (:gap 1)
+                   (:grid-row-gap 1)
+                   (:width 100)
+                   (:align-items bogus)
+                   (:grid-auto-flow row :grid-auto-flow column)))
+    (should-error (apply #'ebox-grid-layout-create plist) :type 'error)))
+
+(ert-deftest ebox-grid-config-validation-does-not-reparse-canonical-pixels ()
+  "Grid boundary validation should preserve physical pixels under GUI fonts."
+  (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 8)))
+    (let* ((layout
+            (ebox-grid-layout-create
+             :grid-template-columns '((20)) :column-gap '(8)))
+           (box (ebox-box-create :layout layout :children nil))
+           (props (ebox-layout-config-props (ebox-box-node-layout box))))
+      (should (= (plist-get props :column-gap) 8))
+      (should (= (plist-get (car (plist-get props :grid-template-columns))
+                            :size)
+                 20)))))
+
+(ert-deftest ebox-grid-config-boundary-rejects-forged-minmax-roles ()
+  "Trusted Grid validation should enforce minmax roles after mutation."
+  (let ((fr-minimum (ebox-grid-layout-create))
+        (nested-minimum (ebox-grid-layout-create)))
+    (setf (ebox-layout-config-props fr-minimum)
+          (plist-put (ebox-layout-config-props fr-minimum)
+                     :grid-template-columns
+                     '((:kind minmax
+                        :min (:kind fr :factor 1)
+                        :max (:kind auto :factor 0)))))
+    (setf (ebox-layout-config-props nested-minimum)
+          (plist-put (ebox-layout-config-props nested-minimum)
+                     :grid-template-columns
+                     '((:kind minmax
+                        :min (:kind minmax
+                              :min (:kind fixed :size 1)
+                              :max (:kind fixed :size 2))
+                        :max (:kind auto :factor 0)))))
+    (should-error
+     (ebox-box-create :layout fr-minimum :children nil) :type 'error)
+    (should-error
+     (ebox-box-create :layout nested-minimum :children nil) :type 'error)))
+
 (ert-deftest ebox-canonical-flex-consumes-direct-child-participation ()
   "Flex participation should stay on child Boxes without item wrappers."
   (let* ((left-text (ebox-text-create :value "A"))

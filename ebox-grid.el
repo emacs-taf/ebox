@@ -36,6 +36,26 @@
     :justify-items :align-items :justify-content :align-content)
   "Properties owned by the grid formatting context.")
 
+(defconst ebox--grid-config-prop-keys
+  '(:grid-template-columns :grid-template-rows
+    :grid-auto-columns :grid-auto-rows :grid-auto-flow
+    :row-gap :column-gap
+    :justify-items :align-items :justify-content :align-content)
+  "Canonical property order stored in a typed GridConfig.")
+
+(defconst ebox--grid-justify-items-values
+  '(stretch normal start end left right center)
+  "Supported canonical GridConfig inline item alignment values.")
+
+(defconst ebox--grid-align-items-values
+  '(stretch normal start end top bottom center)
+  "Supported canonical GridConfig block item alignment values.")
+
+(defconst ebox--grid-content-alignment-values
+  '(stretch normal start end left right center
+    flex-start flex-end space-between space-around space-evenly)
+  "Supported canonical GridConfig content alignment values.")
+
 (defconst ebox--grid-item-prop-keys
   '(:grid-column :grid-row :grid-column-span :grid-row-span)
   "Properties that describe a child's position in a grid.")
@@ -91,8 +111,11 @@
    ((and (symbolp value)
          (string-match "\\`\\([0-9]+\\(?:\\.[0-9]+\\)?\\)fr\\'"
                        (symbol-name value)))
-    (list :kind 'fr :factor
-          (string-to-number (match-string 1 (symbol-name value)))))
+    (let ((factor
+           (string-to-number (match-string 1 (symbol-name value)))))
+      (unless (> factor 0)
+        (error "ebox-grid: fractional track must be positive: %S" value))
+      (list :kind 'fr :factor factor)))
    ((and (consp value) (eq (car value) 'fr))
     (unless (and (numberp (cadr value)) (> (cadr value) 0))
       (error "ebox-grid: invalid fractional track %S" value))
@@ -104,17 +127,30 @@
       (error "ebox-grid: invalid minmax track %S" value))
     (let ((minimum (ebox-grid--normalize-track (cadr value) axis))
           (maximum (ebox-grid--normalize-track (caddr value) axis)))
+      (unless (memq (plist-get minimum :kind) '(fixed auto))
+        (error "ebox-grid: minmax minimum must be fixed or auto: %S" value))
+      (unless (memq (plist-get maximum :kind) '(fixed auto fr))
+        (error "ebox-grid: minmax maximum cannot be nested: %S" value))
       (when (and (eq (plist-get maximum :kind) 'fixed)
                  (eq (plist-get minimum :kind) 'fixed)
                  (> (plist-get minimum :size) (plist-get maximum :size)))
         (error "ebox-grid: minmax minimum exceeds maximum: %S" value))
       (list :kind 'minmax :min minimum :max maximum)))
-   ((eq axis 'columns)
+   ((and (eq axis 'columns)
+         (or (numberp value)
+             (and (consp value)
+                  (numberp (car value))
+                  (null (cdr value)))))
     (list :kind 'fixed
           :size (ebox--nonnegative-horizontal-size-pixels value 0)))
-   (t
+   ((and (eq axis 'rows)
+         (or (numberp value)
+             (and (consp value)
+                  (numberp (car value))
+                  (null (cdr value)))))
     (let ((lines (ebox--flex-line-value value 0)))
-      (list :kind 'fixed :size lines)))))
+      (list :kind 'fixed :size lines)))
+   (t (error "ebox-grid: unsupported %S track: %S" axis value))))
 
 (defun ebox-grid--normalize-tracks (value axis)
   "Normalize a track template VALUE along AXIS."
@@ -138,24 +174,150 @@
     (cons (or (ebox--flex-line-value row 0) 0)
           (or (ebox--nonnegative-horizontal-size-pixels column 0) 0))))
 
+(defun ebox-grid--enum-value (value default allowed property)
+  "Return VALUE or DEFAULT after checking ALLOWED values for PROPERTY."
+  (let ((resolved (or value default)))
+    (unless (memq resolved allowed)
+      (error "Ebox GridConfig %S has invalid value: %S" property resolved))
+    resolved))
+
+(defun ebox-grid--one-auto-track (value axis property)
+  "Return VALUE normalized as zero or one auto track for AXIS and PROPERTY."
+  (let ((tracks (ebox-grid--normalize-tracks value axis)))
+    (when (> (length tracks) 1)
+      (error "Ebox GridConfig %S accepts at most one track" property))
+    (car tracks)))
+
+(defun ebox-grid--normalize-config-props (props)
+  "Normalize GridConfig PROPS once to canonical layout-owned facts."
+  (let ((gaps (ebox-grid--gap-pair props)))
+    (list
+   :grid-template-columns
+   (ebox-grid--normalize-tracks
+    (plist-get props :grid-template-columns) 'columns)
+   :grid-template-rows
+   (ebox-grid--normalize-tracks
+    (plist-get props :grid-template-rows) 'rows)
+   :grid-auto-columns
+   (ebox-grid--one-auto-track
+    (plist-get props :grid-auto-columns) 'columns :grid-auto-columns)
+   :grid-auto-rows
+   (ebox-grid--one-auto-track
+    (plist-get props :grid-auto-rows) 'rows :grid-auto-rows)
+   :grid-auto-flow
+   (ebox-grid--enum-value
+    (plist-get props :grid-auto-flow) 'row '(row column) :grid-auto-flow)
+   :row-gap (car gaps)
+   :column-gap (cdr gaps)
+   :justify-items
+   (ebox-grid--enum-value
+    (plist-get props :justify-items) 'stretch
+    ebox--grid-justify-items-values :justify-items)
+   :align-items
+   (ebox-grid--enum-value
+    (plist-get props :align-items) 'stretch
+    ebox--grid-align-items-values :align-items)
+   :justify-content
+   (ebox-grid--enum-value
+    (plist-get props :justify-content) 'start
+    ebox--grid-content-alignment-values :justify-content)
+   :align-content
+     (ebox-grid--enum-value
+      (plist-get props :align-content) 'start
+      ebox--grid-content-alignment-values :align-content))))
+
 (defconst ebox--grid-default-config-props
-  '(:grid-template-columns nil :grid-template-rows nil
-    :grid-auto-columns nil :grid-auto-rows nil :grid-auto-flow row
-    :row-gap 0 :column-gap 0
-    :justify-items stretch :align-items stretch
-    :justify-content start :align-content start)
-  "Validated property set for the first default GridConfig slice.")
+  (ebox-grid--normalize-config-props nil)
+  "Computed default property set for GridConfig.")
+
+(defun ebox-grid--canonical-atomic-track-p (track allowed-kinds)
+  "Return non-nil when TRACK is canonical and its kind is in ALLOWED-KINDS."
+  (and (proper-list-p track)
+       (memq (plist-get track :kind) allowed-kinds)
+       (pcase (plist-get track :kind)
+         ('auto (equal track '(:kind auto :factor 0)))
+         ('fixed
+          (let ((size (plist-get track :size)))
+            (and (numberp size) (>= size 0)
+                 (equal track (list :kind 'fixed :size size)))))
+         ('fr
+          (let ((factor (plist-get track :factor)))
+            (and (numberp factor) (> factor 0)
+                 (equal track (list :kind 'fr :factor factor)))))
+         (_ nil))))
+
+(defun ebox-grid--canonical-track-p (track)
+  "Return non-nil when TRACK is one canonical top-level track descriptor."
+  (or (ebox-grid--canonical-atomic-track-p track '(fixed auto fr))
+      (and (proper-list-p track)
+           (eq (plist-get track :kind) 'minmax)
+           (ebox-grid--canonical-atomic-track-p
+            (plist-get track :min) '(fixed auto))
+           (ebox-grid--canonical-atomic-track-p
+            (plist-get track :max) '(fixed auto fr))
+           (equal track
+                  (list :kind 'minmax
+                        :min (plist-get track :min)
+                        :max (plist-get track :max))))))
 
 (defun ebox-grid-layout-config-props-p (props)
-  "Return non-nil when PROPS are the validated default GridConfig."
-  (equal props ebox--grid-default-config-props))
+  "Return non-nil when PROPS are canonical validated GridConfig data."
+  (and (proper-list-p props)
+       (zerop (% (length props) 2))
+       (let ((cursor props) (keys ebox--grid-config-prop-keys) valid)
+         (setq valid t)
+         (while (and valid keys)
+           (setq valid (eq (car cursor) (car keys))
+                 cursor (cddr cursor)
+                 keys (cdr keys)))
+         (and valid (null cursor)))
+       (cl-every #'ebox-grid--canonical-track-p
+                 (plist-get props :grid-template-columns))
+       (cl-every #'ebox-grid--canonical-track-p
+                 (plist-get props :grid-template-rows))
+       (let ((auto-column (plist-get props :grid-auto-columns))
+             (auto-row (plist-get props :grid-auto-rows)))
+         (and (or (null auto-column)
+                  (ebox-grid--canonical-track-p auto-column))
+              (or (null auto-row)
+                  (ebox-grid--canonical-track-p auto-row))))
+       (memq (plist-get props :grid-auto-flow) '(row column))
+       (let ((row-gap (plist-get props :row-gap))
+             (column-gap (plist-get props :column-gap)))
+         (and (integerp row-gap) (>= row-gap 0)
+              (numberp column-gap) (>= column-gap 0)))
+       (memq (plist-get props :justify-items)
+             ebox--grid-justify-items-values)
+       (memq (plist-get props :align-items)
+             ebox--grid-align-items-values)
+       (memq (plist-get props :justify-content)
+             ebox--grid-content-alignment-values)
+       (memq (plist-get props :align-content)
+             ebox--grid-content-alignment-values)))
+
+(defun ebox-grid--validate-config-input (plist)
+  "Return canonical GridConfig input PLIST after surface validation."
+  (unless (and (proper-list-p plist) (zerop (% (length plist) 2)))
+    (error "Ebox GridConfig properties must be an even plist: %S" plist))
+  (let ((seen (make-hash-table :test 'eq)))
+    (cl-loop for (key _value) on plist by #'cddr
+             unless (memq key ebox--grid-config-prop-keys)
+             do (error "Ebox GridConfig does not accept %S" key)
+             do (when (gethash key seen)
+                  (error "Duplicate Ebox GridConfig property: %S" key))
+             do (puthash key t seen)))
+  plist)
 
 ;;;###autoload
-(defun ebox-grid-layout-create ()
-  "Return the canonical Grid layout config with computed defaults."
-  (ebox-layout-config--create
-   :kind 'grid
-   :props (copy-sequence ebox--grid-default-config-props)))
+(defun ebox-grid-layout-create (&rest plist)
+  "Return a typed GridConfig from canonical evaluated PLIST.
+Author `:gap' sugar and legacy grid-gap aliases are normalized before this
+programmatic port and are therefore rejected here."
+  (ebox-grid--validate-config-input plist)
+  (let ((props (ebox-grid--normalize-config-props plist)))
+    (unless (ebox-grid-layout-config-props-p props)
+      (error "Ebox GridConfig normalization produced invalid data: %S" props))
+    (ebox-layout-config--create :kind 'grid :props props)))
 
 (defun ebox-grid--visual-props-p (props)
   "Return non-nil when PROPS contains visible box behavior."
@@ -662,15 +824,12 @@ size for start/center/end alignment unless it would overflow its track."
 (defun ebox--render-grid-children (config constraints children)
   "Render Grid CONFIG under frame CONSTRAINTS over flat CHILDREN."
   (let* ((props config)
-         (columns (ebox-grid--normalize-tracks
-                   (plist-get props :grid-template-columns) 'columns))
-         (rows (ebox-grid--normalize-tracks
-                (plist-get props :grid-template-rows) 'rows))
-         (auto-columns (car (ebox-grid--normalize-tracks
-                             (plist-get props :grid-auto-columns) 'columns)))
-         (auto-rows (car (ebox-grid--normalize-tracks
-                          (plist-get props :grid-auto-rows) 'rows)))
-         (gaps (ebox-grid--gap-pair props))
+         (columns (plist-get props :grid-template-columns))
+         (rows (plist-get props :grid-template-rows))
+         (auto-columns (plist-get props :grid-auto-columns))
+         (auto-rows (plist-get props :grid-auto-rows))
+         (gaps (cons (plist-get props :row-gap)
+                     (plist-get props :column-gap)))
          (flow (or (plist-get props :grid-auto-flow) 'row))
          (placed (ebox-grid--place-children children
                                              (max 1 (length columns))
@@ -723,7 +882,8 @@ size for start/center/end alignment unless it would overflow its track."
     (ebox--render-grid-box
      node
      (ebox--render-grid-children
-      (ebox--plist-keep-keys props ebox--grid-layout-prop-keys)
+      (or (plist-get node :ebox-grid-config)
+          (error "Ebox Grid node lacks canonical config"))
       (ebox-grid--legacy-constraints props wrapper)
       (ebox-tree-layout-children node)))))
 
@@ -744,10 +904,14 @@ Children may carry `:grid-column' and `:grid-row' placement properties.
                              unless (memq key ebox--grid-layout-prop-keys)
                              collect key and collect value))
          (wrapper (ebox-grid--wrapper box-props))
+         (config
+          (ebox-grid--normalize-config-props
+           (ebox--plist-keep-keys raw-props ebox--grid-layout-prop-keys)))
          (node (list :ebox-type 'grid
                      :display '(block grid)
                      :props raw-props
                      :raw-props raw-props
+                     :ebox-grid-config config
                      :ebox-style-declarations
                      (ebox-style-compile-declarations raw-props)
                      :box wrapper

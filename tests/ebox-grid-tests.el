@@ -37,6 +37,22 @@
     (should (= (length lines) 1))
     (should (= (ebox--string-pixel-width (car lines)) 120))))
 
+(ert-deftest ebox-grid-repeated-render-reuses-construction-time-config ()
+  "Grid render and resize paths should not reparse canonical track config."
+  (let* ((node (ebox-grid :width '(120)
+                          :grid-template-columns '(1fr 2fr)
+                          (ebox-create :content "A")
+                          (ebox-create :content "B")))
+         (calls 0)
+         (original (symbol-function 'ebox-grid--normalize-config-props)))
+    (cl-letf (((symbol-function 'ebox-grid--normalize-config-props)
+               (lambda (props)
+                 (cl-incf calls)
+                 (funcall original props))))
+      (ebox-render node)
+      (ebox-render node))
+    (should (zerop calls))))
+
 (ert-deftest ebox-grid-minmax-fractional-columns-fill-and-shrink ()
   "Zero-minimum fractional maxima should remain responsive to width."
   (dolist (width '(120 60))

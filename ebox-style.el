@@ -16,6 +16,8 @@
 (declare-function ebox-create "ebox" (&rest plist))
 (declare-function ebox--flex-normalize-container-props
                   "ebox-flex" (props))
+(declare-function ebox-grid--normalize-config-props
+                  "ebox-grid" (props))
 (declare-function ebox--normalize-horizontal-size-value
                   "ebox-flex" (value allowed-keywords))
 (declare-function ebox--nonnegative-horizontal-size-pixels
@@ -1281,6 +1283,9 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
                (if (eq type 'flex)
                    (ebox--flex-normalize-container-props raw)
                  raw))
+    (when (eq type 'grid)
+      (plist-put node :ebox-grid-config
+                 (ebox-grid--normalize-config-props raw)))
     (ebox-style--apply-container-wrapper node style snapshot)))
 
 (defun ebox-style--delete-node-property (node property)
