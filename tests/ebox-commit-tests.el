@@ -1260,6 +1260,91 @@ remain retained identities."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-candidate-rejects-invalid-final-parent-participation ()
+  "A detached replacement must be revalidated after its final graft."
+  (let* ((buffer
+          (ebox-render-to-buffer
+           (generate-new-buffer-name " *ebox-participation-rollback*")
+           (ebox-column
+            (ebox-create :key 'target :host-ref 'target
+                         :content "Stable" :width '(80)))))
+         (surface (with-current-buffer buffer ebox-surface--buffer-surface))
+         (revision (tp-surface-revision surface))
+         (before (ebox-commit-test--buffer-string buffer))
+         (candidate (ebox-candidate-begin buffer)))
+    (unwind-protect
+        (progn
+          ;; Detached subtrees do not know their parent yet, so recording the
+          ;; replacement is legal.  The final Column graft is authoritative.
+          (ebox-candidate-replace-host-ref
+           candidate 'target
+           (ebox-create :key 'target :host-ref 'target
+                        :content "Invalid" :width '(80) :flex-grow 1))
+          (should-error (ebox-commit buffer candidate) :type 'error)
+          (should (= (tp-surface-revision surface) revision))
+          (should (equal (ebox-commit-test--buffer-string buffer) before)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-candidate-cannot-launder-legacy-adapter-provenance ()
+  "A public path copy must not authenticate a replacement as adapter output."
+  (let* ((adapter
+          (ebox-flex-item
+           (ebox-create :host-ref 'target :content "Stable" :width '(80))))
+         (buffer
+          (ebox-render-to-buffer
+           (generate-new-buffer-name " *ebox-adapter-proof-rollback*")
+           (ebox-column adapter)))
+         (surface (with-current-buffer buffer ebox-surface--buffer-surface))
+         (revision (tp-surface-revision surface))
+         (before (ebox-commit-test--buffer-string buffer))
+         (candidate (ebox-candidate-begin buffer))
+         (replacement
+          (ebox-create :host-ref 'target :content "Invalid" :width '(80))))
+    (plist-put replacement :flex-grow 1)
+    (unwind-protect
+        (progn
+          (ebox-candidate-replace-host-ref candidate 'target replacement)
+          (should-error (ebox-commit buffer candidate) :type 'error)
+          (should (= (tp-surface-revision surface) revision))
+          (should (equal (ebox-commit-test--buffer-string buffer) before)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-candidate-participation-validation-stays-changed-local ()
+  "One replacement must not participation-validate every sibling."
+  (let* ((children
+          (cl-loop for index below 200
+                   collect
+                   (if (= index 99)
+                       (ebox-create :key index :host-ref 'target
+                                    :content (number-to-string index))
+                     (ebox-create :key index
+                                  :content (number-to-string index)))))
+         (buffer
+          (ebox-render-to-buffer
+           (generate-new-buffer-name " *ebox-participation-local*")
+           (apply #'ebox-column children)))
+         (candidate (ebox-candidate-begin buffer))
+         (original
+          (symbol-function 'ebox-tree-validate-indexed-participation))
+         author-node-counts)
+    (unwind-protect
+        (progn
+          (ebox-candidate-replace-host-ref
+           candidate 'target
+           (ebox-create :key 99 :host-ref 'target :content "changed"))
+          (cl-letf
+              (((symbol-function 'ebox-tree-validate-indexed-participation)
+                (lambda (node-table parent-table node-ids &optional source)
+                  (when (eq source 'author)
+                    (push (length node-ids) author-node-counts))
+                  (funcall original node-table parent-table node-ids source))))
+            (ebox-commit buffer candidate))
+          (should (equal author-node-counts '(2))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-candidate-root-replacement-reuses-candidate-validity-contract ()
   "Root replacement rejects invalid, other-buffer, stale, and sealed use."
   (let ((first (generate-new-buffer " *ebox-root-valid-first*"))

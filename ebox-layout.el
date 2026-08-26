@@ -1624,6 +1624,9 @@ Internal implementation of `ebox-render' for box nodes."
 (defvar ebox--surface-materialization-active nil
   "Non-nil while an Ebox TP producer is running raw layout.")
 
+(defvar ebox--render-root-parent-kind nil
+  "Formatting context of a detached root rendered for its owning parent.")
+
 (defun ebox--render-layout (node)
   "Render layout NODE directly to a multi-line propertized string.
 NODE can be:

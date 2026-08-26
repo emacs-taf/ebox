@@ -40,6 +40,8 @@
                   (cache-key signature rendered &optional side-effects))
 (declare-function ebox--render-with-cache
                   "ebox-incremental" (node &optional force cache-probe))
+(declare-function ebox-tree--register-legacy-flex-item-adapter
+                  "ebox-tree" (adapter token source content))
 (declare-function ebox-create "ebox" (&rest plist))
 (declare-function ebox-get "ebox" (box property))
 (declare-function ebox--ensure-node-id "ebox" (node))
@@ -79,6 +81,14 @@
 (defconst ebox--flex-item-prop-keys
   '(:order :flex :flex-grow :flex-shrink :flex-basis :align-self)
   "Properties that belong to flex item metadata.")
+
+(defconst ebox--flex-item-direct-adapter-token
+  (make-symbol "ebox-flex-item-direct-adapter")
+  "Opaque provenance token for a legacy Flex item without a Box wrapper.")
+
+(defconst ebox--flex-item-wrapper-adapter-token
+  (make-symbol "ebox-flex-item-wrapper-adapter")
+  "Opaque provenance token for a legacy Flex item with one Box wrapper.")
 
 (defconst ebox--flex-container-layout-prop-keys
   '(:flex-direction :flex-wrap :flex-flow
@@ -519,11 +529,15 @@ programmatic port and are therefore rejected here."
        (not (eq (plist-get source :ebox-type) 'box))))
 
 (defun ebox--flex-bind-source-viewport (source viewport thunk)
-  "Call THUNK with VIEWPORT bound for composite flex item SOURCE."
-  (if (and viewport (ebox--flex-composite-source-p source))
-      (let ((ebox-viewport-width viewport))
-        (funcall thunk))
-    (funcall thunk)))
+  "Call THUNK in SOURCE's detached Flex-item render context.
+VIEWPORT is bound only for composite SOURCE nodes; the Flex parent context is
+always bound because SOURCE remains a direct Flex participant while rendered
+as a detached geometry root."
+  (let ((ebox--render-root-parent-kind 'flex))
+    (if (and viewport (ebox--flex-composite-source-p source))
+        (let ((ebox-viewport-width viewport))
+          (funcall thunk))
+      (funcall thunk))))
 
 (defvar ebox--flex-sized-render-observation-table
   (make-hash-table :test 'eq :weakness 'key)
@@ -575,13 +589,18 @@ this avoids signature and retained-cost work for one-off responsive sizes."
 Direct box flex items are measured intrinsically.  Composite items receive
 VIEWPORT for descendants so auto and max-width layouts can resolve against
 their containing block, while stack/column containers do not stretch their own
-outer measurement width to VIEWPORT."
+  outer measurement width to VIEWPORT."
   (if (ebox--flex-composite-source-p source)
-      (let ((ebox-viewport-width viewport)
-            (ebox--intrinsic-layout-measurement t))
-        (ebox--render-with-cache source))
-    (let ((ebox-viewport-width nil))
-      (ebox--render-with-cache source))))
+      (ebox--flex-bind-source-viewport
+       source viewport
+       (lambda ()
+         (let ((ebox--intrinsic-layout-measurement t))
+           (ebox--render-with-cache source))))
+    (ebox--flex-bind-source-viewport
+     source nil
+     (lambda ()
+       (let ((ebox-viewport-width nil))
+         (ebox--render-with-cache source))))))
 
 (defun ebox--flex-measured-render-context-compatible-p
     (source measured-viewport final-viewport)
@@ -1115,12 +1134,14 @@ Return a sized render entry containing the rendered string and dimensions."
                 (ebox--flex-sized-entry-rendered fragment-entry))
                ((and fragment-key
                      (fboundp 'ebox--render-cache-render-with-scroll-actions))
-                (let ((ebox-viewport-width item-viewport))
-                  (pcase-let ((`(,captured-rendered ,captured-side-effects)
-                               (ebox--render-cache-render-with-scroll-actions
-                                (or node source))))
-                    (setq fragment-side-effects captured-side-effects)
-                    captured-rendered)))
+                (ebox--flex-bind-source-viewport
+                 source item-viewport
+                 (lambda ()
+                   (pcase-let ((`(,captured-rendered ,captured-side-effects)
+                                (ebox--render-cache-render-with-scroll-actions
+                                 (or node source))))
+                     (setq fragment-side-effects captured-side-effects)
+                     captured-rendered))))
                (t
                 (ebox--flex-bind-source-viewport
                  source item-viewport
@@ -1629,12 +1650,18 @@ metadata and rendering decisions."
            (source (copy-sequence source))
            (declarations
             (append (plist-get source :ebox-style-declarations)
-                    (ebox-style-compile-declarations item-props))))
+                    (ebox-style-compile-declarations item-props)))
+           (adapter (list :ebox-type 'flex-item
+                          :display '(block flow)
+                          :node source
+                          :props item-props))
+           (token (if box-props
+                      ebox--flex-item-wrapper-adapter-token
+                    ebox--flex-item-direct-adapter-token)))
       (plist-put source :ebox-style-declarations declarations)
-      (list :ebox-type 'flex-item
-            :display '(block flow)
-            :node source
-            :props item-props))))
+      (ebox-tree--register-legacy-flex-item-adapter
+       adapter token source
+       (and box-props (plist-get source :ebox-content-node))))))
 
 ;;;###autoload
 (defun ebox-flex (&rest items)

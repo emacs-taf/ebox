@@ -33,6 +33,7 @@
 (defvar ebox--viewport-dependent-subtree-cache)
 (defvar ebox--viewport-height-dependent-subtree-cache)
 (defvar ebox--render-runtime-revision)
+(defvar ebox--render-root-parent-kind)
 (defvar ebox--render-cache-table)
 (defvar ebox--render-cache-signature-cache)
 (defvar ebox--layout-fragments-table)
@@ -960,7 +961,8 @@ PREVIOUS-STATE's node-object table."
          (and subjects (plist-get subjects :node-subject-table))
          bindings-by-subject states-by-subject style-state-table
          stylesheet-signature
-         selector-tree-token stylesheet-subject-local-p))))
+         selector-tree-token stylesheet-subject-local-p
+         ebox--render-root-parent-kind))))
     (list :surface-root surface-root
           :node-root node-root
           :objects-by-node objects-by-node
@@ -1056,7 +1058,10 @@ PREVIOUS-STATE's node-object table."
             (puthash node object objects-by-node)
             (puthash node-id object objects-by-id))))
       (unless (gethash (plist-get root :node-id) objects-by-id)
-        (error "Ebox native projection lost its root object")))
+        (error "Ebox native projection lost its root object"))
+      (when subject-table
+        (ebox-tree-validate-indexed-participation
+         nodes parents touched-ids 'computed)))
     objects-by-node))
 
 (defun ebox-surface--complete-projection
@@ -1089,7 +1094,8 @@ the projection roots a second time."
      (and subjects (plist-get subjects :node-subject-table))
      bindings-by-subject states-by-subject style-state-table
      stylesheet-signature
-     selector-tree-token stylesheet-subject-local-p)
+     selector-tree-token stylesheet-subject-local-p
+     ebox--render-root-parent-kind)
     projection))
 
 (defun ebox-surface--projection-result
@@ -1369,7 +1375,8 @@ When PRESERVE-IDENTITIES-P is non-nil, retain existing Ebox node and region
 identities while always discarding TP handles and render-cache attachments."
   (unless (and (listp source) (not (stringp source)))
     (error "Ebox surface source must be an Ebox node"))
-  (ebox-tree-validate-declarative-root source)
+  (ebox-tree-validate-declarative-root
+   source t ebox--render-root-parent-kind)
   (let ((candidate (ebox-tree-copy-node-structure source)))
     (if preserve-identities-p
         (ebox-surface--clear-runtime-attachments candidate)
@@ -1697,7 +1704,8 @@ dependencies, or any malformed index conservatively preserves root planning."
 (defun ebox-surface--ensure-node-tree
     (context parent node table subject-table bindings-by-subject
              states-by-subject style-state-table stylesheet-signature
-             selector-tree-token stylesheet-subject-local-p)
+             selector-tree-token stylesheet-subject-local-p
+             &optional parent-kind parent-node grandparent-node)
   "Ensure styled NODE descendants below PARENT in CONTEXT and fill TABLE."
   (let ((object
          (tp-object-ensure context parent
@@ -1712,13 +1720,19 @@ dependencies, or any malformed index conservatively preserves root planning."
        style-state-table
        stylesheet-signature selector-tree-token
        stylesheet-subject-local-p))
-    (dolist (child (ebox-tree--children-raw node))
-      (ebox-surface--ensure-node-tree
-       context object child table subject-table bindings-by-subject
-       states-by-subject style-state-table stylesheet-signature
-       selector-tree-token stylesheet-subject-local-p))
+    (let ((child-kind (ebox-tree--child-layout-kind node parent-kind)))
+      (ebox-tree-for-each-direct-child
+       node
+       (lambda (child)
+         (ebox-surface--ensure-node-tree
+          context object child table subject-table bindings-by-subject
+          states-by-subject style-state-table stylesheet-signature
+          selector-tree-token stylesheet-subject-local-p
+          child-kind node parent-node))))
     (when subject-table
-      (ebox-style-sync-flex-item node))
+      (ebox-style-sync-flex-item node)
+      (ebox-tree--validate-node-parent-participation
+       node parent-kind parent-node grandparent-node 'computed))
     object))
 
 (defun ebox-surface--node-object-table (objects-by-node)
@@ -1951,6 +1965,9 @@ valid because their declarative layout and viewport did not change."
                   (binding (plist-get style-state :binding)))
         (ebox-style-apply-computed node (tp-binding-read binding))
         (ebox-style-sync-flex-item node)))
+    (when owner-ids
+      (ebox-tree-validate-indexed-participation
+       nodes (plist-get state :parent-table) owner-ids 'computed))
     state))
 
 (defun ebox-surface--rendered-role-topology-signature

@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;; Owns runtime identity, display accessors, child traversal, parent paths, and
-;; flex participation metadata.  It does not own layout measurement or buffer
+;; parent participation metadata.  It does not own layout measurement or buffer
 ;; editing.
 
 ;;; Code:
@@ -13,6 +13,7 @@
 (require 'ecss-selector)
 (require 'ebox-style)
 (require 'ebox-child-range)
+(require 'ebox-layout-config)
 
 (declare-function ebox-get "ebox" (box property))
 (declare-function ebox--ensure-node-id "ebox" (node))
@@ -28,6 +29,11 @@
   "Dynamic snapshot-detail-local node -> region ids cache.
 This is an optimization for snapshot capture, not buffer runtime state.")
 (defvar ebox--flex-item-prop-keys)
+(defvar ebox--flex-item-direct-adapter-token)
+(defvar ebox--flex-item-wrapper-adapter-token)
+(defvar ebox-tree--legacy-flex-item-adapter-proofs
+  (make-hash-table :test #'eq :weakness 'key)
+  "Weak adapter -> construction-shape proofs for legacy Flex items.")
 
 (defun ebox-tree-computed-display (node)
   "Return NODE's canonical CSS-like display pair."
@@ -163,6 +169,44 @@ This is an optimization for snapshot capture, not buffer runtime state.")
 The returned nodes remain owned by their tree.  Callers may inspect them but
 must not modify a published runtime tree through this accessor."
   (ebox-tree--children-raw node))
+
+(defun ebox-tree-for-each-direct-child (node function)
+  "Call FUNCTION for each direct child of NODE without materializing Ranges."
+  (let ((type (and (listp node) (plist-get node :ebox-type)))
+        (sequence (and (listp node)
+                       (plist-get node :ebox-child-sequence))))
+    (when (memq type '(flex grid))
+      (when-let* ((box (plist-get node :box)))
+        (funcall function box)))
+    (if sequence
+        (ebox-child-range--fold
+         sequence
+         (lambda (ignored child)
+           (funcall function child)
+           ignored)
+         nil)
+      (pcase type
+        ('box
+         (if (plist-member node :children)
+             (dolist (child (plist-get node :children))
+               (funcall function child))
+           (when-let* ((child (plist-get node :ebox-content-node)))
+             (funcall function child))))
+        ((or 'concat 'stack 'flex 'grid)
+         (dolist (child
+                  (or (plist-get node :children)
+                      (pcase type
+                        ('concat
+                         (delq nil (list (plist-get node :left)
+                                         (plist-get node :right))))
+                        ('stack
+                         (delq nil (list (plist-get node :top)
+                                         (plist-get node :bottom)))))))
+           (funcall function child)))
+        ('flex-item
+         (when-let* ((child (plist-get node :node)))
+           (funcall function child))))))
+  node)
 
 (defun ebox-tree-layout-children (node)
   "Return layout container children for NODE in render order.
@@ -360,10 +404,17 @@ original object identity."
                      (setq copy (without (without copy :top) :bottom))))
                   (plist-put copy :ebox-child-sequence
                              (ebox-child-range--build (nreverse segments))))
-              (ebox-tree-copy-with-direct-child-replacements
-               node
-               (mapcar (lambda (child) (cons child (copy-node child)))
-                       (ebox-tree--children-raw node))))))))
+              (let ((copy
+                     (ebox-tree-copy-with-direct-child-replacements
+                      node
+                      (mapcar (lambda (child)
+                                (cons child (copy-node child)))
+                              (ebox-tree--children-raw node)))))
+                ;; Only this exact deep-copy traversal has proven every copied
+                ;; child derives from the authentic source tree.  Generic
+                ;; path-copy replacements must not launder adapter provenance.
+                (ebox-tree--remint-legacy-flex-item-adapter-proof
+                 node copy)))))))
     (copy-node root)))
 
 (defun ebox-tree--runtime-identity-node-shell
@@ -488,7 +539,225 @@ Host references are root-global opaque metadata and are compared with `equal'."
       (visit root))
     root))
 
-(defun ebox-tree-validate-declarative-root (root)
+(defconst ebox-tree--common-participation-keys
+  '(:order :align-self)
+  "Participation properties shared by Flex and Grid children.")
+
+(defconst ebox-tree--flex-participation-keys
+  '(:flex :flex-grow :flex-shrink :flex-basis)
+  "Properties accepted only on a direct Flex child Box.")
+
+(defconst ebox-tree--grid-participation-keys
+  '(:grid-column :grid-row :grid-column-span :grid-row-span :justify-self)
+  "Properties accepted only on a direct Grid child Box.")
+
+(defconst ebox-tree--participation-keys
+  (append ebox-tree--common-participation-keys
+          ebox-tree--flex-participation-keys
+          ebox-tree--grid-participation-keys)
+  "Complete canonical parent-participation property domain.")
+
+(defun ebox-tree--style-specifies-participation-p (style key)
+  "Return non-nil when computed STYLE has a declaration winner for KEY."
+  (and style
+       (ebox-style--specified-property-p style (ebox-style-schema-id key))))
+
+(defun ebox-tree--declarations-specify-participation-p (node key)
+  "Return non-nil when NODE author declarations specify participation KEY."
+  (and (listp node)
+       (plist-member (ebox-style-node-declarations node)
+                     (ebox-style-schema-id key))))
+
+(defun ebox-tree--author-specifies-participation-p (node key)
+  "Return non-nil when NODE's author source specifies participation KEY."
+  (if (eq (plist-get node :ebox-type) 'flex-item)
+      (let* ((adapter-source (plist-get node :node))
+             (content (and (listp adapter-source)
+                           (plist-get adapter-source :ebox-content-node)))
+             (projected-p
+              (or (and (listp adapter-source)
+                       (plist-get adapter-source :ebox-computed-style))
+                  (and (listp content)
+                       (plist-get content :ebox-computed-style)))))
+        (or (ebox-tree--declarations-specify-participation-p
+             adapter-source key)
+            (ebox-tree--declarations-specify-participation-p content key)
+            (and (not projected-p)
+                 (plist-member (plist-get node :props) key))))
+    (or (ebox-tree--declarations-specify-participation-p node key)
+        (and (null (plist-get node :ebox-computed-style))
+             (plist-member node key)))))
+
+(defun ebox-tree--node-participation-keys (node source)
+  "Return NODE participation keys from AUTHOR or COMPUTED SOURCE."
+  (let ((flex-item-p (eq (plist-get node :ebox-type) 'flex-item))
+        (style (plist-get node :ebox-computed-style))
+        keys)
+    (dolist (key ebox-tree--participation-keys)
+      (when
+          (pcase source
+            ('author
+             (ebox-tree--author-specifies-participation-p node key))
+            ('computed
+             (if flex-item-p
+                 (let* ((adapter-source (plist-get node :node))
+                        (adapter-style
+                         (and (listp adapter-source)
+                              (plist-get adapter-source
+                                         :ebox-computed-style)))
+                        (content (and (listp adapter-source)
+                                      (plist-get adapter-source
+                                                 :ebox-content-node)))
+                        (content-style
+                         (and (listp content)
+                              (plist-get content :ebox-computed-style))))
+                   (and (plist-member (plist-get node :props) key)
+                        (or (ebox-tree--style-specifies-participation-p
+                             adapter-style key)
+                            (ebox-tree--style-specifies-participation-p
+                             content-style key))))
+               (and (plist-member node key)
+                    (ebox-tree--style-specifies-participation-p style key))))
+            (_ (error "Unknown Ebox participation source: %S" source)))
+        (push key keys)))
+    (nreverse keys)))
+
+(defun ebox-tree--child-layout-kind (node parent-kind)
+  "Return layout kind governing NODE children, preserving transparent adapters."
+  (pcase (plist-get node :ebox-type)
+    ('flex-item parent-kind)
+    ('flex 'flex)
+    ('grid 'grid)
+    (_ (pcase (if (and (eq (plist-get node :ebox-kind) 'box)
+                       (plist-get node :ebox-layout-config))
+                  (ebox-layout-config-kind
+                   (plist-get node :ebox-layout-config))
+                (ebox-tree-display-inner node))
+         ('flow 'normal)
+         (kind kind)))))
+
+(defun ebox-tree--legacy-flex-item-adapter-p (node token)
+  "Return non-nil when NODE has the exact legacy Flex adapter TOKEN shape."
+  (let ((proof (gethash node ebox-tree--legacy-flex-item-adapter-proofs))
+        (source (plist-get node :node)))
+    (and token
+         (eq (plist-get node :ebox-type) 'flex-item)
+         (vectorp proof)
+         (= (length proof) 3)
+         (eq (aref proof 0) token)
+         (eq (aref proof 1) source)
+         (listp source)
+         (not (stringp source))
+         (let ((children (ebox-tree--children-raw node)))
+           (and (eq (car children) source)
+                (null (cdr children))))
+         (if (eq token ebox--flex-item-wrapper-adapter-token)
+             (let ((content (plist-get source :ebox-content-node)))
+               (and (eq (plist-get source :ebox-type) 'box)
+                    (listp content)
+                    (not (stringp content))
+                    (eq (aref proof 2) content)))
+           (null (aref proof 2))))))
+
+(defun ebox-tree--register-legacy-flex-item-adapter
+    (adapter token source content)
+  "Register ADAPTER's exact TOKEN, SOURCE, and optional CONTENT identities."
+  (puthash adapter (vector token source content)
+           ebox-tree--legacy-flex-item-adapter-proofs)
+  adapter)
+
+(defun ebox-tree--remint-legacy-flex-item-adapter-proof (old new)
+  "Bind NEW adapter provenance to copied children when OLD is authentic."
+  (cond
+   ((ebox-tree--legacy-flex-item-adapter-p
+     old ebox--flex-item-direct-adapter-token)
+    (ebox-tree--register-legacy-flex-item-adapter
+     new ebox--flex-item-direct-adapter-token (plist-get new :node) nil))
+   ((ebox-tree--legacy-flex-item-adapter-p
+     old ebox--flex-item-wrapper-adapter-token)
+    (let ((wrapper (plist-get new :node)))
+      (ebox-tree--register-legacy-flex-item-adapter
+       new ebox--flex-item-wrapper-adapter-token
+       wrapper (plist-get wrapper :ebox-content-node))))
+   (t
+    (remhash new ebox-tree--legacy-flex-item-adapter-proofs)
+    new)))
+
+(defun ebox-tree--legacy-flex-item-duplicate-p (node parent grandparent)
+  "Return non-nil when NODE is an exact duplicate inside a legacy adapter."
+  (or
+   (and (ebox-tree--legacy-flex-item-adapter-p
+         parent ebox--flex-item-direct-adapter-token)
+        (eq node (plist-get parent :node)))
+   (and (ebox-tree--legacy-flex-item-adapter-p
+         parent ebox--flex-item-wrapper-adapter-token)
+        (let ((wrapper (plist-get parent :node)))
+          (and (eq node wrapper)
+               (eq (plist-get wrapper :ebox-type) 'box)
+               (listp (plist-get wrapper :ebox-content-node)))))
+   (and (ebox-tree--legacy-flex-item-adapter-p
+         grandparent ebox--flex-item-wrapper-adapter-token)
+        (let ((wrapper (plist-get grandparent :node)))
+          (and (eq parent wrapper)
+               (eq (plist-get wrapper :ebox-type) 'box)
+               (eq node (plist-get wrapper :ebox-content-node)))))))
+
+(defun ebox-tree--validate-node-parent-participation
+    (node parent-kind parent grandparent source)
+  "Validate NODE participation under PARENT-KIND from AUTHOR or COMPUTED SOURCE."
+  (unless (ebox-tree--legacy-flex-item-duplicate-p node parent grandparent)
+    (let ((keys (ebox-tree--node-participation-keys node source)))
+      (when keys
+        (when (eq (plist-get node :ebox-kind) 'text)
+          (error "Ebox Text cannot carry participation properties: %S" keys))
+        (pcase parent-kind
+          ('flex
+           (when (cl-intersection
+                  keys ebox-tree--grid-participation-keys :test #'eq)
+             (error "Grid participation requires a direct Grid parent: %S"
+                    keys)))
+          ('grid
+           (when (cl-intersection
+                  keys ebox-tree--flex-participation-keys :test #'eq)
+             (error "Flex participation requires a direct Flex parent: %S"
+                    keys)))
+          (_ (error "Ebox participation requires a Flex or Grid parent: %S"
+                    keys))))))
+  node)
+
+(defun ebox-tree--indexed-parent-context
+    (node-id node-table parent-table)
+  "Return (PARENT-KIND PARENT GRANDPARENT) for NODE-ID in indexed tree."
+  (let* ((parent-id (gethash node-id parent-table))
+         (parent (and parent-id (gethash parent-id node-table)))
+         (grandparent-id (and parent-id (gethash parent-id parent-table)))
+         (grandparent (and grandparent-id
+                           (gethash grandparent-id node-table)))
+         (layout-owner parent))
+    (while (and layout-owner
+                (eq (plist-get layout-owner :ebox-type) 'flex-item))
+      (let ((owner-id (plist-get layout-owner :node-id)))
+        (setq owner-id (and owner-id (gethash owner-id parent-table))
+              layout-owner (and owner-id (gethash owner-id node-table)))))
+    (list (and layout-owner
+               (ebox-tree--child-layout-kind layout-owner nil))
+          parent grandparent)))
+
+(defun ebox-tree-validate-indexed-participation
+    (node-table parent-table node-ids &optional source)
+  "Validate NODE-IDS in indexed final tree using AUTHOR or COMPUTED SOURCE."
+  (setq source (or source 'author))
+  (dolist (node-id (delete-dups (copy-sequence node-ids)))
+    (when-let* ((node (gethash node-id node-table)))
+      (pcase-let ((`(,parent-kind ,parent ,grandparent)
+                   (ebox-tree--indexed-parent-context
+                    node-id node-table parent-table)))
+        (ebox-tree--validate-node-parent-participation
+         node parent-kind parent grandparent source))))
+  node-table)
+
+(defun ebox-tree-validate-declarative-root
+    (root &optional validate-participation-p root-parent-kind)
   "Validate ROOT for one declarative runtime commit.
 
 The runtime tree must be a proper tree: a node object cannot appear in two
@@ -502,7 +771,7 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
         (active (make-hash-table :test 'eq))
         (range-refs (make-hash-table :test 'equal)))
     (cl-labels
-        ((visit (node)
+        ((visit (node parent-kind parent grandparent)
            (when (and (listp node) (not (stringp node)))
              (when (gethash node active)
                (error "Ebox declarative tree contains a cycle"))
@@ -510,6 +779,9 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
                (error "Ebox declarative tree reuses one node object"))
              (puthash node t seen)
              (puthash node t active)
+             (when validate-participation-p
+               (ebox-tree--validate-node-parent-participation
+                node parent-kind parent grandparent 'author))
              (let* ((keys (make-hash-table :test 'equal))
                     (type (plist-get node :ebox-type))
                     (raw (and (memq type '(concat stack flex grid))
@@ -547,9 +819,11 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
                        (error "Ebox declarative siblings use duplicate key %S"
                               key))
                      (puthash key t keys))
-                 (visit child)))
+                 (visit child
+                        (ebox-tree--child-layout-kind node parent-kind)
+                        node parent)))
              (remhash node active))))
-      (visit root))
+      (visit root root-parent-kind nil nil))
     root))
 
 (defun ebox-tree-clear-runtime-identities (root)

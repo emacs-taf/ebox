@@ -26,7 +26,11 @@
 (declare-function ebox--replay-scroll-cache-actions
                   "ebox" (actions &optional portable))
 (declare-function ebox-tree-validate-declarative-root
-                  "ebox-tree" (root))
+                  "ebox-tree"
+                  (root &optional validate-participation-p root-parent-kind))
+(declare-function ebox-tree-validate-indexed-participation
+                  "ebox-tree"
+                  (node-table parent-table node-ids &optional source))
 (declare-function ebox-tree-clear-runtime-identities
                   "ebox-tree" (root))
 (declare-function ebox-tree-copy-node-structure
@@ -5815,8 +5819,31 @@ complete preorder first-owner and postorder last-box semantics."
           :dirty-set
           (ebox-incremental--candidate-dirty-set-from-touched
            old-state candidate-root touched)
+          :participation-node-ids
+          (ebox-incremental--candidate-participation-node-ids touched)
           :touched-count (length touched)
           :removed-count (length removed))))
+
+(defun ebox-incremental--candidate-participation-node-ids (touched)
+  "Return final nodes whose participation context changed in TOUCHED."
+  (let ((seen (make-hash-table :test 'equal)) result)
+    (cl-labels ((record
+                 (node)
+                 (when-let* ((node-id (and node (plist-get node :node-id))))
+                   (unless (gethash node-id seen)
+                     (puthash node-id t seen)
+                     (push node-id result)))))
+      (dolist (entry touched)
+        (pcase-let ((`(,old-node ,new-node ,_parent-id ,_children-changed)
+                     entry))
+          (record new-node)
+          ;; Added/replaced children already occur in TOUCHED.  Revisit every
+          ;; direct child only when the parent's layout role itself changed.
+          (when (or (null old-node)
+                    (not (eq (ebox-tree--child-layout-kind old-node 'parent)
+                             (ebox-tree--child-layout-kind new-node 'parent))))
+            (ebox-tree-for-each-direct-child new-node #'record))))
+      (nreverse result))))
 
 (defun ebox-incremental--candidate-local-index-delta
     (old-state candidate-root &optional path-copy-trace range-index-deltas)
@@ -6138,6 +6165,8 @@ replace those O(n) table copies without changing this delta contract."
                         :native-node-postorder native-node-postorder)))
             (list :index index
                   :dirty-set dirty-set
+                  :participation-node-ids
+                  (ebox-incremental--candidate-participation-node-ids touched)
                   :touched-node-ids
                   (mapcar
                    (lambda (entry)
@@ -6538,7 +6567,7 @@ must be recomputed in the next publication."
   (unless (and (listp next-root) (not (stringp next-root)))
     (error "Ebox declarative root must be an Ebox node"))
   ;; Validate before copying so shared references and cycles remain visible.
-  (ebox-tree-validate-declarative-root next-root)
+  (ebox-tree-validate-declarative-root next-root t)
   (let* ((candidate-root
           (ebox-tree-clear-runtime-identities
            (ebox-tree-copy-node-structure next-root)))
@@ -6572,6 +6601,12 @@ must be recomputed in the next publication."
     ;; published, and path copying introduces no new sibling or ref
     ;; relations outside the replaced anchors.  Re-walking the whole
     ;; tree here made every commit pay one full-page validation.
+    (let ((index (plist-get local-preparation :index)))
+      (ebox-tree-validate-indexed-participation
+       (plist-get index :node-table)
+       (plist-get index :parent-table)
+       (plist-get local-preparation :participation-node-ids)
+       'author))
     (setq local-preparation
           (plist-put local-preparation
                      :detached-identity-history detached-history))

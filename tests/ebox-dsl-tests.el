@@ -421,6 +421,106 @@
     (should (= (ebox-dsl-test--tree-count box (lambda (_node) t)) 5))
     (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 5))))
 
+(ert-deftest ebox-canonical-participation-validates-the-final-parent-context ()
+  "Participation should be legal only under its matching direct parent layout."
+  (cl-labels
+      ((child (&rest props)
+         (apply #'ebox-box-create
+                :layout (ebox-normal-layout-create)
+                :children (list (ebox-text-create :value "A"))
+                props))
+       (parent (layout child)
+         (ebox-box-create :layout layout :children (list child))))
+    (should (stringp
+             (ebox-render
+              (parent (ebox-flex-layout-create) (child :flex-grow 1)))))
+    (should (stringp
+             (ebox-render
+              (parent (ebox-grid-layout-create) (child :grid-row 1)))))
+    (should-error
+     (ebox-render (child :flex-grow 1)) :type 'error)
+    (should-error
+     (ebox-render
+      (parent (ebox-normal-layout-create) (child :flex-grow 1)))
+     :type 'error)
+    (should-error
+     (ebox-render
+      (parent (ebox-flex-layout-create) (child :grid-row 1)))
+     :type 'error)
+    (should-error
+     (ebox-render
+      (parent (ebox-grid-layout-create) (child :flex-grow 1)))
+     :type 'error)
+    (let ((text (ebox-text-create :value "A")))
+      (plist-put text :flex-grow 1)
+      (should-error
+       (ebox-render (parent (ebox-flex-layout-create) text)) :type 'error))
+    ;; The final candidate is authoritative after ECSS projection too.
+    (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+      (ebox-style-add-rule "box" (list :flex-grow 1))
+      (should-error
+       (ebox-render
+        (parent (ebox-normal-layout-create) (child)))
+       :type 'error))
+    ;; Detached Flex geometry retains its final parent during computed style.
+    (let ((ebox-style-stylesheet (ecss-stylesheet-create))
+          (detached (child)))
+      (plist-put detached :class "detached-flex-item")
+      (ebox-style-add-rule ".detached-flex-item" (list :flex-grow 1))
+      (let ((ebox--render-root-parent-kind 'flex))
+        (should (stringp (ebox-render detached))))
+      ;; The dynamic context is exact and cannot authorize a later root.
+      (should-error (ebox-render detached) :type 'error))
+    (let ((ebox-style-stylesheet (ecss-stylesheet-create))
+          (detached (child)))
+      (plist-put detached :class "detached-flex-item")
+      (ebox-style-add-rule ".detached-flex-item" (list :grid-row 1))
+      (let ((ebox--render-root-parent-kind 'flex))
+        (should-error (ebox-render detached) :type 'error)))
+    ;; A real legacy adapter exempts only its two exact duplicate nodes.
+    (let* ((illegal-grandchild (child :flex-grow 1))
+           (nested (parent (ebox-normal-layout-create) illegal-grandchild))
+           (adapter (ebox-flex-item nested :flex-grow 1 :padding 1)))
+      ;; The obsolete mutable depth field must have no authority.
+      (plist-put adapter :ebox-flex-item-adapter-depth 99)
+      (should-error
+       (ebox-render (ebox-flex :width '(100) adapter))
+       :type 'error))
+    ;; Provenance binds the exact constructor-time source identities.
+    (let* ((adapter (ebox-flex-item (ebox-create :content "original")))
+           (replacement (ebox-create :content "replacement")))
+      (plist-put replacement :flex-grow 1)
+      (plist-put adapter :node replacement)
+      (should-error
+       (ebox-render (ebox-column adapter)) :type 'error))
+    (let* ((adapter (ebox-flex-item (ebox-create :content "original")))
+           (source (plist-get adapter :node))
+           (replacement (ebox-create :content "replacement")))
+      (plist-put replacement :flex-grow 1)
+      (setq adapter
+            (ebox-tree-copy-with-direct-child-replacements
+             adapter (list (cons source replacement))))
+      (should-error
+       (ebox-render (ebox-column adapter)) :type 'error))
+    (let* ((adapter
+            (ebox-flex-item (ebox-create :content "original") :padding 1))
+           (wrapper (plist-get adapter :node))
+           (replacement (ebox-create :content "replacement")))
+      (plist-put replacement :flex-grow 1)
+      (plist-put wrapper :ebox-content-node replacement)
+      (should-error
+       (ebox-render (ebox-column adapter)) :type 'error))
+    ;; Internal layout and parent participation are orthogonal facts.
+    (should
+     (stringp
+      (ebox-render
+       (parent
+        (ebox-grid-layout-create)
+        (ebox-box-create
+         :layout (ebox-flex-layout-create)
+         :children (list (ebox-text-create :value "A"))
+         :grid-row 1)))))))
+
 (ert-deftest ebox-canonical-grid-revalidates-the-typed-config-boundary ()
   "GridConfig must reject frame properties and cross-kind property sets."
   (let ((extra-frame-prop (ebox-grid-layout-create))
