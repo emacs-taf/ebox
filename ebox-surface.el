@@ -50,6 +50,7 @@
   "Per-projection cache for selector-free computed inline styles.")
 
 (declare-function ebox--render-layout "ebox-layout" (node))
+(declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox-native-commit-render
                   "ebox-native-commit" (state node))
 (declare-function ebox-native-reflow-frame-fragments

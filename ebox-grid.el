@@ -18,6 +18,7 @@
 
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--ensure-region-id "ebox" (box))
+(declare-function ebox-get "ebox" (box property))
 (declare-function ebox-create "ebox" (&rest plist))
 (declare-function ebox-render "ebox-layout" (node))
 (declare-function ebox--lines-concat-horizontal "ebox" (&rest strings))
