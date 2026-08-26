@@ -23,7 +23,8 @@
   "Directory containing the active Ebox Lisp sources.")
 
 (defconst ebox--compile-sources
-  '("ebox-cache.el" "ebox-style.el" "ebox-node-factory.el"
+  '("ebox-cache.el" "ebox-style.el" "ebox-layout-config.el"
+    "ebox-node-factory.el"
     "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
     "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
@@ -41,6 +42,7 @@
 (require 'subr-x)
 (require 'ebox-cache)
 (require 'ebox-style)
+(require 'ebox-layout-config)
 (require 'ebox-node-factory)
 (require 'ebox-child-range)
 (require 'ebox-tree)
@@ -4601,6 +4603,7 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-display-buffer
     ebox-display-signature
     ebox-flex
+    ebox-flex-layout-create
     ebox-flex-item
     ebox-grid
     ebox-grid-fr

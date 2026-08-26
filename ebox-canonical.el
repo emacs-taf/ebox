@@ -11,15 +11,9 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'ebox-layout-config)
 (require 'ebox-style)
 (require 'ebox-node-factory)
-
-(cl-defstruct
-    (ebox-layout-config
-     (:constructor ebox-layout-config--create))
-  "Canonical typed layout selection for one BoxNode."
-  kind
-  props)
 
 (defun ebox-canonical--validate-plist (plist context)
   "Validate PLIST shape for error CONTEXT and return PLIST."
@@ -91,21 +85,6 @@
       (error "%s does not accept %S"
              context (plist-get property :name)))))
 
-;;;###autoload
-(defun ebox-normal-layout-create ()
-  "Return the canonical Normal layout config."
-  (ebox-layout-config--create :kind 'normal :props nil))
-
-;;;###autoload
-(defun ebox-row-layout-create ()
-  "Return the canonical Row layout config."
-  (ebox-layout-config--create :kind 'row :props nil))
-
-;;;###autoload
-(defun ebox-column-layout-create ()
-  "Return the canonical Column layout config."
-  (ebox-layout-config--create :kind 'column :props nil))
-
 (defun ebox-node-kind (node)
   "Return canonical NODE kind, or nil for a legacy runtime node."
   (and (listp node) (plist-get node :ebox-kind)))
@@ -132,7 +111,7 @@
   "Return canonical BoxNode NODE's typed layout config."
   (unless (ebox-box-node-p node)
     (error "Expected canonical BoxNode, got %S" node))
-  (plist-get node :ebox-layout-config))
+  (ebox-layout-config--copy (plist-get node :ebox-layout-config)))
 
 (defun ebox-box-node-children (node)
   "Return canonical BoxNode NODE's retained canonical children."
@@ -188,6 +167,7 @@ child.  Row and Column layouts accept any number of children."
     (unless (ebox-layout-config-p layout)
       (error "Ebox Box :layout must be a typed layout config: %S"
              layout))
+    (setq layout (ebox-layout-config--copy layout))
     (unless (memq outer '(inline block))
       (error "Ebox Box :outer must be inline or block: %S" outer))
     (unless (proper-list-p children)
@@ -198,12 +178,9 @@ child.  Row and Column layouts accept any number of children."
                       children)
       (error "Ebox Box children must be canonical Text/Box nodes: %S"
              children))
-    (unless (memq (ebox-layout-config-kind layout) '(normal row column))
+    (unless (memq (ebox-layout-config-kind layout) '(normal row column flex))
       (error "Ebox Box Layout is not implemented: %S"
              (ebox-layout-config-kind layout)))
-    (unless (null (ebox-layout-config-props layout))
-      (error "Ebox Box Layout properties are not implemented: %S"
-             (ebox-layout-config-props layout)))
     (when (and (eq (ebox-layout-config-kind layout) 'normal)
                (> (length children) 1))
       (error "Ebox Box Normal layout currently accepts at most one child"))

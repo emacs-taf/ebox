@@ -9,6 +9,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'ebox-layout-config)
 (require 'ebox-layout)
 
 (declare-function ebox--flex-fragment-allocation-key
@@ -266,8 +267,8 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
     (cons (nth 0 gap) (nth 1 gap)))
    (t (cons gap gap))))
 
-(defun ebox--flex-normalize-container-props (props)
-  "Normalize flex container PROPS to explicit fields."
+(defun ebox--flex-normalize-config-props (props)
+  "Normalize FlexConfig PROPS to explicit layout-owned fields."
   (let* ((flow (plist-get props :flex-flow))
          (flow-values (if (listp flow) flow (list flow)))
          (flow-direction (cl-find-if
@@ -295,9 +296,28 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
                      (car gap-pair))
           :column-gap (if (plist-member props :column-gap)
                           (plist-get props :column-gap)
-                        (cdr gap-pair))
-          :width (plist-get props :width)
-          :height (plist-get props :height))))
+                        (cdr gap-pair)))))
+
+(defun ebox--flex-normalize-container-props (props)
+  "Normalize legacy flex container PROPS to config plus frame constraints."
+  (append (ebox--flex-normalize-config-props props)
+          (list :width (plist-get props :width)
+                :height (plist-get props :height))))
+
+(defconst ebox--flex-default-config-props
+  (ebox--flex-normalize-config-props nil)
+  "Validated property set for the first default FlexConfig slice.")
+
+(defun ebox-flex-layout-config-props-p (props)
+  "Return non-nil when PROPS are the validated default FlexConfig."
+  (equal props ebox--flex-default-config-props))
+
+;;;###autoload
+(defun ebox-flex-layout-create ()
+  "Return the canonical Flex layout config with computed defaults."
+  (ebox-layout-config--create
+   :kind 'flex
+   :props (copy-sequence ebox--flex-default-config-props)))
 
 (defun ebox--flex-axis (props)
   "Return main axis for normalized flex PROPS."
@@ -1557,14 +1577,10 @@ its child."
           (puthash region-id box ebox--region-box-table)))
     rendered))
 
-(defun ebox--render-flex (node)
-  "Render flex NODE to a propertized string."
-  (let* ((props (ebox--flex-container-content-props
-                 (plist-get node :props)
-                 (plist-get node :raw-props)
-                 (plist-get node :box)))
+(defun ebox--render-flex-children (config constraints children)
+  "Render Flex CONFIG under frame CONSTRAINTS over flat CHILDREN."
+  (let* ((props (append config constraints))
          (axis (ebox--flex-axis props))
-         (children (ebox-tree-layout-children node))
          (main-size (if (eq axis 'row)
                         (ebox--flex-horizontal-value (plist-get props :width))
                       (ebox--flex-line-value (plist-get props :height))))
@@ -1587,13 +1603,39 @@ its child."
                  items main-size main-gap (plist-get props :flex-wrap))))
     (when (eq (plist-get props :flex-wrap) 'wrap-reverse)
       (setq lines (nreverse lines)))
+    (if (eq axis 'row)
+        (ebox--render-flex-row lines props main-size cross-size
+                               main-gap cross-gap)
+      (ebox--render-flex-column lines props main-size cross-size
+                                main-gap cross-gap))))
+
+(defun ebox--flex-box-constraints (box)
+  "Project BOX content dimensions to private FlexConstraints."
+  (let ((width (ebox--wrapper-content-viewport-pixel box))
+        (height (ebox--resolve-size-content-height
+                 box (ebox-get box :height) nil)))
+    (list :width (and width (list width))
+          :height height)))
+
+(defun ebox--render-flex-box-children (box props children)
+  "Render canonical BOX Flex PROPS over flat CHILDREN."
+  (ebox--render-flex-children
+   props
+   (ebox--flex-box-constraints box)
+   children))
+
+(defun ebox--render-flex (node)
+  "Render legacy flex NODE to a propertized string."
+  (let ((props (ebox--flex-container-content-props
+                (plist-get node :props)
+                (plist-get node :raw-props)
+                (plist-get node :box))))
     (ebox--render-flex-box
      node
-     (if (eq axis 'row)
-         (ebox--render-flex-row lines props main-size cross-size
-                                main-gap cross-gap)
-       (ebox--render-flex-column lines props main-size cross-size
-                                 main-gap cross-gap)))))
+     (ebox--render-flex-children
+      (ebox--plist-remove-keys props '(:width :height))
+      (ebox--plist-keep-keys props '(:width :height))
+      (ebox-tree-layout-children node)))))
 
 (defun ebox--flex-prewarm-sized-item (node _target-width)
   "Prepare one fixed-cross flex item phase and yield to the event loop.

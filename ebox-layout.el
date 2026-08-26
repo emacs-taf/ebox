@@ -9,6 +9,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'ebox-layout-config)
 (require 'ebox-tree)
 (require 'ebox-measure)
 (require 'ebox-fragment)
@@ -17,7 +18,8 @@
 
 (declare-function ebox--render-grid "ebox-grid" (node))
 (declare-function ebox--render-flex "ebox-flex" (node))
-(declare-function ebox-layout-config-kind "ebox-canonical" (config))
+(declare-function ebox--render-flex-box-children
+                  "ebox-flex" (box props children))
 (declare-function ebox--render-with-cache
                   "ebox-incremental" (node &optional force cache-probe))
 (declare-function ebox-create "ebox" (&rest plist))
@@ -957,9 +959,15 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
                ('column
                 (ebox--call-with-box-content-context
                  box (lambda () (ebox--render-column-children children))))
+               ('flex
+                (ebox--render-flex-box-children
+                 box
+                 (ebox-layout-config-props
+                  (plist-get box :ebox-layout-config))
+                 children))
                (_ (error "Ebox Box has unsupported LayoutConfig: %S" kind)))))))
     (ebox--record-box-content-width-exact
-     box content (memq kind '(row column)))
+     box content (memq kind '(row column flex)))
     content))
 
 (defun ebox--box-content (box)

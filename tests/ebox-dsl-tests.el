@@ -216,6 +216,123 @@
     (should (equal (ebox--computed-display box) '(block column)))
     (should (string= (ebox-dsl-test--plain box) "A\nB"))))
 
+(ert-deftest ebox-canonical-flex-box-uses-one-box-identity-and-child-list ()
+  "A FlexConfig should select the Box algorithm without a Flex runtime node."
+  (let* ((left (ebox-text-create :value "A"))
+         (right (ebox-text-create :value "B"))
+         (layout (ebox-flex-layout-create))
+         (box (ebox-box-create :layout layout
+                               :children (list left right)
+                               :width '(120)))
+         (rendered (ebox-render box)))
+    (should
+     (equal (ebox-layout-config-props layout)
+            '(:flex-direction row :flex-wrap nowrap
+              :justify-content flex-start :align-items stretch
+              :align-content stretch :row-gap nil :column-gap nil)))
+    (should-not (plist-member (ebox-layout-config-props layout) :width))
+    (should-not (plist-member (ebox-layout-config-props layout) :height))
+    (should (ebox-box-node-p box))
+    (should (eq (ebox-layout-config-kind (ebox-box-node-layout box)) 'flex))
+    (should (eq (ebox-tree-node-children box)
+                (ebox-box-node-children box)))
+    (should (= (ebox-dsl-test--tree-count box (lambda (_node) t)) 3))
+    (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 3))
+    (should
+     (= (ebox-dsl-test--tree-count
+         box (lambda (node) (eq (plist-get node :ebox-type) 'flex)))
+        0))
+    (should-not (plist-member box :ebox-content-node))
+    (should (equal (ebox--computed-display box) '(block flex)))
+    (should (string= (string-trim-right
+                      (substring-no-properties rendered))
+                     "AB"))
+    (should (= (ebox--string-pixel-width rendered) 120))))
+
+(ert-deftest ebox-canonical-flex-revalidates-the-typed-config-boundary ()
+  "Mutated or extra FlexConfig properties should fail before rendering."
+  (let ((invalid-direction (ebox-flex-layout-create))
+        (extra-frame-prop (ebox-flex-layout-create))
+        (cross-kind-props (ebox-flex-layout-create)))
+    (setf (ebox-layout-config-props invalid-direction)
+          '(:flex-direction bogus :flex-wrap nowrap
+            :justify-content flex-start :align-items stretch
+            :align-content stretch :row-gap nil :column-gap nil))
+    (setf (ebox-layout-config-props extra-frame-prop)
+          (append (ebox-layout-config-props extra-frame-prop)
+                  '(:width 999)))
+    (setf (ebox-layout-config-kind cross-kind-props) 'row)
+    (should-error
+     (ebox-box-create :layout invalid-direction :children nil)
+     :type 'error)
+    (should-error
+     (ebox-box-create :layout extra-frame-prop :children nil)
+     :type 'error)
+    (should-error
+     (ebox-box-create :layout cross-kind-props :children nil)
+     :type 'error)))
+
+(ert-deftest ebox-canonical-box-detaches-validated-layout-config ()
+  "Caller and accessor mutations should not alter a constructed Box."
+  (let* ((source-layout (ebox-flex-layout-create))
+         (box (ebox-box-create
+               :layout source-layout
+               :children (list (ebox-text-create :value "A")
+                               (ebox-text-create :value "B"))))
+         (exposed-layout (ebox-box-node-layout box)))
+    (should-not (fboundp 'ebox-layout-config-validator))
+    (setf (ebox-layout-config-props source-layout) '(:flex-direction bogus))
+    (setf (ebox-layout-config-props exposed-layout) '(:width 999))
+    (should (string= (string-trim-right
+                      (substring-no-properties (ebox-render box)))
+                     "AB"))
+    (should (equal (ebox-layout-config-props (ebox-box-node-layout box))
+                   ebox--flex-default-config-props))))
+
+(ert-deftest ebox-canonical-flex-projects-one-box-frame-constraint ()
+  "Typed and legacy Flex should derive the same content size from BoxFrame."
+  (dolist (sizing '(border-box content-box))
+    (let* ((typed
+            (ebox-box-create
+             :layout (ebox-flex-layout-create)
+             :children (list (ebox-text-create :value "A")
+                             (ebox-text-create :value "B"))
+             :width '(140) :padding '(0 (10)) :box-sizing sizing))
+           (legacy
+            (ebox-flex
+             :width '(140) :padding '(0 (10)) :box-sizing sizing
+             (ebox-text-create :value "A")
+             (ebox-text-create :value "B")))
+           (typed-rendered (ebox-render typed))
+           (legacy-rendered (ebox-render legacy)))
+      (should
+       (string=
+        (string-trim-right (substring-no-properties typed-rendered))
+        (string-trim-right (substring-no-properties legacy-rendered))))
+      (should (= (ebox--string-pixel-width typed-rendered)
+                 (ebox--string-pixel-width legacy-rendered))))))
+
+(ert-deftest ebox-canonical-flex-consumes-direct-child-participation ()
+  "Flex participation should stay on child Boxes without item wrappers."
+  (let* ((left-text (ebox-text-create :value "A"))
+         (right-text (ebox-text-create :value "B"))
+         (left (ebox-box-create :layout (ebox-normal-layout-create)
+                                :children (list left-text)
+                                :order 2))
+         (right (ebox-box-create :layout (ebox-normal-layout-create)
+                                 :children (list right-text)
+                                 :order 1))
+         (box (ebox-box-create :layout (ebox-flex-layout-create)
+                               :children (list left right)))
+         (rendered (substring-no-properties (ebox-render box))))
+    (should (string= (string-trim-right rendered) "BA"))
+    (should (= (ebox-dsl-test--tree-count box (lambda (_node) t)) 5))
+    (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 5))
+    (should
+     (= (ebox-dsl-test--tree-count
+         box (lambda (node) (eq (plist-get node :ebox-type) 'flex-item)))
+        0))))
+
 (ert-deftest ebox-canonical-row-and-column-never-collapse-single-child-boxes ()
   "A one-child Row or Column should preserve its canonical Box boundary."
   (let* ((child (ebox-text-create :value "A"))
@@ -234,10 +351,11 @@
     (should (string= (ebox-dsl-test--plain row) "A"))
     (should (string= (ebox-dsl-test--plain column) "A"))))
 
-(ert-deftest ebox-canonical-empty-row-and-column-have-no-runtime-child ()
-  "Empty Row and Column Boxes should not synthesize layout identities."
+(ert-deftest ebox-canonical-empty-layout-boxes-have-no-runtime-child ()
+  "Empty layout Boxes should not synthesize layout identities."
   (dolist (layout (list (ebox-row-layout-create)
-                        (ebox-column-layout-create)))
+                        (ebox-column-layout-create)
+                        (ebox-flex-layout-create)))
     (let ((box (ebox-box-create :layout layout :children nil)))
       (should (ebox-box-node-p box))
       (should-not (ebox-tree-node-children box))

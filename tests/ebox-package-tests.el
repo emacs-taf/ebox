@@ -11,6 +11,7 @@
 
 (defconst ebox-test--autoload-source-files
   '("ebox.el"
+    "ebox-layout-config.el"
     "ebox-node-factory.el"
     "ebox-measure.el"
     "ebox-layout.el"
@@ -51,6 +52,7 @@
   "The public ebox facade should load all internal foundation modules."
   (require 'ebox)
   (dolist (feature '(ebox-cache ebox-style ebox-tree ebox-measure
+                                ebox-layout-config
                                 ebox-node-factory
                                 ebox-fragment ebox-layout ebox-flex ebox-grid
                                 ebox-canonical
@@ -91,7 +93,8 @@
   (should (commandp 'ebox-byte-compile))
   (should
    (equal ebox--compile-sources
-          '("ebox-cache.el" "ebox-style.el" "ebox-node-factory.el"
+          '("ebox-cache.el" "ebox-style.el" "ebox-layout-config.el"
+            "ebox-node-factory.el"
             "ebox-child-range.el"
             "ebox-tree.el" "ebox-measure.el"
             "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
@@ -172,6 +175,7 @@
                      ("ebox-normal-layout-create" . "defun")
                      ("ebox-row-layout-create" . "defun")
                      ("ebox-column-layout-create" . "defun")
+                     ("ebox-flex-layout-create" . "defun")
                      ("ebox-text-create" . "defun")
                      ("ebox-box-create" . "defun")
                      ("ebox-build" . "defun")
@@ -220,6 +224,7 @@
                    ebox-display-buffer
                    ebox-display-signature
                    ebox-flex
+                   ebox-flex-layout-create
                    ebox-flex-item
                    ebox-grid
                    ebox-grid-fr
