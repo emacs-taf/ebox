@@ -52,6 +52,164 @@
     (ebox-style-apply-computed node style)
     (should (equal (ebox--computed-display node) '(inline flex)))))
 
+(ert-deftest ebox-style-strict-cache-does-not-hide-unknown-properties ()
+  "Strict declaration validation should remain exact after an empty cache hit."
+  (ebox-style-compile-declarations nil t)
+  (should-error
+   (ebox-style-compile-declarations '(:not-an-ebox-property 1) t)
+   :type 'error))
+
+(ert-deftest ebox-style-aliases-share-one-canonical-property-id ()
+  "A concise alias should disappear before canonical declarations."
+  (should
+   (equal (ebox-style-compile-declarations '(:bgcolor "red") t)
+          (ebox-style-compile-declarations '(:background-color "red") t))))
+
+(ert-deftest ebox-style-rejects-canonical-and-alias-duplicates ()
+  "One declaration source should not spell one property twice."
+  (should-error
+   (ebox-style-compile-declarations
+    '(:bgcolor "red" :background-color "blue") t)
+   :type 'error)
+  (should-error
+   (ebox-style-compile-declarations
+    '(:background-color "red" :bgcolor "blue") t)
+   :type 'error))
+
+(ert-deftest ebox-style-property-registry-rejects-alias-collisions ()
+  "An alias should never shadow another canonical property."
+  (let ((ebox-style--property-table nil)
+        (ebox-style--property-definitions
+         '((:name :first :id ebox/first :aliases (:second))
+           (:name :second :id ebox/second))))
+    (should-error (ebox-style--ensure-property-table) :type 'error)))
+
+(ert-deftest ebox-style-border-present-is-a-typed-shorthand-not-an-alias ()
+  "The concise border boolean should expand to canonical width and style."
+  (should
+   (equal (ebox-style-compile-declarations '(:border-top-p t) t)
+          '(ebox/border-top-width 1 ebox/border-top-style solid)))
+  (should
+   (equal (ebox-style-compile-declarations '(:border-top-p nil) t)
+          '(ebox/border-top-width 0 ebox/border-top-style none)))
+  (should (eq (ebox-style-canonical-name :border-top-p) :border-top-p)))
+
+(ert-deftest ebox-style-exclusive-check-does-not-reexpand-ordinary-shorthands ()
+  "Conflict validation should leave the declaration cache effective."
+  (let ((calls 0)
+        (original (symbol-function 'ebox-style--padding-shorthand)))
+    (clrhash ebox-style--declaration-cache)
+    (cl-letf (((symbol-function 'ebox-style--padding-shorthand)
+               (lambda (value)
+                 (cl-incf calls)
+                 (funcall original value))))
+      (ebox-style-compile-declarations '(:padding 1) t)
+      (ebox-style-compile-declarations '(:padding 1) t))
+    (should (= calls 1))))
+
+(ert-deftest ebox-style-border-present-rejects-owned-longhand-conflicts ()
+  "One source should not mix the boolean border shorthand with its outputs."
+  (should-error
+   (ebox-style-compile-declarations
+    '(:border-top-p t :border-top-width 2) t)
+   :type 'error)
+  (should-error
+   (ebox-style-compile-declarations
+    '(:border-top-style dashed :border-top-p t) t)
+   :type 'error)
+  (should-error
+   (ebox-style-compile-declarations
+    '(:border-top-p t :border-top (2 dashed "red")) t)
+   :type 'error)
+  (should-error
+   (ebox-style-compile-declarations
+    '(:border-top-p t :border-width 2) t)
+   :type 'error)
+  (should-error
+   (ebox-style-compile-declarations
+    '(:border-style dashed :border-top-p t) t)
+   :type 'error)
+  (should-error
+   (ebox-style-compile-declarations
+    '(:border-bottom-p t :border (1 solid "red")) t)
+   :type 'error))
+
+(ert-deftest ebox-canonical-text-constructor-is-renderable-and-typed ()
+  "A canonical TextNode should retain its kind, source, and string value."
+  (let ((node (ebox-text-create :value "Hello" :source-handle 'source-text)))
+    (should (ebox-text-node-p node))
+    (should-not (ebox-box-node-p node))
+    (should (eq (ebox-node-source-handle node) 'source-text))
+    (should (string= (ebox-text-node-value node) "Hello"))
+    (should (string= (ebox-dsl-test--plain node) "Hello"))))
+
+(ert-deftest ebox-canonical-text-constructor-rejects-non-text-shapes ()
+  "A canonical TextNode should have exactly one string payload."
+  (should-error (ebox-text-create :value 7) :type 'error)
+  (should-error (ebox-text-create :value "A" :content "B") :type 'error)
+  (should-error (ebox-text-create :value "A" :children nil) :type 'error)
+  (should-error (ebox-text-create :value "A" :color "red") :type 'error)
+  (should-error
+   (ebox-text-create :value "A" :value "B")
+   :type 'error)
+  (should-error
+   (ebox-text-create :value "A" :source-handle 'a :source-handle 'b)
+   :type 'error))
+
+(ert-deftest ebox-canonical-normal-box-renders-one-typed-text-child ()
+  "A canonical BoxNode should retain typed Layout and child source facts."
+  (let* ((text (ebox-text-create :value "A" :source-handle 'source-text))
+         (layout (ebox-normal-layout-create))
+         (box (ebox-box-create :layout layout
+                               :children (list text)
+                               :source-handle 'source-box)))
+    (should (ebox-box-node-p box))
+    (should-not (ebox-text-node-p box))
+    (should (eq (ebox-node-source-handle box) 'source-box))
+    (should (eq (ebox-layout-config-kind
+                 (ebox-box-node-layout box))
+                'normal))
+    (should (equal (ebox-box-node-children box) (list text)))
+    (should (string= (ebox-dsl-test--plain box) "A"))))
+
+(ert-deftest ebox-canonical-box-rejects-paint-only-properties ()
+  "Canonical Box geometry should not duplicate paint-only state."
+  (should-error
+   (ebox-box-create :layout (ebox-normal-layout-create)
+                    :bgcolor "red")
+   :type 'error))
+
+(ert-deftest ebox-canonical-box-requires-unique-reserved-fields ()
+  "Typed Box reserved fields should never be missing or duplicated."
+  (let ((normal (ebox-normal-layout-create)))
+    (should-error (ebox-box-create :children nil) :type 'error)
+    (should-error
+     (ebox-box-create :layout normal :layout normal :children nil)
+     :type 'error)
+    (should-error
+     (ebox-box-create :layout normal :children nil :children nil)
+     :type 'error)
+    (should-error
+     (ebox-box-create :layout normal :outer nil :children nil)
+     :type 'error)))
+
+(ert-deftest ebox-build-normalizes-text-author-forms ()
+  "The Ebox DSL should normalize explicit and bare Text forms."
+  (let ((text (ebox-build '(text "A")))
+        (bare (ebox-build "B")))
+    (should (ebox-text-node-p text))
+    (should (ebox-text-node-p bare))
+    (should (string= (ebox-dsl-test--plain text) "A"))
+    (should (string= (ebox-dsl-test--plain bare) "B"))))
+
+(ert-deftest ebox-build-text-requires-one-string-payload ()
+  "The Ebox Text form should reject empty, multiple, and nested payloads."
+  (should-error (ebox-build '(text)) :type 'error)
+  (should-error (ebox-build '(text "A" "B")) :type 'error)
+  (should-error (ebox-build '(text (text "A"))) :type 'error)
+  (should-error (ebox-build '(text :color "red" "A")) :type 'error)
+  (should-error (ebox-build '(text :wrap-mode garbage "A")) :type 'error))
+
 (ert-deftest ebox-dsl-module-preserves-public-build-syntax ()
   "Extracted DSL compiler should preserve existing ebox-build syntax."
   (let ((node (ebox-build

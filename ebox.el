@@ -23,9 +23,11 @@
   "Directory containing the active Ebox Lisp sources.")
 
 (defconst ebox--compile-sources
-  '("ebox-cache.el" "ebox-style.el" "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
+  '("ebox-cache.el" "ebox-style.el" "ebox-node-factory.el"
+    "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
-    "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
+    "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
+    "ebox-buffer-backend.el" "ebox-incremental.el"
     "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
     "ebox-dsl.el" "ebox-selector.el" "ebox.el"
     "ebox-native-reflow.el")
@@ -39,6 +41,7 @@
 (require 'subr-x)
 (require 'ebox-cache)
 (require 'ebox-style)
+(require 'ebox-node-factory)
 (require 'ebox-child-range)
 (require 'ebox-tree)
 (require 'ebox-measure)
@@ -47,6 +50,7 @@
 (require 'ebox-layout)
 (require 'ebox-flex)
 (require 'ebox-grid)
+(require 'ebox-canonical)
 (require 'ebox-buffer-backend)
 (require 'ebox-incremental)
 (require 'ebox-surface)
@@ -386,51 +390,6 @@ caller, such as the Playground preview, renders against a concrete window.")
 (defsubst ebox--next-region-id ()
   "Generate next unique region ID."
   (cl-incf ebox--region-id-counter))
-
-(defconst ebox--longhand
-  '( :content ""
-     :box-sizing border-box ;; content-box or border-box
-
-     ;; 所有宽度的单位是像素，所有高度的单位是行数
-     :width nil :min-width 0 :max-width nil
-     :height nil :min-height 0 :max-height nil
-
-     :padding-left-pixel 0 :padding-right-pixel 0
-     :padding-top-height 0 :padding-bottom-height 0
-     :margin-left-pixel 0 :margin-right-pixel 0
-     :margin-top-height 0 :margin-bottom-height 0
-
-     ;; 左右边框支持设置宽度
-     :border-left-pixel 0 :border-left-color nil
-     :border-right-pixel 0 :border-right-color nil
-     ;; 上下边框由于 Emacs 限制，用 overline/underline 实现，不支持设置宽度
-     :border-top-p nil :border-top-color nil
-     :border-bottom-p nil :border-bottom-color nil
-     :color nil
-     :bgcolor nil
-     :font nil :font-family nil :font-height nil
-     :font-weight nil :font-slant nil
-     :text-align left :vertical-align top
-     ;; supports: 'visible / 'hidden / 'scroll
-     :overflow scroll
-     ;; supports: 'visible / 'hidden — hidden suppresses ink while the
-     ;; layout footprint, buffer text, and metadata stay identical
-     :visibility visible
-     ;; supports: 'word / 'char / 'kp
-     :wrap-mode word
-     :scroll-offset 0 ;; 当前滚动偏移（行数）
-     )
-  "Default plist for a box structure (longhand properties only).")
-
-(defun ebox--longhand-create (&optional plist)
-  "Create a shorthand box structure.
-PLIST is a property list that overrides the defaults."
-  (let ((box (copy-sequence ebox--longhand)))
-    (while plist
-      (let ((key (pop plist))
-            (value (pop plist)))
-        (plist-put box key value)))
-    box))
 
 (defsubst ebox-get (box property)
   "Retrieve PROPERTY from BOX."
@@ -868,21 +827,6 @@ Supports: t (default fg), nil, string, (light . dark) cons."
   (ebox-style-expand-ebox-plist plist))
 
 ;;; --- 核心 API ---
-
-;;;###autoload
-(defun ebox-create (&rest plist)
-  "Create a box from PLIST. Supports all shorthand and longhand properties.
-Properties are expanded recursively according to `ebox-property-rules'."
-  (let ((declarations (ebox-style-compile-declarations plist))
-        (expanded (ebox--expand-plist plist))
-        (controlled-scroll-offset-p (plist-member plist :scroll-offset)))
-    (let ((box (ebox--longhand-create expanded)))
-      (plist-put box :ebox-type 'box)
-      (plist-put box :display '(block flow))
-      (plist-put box :ebox-style-declarations declarations)
-      (when controlled-scroll-offset-p
-        (plist-put box :ebox-scroll-offset-controlled-p t))
-      box)))
 
 ;;; ============================================================
 ;;; Buffer Runtime State & Scroll State
@@ -4643,6 +4587,9 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-candidate-patch-host-paint
     ebox-clear-cache
     ebox-column
+    ebox-normal-layout-create
+    ebox-text-create
+    ebox-box-create
     ebox-commit
     ebox-concat
     ebox-create
@@ -4724,8 +4671,16 @@ and are documented separately in the public API reference.")
 ;; All other ebox-- prefixed functions are internal implementation details.
 ;;
 ;; ── Creation ──────────────────────────────────────────────────
+;;   ebox-text-create :value string &rest canonical-measurement-props
+;;       Create one typed canonical TextNode.
+;;   ebox-normal-layout-create
+;;       Create the typed Normal LayoutConfig.
+;;   ebox-box-create :layout config :children nodes &rest geometry-props
+;;       Create one typed canonical BoxNode.  The current vertical slice
+;;       accepts Normal layout with zero or one canonical child.
 ;;   ebox-create &rest plist
-;;       Create a box. Key options: :content :width :height
+;;       Legacy untyped runtime constructor retained during migration.
+;;       Key options: :content :width :height
 ;;       :padding :margin :border :border-color :bgcolor
 ;;       :text-align :wrap-mode :box-sizing :surface-properties :host-ref
 ;;   ebox-build dsl

@@ -190,7 +190,7 @@ together.
 | Content/geometry | `:content`, `:box-sizing`, `:width`, `:min-width`, `:max-width`, `:height`, `:min-height`, `:max-height` |
 | Padding | `:padding`, `:padding-inline`, `:padding-block`; longhands `:padding-block-start`, `:padding-inline-end`, `:padding-block-end`, `:padding-inline-start`; aliases `:padding-top`, `:padding-right`, `:padding-bottom`, `:padding-left` and the pixel/height aliases `:padding-right-pixel`, `:padding-left-pixel`, `:padding-top-height`, `:padding-bottom-height` |
 | Margin | `:margin`, `:margin-inline`, `:margin-block`; longhands `:margin-block-start`, `:margin-inline-end`, `:margin-block-end`, `:margin-inline-start`; aliases `:margin-top`, `:margin-right`, `:margin-bottom`, `:margin-left` and the pixel/height aliases `:margin-right-pixel`, `:margin-left-pixel`, `:margin-top-height`, `:margin-bottom-height` |
-| Border | `:border`, `:border-top`, `:border-right`, `:border-bottom`, `:border-left`, `:border-width`, `:border-style`, `:border-color`; side longhands `:border-*-width`, `:border-*-style`, `:border-*-color`; compatibility aliases `:border-top-p`, `:border-bottom-p`, `:border-left-pixel`, `:border-right-pixel` |
+| Border | `:border`, `:border-top`, `:border-right`, `:border-bottom`, `:border-left`, `:border-width`, `:border-style`, `:border-color`; side longhands `:border-*-width`, `:border-*-style`, `:border-*-color`; Ebox boolean shorthands `:border-top-p`, `:border-bottom-p`; compatibility aliases `:border-left-pixel`, `:border-right-pixel` |
 | Paint | `:color`, `:background-color`, and alias `:bgcolor` |
 | Typography | `:font`, `:font-family`, `:font-height` and alias `:font-size`, `:font-weight`, `:font-slant` |
 | Text/layout | `:text-align` (`left`, `center`, `right`), `:vertical-align` (`top`, `center`/`middle`, `bottom`), `:overflow` (`scroll`, `hidden`, `visible`), `:wrap-mode` (`word`, `char`, `kp`, or nil), `:visibility` (`visible` or `hidden`) |
@@ -587,7 +587,8 @@ style-rule functions immediately below are public module-level style APIs.
 
 | Function | Use |
 | --- | --- |
-| `ebox-create`, `ebox-build` | Create a node or compile the `.ebox` list DSL. |
+| `ebox-text-create`, `ebox-normal-layout-create`, `ebox-box-create` | Framework-integration port for typed TextNode, Normal LayoutConfig, and BoxNode values. |
+| `ebox-create`, `ebox-build` | Create a legacy node or compile the `.ebox` list DSL during migration. |
 | `ebox-concat`, `ebox-stack`, `ebox-row`, `ebox-column`, `ebox-spacer` | Compose simple horizontal/vertical layouts and blank boxes. |
 | `ebox-flex`, `ebox-flex-item` | Build flex containers and item metadata. |
 | `ebox-grid`, `ebox-grid-fr`, `ebox-grid-item` | Build Grid layouts, fractional tracks, and placement metadata. |

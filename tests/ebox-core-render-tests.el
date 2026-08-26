@@ -5254,13 +5254,13 @@
                           :padding (0 (8)) :border "#D97757")
                      (box :content "Body" :width (120)
                           :padding (0 (8)) :border "#D97757"
-                          :border-top-p nil))
+                          :border-top none))
                     (column
                      (box :id right :content "Right" :width (120)
                           :padding (0 (8)) :border "#5E7F6A")
                      (box :content "Body" :width (120)
                           :padding (0 (8)) :border "#5E7F6A"
-                          :border-top-p nil)))))
+                          :border-top none)))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -5291,17 +5291,17 @@
                     (column
                      (box :id left :content "Left" :width (120)
                           :padding (0 (8)) :border "#D97757"
-                          :border-bottom-p nil)
+                          :border-bottom none)
                      (box :content "Body" :width (120)
                           :padding (0 (8)) :border "#D97757"
-                          :border-top-p nil))
+                          :border-top none))
                     (column
                      (box :content "Right" :width (120)
                           :padding (0 (8)) :border "#5E7F6A"
-                          :border-bottom-p nil)
+                          :border-bottom none)
                      (box :content "Body" :width (120)
                           :padding (0 (8)) :border "#5E7F6A"
-                          :border-top-p nil)))))
+                          :border-top none)))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -5335,17 +5335,17 @@
                     (column
                      (box :id left :content "Left" :width (120)
                           :padding (0 (8)) :border "#D97757"
-                          :border-bottom-p nil)
+                          :border-bottom none)
                      (box :content "Body" :width (120)
                           :padding (0 (8)) :border "#D97757"
-                          :border-top-p nil))
+                          :border-top none))
                     (column
                      (box :content "Right" :width (120)
                           :padding (0 (8)) :border "#5E7F6A"
-                          :border-bottom-p nil)
+                          :border-bottom none)
                      (box :content "Body" :width (120)
                           :padding (0 (8)) :border "#5E7F6A"
-                          :border-top-p nil)))))
+                          :border-top none)))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -8504,7 +8504,7 @@
            `(flex :width (240) :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
                   :padding (0 (8)) :border "#D97757"
-                  :border-top-p nil :bgcolor "#FFF8F2"
+                  :border-top none :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 6
                              collect
                              `(box :id ,(format "prefix-item-%02d" idx)
@@ -8610,7 +8610,7 @@
                   :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
                   :padding (0 (8)) :border "#D97757"
-                  :border-top-p nil :bgcolor "#FFF8F2"
+                  :border-top none :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 8
                              collect
                              `(box :content ,(format "wrapper %02d" idx)
@@ -8659,7 +8659,7 @@
                   :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
                   :padding (0 (8)) :border "#D97757"
-                  :border-top-p nil :bgcolor "#FFF8F2"
+                  :border-top none :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 4
                              collect
                              `(box :content ,(format "complete %02d" idx)
@@ -8788,7 +8788,7 @@
                   :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
                   :padding (0 (8)) :border "#D97757"
-                  :border-top-p nil :bgcolor "#FFF8F2"
+                  :border-top none :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 8
                              collect
                              `(box :content ,(format "extend %02d" idx)
@@ -8821,7 +8821,7 @@
            `(flex :width (240) :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
                   :padding (0 (8)) :border "#D97757"
-                  :border-top-p nil :bgcolor "#FFF8F2"
+                  :border-top none :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 16
                              collect
                              `(box :content ,(format "piece %02d" idx)
@@ -8852,7 +8852,7 @@
                   :padding (0 (8) 2 (8))
                   :margin-bottom 2
                   :border "#D97757"
-                  :border-top-p nil
+                  :border-top none
                   :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 2
                              collect
@@ -8897,7 +8897,7 @@
                   :row-gap 1 :column-gap 0
                   :padding (0 (8))
                   :border "#D97757"
-                  :border-top-p nil
+                  :border-top none
                   :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 4
                              collect
@@ -8934,7 +8934,7 @@
                   :row-gap 1 :column-gap 0
                   :padding (0 (8))
                   :border "#D97757"
-                  :border-top-p nil
+                  :border-top none
                   ,@(cl-loop for idx below 4
                              collect
                              `(box :content ,(format "atomic %02d" idx)
@@ -11066,7 +11066,7 @@
                    :flex-flow (row wrap)
                    :row-gap 1 :column-gap (8)
                    :padding (0 (12)) :border "#D97757"
-                   :border-top-p nil
+                   :border-top none
                    ,@(cl-loop for idx below 24
                               collect
                               `(box :content ,(format "signature %02d" idx)

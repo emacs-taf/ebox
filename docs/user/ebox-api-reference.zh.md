@@ -173,7 +173,7 @@ property；`ebox-region-update` 接受其目标支持的可变 content/style/scr
 | Content/geometry | `:content`、`:box-sizing`、`:width`、`:min-width`、`:max-width`、`:height`、`:min-height`、`:max-height` |
 | Padding | `:padding`、`:padding-inline`、`:padding-block`；longhand `:padding-block-start`、`:padding-inline-end`、`:padding-block-end`、`:padding-inline-start`；别名 `:padding-top`、`:padding-right`、`:padding-bottom`、`:padding-left`，以及 `:padding-right-pixel`、`:padding-left-pixel`、`:padding-top-height`、`:padding-bottom-height` |
 | Margin | `:margin`、`:margin-inline`、`:margin-block`；longhand `:margin-block-start`、`:margin-inline-end`、`:margin-block-end`、`:margin-inline-start`；别名 `:margin-top`、`:margin-right`、`:margin-bottom`、`:margin-left`，以及 `:margin-right-pixel`、`:margin-left-pixel`、`:margin-top-height`、`:margin-bottom-height` |
-| Border | `:border`、`:border-top`、`:border-right`、`:border-bottom`、`:border-left`、`:border-width`、`:border-style`、`:border-color`；side longhand `:border-*-width`、`:border-*-style`、`:border-*-color`；兼容别名 `:border-top-p`、`:border-bottom-p`、`:border-left-pixel`、`:border-right-pixel` |
+| Border | `:border`、`:border-top`、`:border-right`、`:border-bottom`、`:border-left`、`:border-width`、`:border-style`、`:border-color`；side longhand `:border-*-width`、`:border-*-style`、`:border-*-color`；Ebox boolean shorthand `:border-top-p`、`:border-bottom-p`；兼容别名 `:border-left-pixel`、`:border-right-pixel` |
 | Paint | `:color`、`:background-color`、别名 `:bgcolor` |
 | Typography | `:font`、`:font-family`、`:font-height` 和别名 `:font-size`、`:font-weight`、`:font-slant` |
 | Text/layout | `:text-align`（`left`、`center`、`right`）、`:vertical-align`（`top`、`center`/`middle`、`bottom`）、`:overflow`（`scroll`、`hidden`、`visible`）、`:wrap-mode`（`word`、`char`、`kp` 或 nil）、`:visibility`（`visible` 或 `hidden`） |
@@ -533,7 +533,8 @@ style API。
 
 | 函数 | 用途 |
 | --- | --- |
-| `ebox-create`、`ebox-build` | 创建节点或编译 `.ebox` list DSL。 |
+| `ebox-text-create`、`ebox-normal-layout-create`、`ebox-box-create` | 框架集成使用的 typed TextNode、Normal LayoutConfig 与 BoxNode 端口。 |
+| `ebox-create`、`ebox-build` | 迁移期间创建旧节点或编译 `.ebox` list DSL。 |
 | `ebox-concat`、`ebox-stack`、`ebox-row`、`ebox-column`、`ebox-spacer` | 组合简单横向/纵向布局与空白 box。 |
 | `ebox-flex`、`ebox-flex-item` | 构建 Flex 容器与 item metadata。 |
 | `ebox-grid`、`ebox-grid-fr`、`ebox-grid-item` | 构建 Grid、分数轨道和 placement metadata。 |

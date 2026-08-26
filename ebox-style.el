@@ -114,14 +114,14 @@
      :group geometry :dirty-kind geometry :signature layout
      :validator nonnegative-size)
     (:name :border-top-width :id ebox/border-top-width
-     :aliases (:border-top-p) :initial nil :contexts (box)
+     :initial nil :contexts (box)
      :group geometry :dirty-kind geometry :signature layout)
     (:name :border-right-width :id ebox/border-right-width
      :aliases (:border-right-pixel) :initial nil :contexts (box)
      :group geometry :dirty-kind geometry :signature layout
      :validator nonnegative-size)
     (:name :border-bottom-width :id ebox/border-bottom-width
-     :aliases (:border-bottom-p) :initial nil :contexts (box)
+     :initial nil :contexts (box)
      :group geometry :dirty-kind geometry :signature layout)
     (:name :border-left-width :id ebox/border-left-width
      :aliases (:border-left-pixel) :initial nil :contexts (box)
@@ -231,6 +231,14 @@
     (:name :border-right :id ebox/border-right :shorthand border-right)
     (:name :border-bottom :id ebox/border-bottom :shorthand border-bottom)
     (:name :border-left :id ebox/border-left :shorthand border-left)
+    (:name :border-top-p :id ebox/border-top-p
+     :shorthand border-top-present :validator boolean
+     :exclusive-outputs t
+     :group structure :dirty-kind structure :signature layout)
+    (:name :border-bottom-p :id ebox/border-bottom-p
+     :shorthand border-bottom-present :validator boolean
+     :exclusive-outputs t
+     :group structure :dirty-kind structure :signature layout)
     (:name :border-width :id ebox/border-width :shorthand border-width
      :group geometry :dirty-kind geometry :signature layout)
     (:name :border-style :id ebox/border-style :shorthand border-style
@@ -263,15 +271,25 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
   (make-hash-table :test 'equal)
   "Bounded memo table for canonical Ebox declaration compilation.")
 
+(defun ebox-style--register-property-name (table name property role)
+  "Register NAME for PROPERTY ROLE in TABLE, rejecting collisions."
+  (when-let* ((existing (gethash name table)))
+    (unless (eq existing property)
+      (error "Ebox property %S %s collides with canonical property %S"
+             name role (plist-get existing :name))))
+  (puthash name property table))
+
 (defun ebox-style--ensure-property-table ()
   "Return the canonical style property registry table."
   (or ebox-style--property-table
       (let ((table (make-hash-table :test 'eq)))
         (dolist (property ebox-style--property-definitions)
-          (puthash (plist-get property :name) property table)
-          (puthash (plist-get property :id) property table)
+          (ebox-style--register-property-name
+           table (plist-get property :name) property "name")
+          (ebox-style--register-property-name
+           table (plist-get property :id) property "ID")
           (dolist (alias (plist-get property :aliases))
-            (puthash alias property table)))
+            (ebox-style--register-property-name table alias property "alias")))
         (setq ebox-style--property-table table))))
 
 (defun ebox-style-property (name)
@@ -457,6 +475,22 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
   "Expand left border VALUE to namespaced longhands."
   (ebox-style--border-side-declarations 'left value))
 
+(defun ebox-style--border-present-declarations (side value)
+  "Return canonical boolean border declarations for SIDE and VALUE."
+  (unless (memq value '(nil t))
+    (error "Ebox border-%s-p must be boolean: %S" side value))
+  (list (intern (format "ebox/border-%s-width" side)) (if value 1 0)
+        (intern (format "ebox/border-%s-style" side))
+        (if value 'solid 'none)))
+
+(defun ebox-style--border-top-present-shorthand (value)
+  "Expand boolean top-border VALUE to canonical width and style."
+  (ebox-style--border-present-declarations 'top value))
+
+(defun ebox-style--border-bottom-present-shorthand (value)
+  "Expand boolean bottom-border VALUE to canonical width and style."
+  (ebox-style--border-present-declarations 'bottom value))
+
 (defun ebox-style--border-component-shorthand (component value)
   "Expand border COMPONENT VALUE across all physical sides."
   (ebox-style--trbl-declarations
@@ -593,6 +627,7 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
     ('font-family #'ebox-style--font-family-p)
     ('font-height #'ebox-style--font-height-p)
     ('font-attribute #'ebox-style--font-attribute-p)
+    ('boolean (lambda (value) (memq value '(nil t))))
     (_ (lambda (_value) t))))
 
 (defun ebox-style--shorthand (name)
@@ -610,6 +645,8 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
      (border-right . ebox-style--border-right-shorthand)
      (border-bottom . ebox-style--border-bottom-shorthand)
      (border-left . ebox-style--border-left-shorthand)
+     (border-top-present . ebox-style--border-top-present-shorthand)
+     (border-bottom-present . ebox-style--border-bottom-present-shorthand)
      (border-width . ebox-style--border-width-shorthand)
      (border-style . ebox-style--border-style-shorthand)
      (border-color . ebox-style--border-color-shorthand)
@@ -694,6 +731,58 @@ cascade pass during its initial static projection."
   "Return non-nil when PLIST is a proper even-length list."
   (and (proper-list-p plist) (zerop (% (length plist) 2))))
 
+(defun ebox-style--validate-no-duplicate-properties (plist)
+  "Reject duplicate canonical properties in author PLIST."
+  (let ((seen (make-hash-table :test 'eq)))
+    (cl-loop for (name _value) on plist by #'cddr
+             for property = (ebox-style-property name)
+             for id = (and property (plist-get property :id))
+             when id
+             do (when-let* ((previous (gethash id seen)))
+                  (error
+                   "Duplicate Ebox property %S via %S and %S"
+                   (plist-get property :name) previous name))
+             and do (puthash id name seen)))
+  plist)
+
+(defun ebox-style--author-property-output-ids (name value)
+  "Return canonical output IDs produced by author NAME and VALUE."
+  (when-let* ((property (ebox-style-property name)))
+    (if-let* ((shorthand-name (plist-get property :shorthand))
+              (expander (ebox-style--shorthand shorthand-name)))
+        (cl-loop for (id _output) on (funcall expander value) by #'cddr
+                 collect id)
+      (list (plist-get property :id)))))
+
+(defun ebox-style--validate-exclusive-properties (plist)
+  "Reject author properties whose canonical outputs overlap in PLIST."
+  (let (entries)
+    (cl-loop for (name value) on plist by #'cddr
+             for property = (ebox-style-property name)
+             when property
+             do (push (list :name name :value value :property property)
+                      entries))
+    (when (cl-some (lambda (entry)
+                     (plist-get (plist-get entry :property)
+                                :exclusive-outputs))
+                   entries)
+      (dolist (entry entries)
+        (when (plist-get (plist-get entry :property) :exclusive-outputs)
+          (let ((outputs
+                 (ebox-style--author-property-output-ids
+                  (plist-get entry :name) (plist-get entry :value))))
+            (dolist (other entries)
+              (unless (eq entry other)
+                (when (cl-intersection
+                       outputs
+                       (ebox-style--author-property-output-ids
+                        (plist-get other :name) (plist-get other :value))
+                       :test #'eq)
+                  (error "Ebox property %S cannot be combined with %S"
+                         (plist-get entry :name)
+                         (plist-get other :name))))))))))
+  plist)
+
 (defun ebox-style--declaration-cache-key (plist strict)
   "Return a stable style-only cache key for PLIST and STRICT.
 Non-style node properties such as content, Host references, and callbacks do
@@ -706,7 +795,12 @@ not affect declaration compilation and are intentionally excluded."
                       (append canonical (list schema value)))
              else if (ebox-style--custom-property-p property)
              do (setq canonical
-                      (append canonical (list property value))))
+                      (append canonical (list property value)))
+             else if strict
+             do (setq canonical
+                      (append canonical
+                              (list 'ebox-style/unknown-property
+                                    property value))))
     (list strict canonical)))
 
 (defun ebox-style--static-invalid-declaration-p (validator value)
@@ -738,6 +832,8 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
   (ebox-style--ensure-properties)
   (unless (ebox-style--valid-plist-p plist)
     (user-error "Ebox style declarations must be an even property list"))
+  (ebox-style--validate-no-duplicate-properties plist)
+  (ebox-style--validate-exclusive-properties plist)
   (let* ((cache-key (ebox-style--declaration-cache-key plist strict))
          (missing (make-symbol "ebox-style-declaration-cache-missing"))
          (cached (gethash cache-key ebox-style--declaration-cache missing)))

@@ -11,6 +11,7 @@
 (require 'ebox-tree)
 (require 'ebox-flex)
 (require 'ebox-grid)
+(require 'ebox-canonical)
 
 (declare-function ebox-create "ebox" (&rest plist))
 
@@ -96,6 +97,20 @@ The first value is string content.  The second value is a lazy child node."
                      (when content (list :content content))
                      (when child-node
                        (list :ebox-content-node child-node)))))))
+
+(defun ebox--build-text (items)
+  "Build one canonical TextNode from DSL ITEMS."
+  (let* ((split (ebox--build-split-attrs items))
+         (props (car split))
+         (payloads (delq nil (cdr split))))
+    (when props
+      (error "Ebox build: Text author properties are not implemented in this slice"))
+    (unless (= (length payloads) 1)
+      (error "ebox-build: text requires exactly one string payload"))
+    (unless (stringp (car payloads))
+      (error "ebox-build: text payload must be a string: %S" (car payloads)))
+    (apply #'ebox-text-create
+           (append props (list :value (car payloads))))))
 
 (defun ebox--build-wrap-layout (tag props layout)
   "Wrap LAYOUT with box PROPS for DSL TAG, or return LAYOUT unchanged."
@@ -220,13 +235,14 @@ and `column' may also receive box properties; those properties wrap
 the child layout in a box using the rendered child layout as content."
   (cond
    ((ebox--node-p dsl) dsl)
-   ((stringp dsl) (ebox-create :content dsl))
+   ((stringp dsl) (ebox-text-create :value dsl))
    ((not (and (consp dsl) (symbolp (car dsl))))
     (error "ebox-build: invalid DSL node %S" dsl))
    (t
     (let ((tag (car dsl))
           (items (ebox--dsl-unquote-properties (cdr dsl))))
       (pcase tag
+        ('text (ebox--build-text items))
         ('box (ebox--build-canonical-box items))
         ('ebox (ebox--build-box items))
         ('row (ebox--build-layout tag #'ebox-row items))

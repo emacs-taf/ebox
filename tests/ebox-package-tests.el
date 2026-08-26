@@ -11,10 +11,12 @@
 
 (defconst ebox-test--autoload-source-files
   '("ebox.el"
+    "ebox-node-factory.el"
     "ebox-measure.el"
     "ebox-layout.el"
     "ebox-flex.el"
     "ebox-grid.el"
+    "ebox-canonical.el"
     "ebox-buffer-backend.el"
     "ebox-selector.el"
     "ebox-native-reflow.el")
@@ -49,11 +51,33 @@
   "The public ebox facade should load all internal foundation modules."
   (require 'ebox)
   (dolist (feature '(ebox-cache ebox-style ebox-tree ebox-measure
+                                ebox-node-factory
                                 ebox-fragment ebox-layout ebox-flex ebox-grid
+                                ebox-canonical
                                 ebox-buffer-backend ebox-incremental
                                 ebox-surface ebox-viewport ebox-dsl
                                 ebox-selector))
     (should (featurep feature))))
+
+(ert-deftest ebox-canonical-module-loads-typed-port-without-facade ()
+  "The canonical autoload boundary should not depend on loading `ebox.el'."
+  (let* ((emacs (expand-file-name invocation-name invocation-directory))
+         (parent (file-name-directory (directory-file-name ebox-test--root)))
+         (ecss (expand-file-name "ecss" parent))
+         (tp (expand-file-name "tp" parent)))
+    (with-temp-buffer
+      (should
+       (zerop
+        (process-file
+         emacs nil (current-buffer) nil
+         "-Q" "--batch"
+         "-L" ebox-test--root "-L" ecss "-L" tp
+         "--eval" "(setq load-prefer-newer t)"
+         "--eval"
+         (concat
+          "(progn (require 'ebox-canonical) "
+          "(unless (ebox-text-node-p (ebox-text-create :value \"A\")) "
+          "  (error \"Typed Text autoload failed\")))")))))))
 
 (ert-deftest ebox-facade-exposes-native-workflow-without-loading-it ()
   "The two native commands should be available without native load work."
@@ -67,10 +91,12 @@
   (should (commandp 'ebox-byte-compile))
   (should
    (equal ebox--compile-sources
-          '("ebox-cache.el" "ebox-style.el" "ebox-child-range.el"
+          '("ebox-cache.el" "ebox-style.el" "ebox-node-factory.el"
+            "ebox-child-range.el"
             "ebox-tree.el" "ebox-measure.el"
             "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
-            "ebox-flex.el" "ebox-grid.el" "ebox-buffer-backend.el" "ebox-incremental.el"
+            "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
+            "ebox-buffer-backend.el" "ebox-incremental.el"
             "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
             "ebox-dsl.el" "ebox-selector.el" "ebox.el"
             "ebox-native-reflow.el"))))
@@ -143,6 +169,9 @@
                      ("ebox-grid-fr" . "defun")
                      ("ebox-grid-item" . "defun")
                      ("ebox-grid" . "defun")
+                     ("ebox-normal-layout-create" . "defun")
+                     ("ebox-text-create" . "defun")
+                     ("ebox-box-create" . "defun")
                      ("ebox-build" . "defun")
                      ("ebox-create" . "defun")
                      ("ebox-scroll-down" . "defun")
@@ -178,6 +207,9 @@
                    ebox-candidate-replace-host-ref
                    ebox-clear-cache
                    ebox-column
+                   ebox-normal-layout-create
+                   ebox-text-create
+                   ebox-box-create
                    ebox-commit
                    ebox-concat
                    ebox-create
