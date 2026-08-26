@@ -178,7 +178,8 @@ child.  Row and Column layouts accept any number of children."
                       children)
       (error "Ebox Box children must be canonical Text/Box nodes: %S"
              children))
-    (unless (memq (ebox-layout-config-kind layout) '(normal row column flex))
+    (unless (memq (ebox-layout-config-kind layout)
+                  '(normal row column flex grid))
       (error "Ebox Box Layout is not implemented: %S"
              (ebox-layout-config-kind layout)))
     (when (and (eq (ebox-layout-config-kind layout) 'normal)

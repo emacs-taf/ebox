@@ -587,7 +587,7 @@ style-rule functions immediately below are public module-level style APIs.
 
 | Function | Use |
 | --- | --- |
-| `ebox-text-create`, `ebox-normal-layout-create`, `ebox-row-layout-create`, `ebox-column-layout-create`, `ebox-flex-layout-create`, `ebox-box-create` | Framework-integration port for typed TextNode, Normal/Row/Column/Flex LayoutConfig, and BoxNode values. |
+| `ebox-text-create`, `ebox-normal-layout-create`, `ebox-row-layout-create`, `ebox-column-layout-create`, `ebox-flex-layout-create`, `ebox-grid-layout-create`, `ebox-box-create` | Framework-integration port for typed TextNode, Normal/Row/Column/Flex/Grid LayoutConfig, and BoxNode values. |
 | `ebox-create`, `ebox-build` | Create a legacy node or compile the `.ebox` list DSL during migration. |
 | `ebox-concat`, `ebox-stack`, `ebox-row`, `ebox-column`, `ebox-spacer` | Compose simple horizontal/vertical layouts and blank boxes. |
 | `ebox-flex`, `ebox-flex-item` | Build flex containers and item metadata. |

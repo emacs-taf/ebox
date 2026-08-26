@@ -12,6 +12,7 @@
 (require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
+(require 'ebox-layout-config)
 (require 'ebox-layout)
 (require 'ebox-flex)
 
@@ -31,7 +32,7 @@
 (defconst ebox--grid-layout-prop-keys
   '(:grid-template-columns :grid-template-rows
     :grid-auto-columns :grid-auto-rows :grid-auto-flow
-    :grid-column-gap :grid-row-gap :gap
+    :column-gap :row-gap :grid-column-gap :grid-row-gap :gap
     :justify-items :align-items :justify-content :align-content)
   "Properties owned by the grid formatting context.")
 
@@ -123,14 +124,38 @@
 (defun ebox-grid--gap-pair (props)
   "Return normalized (ROW-GAP . COLUMN-GAP) from grid PROPS."
   (let* ((pair (ebox--flex-gap-pair (plist-get props :gap)))
-         (row (if (plist-member props :grid-row-gap)
-                  (plist-get props :grid-row-gap)
-                (car pair)))
-         (column (if (plist-member props :grid-column-gap)
-                     (plist-get props :grid-column-gap)
-                   (cdr pair))))
+         (row (cond
+               ((plist-member props :row-gap) (plist-get props :row-gap))
+               ((plist-member props :grid-row-gap)
+                (plist-get props :grid-row-gap))
+               (t (car pair))))
+         (column (cond
+                  ((plist-member props :column-gap)
+                   (plist-get props :column-gap))
+                  ((plist-member props :grid-column-gap)
+                   (plist-get props :grid-column-gap))
+                  (t (cdr pair)))))
     (cons (or (ebox--flex-line-value row 0) 0)
           (or (ebox--nonnegative-horizontal-size-pixels column 0) 0))))
+
+(defconst ebox--grid-default-config-props
+  '(:grid-template-columns nil :grid-template-rows nil
+    :grid-auto-columns nil :grid-auto-rows nil :grid-auto-flow row
+    :row-gap 0 :column-gap 0
+    :justify-items stretch :align-items stretch
+    :justify-content start :align-content start)
+  "Validated property set for the first default GridConfig slice.")
+
+(defun ebox-grid-layout-config-props-p (props)
+  "Return non-nil when PROPS are the validated default GridConfig."
+  (equal props ebox--grid-default-config-props))
+
+;;;###autoload
+(defun ebox-grid-layout-create ()
+  "Return the canonical Grid layout config with computed defaults."
+  (ebox-layout-config--create
+   :kind 'grid
+   :props (copy-sequence ebox--grid-default-config-props)))
 
 (defun ebox-grid--visual-props-p (props)
   "Return non-nil when PROPS contains visible box behavior."
@@ -618,10 +643,25 @@ size for start/center/end alignment unless it would overflow its track."
           (puthash region-id box ebox--region-box-table)))
     rendered))
 
-(defun ebox--render-grid (node)
-  "Render GRID NODE to a propertized string."
-  (let* ((props (plist-get node :raw-props))
-         (children (ebox-tree-layout-children node))
+(defun ebox-grid--legacy-constraints (props wrapper)
+  "Return private GridConstraints from legacy PROPS and WRAPPER."
+  (let ((width (ebox--nonnegative-horizontal-size-pixels
+                (plist-get props :width)
+                (ebox--viewport-pixel-width nil)))
+        (height (ebox--flex-line-value (plist-get props :height) nil)))
+    (when wrapper
+      (setq width (ebox--box-sizing-content-pixel wrapper width)))
+    (list :width width :height height)))
+
+(defun ebox-grid--box-constraints (box)
+  "Project BOX content dimensions to private GridConstraints."
+  (list :width (ebox--wrapper-content-viewport-pixel box)
+        :height (ebox--resolve-size-content-height
+                 box (ebox-get box :height) nil)))
+
+(defun ebox--render-grid-children (config constraints children)
+  "Render Grid CONFIG under frame CONSTRAINTS over flat CHILDREN."
+  (let* ((props config)
          (columns (ebox-grid--normalize-tracks
                    (plist-get props :grid-template-columns) 'columns))
          (rows (ebox-grid--normalize-tracks
@@ -639,14 +679,9 @@ size for start/center/end alignment unless it would overflow its track."
          (matrix (nth 1 placed))
          (row-count (nth 2 placed))
          (column-count (nth 3 placed))
-         (available (ebox--nonnegative-horizontal-size-pixels
-                     (plist-get props :width)
-                     (ebox--viewport-pixel-width nil)))
-         (wrapper (plist-get node :box))
-         (height (ebox--flex-line-value (plist-get props :height) nil))
+         (available (plist-get constraints :width))
+         (height (plist-get constraints :height))
          (rendered (make-hash-table :test 'eq)))
-    (when wrapper
-      (setq available (ebox--box-sizing-content-pixel wrapper available)))
     (unless (memq flow '(row column))
       (error "ebox-grid: :grid-auto-flow must be `row' or `column'"))
     (dolist (entry entries)
@@ -674,7 +709,23 @@ size for start/center/end alignment unless it would overflow its track."
              (or (plist-get props :align-content) 'start)))
            (body (ebox-grid--render entries matrix column-layout row-layout
                                     props sized-rendered)))
-      (ebox--render-grid-box node body))))
+      body)))
+
+(defun ebox--render-grid-box-children (box config children)
+  "Render canonical BOX Grid CONFIG over flat CHILDREN."
+  (ebox--render-grid-children
+   config (ebox-grid--box-constraints box) children))
+
+(defun ebox--render-grid (node)
+  "Render legacy GRID NODE to a propertized string."
+  (let* ((props (plist-get node :raw-props))
+         (wrapper (plist-get node :box)))
+    (ebox--render-grid-box
+     node
+     (ebox--render-grid-children
+      (ebox--plist-keep-keys props ebox--grid-layout-prop-keys)
+      (ebox-grid--legacy-constraints props wrapper)
+      (ebox-tree-layout-children node)))))
 
 ;;;###autoload
 (defun ebox-grid (&rest items)

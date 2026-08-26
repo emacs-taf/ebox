@@ -4607,6 +4607,7 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-flex-item
     ebox-grid
     ebox-grid-fr
+    ebox-grid-layout-create
     ebox-grid-item
     ebox-host-ref-bounds
     ebox-host-ref-position

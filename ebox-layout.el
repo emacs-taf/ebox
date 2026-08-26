@@ -17,6 +17,8 @@
 (require 'ebox-buffer-backend)
 
 (declare-function ebox--render-grid "ebox-grid" (node))
+(declare-function ebox--render-grid-box-children
+                  "ebox-grid" (box props children))
 (declare-function ebox--render-flex "ebox-flex" (node))
 (declare-function ebox--render-flex-box-children
                   "ebox-flex" (box props children))
@@ -965,9 +967,15 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
                  (ebox-layout-config-props
                   (plist-get box :ebox-layout-config))
                  children))
+               ('grid
+                (ebox--render-grid-box-children
+                 box
+                 (ebox-layout-config-props
+                  (plist-get box :ebox-layout-config))
+                 children))
                (_ (error "Ebox Box has unsupported LayoutConfig: %S" kind)))))))
     (ebox--record-box-content-width-exact
-     box content (memq kind '(row column flex)))
+     box content (memq kind '(row column flex grid)))
     content))
 
 (defun ebox--box-content (box)

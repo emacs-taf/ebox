@@ -312,6 +312,97 @@
       (should (= (ebox--string-pixel-width typed-rendered)
                  (ebox--string-pixel-width legacy-rendered))))))
 
+(ert-deftest ebox-canonical-grid-box-uses-one-box-identity-and-child-list ()
+  "A GridConfig should select the Box algorithm without a Grid runtime node."
+  (let* ((layout (ebox-grid-layout-create))
+         (box (ebox-box-create
+               :layout layout
+               :children (list (ebox-text-create :value "A")
+                               (ebox-text-create :value "B"))
+               :width '(120)))
+         (rendered (ebox-render box)))
+    (should (equal (ebox-layout-config-props layout)
+                   ebox--grid-default-config-props))
+    (should-not (plist-member (ebox-layout-config-props layout) :width))
+    (should-not (plist-member (ebox-layout-config-props layout) :height))
+    (should (ebox-box-node-p box))
+    (should (eq (ebox-layout-config-kind (ebox-box-node-layout box)) 'grid))
+    (should (eq (ebox-tree-node-children box)
+                (ebox-box-node-children box)))
+    (should (= (ebox-dsl-test--tree-count box (lambda (_node) t)) 3))
+    (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 3))
+    (should
+     (= (ebox-dsl-test--tree-count
+         box (lambda (node) (eq (plist-get node :ebox-type) 'grid)))
+        0))
+    (should-not (plist-member box :ebox-content-node))
+    (should (equal (ebox--computed-display box) '(block grid)))
+    (should (string=
+             (replace-regexp-in-string
+              "[[:space:]]" "" (substring-no-properties rendered))
+             "AB"))
+    (should (equal (mapcar #'ebox--string-pixel-width
+                           (ebox-string-lines rendered))
+                   '(120 120 120)))))
+
+(ert-deftest ebox-canonical-grid-consumes-direct-child-placement ()
+  "Grid placement should stay on child Boxes without grid-item wrappers."
+  (let* ((later
+          (ebox-box-create :layout (ebox-normal-layout-create)
+                           :children (list (ebox-text-create :value "A"))
+                           :grid-row 2))
+         (earlier
+          (ebox-box-create :layout (ebox-normal-layout-create)
+                           :children (list (ebox-text-create :value "B"))
+                           :grid-row 1))
+         (box (ebox-box-create :layout (ebox-grid-layout-create)
+                               :children (list later earlier)))
+         (rendered (substring-no-properties (ebox-render box))))
+    (should (string=
+             (replace-regexp-in-string "[[:space:]]" "" rendered)
+             "BA"))
+    (should (= (ebox-dsl-test--tree-count box (lambda (_node) t)) 5))
+    (should (= (ebox-dsl-test--tree-count box #'ebox-node-kind) 5))))
+
+(ert-deftest ebox-canonical-grid-revalidates-the-typed-config-boundary ()
+  "GridConfig must reject frame properties and cross-kind property sets."
+  (let ((extra-frame-prop (ebox-grid-layout-create))
+        (cross-kind-props (ebox-grid-layout-create)))
+    (setf (ebox-layout-config-props extra-frame-prop)
+          (append (ebox-layout-config-props extra-frame-prop)
+                  '(:width 999)))
+    (setf (ebox-layout-config-kind cross-kind-props) 'column)
+    (should-error
+     (ebox-box-create :layout extra-frame-prop :children nil)
+     :type 'error)
+    (should-error
+     (ebox-box-create :layout cross-kind-props :children nil)
+     :type 'error)))
+
+(ert-deftest ebox-canonical-grid-projects-one-box-frame-constraint ()
+  "Typed and legacy Grid should derive the same content size from BoxFrame."
+  (dolist (sizing '(border-box content-box))
+    (let* ((typed
+            (ebox-box-create
+             :layout (ebox-grid-layout-create)
+             :children (list (ebox-text-create :value "A")
+                             (ebox-text-create :value "B"))
+             :width '(140) :padding '(0 (10)) :box-sizing sizing))
+           (legacy
+            (ebox-grid
+             :width '(140) :padding '(0 (10)) :box-sizing sizing
+             (ebox-text-create :value "A")
+             (ebox-text-create :value "B")))
+           (typed-rendered (ebox-render typed))
+           (legacy-rendered (ebox-render legacy)))
+      (should (string= (substring-no-properties typed-rendered)
+                       (substring-no-properties legacy-rendered)))
+      (should
+       (equal (mapcar #'ebox--string-pixel-width
+                      (ebox-string-lines typed-rendered))
+              (mapcar #'ebox--string-pixel-width
+                      (ebox-string-lines legacy-rendered)))))))
+
 (ert-deftest ebox-canonical-flex-consumes-direct-child-participation ()
   "Flex participation should stay on child Boxes without item wrappers."
   (let* ((left-text (ebox-text-create :value "A"))
@@ -355,7 +446,8 @@
   "Empty layout Boxes should not synthesize layout identities."
   (dolist (layout (list (ebox-row-layout-create)
                         (ebox-column-layout-create)
-                        (ebox-flex-layout-create)))
+                        (ebox-flex-layout-create)
+                        (ebox-grid-layout-create)))
     (let ((box (ebox-box-create :layout layout :children nil)))
       (should (ebox-box-node-p box))
       (should-not (ebox-tree-node-children box))

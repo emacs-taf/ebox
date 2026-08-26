@@ -11,6 +11,8 @@
 
 (declare-function ebox-flex-layout-config-props-p
                   "ebox-flex" (props))
+(declare-function ebox-grid-layout-config-props-p
+                  "ebox-grid" (props))
 
 (cl-defstruct
     (ebox-layout-config
@@ -31,6 +33,9 @@
             ('flex
              (and (fboundp 'ebox-flex-layout-config-props-p)
                   (ebox-flex-layout-config-props-p props)))
+            ('grid
+             (and (fboundp 'ebox-grid-layout-config-props-p)
+                  (ebox-grid-layout-config-props-p props)))
             (_ nil))))
     (unless valid-p
       (error "Invalid %S LayoutConfig properties: %S"

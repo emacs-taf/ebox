@@ -533,7 +533,7 @@ style API。
 
 | 函数 | 用途 |
 | --- | --- |
-| `ebox-text-create`、`ebox-normal-layout-create`、`ebox-row-layout-create`、`ebox-column-layout-create`、`ebox-flex-layout-create`、`ebox-box-create` | 框架集成使用的 typed TextNode、Normal/Row/Column/Flex LayoutConfig 与 BoxNode 端口。 |
+| `ebox-text-create`、`ebox-normal-layout-create`、`ebox-row-layout-create`、`ebox-column-layout-create`、`ebox-flex-layout-create`、`ebox-grid-layout-create`、`ebox-box-create` | 框架集成使用的 typed TextNode、Normal/Row/Column/Flex/Grid LayoutConfig 与 BoxNode 端口。 |
 | `ebox-create`、`ebox-build` | 迁移期间创建旧节点或编译 `.ebox` list DSL。 |
 | `ebox-concat`、`ebox-stack`、`ebox-row`、`ebox-column`、`ebox-spacer` | 组合简单横向/纵向布局与空白 box。 |
 | `ebox-flex`、`ebox-flex-item` | 构建 Flex 容器与 item metadata。 |
