@@ -100,6 +100,16 @@
       (should-not (string-match-p "`etaf-[[:alnum:]-]+\\.el`" source))
       (should-not (string-match-p "`etaf\\.el`" source)))))
 
+(ert-deftest ebox-docs-do-not-present-removed-grid-item-api ()
+  "Public documentation must expose direct child Grid placement only."
+  (dolist (file '("docs/user/ebox-api-reference.en.md"
+                  "docs/user/ebox-api-reference.zh.md"
+                  "docs/user/ebox-user-guide.en.md"
+                  "docs/user/ebox-user-guide.zh.md"))
+    (let ((source (ebox-docs-test--read file)))
+      (should-not (string-match-p "ebox-grid-item" source))
+      (should-not (string-match-p "`grid-item`" source)))))
+
 (provide 'ebox-docs-contract-tests)
 
 ;;; ebox-docs-contract-tests.el ends here

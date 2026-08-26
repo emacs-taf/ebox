@@ -161,12 +161,9 @@
           (ebox-grid
            :grid-template-columns '((20) (20))
            :grid-template-rows '(1 1)
-           (ebox-grid-item (ebox-create :content "Header")
-                           :grid-column '(1 :span 2))
-           (ebox-grid-item (ebox-create :content "Left")
-                           :grid-row 2 :grid-column 1)
-           (ebox-grid-item (ebox-create :content "Right")
-                           :grid-row 2 :grid-column 2)))))
+           (ebox-create :content "Header" :grid-column '(1 :span 2))
+           (ebox-create :content "Left" :grid-row 2 :grid-column 1)
+           (ebox-create :content "Right" :grid-row 2 :grid-column 2)))))
     (should (string-match-p "Header" plain))
     (should (string-match-p "Left.*Right" plain))))
 
@@ -217,11 +214,11 @@
   (should-error
    (ebox-render
     (ebox-grid
-     (ebox-grid-item (ebox-create :content "A") :grid-column-span 0))))
+     (ebox-create :content "A" :grid-column-span 0))))
   (should-error
    (ebox-render
     (ebox-grid
-     (ebox-grid-item (ebox-create :content "A") :grid-column 0)))))
+     (ebox-create :content "A" :grid-column 0)))))
 
 (ert-deftest ebox-grid-rejects-invalid-ecss-placement-before-layout ()
   "ECSS rules should reject invalid Grid placement before layout runs."
@@ -266,13 +263,12 @@
     (should (string-match-p "A" (ebox-grid-test--plain node)))
     (should (string-match-p "B" (ebox-grid-test--plain node)))))
 
-(ert-deftest ebox-build-compiles-grid-item-placement ()
-  "The Ebox DSL should preserve grid-item placement metadata."
+(ert-deftest ebox-build-compiles-direct-grid-placement ()
+  "The Ebox DSL should preserve direct child Box placement metadata."
   (let ((node
          (ebox-build
           '(grid :grid-template-columns ((20) (20))
-             (grid-item :grid-column (1 :span 2)
-                        (box :content "Header"))))))
+             (box :grid-column (1 :span 2) :content "Header")))))
     (should (string-match-p "Header" (ebox-grid-test--plain node)))
     (should (equal (plist-get (car (plist-get node :children)) :grid-column)
                    '(1 :span 2)))))

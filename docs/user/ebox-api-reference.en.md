@@ -136,9 +136,7 @@ of full browser CSS compatibility.
  :grid-template-columns '((200) 1fr 1fr)
  :grid-template-rows '(1 1)
  :gap '(1 (12))
- (ebox-grid-item
-  (ebox-create :content "Header")
-  :grid-column '(1 :span 3))
+ (ebox-create :content "Header" :grid-column '(1 :span 3))
  (ebox-create :content "Main" :grid-column 1 :grid-row 2)
  (ebox-create :content "Aside" :grid-column 2 :grid-row 2))
 ```
@@ -152,8 +150,8 @@ positions use implicit tracks. `:grid-auto-columns`, `:grid-auto-rows`, and
 Grid item placement is one-based. `:grid-column` and `:grid-row` accept a
 positive start integer, `(start :span positive-integer)`, or `(start end)` with
 `end` greater than `start`. `:grid-column-span` and `:grid-row-span` accept
-positive integers. `ebox-grid-item` is a convenience wrapper; placement
-properties may also be placed directly on a child node.
+positive integers. Placement properties belong directly to the child Box;
+Grid item is a parent-child role, not a wrapper or constructor.
 
 ## 4. Units, box properties, and text properties
 
@@ -534,15 +532,14 @@ boolean to nil when a host application must avoid background preparation.
 ## 10. Standalone `.ebox` DSL
 
 `ebox-build` compiles a data-oriented list form. Supported tags are `box` and
-`ebox`, `row`, `column`, `flex`, `item`, `grid`, `grid-item`, and `spacer`:
+`ebox`, `row`, `column`, `flex`, `item`, `grid`, and `spacer`:
 
 ```elisp
 (ebox-build
  '(grid :width (640)
         :grid-template-columns ((200) 1fr 1fr)
         :gap (1 (12))
-        (grid-item :grid-column (1 :span 3)
-                   (box :content "Header"))
+        (box :grid-column (1 :span 3) :content "Header")
         (box :content "Main")))
 ```
 
@@ -550,7 +547,7 @@ Strings directly under `box` become newline-joined content. Child forms become
 a default vertical child layout. `row` and `column` can receive box
 properties around their child layout. `flex` accepts container properties;
 `item` accepts flex item properties and exactly one or more child forms;
-`grid-item` requires exactly one child; `spacer` accepts no children.
+`spacer` accepts no children.
 
 Inside a `.ebox` file, keep structural forms unquoted. Quote list and symbol
 constants in property positions when they are data, such as
@@ -591,7 +588,7 @@ style-rule functions immediately below are public module-level style APIs.
 | `ebox-create`, `ebox-build` | Create a legacy node or compile the `.ebox` list DSL during migration. |
 | `ebox-concat`, `ebox-stack`, `ebox-row`, `ebox-column`, `ebox-spacer` | Compose simple horizontal/vertical layouts and blank boxes. |
 | `ebox-flex`, `ebox-flex-item` | Build flex containers and item metadata. |
-| `ebox-grid`, `ebox-grid-fr`, `ebox-grid-item` | Build Grid layouts, fractional tracks, and placement metadata. |
+| `ebox-grid`, `ebox-grid-fr` | Build Grid layouts and fractional tracks; placement metadata belongs to direct child Boxes. |
 | `ebox-render`, `ebox-render-to-buffer`, `ebox-display-buffer` | Pure materialization, retained mount, and display wrapper. |
 | `ebox-commit`, `ebox-buffer-update-report`, `ebox-rerender-buffer-with-context`, `ebox-viewport-window-width` | Atomic root commit, report lookup, viewport-context rerender, and the shared display-safe width sampler. |
 | `ebox-region-ids`, `ebox-region-resolve`, `ebox-region-update` | Region mapping, logical handle lookup, and direct update. |

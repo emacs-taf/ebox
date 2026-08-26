@@ -170,7 +170,6 @@
                      ("ebox-flex-item" . "defun")
                      ("ebox-flex" . "defun")
                      ("ebox-grid-fr" . "defun")
-                     ("ebox-grid-item" . "defun")
                      ("ebox-grid" . "defun")
                      ("ebox-grid-layout-create" . "defun")
                      ("ebox-normal-layout-create" . "defun")
@@ -230,7 +229,6 @@
                    ebox-grid
                    ebox-grid-fr
                    ebox-grid-layout-create
-                   ebox-grid-item
                    ebox-host-ref-bounds
                    ebox-host-ref-position
                    ebox-native-build

@@ -342,29 +342,6 @@ programmatic port and are therefore rejected here."
     (error "ebox-grid-fr: FACTOR must be positive: %S" factor))
   (list 'fr factor))
 
-;;;###autoload
-(defun ebox-grid-item (node &rest props)
-  "Return NODE with grid placement PROPS attached.
-Supported properties are `:grid-column', `:grid-row',
-`:grid-column-span', and `:grid-row-span'."
-  (unless (and (listp node) (plist-member node :ebox-type))
-    (error "ebox-grid-item: NODE is not an Ebox node: %S" node))
-  (let ((copy (copy-sequence node))
-        (declarations (ebox-style-compile-declarations props t)))
-    (while props
-      (let* ((key (pop props))
-             (value (progn
-                      (unless props
-                        (error "ebox-grid-item: missing value for %S" key))
-                      (pop props))))
-        (unless (memq key ebox--grid-item-prop-keys)
-          (error "ebox-grid-item: unsupported property %S" key))
-        (plist-put copy key value)))
-    (plist-put copy :ebox-style-declarations
-               (append (plist-get copy :ebox-style-declarations)
-                       declarations))
-    copy))
-
 (defun ebox-grid--placement-part (value default)
   "Return (START SPAN) parsed from placement VALUE and DEFAULT."
   (cond
@@ -895,7 +872,8 @@ Grid properties include `:grid-template-columns', `:grid-template-rows',
 `:grid-auto-flow', `:gap', `:grid-row-gap', `:grid-column-gap',
 `:justify-items', `:align-items', `:width', and `:height'.  Track sizes use
 Ebox pixel/line units, `auto', `(fr FACTOR)', or symbols such as `1fr'.
-Children may carry `:grid-column' and `:grid-row' placement properties.
+Children may carry `:grid-column', `:grid-row', `:grid-column-span', and
+`:grid-row-span' placement properties directly.
 `ebox-grid-fr' is a convenient constructor for fractional tracks."
   (let* ((split (ebox-grid--split-attrs items))
          (raw-props (car split))

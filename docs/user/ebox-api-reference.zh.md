@@ -124,9 +124,7 @@ Flex preferred/min/max size 支持 Ebox 子集：`auto`、`min-content`、
  :grid-template-columns '((200) 1fr 1fr)
  :grid-template-rows '(1 1)
  :gap '(1 (12))
- (ebox-grid-item
-  (ebox-create :content "Header")
-  :grid-column '(1 :span 3))
+ (ebox-create :content "Header" :grid-column '(1 :span 3))
  (ebox-create :content "Main" :grid-column 1 :grid-row 2)
  (ebox-create :content "Aside" :grid-column 2 :grid-row 2))
 ```
@@ -138,8 +136,8 @@ Flex preferred/min/max size 支持 Ebox 子集：`auto`、`min-content`、
 
 Grid placement 从 1 开始。`:grid-column` 和 `:grid-row` 接受正整数起点、
 `(start :span 正整数)`，或 `start` 小于 `end` 的 `(start end)`。
-`:grid-column-span` 与 `:grid-row-span` 接受正整数。`ebox-grid-item` 是便捷
-包装器；placement property 也可以直接放在 child node 上。
+`:grid-column-span` 与 `:grid-row-span` 接受正整数。placement property 直接属于
+child Box；Grid item 是父子参与角色，不是 wrapper 或 constructor。
 
 ## 4. 单位、box property 与文本属性
 
@@ -484,22 +482,20 @@ Idle prewarm 不会发布 buffer text 或 runtime state。宿主应用不希望�
 ## 10. 独立 `.ebox` DSL
 
 `ebox-build` 编译数据型 list form。支持的 tag 是 `box`/`ebox`、`row`、
-`column`、`flex`、`item`、`grid`、`grid-item` 和 `spacer`：
+`column`、`flex`、`item`、`grid` 和 `spacer`：
 
 ```elisp
 (ebox-build
  '(grid :width (640)
         :grid-template-columns ((200) 1fr 1fr)
         :gap (1 (12))
-        (grid-item :grid-column (1 :span 3)
-                   (box :content "Header"))
+        (box :grid-column (1 :span 3) :content "Header")
         (box :content "Main")))
 ```
 
 `box` 下的直接字符串会合并为换行内容；child form 会变成默认纵向 child
 layout。`row` 与 `column` 可以接收 box property 并包住 child layout；`flex`
-接收容器 property；`item` 接收 flex item property；`grid-item` 必须有一个
-child；`spacer` 不能有 child。
+接收容器 property；`item` 接收 flex item property；`spacer` 不能有 child。
 
 在 `.ebox` 文件中，结构 form 保持不加 quote；property 位置的 list 和 symbol
 常量要作为 data quote，例如 `:gap '(1 (12))` 或 `:justify-content 'center`；
@@ -537,7 +533,7 @@ style API。
 | `ebox-create`、`ebox-build` | 迁移期间创建旧节点或编译 `.ebox` list DSL。 |
 | `ebox-concat`、`ebox-stack`、`ebox-row`、`ebox-column`、`ebox-spacer` | 组合简单横向/纵向布局与空白 box。 |
 | `ebox-flex`、`ebox-flex-item` | 构建 Flex 容器与 item metadata。 |
-| `ebox-grid`、`ebox-grid-fr`、`ebox-grid-item` | 构建 Grid、分数轨道和 placement metadata。 |
+| `ebox-grid`、`ebox-grid-fr` | 构建 Grid 与分数轨道；placement metadata 直接属于 child Box。 |
 | `ebox-render`、`ebox-render-to-buffer`、`ebox-display-buffer` | 纯 materialization、retained mount 与展示包装。 |
 | `ebox-commit`、`ebox-buffer-update-report`、`ebox-rerender-buffer-with-context`、`ebox-viewport-window-width` | 原子根提交、报告查询、viewport-context rerender 与统一的显示安全宽度采样。 |
 | `ebox-region-ids`、`ebox-region-resolve`、`ebox-region-update` | Region 映射、logical handle 查询与直接更新。 |

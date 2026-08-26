@@ -4608,7 +4608,6 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-grid
     ebox-grid-fr
     ebox-grid-layout-create
-    ebox-grid-item
     ebox-host-ref-bounds
     ebox-host-ref-position
     ebox-native-build
@@ -4693,7 +4692,7 @@ and are documented separately in the public API reference.")
 ;;       :padding :margin :border :border-color :bgcolor
 ;;       :text-align :wrap-mode :box-sizing :surface-properties :host-ref
 ;;   ebox-build dsl
-;;       Compile ETML-style (box/row/column/flex/item/spacer ...) forms into
+;;       Compile ETML-style (box/row/column/flex/spacer ...) forms into
 ;;       normal ebox layout nodes.
 ;;
 ;; ── Layout ────────────────────────────────────────────────────

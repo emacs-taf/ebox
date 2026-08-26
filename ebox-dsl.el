@@ -160,17 +160,6 @@ The first value is string content.  The second value is a lazy child node."
           (plist-put child key (plist-get item-props key))))
       (apply #'ebox-flex-item child item-props))))
 
-(defun ebox--build-grid-item (items)
-  "Build a grid-item node from DSL ITEMS."
-  (let* ((split (ebox-grid--split-attrs items))
-         (props (car split))
-         (children (delq nil (cdr split))))
-    (unless (= (length children) 1)
-      (error "ebox-build: grid-item requires exactly one child node"))
-    (apply #'ebox-grid-item
-           (ebox-dsl-build (car children))
-           props)))
-
 (defun ebox--build-grid (items)
   "Build a grid node from DSL ITEMS."
   (let* ((split (ebox-grid--split-attrs items))
@@ -226,7 +215,7 @@ Supported forms:
   (row (box :content \"Left\") (spacer :width (16)) (box :content \"Right\"))
   (column (box :content \"Top\") (box :content \"Bottom\"))
   (grid :grid-template-columns ((80) (80))
-        (grid-item :grid-column (1 :span 2) (box \"Header\")))
+        (box :grid-column (1 :span 2) \"Header\"))
   (flex :width (320) :gap (1 (12)) (item :flex 1 (box \"A\")))
 
 `box' and `ebox' create `ebox-create' nodes.  `row', `column',
@@ -249,7 +238,6 @@ the child layout in a box using the rendered child layout as content."
         ('column (ebox--build-layout tag #'ebox-column items))
         ('flex (ebox--build-flex items))
         ('item (ebox--build-flex-item items))
-        ('grid-item (ebox--build-grid-item items))
         ('spacer (ebox--build-spacer items))
         ('grid (ebox--build-grid items))
         (_ (error "ebox-build: unknown DSL tag %S" tag)))))))
