@@ -87,6 +87,8 @@
                   "ebox-cache" (buffer))
 (declare-function ebox-cache-restore-report
                   "ebox-cache" (buffer snapshot))
+(declare-function ebox-surface-call-with-observation
+                  "ebox-surface" (buffer stage function))
 (declare-function ebox-style-cascade-active-p
                   "ebox-style" ())
 (declare-function ebox-native-commit-plan-eligible-p
@@ -3937,8 +3939,8 @@ during `ebox-incremental-flush'."
      (ebox--ensure-node-id root)
      (ebox-incremental--batch-dirty-set buffer pending))))
 
-(defun ebox-incremental-flush (buffer)
-  "Flush BUFFER's explicit incremental update batch."
+(defun ebox-incremental--flush (buffer)
+  "Flush BUFFER's explicit incremental update batch without observing it."
   (unless (buffer-live-p buffer)
     (error "ebox-incremental: buffer is not live: %S" buffer))
   (let* ((state (ebox-incremental--batch-state buffer))
@@ -3990,6 +3992,12 @@ during `ebox-incremental-flush'."
            'ebox-incremental--after-successful-batch-flush-hook
            buffer pending report))
         (ebox--buffer-update-report buffer)))))
+
+(defun ebox-incremental-flush (buffer)
+  "Flush BUFFER's explicit incremental update batch as one operation."
+  (ebox-surface-call-with-observation
+   buffer 'batch
+   (lambda () (ebox-incremental--flush buffer))))
 
 ;;; Declarative Root Commit
 

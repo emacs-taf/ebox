@@ -108,9 +108,10 @@ though the facade inventory below focuses on application entry points.
 | Function | Contract |
 | --- | --- |
 | `ebox-render` | Return a propertized string without publishing a live buffer. |
-| `ebox-render-to-buffer` | Copy the built root, mount a retained TP surface, enable `ebox-buffer-mode`, and return the buffer. |
+| `ebox-render-to-buffer` | Copy the built root, mount a retained TP surface, enable `ebox-buffer-mode`, and return the buffer. Its optional plist accepts only `:observer FUNCTION`. |
 | `ebox-display-buffer` | Render through the retained path, delete other windows, and switch to the result. |
 | `ebox-commit` | Atomically publish a newly built root or one-shot logical candidate. |
+| `ebox-buffer-set-observer` | Set or remove one function-valued observer on an already mounted buffer. |
 | `ebox-buffer-update-report` | Return a defensive copy of the last successful update report. |
 | `ebox-rerender-buffer-with-context` | Apply explicit viewport width and optional height while retaining identity. |
 | `ebox-viewport-window-width` | Return Ebox's display-safe pixel width for a window. |
@@ -118,6 +119,28 @@ though the facade inventory below focuses on application entry points.
 `ebox-commit` accepts optional framework publish and rollback callbacks. They
 join the existing atomic publication; failures restore the previous buffer,
 surface, runtime state, and successful report.
+
+Every public Ebox publication owns its TP transaction. Calling mount, commit,
+viewport, region, selector, batch, or TP-backed scroll publication from inside
+an already active outer TP transaction is rejected before Ebox mutation.
+
+Observation is an optional read-only boundary, not transaction authority. An
+observer has the signature `(OBSERVER BUFFER REPORT)`. After one accepted TP
+publication and all Ebox finalization complete, it receives two defensive flat
+reports in order: TP first, then Ebox. Both carry the same `:correlation-id`,
+derived from the TP transaction id. Ebox stages are `mount`, `commit`,
+`viewport`, `region`, `selector`, `batch`, and `scroll`. Nested public calls
+reuse the outer operation, so a multi-match selector or explicit batch still
+emits one pair. No-op operations and native-window scrolls that publish no TP
+surface emit no pair. Observer errors are contained after acceptance and
+cannot roll back rendering.
+
+Pass `:observer` to `ebox-render-to-buffer` when the initial mount must be
+included. That mount report is transient: observed and unobserved mounts both
+leave `ebox-buffer-update-report` nil. Use `ebox-buffer-set-observer` to replace
+or remove observation later; passing nil detaches the TP bridge. With no
+observer, Ebox creates no observation context, timestamps, GC snapshots, or
+report decoration.
 
 `ebox-call-with-render-burst` is the exception-safe allocation/GC boundary for
 a framework callback. `ebox-render-burst-begin` and `ebox-render-burst-end`
@@ -195,7 +218,8 @@ names every entry:
   `ebox-column-layout-create`, `ebox-flex-layout-create`,
   `ebox-grid-layout-create`, `ebox-box-create`, `ebox-child-range`.
 - Render/publication: `ebox-render`, `ebox-render-to-buffer`,
-  `ebox-display-buffer`, `ebox-commit`, `ebox-buffer-update-report`,
+  `ebox-display-buffer`, `ebox-commit`, `ebox-buffer-set-observer`,
+  `ebox-buffer-update-report`,
   `ebox-rerender-buffer-with-context`, `ebox-viewport-window-width`,
   `ebox-call-with-render-burst`, `ebox-render-burst-begin`,
   `ebox-render-burst-end`.

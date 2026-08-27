@@ -101,15 +101,35 @@ typed 模块还公开 `ebox-node-kind`、`ebox-text-node-p`、`ebox-box-node-p`�
 | 函数 | 契约 |
 | --- | --- |
 | `ebox-render` | 返回带属性字符串，不发布 live buffer。 |
-| `ebox-render-to-buffer` | 复制 built root，挂载 retained TP surface，启用 `ebox-buffer-mode` 并返回 buffer。 |
+| `ebox-render-to-buffer` | 复制 built root，挂载 retained TP surface，启用 `ebox-buffer-mode` 并返回 buffer；可选 plist 只接受 `:observer FUNCTION`。 |
 | `ebox-display-buffer` | 走 retained 路径渲染，删除其他 window 后切换到结果。 |
 | `ebox-commit` | 原子发布重新构建的 root 或 one-shot logical candidate。 |
+| `ebox-buffer-set-observer` | 给已经 mounted 的 buffer 设置或移除一个 function observer。 |
 | `ebox-buffer-update-report` | 返回最近一次成功更新报告的防御性副本。 |
 | `ebox-rerender-buffer-with-context` | 应用显式 viewport width 与可选 height，同时保留 identity。 |
 | `ebox-viewport-window-width` | 返回 Ebox 对 window 使用的 display-safe 像素宽度。 |
 
 `ebox-commit` 接受可选 framework publish/rollback callback。它们加入现有原子发布；
 失败会恢复旧 buffer、surface、runtime state 与最近一次成功报告。
+
+每个公共 Ebox publication 都拥有自己的 TP transaction。在已经 active 的外层 TP
+transaction 中调用 mount、commit、viewport、region、selector、batch 或 TP-backed
+scroll publication，会在 Ebox mutation 前被拒绝。
+
+观察是可选只读边界，不拥有 transaction 权限。observer 签名是
+`(OBSERVER BUFFER REPORT)`。一次 TP publication 被接受且 Ebox finalization 全部完成后，
+observer 按顺序收到两份防御性 flat report：先 TP，后 Ebox。两者共享从 TP transaction
+id 得到的 `:correlation-id`。Ebox stage 是 `mount`、`commit`、`viewport`、
+`region`、`selector`、`batch` 和 `scroll`。嵌套公共调用复用最外层 operation，
+因此多匹配 selector 或显式 batch 仍只发送一对 report。没有 TP surface publication
+的 no-op 与 native-window scroll 不发送 report。observer error 在 accept 后被包含，
+不能回滚渲染。
+
+需要观察首次 mount 时，把 `:observer` 传给 `ebox-render-to-buffer`。mount report 只
+瞬时发送；有无 observer 时 `ebox-buffer-update-report` 都仍为 nil。后续通过
+`ebox-buffer-set-observer` 替换 observer，传 nil 时移除并从 TP surface 解绑 bridge。
+observer 为 nil 时，Ebox 不创建 observation context，不取 timestamp/GC snapshot，
+也不装饰 report。
 
 `ebox-call-with-render-burst` 是框架 callback 的 exception-safe allocation/GC 边界。
 `ebox-render-burst-begin` 与 `ebox-render-burst-end` 提供较底层的 token 形式，必须用
@@ -181,7 +201,7 @@ native 模块只是加速器，不是正确性依赖。加载包不会构建它�
   `ebox-flex-layout-create`、`ebox-grid-layout-create`、`ebox-box-create`、
   `ebox-child-range`；
 - 渲染/发布：`ebox-render`、`ebox-render-to-buffer`、`ebox-display-buffer`、
-  `ebox-commit`、`ebox-buffer-update-report`、
+  `ebox-commit`、`ebox-buffer-set-observer`、`ebox-buffer-update-report`、
   `ebox-rerender-buffer-with-context`、`ebox-viewport-window-width`、
   `ebox-call-with-render-burst`、`ebox-render-burst-begin`、
   `ebox-render-burst-end`；

@@ -202,6 +202,7 @@
                      ("ebox-scroll-up" . "defun")
                      ("ebox-region-update" . "defun")
                      ("ebox-region-resolve" . "defun")
+                     ("ebox-buffer-set-observer" . "defun")
                      ("ebox-buffer-update-report" . "defun")
                      ("ebox-byte-compile" . "defun")
                      ("ebox-native-build" . "defun")
@@ -219,6 +220,7 @@
 (ert-deftest ebox-public-api-includes-all-public-autoloaded-entry-points ()
   "The facade inventory should not omit an autoloaded public entry point."
   (dolist (entry '(ebox-byte-compile
+                   ebox-buffer-set-observer
                    ebox-buffer-update-report
                    ebox-build
                    ebox-buffer-mode

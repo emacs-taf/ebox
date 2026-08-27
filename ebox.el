@@ -68,6 +68,7 @@
 (declare-function ebox-native-reflow--build
                   "ebox-native-reflow" (&optional clean))
 (declare-function ebox-native-reflow--status "ebox-native-reflow" ())
+(declare-function tp-transaction-active-p "tp-reactive" ())
 
 (defalias 'ebox-select-all #'ebox-selector-query-buffer)
 (defalias 'ebox-update-selector #'ebox-selector-update-buffer)
@@ -443,6 +444,21 @@ publication."
       (user-error "Ebox report target has no rendered runtime: %S"
                   buffer-or-name))
     (copy-tree (ebox--buffer-update-report buffer))))
+
+;;;###autoload
+(defun ebox-buffer-set-observer (buffer-or-name observer-or-nil)
+  "Set BUFFER-OR-NAME's publication observer to OBSERVER-OR-NIL.
+The observer receives BUFFER and one defensive flat report at a time after an
+accepted publication.  TP's report is delivered first, followed by Ebox's
+completed report.  Nil removes observation without affecting rendering."
+  (let ((buffer (and buffer-or-name (get-buffer buffer-or-name))))
+    (unless (buffer-live-p buffer)
+      (user-error "Ebox observer target is not a live buffer: %S"
+                  buffer-or-name))
+    (unless (ebox-surface-buffer-mounted-p buffer)
+      (user-error "Ebox observer target has no rendered surface: %S"
+                  buffer-or-name))
+    (ebox-surface-set-buffer-observer buffer observer-or-nil)))
 
 (defun ebox--ensure-region-id (box)
   "Return BOX's stable region id, creating one if needed."
@@ -3356,29 +3372,36 @@ inside the old prefix, so a line-slide never mixes two layout versions."
 
 (defun ebox--scroll-region-by (region-id delta &optional prefix-budget-lines)
   "Scroll REGION-ID by DELTA through its runtime using PREFIX-BUDGET-LINES."
-  (let ((run
-         (lambda ()
-           (when-let* ((state (and region-id (ebox--scroll-get-state region-id)))
-                       (buffer (ebox--scroll-state-buffer state)))
-             (unless (ebox-surface-buffer-mounted-p buffer)
-               (error "Ebox scroll update requires a mounted TP surface"))
-             (ebox--surface-scroll-region-by
-              buffer region-id delta prefix-budget-lines)))))
-    ;; Scroll publication allocates a short-lived candidate text/ownership
-    ;; plan.  Keep GC out of the visible event and let the existing deferred
-    ;; render-GC lease collect after the interaction burst; batch tests keep
-    ;; their deterministic threshold and never install a timer.
-    (let ((native
-           (when-let* ((state (and region-id
-                                   (ebox--scroll-get-state region-id)))
-                       (buffer (ebox--scroll-state-buffer state)))
-             (ebox--native-buffer-scroll-by buffer region-id delta))))
-      (if (not (eq native 'native-unavailable))
-          native
-        (if noninteractive
-            (funcall run)
-          (ebox--with-deferred-render-gc
-            (funcall run)))))))
+  (let* ((state (and region-id (ebox--scroll-get-state region-id)))
+         (buffer (and state (ebox--scroll-state-buffer state)))
+         (execute
+          (lambda ()
+            ;; Scroll publication allocates a short-lived candidate
+            ;; text/ownership plan.  Keep GC out of the visible event and let
+            ;; the existing deferred render-GC lease collect after the
+            ;; interaction burst; batch tests keep their deterministic
+            ;; threshold and never install a timer.
+            (let ((native
+                   (and buffer
+                        (ebox--native-buffer-scroll-by
+                         buffer region-id delta))))
+              (if (not (eq native 'native-unavailable))
+                  native
+                (let ((run
+                       (lambda ()
+                         (when buffer
+                           (unless (ebox-surface-buffer-mounted-p buffer)
+                             (error
+                              "Ebox scroll update requires a mounted TP surface"))
+                           (ebox--surface-scroll-region-by
+                            buffer region-id delta prefix-budget-lines)))))
+                  (if noninteractive
+                      (funcall run)
+                    (ebox--with-deferred-render-gc
+                      (funcall run)))))))))
+    (if buffer
+        (ebox-surface-call-with-observation buffer 'scroll execute)
+      (funcall execute))))
 
 (defun ebox--scroll-progress-p (result)
   "Return non-nil when RESULT represents consumed or pending scroll work."
@@ -3830,6 +3853,7 @@ Defaults to the current buffer."
 
 (defun ebox--cleanup-current-buffer ()
   "Remove Ebox runtime state owned by the current buffer."
+  (ebox-surface-cleanup-buffer-observer (current-buffer))
   (ebox--clear-buffer-runtime-state (current-buffer))
   (setq-local ebox-surface--buffer-surface nil))
 
@@ -4260,12 +4284,6 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
                      (ebox--constraint-change-report-props
                       constraint-change)))))))))
 
-(defun ebox--surface-region-update (handle props)
-  "Apply PROPS to surface-scoped region HANDLE through one TP commit."
-  (pcase-let ((`(,buffer . ,region-id)
-               (ebox-selector--region-target handle)))
-    (ebox--surface-region-update-target buffer region-id handle props)))
-
 ;;;###autoload
 (defun ebox-region-update (handle &rest props)
   "Update the box identified by surface-scoped HANDLE with PROPS.
@@ -4284,8 +4302,16 @@ Examples:
   (unless (ebox-region-handle-p handle)
     (signal (quote wrong-type-argument)
             (list (quote ebox-region-handle-p) handle)))
-  (ebox--with-render-gc
-    (ebox--surface-region-update handle props)))
+  (pcase-let ((`(,buffer . ,region-id)
+               (ebox-selector--region-target handle)))
+    (let ((execute
+           (lambda ()
+             (ebox--with-render-gc
+               (ebox--surface-region-update-target
+                buffer region-id handle props)))))
+      (if (ebox-incremental-batching-p buffer)
+          (funcall execute)
+        (ebox-surface-call-with-observation buffer 'region execute)))))
 
 (defvar ebox-scroll-map nil
   "Keymap for scroll interaction within ebox.")
@@ -4347,24 +4373,65 @@ Examples:
       (ebox--install-scroll-map-overrides)
     (ebox--clear-scroll-map-overrides)))
 
+(defun ebox--render-observer-option (options)
+  "Validate OPTIONS and return `(PRESENT . OBSERVER)'."
+  (unless (proper-list-p options)
+    (signal 'wrong-type-argument (list 'proper-list-p options)))
+  (let ((rest options)
+        present observer)
+    (while rest
+      (unless (cdr rest)
+        (error "Ebox render option has no value: %S" (car rest)))
+      (let ((key (pop rest))
+            (value (pop rest)))
+        (unless (eq key :observer)
+          (error "Unknown Ebox render option: %S" key))
+        (when present
+          (error "Duplicate Ebox render option: :observer"))
+        (setq present t observer value)))
+    (unless (or (null observer) (functionp observer))
+      (signal 'wrong-type-argument (list 'functionp observer)))
+    (cons present observer)))
+
 ;;;###autoload
-(defun ebox-render-to-buffer (buffer-or-name node)
+(defun ebox-render-to-buffer (buffer-or-name node &optional options)
   "Render layout NODE into BUFFER-OR-NAME and return the buffer.
-NODE is a typed TextNode/BoxNode or a pre-rendered string."
+NODE is a typed TextNode/BoxNode or a pre-rendered string.
+OPTIONS accepts only `:observer'.  Its function receives the buffer and flat
+TP/Ebox reports after accepted initial publication and later commits."
   (declare (indent 1))
   (unless (stringp node)
     ;; Validate opaque host identities before preparing a target generation.
     (ebox-tree-validate-host-refs node))
-  (let ((buffer (get-buffer-create buffer-or-name)))
-    (ebox--with-render-gc
-      (ebox-surface-mount-buffer buffer node)
-      (with-current-buffer buffer
-        (goto-char (point-min))
-        (add-hook 'kill-buffer-hook #'ebox--cleanup-current-buffer nil t)
-        (ebox-buffer-mode 1)
-        (read-only-mode 1)
-        (ebox--schedule-buffer-runtime-prewarm buffer nil nil)
-        buffer))))
+  (let* ((observer-option (ebox--render-observer-option options))
+         (buffer (get-buffer-create buffer-or-name))
+         (old-observer (ebox-surface-buffer-observer buffer))
+         (old-bridge (with-current-buffer buffer ebox-surface--tp-observer))
+         success result)
+    (unwind-protect
+        (progn
+          (when (car observer-option)
+            (ebox-surface-set-buffer-observer buffer (cdr observer-option)))
+          (setq result
+                (ebox-surface-call-with-observation
+                 buffer 'mount
+                 (lambda ()
+                   (ebox--with-render-gc
+                     (ebox-surface-mount-buffer buffer node)
+                     (with-current-buffer buffer
+                       (goto-char (point-min))
+                       (add-hook 'kill-buffer-hook
+                                 #'ebox--cleanup-current-buffer nil t)
+                       (ebox-buffer-mode 1)
+                       (read-only-mode 1)
+                       (ebox--schedule-buffer-runtime-prewarm buffer nil nil)
+                       buffer))))
+                success t)
+          result)
+      (when (and (not success) (car observer-option))
+        (ebox-surface-set-buffer-observer buffer old-observer)
+        (unless old-bridge
+          (ebox-surface-cleanup-buffer-observer buffer))))))
 
 (defun ebox--host-ref-buffer (buffer-or-name)
   "Return the live buffer named by BUFFER-OR-NAME, or nil."
@@ -4536,6 +4603,8 @@ a later transaction phase fails, and is contained if it violates no-throw.
 Return the successful publication report stored by `ebox-buffer-update-report'."
   (let ((execute
          (lambda ()
+           (when (tp-transaction-active-p)
+             (error "Ebox public operation cannot join an outer TP transaction"))
            (unless (or (null framework-publish) (functionp framework-publish))
              (signal 'wrong-type-argument (list 'functionp framework-publish)))
            (unless (or (null framework-rollback)
@@ -4580,11 +4649,22 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
                         (plist-get commit-input :state-overrides)
                         participant))))
                (ebox-surface--framework-participant-report participant))))))
-    (if noninteractive
-        (ebox--with-render-gc
-          (funcall execute))
-      (ebox--with-deferred-render-gc
-        (funcall execute)))))
+    (let ((buffer (get-buffer buffer-or-name)))
+      (if (and (buffer-live-p buffer)
+               (ebox-surface-buffer-observer buffer))
+          (ebox-surface-call-with-observation
+           buffer 'commit
+           (lambda ()
+             (if noninteractive
+                 (ebox--with-render-gc
+                   (funcall execute))
+               (ebox--with-deferred-render-gc
+                 (funcall execute)))))
+        (if noninteractive
+            (ebox--with-render-gc
+              (funcall execute))
+          (ebox--with-deferred-render-gc
+            (funcall execute)))))))
 
 ;;;###autoload
 (defun ebox-rerender-buffer-with-context
@@ -4608,11 +4688,14 @@ through dirty-set and patch-set execution before falling back to root rerender."
                (ebox--schedule-buffer-runtime-prewarm buffer nil t)
                (ebox--schedule-buffer-reflow-cache-prewarm
                 buffer old-viewport-width viewport-width))))))
-    (if noninteractive
-        (ebox--with-render-gc
-          (funcall execute))
-      (ebox--with-deferred-render-gc
-        (funcall execute)))))
+    (ebox-surface-call-with-observation
+     buffer 'viewport
+     (lambda ()
+       (if noninteractive
+           (ebox--with-render-gc
+             (funcall execute))
+         (ebox--with-deferred-render-gc
+           (funcall execute)))))))
 
 (defun ebox--rerender-buffer-preserving-runtime (buffer)
   "Rerender BUFFER from stored runtime state without rebuilding identity."
@@ -4632,6 +4715,7 @@ through dirty-set and patch-set execution before falling back to root rerender."
 
 (defconst ebox-public-api
   '(ebox-buffer-mode
+    ebox-buffer-set-observer
     ebox-buffer-update-report
     ebox-build
     ebox-byte-compile

@@ -26,6 +26,8 @@
 (declare-function ebox-incremental-begin-batch "ebox-incremental" (buffer))
 (declare-function ebox-incremental-flush "ebox-incremental" (buffer))
 (declare-function ebox-region-update "ebox" (handle &rest props))
+(declare-function ebox-surface-call-with-observation
+                  "ebox-surface" (buffer stage function))
 
 (cl-defstruct
     (ebox-region-handle
@@ -305,35 +307,40 @@ SELECTOR locates runtime nodes, then every editable match is updated through
 skips, and update reports."
   (unless props
     (user-error "ebox-selector: update requires at least one property"))
-  (ebox--with-render-gc
-    (let* ((resolved-buffer (ebox-selector--resolve-buffer buffer))
-           (matches (ebox-selector-query-buffer resolved-buffer selector))
-           editable skipped reports)
-      (unless matches
-        (user-error "ebox-selector: no matches for %S" selector))
-      (dolist (match matches)
-        (if (plist-get match :region-handle)
-            (push match editable)
-          (push (ebox-selector--skip-handle match 'no-region) skipped)))
-      (setq editable (nreverse editable)
-            skipped (nreverse skipped))
-      (cond
-       ((null editable)
-        (setq reports nil))
-       ((= (length editable) 1)
-        (setq reports
-              (list (ebox-selector--update-region (car editable) props))))
-       (t
-        (ebox-incremental-begin-batch resolved-buffer)
-        (dolist (match editable)
-          (ebox-selector--update-region match props))
-        (setq reports
-              (list (ebox-incremental-flush resolved-buffer)))))
-      (list :selector selector
-            :matched (length matches)
-            :updated (length editable)
-            :skipped skipped
-            :reports reports))))
+  (let ((resolved-buffer (ebox-selector--resolve-buffer buffer)))
+    (ebox-surface-call-with-observation
+     resolved-buffer 'selector
+     (lambda ()
+       (ebox--with-render-gc
+         (let ((matches
+                (ebox-selector-query-buffer resolved-buffer selector))
+               editable skipped reports)
+           (unless matches
+             (user-error "ebox-selector: no matches for %S" selector))
+           (dolist (match matches)
+             (if (plist-get match :region-handle)
+                 (push match editable)
+               (push (ebox-selector--skip-handle match 'no-region) skipped)))
+           (setq editable (nreverse editable)
+                 skipped (nreverse skipped))
+           (cond
+            ((null editable)
+             (setq reports nil))
+            ((= (length editable) 1)
+             (setq reports
+                   (list (ebox-selector--update-region
+                          (car editable) props))))
+            (t
+             (ebox-incremental-begin-batch resolved-buffer)
+             (dolist (match editable)
+               (ebox-selector--update-region match props))
+             (setq reports
+                   (list (ebox-incremental-flush resolved-buffer)))))
+           (list :selector selector
+                 :matched (length matches)
+                 :updated (length editable)
+                 :skipped skipped
+                 :reports reports)))))))
 
 (provide 'ebox-selector)
 

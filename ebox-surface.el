@@ -163,9 +163,34 @@ the winning client state; otherwise only the candidate is disposable."
                   (context plan rendered ranges &optional client-state
                    full-surface-p property-contributions))
 (declare-function tp-surface-report-summary "tp-surface" (surface))
+(declare-function tp-surface-add-observer
+                  "tp-surface" (surface observer))
+(declare-function tp-surface-remove-observer
+                  "tp-surface" (surface observer))
+(declare-function tp-transaction-active-p "tp-reactive" ())
+(defvar gcs-done)
+(defvar gc-elapsed)
 
 (defvar-local ebox-surface--buffer-surface nil
   "Live TP content surface mounted for the current Ebox buffer.")
+
+(defvar-local ebox-surface--buffer-observer nil
+  "Optional public observer for completed Ebox buffer publications.")
+
+(defvar-local ebox-surface--tp-observer nil
+  "Stable TP observer bridge installed for the current Ebox buffer.")
+
+(defvar-local ebox-surface--observation-contexts nil
+  "Pending observed Ebox calls for the current buffer.")
+
+(defvar ebox-surface--observation-context nil
+  "Dynamically bound observation context for one public Ebox call.")
+
+(cl-defstruct (ebox-surface--observation
+               (:constructor ebox-surface--make-observation))
+  "Two-phase observation of one public Ebox publication."
+  buffer observer stage started gc-start transaction-before correlation-id
+  tp-report ebox-report finished gc-end finished-p)
 
 (cl-defstruct (ebox-surface--signals
                (:constructor ebox-surface--make-signals))
@@ -180,6 +205,208 @@ the winning client state; otherwise only the candidate is disposable."
 
 (defvar-local ebox-surface--context-signals nil
   "Buffer-scoped TP signals consumed by the mounted Ebox producer.")
+
+(defun ebox-surface--observation-clock ()
+  "Return the current observation clock in seconds."
+  (float-time))
+
+(defun ebox-surface--observation-gc-snapshot ()
+  "Return current GC count and elapsed seconds."
+  (cons (if (boundp 'gcs-done) gcs-done 0)
+        (if (boundp 'gc-elapsed) gc-elapsed 0.0)))
+
+(defun ebox-surface--observation-discard (context)
+  "Remove pending observation CONTEXT from its owning buffer."
+  (when-let* ((buffer (ebox-surface--observation-buffer context))
+              ((buffer-live-p buffer)))
+    (with-current-buffer buffer
+      (setq ebox-surface--observation-contexts
+            (delq context ebox-surface--observation-contexts)))))
+
+(defun ebox-surface--decorate-observation-report (context report)
+  "Return CONTEXT metadata attached to defensive Ebox REPORT copy."
+  (let* ((result (copy-tree report))
+         (gc-start (ebox-surface--observation-gc-start context))
+         (gc (ebox-surface--observation-gc-end context))
+         (tp-report (ebox-surface--observation-tp-report context)))
+    (dolist (entry
+             `((:provider . ebox)
+               (:stage . ,(ebox-surface--observation-stage context))
+               (:correlation-id
+                . ,(ebox-surface--observation-correlation-id context))
+               (:duration-ms
+                . ,(* 1000.0
+                      (- (ebox-surface--observation-finished context)
+                         (ebox-surface--observation-started context))))
+               (:gc-count . ,(- (car gc) (car gc-start)))
+               (:gc-duration-ms . ,(* 1000.0 (- (cdr gc) (cdr gc-start))))
+               (:tp-duration-ms . ,(plist-get tp-report :duration-ms))))
+      (setq result (plist-put result (car entry) (cdr entry))))
+    result))
+
+(defun ebox-surface--observation-mount-report (context)
+  "Build CONTEXT's transient initial-mount Ebox report."
+  (let* ((buffer (ebox-surface--observation-buffer context))
+         (surface (ebox-surface--live-buffer-surface buffer))
+         (state (and surface (tp-surface-client-state surface)))
+         (tp-report (and surface (tp-surface-report-summary surface))))
+    (when (and surface state)
+      (ebox-surface--commit-report
+       surface state
+       (ebox--update-report
+        nil 'surface-mount
+        :constraint-source 'declarative
+        :dirty-count 1
+        :patch-count
+        (+ (or (plist-get tp-report :text-operations)
+               0)
+           (or (plist-get tp-report :property-operations)
+               0)))))))
+
+(defun ebox-surface--observation-deliver (context)
+  "Deliver CONTEXT's paired reports once both phases are complete."
+  (when (and (ebox-surface--observation-tp-report context)
+             (ebox-surface--observation-ebox-report context)
+             (not (ebox-surface--observation-finished-p context)))
+    (setf (ebox-surface--observation-finished-p context) t)
+    (ebox-surface--observation-discard context)
+    (let ((observer (ebox-surface--observation-observer context))
+          (reports
+           (list
+            (ebox-surface--observation-tp-report context)
+            (ebox-surface--decorate-observation-report
+             context (ebox-surface--observation-ebox-report context)))))
+      (dolist (report reports)
+        (let ((inhibit-quit t)
+              (quit-flag nil))
+          (condition-case nil
+              (funcall observer
+                       (ebox-surface--observation-buffer context)
+                       (copy-tree report))
+            ((error quit) nil)))))))
+
+(defun ebox-surface--observation-finish (context)
+  "Finish CONTEXT after Ebox finalization, excluding observer callbacks."
+  (let ((finished (ebox-surface--observation-clock))
+        (gc (ebox-surface--observation-gc-snapshot))
+        (surface
+         (ebox-surface--live-buffer-surface
+          (ebox-surface--observation-buffer context))))
+    ;; Public operations do not all return the Ebox update report: selector
+    ;; updates return a summary and scroll returns a consumed distance.  The
+    ;; retained client state is the single completed report authority after
+    ;; the public call returns.
+    (let ((report
+           (unless (eq (ebox-surface--observation-stage context) 'mount)
+             (and surface
+                  (plist-get (tp-surface-client-state surface)
+                             :last-update-report)))))
+    (unless report
+      (setq report (ebox-surface--observation-mount-report context)))
+    (when report
+      (setf (ebox-surface--observation-ebox-report context)
+            report
+            (ebox-surface--observation-finished context) finished
+            (ebox-surface--observation-gc-end context) gc)))
+    (if (ebox-surface--observation-correlation-id context)
+        (ebox-surface--observation-deliver context)
+      (ebox-surface--observation-discard context))))
+
+(defun ebox-surface--capture-tp-observation (buffer report)
+  "Capture accepted TP REPORT for BUFFER and complete matching Ebox calls."
+  (when (buffer-live-p buffer)
+    (let ((correlation-id (plist-get report :transaction-id))
+          matches)
+      (with-current-buffer buffer
+        (dolist (context ebox-surface--observation-contexts)
+          (when (equal correlation-id
+                       (ebox-surface--observation-correlation-id context))
+            (push context matches))))
+      (dolist (context (nreverse matches))
+        (let ((tp-report (copy-tree report)))
+          (setq tp-report
+                (plist-put tp-report :correlation-id correlation-id))
+          (setf (ebox-surface--observation-tp-report context) tp-report)
+          (ebox-surface--observation-deliver context))))))
+
+(defun ebox-surface--ensure-tp-observer (buffer)
+  "Return BUFFER's stable TP observation bridge."
+  (with-current-buffer buffer
+    (or ebox-surface--tp-observer
+        (setq ebox-surface--tp-observer
+              (lambda (_surface report)
+                (ebox-surface--capture-tp-observation buffer report))))))
+
+(defun ebox-surface-set-buffer-observer (buffer observer)
+  "Set BUFFER's Ebox OBSERVER, or remove it when OBSERVER is nil."
+  (unless (or (null observer) (functionp observer))
+    (signal 'wrong-type-argument (list 'functionp observer)))
+  (let ((surface (ebox-surface--live-buffer-surface buffer)))
+    (with-current-buffer buffer
+      (if observer
+          (let ((bridge (ebox-surface--ensure-tp-observer buffer)))
+            (setq-local ebox-surface--buffer-observer observer)
+            (when surface (tp-surface-add-observer surface bridge)))
+        (when (and surface ebox-surface--tp-observer)
+          (tp-surface-remove-observer surface ebox-surface--tp-observer))
+        (setq-local ebox-surface--buffer-observer nil)
+        (dolist (context ebox-surface--observation-contexts)
+          (setf (ebox-surface--observation-finished-p context) t))
+        (setq-local ebox-surface--observation-contexts nil))))
+  observer)
+
+(defun ebox-surface-buffer-observer (buffer)
+  "Return BUFFER's current Ebox observer, or nil."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer ebox-surface--buffer-observer)))
+
+(defun ebox-surface-call-with-observation (buffer stage function)
+  "Call FUNCTION while observing BUFFER publication at STAGE."
+  (let ((current ebox-surface--observation-context)
+        (observer (ebox-surface-buffer-observer buffer)))
+    (cond
+     ((and current
+           (not (ebox-surface--observation-finished-p current))
+           (eq buffer (ebox-surface--observation-buffer current)))
+      (funcall function))
+     ((tp-transaction-active-p)
+      (error "Ebox public operation cannot join an outer TP transaction"))
+     ((null observer)
+      (funcall function))
+     (t
+      (let* ((surface (ebox-surface--live-buffer-surface buffer))
+             (before-report (and surface (tp-surface-report-summary surface)))
+             (context
+              (ebox-surface--make-observation
+               :buffer buffer :observer observer :stage stage
+               :started (ebox-surface--observation-clock)
+               :gc-start (ebox-surface--observation-gc-snapshot)
+               :transaction-before (plist-get before-report :transaction-id))))
+        (with-current-buffer buffer
+          (push context ebox-surface--observation-contexts))
+        (let ((ebox-surface--observation-context context)
+              result success)
+          (unwind-protect
+              (progn
+                (setq result (funcall function)
+                      success t)
+                (ebox-surface--observation-finish context)
+                result)
+            (unless success
+              (ebox-surface--observation-discard context)))))))))
+
+(defun ebox-surface-cleanup-buffer-observer (buffer)
+  "Remove BUFFER's TP bridge and all pending observation state."
+  (when (buffer-live-p buffer)
+    (let ((surface (ebox-surface--live-buffer-surface buffer)))
+      (with-current-buffer buffer
+        (when (and surface ebox-surface--tp-observer)
+          (condition-case nil
+              (tp-surface-remove-observer surface ebox-surface--tp-observer)
+            (error nil)))
+        (setq-local ebox-surface--buffer-observer nil)
+        (setq-local ebox-surface--tp-observer nil)
+        (setq-local ebox-surface--observation-contexts nil)))))
 
 (defvar ebox-surface--scroll-line-fragment-cache
   (make-hash-table :test #'eq :weakness 'key)
@@ -646,7 +873,7 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
 
 (defun ebox-surface--publish-runtime-state
     (buffer surface old-state report-base after-publication
-            &optional framework-participant)
+            &optional framework-participant observation-context)
   "Register BUFFER runtime publication for SURFACE after OLD-STATE.
 REPORT-BASE requests an Ebox commit report.  AFTER-PUBLICATION, when non-nil,
 runs after TP and Ebox point at the same candidate generation.
@@ -681,6 +908,16 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
                (ebox-surface--framework-participant-scroll-keys
                 framework-participant)
                scroll-keys))
+       (when observation-context
+         (let* ((tp-report (tp-surface-report-summary surface))
+                (transaction-id (plist-get tp-report :transaction-id)))
+           (if (equal transaction-id
+                      (ebox-surface--observation-transaction-before
+                       observation-context))
+               (ebox-surface--observation-discard observation-context)
+             (setf (ebox-surface--observation-correlation-id
+                    observation-context)
+                   transaction-id))))
        (when new-state
          (plist-put new-state :surface surface)
          (plist-put new-state :runtime-revision
@@ -735,7 +972,10 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
          (error "Ebox declarative target died during publication")))
      (lambda ()
        (unwind-protect
-           (ebox-surface--participant-run-rollback framework-participant)
+           (progn
+             (ebox-surface--participant-run-rollback framework-participant)
+             (when observation-context
+               (ebox-surface--observation-discard observation-context)))
          (if (buffer-live-p buffer)
              (progn
                (when region-snapshot
@@ -764,7 +1004,8 @@ REPORT-BASE requests a committed Ebox report.  AFTER-PUBLICATION runs inside
 the rollback-capable transaction.  PRESERVE-IDENTITIES-P retains identities
 already present in a logical candidate.  STATE-OVERRIDES augments its runtime.
 FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
-  (let* ((surface (ebox-surface--live-buffer-surface buffer))
+  (let* ((observation-context ebox-surface--observation-context)
+         (surface (ebox-surface--live-buffer-surface buffer))
          (old-state (and surface (tp-surface-client-state surface)))
          (context-values
           (ebox-surface--context-values buffer old-state state-overrides))
@@ -790,11 +1031,16 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
               (setq surface
                     (tp-surface-mount
                      buffer producer
-                     '(:capability content :inhibit-read-only t
-                       :coordinate-mounts t))))
+                     (append
+                      '(:capability content :inhibit-read-only t
+                        :coordinate-mounts t)
+                      (when-let* ((bridge
+                                   (with-current-buffer buffer
+                                     ebox-surface--tp-observer)))
+                        (list :observers (list bridge)))))))
             (ebox-surface--publish-runtime-state
              buffer surface old-state report-base after-publication
-             framework-participant))
+             framework-participant observation-context))
           (setq success t)
           (let ((scroll-keys
                  (if framework-participant
@@ -1552,7 +1798,8 @@ may be adopted without another structural copy or identity reconciliation.
 When SOURCE-PATH-COPIED-P is non-nil, SOURCE shares untouched published nodes;
 the surface must preserve those shared nodes while consuming the candidate.
 FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
-  (let* ((surface (ebox-surface--live-buffer-surface buffer))
+  (let* ((observation-context ebox-surface--observation-context)
+         (surface (ebox-surface--live-buffer-surface buffer))
          (old-state (and surface (tp-surface-client-state surface))))
     (unless surface
       (error "Ebox scoped update requires a mounted TP surface"))
@@ -1593,7 +1840,7 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
                  (list :on-mismatch on-mismatch :return-report nil))
                 (ebox-surface--publish-runtime-state
                  buffer surface old-state report-base after-publication
-                 framework-participant))
+                 framework-participant observation-context))
               (setq success t)
               (let ((scroll-keys
                      (if framework-participant

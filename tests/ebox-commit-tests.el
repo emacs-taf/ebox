@@ -34,6 +34,393 @@
   (or (plist-get proof :owner-proofs)
       (and proof (list proof))))
 
+(defun ebox-commit-test--observed-root (content)
+  "Return one stable declarative root containing CONTENT."
+  (ebox-test-box :key 'root :content content))
+
+(defun ebox-commit-test--hash-facts (table &optional values)
+  "Return sorted TABLE keys, or key/value pairs when VALUES is non-nil."
+  (let (facts)
+    (maphash (lambda (key value)
+               (push (if values (cons key value) key) facts))
+             table)
+    (sort facts
+          (lambda (left right)
+            (string< (prin1-to-string left)
+                     (prin1-to-string right))))))
+
+(defun ebox-commit-test--runtime-facts (buffer)
+  "Return stable retained runtime facts for BUFFER equivalence checks."
+  (let* ((surface (with-current-buffer buffer
+                    ebox-surface--buffer-surface))
+         (state (tp-surface-client-state surface)))
+    (list :surface-revision (tp-surface-revision surface)
+          :runtime-revision (plist-get state :runtime-revision)
+          :last-update-report (plist-get state :last-update-report)
+          :viewport-width (plist-get state :viewport-width)
+          :viewport-height (plist-get state :viewport-height)
+          :projection-kind (plist-get state :projection-kind)
+          :node-ids
+          (ebox-commit-test--hash-facts (plist-get state :node-table))
+          :region-ids
+          (ebox-commit-test--hash-facts (plist-get state :region-id-set))
+          :parents
+          (ebox-commit-test--hash-facts (plist-get state :parent-table) t)
+          :type-counts
+          (ebox-commit-test--hash-facts
+           (plist-get state :runtime-type-count-table) t)
+          :scroll-region-ids (copy-sequence
+                              (plist-get state :scroll-region-ids)))))
+
+(defun ebox-commit-test--assert-observer-pair (events stage)
+  "Assert reversed EVENTS contain one TP/Ebox pair for STAGE."
+  (should (= (length events) 2))
+  (let ((ordered (nreverse events)))
+    (should (equal (mapcar (lambda (report)
+                             (plist-get report :provider))
+                           ordered)
+                   '(tp ebox)))
+    (should (equal (mapcar (lambda (report)
+                             (plist-get report :stage))
+                           ordered)
+                   (list 'publication stage)))
+    (should (equal (plist-get (car ordered) :correlation-id)
+                   (plist-get (cadr ordered) :correlation-id)))))
+
+(ert-deftest ebox-observer-initial-mount-preserves-state-and-report-contract ()
+  "Observed mount is equivalent and does not retain its transient report."
+  (let ((plain (generate-new-buffer " *ebox-observer-plain*"))
+        (observed (generate-new-buffer " *ebox-observer-mounted*"))
+        events)
+    (unwind-protect
+        (progn
+          (let ((ebox--region-id-counter 0)
+                (ebox--runtime-node-id-counter 0))
+            (ebox-render-to-buffer
+             plain (ebox-commit-test--observed-root "same")))
+          (let ((ebox--region-id-counter 0)
+                (ebox--runtime-node-id-counter 0))
+            (ebox-render-to-buffer
+             observed (ebox-commit-test--observed-root "same")
+             (list :observer
+                   (lambda (buffer report)
+                     (push (list buffer report) events)))))
+          (should
+           (equal-including-properties
+            (ebox-commit-test--buffer-string plain)
+            (ebox-commit-test--buffer-string observed)))
+          (should (equal (ebox-commit-test--runtime-facts plain)
+                         (ebox-commit-test--runtime-facts observed)))
+          (should-not (ebox-buffer-update-report plain))
+          (should-not (ebox-buffer-update-report observed))
+          (should (= (length events) 2))
+          (let* ((ordered (nreverse events))
+                 (tp-report (cadar ordered))
+                 (ebox-report (cadadr ordered)))
+            (should (eq (caar ordered) observed))
+            (should (eq (caadr ordered) observed))
+            (should (eq (plist-get tp-report :provider) 'tp))
+            (should (eq (plist-get tp-report :stage) 'publication))
+            (should (eq (plist-get ebox-report :provider) 'ebox))
+            (should (eq (plist-get ebox-report :stage) 'mount))
+            (should (equal (plist-get tp-report :correlation-id)
+                           (plist-get ebox-report :correlation-id)))
+            (dolist (key '(:duration-ms :gc-count :gc-duration-ms
+                           :tp-duration-ms))
+              (should (plist-member ebox-report key)))))
+      (when (buffer-live-p plain) (kill-buffer plain))
+      (when (buffer-live-p observed) (kill-buffer observed)))))
+
+(ert-deftest ebox-observer-covers-public-update-boundaries-once ()
+  "Viewport, region, selector, batch, and scroll each emit one flat pair."
+  (let ((buffer (generate-new-buffer " *ebox-observer-operations*"))
+        (scroll-buffer (generate-new-buffer " *ebox-observer-scroll*"))
+        events)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-build
+            '(column :width (viewport)
+              (box :id first :class card "One")
+              (box :id second :class card "Two")))
+           (list :observer
+                 (lambda (_buffer report) (push report events))))
+          (setq events nil)
+          (ebox-rerender-buffer-with-context buffer 80)
+          (ebox-commit-test--assert-observer-pair events 'viewport)
+
+          (setq events nil)
+          (ebox-region-update
+           (ebox-region-resolve buffer 'first) :color "#123456")
+          (ebox-commit-test--assert-observer-pair events 'region)
+
+          (setq events nil)
+          (ebox-selector-update-buffer buffer ".card" :bgcolor "#eeeeee")
+          (ebox-commit-test--assert-observer-pair events 'selector)
+
+          (setq events nil)
+          (ebox-incremental-begin-batch buffer)
+          (ebox-region-update
+           (ebox-region-resolve buffer 'first) :color "#654321")
+          (should-not events)
+          (ebox-incremental-flush buffer)
+          (ebox-commit-test--assert-observer-pair events 'batch)
+
+          (setq events nil)
+          (ebox-incremental-begin-batch buffer)
+          (ebox-incremental-flush buffer)
+          (should-not events)
+
+          (let* ((root
+                  (ebox-build
+                   '(box :id scroll-root :height 1 :overflow scroll
+                     "A\nB\nC")))
+                 (scroll-id (car (ebox-region-ids root))))
+            (ebox-render-to-buffer
+             scroll-buffer root
+             (list :observer
+                   (lambda (_buffer report) (push report events))))
+            (setq events nil)
+            (should (= (ebox--scroll-region-by scroll-id 1) 1))
+            (ebox-commit-test--assert-observer-pair events 'scroll)))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (when (buffer-live-p scroll-buffer) (kill-buffer scroll-buffer)))))
+
+(ert-deftest ebox-observer-commit-emits-one-flat-pair-after-completion ()
+  "One accepted commit emits TP then the completed Ebox report exactly once."
+  (let (events
+        (buffer (generate-new-buffer " *ebox-observer-commit*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer (ebox-commit-test--observed-root "old")
+           (list :observer
+                 (lambda (_buffer report) (push report events))))
+          (setq events nil)
+          (let ((report
+                 (ebox-commit
+                  buffer (ebox-commit-test--observed-root "new"))))
+            (should (eq (plist-get report :framework-participant-state)
+                        'completed)))
+          (should (= (length events) 2))
+          (let ((ordered (nreverse events)))
+            (should (equal (mapcar (lambda (report)
+                                     (plist-get report :provider))
+                                   ordered)
+                           '(tp ebox)))
+            (should (equal (mapcar (lambda (report)
+                                     (plist-get report :stage))
+                                   ordered)
+                           '(publication commit)))
+            (should (equal (plist-get (car ordered) :correlation-id)
+                           (plist-get (cadr ordered) :correlation-id)))
+            (should (eq (plist-get (cadr ordered)
+                                   :framework-participant-state)
+                        'completed))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-observer-disabled-path-does-no-instrumentation-work ()
+  "An unobserved mount and commit bypass every Ebox instrumentation helper."
+  (let ((calls 0)
+        (buffer (generate-new-buffer " *ebox-observer-disabled*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ebox-surface--make-observation)
+                   (lambda (&rest _args) (cl-incf calls)))
+                  ((symbol-function 'ebox-surface--observation-clock)
+                   (lambda () (cl-incf calls)))
+                  ((symbol-function 'ebox-surface--observation-gc-snapshot)
+                   (lambda () (cl-incf calls)))
+                  ((symbol-function 'ebox-surface--decorate-observation-report)
+                   (lambda (&rest _args) (cl-incf calls))))
+          (ebox-render-to-buffer
+           buffer (ebox-commit-test--observed-root "old"))
+          (ebox-commit buffer (ebox-commit-test--observed-root "new"))
+          (should (= calls 0)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-buffer-observer-setter-keeps-one-stable-tp-bridge ()
+  "Add and replacement reuse one bridge; nil removes it from TP."
+  (let ((buffer (generate-new-buffer " *ebox-observer-setter*"))
+        first-events second-events)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer (ebox-commit-test--observed-root "zero"))
+          (let ((first
+                 (lambda (_buffer report) (push report first-events))))
+            (should (eq (ebox-buffer-set-observer buffer first) first)))
+          (should-error (ebox-buffer-set-observer buffer 'not-a-function)
+                        :type 'wrong-type-argument)
+          (let ((bridge (with-current-buffer buffer
+                          ebox-surface--tp-observer))
+                (surface (with-current-buffer buffer
+                           ebox-surface--buffer-surface)))
+            (should (memq bridge (tp--surface-observers surface)))
+            (ebox-buffer-set-observer
+             buffer (lambda (_buffer report) (push report second-events)))
+            (should (eq bridge (with-current-buffer buffer
+                                 ebox-surface--tp-observer)))
+            (should (= (length (tp--surface-observers surface)) 1))
+            (ebox-commit buffer (ebox-commit-test--observed-root "one"))
+            (should-not first-events)
+            (should (= (length second-events) 2))
+            (should-not (ebox-buffer-set-observer buffer nil))
+            (should-not (memq bridge (tp--surface-observers surface)))
+            (setq second-events nil)
+            (ebox-commit buffer (ebox-commit-test--observed-root "two"))
+            (should-not second-events)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-observer-render-failure-releases-new-observation-state ()
+  "A failed observed first mount leaves no observer, bridge, or context."
+  (let ((buffer (generate-new-buffer " *ebox-observer-mount-failure*")))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'ebox-surface-mount-buffer)
+                     (lambda (&rest _args) (error "mount failed"))))
+            (should-error
+             (ebox-render-to-buffer
+              buffer (ebox-commit-test--observed-root "never")
+              (list :observer (lambda (&rest _args))))
+             :type 'error))
+          (with-current-buffer buffer
+            (should-not ebox-surface--buffer-observer)
+            (should-not ebox-surface--tp-observer)
+            (should-not ebox-surface--observation-contexts)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-observer-boundary-rejects-outer-tp-before-operation ()
+  "A public observation boundary cannot finish before an outer TP accept."
+  (let ((buffer (generate-new-buffer " *ebox-observer-outer-tp*"))
+        events)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer (ebox-build '(box :id target "old"))
+           (list :observer
+                 (lambda (_buffer report) (push report events))))
+          (setq events nil)
+          (let ((before (ebox-commit-test--buffer-string buffer)))
+            (tp-with-transaction
+              (let ((failure
+                     (condition-case condition
+                         (progn
+                           (ebox-region-update
+                            (ebox-region-resolve buffer 'target)
+                            :color "#123456")
+                           nil)
+                       (error condition))))
+                (should
+                 (equal
+                  (cdr failure)
+                  '("Ebox public operation cannot join an outer TP transaction")))))
+            (should (equal-including-properties
+                     before (ebox-commit-test--buffer-string buffer))))
+          (should-not events)
+          (should-not (ebox-buffer-update-report buffer))
+          (should-not (with-current-buffer buffer
+                        ebox-surface--observation-contexts)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-observer-reentrant-publication-gets-a-new-context ()
+  "A publication started by an observer emits its own correlated pair."
+  (let ((buffer (generate-new-buffer " *ebox-observer-reentrant*"))
+        events allow nested)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer (ebox-commit-test--observed-root "initial")
+           (list
+            :observer
+            (lambda (_buffer report)
+              (push report events)
+              (when (and allow
+                         (not nested)
+                         (eq (plist-get report :provider) 'tp))
+                (setq nested t)
+                (ebox-commit
+                 buffer (ebox-commit-test--observed-root "nested"))))))
+          (setq events nil allow t)
+          (ebox-commit buffer (ebox-commit-test--observed-root "outer"))
+          (let* ((ordered (nreverse events))
+                 (outer-correlation
+                  (plist-get (nth 0 ordered) :correlation-id))
+                 (nested-correlation
+                  (plist-get (nth 1 ordered) :correlation-id)))
+            (should (= (length ordered) 4))
+            (should (equal (mapcar (lambda (report)
+                                     (plist-get report :provider))
+                                   ordered)
+                           '(tp tp ebox ebox)))
+            (should (equal outer-correlation
+                           (plist-get (nth 3 ordered) :correlation-id)))
+            (should (equal nested-correlation
+                           (plist-get (nth 2 ordered) :correlation-id)))
+            (should-not (equal outer-correlation nested-correlation)))
+          (should
+           (equal (substring-no-properties
+                   (ebox-commit-test--buffer-string buffer))
+                  "nested"))
+          (should-not (with-current-buffer buffer
+                        ebox-surface--observation-contexts)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-observer-error-cannot-roll-back-publication ()
+  "Each observer failure is contained after the accepted state is visible."
+  (let ((buffer (generate-new-buffer " *ebox-observer-error*"))
+        (calls 0))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer (ebox-commit-test--observed-root "old")
+           (list :observer
+                 (lambda (_buffer _report)
+                   (cl-incf calls)
+                   (error "observer failure"))))
+          (setq calls 0)
+          (let ((report
+                 (ebox-commit
+                  buffer (ebox-commit-test--observed-root "committed"))))
+            (should (eq (plist-get report :framework-participant-state)
+                        'completed)))
+          (should (= calls 2))
+          (should (equal (substring-no-properties
+                          (ebox-commit-test--buffer-string buffer))
+                         "committed")))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-commit-rejects-outer-tp-transaction-before-mutation ()
+  "Observed and plain commits reject an outer TP transaction before mutation."
+  (dolist (observed '(nil t))
+    (let ((buffer (generate-new-buffer " *ebox-outer-transaction*"))
+          events)
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             buffer (ebox-commit-test--observed-root "old")
+             (and observed
+                  (list :observer
+                        (lambda (_buffer report) (push report events)))))
+            (setq events nil)
+            (let ((failure
+                   (condition-case condition
+                       (progn
+                         (tp-with-transaction
+                           (ebox-commit
+                            buffer (ebox-commit-test--observed-root "new")))
+                         nil)
+                     (error condition))))
+              (should (equal (cdr failure)
+                             '("Ebox public operation cannot join an outer TP transaction"))))
+            (should-not events)
+            (should (equal (substring-no-properties
+                            (ebox-commit-test--buffer-string buffer))
+                           "old"))
+            (should-not (with-current-buffer buffer
+                          ebox-surface--observation-contexts)))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
 (ert-deftest ebox-native-fragment-style-delta-copies-only-changed-records ()
   "A native style delta keeps the retained template immutable."
   (let* ((first [0 1 0 nil nil nil nil (1)])
