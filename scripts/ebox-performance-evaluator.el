@@ -286,7 +286,7 @@
       (let (cells)
         (dotimes (column 4)
           (push
-           (apply #'ebox-create
+           (apply #'ebox-test-box
                   (append
                    (list :key (list 'cell row column)
                          :content (format "row-%d cell-%d\ndetail-%d-%d"
@@ -299,24 +299,23 @@
                      '(:id target))
                    (when styled '(:class card))))
            cells))
-        (push (apply #'ebox-row (nreverse cells)) rows)))
-    (apply #'ebox-column (nreverse rows))))
+        (push (apply #'ebox-test-row (nreverse cells)) rows)))
+    (apply #'ebox-test-column (nreverse rows))))
 
 (defun ebox-performance-evaluator--resize-fixture ()
   "Return a viewport-dependent wrapped flex fixture."
   (let (items)
     (dotimes (index 12)
       (push
-       (ebox-flex-item
-        (ebox-create
-         :key (list 'resize-item index)
-         :content (format "resize-%02d" index)
-         :width '(70)
-         :padding '(0 1)
-         :color "#172554"
-         :bgcolor "#DBEAFE"))
+       (ebox-test-box
+        :key (list 'resize-item index)
+        :content (format "resize-%02d" index)
+        :width '(70)
+        :padding '(0 1)
+        :color "#172554"
+        :bgcolor "#DBEAFE")
        items))
-    (apply #'ebox-flex
+    (apply #'ebox-test-flex
            :key 'resize-root
            :width '(viewport)
            :flex-wrap 'wrap

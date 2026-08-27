@@ -191,7 +191,7 @@ together.
 | Border | `:border`, `:border-top`, `:border-right`, `:border-bottom`, `:border-left`, `:border-width`, `:border-style`, `:border-color`; side longhands `:border-*-width`, `:border-*-style`, `:border-*-color`; Ebox boolean shorthands `:border-top-p`, `:border-bottom-p`; compatibility aliases `:border-left-pixel`, `:border-right-pixel` |
 | Paint | `:color`, `:background-color`, and alias `:bgcolor` |
 | Typography | `:font`, `:font-family`, `:font-height` and alias `:font-size`, `:font-weight`, `:font-slant` |
-| Text/layout | `:text-align` (`left`, `center`, `right`), `:vertical-align` (`top`, `center`/`middle`, `bottom`), `:overflow` (`scroll`, `hidden`, `visible`), `:wrap-mode` (`word`, `char`, `kp`, or nil), `:visibility` (`visible` or `hidden`) |
+| Box content | `:text-align` (`left`, `center`, `right`), `:vertical-align` (`top`, `center`/`middle`, `bottom`), `:overflow` (`scroll`, `hidden`, `visible`), `:wrap-mode` (`word`, `char`, `kp`, or `none`; default `word`), `:visibility` (`visible` or `hidden`) |
 | Structural style | `:display` is computed for node/layout contexts; the layout constructors normally choose the valid display tuple. |
 | Flex container/item | `:flex-direction`, `:flex-wrap`, `:flex-flow`, `:justify-content`, `:align-items`, `:align-content`, `:gap`, `:row-gap`, `:column-gap` (aliases `:grid-row-gap`, `:grid-column-gap`); item names `:order`, `:flex`, `:flex-grow`, `:flex-shrink`, `:flex-basis`, `:align-self` |
 | Grid container/item | `:grid-template-columns`, `:grid-template-rows`, `:grid-auto-columns`, `:grid-auto-rows`, `:grid-auto-flow`, `:justify-items`; item placement `:grid-column`, `:grid-row`, `:grid-column-span`, `:grid-row-span` |

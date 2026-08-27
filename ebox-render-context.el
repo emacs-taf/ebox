@@ -11,6 +11,8 @@
 (defvar ebox-viewport-height nil)
 (defvar ebox--render-runtime-revision nil)
 (defvar ebox--surface-materialization-active nil)
+(defvar ebox--render-root-parent-kind nil
+  "Formatting context owning the detached render root, or nil.")
 (defvar ebox--render-cache-table nil)
 (defvar ebox--render-cache-signature-cache nil)
 (defvar ebox--viewport-dependent-node-ids-cache nil)

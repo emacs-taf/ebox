@@ -162,15 +162,6 @@
                      ("ebox-call-with-render-burst" . "defun")
                      ("ebox-render" . "defun")
                      ("ebox-region-ids" . "defun")
-                     ("ebox-concat" . "defun")
-                     ("ebox-spacer" . "defun")
-                     ("ebox-row" . "defun")
-                     ("ebox-stack" . "defun")
-                     ("ebox-column" . "defun")
-                     ("ebox-flex-item" . "defun")
-                     ("ebox-flex" . "defun")
-                     ("ebox-grid-fr" . "defun")
-                     ("ebox-grid" . "defun")
                      ("ebox-grid-layout-create" . "defun")
                      ("ebox-normal-layout-create" . "defun")
                      ("ebox-row-layout-create" . "defun")
@@ -179,7 +170,6 @@
                      ("ebox-text-create" . "defun")
                      ("ebox-box-create" . "defun")
                      ("ebox-build" . "defun")
-                     ("ebox-create" . "defun")
                      ("ebox-scroll-down" . "defun")
                      ("ebox-scroll-up" . "defun")
                      ("ebox-region-update" . "defun")
@@ -212,22 +202,15 @@
                    ebox-candidate-replace-root
                    ebox-candidate-replace-host-ref
                    ebox-clear-cache
-                   ebox-column
                    ebox-normal-layout-create
                    ebox-row-layout-create
                    ebox-column-layout-create
                    ebox-text-create
                    ebox-box-create
                    ebox-commit
-                   ebox-concat
-                   ebox-create
                    ebox-display-buffer
                    ebox-display-signature
-                   ebox-flex
                    ebox-flex-layout-create
-                   ebox-flex-item
-                   ebox-grid
-                   ebox-grid-fr
                    ebox-grid-layout-create
                    ebox-host-ref-bounds
                    ebox-host-ref-position
@@ -241,7 +224,6 @@
                    ebox-render-burst-end
                    ebox-render-to-buffer
                    ebox-rerender-buffer-with-context
-                   ebox-row
                    ebox-scroll-down
                    ebox-scroll-page-down
                    ebox-scroll-page-up
@@ -252,10 +234,16 @@
                    ebox-selector-query-all
                    ebox-selector-query-buffer
                    ebox-selector-update-buffer
-                   ebox-spacer
-                   ebox-stack
                    ebox-string-pixel-width))
     (should (memq entry ebox-public-api))))
+
+(ert-deftest ebox-legacy-creation-surface-is-absent ()
+  "Only typed constructors and `ebox-build' may create public nodes."
+  (dolist (entry '(ebox-test-box ebox-concat ebox-stack ebox-spacer
+                   ebox-row ebox-column ebox-flex ebox-flex-item
+                   ebox-grid ebox-grid-fr))
+    (should-not (fboundp entry))
+    (should-not (memq entry ebox-public-api))))
 
 (ert-deftest ebox-live-buffer-publication-uses-only-tp-surfaces ()
   "The facade should expose no raw live-buffer writer beside TP surfaces."

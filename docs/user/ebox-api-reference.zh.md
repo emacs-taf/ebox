@@ -174,7 +174,7 @@ property；`ebox-region-update` 接受其目标支持的可变 content/style/scr
 | Border | `:border`、`:border-top`、`:border-right`、`:border-bottom`、`:border-left`、`:border-width`、`:border-style`、`:border-color`；side longhand `:border-*-width`、`:border-*-style`、`:border-*-color`；Ebox boolean shorthand `:border-top-p`、`:border-bottom-p`；兼容别名 `:border-left-pixel`、`:border-right-pixel` |
 | Paint | `:color`、`:background-color`、别名 `:bgcolor` |
 | Typography | `:font`、`:font-family`、`:font-height` 和别名 `:font-size`、`:font-weight`、`:font-slant` |
-| Text/layout | `:text-align`（`left`、`center`、`right`）、`:vertical-align`（`top`、`center`/`middle`、`bottom`）、`:overflow`（`scroll`、`hidden`、`visible`）、`:wrap-mode`（`word`、`char`、`kp` 或 nil）、`:visibility`（`visible` 或 `hidden`） |
+| Box 内容 | `:text-align`（`left`、`center`、`right`）、`:vertical-align`（`top`、`center`/`middle`、`bottom`）、`:overflow`（`scroll`、`hidden`、`visible`）、`:wrap-mode`（`word`、`char`、`kp`、`none`，默认 `word`）、`:visibility`（`visible` 或 `hidden`） |
 | Structural style | `:display` 会在 node/layout context 中计算；有效的 display tuple 通常由布局构造器选择。 |
 | Flex container/item | `:flex-direction`、`:flex-wrap`、`:flex-flow`、`:justify-content`、`:align-items`、`:align-content`、`:gap`、`:row-gap`、`:column-gap`（别名 `:grid-row-gap`、`:grid-column-gap`）；item 名称 `:order`、`:flex`、`:flex-grow`、`:flex-shrink`、`:flex-basis`、`:align-self` |
 | Grid container/item | `:grid-template-columns`、`:grid-template-rows`、`:grid-auto-columns`、`:grid-auto-rows`、`:grid-auto-flow`、`:justify-items`；item placement `:grid-column`、`:grid-row`、`:grid-column-span`、`:grid-row-span` |

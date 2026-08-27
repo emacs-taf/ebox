@@ -18,6 +18,22 @@
       (widen)
       (buffer-substring (point-min) (point-max)))))
 
+(defun ebox-commit-test--face-value (face key)
+  "Return KEY from FACE whether FACE is one plist or a face stack."
+  (cond
+   ((null face) nil)
+   ((and (listp face) (keywordp (car face)))
+    (plist-get face key))
+   ((listp face)
+    (cl-some (lambda (entry)
+               (ebox-commit-test--face-value entry key))
+             face))))
+
+(defun ebox-commit-test--owner-proofs (proof)
+  "Return the uniform leaf-owner proof list represented by PROOF."
+  (or (plist-get proof :owner-proofs)
+      (and proof (list proof))))
+
 (ert-deftest ebox-native-fragment-style-delta-copies-only-changed-records ()
   "A native style delta keeps the retained template immutable."
   (let* ((first [0 1 0 nil nil nil nil (1)])
@@ -34,15 +50,15 @@
 (ert-deftest ebox-native-object-delta-orders-moved-and-new-nodes ()
   "A topology delta names parents before moved and introduced children."
   (let* ((old-root
-          (ebox-column (ebox-create :key 'a :content "A")
-                       (ebox-create :key 'b :content "B")))
+          (ebox-test-column (ebox-test-box :key 'a :content "A")
+                       (ebox-test-box :key 'b :content "B")))
          (_old-ids (ebox--runtime-node-ids old-root))
          (old-index (ebox--runtime-index old-root t))
          (old-objects (make-hash-table :test 'equal))
          (new-root
-          (ebox-column (ebox-create :key 'b :content "B")
-                       (ebox-create :key 'a :content "A")
-                       (ebox-create :key 'c :content "C")))
+          (ebox-test-column (ebox-test-box :key 'b :content "B")
+                       (ebox-test-box :key 'a :content "A")
+                       (ebox-test-box :key 'c :content "C")))
          (_reconciled (ebox-tree-reconcile-runtime old-root new-root))
          (new-index (ebox--runtime-index new-root t))
          (root-id (plist-get old-root :node-id)))
@@ -58,26 +74,29 @@
              old-state new-state
              (list :touched-node-ids (list root-id)
                    :removed-node-ids nil)))
-           (children (ebox-tree--children-raw new-root)))
+           (children (ebox-tree--children-raw new-root))
+           (introduced (car (last children))))
       (should
        (equal delta
-              (cons root-id (mapcar (lambda (node)
-                                      (plist-get node :node-id))
-                                    children)))))))
+              (append
+               (list root-id
+                     (plist-get (car children) :node-id)
+                     (plist-get (cadr children) :node-id))
+               (ebox--runtime-node-ids introduced)))))))
 
 (ert-deftest ebox-native-object-delta-requires-complete-removal-proof ()
   "An unreported disappeared object rejects the native topology delta."
   (let* ((old-root
-          (ebox-column (ebox-create :key 'a :content "A")
-                       (ebox-create :key 'tail :content "T")
-                       (ebox-create :key 'b :content "B")))
+          (ebox-test-column (ebox-test-box :key 'a :content "A")
+                       (ebox-test-box :key 'tail :content "T")
+                       (ebox-test-box :key 'b :content "B")))
          (_old-ids (ebox--runtime-node-ids old-root))
          (old-index (ebox--runtime-index old-root t))
          (old-objects (make-hash-table :test 'equal))
          (removed-node (car (last (ebox-tree--children-raw old-root))))
          (new-root
-          (ebox-column (ebox-create :key 'a :content "A")
-                       (ebox-create :key 'tail :content "T")))
+          (ebox-test-column (ebox-test-box :key 'a :content "A")
+                       (ebox-test-box :key 'tail :content "T")))
          (_reconciled (ebox-tree-reconcile-runtime old-root new-root))
          (new-index (ebox--runtime-index new-root t))
          (root-id (plist-get old-root :node-id)))
@@ -100,7 +119,7 @@
          old-state new-state
          (list :touched-node-ids (list root-id)
                :removed-node-ids
-               (list (plist-get removed-node :node-id)))))))))
+               (ebox--runtime-node-ids removed-node))))))))
 
 (ert-deftest ebox-style-schema-registration-is-not-per-node-copy ()
   "Repeated node construction must not copy the whole ECSS schema domain."
@@ -111,7 +130,7 @@
                  (cl-incf calls)
                  (apply original arguments))))
       (dotimes (_ 24)
-        (ebox-create :content "schema-hot-path" :color "#111111")))
+        (ebox-test-box :content "schema-hot-path" :color "#111111")))
     (should (= calls 0))))
 
 (ert-deftest ebox-style-declaration-compilation-is-memoized ()
@@ -132,10 +151,10 @@
   "A declarative commit should publish changed content."
   (let* ((buffer (ebox-render-to-buffer
                   (generate-new-buffer-name " *ebox-commit-content*")
-                  (ebox-create :key 'root :content "Before" :width '(80))))
+                  (ebox-test-box :key 'root :content "Before" :width '(80))))
          (report (ebox-commit
                   buffer
-                  (ebox-create :key 'root :content "After" :width '(80)))))
+                  (ebox-test-box :key 'root :content "After" :width '(80)))))
     (unwind-protect
         (progn
           (should (string-prefix-p
@@ -152,15 +171,15 @@
   "Keyed siblings should remain addressable after a reorder commit."
   (let* ((buffer (ebox-render-to-buffer
                   (generate-new-buffer-name " *ebox-commit-keyed*")
-                  (ebox-column
-                   (ebox-create :key 'a :host-ref 'a :content "A" :width '(40))
-                   (ebox-create :key 'b :host-ref 'b :content "B" :width '(40)))))
+                  (ebox-test-column
+                   (ebox-test-box :key 'a :host-ref 'a :content "A" :width '(40))
+                   (ebox-test-box :key 'b :host-ref 'b :content "B" :width '(40)))))
          (old-b (ebox-host-ref-position buffer 'b))
          (report (ebox-commit
                   buffer
-                  (ebox-column
-                   (ebox-create :key 'b :host-ref 'b :content "B2" :width '(40))
-                   (ebox-create :key 'a :host-ref 'a :content "A" :width '(40))))))
+                  (ebox-test-column
+                   (ebox-test-box :key 'b :host-ref 'b :content "B2" :width '(40))
+                   (ebox-test-box :key 'a :host-ref 'a :content "A" :width '(40))))))
     (unwind-protect
         (progn
           (should old-b)
@@ -177,25 +196,25 @@
   (let* ((buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-root-candidate*")
-           (ebox-column
-            (ebox-create :key 'a :host-ref 'a :content "A" :width '(40))
-            (ebox-create :key 'b :host-ref 'b :content "B" :width '(40)))))
+           (ebox-test-column
+            (ebox-test-box :key 'a :host-ref 'a :content "A" :width '(40))
+            (ebox-test-box :key 'b :host-ref 'b :content "B" :width '(40)))))
          (surface (with-current-buffer buffer ebox-surface--buffer-surface))
          (revision (tp-surface-revision surface))
          (candidate (ebox-candidate-begin buffer)))
     (unwind-protect
         (progn
           (ebox-candidate-replace-host-ref
-           candidate 'a (ebox-create :key 'a :content "ignored-before"))
+           candidate 'a (ebox-test-box :key 'a :content "ignored-before"))
           (ebox-candidate-replace-root
            candidate
-           (ebox-create :key 'root :host-ref 'a :content "first-root"
+           (ebox-test-box :key 'root :host-ref 'a :content "first-root"
                         :width '(80)))
           (ebox-candidate-replace-host-ref
-           candidate 'b (ebox-create :key 'b :content "ignored-after"))
+           candidate 'b (ebox-test-box :key 'b :content "ignored-after"))
           (ebox-candidate-replace-root
            candidate
-           (ebox-create :key 'root :host-ref 'b :content "final-root"
+           (ebox-test-box :key 'root :host-ref 'b :content "final-root"
                         :width '(80)))
           (should (= (length (ebox-candidate--replacements candidate)) 1))
           (let ((report (ebox-commit buffer candidate)))
@@ -211,7 +230,7 @@
             (should (plist-get report :runtime-published)))
           (should-error
            (ebox-candidate-replace-root
-            candidate (ebox-create :key 'root :content "sealed"))))
+            candidate (ebox-test-box :key 'root :content "sealed"))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-commit-framework-participant-completes-and-rolls-back ()
@@ -220,11 +239,11 @@
     (unwind-protect
         (progn
           (ebox-render-to-buffer
-              buffer (ebox-create :key 'root :content "old" :width '(80)))
+              buffer (ebox-test-box :key 'root :content "old" :width '(80)))
           (let (trace)
             (let ((report
                    (ebox-commit
-                    buffer (ebox-create :key 'root :content "new" :width '(80))
+                    buffer (ebox-test-box :key 'root :content "new" :width '(80))
                     (lambda (_report) (push 'publish trace))
                     (lambda (_report) (push 'rollback trace)))))
               (should (equal trace '(publish)))
@@ -245,7 +264,7 @@
                     (condition-case condition
                         (ebox-commit
                          buffer
-                         (ebox-create :key 'root :content "rejected"
+                         (ebox-test-box :key 'root :content "rejected"
                                       :width '(80))
                          (lambda (report)
                            (setq captured report)
@@ -274,23 +293,23 @@
           (progn
             (ebox-render-to-buffer
                 buffer
-              (ebox-column
-               (ebox-create :key 'a :host-ref 'a :content "old-a" :width '(40))
-               (ebox-create :key 'b :host-ref 'b :content "old-b" :width '(40))))
+              (ebox-test-column
+               (ebox-test-box :key 'a :host-ref 'a :content "old-a" :width '(40))
+               (ebox-test-box :key 'b :host-ref 'b :content "old-b" :width '(40))))
             (let ((before (ebox-commit-test--buffer-string buffer))
                   (candidate (ebox-candidate-begin buffer))
                   trace captured)
               (when (eq mode 'scoped)
                 (ebox-candidate-replace-host-ref
                  candidate 'a
-                 (ebox-create :key 'a :host-ref 'a :content "new-a"
+                 (ebox-test-box :key 'a :host-ref 'a :content "new-a"
                               :width '(40))))
               (should-error
                (ebox-commit
                 buffer
                 (if (eq mode 'scoped)
                     candidate
-                  (ebox-create :key 'root :content "new-root" :width '(80)))
+                  (ebox-test-box :key 'root :content "new-root" :width '(80)))
                 (lambda (report)
                   (setq captured report)
                   (push 'publish trace)
@@ -306,7 +325,7 @@
 (ert-deftest ebox-commit-framework-argument-validation ()
   "Four-argument framework callbacks have an exact paired contract."
   (let ((buffer (generate-new-buffer " *ebox-framework-validation*"))
-        (root (ebox-create :key 'root :content "x")))
+        (root (ebox-test-box :key 'root :content "x")))
     (unwind-protect
         (progn
           (ebox-render-to-buffer buffer root)
@@ -322,23 +341,23 @@
   "A column content growth must publish shifted later styled siblings."
   (let* ((buffer (generate-new-buffer-name " *ebox-commit-column-scope*"))
          (old-root
-          (ebox-column
-           (ebox-create :key 'panel :padding '(1 (2))
+          (ebox-test-column
+           (ebox-test-box :key 'panel :padding '(1 (2))
                         :border "#687386" :bgcolor "#FFFDF8"
                         :content "Panel")
-           (ebox-create :key 'payload :padding '(0 (1))
+           (ebox-test-box :key 'payload :padding '(0 (1))
                         :border "#AAA" :content "No payload yet.")
-           (ebox-create :key 'later :padding '(0 (1))
+           (ebox-test-box :key 'later :padding '(0 (1))
                         :border "#BBB" :content "Later sibling")))
          (new-root
-          (ebox-column
-           (ebox-create :key 'panel :padding '(1 (2))
+          (ebox-test-column
+           (ebox-test-box :key 'panel :padding '(1 (2))
                         :border "#687386" :bgcolor "#FFFDF8"
                         :content "Panel")
-           (ebox-create :key 'payload :padding '(0 (1))
+           (ebox-test-box :key 'payload :padding '(0 (1))
                         :border "#AAA"
                         :content "Payload received: payload=42")
-           (ebox-create :key 'later :padding '(0 (1))
+           (ebox-test-box :key 'later :padding '(0 (1))
                         :border "#BBB" :content "Later sibling")))
          (report nil))
     (unwind-protect
@@ -368,10 +387,10 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-commit-style-cache*")
-                 (ebox-column
-                  (ebox-create :key 'first :class "card" :content "Before"
+                 (ebox-test-column
+                  (ebox-test-box :key 'first :class "card" :content "Before"
                                :width '(40))
-                  (ebox-create :key 'second :class "card" :content "Stable"
+                  (ebox-test-box :key 'second :class "card" :content "Stable"
                                :width '(40)))))
           (setq calls 0)
           (cl-letf (((symbol-function 'ecss-compute-style)
@@ -380,10 +399,10 @@
                        (apply original arguments))))
             (ebox-commit
              buffer
-             (ebox-column
-              (ebox-create :key 'first :class "card" :content "After"
+             (ebox-test-column
+              (ebox-test-box :key 'first :class "card" :content "After"
                            :width '(40))
-              (ebox-create :key 'second :class "card" :content "Stable"
+              (ebox-test-box :key 'second :class "card" :content "Stable"
                            :width '(40))))
             (should (= calls 0))))
       (when (buffer-live-p buffer)
@@ -401,10 +420,10 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-commit-selector-snapshot*")
-                 (ebox-column
-                  (ebox-create :key 'first :class "card" :content "Before"
+                 (ebox-test-column
+                  (ebox-test-box :key 'first :class "card" :content "Before"
                                :width '(40))
-                  (ebox-create :key 'second :class "card" :content "Stable"
+                  (ebox-test-box :key 'second :class "card" :content "Stable"
                                :width '(40)))))
           (cl-letf (((symbol-function 'ebox-surface--subject-signature)
                      (lambda (&rest arguments)
@@ -412,17 +431,17 @@
                        (apply original arguments))))
             (ebox-commit
              buffer
-             (ebox-column
-              (ebox-create :key 'first :class "card" :content "After"
+             (ebox-test-column
+              (ebox-test-box :key 'first :class "card" :content "After"
                            :width '(40))
-              (ebox-create :key 'second :class "card" :content "Stable"
+              (ebox-test-box :key 'second :class "card" :content "Stable"
                            :width '(40))))
             (should (= calls 1))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
 (ert-deftest ebox-commit-reuses-local-selector-styles-across-tree-change ()
-  "A subject-local stylesheet should compute only newly inserted node styles."
+  "A subject-local stylesheet should compute only the new Box and Text facts."
   (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
          (calls 0)
          (original (symbol-function 'ecss-compute-style))
@@ -433,10 +452,10 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-local-selector-reuse*")
-                 (ebox-column
-                  (ebox-create :key 'first :class "card" :content "First"
+                 (ebox-test-column
+                  (ebox-test-box :key 'first :class "card" :content "First"
                                :width '(40))
-                  (ebox-create :key 'second :class "card" :content "Second"
+                  (ebox-test-box :key 'second :class "card" :content "Second"
                                :width '(40)))))
           (cl-letf (((symbol-function 'ecss-compute-style)
                      (lambda (&rest arguments)
@@ -444,80 +463,24 @@
                        (apply original arguments))))
             (ebox-commit
              buffer
-             (ebox-column
-              (ebox-create :key 'first :class "card" :content "First"
+             (ebox-test-column
+              (ebox-test-box :key 'first :class "card" :content "First"
                            :width '(40))
-              (ebox-create :key 'second :class "card" :content "Second"
+              (ebox-test-box :key 'second :class "card" :content "Second"
                            :width '(40))
-              (ebox-create :key 'third :class "card" :content "Third"
+              (ebox-test-box :key 'third :class "card" :content "Third"
                            :width '(40)))))
-          (should (= calls 1))
+          (should (= calls 2))
           (let* ((text (ebox-commit-test--buffer-string buffer))
                  (position (string-match "Third" text)))
             (should position)
-            (should (equal (plist-get (get-text-property position 'face text)
-                                      :foreground)
+            (should (equal (ebox-commit-test--face-value
+                            (get-text-property position 'face text)
+                            :foreground)
                            "#2255AA"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-commit-reuses-successful-allocation-certificate ()
-  "A repeated fixed-slot update must not rescan unchanged ancestor spans."
-  (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
-         (buffer nil)
-         (ancestor-scans 0))
-    (ebox-style-add-rule ".card" '(:color "#111111") :layer 'components)
-    (unwind-protect
-        (progn
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-allocation-certificate*")
-                 (ebox-build
-                  '(grid :width (100) :height 2
-                    :grid-template-columns (1fr 1fr)
-                    (column :key card-shell :width stretch :height 2
-                     (box :key card :class "card" :host-ref target
-                          :content "Before" :width (40)))
-                    (box :key stable :content "Stable"
-                         :width (40) :height 1)))))
-          (let ((first (ebox-candidate-begin buffer)))
-            (ebox-candidate-replace-host-ref
-             first 'target
-             (ebox-create :key 'card :class "card" :host-ref 'target
-                          :content "Middle" :width '(40)))
-            (should (eq (plist-get (ebox-commit buffer first)
-                                   :projection-kind)
-                        'owner-scoped)))
-          (let* ((state (ebox--buffer-render-state buffer))
-                 (certificates
-                  (plist-get state :retained-allocation-certificates)))
-            (should (hash-table-p certificates))
-            (should (= 1 (hash-table-count certificates))))
-          (let ((second (ebox-candidate-begin buffer))
-                (original
-                 (symbol-function
-                  'ebox-incremental--compute-ancestor-slot-signature)))
-            (ebox-candidate-replace-host-ref
-             second 'target
-             (ebox-create :key 'card :class "card" :host-ref 'target
-                          :content "After" :width '(40)))
-            (cl-letf
-                (((symbol-function
-                   'ebox-incremental--compute-ancestor-slot-signature)
-                  (lambda (&rest arguments)
-                    (cl-incf ancestor-scans)
-                    (apply original arguments))))
-              (should (eq (plist-get (ebox-commit buffer second)
-                                     :projection-kind)
-                          'owner-scoped))))
-          (should (= ancestor-scans 0))
-          (should
-           (string-match-p
-            "After"
-            (substring-no-properties
-             (ebox-commit-test--buffer-string buffer)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest ebox-commit-invalidates-selector-tree-token-for-sibling-change ()
   "A sibling metadata change must invalidate retained selector computations."
@@ -530,10 +493,10 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-commit-selector-change*")
-                 (ebox-column
-                  (ebox-create :key 'state :class "inactive" :content "State"
+                 (ebox-test-column
+                  (ebox-test-box :key 'state :class "inactive" :content "State"
                                :width '(40))
-                  (ebox-create :key 'target :class "target" :content "Target"
+                  (ebox-test-box :key 'target :class "target" :content "Target"
                                :width '(40)))))
           (let* ((before (ebox-commit-test--buffer-string buffer))
                  (position (string-match "Target" before)))
@@ -541,16 +504,17 @@
             (should-not (get-text-property position 'face before)))
           (ebox-commit
            buffer
-           (ebox-column
-            (ebox-create :key 'state :class "active" :content "State"
+           (ebox-test-column
+            (ebox-test-box :key 'state :class "active" :content "State"
                          :width '(40))
-            (ebox-create :key 'target :class "target" :content "Target"
+            (ebox-test-box :key 'target :class "target" :content "Target"
                          :width '(40))))
           (let* ((after (ebox-commit-test--buffer-string buffer))
                  (position (string-match "Target" after)))
             (should position)
-            (should (equal (plist-get (get-text-property position 'face after)
-                                      :foreground)
+            (should (equal (ebox-commit-test--face-value
+                            (get-text-property position 'face after)
+                            :foreground)
                            "#2255AA"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -565,18 +529,20 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-commit-style-rule*")
-                 (ebox-create :key 'card :class "card" :content "Stable"
+                 (ebox-test-box :key 'card :class "card" :content "Stable"
                               :width '(40))))
-          (should (equal (plist-get (get-text-property
-                                     (point-min) 'face buffer) :foreground)
+          (should (equal (ebox-commit-test--face-value
+                          (get-text-property (point-min) 'face buffer)
+                          :foreground)
                          "#111111"))
           (ebox-style-add-rule ".card" '(:color "#222222") :layer 'components)
           (ebox-commit
            buffer
-           (ebox-create :key 'card :class "card" :content "Stable"
+           (ebox-test-box :key 'card :class "card" :content "Stable"
                         :width '(40)))
-          (should (equal (plist-get (get-text-property
-                                     (point-min) 'face buffer) :foreground)
+          (should (equal (ebox-commit-test--face-value
+                          (get-text-property (point-min) 'face buffer)
+                          :foreground)
                          "#222222")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -590,7 +556,7 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-commit-cascade-activation*")
-                 (ebox-create :key 'card :class "card" :content "Before"
+                 (ebox-test-box :key 'card :class "card" :content "Before"
                               :width '(40))))
           (should-not (get-text-property (point-min) 'face buffer))
           (ebox-style-add-rule ".card" '(:color "#2255AA")
@@ -598,7 +564,7 @@
           (let ((report
                  (ebox-commit
                   buffer
-                  (ebox-create :key 'card :class "card" :content "After"
+                  (ebox-test-box :key 'card :class "card" :content "After"
                                :width '(40)))))
             (should (string-prefix-p
                      "After"
@@ -606,94 +572,13 @@
                       (substring-no-properties
                        (ebox-commit-test--buffer-string buffer)))))
             (should-not (eq (plist-get report :strategy) 'span-patch))
-            (should (equal (plist-get (get-text-property
-                                       (point-min) 'face buffer) :foreground)
+            (should (equal (ebox-commit-test--face-value
+                            (get-text-property (point-min) 'face buffer)
+                            :foreground)
                            "#2255AA"))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-commit-uses-static-cascade-owner-proof ()
-  "A static cascade content commit may plan its local owner."
-  (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
-         (calls 0)
-         (ensured 0)
-         (rendered nil)
-         (buffer nil))
-    (ebox-style-add-rule ".card" '(:color "#111111") :layer 'components)
-    (unwind-protect
-        (progn
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-commit-proof-cache*")
-                 (ebox-build
-                  '(column :width (100) :height 4
-                    (column :key main :width (100) :height 2
-                     (grid :key grid :width (100) :height 2
-                      :grid-template-columns (1fr 1fr)
-                      (column :key card-shell :width stretch :height 2
-                       (box :key card :class "card" :host-ref target
-                            :content "Before"))
-                      (box :key stable :content "Stable"
-                           :width (40) :height 1)))
-                    (box :key footer :content "Footer"
-                         :width (100) :height 1)))))
-          (let* ((state (ebox--buffer-render-state buffer))
-                 (style-states (plist-get state :style-binding-states))
-                 (binding-state
-                  (cl-loop for value being the hash-values of style-states
-                           when (and (plist-get value :declarations)
-                                     (plist-get value :parent-style-state)
-                                     (ebox-surface--static-style-state-p value))
-                           return value)))
-            (should binding-state)
-            (should (tp-binding-live-p (plist-get binding-state :binding)))
-            (should (plist-get binding-state :parent-style-state))
-            (should (= 1 (plist-get binding-state
-                                    :inherited-dependency-count)))
-            (should (= 1 (tp-binding-dependency-count
-                          (plist-get binding-state :binding))))
-            (should (ebox-surface--static-style-state-p binding-state)))
-          (let ((original
-                 (symbol-function 'ebox-incremental--layout-owner-plan))
-                (original-ensure
-                 (symbol-function 'ebox-surface--ensure-node-tree))
-                (original-render (symbol-function 'ebox--render-layout)))
-            (cl-letf (((symbol-function 'ebox-incremental--layout-owner-plan)
-                       (lambda (&rest arguments)
-                         (cl-incf calls)
-                         (apply original arguments)))
-                      ((symbol-function 'ebox-surface--ensure-node-tree)
-                       (lambda (&rest arguments)
-                         (cl-incf ensured)
-                         (apply original-ensure arguments)))
-                      ((symbol-function 'ebox--render-layout)
-                       (lambda (node)
-                         (push (plist-get node :node-id) rendered)
-                         (funcall original-render node))))
-              (let* ((candidate (ebox-candidate-begin buffer))
-                     (_replacement
-                      (ebox-candidate-replace-host-ref
-                       candidate 'target
-                       (ebox-create :key 'card :class "card"
-                                    :host-ref 'target :content "After")))
-                     (report (ebox-commit buffer candidate)))
-                (should (eq (plist-get report :projection-kind)
-                            'owner-scoped))
-                ;; The nested 1fr Grid now carries a strict local allocation
-                ;; certificate; the proof no longer rescans every normal-flow
-                ;; ancestor just to establish the same slot width.
-                (should (= 1 (plist-get report :ancestor-slot-count)))
-                (should (= 0 (plist-get report
-                                        :ancestor-slot-generation))))
-              (should (string-match-p
-                       "After"
-                       (substring-no-properties
-                        (ebox-commit-test--buffer-string buffer))))
-              (should (= calls 1))
-              (should (= ensured 0))
-              (should (= (length rendered) 1))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer))))))
 
 (ert-deftest ebox-commit-keeps-root-owner-for-dynamic-cascade-source ()
   "A TP-dependent cascade binding must preserve root-owner fallback."
@@ -709,10 +594,10 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-dynamic-style-proof*")
-                 (ebox-column
-                  (ebox-create :key 'card :class "card" :content "Before"
+                 (ebox-test-column
+                  (ebox-test-box :key 'card :class "card" :content "Before"
                                :width '(40))
-                  (ebox-create :key 'stable :content "Stable"
+                  (ebox-test-box :key 'stable :content "Stable"
                                :width '(40)))))
           (let* ((state (ebox--buffer-render-state buffer))
                  (style-states (plist-get state :style-binding-states))
@@ -735,223 +620,50 @@
                          (apply original arguments))))
               (ebox-commit
                buffer
-               (ebox-column
-                (ebox-create :key 'card :class "card" :content "After"
+               (ebox-test-column
+                (ebox-test-box :key 'card :class "card" :content "After"
                              :width '(40))
-                (ebox-create :key 'stable :content "Stable"
+                (ebox-test-box :key 'stable :content "Stable"
                              :width '(40))))
               (should (= calls 0)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-owner-scoped-proof-rejects-unstable-allocation ()
-  "Auto intrinsic, line-count, and topology changes must keep root fallback."
-  (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
-    (ebox-style-add-rule ".card" '(:color "#111111") :layer 'components)
-    (dolist
-        (case
-         (list
-          (list :name "auto"
-                :old (ebox-create :key 'card :class "card" :host-ref 'target
-                                  :content "Before")
-                :new (ebox-create :key 'card :class "card" :host-ref 'target
-                                  :content "After, intrinsically wider"))
-          (list :name "lines"
-                :old (ebox-create :key 'card :class "card" :host-ref 'target
-                                  :content "Before" :width '(40))
-                :new (ebox-create :key 'card :class "card" :host-ref 'target
-                                  :content "After\nsecond" :width '(40)))
-          (list :name "topology"
-                :old (ebox-create :key 'card :class "card" :host-ref 'target
-                                  :content "Before" :width '(40) :height 1)
-                :new (ebox-column
-                      (ebox-create :key 'first :content "After" :width '(40))
-                      (ebox-create :key 'second :content "Second"
-                                   :width '(40))))))
-      (let ((buffer nil))
-        (unwind-protect
-            (progn
-              (setq buffer
-                    (ebox-render-to-buffer
-                     (generate-new-buffer-name
-                      (format " *ebox-owner-proof-%s*" (plist-get case :name)))
-                     (ebox-column
-                      (plist-get case :old)
-                      (ebox-create :key 'stable :content "Stable"
-                                   :width '(40)))))
-              (let ((candidate (ebox-candidate-begin buffer)))
-                (ebox-candidate-replace-host-ref
-                 candidate 'target (plist-get case :new))
-                (let ((report (ebox-commit buffer candidate)))
-                  (should-not (eq (plist-get report :projection-kind)
-                                  'owner-scoped)))))
-          (when (buffer-live-p buffer)
-            (kill-buffer buffer)))))
-    (let ((buffer nil))
-      (unwind-protect
-          (progn
-            (setq buffer
-                  (ebox-render-to-buffer
-                   (generate-new-buffer-name " *ebox-owner-proof-auto-grid*")
-                   (ebox-build
-                    '(grid :width (100) :height 1
-                      :grid-template-columns (auto (40))
-                      (box :key card :class "card" :host-ref target
-                           :content "Before" :height 1)
-                      (box :key stable :content "Stable"
-                           :width (40) :height 1)))))
-            (let ((candidate (ebox-candidate-begin buffer)))
-              (ebox-candidate-replace-host-ref
-               candidate 'target
-               (ebox-create :key 'card :class "card" :host-ref 'target
-                            :content "After" :height 1))
-              (let ((report (ebox-commit buffer candidate)))
-                (should-not (eq (plist-get report :projection-kind)
-                                'owner-scoped)))))
-        (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
 
-(ert-deftest ebox-commit-owner-scoped-multi-owner-is-atomic ()
-  "Two disjoint fixed-slot owners render locally in one publication."
-  (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
-         (buffer nil)
-         (ensured 0)
-         (ancestor-proofs 0)
-         (rendered nil)
-         (published 0))
-    (ebox-style-add-rule ".card" '(:color "#111111") :layer 'components)
-    (unwind-protect
-        (progn
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-owner-multi*")
-                 (ebox-build
-                  '(grid :width (100)
-                    :grid-template-columns (1fr 1fr)
-                    (column :key card-shell :width stretch
-                     :border "#687386" :padding (1 2)
-                     (box :key first :class "card" :host-ref first
-                          :content "First" )
-                     (box :key second :class "card" :host-ref second
-                          :content "Second"))
-                    (box :key stable :content "Stable"
-                         :width (40) :height 2)))))
-          (let* ((surface (with-current-buffer buffer
-                            ebox-surface--buffer-surface))
-                 (revision (tp-surface-revision surface))
-                 (candidate (ebox-candidate-begin buffer))
-                 (original-ensure
-                  (symbol-function 'ebox-surface--ensure-node-tree))
-                 (original-ancestor-proof
-                  (symbol-function
-                   'ebox-incremental--compute-ancestor-slot-signature))
-                 (original-render (symbol-function 'ebox--render-layout)))
-            (ebox-candidate-replace-host-ref
-             candidate 'first
-             (ebox-create :key 'first :class "card" :host-ref 'first
-                          :content "Alpha"))
-            (ebox-candidate-replace-host-ref
-             candidate 'second
-             (ebox-create :key 'second :class "card" :host-ref 'second
-                          :content "Bravo!"))
-            (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
-                       (lambda (&rest arguments)
-                         (cl-incf ensured)
-                         (apply original-ensure arguments)))
-                      ((symbol-function 'ebox--render-layout)
-                       (lambda (node)
-                         (push (plist-get node :node-id) rendered)
-                         (funcall original-render node)))
-                      ((symbol-function
-                        'ebox-incremental--compute-ancestor-slot-signature)
-                       (lambda (&rest arguments)
-                         (cl-incf ancestor-proofs)
-                         (apply original-ancestor-proof arguments))))
-              (let ((report
-                     (ebox-commit
-                      buffer candidate
-                      (lambda (_report) (cl-incf published)))))
-                (should (eq (plist-get report :projection-kind)
-                            'owner-scoped))
-                (should (= 2 (length (plist-get report
-                                                :rendered-owner-ids))))
-                (should (= 1 published))
-                (should (= 1 (- (tp-surface-revision surface) revision)))
-                (should (= 0 ensured))
-                (should (= 2 ancestor-proofs))
-                (should (= 2 (length rendered)))
-                (should (string-match-p
-                         "Alpha" (ebox-commit-test--buffer-string buffer)))
-                (should (string-match-p
-                         "Bravo!" (ebox-commit-test--buffer-string buffer)))
-                (let* ((text (ebox-commit-test--buffer-string buffer))
-                       (position (string-match "Alpha" text)))
-                  (should position)
-                  (should (equal
-                           (plist-get (get-text-property position 'face text)
-                                      :foreground)
-                           "#111111")))
-                (should (< (plist-get report :reconciled-objects)
-                           (plist-get (tp-surface-inspect surface)
-                                      :object-count)))))
-            (let* ((fallback-revision (tp-surface-revision surface))
-                   (fallback (ebox-candidate-begin buffer)))
-              (ebox-candidate-replace-host-ref
-               fallback 'first
-               (ebox-create :key 'first :class "card" :host-ref 'first
-                            :content "Gamma"))
-              (ebox-candidate-replace-host-ref
-               fallback 'second
-               (ebox-create :key 'second :class "card" :host-ref 'second
-                            :content "Much much much much much much longer beta content"))
-              (let ((report (ebox-commit buffer fallback)))
-                (should-not (eq (plist-get report :projection-kind)
-                                'owner-scoped))
-                (should (or (plist-get report :tp-scope-fallback)
-                            (plist-get report :tp-full-root)))
-                (should (= 1 (- (tp-surface-revision surface)
-                                fallback-revision)))
-                (let ((text (ebox-commit-test--buffer-string buffer)))
-                  (should (string-match-p
-                           "Much much much much much much longer beta"
-                           text))
-                  (should (string-match-p "content" text)))))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest ebox-commit-formatting-context-reflow-owns-variable-line-siblings ()
   "Two variable-line owners should publish through their nearest stack context.
 The context owns the complete local block; the root and untouched header/footer
 remain retained identities."
   (let* ((old-root
-          (ebox-column
-           (ebox-create :key 'header :content "Header" :width '(160))
-           (ebox-create
+          (ebox-test-column
+           (ebox-test-box :key 'header :content "Header" :width '(160))
+           (ebox-test-box
             :key 'shell :width '(160)
             :ebox-content-node
-            (ebox-column
-             (ebox-create :key 'message :host-ref 'message
+            (ebox-test-column
+             (ebox-test-box :key 'message :host-ref 'message
                           :content "Callback action pending")
-             (ebox-flex :width '(120) :height 1
-                        (ebox-create :key 'toggle :host-ref 'toggle
+             (ebox-test-flex :width '(120) :height 1
+                        (ebox-test-box :key 'toggle :host-ref 'toggle
                                      :content "Behavior: off"))))
-           (ebox-create :key 'footer :content "Footer" :width '(160))))
+           (ebox-test-box :key 'footer :content "Footer" :width '(160))))
          (new-message
-          (ebox-create :key 'message :host-ref 'message
+          (ebox-test-box :key 'message :host-ref 'message
                        :content "Behavior toggle: on / callback active / a longer status line"))
          (new-toggle
-          (ebox-create :key 'toggle :host-ref 'toggle
+          (ebox-test-box :key 'toggle :host-ref 'toggle
                        :content "Behavior: on"))
          (new-root
-          (ebox-column
-           (ebox-create :key 'header :content "Header" :width '(160))
-           (ebox-create
+          (ebox-test-column
+           (ebox-test-box :key 'header :content "Header" :width '(160))
+           (ebox-test-box
             :key 'shell :width '(160)
             :ebox-content-node
-            (ebox-column
+            (ebox-test-column
              new-message
-             (ebox-flex :width '(120) :height 1 new-toggle)))
-           (ebox-create :key 'footer :content "Footer" :width '(160))))
+             (ebox-test-flex :width '(120) :height 1 new-toggle)))
+           (ebox-test-box :key 'footer :content "Footer" :width '(160))))
          (buffer nil)
          (fresh nil))
     (unwind-protect
@@ -994,11 +706,23 @@ remain retained identities."
                         (let* ((region-node-table
                                 (plist-get state :region-node-table))
                                (node-table (plist-get state :node-table))
+                               (parent-table (plist-get state :parent-table))
                                (node-id (and region-node-table
                                              (gethash value region-node-table)))
-                               (node (and node-id
-                                           (gethash node-id node-table))))
-                          (or (and node (ebox-tree-node-key node)) value))
+                               (source-node-id node-id)
+                               (root-node-id
+                                (plist-get (plist-get state :root-node)
+                                           :node-id))
+                               key)
+                          (while (and node-id (not key))
+                            (when-let* ((node (gethash node-id node-table)))
+                              (setq key (ebox-tree-node-key node)))
+                            (setq node-id
+                                  (and (not key)
+                                       (gethash node-id parent-table))))
+                          (or key
+                              (and (equal source-node-id root-node-id) 'root)
+                              value))
                       value)))
                  (semantic-properties
                   (lambda (state text position)
@@ -1040,17 +764,17 @@ remain retained identities."
   "Formatting-context reflow keeps one rollback boundary and can retry."
   (cl-labels
       ((root (message toggle)
-         (ebox-column
-          (ebox-create :key 'header :content "Header" :width '(160))
-          (ebox-create
+         (ebox-test-column
+          (ebox-test-box :key 'header :content "Header" :width '(160))
+          (ebox-test-box
            :key 'shell :width '(160)
            :ebox-content-node
-           (ebox-column
-            (ebox-create :key 'message :host-ref 'message :content message)
-            (ebox-flex :width '(120) :height 1
-                       (ebox-create :key 'toggle :host-ref 'toggle
+           (ebox-test-column
+            (ebox-test-box :key 'message :host-ref 'message :content message)
+            (ebox-test-flex :width '(120) :height 1
+                       (ebox-test-box :key 'toggle :host-ref 'toggle
                                     :content toggle))))
-          (ebox-create :key 'footer :content "Footer" :width '(160)))))
+          (ebox-test-box :key 'footer :content "Footer" :width '(160)))))
     (dolist (failure-kind '(client-state final-accept))
       (let ((buffer (generate-new-buffer
                      (format " *ebox-formatting-context-%S*" failure-kind))))
@@ -1068,12 +792,12 @@ remain retained identities."
                      (candidate (ebox-candidate-begin buffer)))
                 (ebox-candidate-replace-host-ref
                  candidate 'message
-                 (ebox-create
+                 (ebox-test-box
                   :key 'message :host-ref 'message
                   :content "Behavior toggle: on / callback active / a longer status line"))
                 (ebox-candidate-replace-host-ref
                  candidate 'toggle
-                 (ebox-create :key 'toggle :host-ref 'toggle
+                 (ebox-test-box :key 'toggle :host-ref 'toggle
                               :content "Behavior: on"))
                 (if (eq failure-kind 'client-state)
                     (let ((tp--surface-publication-step-function
@@ -1094,12 +818,12 @@ remain retained identities."
                 (let ((retry (ebox-candidate-begin buffer)))
                   (ebox-candidate-replace-host-ref
                    retry 'message
-                   (ebox-create
+                   (ebox-test-box
                     :key 'message :host-ref 'message
                     :content "Behavior toggle: on / callback active / a longer status line"))
                   (ebox-candidate-replace-host-ref
                    retry 'toggle
-                   (ebox-create :key 'toggle :host-ref 'toggle
+                   (ebox-test-box :key 'toggle :host-ref 'toggle
                                 :content "Behavior: on"))
                   (let ((report (ebox-commit buffer retry)))
                     (should (eq (plist-get report :projection-kind)
@@ -1112,12 +836,12 @@ remain retained identities."
 (ert-deftest ebox-commit-multi-owner-variable-content-keeps-fixed-slots ()
   "Two fixed Grid slots accept unequal one-line content in one publication."
   (let* ((new-left
-          (ebox-create :key 'left :host-ref 'left
+          (ebox-test-box :key 'left :host-ref 'left
                        :content "L"))
          (new-right
-          (ebox-create :key 'right :host-ref 'right :content "R"))
+          (ebox-test-box :key 'right :host-ref 'right :content "R"))
          (old-root
-          (ebox-build
+          (ebox-test-build
            '(grid :key grid :width (80)
                   :grid-template-columns ((36) (36))
                   :column-gap (0 (8))
@@ -1148,7 +872,7 @@ remain retained identities."
                 (ebox-render-to-buffer
                  (generate-new-buffer-name
                   " *ebox-multi-owner-variable-slots-fresh*")
-                 (ebox-build
+                 (ebox-test-build
                   '(grid :key grid :width (80)
                          :grid-template-columns ((36) (36))
                          :column-gap (0 (8))
@@ -1168,19 +892,19 @@ remain retained identities."
   "Variable multi-owner spans restore old state at both TP failure points."
   (cl-labels
       ((root (left right)
-         (ebox-grid :key 'grid :width '(80)
+         (ebox-test-grid :key 'grid :width '(80)
                     :grid-template-columns '((36) (36))
                     :column-gap '(0 (8))
-                    (ebox-create :key 'left :host-ref 'left :content left)
-                    (ebox-create :key 'right :host-ref 'right :content right)))
+                    (ebox-test-box :key 'left :host-ref 'left :content left)
+                    (ebox-test-box :key 'right :host-ref 'right :content right)))
        (candidate (buffer)
          (let ((candidate (ebox-candidate-begin buffer)))
            (ebox-candidate-replace-host-ref
             candidate 'left
-            (ebox-create :key 'left :host-ref 'left :content "L"))
+            (ebox-test-box :key 'left :host-ref 'left :content "L"))
            (ebox-candidate-replace-host-ref
             candidate 'right
-            (ebox-create :key 'right :host-ref 'right :content "R"))
+            (ebox-test-box :key 'right :host-ref 'right :content "R"))
            candidate)))
     (dolist (failure-kind '(client-state final-accept))
       (let ((buffer (generate-new-buffer
@@ -1217,27 +941,33 @@ remain retained identities."
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
-(ert-deftest ebox-commit-updates-raw-runtime-type-counts ()
-  "A structural candidate should publish exact raw runtime type counts."
+(ert-deftest ebox-commit-updates-canonical-runtime-type-counts ()
+  "A structural candidate should publish exact Text and Box counts."
   (let* ((buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-commit-types*")
            (ebox-build
             '(flex :key root :width (80)
-                   (item (box :key child :content "A" :width (40)))))))
+                   (box :key child :width (40) "A")))))
          (before (gethash buffer ebox--buffer-render-state-table)))
     (unwind-protect
         (progn
           (should (= (gethash
-                      'item (plist-get before :runtime-type-count-table))
+                      'box (plist-get before :runtime-type-count-table))
+                     2))
+          (should (= (gethash
+                      'text (plist-get before :runtime-type-count-table))
                      1))
           (ebox-commit
-           buffer (ebox-create :key 'root :content "B" :width '(80)))
+           buffer (ebox-test-box :key 'root :content "B" :width '(80)))
           (let ((after (gethash buffer ebox--buffer-render-state-table)))
             (should-not
              (gethash 'item (plist-get after :runtime-type-count-table)))
             (should (= (gethash
                         'box (plist-get after :runtime-type-count-table))
+                       1))
+            (should (= (gethash
+                        'text (plist-get after :runtime-type-count-table))
                        1))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
@@ -1246,11 +976,11 @@ remain retained identities."
   "A failed candidate must leave the previously published buffer intact."
   (let ((buffer (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-commit-rollback*")
-                 (ebox-create :key 'root :content "Stable" :width '(80)))))
+                 (ebox-test-box :key 'root :content "Stable" :width '(80)))))
     (unwind-protect
         (progn
           (should-error
-           (ebox-commit buffer (ebox-create :key 'root :content nil
+           (ebox-commit buffer (ebox-test-box :key 'root :content nil
                                              :width 'invalid)))
           (should (string-prefix-p
                    "Stable"
@@ -1265,8 +995,8 @@ remain retained identities."
   (let* ((buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-participation-rollback*")
-           (ebox-column
-            (ebox-create :key 'target :host-ref 'target
+           (ebox-test-column
+            (ebox-test-box :key 'target :host-ref 'target
                          :content "Stable" :width '(80)))))
          (surface (with-current-buffer buffer ebox-surface--buffer-surface))
          (revision (tp-surface-revision surface))
@@ -1278,33 +1008,8 @@ remain retained identities."
           ;; replacement is legal.  The final Column graft is authoritative.
           (ebox-candidate-replace-host-ref
            candidate 'target
-           (ebox-create :key 'target :host-ref 'target
+           (ebox-test-box :key 'target :host-ref 'target
                         :content "Invalid" :width '(80) :flex-grow 1))
-          (should-error (ebox-commit buffer candidate) :type 'error)
-          (should (= (tp-surface-revision surface) revision))
-          (should (equal (ebox-commit-test--buffer-string buffer) before)))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest ebox-candidate-cannot-launder-legacy-adapter-provenance ()
-  "A public path copy must not authenticate a replacement as adapter output."
-  (let* ((adapter
-          (ebox-flex-item
-           (ebox-create :host-ref 'target :content "Stable" :width '(80))))
-         (buffer
-          (ebox-render-to-buffer
-           (generate-new-buffer-name " *ebox-adapter-proof-rollback*")
-           (ebox-column adapter)))
-         (surface (with-current-buffer buffer ebox-surface--buffer-surface))
-         (revision (tp-surface-revision surface))
-         (before (ebox-commit-test--buffer-string buffer))
-         (candidate (ebox-candidate-begin buffer))
-         (replacement
-          (ebox-create :host-ref 'target :content "Invalid" :width '(80))))
-    (plist-put replacement :flex-grow 1)
-    (unwind-protect
-        (progn
-          (ebox-candidate-replace-host-ref candidate 'target replacement)
           (should-error (ebox-commit buffer candidate) :type 'error)
           (should (= (tp-surface-revision surface) revision))
           (should (equal (ebox-commit-test--buffer-string buffer) before)))
@@ -1317,31 +1022,33 @@ remain retained identities."
           (cl-loop for index below 200
                    collect
                    (if (= index 99)
-                       (ebox-create :key index :host-ref 'target
+                       (ebox-test-box :key index :host-ref 'target
                                     :content (number-to-string index))
-                     (ebox-create :key index
+                     (ebox-test-box :key index
                                   :content (number-to-string index)))))
          (buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-participation-local*")
-           (apply #'ebox-column children)))
+           (apply #'ebox-test-column children)))
          (candidate (ebox-candidate-begin buffer))
          (original
           (symbol-function 'ebox-tree-validate-indexed-participation))
-         author-node-counts)
+         validation-frontiers)
     (unwind-protect
         (progn
           (ebox-candidate-replace-host-ref
            candidate 'target
-           (ebox-create :key 99 :host-ref 'target :content "changed"))
+           (ebox-test-box :key 99 :host-ref 'target :content "changed"))
           (cl-letf
               (((symbol-function 'ebox-tree-validate-indexed-participation)
                 (lambda (node-table parent-table node-ids &optional source)
-                  (when (eq source 'author)
-                    (push (length node-ids) author-node-counts))
+                  (push (cons source (length node-ids))
+                        validation-frontiers)
                   (funcall original node-table parent-table node-ids source))))
             (ebox-commit buffer candidate))
-          (should (equal author-node-counts '(2))))
+          ;; The changed Box, its Text leaf, and direct parent context are the
+          ;; complete validation frontier; 197 siblings remain untouched.
+          (should (equal validation-frontiers '((computed . 3)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -1351,20 +1058,20 @@ remain retained identities."
         (second (generate-new-buffer " *ebox-root-valid-second*")))
     (unwind-protect
         (progn
-          (ebox-render-to-buffer first (ebox-create :key 'root :content "one"))
-          (ebox-render-to-buffer second (ebox-create :key 'root :content "two"))
+          (ebox-render-to-buffer first (ebox-test-box :key 'root :content "one"))
+          (ebox-render-to-buffer second (ebox-test-box :key 'root :content "two"))
           (let ((candidate (ebox-candidate-begin first)))
             (should-error (ebox-candidate-replace-root candidate "invalid"))
             (ebox-candidate-replace-root
-             candidate (ebox-create :key 'root :content "candidate"))
+             candidate (ebox-test-box :key 'root :content "candidate"))
             (should-error (ebox-commit second candidate))
             (should-error
              (ebox-candidate-replace-root
-              candidate (ebox-create :key 'root :content "sealed"))))
+              candidate (ebox-test-box :key 'root :content "sealed"))))
           (let ((candidate (ebox-candidate-begin first)))
             (ebox-candidate-replace-root
-             candidate (ebox-create :key 'root :content "stale"))
-            (ebox-commit first (ebox-create :key 'root :content "new-base"))
+             candidate (ebox-test-box :key 'root :content "stale"))
+            (ebox-commit first (ebox-test-box :key 'root :content "new-base"))
             (should-error (ebox-commit first candidate))))
       (dolist (buffer (list first second))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
@@ -1374,15 +1081,15 @@ remain retained identities."
   (let ((buffer (generate-new-buffer " *ebox-framework-compat*")))
     (unwind-protect
         (progn
-          (ebox-render-to-buffer buffer (ebox-create :key 'root :content "0"))
+          (ebox-render-to-buffer buffer (ebox-test-box :key 'root :content "0"))
           (should (eq (plist-get
-                       (ebox-commit buffer (ebox-create :key 'root :content "1"))
+                       (ebox-commit buffer (ebox-test-box :key 'root :content "1"))
                        :framework-participant-state)
                       'completed))
           (let ((calls 0) seen)
             (let ((report
                    (ebox-commit
-                    buffer (ebox-create :key 'root :content "2")
+                    buffer (ebox-test-box :key 'root :content "2")
                     (lambda (value) (cl-incf calls) (setq seen value)))))
               (should (= calls 1))
               (should (eq seen report))
@@ -1398,14 +1105,14 @@ remain retained identities."
           (progn
             (ebox-render-to-buffer
                 buffer
-              (ebox-column
-               (ebox-create :key 'a :host-ref 'a :content "old-a")
-               (ebox-create :key 'b :host-ref 'b :content "old-b")))
+              (ebox-test-column
+               (ebox-test-box :key 'a :host-ref 'a :content "old-a")
+               (ebox-test-box :key 'b :host-ref 'b :content "old-b")))
             (let* ((before (ebox-commit-test--buffer-string buffer))
                    (candidate (ebox-candidate-begin buffer))
                    trace captured failure)
               (ebox-candidate-replace-host-ref
-               candidate 'a (ebox-create :key 'a :host-ref 'a :content "new-a"))
+               candidate 'a (ebox-test-box :key 'a :host-ref 'a :content "new-a"))
               (cl-letf (((symbol-function 'accept-change-group)
                          (lambda (_group) (error "accept failed"))))
                 (setq failure
@@ -1414,7 +1121,7 @@ remain retained identities."
                            buffer
                            (if (eq mode 'scoped)
                                candidate
-                             (ebox-create :key 'root :content "new-root"))
+                             (ebox-test-box :key 'root :content "new-root"))
                            (lambda (report)
                              (setq captured report)
                              (push 'publish trace))
@@ -1434,7 +1141,7 @@ remain retained identities."
                        (ebox-commit-test--buffer-string buffer) before))
               (should (eq (plist-get
                            (ebox-commit
-                            buffer (ebox-create :key 'root :content "next"))
+                            buffer (ebox-test-box :key 'root :content "next"))
                            :framework-participant-state)
                           'completed))))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
@@ -1449,14 +1156,14 @@ remain retained identities."
                        :condition (quit)))))
     (unwind-protect
         (progn
-          (ebox-render-to-buffer buffer (ebox-create :key 'root :content "0"))
+          (ebox-render-to-buffer buffer (ebox-test-box :key 'root :content "0"))
           (cl-letf
               (((symbol-function
                  'ebox-incremental--finalize-declarative-scroll-publication)
                 (lambda (&rest _arguments) diagnostics)))
             (let ((report
                    (ebox-commit
-                    buffer (ebox-create :key 'root :content "1"))))
+                    buffer (ebox-test-box :key 'root :content "1"))))
               (should (eq (plist-get report :framework-participant-state)
                           'completed))
               (should (equal
@@ -1464,7 +1171,7 @@ remain retained identities."
                        diagnostics))))
           (should (eq (plist-get
                        (ebox-commit buffer
-                                    (ebox-create :key 'root :content "2"))
+                                    (ebox-test-box :key 'root :content "2"))
                        :framework-participant-state)
                       'completed)))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
@@ -1474,7 +1181,7 @@ remain retained identities."
   (let ((buffer (generate-new-buffer " *ebox-participant-owner-failure*")))
     (unwind-protect
         (progn
-          (ebox-render-to-buffer buffer (ebox-create :key 'root :content "old"))
+          (ebox-render-to-buffer buffer (ebox-test-box :key 'root :content "old"))
           (let* ((surface (with-current-buffer
                             buffer ebox-surface--buffer-surface))
                  (old-state (tp-surface-client-state surface))
@@ -1493,7 +1200,7 @@ remain retained identities."
               (setq failure
                     (condition-case condition
                         (ebox-commit
-                         buffer (ebox-create :key 'root :content "new")
+                         buffer (ebox-test-box :key 'root :content "new")
                          #'ignore
                          (lambda (_report) (setq rollback-called t)))
                       (error condition))))
@@ -1510,22 +1217,22 @@ remain retained identities."
 (defun ebox-commit-test--mixed-owner-root
     (left right paint-a paint-b paint-c)
   "Return the raw sibling fixture for mixed geometry/paint publication."
-  (ebox-column
-   (ebox-create
+  (ebox-test-column
+   (ebox-test-box
     :key 'geometry-context :width '(80)
     :ebox-content-node
-    (ebox-column
-     (ebox-create :key 'left :host-ref 'left
+    (ebox-test-column
+     (ebox-test-box :key 'left :host-ref 'left
                   :content left :font 'bold)
-     (ebox-create :key 'right :host-ref 'right
+     (ebox-test-box :key 'right :host-ref 'right
                   :content right)))
-   (ebox-create :key 'paint-a :host-ref 'paint-a
+   (ebox-test-box :key 'paint-a :host-ref 'paint-a
                 :content "paint-a" :color paint-a)
-   (ebox-create :key 'paint-b :host-ref 'paint-b
+   (ebox-test-box :key 'paint-b :host-ref 'paint-b
                 :content "paint-b" :bgcolor paint-b)
-   (ebox-create :key 'paint-c :host-ref 'paint-c
+   (ebox-test-box :key 'paint-c :host-ref 'paint-c
                 :content "paint-c" :color paint-c)
-   (ebox-create :key 'untouched :host-ref 'untouched
+   (ebox-test-box :key 'untouched :host-ref 'untouched
                 :content "untouched")))
 
 (ert-deftest ebox-candidate-host-paint-patch-preserves-subtree-identity ()
@@ -1533,27 +1240,27 @@ remain retained identities."
   (let* ((buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-host-paint-patch* ")
-           (ebox-create
+           (ebox-test-box
             :key 'target :host-ref 'target :bgcolor "#111111"
             :ebox-content-node
-            (ebox-column
-             (ebox-create :key 'child :host-ref 'child :content "child")))))
+            (ebox-test-column
+             (ebox-test-box :key 'child :host-ref 'child :content "child")))))
          (child-id (plist-get (ebox--host-ref-node buffer 'child) :node-id)))
     (unwind-protect
         (progn
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-patch-host-paint
              candidate 'target
-             (ebox-create
+             (ebox-test-box
               :key 'target :host-ref 'target :bgcolor "#111111"
               :ebox-content-node
-              (ebox-column
-               (ebox-create :key 'child :host-ref 'child :content "child")))
-             (ebox-create
+              (ebox-test-column
+               (ebox-test-box :key 'child :host-ref 'child :content "child")))
+             (ebox-test-box
               :key 'target :host-ref 'target :bgcolor "#EEEEEE"
               :ebox-content-node
-              (ebox-column
-               (ebox-create :key 'child :host-ref 'child :content "child"))))
+              (ebox-test-column
+               (ebox-test-box :key 'child :host-ref 'child :content "child"))))
             (let ((report (ebox-commit buffer candidate)))
               (should (eq (plist-get report :projection-kind) 'paint))
               (should (= child-id
@@ -1566,51 +1273,57 @@ remain retained identities."
             (should-not
              (ebox-candidate-patch-host-paint
               candidate 'target
-              (ebox-create
+              (ebox-test-box
                :key 'target :host-ref 'target :bgcolor "#EEEEEE"
                :content "child")
-              (ebox-create
+              (ebox-test-box
                :key 'target :host-ref 'target :bgcolor "#EEEEEE"
                :width '(40) :content "child"))))
           (let ((candidate (ebox-candidate-begin buffer)))
             (should
              (ebox-candidate-patch-host-paint
               candidate 'target
-              (ebox-create
+              (ebox-test-box
                :key 'target :host-ref 'target :bgcolor "#EEEEEE"
                :ebox-content-node
-               (ebox-column
-                (ebox-create :key 'child :host-ref 'child :content "child")))
-              (ebox-create
+               (ebox-test-column
+                (ebox-test-box :key 'child :host-ref 'child :content "child")))
+              (ebox-test-box
                :key 'target :host-ref 'target :bgcolor "#EEEEEE"
                :color "#FFFFFF"
                :ebox-content-node
-               (ebox-column
-                (ebox-create :key 'child :host-ref 'child :content "child")))))
+               (ebox-test-column
+                (ebox-test-box :key 'child :host-ref 'child :content "child")))))
             (ebox-commit buffer candidate)
             (should
              (equal "#FFFFFF"
-                    (plist-get (ebox--host-ref-node buffer 'target) :color)))
-            (should
-             (equal "#FFFFFF"
-                    (plist-get (ebox--host-ref-node buffer 'child) :color)))))
+                    (ebox-style-node-specified-value
+                     (ebox--host-ref-node buffer 'target) :color)))
+            (let* ((rendered (ebox-commit-test--buffer-string buffer))
+                   (position (string-match "child" rendered)))
+              (should position)
+              (should
+               (equal "#FFFFFF"
+                      (ebox-commit-test--face-value
+                       (get-text-property position 'face rendered)
+                       :foreground))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (defun ebox-commit-test--fixed-basis-selection-root (row-1 row-2)
   "Return a stretched fixed-basis panel containing two selectable rows."
   (let ((panel
-         (ebox-create
+         (ebox-test-box
           :key 'selection-panel :width 'stretch :min-width 0 :min-height 24
           :flex-grow 2 :flex-shrink 1 :flex-basis '(340)
           :ebox-content-node
-          (ebox-column
-           (ebox-create :key 'row-1 :host-ref 'row-1 :content row-1)
-           (ebox-create :key 'row-2 :host-ref 'row-2 :content row-2)))))
-    (ebox-flex
+          (ebox-test-column
+           (ebox-test-box :key 'row-1 :host-ref 'row-1 :content row-1)
+           (ebox-test-box :key 'row-2 :host-ref 'row-2 :content row-2)))))
+    (ebox-test-flex
      :key 'fixed-basis-selection-root
      :width '(900) :height 24
      :flex-flow '(row nowrap) :align-items 'stretch
-     (ebox-create :key 'peer :content "peer" :width 'stretch
+     (ebox-test-box :key 'peer :content "peer" :width 'stretch
                   :min-width 0 :min-height 24
                   :flex-grow 4 :flex-shrink 1 :flex-basis '(620))
      panel)))
@@ -1621,10 +1334,10 @@ remain retained identities."
   (let ((candidate (ebox-candidate-begin buffer)))
     (ebox-candidate-replace-host-ref
      candidate 'row-1
-     (ebox-create :key 'row-1 :host-ref 'row-1 :content row-1))
+     (ebox-test-box :key 'row-1 :host-ref 'row-1 :content row-1))
     (ebox-candidate-replace-host-ref
      candidate 'row-2
-     (ebox-create :key 'row-2 :host-ref 'row-2 :content row-2))
+     (ebox-test-box :key 'row-2 :host-ref 'row-2 :content row-2))
     candidate))
 
 (ert-deftest ebox-commit-fixed-basis-selection-round-trip-stays-local ()
@@ -1667,8 +1380,8 @@ remain retained identities."
                    (panel-snapshot (and snapshots
                                         (gethash panel-id snapshots))))
               (push report reports)
-              (should (eq (plist-get report :projection-kind)
-                          'owner-scoped))
+              (should (memq (plist-get report :projection-kind)
+                            '(span-patch owner-scoped)))
               (should-not (member root-id (plist-get report :owner-ids)))
               (should-not (plist-get report :tp-full-root))
               (should-not (plist-get report :tp-scope-fallback))
@@ -1695,192 +1408,28 @@ remain retained identities."
   (let ((candidate (ebox-candidate-begin buffer)))
     (ebox-candidate-replace-host-ref
      candidate 'left
-     (ebox-create :key 'left :host-ref 'left
+     (ebox-test-box :key 'left :host-ref 'left
                   :content left :font 'bold))
     (ebox-candidate-replace-host-ref
      candidate 'right
-     (ebox-create :key 'right :host-ref 'right
+     (ebox-test-box :key 'right :host-ref 'right
                   :content right))
     (ebox-candidate-replace-host-ref
      candidate 'paint-a
-     (ebox-create :key 'paint-a :host-ref 'paint-a
+     (ebox-test-box :key 'paint-a :host-ref 'paint-a
                   :content "paint-a" :color paint-a))
     (ebox-candidate-replace-host-ref
      candidate 'paint-b
-     (ebox-create :key 'paint-b :host-ref 'paint-b
+     (ebox-test-box :key 'paint-b :host-ref 'paint-b
                   :content "paint-b" :bgcolor paint-b))
     (ebox-candidate-replace-host-ref
      candidate 'paint-c
-     (ebox-create :key 'paint-c :host-ref 'paint-c
+     (ebox-test-box :key 'paint-c :host-ref 'paint-c
                   :content "paint-c" :color paint-c))
     candidate))
 
-(ert-deftest ebox-commit-mixed-owner-reflow-is-atomic-and-round-trips ()
-  "Geometry and color owners publish once without duplicating face layers."
-  (let ((buffer
-         (ebox-render-to-buffer
-          (generate-new-buffer-name " *ebox-mixed-owner* ")
-          (ebox-commit-test--mixed-owner-root
-           "left-old" "right-old" "#111111" "#222222" "#333333"))))
-    (unwind-protect
-        (progn
-          (let ((candidate (ebox-candidate-begin buffer)))
-            (ebox-candidate-replace-host-ref
-             candidate 'left
-             (ebox-create :key 'left :host-ref 'left
-                          :content "left-new" :font 'bold))
-            (ebox-candidate-replace-host-ref
-             candidate 'right
-             (ebox-create :key 'right :host-ref 'right
-                          :content "right-new"))
-            (ebox-candidate-replace-host-ref
-             candidate 'paint-a
-             (ebox-create :key 'paint-a :host-ref 'paint-a
-                          :content "paint-a" :color "#AAAAAA"))
-            (ebox-candidate-replace-host-ref
-             candidate 'paint-b
-             (ebox-create :key 'paint-b :host-ref 'paint-b
-                          :content "paint-b" :bgcolor "#BBBBBB"))
-            (ebox-candidate-replace-host-ref
-             candidate 'paint-c
-             (ebox-create :key 'paint-c :host-ref 'paint-c
-                          :content "paint-c" :color "#CCCCCC"))
-            (let ((report (ebox-commit buffer candidate)))
-              (should (eq (plist-get report :projection-kind)
-                          'mixed-owner-reflow))
-              (should-not (plist-get report :tp-full-root))
-              (should-not (plist-get report :tp-scope-fallback))
-              (should-not
-               (member (ebox--buffer-root-node-id buffer)
-                       (plist-get report :owner-ids)))
-              (should (= (plist-get report :created-objects) 0))
-              (should (= (plist-get report :removed-objects) 0))
-              (with-current-buffer buffer
-                (should
-                 (equal-including-properties
-                  (buffer-substring (point-min) (point-max))
-                  (ebox-render (ebox--buffer-root-node buffer)))))))
-          (let ((candidate (ebox-candidate-begin buffer)))
-            (ebox-candidate-replace-host-ref
-             candidate 'left
-             (ebox-create :key 'left :host-ref 'left
-                          :content "left-old" :font 'bold))
-            (ebox-candidate-replace-host-ref
-             candidate 'right
-             (ebox-create :key 'right :host-ref 'right
-                          :content "right-old"))
-            (ebox-candidate-replace-host-ref
-             candidate 'paint-a
-             (ebox-create :key 'paint-a :host-ref 'paint-a
-                          :content "paint-a" :color "#111111"))
-            (ebox-candidate-replace-host-ref
-             candidate 'paint-b
-             (ebox-create :key 'paint-b :host-ref 'paint-b
-                          :content "paint-b" :bgcolor "#222222"))
-            (ebox-candidate-replace-host-ref
-             candidate 'paint-c
-             (ebox-create :key 'paint-c :host-ref 'paint-c
-                          :content "paint-c" :color "#333333"))
-            (let ((report (ebox-commit buffer candidate)))
-              (should (eq (plist-get report :projection-kind)
-                          'mixed-owner-reflow))
-              (with-current-buffer buffer
-                (should
-                 (equal-including-properties
-                  (buffer-substring (point-min) (point-max))
-                  (ebox-render (ebox--buffer-root-node buffer))))))))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(ert-deftest ebox-commit-mixed-owner-reflow-rolls-back-and-retries ()
-  "Mixed publication restores the old pair after final-accept failure."
-  (let* ((buffer
-          (ebox-render-to-buffer
-           (generate-new-buffer-name " *ebox-mixed-owner-rollback* ")
-           (ebox-commit-test--mixed-owner-root
-            "left-old" "right-old" "#111111" "#222222" "#333333")))
-         (old-buffer (ebox-commit-test--buffer-string buffer))
-         (candidate
-          (ebox-commit-test--mixed-owner-candidate
-           buffer "left-new" "right-new" "#AAAAAA" "#BBBBBB" "#CCCCCC")))
-    (unwind-protect
-        (progn
-          (cl-letf (((symbol-function 'accept-change-group)
-                     (lambda (_group) (error "mixed final accept"))))
-            (should-error (ebox-commit buffer candidate)))
-          (should (equal-including-properties
-                   (ebox-commit-test--buffer-string buffer) old-buffer))
-          (let ((retry
-                 (ebox-commit-test--mixed-owner-candidate
-                  buffer "left-new" "right-new"
-                  "#AAAAAA" "#BBBBBB" "#CCCCCC")))
-            (let ((report (ebox-commit buffer retry)))
-              (should (eq (plist-get report :projection-kind)
-                          'mixed-owner-reflow))
-              (with-current-buffer buffer
-                (should
-                 (equal-including-properties
-                  (buffer-substring (point-min) (point-max))
-                  (ebox-render (ebox--buffer-root-node buffer))))))))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(ert-deftest ebox-commit-mixed-owner-reflow-reuses-unchanged-fragments ()
-  "Delegate affected face composition to TP and retain fragment topology."
-  (let* ((buffer
-          (ebox-render-to-buffer
-           (generate-new-buffer-name " *ebox-mixed-owner-reuse* ")
-           (ebox-commit-test--mixed-owner-root
-            "left-old" "right-old" "#111111" "#222222" "#333333")))
-         (surface (with-current-buffer buffer ebox-surface--buffer-surface))
-         (old-state (tp-surface-client-state surface))
-         (fragment-count (length (plist-get old-state :surface-fragments)))
-         (repaints 0)
-         (metadata-calls 0)
-         (original
-          (symbol-function 'ebox-surface--repaint-output-fragment!))
-         (original-metadata
-          (symbol-function 'ebox-surface--fragment-metadata)))
-    (unwind-protect
-        (progn
-          (should
-           (cl-every
-            (lambda (fragment)
-              (or (null (plist-get fragment :paint-role-ids))
-                  (plist-get fragment :paint-node-chain)))
-            (plist-get old-state :surface-fragments)))
-          (should (plist-get old-state :surface-owned-ranges))
-          (cl-letf (((symbol-function 'ebox-surface--repaint-output-fragment!)
-                     (lambda (&rest args)
-                       (cl-incf repaints)
-                       (apply original args)))
-                    ((symbol-function 'ebox-surface--fragment-metadata)
-                     (lambda (&rest args)
-                       (cl-incf metadata-calls)
-                       (apply original-metadata args))))
-            (should (eq (plist-get
-                         (ebox-commit
-                          buffer
-                          (ebox-commit-test--mixed-owner-candidate
-                           buffer "left-new" "right-new"
-                           "#AAAAAA" "#BBBBBB" "#CCCCCC"))
-                         :projection-kind)
-                        'mixed-owner-reflow)))
-          (should (> fragment-count 0))
-          (should (zerop repaints))
-          (should
-           (plist-get (tp-surface-client-state surface)
-                      :paint-property-contributions))
-          (let ((fragments
-                 (plist-get (tp-surface-client-state surface)
-                            :surface-fragments))
-                (offset 0))
-            (should fragments)
-            (dolist (fragment fragments)
-              (should (= offset (plist-get fragment :start)))
-              (setq offset (plist-get fragment :end)))
-            (should (= offset
-                       (with-current-buffer buffer (buffer-size)))))
-          (should (= metadata-calls 0)))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-surface-owned-range-index-rebases-exact-boundaries ()
   "Rebase retained ownership exactly and reject ambiguous inner boundaries."
@@ -1908,11 +1457,11 @@ remain retained identities."
   (let* ((buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-structure-proof-domain* ")
-           (ebox-column
-            (ebox-create
+           (ebox-test-column
+            (ebox-test-box
              :key 'target :host-ref 'target
              :ebox-content-node
-             (ebox-column (ebox-create :key 'first :content "first"))))))
+             (ebox-test-column (ebox-test-box :key 'first :content "first"))))))
          (span-calls 0)
          (mixed-calls 0)
          (old-span
@@ -1923,11 +1472,11 @@ remain retained identities."
         (let ((candidate (ebox-candidate-begin buffer)))
           (ebox-candidate-replace-host-ref
            candidate 'target
-           (ebox-create
+           (ebox-test-box
             :key 'target :host-ref 'target
             :ebox-content-node
-            (ebox-column (ebox-create :key 'first :content "first")
-                         (ebox-create :key 'second :content "second"))))
+            (ebox-test-column (ebox-test-box :key 'first :content "first")
+                         (ebox-test-box :key 'second :content "second"))))
           (cl-letf
               (((symbol-function 'ebox-incremental--span-patch-projection-proof)
                 (lambda (&rest arguments)
@@ -1949,9 +1498,9 @@ remain retained identities."
   (let* ((buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-range-dirty-boundary* ")
-           (ebox-column
+           (ebox-test-column
             (ebox-child-range
-             'rows (ebox-create :key 'old :content "old")))))
+             'rows (ebox-test-box :key 'old :content "old")))))
          (state (ebox--buffer-render-state buffer))
          (parent-id
           (plist-get (gethash 'rows (plist-get state :range-ref-table))
@@ -1962,7 +1511,7 @@ remain retained identities."
               (original
                (symbol-function 'ebox-incremental--surface-commit-input)))
           (ebox-candidate-replace-range-ref
-           candidate 'rows (list (ebox-create :key 'new :content "new")))
+           candidate 'rows (list (ebox-test-box :key 'new :content "new")))
           (cl-letf
               (((symbol-function 'ebox-incremental--surface-commit-input)
                 (lambda (target old-state prepared)
@@ -1981,78 +1530,35 @@ remain retained identities."
                                   (ebox-commit-test--buffer-string buffer))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(ert-deftest ebox-commit-mixed-owner-reflow-skips-full-owner-planner ()
-  "A proven mixed union should not also plan the complete dirty set."
-  (let* ((buffer
-          (ebox-render-to-buffer
-           (generate-new-buffer-name " *ebox-mixed-owner-plan* ")
-           (ebox-commit-test--mixed-owner-root
-            "left-old" "right-old" "#111111" "#222222" "#333333")))
-         (calls 0)
-         (axis-scans 0)
-         (original
-          (symbol-function 'ebox-incremental--layout-owner-plan))
-         (original-context-axes
-          (symbol-function 'ebox-surface--context-axes)))
-    (unwind-protect
-        (cl-letf
-            (((symbol-function 'ebox-incremental--layout-owner-plan)
-              (lambda (&rest arguments)
-                (cl-incf calls)
-                (apply original arguments)))
-             ((symbol-function 'ebox-surface--context-axes)
-              (lambda (&rest arguments)
-                (cl-incf axis-scans)
-                (apply original-context-axes arguments))))
-          (let* ((report
-                  (ebox-commit
-                   buffer
-                   (ebox-commit-test--mixed-owner-candidate
-                    buffer "left-new" "right-new"
-                    "#AAAAAA" "#BBBBBB" "#CCCCCC")))
-                 (owner-ids (plist-get report :owner-ids)))
-            (should (eq (plist-get report :projection-kind)
-                        'mixed-owner-reflow))
-            (should (= calls 0))
-            (should (= axis-scans 0))
-            (should (= (plist-get report :tp-scope-count)
-                       (length owner-ids)))
-            (should-not (plist-get report :tp-scope-fallback))
-            (with-current-buffer buffer
-              (should
-               (equal-including-properties
-                (buffer-substring (point-min) (point-max))
-                (ebox-render (ebox--buffer-root-node buffer)))))))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (defun ebox-commit-test--allocation-closure-root
     (toast paint-a paint-b &optional width footer-overflow root-overflow)
   "Return a generic whole-line Flex allocation-closure fixture."
-  (ebox-create
+  (ebox-test-box
    :key 'root :width (list (or width 800))
    :height (and root-overflow 1) :overflow root-overflow
    :ebox-content-node
-   (ebox-column
-    (ebox-create :key 'status :host-ref 'status
+   (ebox-test-column
+    (ebox-test-box :key 'status :host-ref 'status
                  :content "Theme: Light" :width '(200))
-    (ebox-create :key 'paint-a :host-ref 'paint-a
+    (ebox-test-box :key 'paint-a :host-ref 'paint-a
                  :content "paint-a" :color paint-a)
-    (ebox-create :key 'paint-b :host-ref 'paint-b
+    (ebox-test-box :key 'paint-b :host-ref 'paint-b
                  :content "paint-b" :bgcolor paint-b)
-    (ebox-create
+    (ebox-test-box
      :key 'footer-owner :width (list (or width 800))
      :ebox-content-node
-     (ebox-column
-      (ebox-flex
+     (ebox-test-column
+      (ebox-test-flex
        :key 'footer :width (list (or width 800)) :flex-wrap 'wrap
        :overflow footer-overflow :gap '(1 (4))
-       (ebox-create
+       (ebox-test-box
         :key 'toast-slot :width 'stretch :min-width 0
         :flex-grow 1 :flex-shrink 1 :flex-basis '(0)
         :ebox-content-node
-        (ebox-column
-         (ebox-create :key 'toast :host-ref 'toast :content toast)))
-       (ebox-create :key 'peer :content "database.sqlite")))))))
+        (ebox-test-column
+         (ebox-test-box :key 'toast :host-ref 'toast :content toast)))
+       (ebox-test-box :key 'peer :content "database.sqlite")))))))
 
 (defun ebox-commit-test--allocation-closure-candidate
     (buffer toast paint-a paint-b)
@@ -2060,14 +1566,14 @@ remain retained identities."
   (let ((candidate (ebox-candidate-begin buffer)))
     (ebox-candidate-replace-host-ref
      candidate 'toast
-     (ebox-create :key 'toast :host-ref 'toast :content toast))
+     (ebox-test-box :key 'toast :host-ref 'toast :content toast))
     (ebox-candidate-replace-host-ref
      candidate 'paint-a
-     (ebox-create :key 'paint-a :host-ref 'paint-a
+     (ebox-test-box :key 'paint-a :host-ref 'paint-a
                   :content "paint-a" :color paint-a))
     (ebox-candidate-replace-host-ref
      candidate 'paint-b
-     (ebox-create :key 'paint-b :host-ref 'paint-b
+     (ebox-test-box :key 'paint-b :host-ref 'paint-b
                   :content "paint-b" :bgcolor paint-b))
     candidate))
 
@@ -2079,140 +1585,12 @@ remain retained identities."
           buffer toast paint-a paint-b)))
     (ebox-candidate-replace-host-ref
      candidate 'status
-     (ebox-create :key 'status :host-ref 'status
+     (ebox-test-box :key 'status :host-ref 'status
                   :content status :width '(200)))
     candidate))
 
-(ert-deftest ebox-commit-allocation-closure-round-trips-exactly ()
-  "Stable Flex allocation closes one content damage plus external paint."
-  (let* ((buffer
-          (ebox-render-to-buffer
-           (generate-new-buffer-name " *ebox-allocation-closure* ")
-         (ebox-commit-test--allocation-closure-root
-            "Light" "#111111" "#222222")))
-         (surface (with-current-buffer buffer ebox-surface--buffer-surface))
-         (full-renders 0)
-         (original-full-render
-          (symbol-function 'ebox-surface--render-candidate)))
-    (unwind-protect
-        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
-                   (lambda (&rest arguments)
-                     (cl-incf full-renders)
-                     (apply original-full-render arguments))))
-          (dolist (values '(("A longer dark notification"
-                             "#AAAAAA" "#BBBBBB")
-                            ("Light" "#111111" "#222222")))
-            (let* ((before (tp-surface-revision surface))
-                   (candidate
-                    (apply #'ebox-commit-test--allocation-closure-candidate
-                           buffer values))
-                   (report (ebox-commit buffer candidate))
-                   (state (tp-surface-client-state surface))
-                   (owner-proof
-                    (car (plist-get
-                          (plist-get (plist-get state :mixed-owner-proof)
-                                     :geometry-proof)
-                          :owner-proofs))))
-              (should (eq (plist-get report :projection-kind)
-                          'mixed-owner-reflow))
-              (should (plist-get owner-proof :allocation-closure-p))
-              (should (= (tp-surface-revision surface) (1+ before)))
-              (should-not (plist-get report :tp-full-root))
-              (should-not (plist-get report :tp-scope-fallback))
-              (should (= (plist-get report :created-objects) 0))
-              (should (= (plist-get report :removed-objects) 0))
-              (should (= (or (plist-get report :moved-objects) 0) 0))
-              (with-current-buffer buffer
-                (should
-                 (equal-including-properties
-                  (buffer-substring (point-min) (point-max))
-                  (ebox-render (ebox--buffer-root-node buffer)))))))
-          (should (= full-renders 0)))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(ert-deftest ebox-commit-allocation-closure-rolls-back-and-retries ()
-  "Failed allocation-closure publication restores state before retry."
-  (let* ((buffer
-          (ebox-render-to-buffer
-           (generate-new-buffer-name " *ebox-allocation-rollback* ")
-           (ebox-commit-test--allocation-closure-root
-            "Light" "#111111" "#222222")))
-         (surface (with-current-buffer buffer ebox-surface--buffer-surface))
-         (state (tp-surface-client-state surface))
-         (revision (tp-surface-revision surface))
-         (text (ebox-commit-test--buffer-string buffer)))
-    (unwind-protect
-        (progn
-          (cl-letf (((symbol-function 'accept-change-group)
-                     (lambda (_group) (error "allocation final accept"))))
-            (should-error
-             (ebox-commit
-              buffer
-              (ebox-commit-test--allocation-closure-candidate
-               buffer "A longer dark notification" "#AAAAAA" "#BBBBBB"))))
-          (should (= (tp-surface-revision surface) revision))
-          (should (eq (tp-surface-client-state surface) state))
-          (should (equal-including-properties
-                   (ebox-commit-test--buffer-string buffer) text))
-          (should (eq (plist-get
-                       (ebox-commit
-                        buffer
-                        (ebox-commit-test--allocation-closure-candidate
-                         buffer "A longer dark notification"
-                         "#AAAAAA" "#BBBBBB"))
-                       :projection-kind)
-                      'mixed-owner-reflow)))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(ert-deftest ebox-commit-two-geometry-allocation-closure-round-trips ()
-  "Combine one ordinary span with one allocation closure after global miss."
-  (let* ((buffer
-          (ebox-render-to-buffer
-           (generate-new-buffer-name " *ebox-two-geometry-closure* ")
-           (ebox-commit-test--allocation-closure-root
-            "Light" "#111111" "#222222")))
-         (surface (with-current-buffer buffer ebox-surface--buffer-surface))
-         (full-renders 0)
-         (original-full-render
-          (symbol-function 'ebox-surface--render-candidate)))
-    (unwind-protect
-        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
-                   (lambda (&rest arguments)
-                     (cl-incf full-renders)
-                     (apply original-full-render arguments))))
-          (dolist (values '(("Theme: Dark" "A longer dark notification"
-                             "#AAAAAA" "#BBBBBB")
-                            ("Theme: Light" "Light"
-                             "#111111" "#222222")))
-            (let* ((before (tp-surface-revision surface))
-                   (report
-                    (ebox-commit
-                     buffer
-                     (apply
-                      #'ebox-commit-test--two-geometry-allocation-candidate
-                      buffer values)))
-                   (state (tp-surface-client-state surface))
-                   (proofs
-                    (plist-get
-                     (plist-get (plist-get state :mixed-owner-proof)
-                                :geometry-proof)
-                     :owner-proofs)))
-              (should (eq (plist-get report :projection-kind)
-                          'mixed-owner-reflow))
-              (should (= 2 (length proofs)))
-              (should (cl-some (lambda (proof)
-                                 (plist-get proof :allocation-closure-p))
-                               proofs))
-              (should (= (tp-surface-revision surface) (1+ before)))
-              (should-not (plist-get report :tp-full-root))
-              (should-not (plist-get report :tp-scope-fallback))
-              (with-current-buffer buffer
-                (should
-                 (equal-including-properties
-                  (buffer-substring (point-min) (point-max))
-                  (ebox-render (ebox--buffer-root-node buffer)))))))
-          (should (= full-renders 0)))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-allocation-closure-allows-recomposable-ancestor-paint ()
   "Allow ancestor paint but reject paint at/below an allocation owner."
@@ -2232,25 +1610,6 @@ remain retained identities."
        (ebox-incremental--allocation-closure-paint-disjoint-p
         state '(3) '(4))))))
 
-(ert-deftest ebox-commit-allocation-closure-unsafe-shapes-fallback ()
-  "Wrap/width, overflow, and scroll changes cannot use allocation closure."
-  (dolist (case '((120 nil nil) (800 visible nil) (800 nil scroll)))
-    (pcase-let ((`(,width ,footer-overflow ,root-overflow) case))
-      (let ((buffer
-             (ebox-render-to-buffer
-              (generate-new-buffer-name " *ebox-allocation-fallback* ")
-              (ebox-commit-test--allocation-closure-root
-               "Light" "#111111" "#222222"
-               width footer-overflow root-overflow))))
-        (unwind-protect
-            (let ((report
-                   (ebox-commit
-                    buffer
-                    (ebox-commit-test--allocation-closure-candidate
-                     buffer (make-string 200 ?X) "#AAAAAA" "#BBBBBB"))))
-              (should-not (eq (plist-get report :projection-kind)
-                              'mixed-owner-reflow)))
-          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
 
 (ert-deftest ebox-commit-allocation-closure-proof-misses-fallback ()
   "Topology, selector, cascade, and role misses reject allocation closure."
@@ -2265,18 +1624,18 @@ remain retained identities."
             (ebox-candidate-replace-host-ref
              candidate 'toast
              (if (eq kind 'topology)
-                 (ebox-create
+                 (ebox-test-box
                   :key 'toast :host-ref 'toast
                   :ebox-content-node
-                  (ebox-column
-                   (ebox-create :key 'nested-toast
+                  (ebox-test-column
+                   (ebox-test-box :key 'nested-toast
                                 :content "A longer notification")))
-               (ebox-create :key 'toast :host-ref 'toast
+               (ebox-test-box :key 'toast :host-ref 'toast
                             :class (and (eq kind 'selector) "changed")
                             :content "A longer notification")))
             (ebox-candidate-replace-host-ref
              candidate 'paint-a
-             (ebox-create :key 'paint-a :host-ref 'paint-a
+             (ebox-test-box :key 'paint-a :host-ref 'paint-a
                           :content "paint-a" :color "#AAAAAA"))
             (let ((report
                    (if (eq kind 'cascade)

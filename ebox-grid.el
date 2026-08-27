@@ -19,7 +19,8 @@
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--ensure-region-id "ebox" (box))
 (declare-function ebox-get "ebox" (box property))
-(declare-function ebox-create "ebox" (&rest plist))
+(declare-function ebox-node-factory--create-from-properties
+                  "ebox-node-factory" (&rest plist))
 (declare-function ebox-render "ebox-layout" (node))
 (declare-function ebox--lines-concat-horizontal "ebox" (&rest strings))
 (declare-function ebox-string-lines "ebox" (string))
@@ -332,16 +333,9 @@ programmatic port and are therefore rejected here."
   (when (ebox-grid--visual-props-p props)
     (when (plist-member props :content)
       (error "ebox-grid: grid cannot combine :content with child nodes"))
-    (apply #'ebox-create
+    (apply #'ebox-node-factory--create-from-properties
            (append (ebox--preformatted-box-props props)
                    (list :content "")))))
-
-;;;###autoload
-(defun ebox-grid-fr (factor)
-  "Return a fractional grid track with FACTOR weight."
-  (unless (and (numberp factor) (> factor 0))
-    (error "ebox-grid-fr: FACTOR must be positive: %S" factor))
-  (list 'fr factor))
 
 (defun ebox-grid--placement-part (value default)
   "Return (START SPAN) parsed from placement VALUE and DEFAULT."
@@ -864,43 +858,6 @@ size for start/center/end alignment unless it would overflow its track."
           (error "Ebox Grid node lacks canonical config"))
       (ebox-grid--legacy-constraints props wrapper)
       (ebox-tree-layout-children node)))))
-
-;;;###autoload
-(defun ebox-grid (&rest items)
-  "Return a two-dimensional grid layout node from ITEMS.
-
-Grid properties include `:grid-template-columns', `:grid-template-rows',
-`:grid-auto-flow', `:gap', `:grid-row-gap', `:grid-column-gap',
-`:justify-items', `:align-items', `:width', and `:height'.  Track sizes use
-Ebox pixel/line units, `auto', `(fr FACTOR)', or symbols such as `1fr'.
-Children may carry `:grid-column', `:grid-row', `:grid-column-span', and
-`:grid-row-span' placement properties directly.
-`ebox-grid-fr' is a convenient constructor for fractional tracks."
-  (let* ((split (ebox-grid--split-attrs items))
-         (raw-props (car split))
-         (children (delq nil (cdr split)))
-         (box-props (cl-loop for (key value) on raw-props by #'cddr
-                             unless (memq key ebox--grid-layout-prop-keys)
-                             collect key and collect value))
-         (wrapper (ebox-grid--wrapper box-props))
-         (config
-          (ebox-grid--normalize-config-props
-           (ebox--plist-keep-keys raw-props ebox--grid-layout-prop-keys)))
-         (node (list :ebox-type 'grid
-                     :display '(block grid)
-                     :props raw-props
-                     :raw-props raw-props
-                     :ebox-grid-config config
-                     :ebox-style-declarations
-                     (ebox-style-compile-declarations raw-props)
-                     :box wrapper
-                     :children children)))
-    (when wrapper
-      (plist-put wrapper :ebox-style-wrapper t))
-    (dolist (key '(:id :class :selector-state :selector-attributes :key))
-      (when (plist-member raw-props key)
-        (plist-put node key (plist-get raw-props key))))
-    node))
 
 (provide 'ebox-grid)
 

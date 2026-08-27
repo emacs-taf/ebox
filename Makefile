@@ -5,6 +5,7 @@ ECSS_DIR ?= ../ecss
 LOAD_EXTRA ?=
 
 EMACS_BATCH = $(EMACS) -Q --batch -L . -L $(ECSS_DIR) -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
+EMACS_TEST = $(EMACS_BATCH) -L tests -l tests/ebox-fixtures.el
 NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
 NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
@@ -27,34 +28,34 @@ compile:
 test: core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests docs-contract-tests ci-contract-tests
 
 core-tests:
-	$(EMACS_BATCH) -l tests/ebox-core-render-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-core-render-tests.el -f ert-run-tests-batch-and-exit
 
 child-range-tests:
-	$(EMACS_BATCH) -l tests/ebox-child-range-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-child-range-tests.el -f ert-run-tests-batch-and-exit
 
 grid-tests:
-	$(EMACS_BATCH) -l tests/ebox-grid-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-grid-tests.el -f ert-run-tests-batch-and-exit
 
 ebox-commit-tests:
-	$(EMACS_BATCH) -l tests/ebox-commit-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-commit-tests.el -f ert-run-tests-batch-and-exit
 
 surface-tests:
-	$(EMACS_BATCH) -l tests/ebox-surface-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-surface-tests.el -f ert-run-tests-batch-and-exit
 
 visual-check-tests:
-	$(EMACS_BATCH) -l tests/ebox-visual-check-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-visual-check-tests.el -f ert-run-tests-batch-and-exit
 
 package-tests:
 	$(EMACS_BATCH) -l tests/ebox-package-tests.el -f ert-run-tests-batch-and-exit
 
 selector-tests:
-	$(EMACS_BATCH) -l tests/ebox-selector-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-selector-tests.el -f ert-run-tests-batch-and-exit
 
 dsl-tests:
 	$(EMACS_BATCH) -l tests/ebox-dsl-tests.el -f ert-run-tests-batch-and-exit
 
 flex-tests:
-	$(EMACS_BATCH) -l tests/ebox-flex-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-flex-tests.el -f ert-run-tests-batch-and-exit
 
 performance-evaluator: surface-tests ebox-commit-tests
 	$(EMACS_BATCH) -l scripts/ebox-performance-evaluator.el -f ebox-performance-evaluator-batch

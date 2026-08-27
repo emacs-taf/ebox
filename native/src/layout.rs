@@ -121,6 +121,14 @@ enum LayoutNode {
     Box {
         region_id: i64,
         content: Option<Box<MeasuredText>>,
+        #[serde(default)]
+        content_region_id: Option<i64>,
+        #[serde(default)]
+        content_typography_style: Option<u32>,
+        #[serde(default)]
+        content_foreground_style: Option<u32>,
+        #[serde(default)]
+        content_surface_template_id: Option<u32>,
         child: Option<Box<LayoutNode>>,
         content_width_exact: bool,
         #[serde(default)]
@@ -142,6 +150,8 @@ enum LayoutNode {
         margin_bottom: i64,
         border_left: i64,
         border_right: i64,
+        #[serde(default)]
+        typography_style: Option<u32>,
         foreground_style: Option<u32>,
         background_style: Option<u32>,
         border_left_style: Option<u32>,
@@ -155,6 +165,16 @@ enum LayoutNode {
         overflow: Overflow,
         wrap_mode: WrapMode,
         scroll_offset: i64,
+    },
+    Text {
+        region_id: i64,
+        content: Box<MeasuredText>,
+        #[serde(default)]
+        typography_style: Option<u32>,
+        foreground_style: Option<u32>,
+        #[serde(default)]
+        surface_template_id: Option<u32>,
+        wrap_mode: WrapMode,
     },
     Row {
         children: Vec<LayoutNode>,
@@ -1249,6 +1269,9 @@ fn composed_face(
                 list_value = false;
             }
             StyleMode::Add => {
+                if faces.len() == 1 && styles[faces[0]].face == style.face {
+                    continue;
+                }
                 if !faces.is_empty() {
                     list_value = true;
                 }
@@ -2441,6 +2464,7 @@ fn encode_patch_combined_payload(
 /// Emacs adapter payload built on the editor-independent core batch.
 struct EmacsCommitBatch {
     core: CommitBatch,
+    publication_edits: Vec<SpanEdit>,
     combined_payload: Vec<u8>,
     metadata_records: usize,
     fragment_bytes: Vec<u8>,
@@ -2449,6 +2473,24 @@ struct EmacsCommitBatch {
     reuse_ownership_template: bool,
     reuse_mount_projection: bool,
     fragment_style_delta: Option<FragmentStyleDelta>,
+}
+
+fn coalesce_publication_edits(edits: &[SpanEdit]) -> Vec<SpanEdit> {
+    const MAX_UNCHANGED_GAP: usize = 1;
+    let mut result: Vec<SpanEdit> = Vec::with_capacity(edits.len());
+    for &edit in edits {
+        if let Some(previous) = result.last_mut() {
+            let old_gap = edit.old_start.saturating_sub(previous.old_end);
+            let new_gap = edit.new_start.saturating_sub(previous.new_end);
+            if old_gap == new_gap && old_gap <= MAX_UNCHANGED_GAP {
+                previous.old_end = edit.old_end;
+                previous.new_end = edit.new_end;
+                continue;
+            }
+        }
+        result.push(edit);
+    }
+    result
 }
 
 fn build_emacs_commit_batch(
@@ -2460,8 +2502,8 @@ fn build_emacs_commit_batch(
     max_bytes: usize,
 ) -> Result<EmacsCommitBatch, String> {
     let core = tape_commit_batch(&old.characters, &target.characters);
-    let descriptor_bytes = core
-        .semantic_edits
+    let publication_edits = coalesce_publication_edits(&core.semantic_edits);
+    let descriptor_bytes = publication_edits
         .len()
         .checked_add(core.coordinate_edits.len())
         .ok_or_else(|| "Native layout patch descriptor count overflow".to_owned())?
@@ -2523,7 +2565,7 @@ fn build_emacs_commit_batch(
     };
     let replacements = encode_patch_replacement_body(
         &target.characters,
-        &core.semantic_edits,
+        &publication_edits,
         compiled_styles,
         payload_limit,
     )?;
@@ -2552,6 +2594,7 @@ fn build_emacs_commit_batch(
     };
     Ok(EmacsCommitBatch {
         core,
+        publication_edits,
         combined_payload,
         metadata_records,
         fragment_bytes,
@@ -2588,7 +2631,7 @@ pub(crate) fn encode_layout_patch_tape(
         root_metadata,
         max_bytes,
     )?;
-    let patch_count = count_u32(batch.core.semantic_edits.len(), "patches")?;
+    let patch_count = count_u32(batch.publication_edits.len(), "patches")?;
     let coordinate_patch_count =
         count_u32(batch.core.coordinate_edits.len(), "coordinate patches")?;
     let target_character_count = u64::try_from(target.characters.len())
@@ -2598,9 +2641,10 @@ pub(crate) fn encode_layout_patch_tape(
     let mut writer = TapeWriter::new(max_bytes)?;
     writer.push_u64(base_character_count)?;
     writer.push_u32(patch_count)?;
-    // Publication remains a minimal text/property patch.  The compact target
-    // role sidecar lets Emacs swap exact runtime indexes without synchronously
-    // rescanning the page or rebuilding thousands of markers per frame.
+    // Publication coalesces only one-character equal-coordinate gaps.  The
+    // pure core retains its exact minimal semantic edits, while the compact
+    // target role sidecar lets Emacs swap exact runtime indexes without
+    // synchronously rescanning the page or rebuilding thousands of markers.
     writer.push_u32(
         u32::from(batch.reuse_fragment_template)
             | (u32::from(batch.reuse_ownership_template) << 1)
@@ -2625,7 +2669,7 @@ pub(crate) fn encode_layout_patch_tape(
     )?;
     writer.push_u32(coordinate_patch_count)?;
     writer.push_u32(0)?;
-    for patch in &batch.core.semantic_edits {
+    for patch in &batch.publication_edits {
         writer.push_u64(patch.old_start as u64)?;
         writer.push_u64(patch.old_end as u64)?;
         writer.push_u64(patch.new_start as u64)?;
@@ -2991,6 +3035,7 @@ fn add_context_work(
     work_units: &mut usize,
 ) -> Result<(), String> {
     match node {
+        LayoutNode::Text { .. } => {}
         LayoutNode::Box {
             child,
             height,
@@ -3063,9 +3108,59 @@ fn validate_node(
     }
     add_work_units(work_units, 1)?;
     match node {
+        LayoutNode::Text {
+            region_id,
+            content,
+            typography_style,
+            foreground_style,
+            surface_template_id,
+            ..
+        } => {
+            if *region_id <= 0 {
+                return Err("Native layout Text region id must be positive".to_owned());
+            }
+            for style_id in [typography_style, foreground_style].into_iter().flatten() {
+                if *style_id >= style_count {
+                    return Err("Native layout Text style id exceeds the style table".to_owned());
+                }
+            }
+            if let Some(template_id) = surface_template_id {
+                if *template_id >= property_template_count {
+                    return Err(
+                        "Native layout Text property template id exceeds the property template table"
+                            .to_owned(),
+                    );
+                }
+            }
+            if content.lines.is_empty() {
+                return Err("Native layout Text must contain one line".to_owned());
+            }
+            add_work_units(work_units, content.lines.len())?;
+            for line in &content.lines {
+                add_work_units(work_units, line.clusters.len())?;
+                for cluster in &line.clusters {
+                    if cluster.text.is_empty() {
+                        return Err("Native layout Text cluster cannot be empty".to_owned());
+                    }
+                    validate_dimension("Text cluster width", cluster.width)?;
+                    if let Some(template_id) = cluster.source_template_id {
+                        if template_id >= property_template_count {
+                            return Err(
+                                "Native layout Text property template id exceeds the property template table"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
         LayoutNode::Box {
             region_id,
             content,
+            content_region_id,
+            content_typography_style,
+            content_foreground_style,
+            content_surface_template_id,
             child,
             content_width_exact: _,
             content_min_width,
@@ -3085,6 +3180,7 @@ fn validate_node(
             margin_bottom,
             border_left,
             border_right,
+            typography_style,
             foreground_style,
             background_style,
             border_left_style,
@@ -3105,6 +3201,14 @@ fn validate_node(
                 return Err(
                     "Native layout box must contain exactly one text or child value".to_owned(),
                 );
+            }
+            if content_region_id.is_some() && content.is_none() {
+                return Err("Native layout box content identity requires measured text".to_owned());
+            }
+            if let Some(content_region_id) = content_region_id {
+                if *content_region_id <= 0 {
+                    return Err("Native layout box content region id must be positive".to_owned());
+                }
             }
             for (name, size) in [
                 ("width", width),
@@ -3140,6 +3244,9 @@ fn validate_node(
                     .unwrap_or(usize::MAX),
             )?;
             for style_id in [
+                content_typography_style,
+                content_foreground_style,
+                typography_style,
                 foreground_style,
                 background_style,
                 border_left_style,
@@ -3158,6 +3265,14 @@ fn validate_node(
                 if *template_id >= property_template_count {
                     return Err(
                         "Native layout property template id exceeds the property template table"
+                            .to_owned(),
+                    );
+                }
+            }
+            if let Some(template_id) = content_surface_template_id {
+                if *template_id >= property_template_count {
+                    return Err(
+                        "Native layout box content property template id exceeds the property template table"
                             .to_owned(),
                     );
                 }
@@ -4660,6 +4775,7 @@ fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
 
 fn exact_rendered_height(node: &LayoutNode, context: LayoutContext) -> Option<i64> {
     match node {
+        LayoutNode::Text { content, .. } => i64::try_from(content.lines.len()).ok(),
         LayoutNode::Box {
             height,
             min_height,
@@ -5158,6 +5274,10 @@ fn render_node_with_override(
         LayoutNode::Box {
             region_id,
             content,
+            content_region_id,
+            content_typography_style,
+            content_foreground_style,
+            content_surface_template_id,
             child,
             content_width_exact,
             content_min_width: _,
@@ -5178,6 +5298,7 @@ fn render_node_with_override(
             margin_bottom,
             border_left,
             border_right,
+            typography_style,
             foreground_style,
             background_style,
             border_left_style,
@@ -5439,7 +5560,16 @@ fn render_node_with_override(
             }
 
             let mut formatted = if let Some(text) = content {
-                measured_lines(text, content_width, *wrap_mode)
+                let mut content_lines = measured_lines(text, content_width, *wrap_mode);
+                if let Some(content_region_id) = content_region_id {
+                    for (index, line) in content_lines.iter_mut().enumerate() {
+                        line.own_content(*content_region_id, index as i64);
+                        line.apply_style(*content_typography_style);
+                        line.apply_style(*content_foreground_style);
+                        line.apply_property_template(*content_surface_template_id);
+                    }
+                }
+                content_lines
                     .into_iter()
                     .map(|line| line.padded(content_width, *text_align))
                     .collect::<Vec<_>>()
@@ -5580,6 +5710,7 @@ fn render_node_with_override(
                     *padding_right,
                     region_properties(RegionRole::PaddingRight, *region_id, None),
                 );
+                line.apply_style(*typography_style);
                 line.apply_style(*foreground_style);
                 line.apply_style(*background_style);
                 line.prepend_space_with_properties(
@@ -5647,6 +5778,24 @@ fn render_node_with_override(
                 rendered.apply_scroll_window(*region_id);
             }
             Ok(rendered)
+        }
+        LayoutNode::Text {
+            region_id,
+            content,
+            typography_style,
+            foreground_style,
+            surface_template_id,
+            wrap_mode,
+        } => {
+            let width = measured_max_width(content);
+            let mut lines = measured_lines(content, width, *wrap_mode);
+            for (index, line) in lines.iter_mut().enumerate() {
+                line.own_content(*region_id, index as i64);
+                line.apply_style(*typography_style);
+                line.apply_style(*foreground_style);
+                line.apply_property_template(*surface_template_id);
+            }
+            Ok(Rendered::from_lines(lines))
         }
         LayoutNode::Row { children } => {
             let child_context = LayoutContext {
@@ -5801,6 +5950,10 @@ mod tests {
         LayoutNode::Box {
             region_id,
             content: Some(Box::new(content)),
+            content_region_id: None,
+            content_typography_style: None,
+            content_foreground_style: None,
+            content_surface_template_id: None,
             child: None,
             content_width_exact: false,
             content_min_width: None,
@@ -5821,6 +5974,7 @@ mod tests {
             margin_bottom: 0,
             border_left: 0,
             border_right: 0,
+            typography_style: None,
             foreground_style: None,
             background_style: None,
             border_left_style: None,
@@ -5857,6 +6011,10 @@ mod tests {
         LayoutNode::Box {
             region_id,
             content: None,
+            content_region_id: None,
+            content_typography_style: None,
+            content_foreground_style: None,
+            content_surface_template_id: None,
             child: Some(Box::new(child)),
             content_width_exact: true,
             content_min_width: None,
@@ -5877,6 +6035,7 @@ mod tests {
             margin_bottom: 0,
             border_left: 0,
             border_right: 0,
+            typography_style: None,
             foreground_style: None,
             background_style: None,
             border_left_style: None,
@@ -5954,6 +6113,80 @@ mod tests {
             root_width: 80,
             complete: true,
         }
+    }
+
+    #[test]
+    fn typed_column_lowering_stretches_centered_child() {
+        let mut text = auto_text_box(3, measured_text(vec![vec![cluster("x", 10, None)]]), None);
+        let LayoutNode::Box { width, .. } = &mut text else {
+            unreachable!();
+        };
+        *width = Size::MaxContent;
+        let mut label = child_box(2, text, None);
+        let LayoutNode::Box {
+            width,
+            min_width,
+            content_width_exact,
+            text_align,
+            ..
+        } = &mut label
+        else {
+            unreachable!();
+        };
+        *width = Size::Auto;
+        *min_width = Size::MaxContent;
+        *content_width_exact = false;
+        *text_align = HorizontalAlign::Center;
+        let column = LayoutNode::Flex {
+            direction: FlexDirection::Column,
+            wrap: FlexWrap::Nowrap,
+            justify: FlexAlign::FlexStart,
+            align_items: FlexAlign::Stretch,
+            align_content: FlexAlign::Stretch,
+            width: Size::Stretch,
+            height: Size::Auto,
+            row_gap: 0,
+            column_gap: 0,
+            items: vec![FlexItem {
+                node: label,
+                order: 0,
+                grow: 0.0,
+                shrink: 0.0,
+                basis: Size::Auto,
+                align_self: FlexAlign::Stretch,
+            }],
+        };
+        let mut outer = child_box(1, column, None);
+        let LayoutNode::Box {
+            width,
+            content_width_exact,
+            ..
+        } = &mut outer
+        else {
+            unreachable!();
+        };
+        *width = Size::Auto;
+        *content_width_exact = true;
+        let rendered = render_node_with_override(
+            &outer,
+            test_context(),
+            false,
+            Some(BoxOverride {
+                content_width: Some(100),
+                content_height: None,
+                declared_width: None,
+            }),
+        )
+        .expect("typed column render");
+        assert_eq!(rendered.lines[0].width, 100);
+        assert!(
+            matches!(
+                rendered.lines[0].atoms.first(),
+                Some(Atom::Space { width: 45, .. })
+            ),
+            "{:?}",
+            rendered.lines[0].atoms
+        );
     }
 
     fn literal_from_full_tape(tape: &[u8]) -> &str {
@@ -7151,7 +7384,7 @@ mod tests {
         assert_eq!(u64::from_le_bytes(encoded[92..100].try_into().unwrap()), 7);
         assert_eq!(u64::from_le_bytes(encoded[112..120].try_into().unwrap()), 6);
         let patch_count = u32::from_le_bytes(encoded[120..124].try_into().unwrap()) as usize;
-        assert_eq!(patch_count, 3);
+        assert_eq!(patch_count, 1);
         let reserved = u32::from_le_bytes(encoded[124..128].try_into().unwrap());
         let metadata_records = u64::from_le_bytes(encoded[128..136].try_into().unwrap());
         let payload_length = u64::from_le_bytes(encoded[136..144].try_into().unwrap()) as usize;
@@ -7168,9 +7401,9 @@ mod tests {
         assert!(fragment_length > 0);
         assert!(fragment_records > 0);
         assert_eq!(encoded.len(), payload_end + fragment_length);
-        assert!(payload.starts_with("[#(\"Xe \""));
-        assert!(payload.contains("1 2 (ebox-content 9 ebox-native-property-template-ids (4))"));
-        assert!(payload.contains("2 3 (display (space :width (7)))"));
+        assert!(payload.starts_with("[#(\"Xdef \""));
+        assert!(payload.contains("2 3 (ebox-content 9 ebox-native-property-template-ids (4))"));
+        assert!(payload.contains("4 5 (display (space :width (7)))"));
         assert!(payload.contains("(:prepared-p t"));
         assert!(payload.contains("(9 content) ((5 . 6))"));
         assert!(payload.contains("data (9 (5 . 6))"));

@@ -46,6 +46,13 @@
 (declare-function ebox-native--module-release "ebox_native_reflow" (session))
 (declare-function ebox--grapheme-clusters "ebox-layout" (string))
 (declare-function ebox--format-content-string "ebox-layout" (box content))
+(declare-function ebox-style-no-soft-wrap-p "ebox-style" (value))
+(declare-function ebox-style-soft-wrap-p "ebox-style" (value))
+(declare-function ebox-style--text-paint-owner-p "ebox-style" (node))
+(declare-function ebox-layout-config-kind "ebox-layout-config" (config))
+(declare-function ebox-layout-config-props "ebox-layout-config" (config))
+(declare-function ebox-tree-node-children "ebox-tree" (node))
+(declare-function ebox-buffer--font-face "ebox-buffer-backend" (style))
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--buffer-render-state "ebox-incremental" (buffer))
 (declare-function ebox--ensure-region-id "ebox" (box))
@@ -55,7 +62,6 @@
 (declare-function ebox--flex-container-content-props
                   "ebox-flex" (props raw-props wrapper-box))
 (declare-function ebox--flex-item-props "ebox-flex" (item))
-(declare-function ebox--flex-item-source-node "ebox-tree" (item))
 (declare-function ebox--flex-line-value "ebox-flex" (value &optional default))
 (declare-function ebox--content-min-pixel "ebox-layout" (box))
 (declare-function ebox--horizontal-size-pixels
@@ -1308,6 +1314,29 @@ Ebox nodes, identities, text, properties, or publication state."
      :layout-fragment-cache (make-hash-table :test 'equal)
      :layout-fragment-revision 0)))
 
+(cl-defun ebox-native-reflow-fork-session
+    (session &key (workers 1) (max-jobs 4) (max-results 4)
+             (max-result-bytes ebox-native-reflow-max-result-bytes))
+  "Return an unpublished native child of committed SESSION.
+The child owns a fresh Rust handle, while immutable compiled layout facts and
+a private copy of the fragment index seed its first frame.  Pending/confirmed
+frame state deliberately stays with SESSION because it names that handle."
+  (ebox-native-reflow--live-handle session)
+  (let ((fork
+         (ebox-native-reflow-create-session
+          :workers workers :max-jobs max-jobs :max-results max-results
+          :max-result-bytes max-result-bytes)))
+    (setf (ebox-native-reflow-session-styles fork)
+          (copy-sequence (ebox-native-reflow-session-styles session))
+          (ebox-native-reflow-session-layout-package fork)
+          (ebox-native-reflow-session-layout-package session)
+          (ebox-native-reflow-session-layout-fragment-cache fork)
+          (copy-hash-table
+           (ebox-native-reflow-session-layout-fragment-cache session))
+          (ebox-native-reflow-session-layout-fragment-revision fork)
+          (ebox-native-reflow-session-layout-fragment-revision session))
+    fork))
+
 (defun ebox-native-reflow--live-handle (session)
   "Return SESSION's live module handle or signal an error."
   (unless (and (ebox-native-reflow-session-p session)
@@ -1599,7 +1628,7 @@ This mirrors the static half of `ebox--render-transparent-preformatted-box'.
 Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
   (and (eq box ebox-native-reflow--compile-root-node)
        (eq (plist-get source-child :ebox-type) 'stack)
-       (null (ebox-get box :wrap-mode))
+       (ebox-style-no-soft-wrap-p (ebox-get box :wrap-mode))
        (eq (ebox-get box :text-align) 'left)
        (eq (ebox-get box :vertical-align) 'top)
        (null (ebox-get box :height))
@@ -1618,16 +1647,145 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
        (null (ebox-get box :color))
        (null (ebox-get box :bgcolor))))
 
+(defun ebox-native-reflow--simple-axis-align (value)
+  "Return Flex IR alignment equivalent to simple-axis VALUE."
+  (pcase value
+    ('start "flex-start")
+    ('end "flex-end")
+    ((or 'center 'stretch) (symbol-name value))
+    (_ (error "Native reflow unsupported Row/Column alignment: %S" value))))
+
+(defun ebox-native-reflow--simple-axis-item-align (kind child cross-align)
+  "Return CHILD alignment for simple-axis KIND and CROSS-ALIGN."
+  (cond
+   ((eq (plist-get child :ebox-kind) 'text) "flex-start")
+   ((not (eq cross-align 'stretch))
+    (ebox-native-reflow--simple-axis-align cross-align))
+   (t
+    (let ((cross-size (ebox-get child (if (eq kind 'row) :height :width))))
+      (if (memq cross-size '(nil auto stretch))
+          "stretch"
+        "flex-start")))))
+
+(defun ebox-native-reflow--compile-typed-axis-children
+    (kind config children &optional fragments)
+  "Compile canonical Row/Column CHILDREN for KIND and CONFIG.
+The native IR represents this simple-axis layout as fixed Flex items so
+cross-axis stretch and item gap remain explicit without legacy runtime nodes."
+  (let* ((props (ebox-layout-config-props config))
+         (gap (plist-get props :item-gap))
+         (cross-align (plist-get props :cross-align))
+         (row-p (eq kind 'row))
+         (compiled-children
+          (mapcar
+           (lambda (child)
+             (if fragments
+                 (ebox-native-reflow--compiled-scene-child fragments child)
+               (ebox-native-reflow--compile-node child)))
+           children)))
+    (if (and (memq kind '(row column))
+             (equal gap 0) (eq cross-align 'stretch))
+        ;; Default Row/Column are exactly Rust's simple axis algorithms:
+        ;; children are top-aligned/padded on Row and share the known content
+        ;; viewport on Column.  Sending this subset through Flex repeats
+        ;; intrinsic measurement and distribution at every nesting level.
+        (list :type (symbol-name kind)
+              :children (vconcat compiled-children))
+      (list
+       :type "flex"
+       :direction (symbol-name kind)
+       :wrap "nowrap"
+       :justify "flex-start"
+       :align-items
+       (ebox-native-reflow--simple-axis-align
+        (plist-get props :cross-align))
+       :align-content "stretch"
+       ;; Row/Column are the complete child layout of their owning Box.  Their
+       ;; inline axis therefore uses that Box's content viewport; `auto' would
+       ;; collapse a Column to max-content and lose cross-axis stretch.
+       :width (list :kind "stretch")
+       :height (list :kind "auto")
+       :row-gap (if row-p 0 gap)
+       :column-gap (if row-p gap 0)
+       :items
+       (vconcat
+        (cl-mapcar
+         (lambda (child compiled)
+           (list :node compiled
+                 :order 0 :grow 0 :shrink 0
+                 :basis (list :kind "auto")
+                 :align-self
+                 (ebox-native-reflow--simple-axis-item-align
+                  kind child cross-align)))
+         children compiled-children))))))
+
+(defun ebox-native-reflow--compile-typed-box-child (box)
+  "Compile canonical BOX's typed child layout, or return nil."
+  (let* ((config (plist-get box :ebox-layout-config))
+         (kind (and config (ebox-layout-config-kind config)))
+         (children (ebox-tree-node-children box)))
+    (unless config
+      (error "Native reflow canonical Box has no LayoutConfig"))
+    (pcase kind
+      ('normal
+       (pcase children
+         ('() nil)
+         (`(,child) (ebox-native-reflow--compile-node child))
+         (_ (error "Native reflow does not yet compile multi-child Normal Box"))))
+      ((or 'row 'column)
+       (ebox-native-reflow--compile-typed-axis-children
+        kind config children))
+      ('flex
+       (ebox-native-reflow--compile-flex-inner
+        (copy-sequence (ebox-layout-config-props config)) children))
+      ('grid
+       (error "Native reflow does not yet compile Grid LayoutConfig"))
+      (_ (error "Native reflow unsupported LayoutConfig: %S" kind)))))
+
+(defun ebox-native-reflow--compile-text-node (node)
+  "Compile canonical Text NODE to the lightweight native Text IR."
+  (let* ((region-id (ebox--ensure-region-id node))
+         (typography-style
+          (ebox-native-reflow--compile-add-face-style
+           (ebox-buffer--font-face node)))
+         (foreground-style
+          (ebox-native-reflow--compile-add-face-style
+           (ebox-native-reflow--compile-foreground-face
+            (ebox-get node :color))))
+         (surface-template-id
+          (ebox-native-reflow--register-property-template
+           (ebox-get node :surface-properties) "text surface"))
+         (wrap-mode (or (ebox-get node :wrap-mode) 'none)))
+    (list :type "text"
+          :region-id region-id
+          :content
+          (ebox-native-reflow--compile-text
+           (or (plist-get node :ebox-text-value)
+               (ebox-get node :content)
+               ""))
+          :typography-style (or typography-style :null)
+          :foreground-style (or foreground-style :null)
+          :surface-template-id (or surface-template-id :null)
+          :wrap-mode
+          (ebox-native-reflow--symbol-name
+           wrap-mode 'none '(none word char) "Text wrap-mode"))))
+
 (defun ebox-native-reflow--compile-box
     (box &optional child-override child-override-p child-resolved-p)
   "Compile normalized Ebox BOX to strict layout IR."
-  (when (plist-member box :children)
-    (error "Native reflow does not yet compile typed Box children"))
-  (let* ((source-child (plist-get box :ebox-content-node))
+  (let* ((typed-box-p (eq (plist-get box :ebox-kind) 'box))
+         (typed-text-p (eq (plist-get box :ebox-kind) 'text))
+         (typed-layout-kind
+          (and typed-box-p
+               (ebox-layout-config-kind
+                (plist-get box :ebox-layout-config))))
+         (source-child (plist-get box :ebox-content-node))
          (child (if (or child-override-p child-resolved-p)
                     child-override
-                  (and source-child
-                       (ebox-native-reflow--compile-node source-child))))
+                  (if typed-box-p
+                      (ebox-native-reflow--compile-typed-box-child box)
+                    (and source-child
+                         (ebox-native-reflow--compile-node source-child)))))
          (wrap-mode (or (ebox-get box :wrap-mode) 'none))
          (kp-content
           (and (not child)
@@ -1647,7 +1805,12 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
          (foreground-style
           (ebox-native-reflow--compile-add-face-style
            (ebox-native-reflow--compile-foreground-face
-            (ebox-get box :color))))
+            (and (ebox-style--text-paint-owner-p box)
+                 (ebox-get box :color)))))
+         (typography-style
+          (and (ebox-style--text-paint-owner-p box)
+               (ebox-native-reflow--compile-add-face-style
+                (ebox-buffer--font-face box))))
          (background-style
           (ebox-native-reflow--compile-add-face-style
            (let ((background (ebox-get box :bgcolor)))
@@ -1679,24 +1842,40 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
                                   (when color (list :color color)))))))))
          (surface-template-id
           (ebox-native-reflow--register-property-template
-           (ebox-get box :surface-properties) "surface")))
+           (ebox-get box :surface-properties) "surface"))
+         (fused-text-p
+          (and typed-box-p
+               (eq typed-layout-kind 'normal)
+               (equal (plist-get child :type) "text"))))
     (list
      :type "box"
      :region-id region-id
-     :content (if child
-                  :null
+     :content (cond
+               (fused-text-p (plist-get child :content))
+               (child :null)
+               (t
                 (ebox-native-reflow--compile-text
                  (or kp-content (ebox-get box :content) "")
-                 (and kp-content t)))
-     :child (or child :null)
+                 (and kp-content t))))
+     :content-region-id
+     (if fused-text-p (plist-get child :region-id) :null)
+     :content-typography-style
+     (if fused-text-p (plist-get child :typography-style) :null)
+     :content-foreground-style
+     (if fused-text-p (plist-get child :foreground-style) :null)
+     :content-surface-template-id
+     (if fused-text-p (plist-get child :surface-template-id) :null)
+     :child (if fused-text-p :null (or child :null))
      :content-width-exact
      (if (or child-override-p
+             (memq typed-layout-kind '(row column flex grid))
              (ebox-native-reflow--transparent-stack-content-exact-p
               box source-child))
          t
        :false)
      :width (ebox-native-reflow--compile-size
-             (ebox-get box :width) 'horizontal "auto")
+             (if typed-text-p 'max-content (ebox-get box :width))
+             'horizontal "auto")
      :min-width (ebox-native-reflow--compile-size
                  (ebox-get box :min-width) 'horizontal "pixels")
      :max-width (ebox-native-reflow--compile-size
@@ -1721,6 +1900,7 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
      :margin-bottom margin-bottom
      :border-left border-left
      :border-right border-right
+     :typography-style (or typography-style :null)
      :foreground-style (or foreground-style :null)
      :background-style (or background-style :null)
      :border-left-style (or border-left-style :null)
@@ -1757,7 +1937,7 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
     (item axis &optional compiled-node compiled-node-p
           content-min-width content-min-width-p)
   "Compile flex ITEM metadata and source for AXIS."
-  (let* ((source (ebox--flex-item-source-node item))
+  (let* ((source item)
          (props (ebox--flex-item-props item))
          (order (plist-get props :order))
          (grow (plist-get props :flex-grow))
@@ -1785,12 +1965,14 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
     ;; the source subtree again during native package construction.
     (when (and (eq axis 'row)
                (eq (plist-get source :ebox-type) 'box)
-               (ebox-get source :wrap-mode)
-               ;; A composite child already exists in the compiled fragment;
-               ;; Rust derives its intrinsic minimum directly from that child
-               ;; when the visible Elisp render did not measure it yet.
-               (or content-min-width-p
-                   (null (plist-get source :ebox-content-node))))
+               (not (eq (plist-get source :ebox-kind) 'text))
+               (ebox-style-soft-wrap-p (ebox-get source :wrap-mode))
+                ;; A composite child already exists in the compiled fragment;
+                ;; Rust derives its intrinsic minimum directly from that child
+                ;; when the visible Elisp render did not measure it yet.
+                (or content-min-width-p
+                    (and (null (plist-get source :ebox-content-node))
+                         (null (ebox-tree-node-children source)))))
       (unless content-min-width-p
         (setq content-min-width (ebox--content-min-pixel source)))
       (setq compiled
@@ -1806,88 +1988,89 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
            (if (eq axis 'row) 'horizontal 'vertical)
            "auto")
           :align-self
-          (ebox-native-reflow--compile-flex-align
-           (plist-get props :align-self) 'auto "align-self"))))
+          (if (eq (plist-get source :ebox-kind) 'text)
+              "flex-start"
+            (ebox-native-reflow--compile-flex-align
+             (plist-get props :align-self) 'auto "align-self")))))
+
+(defun ebox-native-reflow--compile-flex-inner
+    (props items &optional fragments flex-content-min-widths)
+  "Compile Flex PROPS and ITEMS to one backend-neutral native IR node."
+  (let ((axis (ebox--flex-axis props)))
+    (list
+     :type "flex"
+     :direction
+     (ebox-native-reflow--symbol-name
+      (plist-get props :flex-direction) 'row
+      '(row row-reverse column column-reverse) "flex-direction")
+     :wrap
+     (ebox-native-reflow--symbol-name
+      (plist-get props :flex-wrap) 'nowrap
+      '(nowrap wrap wrap-reverse) "flex-wrap")
+     :justify
+     (ebox-native-reflow--compile-flex-align
+      (plist-get props :justify-content) 'flex-start "justify-content")
+     :align-items
+     (ebox-native-reflow--compile-flex-align
+      (plist-get props :align-items) 'stretch "align-items")
+     :align-content
+     (ebox-native-reflow--compile-flex-align
+      (plist-get props :align-content) 'stretch "align-content")
+     :width
+     (ebox-native-reflow--compile-size
+      (plist-get props :width) 'horizontal "auto")
+     :height
+     (ebox-native-reflow--compile-size
+      (plist-get props :height) 'vertical "auto")
+     :row-gap (or (ebox--flex-line-value (plist-get props :row-gap) 0) 0)
+     :column-gap
+     (or (ebox--horizontal-size-pixels (plist-get props :column-gap) 0) 0)
+     :items
+     (vconcat
+      (mapcar
+       (lambda (item)
+         (if fragments
+             (let* ((source item)
+                    (missing (make-symbol "missing-content-min"))
+                    (content-min
+                     (if flex-content-min-widths
+                         (gethash source flex-content-min-widths missing)
+                       missing)))
+               (ebox-native-reflow--compile-flex-item
+                item axis
+                (ebox-native-reflow--compiled-scene-child fragments source)
+                t content-min (not (eq content-min missing))))
+           (ebox-native-reflow--compile-flex-item item axis)))
+       items)))))
 
 (defun ebox-native-reflow--compile-flex
     (node &optional fragments flex-content-min-widths)
-  "Compile normalized flex NODE, translating its wrapper to a box node."
+  "Compile normalized legacy flex NODE through the shared Flex IR builder."
   (let* ((wrapper (plist-get node :box))
          (props (ebox--flex-container-content-props
                  (plist-get node :props)
                  (plist-get node :raw-props)
-                 wrapper))
-         (_dynamic-wrapper-size
-          (when wrapper
-            ;; The surrounding native box supplies its resolved content width
-            ;; to the child for each frame.  Do not freeze the compiler's
-            ;; ambient viewport into a multi-frame layout document.
-            (plist-put props :width nil)
-            (when (plist-member (plist-get node :raw-props) :height)
-              (plist-put props :height 'viewport-height))))
-         (axis (ebox--flex-axis props))
-         (inner
-          (list
-           :type "flex"
-           :direction
-           (ebox-native-reflow--symbol-name
-            (plist-get props :flex-direction) 'row
-            '(row row-reverse column column-reverse) "flex-direction")
-           :wrap
-           (ebox-native-reflow--symbol-name
-            (plist-get props :flex-wrap) 'nowrap
-            '(nowrap wrap wrap-reverse) "flex-wrap")
-           :justify
-           (ebox-native-reflow--compile-flex-align
-            (plist-get props :justify-content) 'flex-start
-            "justify-content")
-           :align-items
-           (ebox-native-reflow--compile-flex-align
-            (plist-get props :align-items) 'stretch "align-items")
-           :align-content
-           (ebox-native-reflow--compile-flex-align
-            (plist-get props :align-content) 'stretch "align-content")
-           :width
-           (ebox-native-reflow--compile-size
-            (plist-get props :width) 'horizontal "auto")
-           :height
-           (ebox-native-reflow--compile-size
-            (plist-get props :height) 'vertical "auto")
-           :row-gap
-           (or (ebox--flex-line-value (plist-get props :row-gap) 0) 0)
-           :column-gap
-           (or (ebox--horizontal-size-pixels
-                (plist-get props :column-gap) 0)
-               0)
-           :items
-           (vconcat
-            (mapcar (lambda (item)
-                      (if fragments
-                          (let* ((source (ebox--flex-item-source-node item))
-                                 (missing (make-symbol "missing-content-min"))
-                                 (content-min
-                                  (if flex-content-min-widths
-                                      (gethash source
-                                               flex-content-min-widths
-                                               missing)
-                                    missing)))
-                            (ebox-native-reflow--compile-flex-item
-                             item axis
-                             (ebox-native-reflow--compiled-scene-child
-                              fragments source)
-                             t
-                             content-min
-                             (not (eq content-min missing))))
-                        (ebox-native-reflow--compile-flex-item item axis)))
-                    (ebox-tree-layout-children node))))))
-    (if wrapper
-        (ebox-native-reflow--compile-box wrapper inner t)
-      inner)))
+                 wrapper)))
+    (when wrapper
+      ;; The surrounding native box supplies its resolved content width to the
+      ;; child for each frame.  Do not freeze the compiler's ambient viewport.
+      (plist-put props :width nil)
+      (when (plist-member (plist-get node :raw-props) :height)
+        (plist-put props :height 'viewport-height)))
+    (let ((inner
+           (ebox-native-reflow--compile-flex-inner
+            props (ebox-tree-layout-children node)
+            fragments flex-content-min-widths)))
+      (if wrapper
+          (ebox-native-reflow--compile-box wrapper inner t)
+        inner))))
 
 (defun ebox-native-reflow--compile-node (node)
   "Compile supported normalized Ebox NODE to strict layout IR."
   (pcase (and (listp node) (plist-get node :ebox-type))
-    ('box (ebox-native-reflow--compile-box node))
+    ('box (if (eq (plist-get node :ebox-kind) 'text)
+              (ebox-native-reflow--compile-text-node node)
+            (ebox-native-reflow--compile-box node)))
     ('concat
      (list :type "row"
            :children
@@ -1899,7 +2082,6 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
            (vconcat (mapcar #'ebox-native-reflow--compile-node
                             (ebox--layout-children node)))))
     ('flex (ebox-native-reflow--compile-flex node))
-    ('flex-item (ebox-native-reflow--compile-node (plist-get node :node)))
     (_ (error "Native reflow unsupported node type: %S"
               (and (listp node) (plist-get node :ebox-type))))))
 
@@ -1912,9 +2094,21 @@ backend has a matching two-dimensional layout contract."
    ((plist-get node :ebox-child-sequence) nil)
    ((eq (plist-get node :ebox-type) 'grid) nil)
    ((eq (plist-get node :ebox-type) 'box)
-    (and (not (plist-member node :children))
-         (ebox-native-reflow--native-node-supported-p
-          (plist-get node :ebox-content-node))))
+    (if-let* ((config (and (eq (plist-get node :ebox-kind) 'box)
+                            (plist-get node :ebox-layout-config))))
+        (let ((kind (ebox-layout-config-kind config))
+              (children (ebox-tree-node-children node)))
+          (and
+           (pcase kind
+             ('normal (<= (length children) 1))
+             ((or 'row 'column)
+              t)
+             ('flex t)
+             (_ nil))
+           (cl-every #'ebox-native-reflow--native-node-supported-p children)))
+      (and (not (plist-member node :children))
+           (ebox-native-reflow--native-node-supported-p
+            (plist-get node :ebox-content-node)))))
    ((memq (plist-get node :ebox-type) '(concat stack))
     (cl-every #'ebox-native-reflow--native-node-supported-p
               (ebox--layout-children node)))
@@ -1923,16 +2117,40 @@ backend has a matching two-dimensional layout contract."
               (append (when-let* ((box (plist-get node :box)))
                         (list box))
                       (ebox-tree-layout-children node))))
-   ((eq (plist-get node :ebox-type) 'flex-item)
-    (ebox-native-reflow--native-node-supported-p (plist-get node :node)))
    (t nil)))
+
+(defun ebox-native-reflow--compile-typed-scene-child
+    (box fragments flex-content-min-widths)
+  "Compile typed BOX child layout from already compiled FRAGMENTS."
+  (let* ((config (plist-get box :ebox-layout-config))
+         (kind (ebox-layout-config-kind config))
+         (children (ebox-tree-node-children box)))
+    (pcase kind
+      ('normal
+       (and children
+            (ebox-native-reflow--compiled-scene-child
+             fragments (car children))))
+      ((or 'row 'column)
+       (ebox-native-reflow--compile-typed-axis-children
+        kind config children fragments))
+      ('flex
+       (ebox-native-reflow--compile-flex-inner
+        (copy-sequence (ebox-layout-config-props config))
+        children fragments flex-content-min-widths))
+      (_ (error "Native reflow unsupported typed scene LayoutConfig: %S"
+                kind)))))
 
 (defun ebox-native-reflow--compiled-scene-child (fragments node)
   "Return NODE's compiled fragment from FRAGMENTS, failing closed."
   (let ((missing (make-symbol "missing-native-scene-fragment")))
     (let ((fragment (gethash node fragments missing)))
       (when (eq fragment missing)
-        (error "Native render scene is missing a child fragment"))
+        (error "Native render scene is missing child node %S (%S/%S)"
+               (plist-get node :node-id)
+               (plist-get node :ebox-kind)
+               (and (plist-get node :ebox-layout-config)
+                    (ebox-layout-config-kind
+                     (plist-get node :ebox-layout-config)))))
       fragment)))
 
 (defun ebox-native-reflow--compile-scene-node
@@ -1940,12 +2158,20 @@ backend has a matching two-dimensional layout contract."
   "Compile one flat scene NODE from already compiled FRAGMENTS."
   (pcase (and (listp node) (plist-get node :ebox-type))
     ('box
-     (let ((child (plist-get node :ebox-content-node)))
-       (ebox-native-reflow--compile-box
-        node
-        (and child
-             (ebox-native-reflow--compiled-scene-child fragments child))
-        nil t)))
+     (if (eq (plist-get node :ebox-kind) 'text)
+         (ebox-native-reflow--compile-text-node node)
+       (if (eq (plist-get node :ebox-kind) 'box)
+         (ebox-native-reflow--compile-box
+         node
+          (ebox-native-reflow--compile-typed-scene-child
+           node fragments flex-content-min-widths)
+          nil t)
+       (let ((child (plist-get node :ebox-content-node)))
+         (ebox-native-reflow--compile-box
+          node
+          (and child
+               (ebox-native-reflow--compiled-scene-child fragments child))
+          nil t)))))
     ('concat
      (list :type "row"
            :children
@@ -1965,9 +2191,6 @@ backend has a matching two-dimensional layout contract."
     ('flex
      (ebox-native-reflow--compile-flex
       node fragments flex-content-min-widths))
-    ('flex-item
-     (ebox-native-reflow--compiled-scene-child
-      fragments (plist-get node :node)))
     (_ (error "Native reflow unsupported scene node type: %S"
               (and (listp node) (plist-get node :ebox-type))))))
 
@@ -2153,12 +2376,13 @@ per call, and no call recursively visits the captured Ebox tree."
 (defun ebox-native-reflow--retained-layout-children (node)
   "Return NODE children referenced by one compiled native fragment."
   (pcase (plist-get node :ebox-type)
-    ('box (when-let* ((child (plist-get node :ebox-content-node)))
-            (list child)))
+    ('box
+     (if (eq (plist-get node :ebox-kind) 'box)
+         (ebox-tree-node-children node)
+       (when-let* ((child (plist-get node :ebox-content-node)))
+         (list child))))
     ((or 'concat 'stack) (ebox--layout-children node))
-    ('flex
-     (mapcar #'ebox--flex-item-source-node
-             (ebox-tree-layout-children node)))
+    ('flex (ebox-tree-layout-children node))
     (_ nil)))
 
 (defun ebox-native-reflow--retained-layout-postorder (root)
@@ -2169,8 +2393,7 @@ per call, and no call recursively visits the captured Ebox tree."
            (dolist (child
                     (ebox-native-reflow--retained-layout-children node))
              (visit child))
-           (unless (eq (plist-get node :ebox-type) 'flex-item)
-             (push node nodes))))
+           (push node nodes)))
       (visit root))
     (vconcat (nreverse nodes))))
 
@@ -2214,7 +2437,8 @@ per call, and no call recursively visits the captured Ebox tree."
                (touched-ids (plist-get state :native-touched-node-ids))
                (touched-set
                 (and (plist-get state :native-topology-stable-p)
-                     (consp touched-ids)
+                     (plist-member state :native-touched-node-ids)
+                     (proper-list-p touched-ids)
                      (make-hash-table :test 'equal)))
                (retained-fast-p
                 (and touched-set
@@ -3646,8 +3870,11 @@ metadata together with the text."
       (let ((style (aref styles style-id)))
         (pcase (plist-get style :mode)
           ('set (setq faces (list (plist-get style :face))))
-          ('add (setq faces
-                      (append faces (list (plist-get style :face)))))
+          ('add
+           (let ((face (plist-get style :face)))
+             (unless (and (= (length faces) 1)
+                          (equal (car faces) face))
+               (setq faces (append faces (list face))))))
           (_ (error "Native reflow frame has an invalid style mode")))))))
 
 (defun ebox-native-reflow--fragment-face-baseline

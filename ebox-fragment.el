@@ -13,6 +13,8 @@
 
 (declare-function ebox--current-display-signature "ebox-measure" ())
 (declare-function ebox--ensure-node-id "ebox" (node))
+(declare-function ebox-style--declaration-value-equal-p
+                  "ebox-style" (left right))
 (declare-function ebox--complete-layout-snapshot
                   "ebox-incremental"
                   (buffer node snapshot &optional copy))
@@ -129,18 +131,24 @@ Backend marker and buffer span data are intentionally excluded."
     :border-top-color :border-bottom-color)
   "Box properties that affect paint without changing layout geometry.")
 
+(defconst ebox--typography-style-signature-keys
+  '(:font :font-family :font-height :font-weight :font-slant)
+  "Typography properties whose resolved metrics may change geometry.")
+
 (defconst ebox--geometry-style-signature-keys
-  '(:box-sizing
-    :width :min-width :max-width
-    :height :min-height :max-height
-    :padding-left-pixel :padding-right-pixel
-    :padding-top-height :padding-bottom-height
-    :margin-left-pixel :margin-right-pixel
-    :margin-top-height :margin-bottom-height
-    :border-left-pixel :border-right-pixel
-    :text-align :vertical-align
-    :overflow :wrap-mode
-    :flex-props :flex-participation)
+  (append
+   '(:box-sizing
+     :width :min-width :max-width
+     :height :min-height :max-height)
+   ebox--typography-style-signature-keys
+   '(:padding-left-pixel :padding-right-pixel
+     :padding-top-height :padding-bottom-height
+     :margin-left-pixel :margin-right-pixel
+     :margin-top-height :margin-bottom-height
+     :border-left-pixel :border-right-pixel
+     :text-align :vertical-align
+     :overflow :wrap-mode
+     :flex-props :flex-participation))
   "Style signature keys that require layout or owner rerender work.")
 
 (defconst ebox--structure-style-signature-keys
@@ -196,8 +204,8 @@ Backend marker and buffer span data are intentionally excluded."
                          (ebox-fragment-plist-keys new)))
       (cl-pushnew key keys))
     (dolist (key keys)
-      (unless (equal (plist-get old key)
-                     (plist-get new key))
+      (unless (ebox-style--declaration-value-equal-p
+               (plist-get old key) (plist-get new key))
         (push key changed)))
     changed))
 

@@ -20,6 +20,8 @@
                   (session node frame &optional layout-package state))
 (declare-function ebox-native-reflow-create-session
                   "ebox-native-reflow" (&rest arguments))
+(declare-function ebox-native-reflow-fork-session
+                  "ebox-native-reflow" (session &rest options))
 (declare-function ebox-native-reflow-confirm-native-frame
                   "ebox-native-reflow"
                   (session generation key confirmed-revision))
@@ -232,6 +234,59 @@ type, key, parent, and sibling position are identical."
          (ebox-native-commit--runtime-types-supported-p state)
          (ebox-native-commit--region-index-safe-p state))))
 
+(defun ebox-native-commit-viewport-continuity-eligible-p
+    (previous-state candidate-state)
+  "Return non-nil when CANDIDATE-STATE can extend the retained native frame.
+The viewport planner owns the unchanged-topology proof.  This predicate owns
+the native continuation contract: a live session, a confirmable prior frame,
+the committed text/fragment bases, compiler postorder, and projection support."
+  (and (eq (plist-get previous-state :projection-kind) 'native-frame)
+       (plist-get previous-state :native-sync-session)
+       (or (plist-get previous-state :native-sync-pending)
+           (plist-get previous-state :native-sync-confirmed-p))
+       (stringp (plist-get previous-state :native-committed-rendered))
+       (vectorp
+        (plist-get previous-state :native-committed-fragment-template))
+       (plist-member previous-state :native-committed-owned-ranges)
+       (let ((postorder (plist-get previous-state :native-node-postorder)))
+         (and (vectorp postorder) (> (length postorder) 0)))
+       (let ((state (copy-sequence candidate-state)))
+         (plist-put state :native-topology-stable-p t)
+         ;; Viewport context changed, but no declarative source node did.
+         ;; Presence of this empty set is an explicit compiler certificate.
+         (plist-put state :native-touched-node-ids nil)
+         (plist-put state :native-removed-node-ids nil)
+         (ebox-native-commit-projection-eligible-p
+          previous-state state nil))))
+
+(defun ebox-native-commit--isolate-session
+    (previous-state candidate-state)
+  "Give CANDIDATE-STATE a private child of PREVIOUS-STATE's native session."
+  (when-let* ((session (plist-get previous-state :native-sync-session))
+              (fork
+               (condition-case nil
+                   (ebox-native-reflow-fork-session session)
+                 (error nil))))
+    (plist-put candidate-state :native-sync-session fork)
+    ;; A pending/confirmed frame is local to the previous Rust handle.  The
+    ;; fork retains compiler facts but begins its own publication sequence.
+    (plist-put candidate-state :native-sync-pending nil)
+    (plist-put candidate-state :native-sync-confirmed-p nil)
+    t))
+
+(defun ebox-native-commit-prepare-viewport-continuity
+    (previous-state candidate-state)
+  "Prepare a private native viewport continuation in CANDIDATE-STATE."
+  (and (ebox-native-commit-viewport-continuity-eligible-p
+        previous-state candidate-state)
+       (ebox-native-commit--isolate-session
+        previous-state candidate-state)
+       (progn
+         (plist-put candidate-state :native-topology-stable-p t)
+         (plist-put candidate-state :native-touched-node-ids nil)
+         (plist-put candidate-state :native-removed-node-ids nil)
+         t)))
+
 (defun ebox-native-commit-plan-eligible-p
     (old-state candidate-state prepared)
   "Return non-nil when PREPARED can bypass superseded local layout proofs."
@@ -249,22 +304,25 @@ type, key, parent, and sibling position are identical."
             (ebox-native-commit-object-delta-node-ids
              old-state candidate-state prepared)))
          (state (copy-sequence candidate-state)))
-    (plist-put candidate-state :native-topology-stable-p stable)
-    (plist-put candidate-state :native-touched-node-ids layout-touched)
-    (when context-axes-stable
-      (plist-put candidate-state :viewport-dependent-node-ids-ready t)
-      (plist-put candidate-state :viewport-dependent-node-ids
-                 (plist-get old-state :viewport-dependent-node-ids))
-      (plist-put candidate-state :viewport-dependent-node-id-axes
-                 (plist-get old-state :viewport-dependent-node-id-axes)))
-    (unless stable
-      (cl-remf candidate-state :native-fragment-owner-cache))
     (plist-put state :native-touched-node-ids layout-touched)
     (plist-put state :native-topology-stable-p stable)
-    (and (or stable layout-touched)
-         (not (ebox-style-cascade-active-p))
-         (ebox-native-commit-projection-eligible-p
-          old-state state nil))))
+    (when (and (or stable layout-touched)
+               (not (ebox-style-cascade-active-p))
+               (ebox-native-commit-projection-eligible-p
+                old-state state nil)
+               (ebox-native-commit--isolate-session
+                old-state candidate-state))
+      (plist-put candidate-state :native-topology-stable-p stable)
+      (plist-put candidate-state :native-touched-node-ids layout-touched)
+      (when context-axes-stable
+        (plist-put candidate-state :viewport-dependent-node-ids-ready t)
+        (plist-put candidate-state :viewport-dependent-node-ids
+                   (plist-get old-state :viewport-dependent-node-ids))
+        (plist-put candidate-state :viewport-dependent-node-id-axes
+                   (plist-get old-state :viewport-dependent-node-id-axes)))
+      (unless stable
+        (cl-remf candidate-state :native-fragment-owner-cache))
+      t)))
 
 (defun ebox-native-commit--root-box (node)
   "Return NODE's outer box, or nil."
@@ -309,7 +367,7 @@ type, key, parent, and sibling position are identical."
       (maphash
        (lambda (_node-id node)
          (unless (memq (plist-get node :ebox-type)
-                       '(box concat stack flex flex-item))
+                       '(box concat stack flex))
            (setq supported nil)))
        nodes))
     supported))
@@ -482,7 +540,7 @@ type, key, parent, and sibling position are identical."
 Return nil without mutating STATE when the native capability proof is absent."
   (when (and (require 'ebox-native-reflow nil t)
              (ebox-native-reflow-layout-ready-p)
-             (memq (plist-get state :projection-kind) '(nil native-frame))
+             (eq (plist-get state :projection-kind) 'native-frame)
              (ebox-native-commit--runtime-types-supported-p state)
              (ebox-native-commit--region-index-safe-p state))
     (when-let* ((frame-spec (ebox-native-commit--frame-spec state node)))

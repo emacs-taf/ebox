@@ -432,6 +432,7 @@ publication."
 
 (defun ebox--ensure-region-id (box)
   "Return BOX's stable region id, creating one if needed."
+  (ebox--ensure-node-id box)
   (or (ebox-get box :region-id)
       (let ((id (ebox--next-region-id)))
         (ebox-put box :region-id id)
@@ -632,18 +633,7 @@ ALIGN can be `top', `center', or `bottom'."
   "Return NODE's region ids in document order.
 NODE can be an unrendered layout tree or an already-rendered string.
 For layout trees, missing ids are assigned to box plists and remain stable
-for later renders and dynamic updates.
-
-Use this to capture ids *before* inserting into a buffer:
-
-  (let* ((layout (ebox-stack info-box (ebox-concat left right)))
-         (ids    (ebox-region-ids layout))
-         (info-id (nth 0 ids))
-         (left-id (nth 1 ids))
-         (right-id (nth 2 ids)))
-    (ebox-render-to-buffer \"*my-ui*\" layout)
-    ;; now use info-id / left-id / right-id for dynamic updates
-    )"
+for later renders and dynamic updates."
   (cond
    ((stringp node)
     (ebox--string-region-ids node))
@@ -677,8 +667,6 @@ Use this to capture ids *before* inserting into a buffer:
           (apply #'append
                  (mapcar #'ebox-region-ids
                          (ebox-tree-layout-children node)))))
-       ((eq type 'flex-item)
-        (ebox-region-ids (plist-get node :node)))
        (t nil))))))
 
 (defun ebox--runtime-node-ids (node)
@@ -3796,9 +3784,10 @@ With prefix ARG, scroll by that many content lines."
 (defun ebox--clear-buffer-runtime-state (&optional buffer)
   "Remove all runtime caches owned by BUFFER.
 Defaults to the current buffer."
-  (let ((buffer (or buffer (current-buffer))))
+  (let* ((buffer (or buffer (current-buffer)))
+         (state (ebox--buffer-render-state buffer)))
     (ebox--cancel-buffer-runtime-prewarm buffer)
-    (when-let* ((root (ebox--buffer-root-node buffer)))
+    (when-let* ((root (plist-get state :root-node)))
       (ebox--clear-region-runtime-caches
        (ebox--node-all-region-ids root)))
     (ebox--clear-buffer-render-state buffer)))
@@ -3849,6 +3838,19 @@ Defaults to the current buffer."
     (:background-color :bgcolor)
     (_ property)))
 
+(defun ebox--region-update-direct-text-node (box)
+  "Return BOX's sole direct canonical Text child, or nil."
+  (let ((children (and (ebox-box-node-p box)
+                       (ebox-box-node-children box))))
+    (and (= (length children) 1)
+         (ebox-text-node-p (car children))
+         (car children))))
+
+(defun ebox--region-update-content-value (box)
+  "Return the mutable region content represented by canonical BOX."
+  (when-let* ((text (ebox--region-update-direct-text-node box)))
+    (ebox-text-node-value text)))
+
 (defun ebox--region-update-analysis (box expanded declarations)
   "Return change analysis for BOX, EXPANDED fields, and DECLARATIONS."
   (let (content-seen
@@ -3867,12 +3869,18 @@ Defaults to the current buffer."
                  (setq style-changed-p t)))
               (t
                (push key unknown-keys))))
+    (when (and content-seen (not (stringp content-value)))
+      (user-error "Ebox content update requires a string"))
+    (when (and content-seen
+               (not (ebox--region-update-direct-text-node box)))
+      (user-error "Ebox content update requires one direct Text child"))
     (list :changed-p
           (or (not (equal declarations
                           (plist-get box :ebox-style-declarations)))
               style-changed-p
               (and content-seen
-                   (not (equal (ebox-get box :content) content-value))))
+                   (not (equal (ebox--region-update-content-value box)
+                               content-value))))
           :unknown-keys (nreverse unknown-keys))))
 
 (defun ebox--schedule-runtime-prewarm-after-batch-flush
@@ -3900,7 +3908,7 @@ cannot be changed through the unpublished batch root."
              (ebox-tree-copy-node-structure batch-root))
         (and path-copy-p
              (ebox-incremental-surface-region-candidate-root
-              buffer region-id))
+              buffer region-id t))
         (ebox-tree-copy-node-structure (plist-get state :root-node)))))
 
 (defun ebox--surface-region-apply-props
@@ -3910,18 +3918,28 @@ cannot be changed through the unpublished batch root."
     (unless box
       (user-error "Ebox region handle no longer resolves to a box"))
     (let ((declarations-changed
-           (not (equal declarations
-                       (plist-get box :ebox-style-declarations)))))
+           (not (ebox-style-declarations-equal-p
+                 declarations
+                 (plist-get box :ebox-style-declarations)))))
       (when declarations-changed
         (plist-put box :ebox-style-declarations declarations))
     (cl-loop for (key value) on expanded by #'cddr
              for target-key = (ebox--region-update-normalize-property key)
              when (or (eq target-key :content)
                       (memq target-key ebox--region-update-longhand-props))
-             when (or (not (equal (ebox-get box target-key) value))
+             when (or (not (equal (if (eq target-key :content)
+                                      (ebox--region-update-content-value box)
+                                    (ebox-get box target-key))
+                                  value))
                       (and declarations-changed
                            (ebox-style-property key)))
-             do (plist-put box target-key value)
+             do (if (eq target-key :content)
+                    (if-let* ((text
+                               (ebox--region-update-direct-text-node box)))
+                        (plist-put text :ebox-text-value value)
+                      (user-error
+                       "Ebox content update requires one direct Text child"))
+                  (plist-put box target-key value))
              and do (push target-key changed-keys)))
     (nreverse changed-keys)))
 
@@ -4176,7 +4194,7 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
                          :content)
                      (stringp (cadr expanded))
                      (numberp (ebox-get candidate-box :width))
-                     (null (ebox-tree-node-children candidate-box))
+                     (ebox--region-update-direct-text-node candidate-box)
                      (not (ebox-style-cascade-active-p))
                      (not (plist-get state :cascade-required-p))
                      (null (plist-get state :scroll-region-ids))))
@@ -4296,8 +4314,7 @@ Examples:
 ;;;###autoload
 (defun ebox-render-to-buffer (buffer-or-name node)
   "Render layout NODE into BUFFER-OR-NAME and return the buffer.
-NODE can be any box/concat/stack node created by `ebox-create',
-`ebox-concat', or `ebox-stack', or a pre-rendered string."
+NODE is a typed TextNode/BoxNode or a pre-rendered string."
   (declare (indent 1))
   (unless (stringp node)
     ;; Validate opaque host identities before preparing a target generation.
@@ -4591,22 +4608,15 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-candidate-replace-host-ref
     ebox-candidate-patch-host-paint
     ebox-clear-cache
-    ebox-column
     ebox-column-layout-create
     ebox-normal-layout-create
     ebox-row-layout-create
     ebox-text-create
     ebox-box-create
     ebox-commit
-    ebox-concat
-    ebox-create
     ebox-display-buffer
     ebox-display-signature
-    ebox-flex
     ebox-flex-layout-create
-    ebox-flex-item
-    ebox-grid
-    ebox-grid-fr
     ebox-grid-layout-create
     ebox-host-ref-bounds
     ebox-host-ref-position
@@ -4620,7 +4630,6 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-render-burst-end
     ebox-render-to-buffer
     ebox-rerender-buffer-with-context
-    ebox-row
     ebox-scroll-down
     ebox-scroll-map
     ebox-scroll-page-down
@@ -4633,8 +4642,6 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-selector-query-all
     ebox-selector-query-buffer
     ebox-selector-update-buffer
-    ebox-spacer
-    ebox-stack
     ebox-string-pixel-width
     ebox-update-selector
     ebox-viewport-window-width
@@ -4684,29 +4691,10 @@ and are documented separately in the public API reference.")
 ;;   ebox-normal-layout-create
 ;;       Create the typed Normal LayoutConfig.
 ;;   ebox-box-create :layout config :children nodes &rest geometry-props
-;;       Create one typed canonical BoxNode.  The current vertical slice
-;;       accepts Normal layout with zero or one canonical child.
-;;   ebox-create &rest plist
-;;       Legacy untyped runtime constructor retained during migration.
-;;       Key options: :content :width :height
-;;       :padding :margin :border :border-color :bgcolor
-;;       :text-align :wrap-mode :box-sizing :surface-properties :host-ref
+;;       Create one typed canonical BoxNode.
 ;;   ebox-build dsl
-;;       Compile ETML-style (box/row/column/flex/spacer ...) forms into
-;;       normal ebox layout nodes.
-;;
-;; ── Layout ────────────────────────────────────────────────────
-;;   ebox-concat left right      → horizontal side-by-side
-;;   ebox-stack  top  bottom     → vertical stacking (nest for 3+)
-;;   ebox-row    &rest nodes     → horizontal layout from many nodes
-;;   ebox-column &rest nodes     → vertical layout from many nodes
-;;   ebox-spacer &rest plist     → blank box node
-;;   ebox-flex   &rest items     → flex layout from boxes/items
-;;       Container may also carry normal ebox-create box properties.
-;;   ebox-flex-item node &rest plist
-;;       Attach :order :flex-grow :flex-shrink :flex-basis :flex
-;;       and :align-self metadata to a child node; non-flex properties
-;;       wrap the child in an ebox-create box.
+;;       Compile String/text/box/row/column/flex/grid author forms into
+;;       typed TextNode/BoxNode values.
 ;;
 ;; ── Rendering ─────────────────────────────────────────────────
 ;;   ebox-render box              → propertized string (no buffer side-effect)

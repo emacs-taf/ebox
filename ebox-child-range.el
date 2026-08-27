@@ -185,16 +185,20 @@ VALUE is the replacement segment and METRICS records all path work."
     (cdr (assoc key (and node (ebox-child-range--hash-node-bucket node))
                 #'equal))))
 
-(defun ebox-child-range--item-copy (item metrics)
-  "Validate and copy declarative ITEM while recording METRICS."
+(defun ebox-child-range--item-copy (item metrics &optional retain-identity-p)
+  "Validate declarative ITEM while recording METRICS.
+Return ITEM itself when RETAIN-IDENTITY-P is non-nil; otherwise return a
+shallow copy owned by the persistent sequence."
   (when (ebox-child-range--descriptor-p item)
     (error "Nested child Range descriptors are reserved"))
   (unless (and (listp item) (not (stringp item)))
     (error "Ebox child Range item must be one declarative node"))
   (ebox-child-range--metric-add metrics 'new-payload-validations)
   (ebox-child-range--metric-add metrics 'new-payload-visits)
-  (ebox-child-range--metric-add metrics 'new-payload-copies)
-  (copy-sequence item))
+  (if retain-identity-p
+      item
+    (ebox-child-range--metric-add metrics 'new-payload-copies)
+    (copy-sequence item)))
 
 (defun ebox-child-range--descriptor-create (ref items)
   "Return a reserved Range descriptor for non-nil REF and list ITEMS."
@@ -203,10 +207,13 @@ VALUE is the replacement segment and METRICS records all path work."
     (signal 'wrong-type-argument (list 'proper-list-p items)))
   (ebox-child-range--make-descriptor :ref ref :items items))
 
-(defun ebox-child-range--build (segments &optional hash-function)
+(defun ebox-child-range--build
+    (segments &optional hash-function retain-item-identities-p)
   "Build an immutable child sequence from SEGMENTS.
 Each entry is `(REF . ITEMS)'; nil REF denotes one static child item.
-HASH-FUNCTION optionally supplies the stable key hash."
+HASH-FUNCTION optionally supplies the stable key hash.  When
+RETAIN-ITEM-IDENTITIES-P is non-nil, ITEMS are already-owned canonical nodes
+and the sequence retains those exact objects instead of copying them."
   (unless (proper-list-p segments)
     (signal 'wrong-type-argument (list 'proper-list-p segments)))
   (let* ((count (length segments))
@@ -227,7 +234,8 @@ HASH-FUNCTION optionally supplies the stable key hash."
         (when ref (puthash ref index refs))
         (let ((payload (vconcat
                         (mapcar (lambda (item)
-                                  (ebox-child-range--item-copy item metrics))
+                                  (ebox-child-range--item-copy
+                                   item metrics retain-item-identities-p))
                                 items))))
           (setq root (ebox-child-range--segment-insert
                       root height index

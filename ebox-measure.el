@@ -232,6 +232,19 @@ keep their absolute pixel width."
             (puthash string width cache))
           width)))))
 
+(defun ebox--measurement-face-remapping ()
+  "Return face remaps that can affect geometric text measurement.
+TP paint slots are stable paint-layer addresses.  Their foreground/background
+updates change redisplay without changing glyph geometry, so installing or
+switching those layers must not invalidate Ebox measurement caches."
+  (when (boundp 'face-remapping-alist)
+    (cl-remove-if
+     (lambda (entry)
+       (let ((face (car-safe entry)))
+         (and (symbolp face)
+              (string-match-p "\\`tp-paint-slot-" (symbol-name face)))))
+     face-remapping-alist)))
+
 ;;;###autoload
 (defun ebox-string-pixel-width (string)
   "Return the display pixel width of STRING's first line.
@@ -251,7 +264,7 @@ This is the public, text-scale-aware measurement used by Ebox layout code."
         (face-attribute 'default :width nil t)
         (face-attribute 'default :foreground nil t)
         (face-attribute 'default :background nil t)
-        (and (boundp 'face-remapping-alist) face-remapping-alist)
+        (ebox--measurement-face-remapping)
         (and (boundp 'text-scale-mode-amount) text-scale-mode-amount)))
 
 (defsubst ebox--current-display-signature ()

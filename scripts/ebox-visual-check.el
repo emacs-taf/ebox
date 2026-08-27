@@ -28,7 +28,7 @@
 
 (defun ebox-visual-check-layout ()
   "Return the fixed layout used by visual verification."
-  (let* ((title (ebox-create
+  (let* ((title (ebox-test-box
                  :content "Ebox Visual Check"
                  :box-sizing 'border-box
                  :width 74
@@ -37,7 +37,7 @@
                  :border-color "#4A90D9"
                  :color "#EAF6FF"
                  :bgcolor "#203040"))
-         (hidden (ebox-create
+         (hidden (ebox-test-box
                   :content "Hidden: visible line\nHIDDEN-CLIPPED-LINE"
                   :box-sizing 'border-box
                   :width 24
@@ -48,7 +48,7 @@
                   :color "#F0FFF4"
                   :bgcolor "#17351F"
                   :overflow 'hidden))
-         (scroll (ebox-create
+         (scroll (ebox-test-box
                   :content "Scroll: first\nSCROLL-SECOND\nSCROLL-THIRD"
                   :box-sizing 'border-box
                   :width 24
@@ -59,7 +59,7 @@
                   :color "#FFF4E6"
                   :bgcolor "#3A2410"
                   :overflow 'scroll))
-         (sized (ebox-create
+         (sized (ebox-test-box
                  :content "border-box max-height\nline 2\nSIZED-CLIPPED"
                  :box-sizing 'border-box
                  :width 26
@@ -70,7 +70,7 @@
                  :color "#F8EEFF"
                  :bgcolor "#2F1B3A"
                  :overflow 'hidden))
-         (footer (ebox-create
+         (footer (ebox-test-box
                   :content "Checks: text properties + display specs + GUI screenshot"
                   :box-sizing 'border-box
                   :width 74
@@ -79,7 +79,7 @@
                   :border-color "#7F8C8D"
                   :color "#F8F9F9"
                   :bgcolor "#2C3E50")))
-    (ebox-column title (ebox-row hidden scroll sized) footer)))
+    (ebox-test-column title (ebox-test-row hidden scroll sized) footer)))
 
 (defun ebox-visual-check--max-line-pixel-width (string)
   "Return maximum pixel width among STRING lines."

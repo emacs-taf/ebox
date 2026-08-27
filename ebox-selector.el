@@ -111,8 +111,6 @@
     ('grid
      (when-let* ((box (plist-get node :box)))
        (ebox--ensure-region-id box)))
-    ('flex-item
-     (ebox-selector--node-region-id (plist-get node :node)))
     (_ nil)))
 
 ;;;###autoload

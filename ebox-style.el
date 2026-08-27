@@ -13,7 +13,8 @@
 
 (defvar ebox--longhand)
 (declare-function ebox-selector-parse "ebox-selector" (selector))
-(declare-function ebox-create "ebox" (&rest plist))
+(declare-function ebox-node-factory--create-from-properties
+                  "ebox-node-factory" (&rest plist))
 (declare-function ebox--flex-normalize-container-props
                   "ebox-flex" (props))
 (declare-function ebox-grid--normalize-config-props
@@ -156,8 +157,10 @@
      :normalizer vertical-align)
     (:name :overflow :id ebox/overflow :initial scroll :contexts (box)
      :group structure :dirty-kind geometry :signature layout)
-    (:name :wrap-mode :id ebox/wrap-mode :initial word :contexts (box)
-     :group geometry :dirty-kind geometry :signature layout)
+    (:name :wrap-mode :id ebox/wrap-mode :initial word :inherits t
+     :contexts (box)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator wrap-mode)
     (:name :visibility :id ebox/visibility :initial visible :contexts (box)
      :group paint :dirty-kind paint :signature paint)
     (:name :display :id ebox/display :initial nil :contexts (node)
@@ -302,6 +305,11 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
   "Return canonical CSS-like longhand property name for NAME."
   (when-let* ((property (ebox-style-property name)))
     (plist-get property :name)))
+
+(defun ebox-style-property-accepted-p (tag name)
+  "Return non-nil when author form TAG accepts property NAME."
+  (when-let* ((property (ebox-style-property name)))
+    (ebox-style--form-property-allowed-p tag property)))
 
 (defun ebox-style-schema-id (name)
   "Return namespaced ECSS schema id for Ebox property NAME."
@@ -614,6 +622,20 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
   "Return non-nil when VALUE is a symbolic font attribute."
   (or (null value) (symbolp value)))
 
+(defun ebox-style--wrap-mode-p (value)
+  "Return non-nil when VALUE is a public Box wrapping mode."
+  (memq value '(word char kp none)))
+
+(defun ebox-style-no-soft-wrap-p (value)
+  "Return non-nil when wrap VALUE disables soft line breaking.
+`none' is the canonical author value; nil is retained only for private
+generated wrappers that already contain exact line breaks."
+  (memq value '(nil none)))
+
+(defun ebox-style-soft-wrap-p (value)
+  "Return non-nil when wrap VALUE performs soft line breaking."
+  (memq value '(word char kp)))
+
 (defun ebox-style--validator (name)
   "Return schema validator named NAME."
   (pcase name
@@ -629,6 +651,7 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
     ('font-family #'ebox-style--font-family-p)
     ('font-height #'ebox-style--font-height-p)
     ('font-attribute #'ebox-style--font-attribute-p)
+    ('wrap-mode #'ebox-style--wrap-mode-p)
     ('boolean (lambda (value) (memq value '(nil t))))
     (_ (lambda (_value) t))))
 
@@ -673,6 +696,10 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
 (defvar ebox-style--closed-computed-cache (make-hash-table :test #'equal)
   "Bounded cache of selector-free, dependency-free computed styles.")
 
+(defvar ebox-style--closed-inheritance-cache
+  (make-hash-table :test #'eq :weakness 'key)
+  "Computed-style keyed canonical inheritance projections.")
+
 (defconst ebox-style--closed-computed-cache-limit 512
   "Maximum selector-free computed styles retained across projections.")
 
@@ -690,6 +717,7 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
            ebox-style-schemas (plist-get property :id)
            (ebox-style--schema-options property)))
   (clrhash ebox-style--closed-computed-cache)
+  (clrhash ebox-style--closed-inheritance-cache)
   (setq ebox-style--registered-schemas ebox-style-schemas))
 
 (defun ebox-style--ensure-properties ()
@@ -728,6 +756,53 @@ cascade pass during its initial static projection."
   "Return non-nil when PROPERTY names an ECSS custom property."
   (and (symbolp property)
        (string-prefix-p "--" (symbol-name property))))
+
+(defun ebox-style--declaration-value-equal-p (left right)
+  "Return non-nil when declaration values LEFT and RIGHT are equivalent.
+TP paint slots are stable paint addresses.  Their installation flag and
+current face specification belong to TP publication state, not to the Ebox
+author declaration that references the slot."
+  (if (and (tp-paint-slot-p left) (tp-paint-slot-p right))
+      (eq (tp-paint-slot-face left) (tp-paint-slot-face right))
+    (equal-including-properties left right)))
+
+(defun ebox-style-declarations-equal-p (left right)
+  "Return non-nil when canonical declaration plists LEFT and RIGHT are equal."
+  (let ((left left)
+        (right right)
+        equal-p)
+    (setq equal-p t)
+    (while (and equal-p left right)
+      (setq equal-p
+            (and (eq (car left) (car right))
+                 (ebox-style--declaration-value-equal-p
+                  (cadr left) (cadr right)))
+            left (cddr left)
+            right (cddr right)))
+    (and equal-p (null left) (null right))))
+
+(defun ebox-style--inherited-declarations-changed-p (old new)
+  "Return non-nil when OLD and NEW change descendant style inputs.
+The inherited property domain comes only from the canonical schema.  ECSS
+custom properties also participate because a descendant `var' expression may
+consume them even though Ebox does not interpret their names."
+  (or
+   (cl-some
+    (lambda (property)
+      (let ((old-entry (plist-member old property))
+            (new-entry (plist-member new property)))
+        (not (and (eq (not (null old-entry)) (not (null new-entry)))
+                  (ebox-style--declaration-value-equal-p
+                   (cadr old-entry) (cadr new-entry))))))
+    ebox-style--inherited-properties)
+   (not
+    (ebox-style-declarations-equal-p
+     (cl-loop for (property value) on old by #'cddr
+              when (ebox-style--custom-property-p property)
+              append (list property value))
+     (cl-loop for (property value) on new by #'cddr
+              when (ebox-style--custom-property-p property)
+              append (list property value))))))
 
 (defun ebox-style--valid-plist-p (plist)
   "Return non-nil when PLIST is a proper even-length list."
@@ -816,7 +891,9 @@ not affect declaration compilation and are intentionally excluded."
      (and (numberp value) (not (ebox-style--positive-integer-p value))))
     ('grid-placement
      (and (or (numberp value) (proper-list-p value))
-          (not (ebox-style--grid-placement-p value))))))
+          (not (ebox-style--grid-placement-p value))))
+    ('wrap-mode
+     (not (ebox-style--wrap-mode-p value)))))
 
 (defun ebox-style--validate-declaration-values (declarations)
   "Return DECLARATIONS after static Ebox-owned value validation."
@@ -859,6 +936,65 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
             (clrhash ebox-style--declaration-cache))
           (puthash cache-key compiled ebox-style--declaration-cache)
           (copy-sequence compiled))))))
+
+(defconst ebox-style--text-form-properties
+  '(:color :background-color
+    :font :font-family :font-height :font-weight :font-slant)
+  "Canonical property names accepted by the Text author form.")
+
+(defun ebox-style--form-property-allowed-p (tag property)
+  "Return non-nil when author TAG accepts PROPERTY metadata."
+  (let ((name (plist-get property :name))
+        (contexts (plist-get property :contexts)))
+    (if (eq tag 'text)
+        (memq name ebox-style--text-form-properties)
+      (or (memq 'box contexts)
+          (memq 'item contexts)
+          (and (memq tag '(flex grid))
+               (memq tag contexts))))))
+
+(defun ebox-style-validate-form-declarations (tag declarations)
+  "Validate canonical DECLARATIONS for Text/Box author TAG."
+  (unless (memq tag '(text box row column flex grid))
+    (error "Unknown Ebox author form: %S" tag))
+  (unless (ebox-style--valid-plist-p declarations)
+    (error "Ebox canonical declarations must be an even plist: %S"
+           declarations))
+  (let ((seen (make-hash-table :test #'eq)))
+    (cl-loop for (id _value) on declarations by #'cddr
+             for property = (ebox-style-property id)
+             unless (and property (eq id (plist-get property :id)))
+             do (error "Ebox declaration is not a canonical property ID: %S"
+                       id)
+             do (when (gethash id seen)
+                  (error "Duplicate canonical Ebox declaration: %S" id))
+             do (puthash id t seen)
+             unless (ebox-style--form-property-allowed-p tag property)
+             do (error "Ebox %S does not accept %S"
+                       tag (plist-get property :name))))
+  (ebox-style--validate-declaration-values declarations)
+  declarations)
+
+(defun ebox-style-compile-form (tag plist)
+  "Compile evaluated author PLIST once and validate it for TAG."
+  (ebox-style-validate-form-declarations
+   tag (ebox-style-compile-declarations plist t)))
+
+(defun ebox-style-declaration-properties (declarations predicate)
+  "Return canonical author properties in DECLARATIONS matching PREDICATE."
+  (cl-loop for (id value) on declarations by #'cddr
+           for property = (or (ebox-style-property id)
+                              (error "Unknown canonical Ebox property: %S" id))
+           when (funcall predicate property)
+           append (list (plist-get property :name) value)))
+
+(defun ebox-style-declarations-require-projection-p
+    (declarations predicate)
+  "Return non-nil when DECLARATIONS include facts outside PREDICATE."
+  (cl-loop for (id _value) on declarations by #'cddr
+           for property = (or (ebox-style-property id)
+                              (error "Unknown canonical Ebox property: %S" id))
+           thereis (not (funcall predicate property))))
 
 (defun ebox-style-merge-declarations (base overrides)
   "Merge canonical BASE and OVERRIDES through ECSS property schemas."
@@ -949,9 +1085,10 @@ winner is required so parent inherited geometry/paint cannot be stale."
        (plist-member new 'ebox/color)))
 
 (defconst ebox-style--inherited-properties
-  '(ebox/color ebox/font ebox/font-family ebox/font-height
-    ebox/font-weight ebox/font-slant)
-  "Inherited ECSS properties whose parent values guard Theme deltas.")
+  (cl-loop for property in ebox-style--property-definitions
+           when (plist-get property :inherits)
+           collect (plist-get property :id))
+  "Canonical ECSS properties inherited according to the shared schema.")
 
 (defun ebox-style--inherited-style-signature (style)
   "Return the inherited-value fingerprint of computed STYLE, or nil.
@@ -1165,13 +1302,25 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
   (ecss-computed-style-specified-p style property))
 
 (defun ebox-style-node-declarations (node)
-  "Return canonical ECSS declarations stored on semantic Ebox NODE."
+  "Return NODE's immutable canonical ECSS declarations.
+Callers that need to mutate the declaration spine must copy it first."
   (let ((declarations (plist-get node :ebox-style-declarations)))
     (if (memq (plist-get node :ebox-type) '(flex grid))
         (ebox-style-merge-declarations
          declarations
          (plist-get (plist-get node :box) :ebox-style-overrides))
-      (copy-sequence declarations))))
+      declarations)))
+
+(defun ebox-style-node-specified-value (node name &optional missing)
+  "Return NODE's canonical specified value for author property NAME.
+Return MISSING when NAME is valid but not specified.  Aliases resolve to the
+same canonical property id, so callers never inspect backend plist fields."
+  (let ((id (or (ebox-style-schema-id name)
+                (error "Unknown Ebox property: %S" name)))
+        (declarations (ebox-style-node-declarations node)))
+    (if (plist-member declarations id)
+        (plist-get declarations id)
+      missing)))
 
 (defun ebox-style--remove-style-properties (plist)
   "Return PLIST without Ebox style or ECSS custom properties."
@@ -1195,6 +1344,38 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
              do (plist-put box property value)))
   box)
 
+(defvar ebox-style--box-engine-longhand-cache
+  (make-hash-table :test #'eq :weakness 'key)
+  "Computed-style keyed expanded engine longhands for canonical Box nodes.")
+
+(defvar ebox-style--text-engine-longhand-cache
+  (make-hash-table :test #'eq :weakness 'key)
+  "Computed-style keyed expanded engine longhands for canonical Text nodes.")
+
+(defun ebox-style--cached-engine-longhands (style text-p snapshot)
+  "Return STYLE's expanded engine longhands for TEXT-P and SNAPSHOT."
+  (let* ((cache (if text-p
+                    ebox-style--text-engine-longhand-cache
+                  ebox-style--box-engine-longhand-cache))
+         (missing (make-symbol "ebox-engine-longhands-missing"))
+         (cached (gethash style cache missing)))
+    (if (not (eq cached missing))
+        cached
+      (let ((expanded
+             (ebox-style-expand-ebox-plist
+              (if text-p
+                  (ebox-style--text-values style snapshot)
+                (ebox-style--box-values style snapshot)))))
+        (puthash style expanded cache)
+        expanded))))
+
+(defun ebox-style--apply-engine-longhands (box longhands)
+  "Project already expanded LONGHANDS into BOX engine fields."
+  (ebox-style--reset-box-engine-style box)
+  (cl-loop for (property value) on longhands by #'cddr
+           do (plist-put box property value))
+  box)
+
 (defun ebox-style--box-values (style &optional snapshot)
   "Return computed box values ready for Ebox engine projection."
   (let* ((snapshot (or snapshot (ebox-style--computed-snapshot style)))
@@ -1204,6 +1385,47 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
       (setq values
             (plist-put values :color ebox-style--default-foreground)))
     values))
+
+(defun ebox-style--text-values (style snapshot)
+  "Return computed STYLE values owned by canonical Text."
+  (cl-loop for (name value) on (ebox-style--box-values style snapshot)
+           by #'cddr
+           when (or (ebox-style-property-accepted-p 'text name)
+                    (eq name :wrap-mode))
+           append (list name value)))
+
+(defun ebox-style--closed-inheritance-values (style)
+  "Return STYLE's immutable canonical inheritance projection."
+  (let* ((missing (make-symbol "ebox-inheritance-missing"))
+         (cached (gethash style ebox-style--closed-inheritance-cache missing)))
+    (if (not (eq cached missing))
+        cached
+      (let* ((snapshot (ebox-style--computed-snapshot style))
+             (values (ebox-style--box-values style snapshot))
+             result)
+        (dolist (property '(:color :font :font-family :font-height
+                            :font-weight :font-slant :wrap-mode))
+          (when (plist-member values property)
+            (setq result
+                  (plist-put result property (plist-get values property)))))
+        (puthash style result ebox-style--closed-inheritance-cache)
+        result))))
+
+(defun ebox-style-apply-closed-inheritance (node style)
+  "Apply only closed computed inheritance from STYLE to fresh canonical NODE."
+  (let ((values (ebox-style--closed-inheritance-values style)))
+    (plist-put node :ebox-computed-style style)
+    (cl-loop for (property value) on values by #'cddr
+             do (plist-put node property value)))
+  node)
+
+(defun ebox-style--text-paint-owner-p (node)
+  "Return non-nil when NODE materializes inherited text paint itself.
+Canonical Text owns typography and foreground paint.  Canonical Box retains
+those computed facts for inheritance but materializes only box paint such as
+background and borders.  Legacy runtime boxes keep their established behavior
+until their private encoding is removed."
+  (not (eq (plist-get node :ebox-kind) 'box)))
 
 (defconst ebox-style--container-wrapper-neutral-properties
   '(:width :height :box-sizing :color
@@ -1221,8 +1443,9 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
 
 (defun ebox-style--new-container-wrapper ()
   "Return a stable internal box for container-owned box paint."
-  (let ((wrapper (ebox-create :content "" :wrap-mode nil
-                              :key 'ebox/style-wrapper)))
+  (let ((wrapper
+         (ebox-node-factory--create-from-properties
+          :content "" :wrap-mode nil :key 'ebox/style-wrapper)))
     (plist-put wrapper :ebox-style-wrapper t)
     (plist-put wrapper :ebox-style-generated-wrapper t)
     wrapper))
@@ -1349,31 +1572,15 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
     (ebox-style--apply-display-axes node style snapshot)
     (pcase type
       ('box
-       (ebox-style--apply-engine-values
+       (ebox-style--apply-engine-longhands
         node
-        (ebox-style--box-values style snapshot)))
+        (ebox-style--cached-engine-longhands
+         style (eq (plist-get node :ebox-kind) 'text) snapshot))
+       )
       ((or 'flex 'grid)
        (ebox-style--apply-container node style snapshot)))
     (ebox-style--apply-item node style snapshot))
   node)
-
-(defun ebox-style-sync-flex-item (item)
-  "Synchronize internal Flex ITEM props from its semantic source style."
-  (when (eq (plist-get item :ebox-type) 'flex-item)
-    (when-let* ((source (plist-get item :node)))
-      (let* ((source-style (plist-get source :ebox-computed-style))
-             (child-style
-              (when-let* ((child (plist-get source :ebox-content-node)))
-                (plist-get child :ebox-computed-style)))
-             (values
-              (append
-               (and source-style
-                    (ebox-style--context-values source-style 'item))
-               (and child-style
-                    (ebox-style--context-values child-style 'item)))))
-        (when (or source-style child-style)
-          (plist-put item :props values)))))
-  item)
 
 (defun ebox-style-dirty-kind (name)
   "Return dirty kind for canonical property or alias NAME."

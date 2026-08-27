@@ -230,14 +230,15 @@ fn push_edit(
     });
 }
 
-fn coordinate_edits<T, F>(old: &[T], new: &[T], text_equal: &F) -> Vec<SpanEdit>
-where
-    F: Fn(&T, &T) -> bool,
-{
+fn coordinate_edits(
+    old_len: usize,
+    new_len: usize,
+    text_matches: &[(usize, usize, usize)],
+) -> Vec<SpanEdit> {
     let mut old_position = 0;
     let mut new_position = 0;
     let mut edits = Vec::new();
-    for (matched_old, matched_new, length) in matches(old, new, text_equal) {
+    for &(matched_old, matched_new, length) in text_matches {
         if old_position < matched_old || new_position < matched_new {
             push_edit(
                 &mut edits,
@@ -253,28 +254,26 @@ where
     push_edit(
         &mut edits,
         old_position,
-        old.len(),
+        old_len,
         new_position,
-        new.len(),
+        new_len,
     );
     edits
 }
 
-fn semantic_edits<T, FText, FSemantic>(
+fn semantic_edits<T, FSemantic>(
     old: &[T],
     new: &[T],
-    text_equal: &FText,
+    text_matches: &[(usize, usize, usize)],
     semantic_equal: &FSemantic,
 ) -> Vec<SpanEdit>
 where
-    FText: Fn(&T, &T) -> bool,
     FSemantic: Fn(&T, &T) -> bool,
 {
-    let text_matches = matches(old, new, text_equal);
     let mut old_position = 0;
     let mut new_position = 0;
     let mut edits = Vec::new();
-    for (matched_old, matched_new, length) in text_matches {
+    for &(matched_old, matched_new, length) in text_matches {
         if old_position < matched_old || new_position < matched_new {
             push_edit(
                 &mut edits,
@@ -343,13 +342,14 @@ where
             target: target_revision,
         });
     }
+    let text_matches = matches(old, new, &text_equal);
     Ok(CommitBatch {
         base_revision,
         target_revision,
         base_extent: old.len(),
         target_extent: new.len(),
-        semantic_edits: semantic_edits(old, new, &text_equal, &semantic_equal),
-        coordinate_edits: coordinate_edits(old, new, &text_equal),
+        semantic_edits: semantic_edits(old, new, &text_matches, &semantic_equal),
+        coordinate_edits: coordinate_edits(old.len(), new.len(), &text_matches),
     })
 }
 

@@ -21,22 +21,22 @@
 (defun ebox-selector-test--width-unit-form (width)
   "Return a layout whose root WIDTH constrains nested auto layout."
   `(column :id root :width ,width
-    (box :content "Header text wraps when the root is narrow"
-         :padding (0 (12)) :border "#111111")
+    (box :padding (0 (12)) :border "#111111"
+         "Header text wraps when the root is narrow")
     (flex :flex-flow (row wrap) :column-gap (12)
           :padding (0 (12)) :border "#D97757"
           (column
-           (box :content "row" :width (220) :border "#D97757")
+           (box :width (220) :border "#D97757" "row")
            (flex :width (220) :height 4 :border "#D97757"
-                 (item (box :content "A" :width (42)))
-                 (item (box :content "B" :width (42)))
-                 (item (box :content "C" :width (42)))))
+                 (box :width (42) "A")
+                 (box :width (42) "B")
+                 (box :width (42) "C")))
           (column
-           (box :content "row-reverse" :width (220) :border "#D97757")
+           (box :width (220) :border "#D97757" "row-reverse")
            (flex :width (220) :height 4 :border "#D97757"
-                 (item (box :content "A" :width (42)))
-                 (item (box :content "B" :width (42)))
-                 (item (box :content "C" :width (42))))))))
+                 (box :width (42) "A")
+                 (box :width (42) "B")
+                 (box :width (42) "C"))))))
 
 (defun ebox-selector-test--rendered-widths (rendered)
   "Return pixel widths for RENDERED lines."
@@ -69,8 +69,8 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column :id root :class page
-                  (box :id summary :class (card warning) :content "A")
-                  (box :class card :content "B"))))
+                  (box :id summary :class (card warning) "A")
+                  (box :class card "B"))))
          (matches (ebox-selector-query-all node ".warning")))
     (should (= (length matches) 1))
     (should (equal (plist-get (car matches) :region-id)
@@ -83,8 +83,8 @@
   (let* ((node (ebox-build
                 '(column :class page
                   (row :class toolbar
-                   (box :class action :content "Run"))
-                  (box :class action :content "Loose")))))
+                   (box :class action "Run"))
+                  (box :class action "Loose")))))
     (should (= (length (ebox-selector-query-all node ".toolbar > box")) 1))
     (should (= (length (ebox-selector-query-all node ".page .action")) 2))))
 
@@ -93,9 +93,9 @@
   (ebox-selector-test--reset-runtime-state)
   (let ((node (ebox-build
                '(column
-                 (box :id first :content "A")
-                 (box :id second :class later :content "B")
-                 (box :id third :class later :content "C")))))
+                 (box :id first "A")
+                 (box :id second :class later "B")
+                 (box :id third :class later "C")))))
     (should (equal
              (mapcar (lambda (match)
                        (ebox-tree-node-id (plist-get match :node)))
@@ -112,8 +112,8 @@
   (ebox-selector-test--reset-runtime-state)
   (let ((node (ebox-build
                '(column
-                 (box :class card :content "A")
-                 (box :content "B"))))
+                 (box :class card "A")
+                 (box "B"))))
         (calls 0)
         (matcher (symbol-function 'ecss-selector-match-p)))
     (cl-letf (((symbol-function 'ecss-selector-match-p)
@@ -144,9 +144,9 @@
 
 (ert-deftest ebox-selector-queries-explicit-attributes ()
   "Attribute queries should read only explicit selector metadata."
-  (let ((node (ebox-build
-               '(box :content "Run"
-                     :selector-attributes '((role . button))))))
+  (let ((node (ebox-test-box
+               :content "Run"
+               :selector-attributes '((role . button)))))
     (should (= (length (ebox-selector-query-all node "[role=button]")) 1))
     (should-not (ebox-selector-query-all node "[content=Run]"))))
 
@@ -155,8 +155,8 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column
-                  (box :id summary :class card :content "Summary")
-                  (box :class card :content "Other"))))
+                  (box :id summary :class card "Summary")
+                  (box :class card "Other"))))
          buffer)
     (unwind-protect
         (progn
@@ -178,8 +178,8 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column
-                  (box :id summary :class card :content "Summary")
-                  (box :class card :content "Other"))))
+                  (box :id summary :class card "Summary")
+                  (box :class card "Other"))))
          buffer)
     (unwind-protect
         (progn
@@ -200,8 +200,8 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column
-                  (box :id summary :class (card warning) :content "Summary")
-                  (box :class card :content "Other"))))
+                  (box :id summary :class (card warning) "Summary")
+                  (box :class card "Other"))))
          buffer)
     (unwind-protect
         (progn
@@ -225,8 +225,8 @@
   (let* ((node (ebox-build
                 '(column :class page
                   (row :class toolbar
-                   (box :class action :content "Run"))
-                  (box :class action :content "Loose"))))
+                   (box :class action "Run"))
+                  (box :class action "Loose"))))
          buffer)
     (unwind-protect
         (progn
@@ -249,8 +249,8 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column :id shell
-                  (box :class target :content "A")
-                  (box :content "B"))))
+                  (box :class target "A")
+                  (box "B"))))
          buffer)
     (unwind-protect
         (progn
@@ -262,9 +262,13 @@
             (should-not
              (gethash 'column (plist-get state :selector-type-table)))
             (should (= (gethash
-                        'column
+                        'box
                         (plist-get state :runtime-type-count-table))
-                       1)))
+                       3))
+            (should (= (gethash
+                        'text
+                        (plist-get state :runtime-type-count-table))
+                       2)))
           (should-not (ebox-selector-query-buffer
                        buffer "column .target")))
       (when (and buffer (buffer-live-p buffer))
@@ -276,8 +280,8 @@
   (let* ((node (ebox-build
                 '(column
                   (box :id card
-                       :content "Text wraps when narrow"
-                       :wrap-mode word))))
+                       :wrap-mode word
+                       "Text wraps when narrow"))))
          buffer)
     (unwind-protect
         (progn
@@ -299,7 +303,7 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column
-                  (box :id card :content "Card" :border "#111111"))))
+                  (box :id card :border "#111111" "Card"))))
          buffer)
     (unwind-protect
         (progn
@@ -321,7 +325,7 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column
-                  (box :id card :content "Card"))))
+                  (box :id card "Card"))))
          buffer)
     (unwind-protect
         (progn
@@ -371,10 +375,10 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((target-node (ebox-build
                        '(column
-                         (box :id target-card :content "Target"))))
+                         (box :id target-card "Target"))))
          (other-node (ebox-build
                       '(column
-                        (box :id other-card :content "Other"))))
+                        (box :id other-card "Other"))))
          target-buffer other-buffer)
     (unwind-protect
         (progn
@@ -416,7 +420,7 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column
-                  (box :id card :content "Card"))))
+                  (box :id card "Card"))))
          buffer)
     (unwind-protect
         (progn
@@ -449,8 +453,8 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column
-                  (box :class card :content "One")
-                  (box :class card :content "Two"))))
+                  (box :class card "One")
+                  (box :class card "Two"))))
          buffer)
     (unwind-protect
         (progn
@@ -485,8 +489,8 @@
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column
-                  (box :class card :content "One")
-                  (box :class card :content "Two"))))
+                  (box :class card "One")
+                  (box :class card "Two"))))
          buffer)
     (unwind-protect
         (progn

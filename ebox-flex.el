@@ -40,9 +40,8 @@
                   (cache-key signature rendered &optional side-effects))
 (declare-function ebox--render-with-cache
                   "ebox-incremental" (node &optional force cache-probe))
-(declare-function ebox-tree--register-legacy-flex-item-adapter
-                  "ebox-tree" (adapter token source content))
-(declare-function ebox-create "ebox" (&rest plist))
+(declare-function ebox-node-factory--create-from-properties
+                  "ebox-node-factory" (&rest plist))
 (declare-function ebox-get "ebox" (box property))
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--ensure-region-id "ebox" (box))
@@ -81,14 +80,6 @@
 (defconst ebox--flex-item-prop-keys
   '(:order :flex :flex-grow :flex-shrink :flex-basis :align-self)
   "Properties that belong to flex item metadata.")
-
-(defconst ebox--flex-item-direct-adapter-token
-  (make-symbol "ebox-flex-item-direct-adapter")
-  "Opaque provenance token for a legacy Flex item without a Box wrapper.")
-
-(defconst ebox--flex-item-wrapper-adapter-token
-  (make-symbol "ebox-flex-item-wrapper-adapter")
-  "Opaque provenance token for a legacy Flex item with one Box wrapper.")
 
 (defconst ebox--flex-container-layout-prop-keys
   '(:flex-direction :flex-wrap :flex-flow
@@ -176,28 +167,12 @@ That text is preformatted and must not be sent through the default wrapper."
       props
     (append props (list :wrap-mode nil))))
 
-(defun ebox--flex-wrap-node-with-box-props (tag node props)
-  "Wrap NODE in an `ebox-create' box using PROPS for DSL/API TAG."
-  (if (null props)
-      node
-    (when (plist-member props :content)
-      (error "ebox-build: %S cannot combine :content with child nodes" tag))
-    (let ((box (apply #'ebox-create
-                      (append (ebox--preformatted-box-props props)
-                              (list :display '(block flow)
-                                    :ebox-content-node node)))))
-      (when (listp node)
-        (dolist (key ebox--flex-item-prop-keys)
-          (when (plist-member node key)
-            (plist-put box key (plist-get node key)))))
-      box)))
-
 (defun ebox--flex-make-wrapper-box (props)
   "Return a flex container wrapper box for PROPS, or nil."
   (when (and props (ebox--flex-visual-box-props-p props))
     (when (plist-member props :content)
       (error "ebox-flex: flex cannot combine :content with child nodes"))
-    (apply #'ebox-create
+    (apply #'ebox-node-factory--create-from-properties
            (append (ebox--preformatted-box-props props)
                    (list :content "")))))
 
@@ -528,13 +503,22 @@ programmatic port and are therefore rejected here."
        (plist-get source :ebox-type)
        (not (eq (plist-get source :ebox-type) 'box))))
 
-(defun ebox--flex-bind-source-viewport (source viewport thunk)
+(defun ebox--flex-box-source-p (source)
+  "Return non-nil when SOURCE owns Box geometry for Flex sizing."
+  (and (listp source)
+       (not (stringp source))
+       (eq (plist-get source :ebox-type) 'box)
+       (not (eq (plist-get source :ebox-kind) 'text))))
+
+(defun ebox--flex-bind-source-viewport (_source viewport thunk)
   "Call THUNK in SOURCE's detached Flex-item render context.
-VIEWPORT is bound only for composite SOURCE nodes; the Flex parent context is
-always bound because SOURCE remains a direct Flex participant while rendered
-as a detached geometry root."
+When VIEWPORT is non-nil it is the containing block assigned by the Flex
+parent and therefore applies to SOURCE's complete subtree, including a
+canonical Box with responsive descendants.  Intrinsic measurement passes nil
+explicitly.  The Flex parent context is always bound because SOURCE remains a
+direct Flex participant while rendered as a detached geometry root."
   (let ((ebox--render-root-parent-kind 'flex))
-    (if (and viewport (ebox--flex-composite-source-p source))
+    (if viewport
         (let ((ebox-viewport-width viewport))
           (funcall thunk))
       (funcall thunk))))
@@ -555,7 +539,8 @@ width cannot affect that final output.  The first occurrence is only observed;
 this avoids signature and retained-cost work for one-off responsive sizes."
   (when (and ebox--render-cache-table
              (numberp viewport)
-             (ebox--flex-composite-source-p source))
+             (or (ebox--flex-composite-source-p source)
+                 (ebox--viewport-dependent-subtree-p source)))
     (let* ((observations
             (or (gethash ebox--render-cache-table
                          ebox--flex-sized-render-observation-table)
@@ -589,7 +574,7 @@ this avoids signature and retained-cost work for one-off responsive sizes."
 Direct box flex items are measured intrinsically.  Composite items receive
 VIEWPORT for descendants so auto and max-width layouts can resolve against
 their containing block, while stack/column containers do not stretch their own
-  outer measurement width to VIEWPORT."
+outer measurement width to VIEWPORT."
   (if (ebox--flex-composite-source-p source)
       (ebox--flex-bind-source-viewport
        source viewport
@@ -618,7 +603,7 @@ grapheme."
       (let ((declared-min (or (ebox--resolve-size-content-pixel
                                box (ebox-get box :min-width) 0)
                               0)))
-        (if (null (ebox-get box :wrap-mode))
+        (if (ebox-style-no-soft-wrap-p (ebox-get box :wrap-mode))
             ;; CSS's automatic minimum is min-content only when the author
             ;; leaves `min-width' at its automatic value.  A component that
             ;; deliberately declares `:min-width 0' must be allowed to
@@ -660,13 +645,13 @@ grapheme."
 
 (defun ebox--flex-min-main (source rendered axis)
   "Return SOURCE's minimum main-axis size for flex layout on AXIS."
-  (if (and (listp source) (eq (plist-get source :ebox-type) 'box))
+  (if (ebox--flex-box-source-p source)
       (ebox--flex-box-min-main source rendered axis)
     (ebox--flex-string-main rendered axis)))
 
 (defun ebox--flex-max-main (source axis)
   "Return SOURCE's maximum main-axis size for flex layout on AXIS."
-  (when (and (listp source) (eq (plist-get source :ebox-type) 'box))
+  (when (ebox--flex-box-source-p source)
     (ebox--flex-box-main-constraint
      source axis (if (eq axis 'row) :max-width :max-height))))
 
@@ -683,12 +668,11 @@ grapheme."
    ((eq basis 'auto)
     (ebox--flex-string-main rendered axis))
    ((eq basis 'content)
-    (if (and (listp source) (eq (plist-get source :ebox-type) 'box))
+    (if (ebox--flex-box-source-p source)
         (ebox--flex-box-content-basis-main source rendered axis)
       (ebox--flex-string-main rendered axis)))
    ((and (eq axis 'row)
-         (listp source)
-         (eq (plist-get source :ebox-type) 'box))
+         (ebox--flex-box-source-p source))
     (let* ((normalized
             (ebox--normalize-horizontal-size-value
              basis ebox--preferred-size-keywords))
@@ -727,9 +711,7 @@ grapheme."
            (ebox--flex-recache-source-boxes child)))
         ('flex
          (dolist (child (ebox-tree-layout-children node))
-           (ebox--flex-recache-source-boxes child)))
-        ('flex-item
-         (ebox--flex-recache-source-boxes (plist-get node :node)))))))
+           (ebox--flex-recache-source-boxes child)))))))
 
 (defun ebox--flex-box-main-margin (box axis)
   "Return BOX's total margin on AXIS."
@@ -763,7 +745,7 @@ grapheme."
 
 (defun ebox--flex-copy-node-for-size (node axis main cross stretch)
   "Return NODE or a copy with flex-computed MAIN/CROSS size."
-  (if (and (listp node) (eq (plist-get node :ebox-type) 'box))
+  (if (ebox--flex-box-source-p node)
       (let ((copy (copy-sequence node)))
         (ebox--ensure-region-id node)
         (plist-put copy :region-id (ebox-get node :region-id))
@@ -784,7 +766,11 @@ grapheme."
 
 (defun ebox--flex-measure-cacheable-p (source props)
   "Return non-nil when SOURCE and PROPS have stable flex measurements."
-  (and (ebox--render-cacheable-node-p source)
+  (and (or (and (eq (and (listp source)
+                          (plist-get source :ebox-type))
+                      'box)
+                (not (ebox--flex-composite-source-p source)))
+           (ebox--render-cacheable-node-p source))
        (not (ebox--viewport-dependent-size-value-p
              (plist-get props :flex-basis)))))
 
@@ -793,13 +779,20 @@ grapheme."
 The result is nil when SOURCE cannot use the persistent measurement cache;
 otherwise it carries the key, signature, and any cached measurement so a
 caller can pass the same miss context to the renderer."
-  (when (ebox--flex-measure-cacheable-p source props)
-    (let* ((cache-key
-            (list (ebox--ensure-node-id source) 'flex-measure axis props))
-           (signature (ebox--flex-render-cache-signature source)))
-      (list :cache-key cache-key
-            :signature signature
-            :cached (ebox--render-cache-lookup cache-key signature)))))
+  (let ((direct-box-p
+         (and (eq (and (listp source) (plist-get source :ebox-type)) 'box)
+              (not (ebox--flex-composite-source-p source)))))
+    ;; `ebox--flex-render-source-for-measurement' renders a direct Box with no
+    ;; ambient inline viewport.  Compute the cache proof in that exact same
+    ;; context so a root resize cannot invalidate an unchanged natural size.
+    (let ((ebox-viewport-width (if direct-box-p nil ebox-viewport-width)))
+      (when (ebox--flex-measure-cacheable-p source props)
+        (let* ((cache-key
+                (list (ebox--ensure-node-id source) 'flex-measure axis props))
+               (signature (ebox--flex-render-cache-signature source)))
+          (list :cache-key cache-key
+                :signature signature
+                :cached (ebox--render-cache-lookup cache-key signature)))))))
 
 (defun ebox--flex-measure-cache-value (probe)
   "Return a copied cached measurement from PROBE, or nil on a miss."
@@ -871,11 +864,11 @@ box heights use declared line constraints.  In those cases the final sized
 render can be the first render instead of rendering the whole subtree once for
 measurement and immediately rendering it again at the computed size."
   (let ((basis (plist-get props :flex-basis)))
-    (when (and (listp source)
-               (eq (plist-get source :ebox-type) 'box)
+    (when (and (ebox--flex-box-source-p source)
                (ebox--flex-fixed-basis-value-p basis)
                (or (not (eq axis 'row))
-                   (ebox-get source :wrap-mode)))
+                   (ebox-style-soft-wrap-p
+                    (ebox-get source :wrap-mode))))
       (let* ((min-main (ebox--flex-min-main source "" axis))
              (max-main (ebox--flex-max-main source axis))
              (base (ebox--flex-basis-main source "" axis basis))
@@ -1013,10 +1006,7 @@ Each item in PARTS is a cons cell (RENDERED . WIDTH)."
   "Render flex ITEM with MAIN and optional CROSS size.
 Return a sized render entry containing the rendered string and dimensions."
   (let* ((source (plist-get item :source))
-         (source-box-p
-          (eq (and (listp source)
-                   (plist-get source :ebox-type))
-              'box))
+         (source-box-p (ebox--flex-box-source-p source))
          (align (ebox--flex-resolved-align item container-align))
          (stretch (memq align '(stretch normal)))
          (render-main (plist-get item :render-main))
@@ -1265,7 +1255,7 @@ Return a sized render entry containing the rendered string and dimensions."
   (let ((items
          (cl-loop for child in children
                   for index from 0
-                  for source = (ebox--flex-item-source-node child)
+                  for source = child
                   for props = (ebox--flex-item-props child)
                   for measurement = (ebox--flex-item-measurement
                                      source props axis viewport)
@@ -1296,7 +1286,7 @@ Return a sized render entry containing the rendered string and dimensions."
       (puthash source-id t source-set))
     (cl-loop for child in children
              for index from 0
-             for source = (ebox--flex-item-source-node child)
+             for source = child
              for source-id = (plist-get source :node-id)
              when (gethash source-id source-set)
              do (let* ((props (ebox--flex-item-props child))
@@ -1640,65 +1630,6 @@ metadata and rendering decisions."
           (ebox--flex-pad-width result cross-size)
         result))))
 
-;;;###autoload
-(defun ebox-flex-item (node &rest plist)
-  "Wrap NODE with flex item metadata and optional box properties from PLIST."
-  (let ((item-props (ebox--plist-keep-keys plist ebox--flex-item-prop-keys))
-        (box-props (ebox--plist-remove-keys plist ebox--flex-item-prop-keys)))
-    (let* ((source (ebox--flex-wrap-node-with-box-props
-                    'ebox-flex-item node box-props))
-           (source (copy-sequence source))
-           (declarations
-            (append (plist-get source :ebox-style-declarations)
-                    (ebox-style-compile-declarations item-props)))
-           (adapter (list :ebox-type 'flex-item
-                          :display '(block flow)
-                          :node source
-                          :props item-props))
-           (token (if box-props
-                      ebox--flex-item-wrapper-adapter-token
-                    ebox--flex-item-direct-adapter-token)))
-      (plist-put source :ebox-style-declarations declarations)
-      (ebox-tree--register-legacy-flex-item-adapter
-       adapter token source
-       (and box-props (plist-get source :ebox-content-node))))))
-
-;;;###autoload
-(defun ebox-flex (&rest items)
-  "Return a lazy flex layout node from ITEMS.
-
-Container properties include flex layout properties
-\(:flex-direction, :flex-wrap, :flex-flow, :justify-content, :align-items,
-:align-content, :gap, :row-gap, :column-gap) plus normal `ebox-create'
-box properties.  When visual box properties are present, :width and :height
-size the outer box and the inner flex layout uses its content area.
-
-Item properties can be stored with `ebox-flex-item' or directly on a
-child box: :order, :flex-grow, :flex-shrink, :flex-basis, :flex, and
-:align-self.  `ebox-flex-item' can also carry normal box properties around
-its child."
-  (let* ((split (ebox--build-split-attrs items))
-         (raw-props (car split))
-         (box-props (ebox--plist-remove-keys
-                     raw-props ebox--flex-container-layout-prop-keys))
-         (wrapper-box (ebox--flex-make-wrapper-box box-props))
-         (props (ebox--flex-normalize-container-props raw-props))
-         (children (delq nil (cdr split)))
-         (node (list :ebox-type 'flex
-                     :display '(block flex)
-                     :props props
-                     :raw-props raw-props
-                     :ebox-style-declarations
-                     (ebox-style-compile-declarations raw-props)
-                     :box wrapper-box
-                     :children children)))
-    (when wrapper-box
-      (plist-put wrapper-box :ebox-style-wrapper t))
-    (dolist (key '(:id :class :selector-state :selector-attributes :key))
-      (when (plist-member raw-props key)
-        (plist-put node key (plist-get raw-props key))))
-    node))
-
 (defun ebox--render-flex-box (node rendered)
   "Render flex NODE's container box around RENDERED, when present."
   (if-let* ((box (plist-get node :box)))
@@ -1825,7 +1756,7 @@ assembles already-rendered items."
         (cond
          ((< measure-index (length children))
           (let* ((child (nth measure-index children))
-                 (source (ebox--flex-item-source-node child))
+                 (source child)
                  (props (ebox--flex-item-props child))
                  (measurement
                   (ebox--flex-item-measurement
@@ -1856,6 +1787,29 @@ assembles already-rendered items."
               (plist-put entry :render-index (1+ render-index))
               t))))))))
 
+(defun ebox--flex-window-canonical-node-p (node)
+  "Return non-nil when NODE is one canonical Flex Layout Box."
+  (and (eq (plist-get node :ebox-kind) 'box)
+       (when-let* ((config (plist-get node :ebox-layout-config)))
+         (eq (ebox-layout-config-kind config) 'flex))))
+
+(defun ebox--flex-window-box (node)
+  "Return NODE's Box wrapper for lazy Flex rendering."
+  (if (ebox--flex-window-canonical-node-p node)
+      node
+    (plist-get node :box)))
+
+(defun ebox--flex-window-props (node)
+  "Return NODE's resolved Flex properties for lazy row production."
+  (if (ebox--flex-window-canonical-node-p node)
+      (append
+       (ebox-layout-config-props (plist-get node :ebox-layout-config))
+       (ebox--flex-box-constraints node))
+    (ebox--flex-container-content-props
+     (plist-get node :props)
+     (plist-get node :raw-props)
+     (plist-get node :box))))
+
 (defun ebox--flex-window-wrapper-supported-p (box)
   "Return non-nil when BOX can safely wrap an incomplete flex prefix."
   (or (null box)
@@ -1863,7 +1817,8 @@ assembles already-rendered items."
            (or (null (ebox-get box :min-height))
                (equal (ebox-get box :min-height) 0))
            (null (ebox-get box :max-height))
-           (null (ebox-get box :wrap-mode))
+           (or (ebox-style-no-soft-wrap-p (ebox-get box :wrap-mode))
+               (ebox--flex-window-canonical-node-p box))
            (eq (ebox-get box :text-align) 'left)
            (eq (ebox-get box :vertical-align) 'top))))
 
@@ -1872,6 +1827,16 @@ assembles already-rendered items."
 When COMPLETE is nil, trailing vertical chrome is suppressed so the result is
 a prefix of the eventual full wrapper render."
   (let ((copy (copy-sequence box)))
+    (when (ebox--flex-window-canonical-node-p copy)
+      ;; The lazy producer has already rendered the Flex children.  Lower the
+      ;; private wrapper copy to Normal content so the generic Box painter
+      ;; applies only this Box's chrome and ownership once.
+      (cl-remf copy :children)
+      (cl-remf copy :ebox-child-sequence)
+      (plist-put copy :ebox-layout-config (ebox-normal-layout-create))
+      (plist-put copy :display
+                 (list (or (car-safe (plist-get copy :display)) 'block)
+                       'flow)))
     (unless complete
       (plist-put copy :padding-bottom-height 0)
       (plist-put copy :margin-bottom-height 0)
@@ -1912,7 +1877,7 @@ a prefix of the eventual full wrapper render."
 (defun ebox--flex-window-render-box-lines (node content complete limit)
   "Return NODE flex wrapper lines around CONTENT up to LIMIT."
   (let* ((rendered
-          (if-let* ((box (plist-get node :box)))
+          (if-let* ((box (ebox--flex-window-box node)))
               (let ((copy (ebox--flex-window-wrapper-copy box complete))
                     (region-id (ebox--ensure-region-id box)))
                 (plist-put copy :region-id region-id)
@@ -1952,7 +1917,8 @@ the chunk begins at the wrapper top and should include top chrome."
            (border-top-p (and include-top
                               (ebox-get box :border-top-p)))
            (border-top-color (ebox-get box :border-top-color))
-           (color (ebox-get box :color))
+           (color (and (ebox-style--text-paint-owner-p box)
+                       (ebox-get box :color)))
            (bgcolor (ebox-get box :bgcolor))
            (inner-height (+ (length content-lines) padding-top))
            result)
@@ -2060,14 +2026,13 @@ the chunk begins at the wrapper top and should include top chrome."
 (defun ebox--flex-window-definite-main (source axis)
   "Return SOURCE's definite main size for prefix flex rendering."
   (when (and (eq axis 'row)
-             (listp source)
-             (eq (plist-get source :ebox-type) 'box)
+             (ebox--flex-box-source-p source)
              (plist-member source :width))
     (ebox--flex-box-main-constraint source axis :width)))
 
 (defun ebox--flex-window-cheap-item (child axis index)
   "Return cheap flex item metadata for CHILD, or nil when unsupported."
-  (let* ((source (ebox--flex-item-source-node child))
+  (let* ((source child)
          (props (ebox--flex-item-props child))
          (basis (plist-get props :flex-basis))
          (main (ebox--flex-window-definite-main source axis))
@@ -2096,7 +2061,8 @@ the chunk begins at the wrapper top and should include top chrome."
               :base main
               :target main
               :window-frozen-shrinkable
-              (and (ebox-get source :wrap-mode)
+              (and (ebox-style-soft-wrap-p
+                    (ebox-get source :wrap-mode))
                    (not (zerop (or (plist-get props :flex-shrink) 1)))
                    t))))))
 
@@ -2109,7 +2075,8 @@ the chunk begins at the wrapper top and should include top chrome."
        (memq (plist-get props :flex-wrap) '(wrap nowrap))
        (not (ebox--flex-reverse-p props))
        (ebox--flex-default-order-p children)
-       (ebox--flex-window-wrapper-supported-p (plist-get node :box))))
+       (ebox--flex-window-wrapper-supported-p
+        (ebox--flex-window-box node))))
 
 (defun ebox--flex-window-lines-from-pieces (pieces)
   "Return flex content string from already rendered row PIECES."
@@ -2126,7 +2093,7 @@ the chunk begins at the wrapper top and should include top chrome."
 
 (defun ebox--flex-window-prefix-line-count (node pieces)
   "Return visible line count for NODE prefix PIECES without wrapper rerender."
-  (+ (ebox--flex-window-top-chrome-lines (plist-get node :box))
+  (+ (ebox--flex-window-top-chrome-lines (ebox--flex-window-box node))
      (if pieces
          (ebox-string-height
           (ebox--flex-window-lines-from-pieces pieces))
@@ -2269,7 +2236,7 @@ the chunk begins at the wrapper top and should include top chrome."
 
 (defun ebox--flex-window-completion-prefix-tail-rewrite-count (node)
   "Return how many cached prefix tail lines completion rewrites for NODE."
-  (let ((box (plist-get node :box)))
+  (let ((box (ebox--flex-window-box node)))
     (if (and box
              (ebox-get box :border-bottom-p)
              (= (floor (ebox-get box :padding-bottom-height)) 0))
@@ -2320,7 +2287,8 @@ the chunk begins at the wrapper top and should include top chrome."
               (+ cached-content-count (length new-content-lines))
             (length (ebox-string-lines content))))
          (prefix-line-count
-          (+ (ebox--flex-window-top-chrome-lines (plist-get node :box))
+          (+ (ebox--flex-window-top-chrome-lines
+              (ebox--flex-window-box node))
              prospective-content-count))
          (source-complete-visible-p
           (and source-complete
@@ -2331,14 +2299,14 @@ the chunk begins at the wrapper top and should include top chrome."
          (wrapper-lines
           (and chunk-wrapper-p new-content-lines
                (ebox--flex-window-render-wrapper-chunk-lines
-                (plist-get node :box)
+                (ebox--flex-window-box node)
                 new-content-lines cached-content-count seedless-chunk-p)))
          (prospective-line-count
           (+ cached-line-count (length wrapper-lines)))
          (completion-prefix-supported-p
           (and chunk-wrapper-p effective-source-complete
                (ebox--flex-window-complete-prefix-supported-p
-                (plist-get node :box))))
+                (ebox--flex-window-box node))))
          (exact-append-p
           (or completion-prefix-supported-p
               (and chunk-wrapper-p (not effective-source-complete))))
@@ -2357,7 +2325,7 @@ the chunk begins at the wrapper top and should include top chrome."
          (completed-tail-line
           (and completion-prefix-supported-p prospective-tail
                (ebox--flex-window-complete-tail-line
-                (plist-get node :box) (car prospective-tail))))
+                (ebox--flex-window-box node) (car prospective-tail))))
          content-lines
          content-line-count
          content-line-tail
@@ -2454,10 +2422,7 @@ Return nil when the flex container needs the normal full renderer."
         (ebox--flex-window-cache-store
          node limit
          (catch 'unsupported
-           (let* ((props (ebox--flex-container-content-props
-                          (plist-get node :props)
-                          (plist-get node :raw-props)
-                          (plist-get node :box)))
+           (let* ((props (ebox--flex-window-props node))
                   (axis (ebox--flex-axis props))
                   (children (ebox-tree-layout-children node))
                   (main-size (if (eq axis 'row)
@@ -2493,7 +2458,7 @@ Return nil when the flex container needs the normal full renderer."
                     (visible-line-count
                      (or (plist-get seed :prefix-line-count)
                          (ebox--flex-window-top-chrome-lines
-                          (plist-get node :box))))
+                          (ebox--flex-window-box node))))
                     result
                     complete)
                (cl-labels

@@ -14,6 +14,8 @@
                   "ebox-flex" (props))
 (declare-function ebox-grid-layout-config-props-p
                   "ebox-grid" (props))
+(declare-function ebox-flex-layout-create "ebox-flex" (&rest plist))
+(declare-function ebox-grid-layout-create "ebox-grid" (&rest plist))
 
 (cl-defstruct
     (ebox-layout-config
@@ -101,6 +103,34 @@
 (defun ebox-column-layout-create (&rest plist)
   "Return canonical ColumnConfig from evaluated PLIST."
   (ebox-layout-config--simple-axis-create 'column plist))
+
+(defun ebox-layout-config-property-names (tag)
+  "Return canonical property names owned by TAG's LayoutConfig."
+  (pcase tag
+    ('flex
+     '(:flex-direction :flex-wrap :justify-content
+       :align-items :align-content :row-gap :column-gap))
+    ('grid
+     '(:grid-template-columns :grid-template-rows
+       :grid-auto-columns :grid-auto-rows :grid-auto-flow
+       :row-gap :column-gap
+       :justify-items :align-items :justify-content :align-content))
+    ((or 'box 'row 'column) nil)
+    (_ (error "Unknown Ebox Box author form: %S" tag))))
+
+(defun ebox-layout-config-for-form (tag properties)
+  "Return TAG's typed LayoutConfig from evaluated layout PROPERTIES."
+  (pcase tag
+    ('box
+     (when properties
+       (error "Ebox Normal layout does not accept config properties: %S"
+              properties))
+     (ebox-normal-layout-create))
+    ('row (apply #'ebox-row-layout-create properties))
+    ('column (apply #'ebox-column-layout-create properties))
+    ('flex (apply #'ebox-flex-layout-create properties))
+    ('grid (apply #'ebox-grid-layout-create properties))
+    (_ (error "Unknown Ebox Box author form: %S" tag))))
 
 (provide 'ebox-layout-config)
 
