@@ -948,8 +948,7 @@ next Emacs start."
                           (plist-get issue :message))))))
     (display-buffer buffer)))
 
-;;;###autoload
-(defun ebox-native-build (&optional clean)
+(defun ebox-native-reflow--build (&optional clean)
   "Compile and install the bundled native module asynchronously.
 The command always runs the shared environment checks first and requires a
 Rust/Cargo toolchain native to the current Emacs architecture.  With prefix
@@ -1018,15 +1017,15 @@ Build output and exact errors appear in `*Ebox Native Build*'."
                      (error-message-string err)))))))
 
 (defun ebox-native-reflow--clean-build ()
-  "Run `ebox-native-build' after clearing Ebox's private Cargo cache."
+  "Run a native build after clearing Ebox's private Cargo cache."
   (interactive)
-  (ebox-native-build t))
+  (ebox-native-reflow--build t))
 
 (defvar ebox-native-status-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "g") #'ebox-native-status)
-    (define-key map (kbd "b") #'ebox-native-build)
+    (define-key map (kbd "g") #'ebox-native-reflow--status)
+    (define-key map (kbd "b") #'ebox-native-reflow--build)
     (define-key map (kbd "B") #'ebox-native-reflow--clean-build)
     map)
   "Keymap for `ebox-native-status-mode'.")
@@ -1142,8 +1141,7 @@ Build output and exact errors appear in `*Ebox Native Build*'."
     (insert (concat "Keys: g refresh status, b build/rebuild, "
                     "B clean rebuild, q quit.\n"))))
 
-;;;###autoload
-(defun ebox-native-status ()
+(defun ebox-native-reflow--status ()
   "Display native toolchain, installation, and runtime loading status."
   (interactive)
   (unless ebox-native-reflow--load-attempted-p

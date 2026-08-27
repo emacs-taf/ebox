@@ -65,11 +65,10 @@
                   "ebox-incremental" (buffer report))
 (declare-function ebox--scroll-rendered-content-lines
                   "ebox-layout" (box lines region-id &optional start-index))
+(declare-function ebox-native-reflow--build
+                  "ebox-native-reflow" (&optional clean))
+(declare-function ebox-native-reflow--status "ebox-native-reflow" ())
 
-(unless (fboundp 'ebox-native-build)
-  (autoload 'ebox-native-build "ebox-native-reflow" nil t))
-(unless (fboundp 'ebox-native-status)
-  (autoload 'ebox-native-status "ebox-native-reflow" nil t))
 (defalias 'ebox-select-all #'ebox-selector-query-buffer)
 (defalias 'ebox-update-selector #'ebox-selector-update-buffer)
 
@@ -77,6 +76,21 @@
   "Pixel-perfect box model renderer for Emacs buffers."
   :group 'applications
   :prefix "ebox-")
+
+;;;###autoload
+(defun ebox-native-build (&optional clean)
+  "Build and install Ebox's optional native module asynchronously.
+With prefix argument CLEAN, clear only Ebox's private Cargo build cache first."
+  (interactive "P")
+  (require 'ebox-native-reflow)
+  (ebox-native-reflow--build clean))
+
+;;;###autoload
+(defun ebox-native-status ()
+  "Display Ebox native toolchain, installation, and runtime status."
+  (interactive)
+  (require 'ebox-native-reflow)
+  (ebox-native-reflow--status))
 
 ;;;###autoload
 (defun ebox-byte-compile ()

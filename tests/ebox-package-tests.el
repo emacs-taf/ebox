@@ -19,8 +19,7 @@
     "ebox-grid.el"
     "ebox-canonical.el"
     "ebox-buffer-backend.el"
-    "ebox-selector.el"
-    "ebox-native-reflow.el")
+    "ebox-selector.el")
   "Source files that currently own public autoload entry points.")
 
 (defun ebox-test--source-text ()
@@ -81,12 +80,41 @@
           "(unless (ebox-text-node-p (ebox-text-create :value \"A\")) "
           "  (error \"Typed Text autoload failed\")))")))))))
 
-(ert-deftest ebox-facade-exposes-native-workflow-without-loading-it ()
-  "The two native commands should be available without native load work."
+(ert-deftest ebox-facade-defines-native-workflow-without-loading-it ()
+  "The facade should define native commands without loading the subsystem."
   (require 'ebox)
-  (should (autoloadp (symbol-function 'ebox-native-build)))
-  (should (autoloadp (symbol-function 'ebox-native-status)))
+  (should (commandp 'ebox-native-build))
+  (should (commandp 'ebox-native-status))
+  (should-not (autoloadp (symbol-function 'ebox-native-build)))
+  (should-not (autoloadp (symbol-function 'ebox-native-status)))
   (should-not (featurep 'ebox-native-reflow)))
+
+(ert-deftest ebox-native-command-autoloads-may-target-the-facade ()
+  "Startup registries may safely autoload native commands from `ebox'."
+  (let* ((emacs (expand-file-name invocation-name invocation-directory))
+         (parent (file-name-directory (directory-file-name ebox-test--root)))
+         (ecss (expand-file-name "ecss" parent))
+         (tp (expand-file-name "tp" parent)))
+    (with-temp-buffer
+      (should
+       (zerop
+        (process-file
+         emacs nil (current-buffer) nil
+         "-Q" "--batch"
+         "-L" ebox-test--root "-L" ecss "-L" tp
+         "--eval" "(setq load-prefer-newer t)"
+         "--eval"
+         (concat
+          "(progn "
+          "(autoload 'ebox-native-status \"ebox\" nil t) "
+          "(autoload 'ebox-native-build \"ebox\" nil t) "
+          "(autoload-do-load (symbol-function 'ebox-native-status) "
+          "                  'ebox-native-status) "
+          "(unless (and (commandp 'ebox-native-status) "
+          "             (commandp 'ebox-native-build)) "
+          "  (error \"Facade did not define native commands\")) "
+          "(when (featurep 'ebox-native-reflow) "
+          "  (error \"Facade autoload eagerly loaded native subsystem\")))")))))))
 
 (ert-deftest ebox-byte-compile-is-an-interactive-public-command ()
   "Users should be able to rebuild all active Ebox bytecode from Emacs."
