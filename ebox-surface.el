@@ -223,6 +223,11 @@ owned; no per-fragment substring is allocated."
         (setq line-index (1+ line-index)))
       (nreverse result))))
 
+(defun ebox-surface--scroll-lines-owned-p (lines)
+  "Return non-nil when every rendered line has an owned fragment template."
+  (and lines
+       (cl-every #'ebox-surface--scroll-line-fragment-template lines)))
+
 (defun ebox-surface--style-state-table (previous-state)
   "Copy retained style state from PREVIOUS-STATE into a weak table."
   (let ((table (make-hash-table :test 'eq :weakness 'key)))
@@ -3310,12 +3315,14 @@ box with wrapper chrome falls back to the retained wrapper renderer."
                    scroll-state))))
         (if (and visible (cadr visible))
             (let* ((lines (cadr visible))
-                   (output (ebox-lines-join lines))
-                   (fragment-data
-                    (ebox-surface--scroll-fragment-data lines output)))
-              (when (and fragment-data
+                   (output (ebox-lines-join lines)))
+              (when (and (ebox-surface--scroll-lines-owned-p lines)
                          (plist-get state :retained-scroll-content-p))
-                (plist-put state :scroll-patch-fragment-data fragment-data))
+                ;; Retain immutable line handles and stream their cached role
+                ;; runs directly into ownership planning.  Materializing one
+                ;; fragment plist per visible property run on every wheel
+                ;; event made scroll allocation O(all visible fragments).
+                (plist-put state :scroll-patch-lines lines))
               (when (> (length output) 0)
                 (add-text-properties
                  0 (length output)
@@ -3745,49 +3752,82 @@ fragment's complete paint-owner ancestor chain."
         (push copy metadata)
         (setq offset (+ offset length))))))
 
-(defun ebox-surface--owned-ranges
-    (context leaf fragments state node-objects region-objects
-             &optional attach-p)
-  "Attach merged owner ranges for FRAGMENTS to candidate LEAF.
+(defun ebox-surface--owned-ranges-from-runs
+    (context leaf state node-objects region-objects attach-p visit-runs)
+  "Attach merged ownership produced by VISIT-RUNS to candidate LEAF.
+VISIT-RUNS receives one callback accepting ROLE-IDS, START, and END.
 Adjacent ranges merge only when both their owner and opaque tags match."
   (let ((active (make-hash-table :test #'eq))
         (owner-cache (make-hash-table :test #'equal))
-        (offset 0)
         ranges)
-    (dolist (fragment fragments)
-      (let* ((role-ids (plist-get fragment :role-ids))
-             (owners (gethash role-ids owner-cache 'ebox/no-owners))
-             (source-p (plist-get fragment :text-source-p))
-             (start (if source-p
-                        (plist-get fragment :start)
-                      offset))
-             (end (if source-p
-                      (plist-get fragment :end)
-                    (+ offset (length (plist-get fragment :text))))))
-        (when (eq owners 'ebox/no-owners)
-          (setq owners
-                (ebox-surface--fragment-owners
-                 role-ids state node-objects region-objects))
-          (puthash role-ids owners owner-cache))
-        (dolist (owner owners)
-          (let* ((object (nth 0 owner))
-                 (tags (nth 1 owner))
-                 (tag-ranges (or (gethash object active)
-                                 (let ((table (make-hash-table :test #'equal)))
-                                   (puthash object table active)
-                                   table)))
-                 (current (gethash tags tag-ranges)))
-            (if (and current (= (plist-get current :end) start))
-                (plist-put current :end end)
-              (let ((range (list :object object :start start :end end
-                                 :tags tags)))
-                (push range ranges)
-                (puthash tags range tag-ranges)))))
-        (setq offset (if source-p end (+ offset (length (plist-get fragment :text)))))))
+    (funcall
+     visit-runs
+     (lambda (role-ids start end)
+       (let ((owners (gethash role-ids owner-cache 'ebox/no-owners)))
+         (when (eq owners 'ebox/no-owners)
+           (setq owners
+                 (ebox-surface--fragment-owners
+                  role-ids state node-objects region-objects))
+           (puthash role-ids owners owner-cache))
+         (dolist (owner owners)
+           (let* ((object (nth 0 owner))
+                  (tags (nth 1 owner))
+                  (tag-ranges
+                   (or (gethash object active)
+                       (let ((table (make-hash-table :test #'equal)))
+                         (puthash object table active)
+                         table)))
+                  (current (gethash tags tag-ranges)))
+             (if (and current (= (plist-get current :end) start))
+                 (plist-put current :end end)
+               (let ((range (list :object object :start start :end end
+                                  :tags tags)))
+                 (push range ranges)
+                 (puthash tags range tag-ranges))))))))
     (setq ranges (nreverse ranges))
     (when attach-p
       (tp-object-attach-content-ranges-owned context leaf ranges))
     ranges))
+
+(defun ebox-surface--owned-ranges
+    (context leaf fragments state node-objects region-objects
+             &optional attach-p)
+  "Attach merged owner ranges for FRAGMENTS to candidate LEAF."
+  (ebox-surface--owned-ranges-from-runs
+   context leaf state node-objects region-objects attach-p
+   (lambda (visit)
+     (let ((offset 0))
+       (dolist (fragment fragments)
+         (let* ((source-p (plist-get fragment :text-source-p))
+                (start (if source-p
+                           (plist-get fragment :start)
+                         offset))
+                (end (if source-p
+                         (plist-get fragment :end)
+                       (+ offset (length (plist-get fragment :text))))))
+           (funcall visit (plist-get fragment :role-ids) start end)
+           (setq offset
+                 (if source-p
+                     end
+                   (+ offset (length (plist-get fragment :text)))))))))))
+
+(defun ebox-surface--scroll-owned-ranges
+    (context leaf lines state node-objects region-objects attach-p)
+  "Attach merged owner ranges for retained scroll LINES to candidate LEAF."
+  (ebox-surface--owned-ranges-from-runs
+   context leaf state node-objects region-objects attach-p
+   (lambda (visit)
+     (let ((offset 0))
+       (dolist (line lines)
+         (let ((template
+                (or (ebox-surface--scroll-line-fragment-template line)
+                    (error "Ebox retained scroll line lost fragment ownership"))))
+           (dolist (fragment template)
+             (funcall visit
+                      (plist-get fragment :role-ids)
+                      (+ offset (plist-get fragment :start))
+                      (+ offset (plist-get fragment :end))))
+           (setq offset (+ offset (length line) 1))))))))
 
 (defun ebox-surface--native-owned-ranges
     (context leaf template state node-objects region-objects attach-p)
@@ -3832,11 +3872,17 @@ Adjacent ranges merge only when both their owner and opaque tags match."
 
 (defun ebox-surface--materialized-fragment-ledger (state)
   "Return STATE's paint ledger, expanding a native frame only on demand."
-  (let ((ledger (plist-get state :surface-fragments)))
-    (if-let* ((frame (and (listp ledger)
-                         (plist-get ledger :native-frame))))
-        (ebox-native-reflow-frame-fragments frame)
-      ledger)))
+  (let* ((ledger (plist-get state :surface-fragments))
+         (frame (and (listp ledger) (plist-get ledger :native-frame)))
+         (lines (and (listp ledger) (plist-get ledger :scroll-lines))))
+    (cond
+     (frame (ebox-native-reflow-frame-fragments frame))
+     (lines
+      (ebox-surface--fragment-metadata
+       (or (ebox-surface--scroll-fragment-data lines "")
+           (error "Ebox retained scroll lines lost fragment ownership"))
+       state))
+     (t ledger))))
 
 (defun ebox-surface--formatting-context-reflow-owned-ranges
     (context leaf ranges state node-objects)
@@ -3875,24 +3921,26 @@ all descendant ranges remain unchanged."
              &optional transfer-text-p)
   "Return one shared-text TP plan for OUTPUT and STATE.
 NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
-  (let* ((fragment-root
+  (let* ((scroll-lines
+          (and transfer-text-p
+               (plist-get state :retained-scroll-content-p)
+               (plist-get state :scroll-patch-lines)))
+         (fragment-root
           (tp-object-ensure context surface-root
                             ebox-surface--fragments-key 'ebox/fragments))
          (fragment-data
-          (or (and transfer-text-p
-                   (plist-get state :retained-scroll-content-p)
-                   (plist-get state :scroll-patch-fragment-data))
-              (and (eq output (plist-get state :native-render-output))
-                   (plist-get state :native-render-fragment-template))
-              (and (eq (plist-get state :projection-kind)
-                       'mixed-owner-reflow)
-                   (plist-get state :mixed-owner-fragment-data))
-              (and (memq (plist-get state :projection-kind)
-                         '(span-patch owner-scoped))
-                   (plist-get state :span-patch-fragment-data))
-              (if (stringp output)
-                  (ebox-surface--rendered-fragments output)
-                output)))
+          (unless scroll-lines
+            (or (and (eq output (plist-get state :native-render-output))
+                     (plist-get state :native-render-fragment-template))
+                (and (eq (plist-get state :projection-kind)
+                         'mixed-owner-reflow)
+                     (plist-get state :mixed-owner-fragment-data))
+                (and (memq (plist-get state :projection-kind)
+                           '(span-patch owner-scoped))
+                     (plist-get state :span-patch-fragment-data))
+                (if (stringp output)
+                    (ebox-surface--rendered-fragments output)
+                  output))))
          (rendered
           (if (stringp output)
               output
@@ -3922,6 +3970,10 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
                  (eq output (plist-get state :native-render-output))))
            (owned-ranges
             (cond
+             (scroll-lines
+              (ebox-surface--scroll-owned-ranges
+               context text-leaf scroll-lines state node-objects
+               region-objects attach-p))
              ((and native-template-p
                    (plist-get state :native-reuse-ownership-p))
               (let ((ranges
@@ -4009,6 +4061,8 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
                  (cond
                   ((plist-get state :native-render-frame)
                    (list :native-frame (plist-get state :native-render-frame)))
+                  (scroll-lines
+                   (list :scroll-lines (copy-sequence scroll-lines)))
                   ((or (plist-get state :mixed-owner-content-p)
                        (plist-get state :span-patch-content-p))
                    ;; Mixed projection already produced fresh offset-only
@@ -4020,6 +4074,7 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
       (cl-remf state :mixed-owner-content-p)
       (cl-remf state :span-patch-fragment-data)
       (cl-remf state :span-patch-content-p)
+      (cl-remf state :scroll-patch-lines)
       (let ((rendered-length (length rendered)))
         (list plan rendered owned-ranges
               (list (list :object text-leaf :start 0 :end rendered-length

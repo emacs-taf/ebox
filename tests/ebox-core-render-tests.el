@@ -8309,8 +8309,8 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-lazy-scroll-gui-cache-miss-returns-pending ()
-  "GUI scroll cache misses should not synchronously render missing content."
+(ert-deftest ebox-lazy-scroll-gui-small-cache-miss-stays-in-ebox-coordinate ()
+  "A bounded GUI cache miss should extend and scroll in one Ebox commit."
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-build
@@ -8331,7 +8331,7 @@
               (ebox-viewport-height 20)
               (ebox-scroll-step 4)
               (ebox-scroll-lazy-idle-prefetch-lines 0)
-              (ebox-scroll-lazy-prefix-lookahead-lines 0)
+              (ebox-scroll-lazy-prefix-lookahead-lines 8)
               (noninteractive nil))
           (cl-letf (((symbol-function 'display-graphic-p)
                      (lambda (&optional _display) t)))
@@ -8355,9 +8355,22 @@
                 (should (= boundary-offset
                            (ebox--scroll-region-by root-id
                                                    boundary-offset)))
-                (should (eq 'pending
-                            (ebox--scroll-region-by root-id 4)))))
-            (should (= prefix-count 0))))
+                (should (= 4 (ebox--scroll-region-by root-id 4)))
+                (should (= (+ boundary-offset 4)
+                           (plist-get (ebox--scroll-get-state root-id)
+                                      :scroll-offset)))
+                (should (= (+ initial-lines 12)
+                           (length
+                            (plist-get (ebox--scroll-get-state root-id)
+                                       :content-lines))))
+                (should
+                 (= content-height
+                    (length
+                     (plist-get
+                      (plist-get (ebox--buffer-render-state buffer)
+                                 :surface-fragments)
+                      :scroll-lines))))))
+            (should (= prefix-count 1))))
       (when root-id
         (ebox--smooth-scroll-stop root-id))
       (when (and buffer (buffer-live-p buffer))

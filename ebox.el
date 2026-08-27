@@ -954,10 +954,11 @@ several costly rows before yielding back to input."
 
 This is the synchronous edge of the lazy scroll model: visible scrolling can
 only replace cached line strings after those strings exist.  When the user
-reaches the current lazy prefix boundary, render at most one configured
-interactive slice instead of pausing for an idle timer or materializing the
-entire source.  BUDGET-LINES caps how many new source lines this call may
-request; callers that represent GUI animation ticks pass their tick size."
+reaches the current lazy prefix boundary, render one configured interactive
+slice plus the fixed lazy lookahead instead of pausing for an idle timer or
+materializing the entire source.  The lookahead amortizes composite source
+rows across following wheel events.  BUDGET-LINES caps the visible slice;
+callers that represent GUI animation ticks pass their tick size."
   (let* ((content-lines (plist-get state :content-lines))
          (content-height (or (plist-get state :content-height) 0))
          (current-lines (length content-lines))
@@ -970,8 +971,7 @@ request; callers that represent GUI animation ticks pass their tick size."
              (slice-lines (max 1 (or budget-lines ebox-scroll-step 1)))
              (slice-end (+ current-lines slice-lines))
              (required-lines (max current-lines
-                                  (min visible-end slice-end)))
-             (ebox-scroll-lazy-prefix-lookahead-lines 0))
+                                  (min visible-end slice-end))))
         (ebox--scroll-state-ensure-prefix-lines
          region-id state required-lines t)))))
 
@@ -3138,8 +3138,14 @@ inside the old prefix, so a line-slide never mixes two layout versions."
         (throw 'result (list :result 'pending)))
       (when (and (> delta 0)
                  (or prefix-budget-lines
-                     (and (ebox--scroll-sync-prefix-render-p)
-                          (<= delta (ebox--scroll-prefetch-slice-lines)))))
+                     ;; A small foreground intent already has an explicit
+                     ;; frame budget.  Extend exactly that bounded prefix
+                     ;; before publication so Ebox remains the sole owner of
+                     ;; the visible scroll coordinate.  Deferring this case
+                     ;; leaves the intent residual to Emacs buffer scrolling;
+                     ;; the following Ebox commit then snaps WINDOW-START
+                     ;; back, producing a cold-cache flicker.
+                     (<= delta (ebox--scroll-prefetch-slice-lines))))
         (setq state
               (ebox--scroll-ensure-bounded-prefix-for-offset
                region-id state desired prefix-budget-lines)))
