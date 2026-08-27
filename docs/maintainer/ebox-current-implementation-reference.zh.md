@@ -79,6 +79,7 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 - 候选失败时必须保留之前的 buffer、runtime identity 和报告。
 - Key 只在兄弟节点中有效；不能用可见字符串作为 identity。
 - Ebox 只拥有逻辑 node-to-subject 适配与 id/class/type 候选索引；ECSS 的公共结构化 matcher 是唯一 selector 真相源。subject 只暴露内建 id/key 和显式 `:selector-attributes`，绝不暴露可见 content、布局状态或 runtime 容器。
+- `ebox-style--property-definitions` 是 Ebox 作者属性的唯一来源：加载时一次生成 Ebox 自己的只读查询索引与一个不可变 ECSS package schema；surface schema 只组合一次，node 构造和更新不重复注册或复制整份 schema。
 - `owner-rerender` 范围大于 `span-patch`，`span-patch` 大于 `paint-patch`。
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。

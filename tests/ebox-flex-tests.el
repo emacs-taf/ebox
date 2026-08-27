@@ -428,7 +428,9 @@
                    :padding (0 (10)) :border "#5E7F6A"
                    :text-align center "wrap")
               (flex :id "body" :max-width (293) :padding (0 (8))
-                    :border "#5E7F6A" :border-top none
+                    :border-right "#5E7F6A"
+                    :border-bottom "#5E7F6A"
+                    :border-left "#5E7F6A"
                     :flex-wrap wrap :column-gap (8)
                     (box :flex-shrink 0 :width (118) "A 118")
                     (box :flex-shrink 0 :width (118) "B 118")
@@ -459,14 +461,19 @@
          (layout
           (ebox-build
            '(flex :flex-flow (row wrap) :row-gap 1 :column-gap (12)
-             :padding (0 (12)) :border "#6F6A95" :border-top none
+             :padding (0 (12))
+             :border-right "#6F6A95"
+             :border-bottom "#6F6A95"
+             :border-left "#6F6A95"
              :bgcolor "#FBF9FF"
              (column
               (box :max-width (440)
                    :padding (0 (10)) :border "#6F6A95"
                    :text-align center ":flex-flow (row wrap)")
               (flex :max-width (440) :padding (0 (8))
-                    :border "#6F6A95" :border-top none
+                    :border-right "#6F6A95"
+                    :border-bottom "#6F6A95"
+                    :border-left "#6F6A95"
                     :flex-flow (row wrap) :gap (1 (12))
                     (box :width (170) "A")
                     (box :width (170) "B")
@@ -476,7 +483,9 @@
                    :padding (0 (10)) :border "#6F6A95"
                    :text-align center ":flex-flow (column wrap)")
               (flex :max-width (440) :padding (0 (8))
-                    :border "#6F6A95" :border-top none
+                    :border-right "#6F6A95"
+                    :border-bottom "#6F6A95"
+                    :border-left "#6F6A95"
                     :flex-flow (column wrap) :gap (1 (12))
                     (box :width (140) "A")
                     (box :width (140) "B")

@@ -155,7 +155,7 @@ and author TAG."
                 (error "%s rejected properties: %s"
                        context (error-message-string err)))))))
       (cl-loop for (id _value) on declarations by #'cddr
-               for property = (or (ebox-style-property id)
+               for property = (or (ebox-style--property id)
                                   (error "Missing canonical Ebox property: %S"
                                          id))
                unless (funcall predicate property)

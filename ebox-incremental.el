@@ -6401,7 +6401,7 @@ by impact classification; the declaration container itself is not geometry."
                         (memq key ebox-tree--excluded-source-keys)
                         (memq key '(:props :raw-props
                                     :ebox-style-declarations))
-                        (ebox-style-property key))
+                        (ebox-style--property key))
               (push key seen)
               (let ((old-entry (plist-member old key))
                     (new-entry (plist-member new key)))
@@ -6683,7 +6683,7 @@ derive render changes from the computed fragment style signatures."
                   (ordinary-keys
                    (cl-remove-if
                     (lambda (key)
-                      (or (ebox-style-property key)
+                      (or (ebox-style--property key)
                           (memq key ebox-tree-metadata-source-keys)))
                     source-keys))
                   (style-keys

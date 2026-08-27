@@ -79,6 +79,7 @@ Caller-owned Source Tree
 - A failed candidate leaves the previous buffer, runtime identity, and report intact.
 - Keys are local to siblings; visible strings are never used as identity.
 - Ebox owns logical node-to-subject adaptation and id/class/type candidate indexes; ECSS's public structured matcher is the only selector truth source. Subjects expose built-in id/key plus explicit `:selector-attributes`, never visible content, layout state, or runtime containers.
+- `ebox-style--property-definitions` is the single Ebox author-property source. Load time derives Ebox's read-only lookup index and one immutable ECSS package schema from it; the surface schema is composed once, and node construction or updates never re-register or copy the whole schema domain.
 - `owner-rerender` is broader than `span-patch`, which is broader than `paint-patch`.
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.

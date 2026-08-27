@@ -24,16 +24,11 @@
                   "ebox-flex" (value allowed-keywords))
 (declare-function ebox--nonnegative-horizontal-size-pixels
                   "ebox-layout" (value &optional default))
-(declare-function ecss-schema-set-create "ecss" ())
 (declare-function ecss-stylesheet-create "ecss" ())
 
 (defvar ebox--preferred-size-keywords)
 (defvar ebox--min-size-keywords)
 (defvar ebox--max-size-keywords)
-
-(defun ebox-style--create-schema-set ()
-  "Return one private ECSS schema set for Ebox style state."
-  (ecss-schema-set-create))
 
 (defun ebox-style--create-stylesheet ()
   "Return one private ECSS stylesheet for Ebox style state."
@@ -226,24 +221,37 @@
     (:name :grid-row-span :id ebox/grid-row-span :initial nil
      :contexts (item) :group geometry :dirty-kind geometry :signature layout
      :validator positive-integer)
-    (:name :padding :id ebox/padding :shorthand padding)
-    (:name :padding-inline :id ebox/padding-inline :shorthand padding-inline)
-    (:name :padding-block :id ebox/padding-block :shorthand padding-block)
-    (:name :margin :id ebox/margin :shorthand margin)
-    (:name :margin-inline :id ebox/margin-inline :shorthand margin-inline)
-    (:name :margin-block :id ebox/margin-block :shorthand margin-block)
-    (:name :border :id ebox/border :shorthand border)
-    (:name :border-top :id ebox/border-top :shorthand border-top)
-    (:name :border-right :id ebox/border-right :shorthand border-right)
-    (:name :border-bottom :id ebox/border-bottom :shorthand border-bottom)
-    (:name :border-left :id ebox/border-left :shorthand border-left)
+    (:name :padding :id ebox/padding :shorthand padding
+     :impacts (geometry) :projections (layout))
+    (:name :padding-inline :id ebox/padding-inline :shorthand padding-inline
+     :impacts (geometry) :projections (layout))
+    (:name :padding-block :id ebox/padding-block :shorthand padding-block
+     :impacts (geometry) :projections (layout))
+    (:name :margin :id ebox/margin :shorthand margin
+     :impacts (geometry) :projections (layout))
+    (:name :margin-inline :id ebox/margin-inline :shorthand margin-inline
+     :impacts (geometry) :projections (layout))
+    (:name :margin-block :id ebox/margin-block :shorthand margin-block
+     :impacts (geometry) :projections (layout))
+    (:name :border :id ebox/border :shorthand border
+     :impacts (geometry structure paint) :projections (layout paint))
+    (:name :border-top :id ebox/border-top :shorthand border-top
+     :impacts (geometry structure paint) :projections (layout paint))
+    (:name :border-right :id ebox/border-right :shorthand border-right
+     :impacts (geometry structure paint) :projections (layout paint))
+    (:name :border-bottom :id ebox/border-bottom :shorthand border-bottom
+     :impacts (geometry structure paint) :projections (layout paint))
+    (:name :border-left :id ebox/border-left :shorthand border-left
+     :impacts (geometry structure paint) :projections (layout paint))
     (:name :border-top-p :id ebox/border-top-p
      :shorthand border-top-present :validator boolean
      :exclusive-outputs t
+     :impacts (geometry structure) :projections (layout)
      :group structure :dirty-kind structure :signature layout)
     (:name :border-bottom-p :id ebox/border-bottom-p
      :shorthand border-bottom-present :validator boolean
      :exclusive-outputs t
+     :impacts (geometry structure) :projections (layout)
      :group structure :dirty-kind structure :signature layout)
     (:name :border-width :id ebox/border-width :shorthand border-width
      :group geometry :dirty-kind geometry :signature layout)
@@ -259,16 +267,8 @@
      :group geometry :dirty-kind geometry :signature layout))
   "Canonical Ebox property schemas and public aliases.")
 
-(defvar ebox-style--property-table nil
-  "Hash table from canonical property names and aliases to metadata.")
-
-(defvar ebox-style-schemas (ebox-style--create-schema-set)
-  "ECSS property schemas for the isolated Ebox style domain.")
-
-(defvar ebox-style--registered-schemas nil
-  "Schema-set object whose Ebox properties are already registered.
-`ecss-schema-set-property' returns a detached schema copy, so probing it on
-every `ebox-create' needlessly copies the entire property metadata domain.")
+(defvar ebox-style-schemas)
+(defvar ebox-style--property-index)
 
 (defconst ebox-style--declaration-cache-max-entries 512
   "Maximum canonical declaration compilations retained by Ebox.")
@@ -277,44 +277,27 @@ every `ebox-create' needlessly copies the entire property metadata domain.")
   (make-hash-table :test 'equal)
   "Bounded memo table for canonical Ebox declaration compilation.")
 
-(defun ebox-style--register-property-name (table name property role)
-  "Register NAME for PROPERTY ROLE in TABLE, rejecting collisions."
-  (when-let* ((existing (gethash name table)))
-    (unless (eq existing property)
-      (error "Ebox property %S %s collides with canonical property %S"
-             name role (plist-get existing :name))))
-  (puthash name property table))
-
-(defun ebox-style--ensure-property-table ()
-  "Return the canonical style property registry table."
-  (or ebox-style--property-table
-      (let ((table (make-hash-table :test 'eq)))
-        (dolist (property ebox-style--property-definitions)
-          (ebox-style--register-property-name
-           table (plist-get property :name) property "name")
-          (ebox-style--register-property-name
-           table (plist-get property :id) property "ID")
-          (dolist (alias (plist-get property :aliases))
-            (ebox-style--register-property-name table alias property "alias")))
-        (setq ebox-style--property-table table))))
+(defun ebox-style--property (name)
+  "Return registry-owned style metadata for internal NAME lookup."
+  (gethash name ebox-style--property-index))
 
 (defun ebox-style-property (name)
-  "Return registered style metadata for canonical property or alias NAME."
-  (gethash name (ebox-style--ensure-property-table)))
+  "Return detached style metadata for canonical property or alias NAME."
+  (ecss-schema-set-property-metadata ebox-style-schemas name))
 
 (defun ebox-style-canonical-name (name)
   "Return canonical CSS-like longhand property name for NAME."
-  (when-let* ((property (ebox-style-property name)))
+  (when-let* ((property (ebox-style--property name)))
     (plist-get property :name)))
 
 (defun ebox-style-property-accepted-p (tag name)
   "Return non-nil when author form TAG accepts property NAME."
-  (when-let* ((property (ebox-style-property name)))
+  (when-let* ((property (ebox-style--property name)))
     (ebox-style--form-property-allowed-p tag property)))
 
 (defun ebox-style-schema-id (name)
   "Return namespaced ECSS schema id for Ebox property NAME."
-  (when-let* ((property (ebox-style-property name)))
+  (when-let* ((property (ebox-style--property name)))
     (plist-get property :id)))
 
 (defun ebox-style--put (plist key value)
@@ -694,6 +677,50 @@ generated wrappers that already contain exact line breaks."
       (setq options (plist-put options :shorthand shorthand)))
     options))
 
+(defun ebox-style--schema-impacts (property)
+  "Return immutable impact classes for PROPERTY metadata."
+  (or (plist-get property :impacts)
+      (and (eq (plist-get property :group) 'typography)
+           '(geometry paint))
+      (list (plist-get property :dirty-kind))))
+
+(defun ebox-style--schema-projections (property)
+  "Return immutable projection owners for PROPERTY metadata."
+  (or (plist-get property :projections)
+      (delq nil (list (plist-get property :signature)))))
+
+(defun ebox-style--schema-definition (property)
+  "Return one ECSS package definition for Ebox PROPERTY metadata."
+  (append
+   (list :id (plist-get property :id)
+         :aliases
+         (cons (plist-get property :name)
+               (copy-sequence (plist-get property :aliases)))
+         :impacts (ebox-style--schema-impacts property)
+         :projections (ebox-style--schema-projections property)
+         :metadata property)
+   (ebox-style--schema-options property)))
+
+(defconst ebox-style--schema-package
+  (ecss-schema-package-create
+   'ebox
+   (mapcar #'ebox-style--schema-definition
+           ebox-style--property-definitions))
+  "Immutable Ebox property package registered with ECSS.")
+
+(defconst ebox-style--property-index
+  (let ((table (make-hash-table :test #'eq)))
+    (dolist (property ebox-style--property-definitions table)
+      (puthash (plist-get property :id) property table)
+      (puthash (plist-get property :name) property table)
+      (dolist (alias (plist-get property :aliases))
+        (puthash alias property table))))
+  "Ebox-owned immutable lookup index over property definitions.")
+
+(defconst ebox-style-schemas
+  (ecss-schema-set-compose ebox-style--schema-package)
+  "Immutable Ebox-only surface schema set.")
+
 (defvar ebox-style--closed-computed-cache (make-hash-table :test #'equal)
   "Bounded cache of selector-free, dependency-free computed styles.")
 
@@ -710,26 +737,6 @@ generated wrappers that already contain exact line breaks."
   "Return non-nil when DECLARATIONS contain no computed value source."
   (cl-loop for (_property value) on declarations by #'cddr
            never (tp-computed-p value)))
-
-(defun ebox-style-register-properties ()
-  "Register the complete namespaced Ebox property domain with ECSS."
-  (dolist (property ebox-style--property-definitions)
-    (apply #'ecss-schema-set-define
-           ebox-style-schemas (plist-get property :id)
-           (ebox-style--schema-options property)))
-  (clrhash ebox-style--closed-computed-cache)
-  (clrhash ebox-style--closed-inheritance-cache)
-  (setq ebox-style--registered-schemas ebox-style-schemas))
-
-(defun ebox-style--ensure-properties ()
-  "Ensure Ebox property schemas exist in the isolated ECSS schema set."
-  (unless (eq ebox-style--registered-schemas ebox-style-schemas)
-    ;; Only the first call for a new schema-set needs to inspect/register the
-    ;; domain.  Avoid the detached `ecss-schema-set-property' accessor on the
-    ;; hot `ebox-create' path; it recursively copies schema metadata.
-    (if (ecss-schema-set-property ebox-style-schemas 'ebox/color)
-        (setq ebox-style--registered-schemas ebox-style-schemas)
-      (ebox-style-register-properties))))
 
 (defvar ebox-style-stylesheet (ebox-style--create-stylesheet)
   "Isolated ECSS stylesheet containing Ebox layout and paint rules.")
@@ -782,6 +789,12 @@ author declaration that references the slot."
             right (cddr right)))
     (and equal-p (null left) (null right))))
 
+(defconst ebox-style--inherited-properties
+  (cl-loop for property in ebox-style--property-definitions
+           when (plist-get property :inherits)
+           collect (plist-get property :id))
+  "Canonical ECSS properties inherited according to the shared schema.")
+
 (defun ebox-style--inherited-declarations-changed-p (old new)
   "Return non-nil when OLD and NEW change descendant style inputs.
 The inherited property domain comes only from the canonical schema.  ECSS
@@ -813,7 +826,7 @@ consume them even though Ebox does not interpret their names."
   "Reject duplicate canonical properties in author PLIST."
   (let ((seen (make-hash-table :test 'eq)))
     (cl-loop for (name _value) on plist by #'cddr
-             for property = (ebox-style-property name)
+             for property = (ebox-style--property name)
              for id = (and property (plist-get property :id))
              when id
              do (when-let* ((previous (gethash id seen)))
@@ -825,7 +838,7 @@ consume them even though Ebox does not interpret their names."
 
 (defun ebox-style--author-property-output-ids (name value)
   "Return canonical output IDs produced by author NAME and VALUE."
-  (when-let* ((property (ebox-style-property name)))
+  (when-let* ((property (ebox-style--property name)))
     (if-let* ((shorthand-name (plist-get property :shorthand))
               (expander (ebox-style--shorthand shorthand-name)))
         (cl-loop for (id _output) on (funcall expander value) by #'cddr
@@ -836,7 +849,7 @@ consume them even though Ebox does not interpret their names."
   "Reject author properties whose canonical outputs overlap in PLIST."
   (let (entries)
     (cl-loop for (name value) on plist by #'cddr
-             for property = (ebox-style-property name)
+             for property = (ebox-style--property name)
              when property
              do (push (list :name name :value value :property property)
                       entries))
@@ -899,17 +912,25 @@ not affect declaration compilation and are intentionally excluded."
 (defun ebox-style--validate-declaration-values (declarations)
   "Return DECLARATIONS after static Ebox-owned value validation."
   (cl-loop for (property value) on declarations by #'cddr
-           for schema = (ebox-style-property property)
+           for schema = (ebox-style--property property)
            for validator = (and schema (plist-get schema :validator))
            when (ebox-style--static-invalid-declaration-p validator value)
            do (error "ebox: invalid value for %S: %S"
                      (plist-get schema :name) value))
   declarations)
 
+(defun ebox-style--merge-ordered-author-declarations (declarations)
+  "Expand ordered Ebox DECLARATIONS as distinct normalization groups.
+Ebox currently preserves CSS shorthand/longhand declaration order, while its
+own author validator rejects exact aliases and explicitly exclusive outputs."
+  (apply #'ecss-merge-declarations
+         ebox-style-schemas
+         (cl-loop for (property value) on declarations by #'cddr
+                  collect (list property value))))
+
 (defun ebox-style-compile-declarations (plist &optional strict)
   "Compile Ebox PLIST aliases to ECSS schema declarations.
 When STRICT is non-nil, reject properties outside the Ebox style domain."
-  (ebox-style--ensure-properties)
   (unless (ebox-style--valid-plist-p plist)
     (user-error "Ebox style declarations must be an even property list"))
   (ebox-style--validate-no-duplicate-properties plist)
@@ -931,7 +952,7 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
                                   property)))
         (let ((compiled
                (ebox-style--validate-declaration-values
-                (ecss-merge-declarations ebox-style-schemas canonical))))
+                (ebox-style--merge-ordered-author-declarations canonical))))
           (when (>= (hash-table-count ebox-style--declaration-cache)
                     ebox-style--declaration-cache-max-entries)
             (clrhash ebox-style--declaration-cache))
@@ -963,7 +984,7 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
            declarations))
   (let ((seen (make-hash-table :test #'eq)))
     (cl-loop for (id _value) on declarations by #'cddr
-             for property = (ebox-style-property id)
+             for property = (ebox-style--property id)
              unless (and property (eq id (plist-get property :id)))
              do (error "Ebox declaration is not a canonical property ID: %S"
                        id)
@@ -984,7 +1005,7 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
 (defun ebox-style-declaration-properties (declarations predicate)
   "Return canonical author properties in DECLARATIONS matching PREDICATE."
   (cl-loop for (id value) on declarations by #'cddr
-           for property = (or (ebox-style-property id)
+           for property = (or (ebox-style--property id)
                               (error "Unknown canonical Ebox property: %S" id))
            when (funcall predicate property)
            append (list (plist-get property :name) value)))
@@ -993,20 +1014,18 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
     (declarations predicate)
   "Return non-nil when DECLARATIONS include facts outside PREDICATE."
   (cl-loop for (id _value) on declarations by #'cddr
-           for property = (or (ebox-style-property id)
+           for property = (or (ebox-style--property id)
                               (error "Unknown canonical Ebox property: %S" id))
            thereis (not (funcall predicate property))))
 
 (defun ebox-style-merge-declarations (base overrides)
   "Merge canonical BASE and OVERRIDES through ECSS property schemas."
-  (ebox-style--ensure-properties)
   (ecss-merge-declarations ebox-style-schemas base overrides))
 
 (cl-defun ebox-style-add-rule
     (selector declarations &key (origin 'author) layer scope)
   "Add SELECTOR rule with Ebox DECLARATIONS to the isolated stylesheet.
 ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
-  (ebox-style--ensure-properties)
   (ecss-stylesheet-add-rule
    ebox-style-stylesheet ebox-style-schemas (ebox-style--selector selector)
    (ebox-style-compile-declarations declarations t)
@@ -1015,7 +1034,6 @@ ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
 
 (defun ebox-style-compute-subject (subject declarations &optional parent-style)
   "Compute SUBJECT style from DECLARATIONS and optional PARENT-STYLE via ECSS."
-  (ebox-style--ensure-properties)
   (let* ((closed-p
           (and (not (ebox-style-cascade-active-p))
                (ebox-style--closed-declarations-p declarations)))
@@ -1084,12 +1102,6 @@ winner is required so parent inherited geometry/paint cannot be stale."
         ebox-style--theme-delta-properties)
        (plist-member old 'ebox/color)
        (plist-member new 'ebox/color)))
-
-(defconst ebox-style--inherited-properties
-  (cl-loop for property in ebox-style--property-definitions
-           when (plist-get property :inherits)
-           collect (plist-get property :id))
-  "Canonical ECSS properties inherited according to the shared schema.")
 
 (defun ebox-style--inherited-style-signature (style)
   "Return the inherited-value fingerprint of computed STYLE, or nil.
@@ -1326,7 +1338,7 @@ same canonical property id, so callers never inspect backend plist fields."
 (defun ebox-style--remove-style-properties (plist)
   "Return PLIST without Ebox style or ECSS custom properties."
   (cl-loop for (property value) on plist by #'cddr
-           unless (or (ebox-style-property property)
+           unless (or (ebox-style--property property)
                       (ebox-style--custom-property-p property))
            append (list property value)))
 
@@ -1636,7 +1648,7 @@ until their private encoding is removed."
 
 (defun ebox-style-dirty-kind (name)
   "Return dirty kind for canonical property or alias NAME."
-  (when-let* ((property (ebox-style-property name)))
+  (when-let* ((property (ebox-style--property name)))
     (plist-get property :dirty-kind)))
 
 (defun ebox-style-signature (computed-style groups)
@@ -1645,7 +1657,7 @@ until their private encoding is removed."
     (while computed-style
       (let* ((property-name (pop computed-style))
              (value (pop computed-style))
-             (property (ebox-style-property property-name))
+             (property (ebox-style--property property-name))
              (group (and property (plist-get property :signature))))
         (when (and property
                    (or (null groups)
@@ -1661,8 +1673,6 @@ until their private encoding is removed."
            (mapcar (lambda (entry)
                      (list (car entry) (cdr entry)))
                    entries))))
-
-(ebox-style-register-properties)
 
 (defconst ebox-style-ebox-property-rules
   '((:padding :expand (:padding-top :padding-right

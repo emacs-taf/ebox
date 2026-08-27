@@ -3992,7 +3992,7 @@ cannot be changed through the unpublished batch root."
                                     (ebox-get box target-key))
                                   value))
                       (and declarations-changed
-                           (ebox-style-property key)))
+                           (ebox-style--property key)))
              do (if (eq target-key :content)
                     (if-let* ((text
                                (ebox--region-update-direct-text-node box)))

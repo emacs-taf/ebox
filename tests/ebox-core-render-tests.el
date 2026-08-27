@@ -454,6 +454,43 @@
                     :font-height)
          literal))))
 
+(ert-deftest ebox-ecss-computed-fact-retains-owner-impact-and-provenance ()
+  "The Ebox package schema should remain attached to one computed fact."
+  (let* ((style
+          (ecss-compute-style
+           ebox-style-schemas (ecss-subject-create :type "box")
+           :declarations (ebox-style-compile-declarations '(:width (120)) t)
+           :provenance t))
+         (fact (ecss-computed-style-property-fact style 'ebox/width)))
+    (should (eq 'ebox/width (ecss-computed-property-fact-property fact)))
+    (should (eq 'ebox (ecss-computed-property-fact-owner fact)))
+    (should (equal '(geometry)
+                   (ecss-computed-property-fact-impacts fact)))
+    (should (equal '(layout)
+                   (ecss-computed-property-fact-projections fact)))
+    (should (equal (ecss-computed-property-fact-value fact)
+                   (ecss-computed-style-value style 'ebox/width)))
+    (should (eq 'declaration
+                (plist-get (ecss-computed-property-fact-provenance fact)
+                           :source)))))
+
+(ert-deftest ebox-ecss-multi-impact-fact-shares-one-computed-value ()
+  "Typography geometry and paint consumers should share one value identity."
+  (let* ((style
+          (ecss-compute-style
+           ebox-style-schemas (ecss-subject-create :type "box")
+           :declarations
+           (ebox-style-compile-declarations '(:font-weight bold) t)))
+         (fact
+          (ecss-computed-style-property-fact style 'ebox/font-weight))
+         (geometry-value (ecss-computed-property-fact-value fact))
+         (paint-value (ecss-computed-property-fact-value fact)))
+    (should (equal '(geometry paint)
+                   (ecss-computed-property-fact-impacts fact)))
+    (should (eq geometry-value paint-value))
+    (should (equal geometry-value
+                   (ecss-computed-style-value style 'ebox/font-weight)))))
+
 (ert-deftest ebox-style-context-reads-each-ecss-snapshot-once ()
   "Style projection should not repeatedly copy one computed ECSS snapshot."
   (let* ((style
@@ -2158,7 +2195,7 @@
   "A color-only change should produce paint dirty, not geometry dirty."
   (ebox-test--reset-runtime-state)
   (let* ((box (ebox-test-box :content "Paint" :width 80
-                           :border t :border-color "red"))
+                           :border '(1 solid "red")))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (let ((old (ebox--current-layout-snapshots (current-buffer))))
@@ -2225,7 +2262,7 @@
   "Paint-only dirty entries should produce paint-patch ops."
   (ebox-test--reset-runtime-state)
   (let* ((box (ebox-test-box :content "Paint" :width 80
-                           :border t :border-color "red"))
+                           :border '(1 solid "red")))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (let ((full-rerenders
@@ -4255,7 +4292,7 @@
   "Update reports should show dirty and patch-set summaries."
   (ebox-test--reset-runtime-state)
   (let* ((box (ebox-test-box :content "Report" :width 80
-                           :border t :border-color "red"))
+                           :border '(1 solid "red")))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (ebox-test--region-update region-id :border-color "blue")
@@ -4569,14 +4606,18 @@
                      (box :id left :content "Left" :width (120)
                           :padding (0 (8)) :border "#D97757")
                      (box :content "Body" :width (120)
-                          :padding (0 (8)) :border "#D97757"
-                          :border-top none))
+                          :padding (0 (8))
+                          :border-right "#D97757"
+                          :border-bottom "#D97757"
+                          :border-left "#D97757"))
                     (column
                      (box :id right :content "Right" :width (120)
                           :padding (0 (8)) :border "#5E7F6A")
                      (box :content "Body" :width (120)
-                          :padding (0 (8)) :border "#5E7F6A"
-                          :border-top none)))))
+                          :padding (0 (8))
+                          :border-right "#5E7F6A"
+                          :border-bottom "#5E7F6A"
+                          :border-left "#5E7F6A")))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -4606,18 +4647,26 @@
                     :padding (0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
                     (column
                      (box :id left :content "Left" :width (120)
-                          :padding (0 (8)) :border "#D97757"
-                          :border-bottom none)
+                          :padding (0 (8))
+                          :border-top "#D97757"
+                          :border-right "#D97757"
+                          :border-left "#D97757")
                      (box :content "Body" :width (120)
-                          :padding (0 (8)) :border "#D97757"
-                          :border-top none))
+                          :padding (0 (8))
+                          :border-right "#D97757"
+                          :border-bottom "#D97757"
+                          :border-left "#D97757"))
                     (column
                      (box :content "Right" :width (120)
-                          :padding (0 (8)) :border "#5E7F6A"
-                          :border-bottom none)
+                          :padding (0 (8))
+                          :border-top "#5E7F6A"
+                          :border-right "#5E7F6A"
+                          :border-left "#5E7F6A")
                      (box :content "Body" :width (120)
-                          :padding (0 (8)) :border "#5E7F6A"
-                          :border-top none)))))
+                          :padding (0 (8))
+                          :border-right "#5E7F6A"
+                          :border-bottom "#5E7F6A"
+                          :border-left "#5E7F6A")))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -4650,18 +4699,26 @@
                     :padding (0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
                     (column
                      (box :id left :content "Left" :width (120)
-                          :padding (0 (8)) :border "#D97757"
-                          :border-bottom none)
+                          :padding (0 (8))
+                          :border-top "#D97757"
+                          :border-right "#D97757"
+                          :border-left "#D97757")
                      (box :content "Body" :width (120)
-                          :padding (0 (8)) :border "#D97757"
-                          :border-top none))
+                          :padding (0 (8))
+                          :border-right "#D97757"
+                          :border-bottom "#D97757"
+                          :border-left "#D97757"))
                     (column
                      (box :content "Right" :width (120)
-                          :padding (0 (8)) :border "#5E7F6A"
-                          :border-bottom none)
+                          :padding (0 (8))
+                          :border-top "#5E7F6A"
+                          :border-right "#5E7F6A"
+                          :border-left "#5E7F6A")
                      (box :content "Body" :width (120)
-                          :padding (0 (8)) :border "#5E7F6A"
-                          :border-top none)))))
+                          :padding (0 (8))
+                          :border-right "#5E7F6A"
+                          :border-bottom "#5E7F6A"
+                          :border-left "#5E7F6A")))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -5335,11 +5392,7 @@
                             :height 4 :min-height 3 :max-height 6
                             :padding-top 1 :padding-bottom 1)
         (ebox-test--region-update region-id
-                            :margin (list 0 '(8) 0 '(8))
-                            :margin-inline '((8) (8))
-                            :margin-block '(0 0)
-                            :margin-top 0 :margin-right '(8)
-                            :margin-bottom 0 :margin-left '(8))
+                            :margin-inline '((8) (8)))
         (let ((report (ebox-test--buffer-update-report)))
           (should (eq (plist-get report :strategy) 'span-patch))
           (should (eq (plist-get report :owner-type) 'box))
@@ -5755,11 +5808,7 @@
              (region-id (plist-get handle :region-id))
              (node-id (plist-get handle :node-id)))
         (ebox-test--region-update region-id
-                                  :margin (list 0 '(8) 0 '(8))
-                                  :margin-inline '((8) (8))
-                                  :margin-block '(0 0)
-                                  :margin-top 0 :margin-right '(8)
-                                  :margin-bottom 0 :margin-left '(8))
+                                  :margin-inline '((8) (8)))
         (let* ((report (ebox-test--buffer-update-report))
                (snapshot (ebox--ensure-layout-snapshot-spans
                           (current-buffer) node-id))
@@ -7109,8 +7158,11 @@
            `(flex :id "flex-window-wrapper" :width (240)
                   :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
-                  :padding (0 (8)) :border "#D97757"
-                  :border-top none :bgcolor "#FFF8F2"
+                  :padding (0 (8))
+                  :border-right "#D97757"
+                  :border-bottom "#D97757"
+                  :border-left "#D97757"
+                  :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 8
                              collect
                              `(box :content ,(format "wrapper %02d" idx)
@@ -7156,9 +7208,8 @@
   (let* ((box (ebox-test-box :width 120
                            :padding-left 8
                            :padding-right 8
-                           :border-left 1
-                           :border-right 1
-                           :border-color "#D97757"
+                           :border-left '(1 solid "#D97757")
+                           :border-right '(1 solid "#D97757")
                            :bgcolor "#FFF8F2"))
          (source (propertize "child" 'ebox-content 77
                             'ebox-content-owner 77
@@ -7244,8 +7295,11 @@
            `(flex :id "flex-prefix-wrapper" :width (240)
                   :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
-                  :padding (0 (8)) :border "#D97757"
-                  :border-top none :bgcolor "#FFF8F2"
+                  :padding (0 (8))
+                  :border-right "#D97757"
+                  :border-bottom "#D97757"
+                  :border-left "#D97757"
+                  :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 8
                              collect
                              `(box :content ,(format "extend %02d" idx)
@@ -7277,8 +7331,11 @@
           (ebox-test-build
            `(flex :width (240) :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
-                  :padding (0 (8)) :border "#D97757"
-                  :border-top none :bgcolor "#FFF8F2"
+                  :padding (0 (8))
+                  :border-right "#D97757"
+                  :border-bottom "#D97757"
+                  :border-left "#D97757"
+                  :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 16
                              collect
                              `(box :content ,(format "piece %02d" idx)
@@ -7308,8 +7365,9 @@
                   :row-gap 1 :column-gap 0
                   :padding (0 (8) 2 (8))
                   :margin-bottom 2
-                  :border "#D97757"
-                  :border-top none
+                  :border-right "#D97757"
+                  :border-bottom "#D97757"
+                  :border-left "#D97757"
                   :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 2
                              collect
@@ -7353,8 +7411,9 @@
                   :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
                   :padding (0 (8))
-                  :border "#D97757"
-                  :border-top none
+                  :border-right "#D97757"
+                  :border-bottom "#D97757"
+                  :border-left "#D97757"
                   :bgcolor "#FFF8F2"
                   ,@(cl-loop for idx below 4
                              collect
@@ -7390,8 +7449,9 @@
                   :flex-flow (row wrap)
                   :row-gap 1 :column-gap 0
                   :padding (0 (8))
-                  :border "#D97757"
-                  :border-top none
+                  :border-right "#D97757"
+                  :border-bottom "#D97757"
+                  :border-left "#D97757"
                   ,@(cl-loop for idx below 4
                              collect
                              `(box :content ,(format "atomic %02d" idx)
@@ -9251,8 +9311,10 @@
              (flex :id "signature-flex" :width (viewport)
                    :flex-flow (row wrap)
                    :row-gap 1 :column-gap (8)
-                   :padding (0 (12)) :border "#D97757"
-                   :border-top none
+                   :padding (0 (12))
+                   :border-right "#D97757"
+                   :border-bottom "#D97757"
+                   :border-left "#D97757"
                    ,@(cl-loop for idx below 24
                               collect
                               `(box :content ,(format "signature %02d" idx)
@@ -12674,8 +12736,8 @@ explicit visible-window handoff may admit its full-content publication."
   "A hidden box renders blank with identical text, lengths, and metadata."
   (let* ((make-box
           (lambda (visibility)
-            (ebox-test-box :content "Hello" :width (list 90) :border t
-                         :border-color "#AA3311" :bgcolor "#223344"
+            (ebox-test-box :content "Hello" :width (list 90)
+                         :border '(1 solid "#AA3311") :bgcolor "#223344"
                          :color "#FFFFFF" :padding '(0 1)
                          :visibility visibility)))
          (visible (ebox-render (funcall make-box 'visible)))

@@ -508,17 +508,24 @@
                :removed-node-ids
                (ebox--runtime-node-ids removed-node))))))))
 
-(ert-deftest ebox-style-schema-registration-is-not-per-node-copy ()
-  "Repeated node construction must not copy the whole ECSS schema domain."
-  (let ((calls 0)
-        (original (symbol-function 'ecss-schema-set-property)))
-    (cl-letf (((symbol-function 'ecss-schema-set-property)
+(ert-deftest ebox-style-schema-composition-is-not-per-node-work ()
+  "Repeated node construction must not rebuild the immutable schema domain."
+  (let ((package-calls 0)
+        (compose-calls 0)
+        (original-package (symbol-function 'ecss-schema-package-create))
+        (original-compose (symbol-function 'ecss-schema-set-compose)))
+    (cl-letf (((symbol-function 'ecss-schema-package-create)
                (lambda (&rest arguments)
-                 (cl-incf calls)
-                 (apply original arguments))))
+                 (cl-incf package-calls)
+                 (apply original-package arguments)))
+              ((symbol-function 'ecss-schema-set-compose)
+               (lambda (&rest arguments)
+                 (cl-incf compose-calls)
+                 (apply original-compose arguments))))
       (dotimes (_ 24)
         (ebox-test-box :content "schema-hot-path" :color "#111111")))
-    (should (= calls 0))))
+    (should (= package-calls 0))
+    (should (= compose-calls 0))))
 
 (ert-deftest ebox-style-declaration-compilation-is-memoized ()
   "Repeated equivalent style declarations compile through ECSS once."

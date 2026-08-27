@@ -95,13 +95,49 @@
     '(:background-color "red" :bgcolor "blue") t)
    :type 'error))
 
+(ert-deftest ebox-style-preserves-ordered-shorthand-longhand-normalization ()
+  "Ebox author pairs remain ordered normalization groups before cutover."
+  (let ((border-then-top
+         (ebox-style-compile-declarations
+          '(:border "red" :border-top none) t))
+        (top-then-border
+         (ebox-style-compile-declarations
+          '(:border-top none :border "red") t)))
+    (should (eq 'none
+                (plist-get border-then-top 'ebox/border-top-style)))
+    (should (equal "red"
+                   (plist-get border-then-top 'ebox/border-right-color)))
+    (should (eq 'solid
+                (plist-get top-then-border 'ebox/border-top-style)))
+    (should (equal "red"
+                   (plist-get top-then-border 'ebox/border-top-color)))))
+
 (ert-deftest ebox-style-property-registry-rejects-alias-collisions ()
   "An alias should never shadow another canonical property."
-  (let ((ebox-style--property-table nil)
-        (ebox-style--property-definitions
-         '((:name :first :id ebox/first :aliases (:second))
-           (:name :second :id ebox/second))))
-    (should-error (ebox-style--ensure-property-table) :type 'error)))
+  (should-error
+   (ecss-schema-package-create
+    'ebox
+    (mapcar
+     #'ebox-style--schema-definition
+     '((:name :first :id ebox/first :aliases (:second)
+        :group paint :dirty-kind paint :signature paint)
+       (:name :second :id ebox/second
+        :group paint :dirty-kind paint :signature paint))))
+   :type 'ecss-invalid-property-schema)
+  (should (eq 'ebox/background-color
+              (ecss-schema-set-canonical-id ebox-style-schemas :bgcolor)))
+  (should (eq :background-color
+              (plist-get
+               (ecss-schema-set-property-metadata
+                ebox-style-schemas :bgcolor)
+               :name)))
+  (let ((metadata (ebox-style-property :bgcolor)))
+    (setf (plist-get metadata :name) :damaged)
+    (setcar (plist-get metadata :contexts) 'damaged)
+    (should (eq :background-color
+                (plist-get (ebox-style-property :bgcolor) :name)))
+    (should (equal '(box)
+                   (plist-get (ebox-style-property :bgcolor) :contexts)))))
 
 (ert-deftest ebox-style-border-present-is-a-typed-shorthand-not-an-alias ()
   "The concise border boolean should expand to canonical width and style."
