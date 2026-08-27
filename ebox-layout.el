@@ -36,6 +36,7 @@
 (declare-function ebox-lines-join "ebox" (lines))
 (declare-function ebox--maplines "ebox" (function string))
 (declare-function ebox--line-has-non-content-properties-p "ebox" (line))
+(declare-function ebox--line-content-metadata-uniform-p "ebox" (line))
 (declare-function ebox--lines-align-vertical
                   "ebox" (string height align))
 (declare-function ebox--lines-concat-horizontal "ebox" (&rest strings))
@@ -82,6 +83,9 @@ containing block merely because the row itself is being rendered in it.")
 
 (defvar ebox--box-content-render-cache nil
   "Dynamic render-pass cache for rendered lazy child content.")
+
+(defvar ebox--box-content-cache-purpose nil
+  "Dynamic discriminator for distinct box content materializations.")
 
 (defvar ebox--rendered-uniform-width-table
   (make-hash-table :test 'eq :weakness 'key)
@@ -482,6 +486,7 @@ START-INDEX is the first source line index represented by LINES."
                    (ebox--propertize-content-line
                     line region-id index padding-line-filler)))
            (when (and (string-blank-p line)
+                      (ebox--line-content-metadata-uniform-p line)
                       (not (ebox--line-has-non-content-properties-p line)))
              (let ((content-id (get-text-property 0 'ebox-content line))
                    (content-idx
@@ -897,14 +902,6 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
    (t
     (error "ebox: unsupported height value after expansion: %S" value))))
 
-(defun ebox--content-max-pixel (box)
-  "Return BOX's max-content width in content pixels."
-  (let* ((content (ebox--box-content box))
-         (lines (ebox-string-lines content)))
-    (if lines
-        (apply #'max (mapcar #'ebox--string-pixel-width lines))
-      0)))
-
 (defun ebox--box-content-node (box)
   "Return BOX's lazy child layout node, if any."
   (plist-get box :ebox-content-node))
@@ -920,6 +917,7 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
         ebox-viewport-height
         ebox--intrinsic-layout-measurement
         ebox--inline-auto-width-intrinsic-p
+        ebox--box-content-cache-purpose
         ebox--render-region-id))
 
 (defun ebox--render-box-content-cached (box renderer)
@@ -1198,6 +1196,43 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
         content
       (ebox--propertize-typography content box))))
 
+(defun ebox--intrinsic-box-content (box)
+  "Return BOX content materialized independently of its used width.
+
+A typed Normal Box performs soft wrapping while composing its children.  Its
+intrinsic widths must therefore measure a separate unwrapped materialization,
+not the content previously composed for the final viewport.  Cache that
+materialization on the source BOX for the current render pass, while applying
+probe-only properties to a shallow copy so the canonical node remains
+unchanged."
+  (if (and (eq (ebox--box-layout-kind box) 'normal)
+           (or (plist-member box :children)
+               (plist-get box :ebox-child-sequence)))
+      (let ((ebox-viewport-width nil)
+            (ebox--intrinsic-layout-measurement t)
+            (ebox--inline-auto-width-intrinsic-p t)
+            (ebox--box-content-cache-purpose 'intrinsic-width))
+        (ebox--render-box-content-cached
+         box
+         (lambda ()
+           (let ((probe (copy-sequence box)))
+             (plist-put probe :width 'auto)
+             (plist-put probe :min-width nil)
+             (plist-put probe :max-width nil)
+             (plist-put probe :wrap-mode 'none)
+             (plist-put probe :ebox-content-width-exact-p nil)
+             (plist-put probe :ebox-content-layout-complete-p nil)
+             (ebox--box-content probe)))))
+    (ebox--box-content box)))
+
+(defun ebox--content-max-pixel (box)
+  "Return BOX's max-content width in content pixels."
+  (let* ((content (ebox--intrinsic-box-content box))
+         (lines (ebox-string-lines content)))
+    (if lines
+        (apply #'max (mapcar #'ebox--string-pixel-width lines))
+      0)))
+
 (defun ebox--line-min-content-pixel (line)
   "Return LINE's min-content width in content pixels."
   (let ((position 0)
@@ -1240,7 +1275,7 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
   (let ((wrap-mode (ebox-get box :wrap-mode)))
     (if (ebox-style-no-soft-wrap-p wrap-mode)
         (ebox--content-max-pixel box)
-      (let ((lines (ebox-string-lines (ebox--box-content box)))
+      (let ((lines (ebox-string-lines (ebox--intrinsic-box-content box)))
             (max-width 0))
         (dolist (line lines max-width)
           (setq max-width
@@ -1649,6 +1684,7 @@ Internal implementation of `ebox-render' for box nodes."
             (ebox--maplines
              (lambda (line)
                (if (and (string-empty-p (string-trim line))
+                        (ebox--line-content-metadata-uniform-p line)
                         (not (ebox--line-has-non-content-properties-p line)))
                    (let ((content-id (get-text-property 0 'ebox-content line))
                          (content-idx
@@ -2047,8 +2083,10 @@ TARGET-WIDTH is the containing block width used to pad narrower leaves."
                   (plist-get window :pixel-width))
                  ((and window (> target-width 0))
                   target-width)
-                 ((eq (and (listp leaf) (plist-get leaf :ebox-type))
-                      'box)
+                 ((and (eq (and (listp leaf)
+                                (plist-get leaf :ebox-type))
+                           'box)
+                       (not (eq (plist-get leaf :ebox-kind) 'text)))
                   (ebox--total-pixel leaf))
                  (t
                   (ebox--string-pixel-width rendered))))
@@ -2934,19 +2972,9 @@ no included vertical margin."
              for source-line in content-lines
              for idx from start-index
              collect
-             (let* ((child-ownership-uniform-p
-                     (cl-every
-                      (lambda (property)
-                        (not
-                         (text-property-not-all
-                          0 (length source-line) property
-                          (get-text-property 0 property source-line)
-                          source-line)))
-                      '(ebox-content ebox-content-idx
-                        ebox-content-owner ebox-content-owners)))
-                    (blank-replacement-p
+             (let* ((blank-replacement-p
                     (and (string-blank-p source-line)
-                          child-ownership-uniform-p
+                          (ebox--line-content-metadata-uniform-p source-line)
                           (not (ebox--line-has-non-content-properties-p
                                 source-line))))
                     (line
@@ -3075,6 +3103,7 @@ only used for incomplete lazy prefixes."
                  (lambda (line)
                    (if (and
                         (string-empty-p (string-trim line))
+                        (ebox--line-content-metadata-uniform-p line)
                         (not (ebox--line-has-non-content-properties-p line)))
                        (let ((content-id
                               (get-text-property 0 'ebox-content line))

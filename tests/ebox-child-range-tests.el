@@ -599,9 +599,8 @@
       (unwind-protect
           (progn
             (ebox-render-to-buffer buffer (root))
-            (let ((root-id (ebox--buffer-root-node-id buffer)))
-              (dolist (selected '(2 1 2))
-                (let ((candidate (ebox-candidate-begin buffer)))
+            (dolist (selected '(2 1 2))
+              (let ((candidate (ebox-candidate-begin buffer)))
                   (ebox-candidate-replace-range-ref
                    candidate 'items (rows selected))
                   (ebox-candidate-replace-host-ref
@@ -617,15 +616,19 @@
                                        selected report))
                       (should-not (memq 'structure
                                         (plist-get report :dirty-kinds)))
-                      (should-not (member root-id
-                                          (plist-get report :owner-ids)))
+                      (should (memq 'paint
+                                    (plist-get report :dirty-kinds)))
                       (should (memq (plist-get report :strategy)
                                     '(span-patch owner-rerender
                                       mixed-owner-reflow)))
                       (should (> (plist-get report :tp-scope-count) 0))
                       (should-not (plist-get report :tp-full-root))
                       (should (= (plist-get report :created-objects) 0))
-                      (should (= (plist-get report :removed-objects) 0))))))))
+                      (should (= (plist-get report :removed-objects) 0))
+                      (with-current-buffer buffer
+                        (should (string-match-p
+                                 (format "detail-%d" selected)
+                                 (buffer-string)))))))))
       (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest ebox-child-range-does-not-reuse-disappeared-key-positionally ()

@@ -53,6 +53,7 @@
 (declare-function ebox--maplines "ebox" (function string))
 (declare-function ebox--line-has-non-content-properties-p
                   "ebox" (line))
+(declare-function ebox--line-content-metadata-uniform-p "ebox" (line))
 (declare-function ebox--lines-concat-horizontal "ebox" (&rest strings))
 (declare-function ebox--lines-stack-vertical "ebox" (&rest strings))
 (declare-function ebox--pixel-border
@@ -500,8 +501,18 @@ programmatic port and are therefore rejected here."
   "Return non-nil when SOURCE is a layout subtree rather than a single box."
   (and (listp source)
        (not (stringp source))
-       (plist-get source :ebox-type)
-       (not (eq (plist-get source :ebox-type) 'box))))
+       (when-let* ((kind (ebox-tree-layout-kind source)))
+         (not (eq kind 'normal)))))
+
+(defun ebox--flex-natural-measurement-source-p (source)
+  "Return non-nil when SOURCE has a viewport-independent outer measure pass."
+  (memq (ebox-tree-layout-kind source) '(normal row column)))
+
+(defun ebox--flex-natural-render-reusable-p (source)
+  "Return non-nil when SOURCE's natural render is independent of item width."
+  (and (ebox--flex-natural-measurement-source-p source)
+       (not (cl-some #'ebox--viewport-dependent-subtree-p
+                     (ebox-tree-layout-children source)))))
 
 (defun ebox--flex-box-source-p (source)
   "Return non-nil when SOURCE owns Box geometry for Flex sizing."
@@ -571,11 +582,11 @@ this avoids signature and retained-cost work for one-off responsive sizes."
 
 (defun ebox--flex-render-source-for-measurement (source viewport)
   "Render SOURCE for flex base-size measurement under VIEWPORT.
-Direct box flex items are measured intrinsically.  Composite items receive
-VIEWPORT for descendants so auto and max-width layouts can resolve against
-their containing block, while stack/column containers do not stretch their own
-outer measurement width to VIEWPORT."
-  (if (ebox--flex-composite-source-p source)
+Direct Normal, Row, and Column boxes are measured at their natural width.
+Nested Flex/Grid formatting contexts receive VIEWPORT so responsive descendants
+can resolve against their containing block without conflating every non-Normal
+layout with viewport dependence."
+  (if (memq (ebox-tree-layout-kind source) '(flex grid))
       (ebox--flex-bind-source-viewport
        source viewport
        (lambda ()
@@ -590,7 +601,8 @@ outer measurement width to VIEWPORT."
 (defun ebox--flex-measured-render-context-compatible-p
     (source measured-viewport final-viewport)
   "Return non-nil when SOURCE's measured render fits FINAL-VIEWPORT."
-  (or (equal measured-viewport final-viewport)
+  (or (ebox--flex-natural-render-reusable-p source)
+      (equal measured-viewport final-viewport)
       (not (ebox--viewport-dependent-subtree-p source))))
 
 (defun ebox--flex-box-min-main (box rendered axis)
@@ -766,10 +778,7 @@ grapheme."
 
 (defun ebox--flex-measure-cacheable-p (source props)
   "Return non-nil when SOURCE and PROPS have stable flex measurements."
-  (and (or (and (eq (and (listp source)
-                          (plist-get source :ebox-type))
-                      'box)
-                (not (ebox--flex-composite-source-p source)))
+  (and (or (ebox--flex-natural-measurement-source-p source)
            (ebox--render-cacheable-node-p source))
        (not (ebox--viewport-dependent-size-value-p
              (plist-get props :flex-basis)))))
@@ -777,15 +786,13 @@ grapheme."
 (defun ebox--flex-measure-cache-probe (source props axis)
   "Return one exact flex measurement cache probe for SOURCE.
 The result is nil when SOURCE cannot use the persistent measurement cache;
-otherwise it carries the key, signature, and any cached measurement so a
-caller can pass the same miss context to the renderer."
-  (let ((direct-box-p
-         (and (eq (and (listp source) (plist-get source :ebox-type)) 'box)
-              (not (ebox--flex-composite-source-p source)))))
+  otherwise it carries the key, signature, and any cached measurement so a
+  caller can pass the same miss context to the renderer."
+  (let ((natural-source-p (ebox--flex-natural-measurement-source-p source)))
     ;; `ebox--flex-render-source-for-measurement' renders a direct Box with no
     ;; ambient inline viewport.  Compute the cache proof in that exact same
     ;; context so a root resize cannot invalidate an unchanged natural size.
-    (let ((ebox-viewport-width (if direct-box-p nil ebox-viewport-width)))
+    (let ((ebox-viewport-width (if natural-source-p nil ebox-viewport-width)))
       (when (ebox--flex-measure-cacheable-p source props)
         (let* ((cache-key
                 (list (ebox--ensure-node-id source) 'flex-measure axis props))
@@ -1940,6 +1947,7 @@ the chunk begins at the wrapper top and should include top chrome."
               (ebox--maplines
                (lambda (line)
                  (if (and (string-empty-p (string-trim line))
+                          (ebox--line-content-metadata-uniform-p line)
                           (not (ebox--line-has-non-content-properties-p line)))
                      (let ((content-id
                             (get-text-property 0 'ebox-content line))

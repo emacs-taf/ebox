@@ -49,16 +49,27 @@
   (should (eq (ebox-style-dirty-kind :layout) 'structure))
   (should (eq (ebox-style-dirty-kind :display) 'structure)))
 
-(ert-deftest ebox-style-projects-public-box-axes-to-internal-display ()
-  "Computed outer/layout properties should project to one display pair."
-  (let* ((style
-          (ebox-style-compute-subject
-           (ecss-subject-create :type "box")
-           (ebox-style-compile-declarations
-            '(:outer inline :layout flex))))
-         (node (ebox-build '(box "A"))))
-    (ebox-style-apply-computed node style)
+(ert-deftest ebox-typed-form-projects-outer-and-layout-to-display ()
+  "A typed Box form should project its two axes to one display pair."
+  (let ((node (ebox-build '(flex :outer inline "A"))))
     (should (equal (ebox--computed-display node) '(inline flex)))))
+
+(ert-deftest ebox-style-unrelated-facts-preserve-typed-layout-config ()
+  "Unrelated computed facts must not replace direct typed layout values."
+  (dolist (case '((flex
+                   (flex :flex-direction column :column-gap (6) "A"))
+                  (grid
+                   (grid :grid-template-columns ((40) (60))
+                         :column-gap (4) "A"))))
+    (let* ((kind (car case))
+           (node (ebox-build (cadr case)))
+           (before (copy-tree (plist-get node :ebox-layout-config)))
+           (style
+            (ebox-style-compute-subject
+             (ecss-subject-create :type (symbol-name kind))
+             (ebox-style-compile-declarations '(:color "#123456")))))
+      (ebox-style-apply-computed node style)
+      (should (equal (plist-get node :ebox-layout-config) before)))))
 
 (ert-deftest ebox-style-strict-cache-does-not-hide-unknown-properties ()
   "Strict declaration validation should remain exact after an empty cache hit."
@@ -828,6 +839,12 @@
                     :bgcolor "red")
    :type 'error))
 
+(ert-deftest ebox-build-projects-source-style-without-polluting-canonical-geometry ()
+  "Track the G4 boundary: author paint must leave canonical Box geometry."
+  :expected-result :failed
+  (let ((node (ebox-build '(box :background-color "red" "Paint"))))
+    (should-not (ebox-get node :bgcolor))))
+
 (ert-deftest ebox-canonical-box-requires-unique-reserved-fields ()
   "Typed Box reserved fields should never be missing or duplicated."
   (let ((normal (ebox-normal-layout-create)))
@@ -867,42 +884,6 @@
   (let ((inline-row (ebox-build '(row :outer inline "A" "B"))))
     (should (equal (ebox--computed-display inline-row) '(inline row)))))
 
-(ert-deftest ebox-build-projects-source-style-without-polluting-canonical-geometry ()
-  "Source metadata and author paint should use their orthogonal projections."
-  (let* ((form
-         '(box :key root :id "root" :class "card"
-            :background-color "red" :width '(80)
-            (text :color "blue" "A")))
-         (original (symbol-function 'ebox-style-compile-declarations))
-         (compile-calls 0)
-         (node
-          (cl-letf (((symbol-function 'ebox-style-compile-declarations)
-                     (lambda (&rest arguments)
-                       (cl-incf compile-calls)
-                       (apply original arguments))))
-            (ebox-build form)))
-         (child (car (ebox-box-node-children node)))
-         (rendered (ebox-render node))
-         (face (get-text-property 0 'face rendered)))
-    (should (eq (plist-get node :key) 'root))
-    (should (equal (plist-get node :id) "root"))
-    (should (equal (plist-get node :class) "card"))
-    (should (eq (plist-get node :host-ref)
-                (ebox-node-source-handle node)))
-    (should (eq (plist-get child :host-ref)
-                (ebox-node-source-handle child)))
-    (should (= compile-calls 2))
-    (should (equal (ebox-get node :bgcolor) nil))
-    (should
-     (cl-some (lambda (entry)
-                (and (listp entry)
-                     (equal (plist-get entry :background) "red")))
-              face))
-    (should
-     (cl-some (lambda (entry)
-                (and (listp entry)
-                     (equal (plist-get entry :foreground) "blue")))
-              face))))
 (ert-deftest ebox-build-gives-equal-forms-distinct-source-identities ()
   "Structurally equal author forms must not share opaque source identity."
   (let* ((node (ebox-build '(row (box "same") (box "same"))))

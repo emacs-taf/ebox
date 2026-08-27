@@ -331,7 +331,7 @@ unless root reflow and idle prefetch also avoid crossing several such rows.")
          (node-table (plist-get state :node-table)))
     (or (plist-get state :selector-index-stale-p)
         (and (hash-table-p type-counts)
-             (> (or (gethash 'item type-counts) 0) 0))
+             (> (or (gethash 'flex type-counts) 0) 0))
         (and (hash-table-p node-table)
              (>= (hash-table-count node-table)
                  ebox--latency-sensitive-scroll-node-limit)))))
@@ -1136,12 +1136,15 @@ same traversal in complete-render overwrite order."
                                      (list :parent-node-id node-id
                                            :segment-index segment-index)
                                      range-ref-table))))
-                      (dolist (child (ebox--node-children node))
-                        (visit
-                         child node-id
-                         (and native-layout-p
-                              (not (and (eq type 'flex)
-                                        (eq child (plist-get node :box)))))))
+                      (ebox-tree-for-each-direct-child
+                       node
+                       (lambda (child)
+                         (visit
+                          child node-id
+                          (and native-layout-p
+                               (not (and (eq type 'flex)
+                                         (eq child
+                                             (plist-get node :box))))))))
                       (index-region-box node)
                       ;; This is the same child-before-parent order used by
                       ;; the recursive Layout IR compiler.  Flex wrapper
@@ -5792,11 +5795,14 @@ complete preorder first-owner and postorder last-box semantics."
         ((visit (node native-layout-p)
            (when (and (listp node) (not (stringp node)))
              (let ((type (plist-get node :ebox-type)))
-               (dolist (child (ebox--node-children node))
-                 (visit child
-                        (and native-layout-p
-                             (not (and (eq type 'flex)
-                                       (eq child (plist-get node :box)))))))
+               (ebox-tree-for-each-direct-child
+                node
+                (lambda (child)
+                  (visit child
+                         (and native-layout-p
+                              (not (and (eq type 'flex)
+                                        (eq child
+                                            (plist-get node :box))))))))
                (when native-layout-p
                  (push node postorder))))))
       (visit root t))
@@ -5816,19 +5822,38 @@ complete preorder first-owner and postorder last-box semantics."
           (append old-postorder nil)))
       nil)))
 
-(defun ebox-incremental--candidate-range-owned-node-ids (range-delta-table)
-  "Return candidate node ids absorbed by RANGE-DELTA-TABLE parents."
-  (let ((owned (make-hash-table :test 'equal)))
+(defun ebox-incremental--candidate-range-created-node-ids (range-delta-table)
+  "Return new node ids covered by structural RANGE-DELTA-TABLE entries."
+  (let ((old-ids (make-hash-table :test 'equal))
+        (owned (make-hash-table :test 'equal)))
     (when (hash-table-p range-delta-table)
-      (cl-labels ((visit
+      (cl-labels ((record
+                   (node table)
+                   (when (and (listp node) (not (stringp node)))
+                     (puthash (plist-get node :node-id) t table)
+                     (ebox-tree-for-each-direct-child
+                      node (lambda (child) (record child table)))))
+                  (record-new
                    (node)
                    (when (and (listp node) (not (stringp node)))
-                     (puthash (plist-get node :node-id) t owned)
-                     (ebox-tree-for-each-direct-child node #'visit))))
+                     (unless (gethash (plist-get node :node-id) old-ids)
+                       (puthash (plist-get node :node-id) t owned))
+                     (ebox-tree-for-each-direct-child node #'record-new))))
+        ;; Compare identities across the complete Range transaction.  A node
+        ;; moved between two Range parents is retained, not removed plus
+        ;; inserted merely because the two structural deltas have different
+        ;; owners.
         (maphash
          (lambda (_parent-id delta)
-           (dolist (payload (plist-get delta :new-payloads))
-             (dolist (node payload) (visit node))))
+           (when (plist-get delta :children-changed)
+             (dolist (payload (plist-get delta :old-payloads))
+               (dolist (node payload) (record node old-ids)))))
+         range-delta-table)
+        (maphash
+         (lambda (_parent-id delta)
+           (when (plist-get delta :children-changed)
+             (dolist (payload (plist-get delta :new-payloads))
+               (dolist (node payload) (record-new node)))))
          range-delta-table)))
     owned))
 
@@ -5836,8 +5861,8 @@ complete preorder first-owner and postorder last-box semantics."
     (old-state candidate-root touched &optional range-delta-table)
   "Return declarative dirty entries for path-local TOUCHED nodes."
   (let ((old-root (plist-get old-state :root-node))
-        (range-owned-node-ids
-         (ebox-incremental--candidate-range-owned-node-ids range-delta-table))
+        (range-created-node-ids
+         (ebox-incremental--candidate-range-created-node-ids range-delta-table))
         dirty)
     (if (not (equal (plist-get old-root :node-id)
                     (plist-get candidate-root :node-id)))
@@ -5853,7 +5878,7 @@ complete preorder first-owner and postorder last-box semantics."
                      entry))
           (when (and old-node
                      (not (gethash (plist-get new-node :node-id)
-                                   range-owned-node-ids)))
+                                   range-created-node-ids)))
             (let* ((changed-keys
                     (ebox-incremental--candidate-local-changed-keys
                      old-node new-node))

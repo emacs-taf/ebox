@@ -16,6 +16,12 @@
     "docs/maintainer/ebox-incremental-update-contract.zh.md")
   "Long-lived documentation files checked for stale path references.")
 
+(defconst ebox-docs-test--public-user-docs
+  '("README.md" "README.zh-CN.md"
+    "docs/user/ebox-user-guide.en.md" "docs/user/ebox-user-guide.zh.md"
+    "docs/user/ebox-api-reference.en.md" "docs/user/ebox-api-reference.zh.md")
+  "Public documents that must describe only the canonical author grammar.")
+
 (defconst ebox-docs-test--active-files
   '("Makefile" ".github/workflows/ci.yml"
     "ebox.el" "ebox-cache.el" "ebox-style.el" "ebox-child-range.el" "ebox-tree.el"
@@ -109,6 +115,36 @@
     (let ((source (ebox-docs-test--read file)))
       (should-not (string-match-p "ebox-grid-item" source))
       (should-not (string-match-p "`grid-item`" source)))))
+
+(ert-deftest ebox-docs-public-author-surface-excludes-removed-forms ()
+  "Public docs must not revive removed constructors or field-based children."
+  (dolist (file ebox-docs-test--public-user-docs)
+    (let ((source (ebox-docs-test--read file)))
+      (dolist (removed '("ebox-create" "ebox-concat" "ebox-stack"
+                         "ebox-spacer" "ebox-flex-item" "ebox-grid-item"
+                         "raw-ebox" ":content"))
+        (should-not (string-match-p (regexp-quote removed) source)))
+      (dolist (removed-form '("(item " "(spacer " "(raw-ebox "))
+        (should-not (string-match-p (regexp-quote removed-form) source))))))
+
+(ert-deftest ebox-docs-canonical-author-grammar-executes ()
+  "Every documented author entry must build the advertised typed node."
+  (require 'ebox)
+  (let ((text-forms '("short" (text "explicit"))))
+    (dolist (form text-forms)
+      (should (ebox-text-node-p (ebox-build form)))))
+  (dolist (entry '((box "normal")
+                   (row (box "row child"))
+                   (column (box "column child"))
+                   (flex (box "flex child"))
+                   (grid (box "grid child"))))
+    (let* ((node (ebox-build entry))
+           (layout (ebox-box-node-layout node)))
+      (should (ebox-box-node-p node))
+      (should (eq (ebox-layout-config-kind layout)
+                  (pcase (car entry)
+                    ('box 'normal)
+                    (kind kind)))))))
 
 (provide 'ebox-docs-contract-tests)
 

@@ -10,6 +10,7 @@
 (require 'subr-x)
 (require 'ecss)
 (require 'tp-style)
+(require 'ebox-layout-config)
 
 (defvar ebox--longhand)
 (declare-function ebox-selector-parse "ebox-selector" (selector))
@@ -1511,6 +1512,54 @@ until their private encoding is removed."
                  (ebox-grid--normalize-config-props raw)))
     (ebox-style--apply-container-wrapper node style snapshot)))
 
+(defun ebox-style--layout-config-values (style kind snapshot)
+  "Return specified STYLE values owned by KIND's typed LayoutConfig."
+  (let ((names (ebox-layout-config-property-names kind)))
+    (cl-loop for (property value)
+             on (ebox-style--context-values style kind t snapshot)
+             by #'cddr
+             when (memq property names)
+             append (list property value))))
+
+(defun ebox-style--merge-layout-config-values (base overrides)
+  "Return detached BASE LayoutConfig values updated by OVERRIDES."
+  (let ((result (copy-tree base)))
+    (cl-loop for (property value) on overrides by #'cddr
+             do (setq result (plist-put result property value)))
+    result))
+
+(defun ebox-style--normalize-layout-config-overrides (kind overrides)
+  "Return specified KIND OVERRIDES in canonical LayoutConfig form."
+  (when overrides
+    (let* ((config (ebox-layout-config-for-form kind overrides))
+           (normalized (ebox-layout-config-props config))
+           (names (cl-loop for (name _value) on overrides by #'cddr
+                           collect name)))
+      (cl-loop for name in names
+               append (list name (plist-get normalized name))))))
+
+(defun ebox-style--apply-typed-layout-config (node style snapshot)
+  "Project computed STYLE child-layout facts into typed Box NODE."
+  (let* ((current (plist-get node :ebox-layout-config))
+         (kind (and current (ebox-layout-config-kind current)))
+         (current-properties
+          (and current
+               (eq kind (ebox-layout-config-kind current))
+               (ebox-layout-config-props current)))
+         (overrides
+          (and (memq kind '(flex grid))
+               (ebox-style--layout-config-values style kind snapshot)))
+         (properties
+          (ebox-style--merge-layout-config-values
+           current-properties
+           (ebox-style--normalize-layout-config-overrides kind overrides))))
+    (when overrides
+      (plist-put node :ebox-layout-config
+                 (ebox-layout-config-with-props current properties)))
+    (plist-put node :display
+               (list (or (car-safe (plist-get node :display)) 'block)
+                     (if (eq kind 'normal) 'flow kind)))))
+
 (defun ebox-style--delete-node-property (node property)
   "Delete PROPERTY from NODE in place while preserving NODE identity."
   (when (eq (car node) property)
@@ -1566,19 +1615,22 @@ until their private encoding is removed."
   (unless (ecss-computed-style-p style)
     (signal 'wrong-type-argument (list 'ecss-computed-style-p style)))
   (let* ((type (plist-get node :ebox-type))
-         (snapshot
-          (ebox-style--computed-snapshot style (memq type '(flex grid)))))
+         (config (plist-get node :ebox-layout-config))
+         (kind (and config (ebox-layout-config-kind config)))
+         (snapshot (ebox-style--computed-snapshot style t)))
     (plist-put node :ebox-computed-style style)
     (ebox-style--apply-display-axes node style snapshot)
-    (pcase type
-      ('box
+    (cond
+     ((or (memq (plist-get node :ebox-kind) '(text box))
+          (eq type 'box))
        (ebox-style--apply-engine-longhands
         node
         (ebox-style--cached-engine-longhands
          style (eq (plist-get node :ebox-kind) 'text) snapshot))
-       )
-      ((or 'flex 'grid)
-       (ebox-style--apply-container node style snapshot)))
+       (when (eq (plist-get node :ebox-kind) 'box)
+         (ebox-style--apply-typed-layout-config node style snapshot)))
+     ((memq (or kind type) '(flex grid))
+      (ebox-style--apply-container node style snapshot)))
     (ebox-style--apply-item node style snapshot))
   node)
 

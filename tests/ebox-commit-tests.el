@@ -941,8 +941,8 @@ remain retained identities."
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
 
-(ert-deftest ebox-commit-updates-canonical-runtime-type-counts ()
-  "A structural candidate should publish exact Text and Box counts."
+(ert-deftest ebox-commit-updates-selector-type-counts ()
+  "A structural candidate should publish exact author selector-type counts."
   (let* ((buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-commit-types*")
@@ -954,15 +954,20 @@ remain retained identities."
         (progn
           (should (= (gethash
                       'box (plist-get before :runtime-type-count-table))
-                     2))
+                     1))
+          (should (= (gethash
+                      'flex (plist-get before :runtime-type-count-table))
+                     1))
           (should (= (gethash
                       'text (plist-get before :runtime-type-count-table))
                      1))
           (ebox-commit
-           buffer (ebox-test-box :key 'root :content "B" :width '(80)))
+           buffer (ebox-build '(box :key root :width (80) "B")))
           (let ((after (gethash buffer ebox--buffer-render-state-table)))
             (should-not
              (gethash 'item (plist-get after :runtime-type-count-table)))
+            (should-not
+             (gethash 'flex (plist-get after :runtime-type-count-table)))
             (should (= (gethash
                         'box (plist-get after :runtime-type-count-table))
                        1))

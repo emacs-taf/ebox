@@ -28,58 +28,29 @@
 
 (defun ebox-visual-check-layout ()
   "Return the fixed layout used by visual verification."
-  (let* ((title (ebox-test-box
-                 :content "Ebox Visual Check"
-                 :box-sizing 'border-box
-                 :width 74
-                 :padding '(0 1)
-                 :border t
-                 :border-color "#4A90D9"
-                 :color "#EAF6FF"
-                 :bgcolor "#203040"))
-         (hidden (ebox-test-box
-                  :content "Hidden: visible line\nHIDDEN-CLIPPED-LINE"
-                  :box-sizing 'border-box
-                  :width 24
-                  :height 3
-                  :padding '(1 1)
-                  :border t
-                  :border-color "#27AE60"
-                  :color "#F0FFF4"
-                  :bgcolor "#17351F"
-                  :overflow 'hidden))
-         (scroll (ebox-test-box
-                  :content "Scroll: first\nSCROLL-SECOND\nSCROLL-THIRD"
-                  :box-sizing 'border-box
-                  :width 24
-                  :height 3
-                  :padding '(1 1)
-                  :border t
-                  :border-color "#E67E22"
-                  :color "#FFF4E6"
-                  :bgcolor "#3A2410"
-                  :overflow 'scroll))
-         (sized (ebox-test-box
-                 :content "border-box max-height\nline 2\nSIZED-CLIPPED"
-                 :box-sizing 'border-box
-                 :width 26
-                 :max-height 3
-                 :padding '(1 1)
-                 :border t
-                 :border-color "#9B59B6"
-                 :color "#F8EEFF"
-                 :bgcolor "#2F1B3A"
-                 :overflow 'hidden))
-         (footer (ebox-test-box
-                  :content "Checks: text properties + display specs + GUI screenshot"
-                  :box-sizing 'border-box
-                  :width 74
-                  :padding '(0 1)
-                  :border t
-                  :border-color "#7F8C8D"
-                  :color "#F8F9F9"
-                  :bgcolor "#2C3E50")))
-    (ebox-test-column title (ebox-test-row hidden scroll sized) footer)))
+  (ebox-build
+   '(column :id dashboard
+     (box :id title :box-sizing border-box :width 74
+          :padding (0 1) :border "#4A90D9"
+          :color "#EAF6FF" :bgcolor "#203040"
+          "Ebox Visual Check")
+     (row :id cards
+          (box :id hidden :box-sizing border-box :width 24 :height 3
+               :padding (1 1) :border "#27AE60"
+               :color "#F0FFF4" :bgcolor "#17351F" :overflow hidden
+               "Hidden: visible line\nHIDDEN-CLIPPED-LINE")
+          (box :id scroll :box-sizing border-box :width 24 :height 3
+               :padding (1 1) :border "#E67E22"
+               :color "#FFF4E6" :bgcolor "#3A2410" :overflow scroll
+               "Scroll: first\nSCROLL-SECOND\nSCROLL-THIRD")
+          (box :id sized :box-sizing border-box :width 26 :max-height 3
+               :padding (1 1) :border "#9B59B6"
+               :color "#F8EEFF" :bgcolor "#2F1B3A" :overflow hidden
+               "border-box max-height\nline 2\nSIZED-CLIPPED"))
+     (box :id footer :box-sizing border-box :width 74
+          :padding (0 1) :border "#7F8C8D"
+          :color "#F8F9F9" :bgcolor "#2C3E50"
+          "Checks: text properties + display specs + GUI screenshot"))))
 
 (defun ebox-visual-check--max-line-pixel-width (string)
   "Return maximum pixel width among STRING lines."
@@ -131,52 +102,65 @@
   "Return visual verification report based on rendered text properties."
   (let* ((layout (ebox-visual-check-layout))
          (ids-before (ebox-region-ids layout))
-         (rendered (ebox-render layout))
-         (plain (substring-no-properties rendered))
-         (ids-after (ebox-region-ids rendered))
-         (metrics (list :height (ebox-string-height rendered)
-                        :pixel-width
-                        (ebox-visual-check--max-line-pixel-width rendered)
-                        :region-count (length ids-before))))
-    (list
-     (list
-      :name "dashboard-contract"
-      :metrics metrics
-      :checks
-      (list
-       (ebox-visual-check--check
-        "region ids are stable"
-        (equal ids-before ids-after)
-        (format "before=%S after=%S" ids-before ids-after))
-       (ebox-visual-check--check
-        "all expected boxes rendered"
-        (= (length ids-before) 5)
-        (format "region-count=%d" (length ids-before)))
-       (ebox-visual-check--check
-        "display specs exist"
-        (ebox-visual-check--some-property-p rendered 'display)
-        "pixel spaces are represented with display properties")
-       (ebox-visual-check--check
-        "foreground faces exist"
-        (ebox-visual-check--some-face-key-p rendered :foreground)
-        "checks :color render path")
-       (ebox-visual-check--check
-        "background faces exist"
-        (ebox-visual-check--some-face-key-p rendered :background)
-        "checks :bgcolor render path")
-       (ebox-visual-check--check
-        "hidden overflow is clipped"
-        (not (string-match-p "HIDDEN-CLIPPED-LINE" plain))
-        "hidden box should not expose clipped line")
-       (ebox-visual-check--check
-        "scroll overflow keeps initial window"
-        (and (string-match-p "Scroll: first" plain)
-             (not (string-match-p "SCROLL-SECOND" plain)))
-        "scroll box should show first window only")
-       (ebox-visual-check--check
-        "border-box max-height clips outer box"
-        (not (string-match-p "SIZED-CLIPPED" plain))
-        "max-height includes vertical padding"))))))
+         (buffer (generate-new-buffer " *ebox-visual-check-report*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer layout)
+          (let* ((runtime-root (ebox--buffer-root-node buffer))
+                 (ids-after (ebox-region-ids runtime-root))
+                 (rendered
+                  (with-current-buffer buffer
+                    (buffer-substring (point-min) (point-max))))
+                 (plain (substring-no-properties rendered))
+                 (metrics (list :height (ebox-string-height rendered)
+                                :pixel-width
+                                (ebox-visual-check--max-line-pixel-width
+                                 rendered)
+                                :region-count (length ids-before))))
+            (list
+             (list
+              :name "dashboard-contract"
+              :metrics metrics
+              :checks
+              (list
+               (ebox-visual-check--check
+                "source and mounted identities agree"
+                (equal ids-before ids-after)
+                (format "source=%S mounted=%S" ids-before ids-after))
+               (ebox-visual-check--check
+                "expected visible labels rendered"
+                (cl-every (lambda (label) (string-match-p label plain))
+                          '("Ebox Visual Check" "Hidden: visible line"
+                            "Scroll: first" "border-box max-height"
+                            "Checks: text properties"))
+                "all non-clipped fixture sections are present")
+               (ebox-visual-check--check
+                "display specs exist"
+                (ebox-visual-check--some-property-p rendered 'display)
+                "pixel spaces are represented with display properties")
+               (ebox-visual-check--check
+                "foreground faces exist"
+                (ebox-visual-check--some-face-key-p rendered :foreground)
+                "checks :color render path")
+               (ebox-visual-check--check
+                "background faces exist"
+                (ebox-visual-check--some-face-key-p rendered :background)
+                "checks :bgcolor render path")
+               (ebox-visual-check--check
+                "hidden overflow is clipped"
+                (not (string-match-p "HIDDEN-CLIPPED-LINE" plain))
+                "hidden box should not expose clipped line")
+               (ebox-visual-check--check
+                "scroll overflow keeps initial window"
+                (and (string-match-p "Scroll: first" plain)
+                     (not (string-match-p "SCROLL-SECOND" plain)))
+                "scroll box should show first window only")
+               (ebox-visual-check--check
+                "border-box max-height clips outer box"
+                (not (string-match-p "SIZED-CLIPPED" plain))
+                "max-height includes vertical padding"))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 (defun ebox-visual-check--format-report (report)
   "Format REPORT as human-readable text."

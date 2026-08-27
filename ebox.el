@@ -546,6 +546,22 @@ and incremental diffs byte-compatible with the visible rendering."
         (setq pos (or (next-property-change pos line) len))))
     nil))
 
+(defun ebox--line-content-metadata-uniform-p (line)
+  "Return non-nil when LINE has one uniform content metadata run.
+Blank-line normalization may replace a line with one full-width filler only
+under this condition; otherwise replacement would erase child ownership
+segments that incremental publication still needs."
+  (let ((length (length line)))
+    (or (zerop length)
+        (cl-every
+         (lambda (property)
+           (not (text-property-not-all
+                 0 length property
+                 (get-text-property 0 property line)
+                 line)))
+         '(ebox-content ebox-content-idx
+           ebox-content-owner ebox-content-owners)))))
+
 (defun ebox--lines-pad-vertical (string height &optional offset padding-string)
   "Extend STRING to HEIGHT lines.
 OFFSET controls content shift: positive (top), negative (bottom).

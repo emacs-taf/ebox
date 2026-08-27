@@ -244,8 +244,8 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-selector-buffer-index-uses-logical-not-adapter-paths ()
-  "Indexed descendant queries should agree with the logical tree query."
+(ert-deftest ebox-selector-buffer-index-preserves-author-form-types ()
+  "Indexed queries should preserve typed author-form selector subjects."
   (ebox-selector-test--reset-runtime-state)
   (let* ((node (ebox-build
                 '(column :id shell
@@ -254,23 +254,28 @@
          buffer)
     (unwind-protect
         (progn
-          (should-not (ebox-selector-query-all node "column .target"))
+          (should (= (length (ebox-selector-query-all
+                              node "column .target"))
+                     1))
           (setq buffer (ebox-render-to-buffer
                         (generate-new-buffer-name " *ebox-selector-test*")
                         node))
           (let ((state (gethash buffer ebox--buffer-render-state-table)))
-            (should-not
-             (gethash 'column (plist-get state :selector-type-table)))
+            (should (= (gethash
+                        'column
+                        (plist-get state :runtime-type-count-table))
+                       1))
             (should (= (gethash
                         'box
                         (plist-get state :runtime-type-count-table))
-                       3))
+                       2))
             (should (= (gethash
                         'text
                         (plist-get state :runtime-type-count-table))
                        2)))
-          (should-not (ebox-selector-query-buffer
-                       buffer "column .target")))
+          (should (= (length (ebox-selector-query-buffer
+                              buffer "column .target"))
+                     1)))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 

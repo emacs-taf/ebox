@@ -279,49 +279,52 @@
     (ebox--with-buffer-render-context buffer
       (ebox-render (ebox--buffer-root-node buffer)))))
 
-(defun ebox-performance-evaluator--static-fixture (&optional styled)
-  "Return a deterministic nested fixture, optionally marked STYLED."
+(defun ebox-performance-evaluator--static-fixture
+    (&optional styled target-content)
+  "Return a deterministic fixture, optionally STYLED and with TARGET-CONTENT."
   (let (rows)
     (dotimes (row 5)
       (let (cells)
         (dotimes (column 4)
           (push
-           (apply #'ebox-test-box
-                  (append
-                   (list :key (list 'cell row column)
-                         :content (format "row-%d cell-%d\ndetail-%d-%d"
-                                          row column row column)
-                         :width '(52)
-                         :padding '(0 1)
-                         :color "#0F172A"
-                         :bgcolor "#F8FAFC")
-                   (when (and (= row 2) (= column 1))
-                     '(:id target))
-                   (when styled '(:class card))))
+           (append
+            (list 'box
+                  :key (list 'cell row column)
+                  :width '(52)
+                  :padding '(0 1)
+                  :color "#0F172A"
+                  :bgcolor "#F8FAFC")
+            (when (and (= row 2) (= column 1)) '(:id target))
+            (when styled '(:class card))
+            (list (if (and target-content (= row 2) (= column 1))
+                      target-content
+                    (format "row-%d cell-%d\ndetail-%d-%d"
+                            row column row column))))
            cells))
-        (push (apply #'ebox-test-row (nreverse cells)) rows)))
-    (apply #'ebox-test-column (nreverse rows))))
+        (push (cons 'row (nreverse cells)) rows)))
+    (ebox-build (cons 'column (nreverse rows)))))
 
 (defun ebox-performance-evaluator--resize-fixture ()
   "Return a viewport-dependent wrapped flex fixture."
   (let (items)
     (dotimes (index 12)
       (push
-       (ebox-test-box
-        :key (list 'resize-item index)
-        :content (format "resize-%02d" index)
-        :width '(70)
-        :padding '(0 1)
-        :color "#172554"
-        :bgcolor "#DBEAFE")
+       (list 'box
+             :key (list 'resize-item index)
+             :width '(70)
+             :padding '(0 1)
+             :color "#172554"
+             :bgcolor "#DBEAFE"
+             (format "resize-%02d" index))
        items))
-    (apply #'ebox-test-flex
-           :key 'resize-root
-           :width '(viewport)
-           :flex-wrap 'wrap
-           :column-gap '(6)
-           :row-gap 1
-           (nreverse items))))
+    (ebox-build
+     (append (list 'flex
+                   :key 'resize-root
+                   :width '(viewport)
+                   :flex-wrap 'wrap
+                   :column-gap '(6)
+                   :row-gap 1)
+             (nreverse items)))))
 
 (defun ebox-performance-evaluator--pure-static ()
   "Measure isolated static materialization against a TP-backed reference."
@@ -399,7 +402,7 @@
               :checks checks :tp-report nil)))))
 
 (defun ebox-performance-evaluator--mounted-update ()
-  "Measure one scoped mounted content update and validate its output."
+  "Measure one scoped mounted content commit and validate its output."
   (let ((ebox-style-stylesheet (ecss-stylesheet-create))
         (ebox-viewport-width 240)
         (ebox-viewport-height 12)
@@ -417,12 +420,16 @@
                  (measurement
                   (ebox-performance-evaluator--measure
                    (lambda ()
-                     (ebox-region-update handle :content "UPDATED\ndetail"))))
+                     (ebox-commit
+                      buffer
+                      (ebox-performance-evaluator--static-fixture
+                       nil "UPDATED\ndetail")))))
                  (report (ebox-buffer-update-report buffer))
                  (surface (plist-get (ebox--buffer-render-state buffer)
                                      :surface))
+                 (after-handle (ebox-region-resolve buffer "target"))
                  (after-object
-                  (ebox-selector--region-handle-object handle))
+                  (ebox-selector--region-handle-object after-handle))
                  (expected (ebox-performance-evaluator--runtime-output buffer))
                  (actual (ebox-performance-evaluator--buffer-string buffer))
                  (tp-report (tp-surface-report surface))

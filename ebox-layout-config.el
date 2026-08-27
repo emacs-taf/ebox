@@ -89,6 +89,15 @@
    :kind (ebox-layout-config-kind config)
    :props (copy-tree (ebox-layout-config-props config))))
 
+(defun ebox-layout-config-with-props (config props)
+  "Return CONFIG's variant with detached canonical PROPS.
+PROPS must already use the variant's normalized representation."
+  (ebox-layout-config-validate config)
+  (ebox-layout-config-validate
+   (ebox-layout-config--create
+    :kind (ebox-layout-config-kind config)
+    :props (copy-tree props))))
+
 ;;;###autoload
 (defun ebox-normal-layout-create ()
   "Return the canonical Normal layout config."

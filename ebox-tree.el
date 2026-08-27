@@ -30,16 +30,31 @@
 This is an optimization for snapshot capture, not buffer runtime state.")
 (defvar ebox--flex-item-prop-keys)
 
+(defun ebox-tree-layout-kind (node)
+  "Return NODE's child-layout kind through the tree boundary.
+Typed Box nodes own this fact in their LayoutConfig.  Private legacy nodes are
+translated only here so tree consumers do not infer layout from storage tags."
+  (let ((canonical-kind (and (listp node) (plist-get node :ebox-kind))))
+    (pcase canonical-kind
+      ('text nil)
+      ('box
+       (when-let* ((config (plist-get node :ebox-layout-config)))
+         (ebox-layout-config-kind config)))
+      (_
+       (pcase (and (listp node) (plist-get node :ebox-type))
+         ('box 'normal)
+         ('concat 'row)
+         ('stack 'column)
+         ('flex 'flex)
+         ('grid 'grid)
+         (_ nil))))))
+
 (defun ebox-tree-computed-display (node)
   "Return NODE's canonical CSS-like display pair."
   (or (and (listp node) (plist-get node :display))
-      (pcase (and (listp node) (plist-get node :ebox-type))
-        ('box '(block flow))
-        ('concat '(block row))
-        ('stack '(block column))
-        ('flex '(block flex))
-        ('grid '(block grid))
-        (_ ebox--default-display))))
+      (when-let* ((kind (ebox-tree-layout-kind node)))
+        (list 'block (if (eq kind 'normal) 'flow kind)))
+      ebox--default-display))
 
 (defun ebox-tree-display-outer (node)
   "Return NODE's outer display."
@@ -65,17 +80,10 @@ their private props encoding.  Callers receive a detached value."
 
 (defun ebox-tree-node-selector-type (node)
   "Return NODE's CSS-like selector type symbol."
-  (or (pcase (and (listp node) (plist-get node :ebox-kind))
-        ('text 'text)
-        ('box 'box)
-        (_ nil))
-      (pcase (and (listp node) (plist-get node :ebox-type))
-        ('box 'box)
-        ('concat 'row)
-        ('stack 'column)
-        ('flex 'flex)
-        ('grid 'grid)
-        (_ nil))))
+  (if (eq (and (listp node) (plist-get node :ebox-kind)) 'text)
+      'text
+    (when-let* ((kind (ebox-tree-layout-kind node)))
+      (if (eq kind 'normal) 'box kind))))
 
 (defun ebox-tree-metadata-string (value)
   "Return VALUE normalized to a selector metadata string."
@@ -691,16 +699,10 @@ Host references are root-global opaque metadata and are compared with `equal'."
 (defun ebox-tree--child-layout-kind (node parent-kind)
   "Return the layout kind governing NODE's direct children."
   (ignore parent-kind)
-  (pcase (plist-get node :ebox-type)
-    ('flex 'flex)
-    ('grid 'grid)
-    (_ (pcase (if (and (eq (plist-get node :ebox-kind) 'box)
-                       (plist-get node :ebox-layout-config))
-                  (ebox-layout-config-kind
-                   (plist-get node :ebox-layout-config))
-                (ebox-tree-display-inner node))
-         ('flow 'normal)
-         (kind kind)))))
+  (or (ebox-tree-layout-kind node)
+      (pcase (ebox-tree-display-inner node)
+        ('flow 'normal)
+        (kind kind))))
 
 (defun ebox-tree--validate-node-parent-participation
     (node parent-kind source)

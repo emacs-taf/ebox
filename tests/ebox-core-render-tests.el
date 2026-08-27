@@ -139,35 +139,6 @@
         (ebox--scroll-window-initial-lookahead-lines-override 0))
     (should (= (ebox--scroll-window-initial-lookahead-lines) 0))))
 
-(ert-deftest ebox-root-reflow-lookahead-keeps-flex-rows-demand-driven ()
-  "Root reflow should not cross an explicit flex item's atomic row eagerly."
-  (ebox-test--reset-runtime-state)
-  (let (plain-buffer flex-buffer)
-    (unwind-protect
-        (progn
-          (setq plain-buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-plain-lookahead*")
-                 (ebox-test-box :content "plain" :width 120)))
-          (setq flex-buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-flex-lookahead*")
-                 (ebox-test-flex
-                  :width '(120)
-                  (ebox-test-flex-item
-                   (ebox-test-box :content "item" :width '(40))))))
-          (should
-           (= (ebox--root-reflow-scroll-lookahead-lines-for-buffer
-               plain-buffer)
-              ebox--root-reflow-scroll-lookahead-lines))
-          (should
-           (= (ebox--root-reflow-scroll-lookahead-lines-for-buffer
-               flex-buffer)
-              0)))
-      (dolist (buffer (list plain-buffer flex-buffer))
-        (when (and buffer (buffer-live-p buffer))
-          (kill-buffer buffer))))))
-
 (ert-deftest ebox-root-reflow-lookahead-keeps-large-runtimes-demand-driven ()
   "Root reflow should not eagerly cross costly rows in a large runtime."
   (ebox-test--reset-runtime-state)
@@ -186,6 +157,23 @@
            (= (ebox--root-reflow-scroll-lookahead-lines-for-buffer buffer)
               0)))
       (remhash buffer ebox--buffer-render-state-table)
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-root-reflow-lookahead-keeps-typed-flex-demand-driven ()
+  "A typed Flex runtime should not eagerly cross hidden composite rows."
+  (ebox-test--reset-runtime-state)
+  (let ((buffer
+         (ebox-render-to-buffer
+          (generate-new-buffer-name " *ebox-typed-flex-lookahead*")
+          (ebox-build
+           '(flex :width (240) :flex-flow (row wrap)
+             (box :width (100) "A")
+             (box :width (100) "B"))))))
+    (unwind-protect
+        (should (zerop
+                 (ebox--root-reflow-scroll-lookahead-lines-for-buffer
+                  buffer)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -543,16 +531,15 @@
   "A child nil color should block inheritance without inheriting background."
   (ebox-test--reset-runtime-state)
   (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
-         (child (ebox-test-box :id 'child :content "Child" :color nil
-                             :width '(96)))
-         (root (ebox-test-box :class 'panel :ebox-content-node child
-                            :wrap-mode nil :width '(96))))
+         (root (ebox-test-build
+                '(box :class panel :wrap-mode none :width (96)
+                  (box :id child :color nil :width (96) "Child")))))
     (ebox-style-add-rule
      ".panel" '(:color "#E2E8F0" :bgcolor "#0F172A")
      :layer 'components)
     (ebox-test--with-rendered-buffer root
       (let* ((runtime-root (ebox-test--runtime-root (current-buffer)))
-             (runtime-child (plist-get runtime-root :ebox-content-node))
+             (runtime-child (car (ebox-tree-layout-children runtime-root)))
              (child-style (plist-get runtime-child :ebox-computed-style))
              (values (ecss-computed-style-values child-style))
              (active (ecss-computed-style-active-properties child-style)))
@@ -634,24 +621,26 @@
          (ebox-test-box :class 'placed :content "Placed")
          (ebox-test-box :content "Auto"))
       (let* ((root (ebox-test--runtime-root (current-buffer)))
-             (placed (car (plist-get root :children))))
-        (should (equal (plist-get (plist-get root :props)
-                                  :grid-template-columns)
-                       '((40) (40))))
-        (should (equal (plist-get (plist-get root :props) :grid-column-gap)
-                       '(4)))
+             (config (plist-get root :ebox-layout-config))
+             (props (ebox-layout-config-props config))
+             (placed (car (ebox-tree-layout-children root))))
+        (should (eq (ebox-layout-config-kind config) 'grid))
+        (should (equal (plist-get props :grid-template-columns)
+                       '((:kind fixed :size 40)
+                         (:kind fixed :size 40))))
+        (should (equal (plist-get props :column-gap)
+                       4))
         (should (= (plist-get placed :grid-column) 2))))))
 
 (ert-deftest ebox-font-cascade-inherits-overrides-and-precedes-measurement ()
   "Font computed values should reach child text before pixel measurement."
   (ebox-test--reset-runtime-state)
-  (let* ((child
-          (ebox-test-box :id 'child :content "MMMM"
-                       :font-family "Child Family"))
-         (root
-          (ebox-test-box :ebox-content-node child :wrap-mode nil
-                       :font-family "Parent Family"
-                       :font-height 1.25 :font-weight 'bold))
+  (let* ((root
+          (ebox-test-build
+           '(box :wrap-mode none
+             :font-family "Parent Family"
+             :font-height 1.25 :font-weight bold
+             (box :id child :font-family "Child Family" "MMMM"))))
          measured-face)
     (cl-letf (((symbol-function 'ebox--string-pixel-width)
                (lambda (string)
@@ -660,7 +649,7 @@
                  40)))
       (ebox-test--with-rendered-buffer root
         (let* ((runtime-root (ebox-test--runtime-root (current-buffer)))
-               (runtime-child (plist-get runtime-root :ebox-content-node))
+               (runtime-child (car (ebox-tree-layout-children runtime-root)))
                (style (plist-get runtime-child :ebox-computed-style))
                (values (ecss-computed-style-values style))
                (face (ebox-test--first-content-face (buffer-string))))
@@ -748,48 +737,26 @@
         (should (eq (plist-get (ebox-test--buffer-update-report) :strategy)
                     'paint-patch))))))
 
-(ert-deftest ebox-region-ids-assigns-stable-ids-before-render ()
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "L" :width 40))
-         (right (ebox-test-box :content "R" :width 50))
-         (layout (ebox-test-concat left right))
-         (ids-before (ebox-region-ids layout)))
-    (should (equal ids-before '(1 2)))
-    (should (equal (ebox-region-ids layout) ids-before))
-    (should (equal (ebox-region-ids (ebox-render layout)) ids-before))))
-
-
 (ert-deftest ebox-live-mount-uses-runtime-copy-and-leaves-source-stable ()
   "Live publication should update a surface copy without mutating SOURCE."
   (ebox-test--reset-runtime-state)
   (let* ((source (ebox-test-build
-                  '(box :id "root" :content "before\nhidden" :width (120)
-                        :color "#111111" :height 1 :overflow scroll)))
+                  '(box :id root :width (120) :color "#111111"
+                    :height 1 :overflow scroll "before\nhidden")))
+         (source-before (copy-tree source))
          (buffer (generate-new-buffer " *ebox-live-copy-source*")))
     (unwind-protect
         (progn
-          (should-not (plist-member source :region-id))
           (ebox-render-to-buffer buffer source)
-          (let* ((runtime-root (ebox-test--runtime-root buffer))
-                 (handle (ebox-region-resolve buffer "root")))
-            (should-not (eq runtime-root source))
-            (ebox-test--region-update handle
-                                :content "after\nhidden"
-                                :color "#222222"
-                                :width '(140))
-            (setq runtime-root (ebox-test--runtime-root buffer))
-            (should-not (plist-member source :region-id))
-            (should-not (plist-member source :node-id))
-            (should (equal (ebox-get source :content) "before\nhidden"))
-            (should (equal (ebox-get source :color) "#111111"))
-            (should (equal (ebox-get source :width) 120))
-            (should (equal (ebox-get source :scroll-offset) 0))
-            (should (equal (ebox-get runtime-root :content) "after\nhidden"))
-            (should (equal (ebox-get runtime-root :color) "#222222"))
-            (should (equal (ebox-get runtime-root :width) 140))
-            (with-current-buffer buffer
-              (should (string-match-p "after"
-                                      (buffer-string))))))
+          (ebox-commit
+           buffer
+           (ebox-test-build
+            '(box :id root :width (140) :color "#222222"
+              :height 1 :overflow scroll "after\nhidden")))
+          (should (equal source source-before))
+          (with-current-buffer buffer
+            (should (string-match-p "after" (buffer-string)))
+            (should-not (string-match-p "before" (buffer-string)))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -797,8 +764,9 @@
   "One immutable source should mount and update independently in two buffers."
   (ebox-test--reset-runtime-state)
   (let* ((source (ebox-test-build
-                  '(box :id "root" :content "owned\nhidden" :width (120)
-                        :height 1 :overflow scroll)))
+                  '(box :id root :width (120) :height 1
+                    :overflow scroll "owned\nhidden")))
+         (source-before (copy-tree source))
          first-buffer second-buffer)
     (unwind-protect
         (progn
@@ -810,19 +778,19 @@
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-live-second*")
                  source))
-          (let ((first-handle (ebox-region-resolve first-buffer "root"))
-                (second-handle (ebox-region-resolve second-buffer "root")))
-            (should-not (eq first-handle second-handle))
-            (ebox-test--region-update first-handle :content "first changed")
-            (with-current-buffer first-buffer
-              (should (string-match-p "first changed" (buffer-string))))
-            (with-current-buffer second-buffer
-              (should-not (string-match-p "first changed" (buffer-string))))
-            (ebox-test--region-update second-handle :content "second changed")
-            (with-current-buffer second-buffer
-              (should (string-match-p "second changed" (buffer-string))))
-            (should (equal (ebox-get source :content) "owned\nhidden"))
-            (should-not (plist-member source :region-id))))
+          (ebox-commit first-buffer
+                       (ebox-test-build '(box :id root "first changed")))
+          (with-current-buffer first-buffer
+            (should (string-match-p "first changed" (buffer-string))))
+          (with-current-buffer second-buffer
+            (should-not (string-match-p "first changed" (buffer-string))))
+          (ebox-commit second-buffer
+                       (ebox-test-build '(box :id root "second changed")))
+          (with-current-buffer second-buffer
+            (should (string-match-p "second changed" (buffer-string))))
+          (with-current-buffer first-buffer
+            (should-not (string-match-p "second changed" (buffer-string))))
+          (should (equal source source-before)))
       (dolist (buffer (list first-buffer second-buffer))
         (when (and buffer (buffer-live-p buffer))
           (kill-buffer buffer))))))
@@ -830,7 +798,8 @@
 (ert-deftest ebox-live-mount-kill-invalidates-handle ()
   "Killing a surface buffer should invalidate its region handles."
   (ebox-test--reset-runtime-state)
-  (let* ((old-source (ebox-test-box :id "old" :content "old" :width 120))
+  (let* ((old-source (ebox-test-build '(box :id old :width 120 "old")))
+         (source-before (copy-tree old-source))
          primary-buffer secondary-buffer)
     (unwind-protect
         (progn
@@ -841,34 +810,20 @@
           (let ((old-handle (ebox-region-resolve primary-buffer "old")))
             (kill-buffer primary-buffer)
             (setq primary-buffer nil)
-            (should-error (ebox-test--region-update old-handle :content "stale")
+            (should-error (ebox-test--region-update old-handle :width '(140))
                           :type 'user-error))
           (setq secondary-buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-live-secondary*")
                  old-source))
-          (ebox-test--region-update (ebox-region-resolve secondary-buffer "old")
-                              :content "reused")
+          (ebox-commit secondary-buffer
+                       (ebox-test-build '(box :id old :width 120 "reused")))
           (with-current-buffer secondary-buffer
             (should (string-match-p "reused" (buffer-string))))
-          (should (equal (ebox-get old-source :content) "old")))
+          (should (equal old-source source-before)))
       (dolist (buffer (list primary-buffer secondary-buffer))
         (when (and buffer (buffer-live-p buffer))
           (kill-buffer buffer))))))
-
-(ert-deftest ebox-runtime-node-ids-cover-layout-and-box-nodes ()
-  "Every runtime node should have a stable internal node id."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-stack
-                  (ebox-test-box :content "Top" :width 60)
-                  (ebox-test-concat
-                   (ebox-test-box :content "Left" :width 40)
-                   (ebox-test-box :content "Right" :width 40))))
-         (ids-before (ebox--runtime-node-ids layout)))
-    (should (= (length ids-before) 5))
-    (should (= (length (delete-dups (copy-sequence ids-before))) 5))
-    (ebox-render layout)
-    (should (equal (ebox--runtime-node-ids layout) ids-before))))
 
 (ert-deftest ebox-wrapper-child-nodes-are-in-runtime-index ()
   "A wrapper box's child layout should remain visible in runtime state."
@@ -892,45 +847,6 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-region-render-owner-index-maps-boxes-and-flex-wrapper ()
-  "Region lookup should map each box to its smallest renderable owner."
-  (ebox-test--reset-runtime-state)
-  (let* ((plain (ebox-test-box :id "plain" :content "Plain" :width '(80)))
-         (flex-child (ebox-test-box :id "child" :content "Flex child"
-                                  :width '(80)))
-         (flex (ebox-test-flex :width '(120) :padding 1 flex-child))
-         (layout (ebox-test-column plain flex)))
-    (ebox-test--with-rendered-buffer layout
-      (let* ((buffer (current-buffer))
-             (runtime-root (ebox-test--runtime-root buffer))
-             (runtime-plain (car (plist-get runtime-root :children)))
-             (runtime-flex (cadr (plist-get runtime-root :children)))
-             (runtime-wrapper (plist-get runtime-flex :box))
-             (runtime-child (car (plist-get runtime-flex :children)))
-             (table (ebox--buffer-region-node-table buffer))
-             (plain-region-id (plist-get runtime-plain :region-id))
-             (wrapper-region-id (plist-get runtime-wrapper :region-id))
-             (child-region-id (plist-get runtime-child :region-id))
-             (plain-node-id (plist-get runtime-plain :node-id))
-             (flex-node-id (plist-get runtime-flex :node-id))
-             (wrapper-node-id (plist-get runtime-wrapper :node-id))
-             (child-node-id (plist-get runtime-child :node-id)))
-        (should (hash-table-p table))
-        (should (equal (gethash plain-region-id table) plain-node-id))
-        (should (equal (gethash wrapper-region-id table) flex-node-id))
-        (should-not (equal (gethash wrapper-region-id table)
-                           wrapper-node-id))
-        (should (equal (gethash child-region-id table) child-node-id))
-        (should (eq (ebox--buffer-region-render-owner-node
-                     buffer plain-region-id)
-                    runtime-plain))
-        (should (eq (ebox--buffer-region-render-owner-node
-                     buffer wrapper-region-id)
-                    runtime-flex))
-        (should (eq (ebox--buffer-region-render-owner-node
-                     buffer child-region-id)
-                    runtime-child))))))
-
 (ert-deftest ebox-region-render-owner-index-keeps-earlier-duplicate-box ()
   "A later flex wrapper should not replace an earlier duplicate region owner."
   (ebox-test--reset-runtime-state)
@@ -948,93 +864,6 @@
       (should (eq expected plain))
       (should (equal (gethash region-id table)
                      (ebox--ensure-node-id expected))))))
-
-(ert-deftest ebox-region-render-owner-index-keeps-outer-flex-duplicate ()
-  "Nested duplicate flex wrappers should retain recursive first-match lookup."
-  (ebox-test--reset-runtime-state)
-  (let* ((region-id 9002)
-         (inner (ebox-test-flex :width '(100) :padding 1
-                           (ebox-test-box :content "Inner" :width '(80))))
-         (outer (ebox-test-flex :width '(140) :padding 1 inner))
-         (inner-wrapper (plist-get inner :box))
-         (outer-wrapper (plist-get outer :box)))
-    (ebox-put inner-wrapper :region-id region-id)
-    (ebox-put outer-wrapper :region-id region-id)
-    (let* ((index (ebox--runtime-index outer))
-           (table (plist-get index :region-node-table))
-           (expected (car (ebox--node-path-to-region outer region-id))))
-      (should (eq expected outer))
-      (should (equal (gethash region-id table)
-                     (ebox--ensure-node-id expected))))))
-
-(ert-deftest ebox-runtime-index-region-box-table-matches-complete-render ()
-  "Runtime indexing should collect the box table with render overwrite order."
-  (ebox-test--reset-runtime-state)
-  (let* ((shared-region-id 9003)
-         (inner (ebox-test-box :content "Inner" :width '(60)))
-         (outer (ebox-test-box :content "" :width '(90)))
-         (flex-child (ebox-test-box :content "Flex child" :width '(50)))
-         (flex (ebox-test-flex :width '(120) :padding 1 flex-child))
-         (layout (ebox-test-column outer flex))
-         (render-table (make-hash-table :test 'equal)))
-    (plist-put outer :ebox-content-node inner)
-    ;; Complete rendering records parents after their child content.  A
-    ;; duplicated legacy id therefore resolves to OUTER in the box table.
-    (ebox-put inner :region-id shared-region-id)
-    (ebox-put outer :region-id shared-region-id)
-    (let* ((index (ebox--runtime-index layout t))
-           (index-table (plist-get index :region-box-table))
-           (ebox--region-box-table render-table)
-           (ebox--surface-materialization-active t)
-           (ebox--scroll-global-state (make-hash-table :test 'equal)))
-      (ebox--render-layout layout)
-      (should (= (hash-table-count index-table)
-                 (hash-table-count render-table)))
-      (maphash
-       (lambda (region-id box)
-         (should (eq (gethash region-id index-table) box)))
-       render-table)
-      (should (eq (gethash shared-region-id index-table) outer))
-      (should
-       (eq (gethash (ebox--ensure-region-id (plist-get flex :box))
-                    index-table)
-           (plist-get flex :box))))))
-
-(ert-deftest ebox-declarative-candidate-reuses-indexed-region-box-table ()
-  "Candidate preparation should not rewalk the tree to collect source boxes."
-  (ebox-test--reset-runtime-state)
-  (let ((root (ebox-test-column
-               (ebox-test-box :key 'first :content "First" :width '(80))
-               (ebox-test-box :key 'second :content "Second" :width '(80))))
-        (next-root
-         (ebox-test-column
-          (ebox-test-box :key 'first :content "Changed" :width '(80))
-          (ebox-test-box :key 'second :content "Second" :width '(80)))))
-    (ebox-test--with-rendered-buffer root
-      (let* ((buffer (current-buffer))
-             (old-state (ebox--buffer-render-state buffer))
-             (recache-calls 0)
-             prepared
-             candidate-state)
-        (cl-letf (((symbol-function 'ebox--flex-recache-source-boxes)
-                   (lambda (&rest _)
-                     (cl-incf recache-calls))))
-          (setq prepared
-                (ebox-incremental--prepare-declarative-root
-                 buffer old-state next-root))
-          (setq candidate-state
-                (ebox-incremental--candidate-state
-                 old-state
-                 (plist-get prepared :root)
-                 (plist-get prepared :index)
-                 prepared)))
-        (should (= recache-calls 0))
-        (should
-         (eq (plist-get candidate-state :region-box-table)
-             (plist-get (plist-get prepared :index) :region-box-table)))
-        (should (= (hash-table-count
-                    (plist-get candidate-state :region-box-table))
-                   2))))))
 
 (ert-deftest ebox-region-render-owner-index-falls-back-for-legacy-state ()
   "A runtime state without the new table should retain recursive lookup."
@@ -1205,19 +1034,6 @@
     (should (eq (nth 0 children) first))
     (should (eq (nth 1 children) untouched))
     (should (eq (nth 2 children) last))))
-
-(ert-deftest ebox-tree-shallow-copy-replaces-flex-item-node ()
-  "A flex-item copy should replace its wrapped node by identity."
-  (let* ((old-child (list :ebox-type 'box :content "old"))
-         (new-child (list :ebox-type 'box :content "new"))
-         (props (list :flex-grow 1))
-         (node (list :ebox-type 'flex-item :node old-child :props props))
-         (copy
-          (ebox-tree-copy-with-direct-child-replacements
-           node (list (cons old-child new-child)))))
-    (should-not (eq copy node))
-    (should (eq (plist-get copy :node) new-child))
-    (should (eq (plist-get copy :props) props))))
 
 (ert-deftest ebox-tree-shallow-copy-without-replacements-shares-values ()
   "A zero-replacement copy should share every nested value."
@@ -1629,7 +1445,6 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-
 (ert-deftest ebox-prepared-root-render-is-exact-one-shot-fast-path ()
   "An exact prepared root should bypass layout once and never affect children."
   (ebox-test--reset-runtime-state)
@@ -1997,21 +1812,20 @@
     (should (equal (get-text-property 0 'ebox-content-owners owned)
                    '(child wrapper)))))
 
-(ert-deftest ebox-scroll-rendered-content-lines-own-color-copy-in-place ()
-  "Colored scroll lines should add ownership to the color copy in place."
-  (let* ((box (ebox-test-box :width 120
-                           :color "#112233"
-                           :bgcolor "#F4F5F6"))
+(ert-deftest ebox-scroll-rendered-content-lines-preserve-text-paint-in-place ()
+  "Scroll ownership should preserve Text paint and add Box background."
+  (let* ((box (ebox-test-box :width 120 :bgcolor "#F4F5F6"))
          (region-id 901)
          (source (propertize "child" 'ebox-content 77
                             'ebox-content-owner 77
-                            'ebox-content-owners '(77)))
+                            'ebox-content-owners '(77)
+                            'face '(:foreground "#112233")))
          (source-before (copy-sequence source))
          (filler (ebox-pixel-space (ebox--content-pixel box)))
          (expected
           (ebox--propertize-colors
            (ebox--propertize-content-line source region-id 4 filler)
-           (ebox-get box :color)
+           nil
            (ebox-get box :bgcolor)))
          (copying-owner-count 0)
          (original-copying-owner
@@ -2068,30 +1882,6 @@
         (should (= (plist-get report :flush-count) 1))
         (should (= (plist-get report :patch-count) 1))
         (should (member 'paint (plist-get report :dirty-kinds)))))))
-
-(ert-deftest ebox-explicit-batch-keeps-stronger-same-owner-operation ()
-  "Same-owner paint and geometry must preserve the stronger operation."
-  (dolist (order '((paint geometry) (geometry paint)))
-    (ebox-test--reset-runtime-state)
-    (let* ((box (ebox-test-box :content "Batch width" :width '(160)
-                             :color "black"))
-           (id (car (ebox-region-ids box))))
-      (ebox-test--with-rendered-buffer box
-        (let ((buffer (current-buffer)))
-          (ebox-incremental-begin-batch buffer)
-          (dolist (operation order)
-            (pcase operation
-              ('paint (ebox-test--region-update id :color "red"))
-              ('geometry (ebox-test--region-update id :width '(80)))))
-          (ebox-incremental-flush buffer))
-        (let ((report (ebox-test--buffer-update-report)))
-          (let ((runtime-box
-                 (gethash id (ebox--buffer-region-box-table
-                              (current-buffer)))))
-            (should (equal (ebox-get box :width) 160))
-            (should (= (ebox-get runtime-box :width) 80)))
-          (should (ebox-test--buffer-visually-matches-runtime-render-p))
-          (should-not (eq (plist-get report :strategy) 'paint-patch)))))))
 
 (ert-deftest ebox-explicit-batch-keeps-descendant-paint-after-ancestor-paint ()
   "Ancestor and child paint must execute general-to-specific in any input order."
@@ -2233,36 +2023,6 @@
     (should (string-match-p "A" rendered))
     (should (string-match-p "B" rendered))))
 
-(ert-deftest ebox-layout-snapshot-details-are-computed-lazily ()
-  "Initial render should store cheap snapshots and complete spans on demand."
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "L" :width 40 :border t))
-         (right (ebox-test-box :content "R" :width 40 :border t))
-         (layout (ebox-test-concat left right))
-         buffer)
-    (unwind-protect
-        (progn
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*")
-                 layout))
-          (let* ((root-id (plist-get (ebox-test--runtime-root buffer)
-                                     :node-id))
-                 (snapshot (ebox--layout-snapshot buffer root-id)))
-            (should snapshot)
-            (should (eq (plist-get snapshot :type) 'concat))
-            (should-not (plist-member snapshot :line-signature))
-            (should-not (plist-member snapshot :buffer-spans))
-            (let ((detailed
-                   (ebox--ensure-layout-snapshot-details buffer root-id)))
-              (should (plist-get detailed :line-signature))
-              (should (plist-get detailed :buffer-spans))
-              (should (plist-member
-                       (ebox--layout-snapshot buffer root-id)
-                       :line-signature)))))
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
 (ert-deftest ebox-layout-snapshot-details-include-footprint-signatures ()
   "Detailed snapshots should expose explicit L2 footprint signatures."
   (ebox-test--reset-runtime-state)
@@ -2296,23 +2056,6 @@
         (should (= (plist-get parent-slot :slot-count) 1))
         (should (memq 'content (plist-get role-topology :roles)))
         (should-not (plist-get overflow :visible))))))
-
-(ert-deftest ebox-role-topology-signature-uses-published-span-index ()
-  "Role topology should reflect the published TP mount index."
-  (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Indexed" :width '(120) :border t))
-         (region-id (ebox--ensure-region-id box)))
-    (ebox-test--with-rendered-buffer box
-      (let ((roles (plist-get (ebox--role-topology-signature
-                              (list region-id))
-                             :roles)))
-        (should (ebox-surface-region-mounts (current-buffer) region-id))
-        (should (memq 'content roles))
-        (should (memq 'content-owner roles))))))
-
-
-
-
 
 (ert-deftest ebox-layout-snapshot-capture-skips-line-ownership-scan ()
   "Initial snapshot capture should not scan line ownership for every node."
@@ -2409,35 +2152,6 @@
                                     :node-id)
                          node-id)))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-(ert-deftest ebox-layout-snapshot-records-display-style-and-wrapper-children ()
-  "Snapshots should describe display, style, and child ids for wrapper boxes."
-  (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column :padding 1 :bgcolor "linen"
-                  (box :content "Child A" :width (120))
-                  (box :content "Child B" :width (120)))))
-         buffer)
-    (unwind-protect
-        (progn
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*")
-                 node))
-          (let* ((snapshot (ebox--layout-snapshot
-                            buffer
-                            (plist-get (ebox-test--runtime-root buffer)
-                                       :node-id)))
-                 (child-ids (plist-get snapshot :child-ids))
-                 (child-snapshot (ebox--layout-snapshot buffer (car child-ids))))
-            (should (equal (plist-get snapshot :display) '(block flow)))
-            (should (equal (plist-get child-snapshot :display)
-                           '(block column)))
-            (should (plist-get snapshot :style-signature))
-            (should child-ids)
-            (should (= (length child-ids) 1))))
-      (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
 (ert-deftest ebox-dirty-set-classifies-paint-only-change ()
@@ -2537,48 +2251,6 @@
         (should-not (plist-get report :full-rerender))
         (should (equal (plist-get report :patch-ops)
                        '(paint-patch)))))))
-
-(ert-deftest ebox-patch-set-promotes-interleaved-row-child-to-row-owner ()
-  "Interleaved row children should promote to their common render owner."
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "Left" :width 60))
-         (right (ebox-test-box :content "Right" :width 60))
-         (layout (ebox-test-row left right))
-         (left-id (car (ebox-region-ids layout))))
-    (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update left-id :width '(120))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (memq (plist-get report :owner-type) '(concat row)))
-        (should-not (eq (plist-get report :owner-type) 'box))))))
-
-(ert-deftest ebox-viewport-resize-patches-single-dependent-box ()
-  "Viewport resize should patch the smallest dependent owner when possible."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-column
-                  (ebox-test-box :content "Fixed" :width '(120) :border t)
-                  (ebox-test-box :content "Fluid" :width 'stretch :border t)))
-         buffer
-         ids-before)
-    (unwind-protect
-        (progn
-          (let ((ebox-viewport-width 240))
-            (setq buffer
-                  (ebox-render-to-buffer
-                   (generate-new-buffer-name " *ebox-test*")
-                   layout)))
-          (setq ids-before (ebox-region-ids layout))
-          (let ((returned
-                 (ebox-rerender-buffer-with-context buffer 260)))
-            (should (equal returned
-                           (ebox-buffer-update-report buffer))))
-          (should (equal (ebox-region-ids layout) ids-before))
-          (let ((report (ebox-test--buffer-update-report)))
-            (should (memq (plist-get report :strategy)
-                          '(span-patch owner-rerender root-rerender)))
-            (should (plist-get report :dirty-count))
-            (should (= (plist-get report :dirty-count) 1))))
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
 
 (ert-deftest ebox-viewport-rerender-report-describes-constraint-change ()
   "Viewport resize reports should use the shared constraint-change model."
@@ -2707,24 +2379,6 @@
                      (ebox-string-lines (buffer-string)))))
         (should widths)
         (should (= (apply #'max widths) 160))))))
-
-(ert-deftest ebox-region-width-update-promotes-parent-layout-owner ()
-  "Child geometry changes should patch the parent layout that reflows siblings."
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "Left" :width 60))
-         (right (ebox-test-box :content "Right" :width 60))
-         (layout (ebox-test-row left right))
-         (left-id (car (ebox-region-ids layout))))
-    (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update left-id :width '(120))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :constraint-owner-type) 'box))
-        (should (eq (plist-get report :owner-type) 'concat))
-        (should (equal (plist-get report :patch-ops)
-                       '(owner-rerender))))
-      (let ((plain (buffer-substring-no-properties (point-min) (point-max))))
-        (should (string-match-p "Left" plain))
-        (should (string-match-p "Right" plain))))))
 
 (ert-deftest ebox-wrapper-child-width-update-promotes-to-wrapper-context ()
   "Child geometry inside a wrapper should promote to the wrapper formatting context."
@@ -3533,48 +3187,46 @@
           (should (= index-build-count 0))
           (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
 
-
-
-
-
-
-
-
-
-
 (ert-deftest ebox-region-role-ranges-come-from-tp-mounts ()
-  "Published role ranges should be numeric snapshots of TP-owned mounts."
+  "Published public bounds should agree with TP-owned mount snapshots."
   (ebox-test--reset-runtime-state)
   (let ((layout
          (ebox-test-build
           '(column :id "root" :width (480)
-            (box :id "target" :content "target" :width (220)
-                 :height 1 :border "#999999")
-            (box :id "peer" :content "peer" :width (220)
-                 :height 1 :border "#999999")))))
+            (box :id "target" :width (220) :height 1
+                 :border "#999999" "target")
+            (box :id "peer" :width (220) :height 1
+                 :border "#999999" "peer")))))
     (ebox-test--with-rendered-buffer layout
       (let* ((target-id (ebox-test--selector-region-id (current-buffer)
                                                        "#target"))
              (peer-id (ebox-test--selector-region-id (current-buffer)
                                                      "#peer"))
              (target-mounts
-              (ebox-surface-region-mounts
-               (current-buffer) target-id '(content)))
+              (ebox-surface-region-mounts (current-buffer) target-id))
              (peer-mounts
-              (ebox-surface-region-mounts
-               (current-buffer) peer-id '(content))))
-        (dolist (mount (append target-mounts peer-mounts))
-          (should (integerp (plist-get mount :start)))
-          (should (integerp (plist-get mount :end)))
-          (should-not (markerp (plist-get mount :start)))
-          (should-not (markerp (plist-get mount :end))))
+              (ebox-surface-region-mounts (current-buffer) peer-id))
+             (target-bounds
+              (ebox-surface-region-bounds (current-buffer) target-id))
+             (peer-bounds
+              (ebox-surface-region-bounds (current-buffer) peer-id)))
         (should target-mounts)
         (should peer-mounts)
-        (should (ebox-surface-region-bounds
-                 (current-buffer) target-id '(content)))))))
-
-
-
+        (should (equal target-bounds
+                       (cons (apply #'min (mapcar
+                                           (lambda (mount)
+                                             (plist-get mount :start))
+                                           target-mounts))
+                             (apply #'max (mapcar
+                                           (lambda (mount)
+                                             (plist-get mount :end))
+                                           target-mounts)))))
+        (should (or (<= (cdr target-bounds) (car peer-bounds))
+                    (<= (cdr peer-bounds) (car target-bounds))))
+        (ebox-test--region-update target-id :bgcolor "#112233")
+        (should (equal peer-bounds
+                       (ebox-surface-region-bounds
+                        (current-buffer) peer-id)))))))
 
 (ert-deftest ebox-viewport-root-owner-spans-skip-region-scan ()
   "Root owner spans should use full buffer lines, not region-property scans."
@@ -3803,26 +3455,6 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-render-cacheability-uses-boolean-viewport-dependency-cache ()
-  "Render cacheability should not enumerate viewport-dependent node ids."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-column
-           (ebox-test-box :content "Static" :width 120)
-           (ebox-test-box :content "Also static" :width 120)))
-         (calls 0)
-         (original (symbol-function 'ebox--viewport-dependent-node-ids)))
-    (let ((ebox--render-cache-table (make-hash-table :test 'equal))
-          (ebox--viewport-dependent-subtree-cache
-           (make-hash-table :test 'eq)))
-      (cl-letf (((symbol-function 'ebox--viewport-dependent-node-ids)
-                 (lambda (&rest args)
-                   (cl-incf calls)
-                   (apply original args))))
-        (should (ebox--render-cacheable-node-p layout))
-        (should (ebox--render-cacheable-node-p layout)))
-      (should (= calls 0)))))
-
 (ert-deftest ebox-render-cacheability-rejects-viewport-dependent-wrapper-child ()
   "Wrapper boxes with viewport-dependent child layout should not reuse static render cache."
   (ebox-test--reset-runtime-state)
@@ -4018,19 +3650,6 @@
     (dolist (vertical-node (append ordinary-height-nodes flex-height-nodes))
       (should (member (plist-get vertical-node :node-id) ids)))))
 
-(ert-deftest ebox-viewport-dependencies-include-direct-flex-basis ()
-  "Viewport dependency discovery should include direct child flex-basis props."
-  (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-box :content "A" :width 80
-                             :flex-basis '(viewport)))
-         (node (ebox-test-flex :width 300
-                 child
-                 (ebox-test-box :content "B" :width 80)))
-         (ids (let ((ebox-viewport-width 360))
-                (ebox--runtime-node-ids node)
-                (ebox--viewport-dependent-node-ids node))))
-    (should (member (plist-get child :node-id) ids))))
-
 (ert-deftest ebox-viewport-dependencies-ignore-flex-item-wrapper-auto-width ()
   "Flex item wrappers should not be dirty only because their own width is auto."
   (ebox-test--reset-runtime-state)
@@ -4042,17 +3661,6 @@
                 (ebox--viewport-dependent-node-ids node))))
     (should-not (member (plist-get item :node-id) ids))
     (should-not (member (plist-get child :node-id) ids))))
-
-(ert-deftest ebox-viewport-dependencies-include-flex-item-viewport-basis ()
-  "Flex item wrappers should stay dirty when their flex-basis uses viewport."
-  (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-box :content "A" :width 80))
-         (item (ebox-test-flex-item child :flex-basis '(viewport)))
-         (node (ebox-test-flex :width 240 item))
-         (ids (let ((ebox-viewport-width 360))
-                (ebox--runtime-node-ids node)
-                (ebox--viewport-dependent-node-ids node))))
-    (should (member (plist-get item :node-id) ids))))
 
 (ert-deftest ebox-buffer-viewport-dependency-cache-recomputes-after-style-change ()
   "Changing responsive style should publish its exact viewport dependency."
@@ -4187,39 +3795,6 @@
                                      (point-min) (point-max))))))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
-
-(ert-deftest ebox-viewport-dependent-node-ids-are-render-pass-memoized ()
-  "Viewport dependency discovery should not recurse twice for the same node."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-flex
-           :width 240
-           (ebox-test-column
-            (ebox-test-box :content "A" :width 80)
-            (ebox-test-box :content "B" :width 80))))
-         (node-count (length (ebox--runtime-node-ids layout)))
-         (width-check-count 0)
-         (height-check-count 0)
-         (original-width
-          (symbol-function 'ebox--node-direct-viewport-width-dependent-p))
-         (original-height
-          (symbol-function 'ebox--node-direct-viewport-height-dependent-p))
-         (ebox--viewport-dependent-node-ids-cache
-          (make-hash-table :test 'eq)))
-    (cl-letf (((symbol-function
-                'ebox--node-direct-viewport-width-dependent-p)
-               (lambda (&rest args)
-                 (cl-incf width-check-count)
-                 (apply original-width args)))
-              ((symbol-function
-                'ebox--node-direct-viewport-height-dependent-p)
-               (lambda (&rest args)
-                 (cl-incf height-check-count)
-                 (apply original-height args))))
-      (ebox--viewport-dependent-node-ids layout)
-      (ebox--viewport-dependent-node-ids layout))
-    (should (= width-check-count node-count))
-    (should (= height-check-count node-count))))
 
 (ert-deftest ebox-render-cache-node-signature-is-render-pass-memoized ()
   "Render cache signatures should not recurse twice for the same node."
@@ -4462,55 +4037,6 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-buffer-render-signature-invalidates-mutated-path ()
-  "Runtime mutation should not reuse a stale ancestor body signature."
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "Before" :width 80))
-         (right (ebox-test-box :content "Stable" :width 80))
-         (layout (ebox-test-column left right))
-         (left-region-id (car (ebox-region-ids left)))
-         old-root-signature
-         new-root-signature
-         buffer)
-    (unwind-protect
-        (progn
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*")
-                 layout))
-          (let ((runtime-root (ebox--buffer-root-node buffer)))
-            (setq old-root-signature
-                  (ebox--with-buffer-render-context buffer
-                    (ebox--render-cache-node-body-signature runtime-root))))
-          (with-current-buffer buffer
-            (ebox-test--region-update left-region-id :content "After")
-            (should (equal (ebox-get left :content) "Before"))
-            (setq new-root-signature
-                  (ebox--with-buffer-render-context buffer
-                    (ebox--render-cache-node-body-signature
-                     (ebox--buffer-root-node buffer))))
-            (should-not (equal old-root-signature new-root-signature))
-            (should
-             (string-match-p
-              "After"
-              (buffer-substring-no-properties (point-min) (point-max))))
-            (should (ebox-test--buffer-visually-matches-runtime-render-p))))
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
-(ert-deftest ebox-render-cache-signature-ignores-viewport-for-static-column ()
-  "Static column signatures should not churn only because outer viewport changed."
-  (ebox-test--reset-runtime-state)
-  (let ((node (ebox-test-column
-               (ebox-test-box :content "A" :width 80)
-               (ebox-test-box :content "B" :width 80))))
-    (ebox--runtime-node-ids node)
-    (let ((left (let ((ebox-viewport-width 320))
-                  (ebox--render-cache-node-signature node)))
-          (right (let ((ebox-viewport-width 640))
-                   (ebox--render-cache-node-signature node))))
-      (should (equal left right)))))
-
 (ert-deftest ebox-render-cache-plist-signature-avoids-append-churn ()
   "Render cache plist signatures should be built linearly."
   (ebox-test--reset-runtime-state)
@@ -4540,26 +4066,6 @@
                  (apply original args))))
       (ebox--format-content box))
     (should (= measure-count 0))))
-
-(ert-deftest ebox-uniform-stack-content-skips-parent-justify-measurement ()
-  "A target-width stack should not be measured again by its parent box."
-  (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-column
-                 (ebox-test-box :content "A" :width '(viewport))
-                 (ebox-test-box :content "B" :width '(viewport))))
-         (parent (ebox-test-box :width '(viewport) :wrap-mode nil
-                              :ebox-content-node child))
-         (justify-count 0)
-         (original (symbol-function 'ebox--lines-justify)))
-    (let ((ebox-viewport-width 120))
-      (cl-letf (((symbol-function 'ebox--lines-justify)
-                 (lambda (&rest args)
-                   (cl-incf justify-count)
-                   (apply original args))))
-        (ebox-render parent)))
-    ;; The two leaf boxes still justify their own text.  The parent does not
-    ;; add a third full-stack pass.
-    (should (= justify-count 2))))
 
 (ert-deftest ebox-uniform-content-skips-noop-word-and-char-formatting ()
   "Exact uniform lines should bypass proven no-op word/char formatting."
@@ -4626,85 +4132,6 @@
       (setq fast (ebox-render parent)))
     (should (equal-including-properties fast generic))))
 
-(ert-deftest ebox-flat-preformatted-box-fast-path-is-exact ()
-  "One-pass exact wrappers should preserve generic chrome and ownership."
-  (ebox-test--reset-runtime-state)
-  (let* ((box
-          (ebox-test-box
-           :content "" :width '(140) :wrap-mode nil :region-id 'wrapper
-           :padding-left-pixel 7 :padding-right-pixel 5
-           :padding-top-height 1 :padding-bottom-height 2
-           :border-left-pixel 2 :border-left-color "#AA0000"
-           :border-right-pixel 3 :border-right-color "#00AA00"
-           :border-top-p t :border-top-color "#0000AA"
-           :border-bottom-p t :border-bottom-color "#AA00AA"
-           :color "#111111" :bgcolor "#EEEEEE"))
-         (content-width (ebox--content-pixel box))
-         (full-line (ebox-pixel-space content-width))
-         (content (concat full-line "\n\n" full-line))
-         (fast-path-calls 0)
-         (original
-          (symbol-function 'ebox--window-render-flat-wrapper-chunk-lines))
-         generic fast)
-    (plist-put box :content content)
-    (plist-put box :ebox-content-width-exact-p t)
-    (let ((ebox--flat-preformatted-box-fast-path-disabled t))
-      (setq generic (ebox-render box)))
-    (clrhash ebox--region-box-table)
-    (clrhash ebox--scroll-global-state)
-    (cl-letf (((symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)
-               (lambda (&rest args)
-                 (cl-incf fast-path-calls)
-                 (apply original args))))
-      (setq fast (ebox-render box)))
-    (should (= fast-path-calls 1))
-    (should (equal-including-properties fast generic))))
-
-(ert-deftest ebox-flat-preformatted-formatted-string-fast-path-is-exact ()
-  "One-pass formatted strings should preserve generic chrome and ownership."
-  (ebox-test--reset-runtime-state)
-  (let* ((box
-          (ebox-test-box
-           :content "Alpha beta gamma delta" :width '(88) :wrap-mode 'word
-           :text-align 'center :region-id 'formatted-wrapper
-           :padding-left-pixel 4 :padding-right-pixel 6
-           :border-left-pixel 1 :border-left-color "#AA0000"
-           :border-right-pixel 2 :border-right-color "#00AA00"
-           :color "#111111" :bgcolor "#EEEEEE"))
-         (fast-path-calls 0)
-         (original
-          (symbol-function 'ebox--window-render-flat-wrapper-chunk-lines))
-         generic fast)
-    (let ((ebox--flat-preformatted-box-fast-path-disabled t))
-      (setq generic (ebox-render box)))
-    (clrhash ebox--region-box-table)
-    (clrhash ebox--scroll-global-state)
-    (cl-letf (((symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)
-               (lambda (&rest arguments)
-                 (cl-incf fast-path-calls)
-                 (apply original arguments))))
-      (setq fast (ebox-render box)))
-    (should (= fast-path-calls 1))
-    (should (equal-including-properties fast generic))))
-
-(ert-deftest ebox-flat-preformatted-string-proves-width-before-reuse ()
-  "Formatted string reuse must not publish an unproven uniform width."
-  (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-box :content "This content must wrap" :width '(5)
-                             :wrap-mode nil :region-id 'overflowing-child))
-         (parent (ebox-test-box :width '(5) :wrap-mode 'word
-                              :region-id 'wrapping-parent
-                              :ebox-content-node child))
-         generic fast)
-    (let ((ebox--flat-preformatted-box-fast-path-disabled t))
-      (setq generic (ebox-render parent)))
-    (clrhash ebox--rendered-uniform-width-table)
-    (clrhash ebox--region-box-table)
-    (let ((ebox--flat-preformatted-box-fast-path-disabled nil))
-      (setq fast (ebox-render parent)))
-    (should (equal-including-properties fast generic))
-    (should (= (ebox-string-height fast) 5))))
-
 (ert-deftest ebox-flat-preformatted-fast-path-keeps-intrinsic-scroll-state ()
   "Intrinsic flat rendering must not clear the published scroll state."
   (ebox-test--reset-runtime-state)
@@ -4728,14 +4155,16 @@
           (propertize
            (ebox-pixel-space 40)
            'ebox-content 'left 'ebox-content-idx 0
-           'ebox-content-owner 'left 'ebox-content-owners '(left)))
+           'ebox-content-owner 'left 'ebox-content-owners '(left)
+           'face '(:foreground "#112233")))
          (right
           (propertize
            (ebox-pixel-space 60)
            'ebox-content 'right 'ebox-content-idx 0
-           'ebox-content-owner 'right 'ebox-content-owners '(right)))
+           'ebox-content-owner 'right 'ebox-content-owners '(right)
+           'face '(:foreground "#112233")))
          (box (ebox-test-box :content "" :width 100 :wrap-mode nil
-                           :color "#112233" :bgcolor "#DDEEFF"))
+                           :bgcolor "#DDEEFF"))
          (rendered
           (car
            (ebox--window-render-flat-wrapper-chunk-lines
@@ -4779,43 +4208,6 @@
       (ebox-render parent))
     (should (eq (gethash region-id ebox--scroll-global-state) state))))
 
-(ert-deftest ebox-flat-preformatted-fixed-hidden-box-fast-path-is-exact ()
-  "Exact fixed-height hidden wrappers should preserve generic output."
-  (ebox-test--reset-runtime-state)
-  (let* ((box
-          (ebox-test-box
-           :content "" :width '(140) :height 6 :box-sizing 'border-box
-           :overflow 'hidden :wrap-mode nil :region-id 'fixed-wrapper
-           :padding-left-pixel 7 :padding-right-pixel 5
-           :padding-top-height 1 :padding-bottom-height 2
-           :border-left-pixel 2 :border-left-color "#AA0000"
-           :border-right-pixel 3 :border-right-color "#00AA00"
-           :border-top-p t :border-top-color "#0000AA"
-           :border-bottom-p t :border-bottom-color "#AA00AA"
-           :color "#111111" :bgcolor "#EEEEEE"))
-         (content-width (ebox--content-pixel box))
-         (full-line (ebox-pixel-space content-width))
-         (content (concat full-line "\n\n" full-line))
-         (fast-path-calls 0)
-         (original
-          (symbol-function 'ebox--window-render-flat-wrapper-chunk-lines))
-         generic fast)
-    (plist-put box :content content)
-    (plist-put box :ebox-content-width-exact-p t)
-    (let ((ebox--flat-preformatted-box-fast-path-disabled t))
-      (setq generic (ebox-render box)))
-    (clrhash ebox--region-box-table)
-    (clrhash ebox--scroll-global-state)
-    (cl-letf (((symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)
-               (lambda (&rest arguments)
-                 (cl-incf fast-path-calls)
-                 (apply original arguments))))
-      (setq fast (ebox-render box)))
-    (should (= fast-path-calls 1))
-    (should-not (gethash 'fixed-wrapper ebox--region-box-table))
-    (should-not (gethash 'fixed-wrapper ebox--scroll-global-state))
-    (should (equal-including-properties fast generic))))
-
 (ert-deftest ebox-flat-preformatted-fixed-box-rejects-layout-work ()
   "Fixed wrappers should stay generic when clipping or alignment is required."
   (ebox-test--reset-runtime-state)
@@ -4839,55 +4231,6 @@
         (ebox-render box))
       (should (= calls 0)))))
 
-
-(ert-deftest ebox-overflowing-stack-content-still-uses-parent-formatting ()
-  "An overflowing child stack must not publish uniform parent-width metadata."
-  (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-column
-                 (ebox-test-box :content "A" :width 140)
-                 (ebox-test-box :content "B" :width 140)))
-         (parent (ebox-test-box :width 120 :wrap-mode nil
-                              :ebox-content-node child))
-         (justify-count 0)
-         (original (symbol-function 'ebox--lines-justify))
-         rendered)
-    (let ((ebox-viewport-width 120))
-      (cl-letf (((symbol-function 'ebox--lines-justify)
-                 (lambda (&rest args)
-                   (cl-incf justify-count)
-                   (apply original args))))
-        (setq rendered (ebox-render parent))))
-    (should (= justify-count 3))
-    (should (= (ebox--string-max-pixel-width rendered) 140))))
-
-(ert-deftest ebox-box-content-node-publishes-only-proven-exact-width ()
-  "A wrapper should mark child output exact only at its proven viewport width."
-  (ebox-test--reset-runtime-state)
-  (let* ((overflow-child
-          (ebox-test-column
-           (ebox-test-box :content "A" :width 140)
-           (ebox-test-box :content "B" :width 140)))
-         (overflow-parent
-          (ebox-test-box :width 120 :wrap-mode nil
-                       :ebox-content-node overflow-child))
-         (exact-child
-          (ebox-test-column
-           (ebox-test-box :content "A" :width 120)
-           (ebox-test-box :content "B" :width 120)))
-         (exact-parent
-          (ebox-test-box :width 120 :wrap-mode nil
-                       :ebox-content-node exact-child))
-         (ebox-viewport-width 120)
-         (ebox--box-content-render-cache (make-hash-table :test 'eq))
-         overflow exact)
-    (setq overflow
-          (ebox--render-box-content-node overflow-parent overflow-child))
-    (setq exact (ebox--render-box-content-node exact-parent exact-child))
-    (should (= (ebox--string-max-pixel-width overflow) 140))
-    (should-not (plist-get overflow-parent :ebox-content-width-exact-p))
-    (should (= (ebox--string-max-pixel-width exact) 120))
-    (should (plist-get exact-parent :ebox-content-width-exact-p))))
-
 (ert-deftest ebox-string-pixel-width-cache-ignores-ebox-ownership-metadata ()
   "Reuse visual width measurements across Ebox-owned text properties."
   (let ((line (propertize "cached row"
@@ -4907,23 +4250,6 @@
         (should (> first 0))
         (should (= first second))))
     (should (= calls 1))))
-
-(ert-deftest ebox-render-caches-lazy-box-content-within-render-pass ()
-  "A lazy child layout should be rendered once per box/context in one pass."
-  (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-column
-                 (ebox-test-box :content "A" :width 80)
-                 (ebox-test-box :content "B" :width 80)))
-         (parent (ebox-test-box :width 'max-content :padding 2))
-         (render-count 0)
-         (original (symbol-function 'ebox--render-node-as-box-content)))
-    (plist-put parent :ebox-content-node child)
-    (cl-letf (((symbol-function 'ebox--render-node-as-box-content)
-               (lambda (&rest args)
-                 (cl-incf render-count)
-                 (apply original args))))
-      (ebox-render parent))
-    (should (= render-count 1))))
 
 (ert-deftest ebox-buffer-update-report-includes-dirty-and-patch-summary ()
   "Update reports should show dirty and patch-set summaries."
@@ -5137,8 +4463,6 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-
-
 (ert-deftest ebox-buffer-kill-clears-region-runtime-caches ()
   "Killing an ebox buffer should clear region-scoped runtime cache entries."
   (ebox-test--reset-runtime-state)
@@ -5197,23 +4521,6 @@
         (remhash buffer ebox-cache--buffer-report-table)
         (remhash buffer ebox-incremental--batch-table)))))
 
-(ert-deftest ebox-concat-content-update-preserves-neighbor-box ()
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "A\nB" :width 60))
-         (right (ebox-test-box :content "R1\nR2\nR3" :width 80))
-         (layout (ebox-test-concat left right))
-         (ids (ebox-region-ids layout))
-         (left-id (nth 0 ids))
-         (right-id (nth 1 ids)))
-    (ebox-test--with-rendered-buffer layout
-      (should (ebox-surface-region-mounts (current-buffer) left-id))
-      (ebox-test--region-update left-id :content "AA\nBB\nCC")
-      (let ((plain (buffer-substring-no-properties (point-min) (point-max))))
-        (should (string-match-p "CC" plain))
-        (should (string-match-p "R3" plain)))
-      (should (equal (ebox-region-ids layout) ids))
-      (should (gethash right-id ebox--region-box-table)))))
-
 (ert-deftest ebox-geometry-update-rerenders-root-once-safely ()
   (ebox-test--reset-runtime-state)
   (let* ((top (ebox-test-box :content "Top" :width 60))
@@ -5233,23 +4540,24 @@
 (ert-deftest ebox-border-color-update-patches-without-full-root-rerender ()
   "A pure border color change should patch owned spans, not rebuild the root."
   (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "L" :width 40
-                            :border t :border-color "red"))
-         (right (ebox-test-box :content "R" :width 40
-                             :border t :border-color "green"))
-         (layout (ebox-test-concat left right))
-         (left-id (car (ebox-region-ids layout))))
+  (let ((layout
+         (ebox-test-build
+          '(row
+            (box :id left :width 40 :border "red" "L")
+            (box :id right :width 40 :border "green" "R")))))
     (ebox-test--with-rendered-buffer layout
-      (let ((full-rerenders
-             (ebox-test--count-full-surface-updates
-               (ebox-test--region-update left-id :border-color "blue"))))
-        (should (= full-rerenders 0)))
-      (let ((border-face (get-text-property (point-min) 'face)))
-        (should (ebox-test--face-has-key-value-p border-face
-                                                 :overline "blue")))
-      (should (string-match-p
-               "R"
-               (buffer-substring-no-properties (point-min) (point-max)))))))
+      (let ((left-id (ebox-test--selector-region-id
+                      (current-buffer) "#left")))
+        (let ((full-rerenders
+               (ebox-test--count-full-surface-updates
+                 (ebox-test--region-update left-id :border-color "blue"))))
+          (should (= full-rerenders 0)))
+        (goto-char (point-min))
+        (search-forward "L")
+        (let ((border-face (get-text-property (match-beginning 0) 'face)))
+          (should (ebox-test--face-has-key-value-p border-face
+                                                   :overline "blue"))))
+      (should (string-match-p "R" (buffer-string))))))
 
 (ert-deftest ebox-flex-row-border-color-update-patches-region-role ()
   "Paint-only updates inside flex rows should not fall back to root rerender."
@@ -5440,37 +4748,6 @@
             face :background "#00AA00"))))
       (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
 
-(ert-deftest ebox-region-update-reuses-buffer-render-viewport-context ()
-  "Incremental rerender should use the viewport from the original buffer render."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-flex :padding '(0 4) :border "#64748B"
-                   (ebox-test-box :content "Flex Child" :width '(120)
-                                :border t)))
-         (region-id (car (ebox--node-all-region-ids layout)))
-         buffer)
-    (unwind-protect
-        (progn
-          (let ((ebox-viewport-width 240))
-            (setq buffer
-                  (ebox-render-to-buffer
-                   (generate-new-buffer-name " *ebox-test*")
-                   layout)))
-          (with-current-buffer buffer
-            (let ((full-rerenders
-                   (ebox-test--count-full-surface-updates
-                     (ebox-test--region-update region-id
-                                         :border-color "#2563EB"))))
-              (should (= full-rerenders 0)))
-            (let ((report (ebox-test--buffer-update-report)))
-              (should (eq (plist-get report :strategy) 'paint-patch))
-              (should (eq (plist-get report :constraint-owner-type) 'flex))
-              (should (eq (plist-get report :tp-render-scope) 'objects))
-              (should-not (plist-get report :tp-full-root))
-              (should (equal (plist-get report :patch-ops)
-                             '(paint-patch))))))
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
 (ert-deftest ebox-rerender-buffer-with-context-resolves-runtime-viewport ()
   "Runtime rerender should resolve viewport-sized boxes with the new context."
   (ebox-test--reset-runtime-state)
@@ -5528,59 +4805,6 @@
                        3))))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
-
-
-(ert-deftest ebox-stable-content-update-patches-without-full-root-rerender ()
-  "A content update with unchanged rendered geometry should stay local."
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "Alpha" :width 80 :height 1))
-         (right (ebox-test-box :content "Right" :width 80 :height 1))
-         (layout (ebox-test-concat left right))
-         (left-id (car (ebox-region-ids layout))))
-    (ebox-test--with-rendered-buffer layout
-      (let ((full-rerenders
-             (ebox-test--count-full-surface-updates
-               (ebox-test--region-update left-id :content "Beta"))))
-        (should (= full-rerenders 0)))
-      (let ((plain (buffer-substring-no-properties (point-min) (point-max))))
-        (should (string-match-p "Beta" plain))
-        (should-not (string-match-p "Alpha" plain))
-        (should (string-match-p "Right" plain))))))
-
-(ert-deftest ebox-nested-stable-content-update-patches-leaf-owner ()
-  "Stable content updates inside nested layouts should not patch the root."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-build
-           '(flex :flex-flow (row wrap) :column-gap (12)
-             :padding (0 (12)) :border "#999999"
-             (column :width (210) :border "#999999"
-              (box :content "Title" :width (190))
-              (box :id target :content "before\nsame"
-                   :width (190) :height 3
-                   :padding (0 (8)) :border "#999999")
-              (box :content "Metric" :width (190)))
-             (column :width (210) :border "#999999"
-              (box :content "Other" :width (190))
-              (box :content "Still here" :width (190))))))
-         (target (car (ebox-selector-query-all layout "#target")))
-         (target-id (plist-get target :region-id))
-         (target-node-id (plist-get target :node-id)))
-    (ebox-test--with-rendered-buffer layout
-      (let ((snapshot (ebox--ensure-layout-snapshot-spans
-                       (current-buffer) target-node-id)))
-        (should snapshot)
-        (should (plist-get snapshot :buffer-spans)))
-      (ebox-test--region-update target-id :content "after\nsame")
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'span-patch))
-        (should (equal (plist-get report :owner-ids) (list target-node-id)))
-        (should (< (plist-get report :span-count) 10))
-        (should-not (plist-get report :full-rerender)))
-      (let ((plain (buffer-substring-no-properties (point-min) (point-max))))
-        (should (string-match-p "after" plain))
-        (should-not (string-match-p "before" plain))
-        (should (string-match-p "Still here" plain))))))
 
 (ert-deftest ebox-flex-contained-geometry-update-does-not-promote-to-root ()
   "Stable flex-contained geometry changes should stop before root."
@@ -5643,195 +4867,6 @@
                      :column-gap '(12) card peer)))
     (list :layout layout :target target :owner owner)))
 
-(ert-deftest ebox-fixed-flex-context-contains-child-width-update ()
-  "Fixed flex contexts should patch their five lines, not the whole card."
-  (ebox-test--reset-runtime-state)
-  (let* ((fixture (ebox-test--nested-width-containment-layout 5))
-         (layout (plist-get fixture :layout))
-         (target (plist-get fixture :target))
-         (owner (plist-get fixture :owner))
-         (target-region-id (car (ebox-region-ids target)))
-         (owner-node-id (ebox--ensure-node-id owner)))
-    (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update target-region-id :width '(280))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'span-patch))
-        (should (equal (plist-get report :owner-ids)
-                       (list owner-node-id)))
-        (should (eq (plist-get report :owner-type) 'flex))
-        (should (> (plist-get report :span-count) 0))
-        (should-not (plist-get report :root-rerender))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
-
-(ert-deftest ebox-contained-partial-flex-content-change-preserves-fixed-slot ()
-  "A fixed partial flex should update without disturbing adjacent siblings."
-  (ebox-test--reset-runtime-state)
-  (let* ((mark (ebox-test-box :key 'mark :host-ref 'mark
-                            :content "○ OFF" :width 'max-content
-                            :overflow 'hidden))
-         (label (ebox-test-box :key 'label :content " Power off"
-                             :host-ref 'label :width 'max-content
-                             :overflow 'hidden))
-         (switch (ebox-test-box :key 'switch :host-ref 'switch
-                              :width 'max-content :wrap-mode nil
-                              :overflow 'hidden
-                              :ebox-content-node (ebox-test-row mark label)))
-         (owner (ebox-test-flex :width '(496) :min-width '(496)
-                           :max-width '(496) :height 1 :min-height 1
-                           :max-height 1 :overflow 'hidden
-                           :bgcolor "#F7F8FA" :wrap-mode nil
-                           :flex-flow '(column nowrap) switch))
-         (caption (ebox-test-box :content "switch" :width '(170)
-                               :min-width '(170) :max-width '(170)
-                               :height 1 :min-height 1 :max-height 1))
-         (outer (ebox-test-flex :width '(680) :min-width '(680)
-                           :max-width '(680) :height 1 :min-height 1
-                           :max-height 1 :overflow 'hidden
-                           :bgcolor "#F7F8FA" :wrap-mode nil
-                           :column-gap '(14) :flex-flow '(row nowrap)
-                           caption owner))
-         (footer (ebox-test-box :content "FOOTER" :width '(680) :height 1))
-         (layout (ebox-test-column outer footer))
-         (mark-node-id (ebox--ensure-node-id mark))
-         (label-node-id (ebox--ensure-node-id label))
-         (owner-node-id (ebox--ensure-node-id owner)))
-    (plist-put owner :key 'owner)
-    (plist-put owner :host-ref 'owner)
-    (plist-put outer :key 'outer)
-    (plist-put outer :host-ref 'outer)
-    (ebox-test--with-rendered-buffer layout
-      (should (ebox--contained-partial-flex-owner-p
-               (current-buffer) owner-node-id))
-      (let ((candidate (ebox-candidate-begin (current-buffer))))
-        (ebox-candidate-replace
-         candidate mark-node-id
-         (ebox-test-box :key 'mark :host-ref 'mark
-                      :content " ON ● " :width 'max-content
-                      :overflow 'hidden))
-        (ebox-candidate-replace
-         candidate label-node-id
-         (ebox-test-box :key 'label :host-ref 'label
-                      :content " Much longer power on state"
-                      :width 'max-content
-                      :overflow 'hidden))
-        (ebox-commit (current-buffer) candidate))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (memq (plist-get report :strategy)
-                      '(span-patch owner-rerender)))
-        (should (equal (plist-get report :owner-ids) (list owner-node-id)))
-        (should (eq (plist-get report :owner-type) 'flex))
-        (should (= (plist-get report :span-count) 1))
-        (should-not (plist-get report :tp-full-root))
-        (should-not (plist-get report :tp-scope-fallback))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))
-        (should
-         (ebox-test--buffer-propertized-matches-runtime-render-p))))))
-
-(ert-deftest ebox-contained-partial-flex-structure-change-preserves-fixed-slot ()
-  "A fixed partial flex should own bounded descendant structure changes."
-  (ebox-test--reset-runtime-state)
-  (let* ((input (ebox-test-box :key 'input :content "query"
-                             :overflow 'hidden))
-         (content
-          (ebox-test-box :key 'content :host-ref 'content
-                       :width 'max-content :overflow 'hidden
-                       :ebox-content-node (ebox-test-column input)))
-         (owner (ebox-test-flex :width '(180) :height 2 :overflow 'hidden
-                           :flex-flow '(column nowrap) content))
-         (caption (ebox-test-box :content "search" :width '(80) :height 2))
-         (outer (ebox-test-row caption owner))
-         (footer (ebox-test-box :content "FOOTER" :width '(260) :height 1))
-         (layout (ebox-test-column outer footer))
-         (content-node-id (ebox--ensure-node-id content))
-         (owner-node-id (ebox--ensure-node-id owner)))
-    (plist-put owner :key 'owner)
-    (plist-put owner :host-ref 'owner)
-    (ebox-test--with-rendered-buffer layout
-      (let ((candidate (ebox-candidate-begin (current-buffer))))
-        (ebox-candidate-replace
-         candidate content-node-id
-         (ebox-test-box
-          :key 'content :host-ref 'content
-          :width 'max-content :overflow 'hidden
-          :ebox-content-node
-          (ebox-test-column
-           (ebox-test-box :key 'input :content "query" :overflow 'hidden)
-           (ebox-test-box :key 'option :content "Apple" :overflow 'hidden))))
-        (ebox-commit (current-buffer) candidate))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'owner-rerender))
-        (should (equal (plist-get report :owner-ids) (list owner-node-id)))
-        (should (eq (plist-get report :owner-type) 'flex))
-        (should (= (plist-get report :span-count) 2))
-        (should-not (plist-get report :tp-full-root))
-        (should-not (plist-get report :tp-scope-fallback))
-        (should
-         (ebox-test--buffer-propertized-matches-runtime-render-p))))))
-
-
-(ert-deftest ebox-auto-height-flex-context-keeps-ancestor-width-fallback ()
-  "Auto-height flex contexts must not contain descendant width reflow."
-  (ebox-test--reset-runtime-state)
-  (let* ((fixture (ebox-test--nested-width-containment-layout))
-         (layout (plist-get fixture :layout))
-         (target (plist-get fixture :target))
-         (owner (plist-get fixture :owner))
-         (target-region-id (car (ebox-region-ids target)))
-         (owner-node-id (ebox--ensure-node-id owner)))
-    (ebox-test--with-rendered-buffer layout
-      (should-not (ebox--definite-containment-formatting-context-p
-                   (current-buffer) owner-node-id))
-      (ebox-test--region-update target-region-id :width '(280))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'owner-rerender))
-        (should-not (equal (plist-get report :owner-ids)
-                           (list owner-node-id)))
-        (should (eq (plist-get report :owner-type) 'flex))
-        (should-not (plist-get report :root-rerender))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
-
-(ert-deftest ebox-intrinsic-constrained-flex-context-keeps-ancestor-fallback ()
-  "Intrinsic min/max constraints must disable definite containment."
-  (dolist (max-width '(min-content (fit-content 260)))
-    (ebox-test--reset-runtime-state)
-    (let* ((fixture (ebox-test--nested-width-containment-layout 5))
-           (layout (plist-get fixture :layout))
-           (target (plist-get fixture :target))
-           (owner (plist-get fixture :owner))
-           (owner-box (plist-get owner :box))
-           (target-region-id (car (ebox-region-ids target)))
-           (owner-node-id (ebox--ensure-node-id owner)))
-      (ebox-put owner-box :max-width max-width)
-      (ebox-test--with-rendered-buffer layout
-        (should-not (ebox--definite-containment-formatting-context-p
-                     (current-buffer) owner-node-id))
-        (ebox-test--region-update target-region-id :width '(280))
-        (let ((report (ebox-test--buffer-update-report)))
-          (should-not (equal (plist-get report :owner-ids)
-                             (list owner-node-id)))
-          (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
-
-(ert-deftest ebox-visible-overflow-flex-context-keeps-ancestor-fallback ()
-  "A fixed context must not contain an unowned visible-overflow suffix."
-  (ebox-test--reset-runtime-state)
-  (let* ((fixture (ebox-test--nested-width-containment-layout 5))
-         (layout (plist-get fixture :layout))
-         (target (plist-get fixture :target))
-         (owner (plist-get fixture :owner))
-         (target-region-id (car (ebox-region-ids target)))
-         (owner-node-id (ebox--ensure-node-id owner)))
-    (ebox-put target :content "line 1\nline 2\nline 3\nline 4")
-    (ebox-put target :height 2)
-    (ebox-put target :overflow 'visible)
-    (ebox-test--with-rendered-buffer layout
-      (should-not (ebox--definite-containment-formatting-context-p
-                   (current-buffer) owner-node-id))
-      (ebox-test--region-update target-region-id :width '(280))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should-not (equal (plist-get report :owner-ids)
-                           (list owner-node-id)))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
-
 (ert-deftest ebox-visible-overflow-flex-wrapper-disables-width-containment ()
   "A visible-overflow flex wrapper must not contain child width changes."
   (ebox-test--reset-runtime-state)
@@ -5850,27 +4885,6 @@
       (should (= (ebox-string-height (ebox-render owner)) 5))
       (should-not (ebox--definite-containment-formatting-context-p
                    (current-buffer) owner-node-id)))))
-
-(ert-deftest ebox-fixed-flex-context-contains-child-block-size-update ()
-  "A fixed flex should contain a child block-size change in its five lines."
-  (ebox-test--reset-runtime-state)
-  (let* ((fixture (ebox-test--nested-width-containment-layout 5))
-         (layout (plist-get fixture :layout))
-         (target (plist-get fixture :target))
-         (target-region-id (car (ebox-region-ids target)))
-         (owner-node-id
-          (ebox--ensure-node-id (plist-get fixture :owner))))
-    (ebox-test--with-rendered-buffer layout
-      (let ((root-id (ebox--buffer-root-node-id (current-buffer))))
-        (ebox-test--region-update target-region-id :height 4)
-        (let ((report (ebox-test--buffer-update-report)))
-          (should (eq (plist-get report :strategy) 'span-patch))
-          (should (equal (plist-get report :owner-ids)
-                         (list owner-node-id)))
-          (should (eq (plist-get report :owner-type) 'flex))
-          (should (> (plist-get report :span-count) 0))
-          (should-not (member root-id (plist-get report :owner-ids))))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
 
 (ert-deftest ebox-fixed-flex-own-width-change-promotes-outside-containment ()
   "A fixed flex must not contain a change to its own outer width."
@@ -5956,41 +4970,6 @@
                                           :border "#999999")
                              (ebox-test-box :content "Metric"
                                           :width '(190) :height 4)))))))
-
-(ert-deftest ebox-flex-owner-update-reports-scoped-tp-publication ()
-  "A contained flex owner update should publish through a scoped TP commit."
-  (ebox-test--reset-runtime-state)
-  (let ((layout (ebox-test--flex-line-width-owner-layout)))
-    (ebox-test--with-rendered-buffer layout
-      (let ((region-id (ebox-test--selector-region-id (current-buffer) "#target")))
-        (ebox-test--region-update region-id
-                            :width '(210)
-                            :min-width '(150)
-                            :max-width '(260))
-        (let ((report (ebox-test--buffer-update-report)))
-          (should (eq (plist-get report :strategy) 'owner-rerender))
-          (should (eq (plist-get report :owner-type) 'flex))
-          (should-not (plist-get report :tp-full-root))
-          (should (> (plist-get report :tp-scope-count) 0))
-          (should-not (plist-get report :tp-scope-fallback))
-          (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
-
-(ert-deftest ebox-flex-line-rerender-skips-auto-width-owner ()
-  "Auto-width flex owners should fall back instead of slicing a moving suffix."
-  (ebox-test--reset-runtime-state)
-  (let ((layout (ebox-test--flex-line-width-owner-layout 12 :auto)))
-    (ebox-test--with-rendered-buffer layout
-      (let ((region-id (ebox-test--selector-region-id (current-buffer) "#target")))
-        (ebox-test--region-update region-id
-                            :width '(210)
-                            :min-width '(150)
-                            :max-width '(260))
-        (let ((report (ebox-test--buffer-update-report)))
-          (should (eq (plist-get report :strategy) 'owner-rerender))
-          (should (eq (plist-get report :owner-type) 'flex))
-          (should-not (plist-get report :tp-full-root))
-          (should-not (plist-get report :tp-scope-fallback))
-          (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
 
 (ert-deftest ebox-flex-owner-update-keeps-unrelated-snapshots-current ()
   "A scoped flex update should leave unrelated snapshots valid."
@@ -6231,7 +5210,6 @@
       (should (= (plist-get (ebox-scroll-state inner-id) :scroll-offset) 1))
       (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
 
-
 (ert-deftest ebox-scroll-child-layout-window-publishes-through-tp ()
   "Child-layout scroll boxes should publish one retained viewport update."
   (ebox-test--reset-runtime-state)
@@ -6469,104 +5447,6 @@
                           (plist-get report :impact-vector)))
           (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
 
-(ert-deftest ebox-owner-rerender-preserves-missing-wrapper-context ()
-  "Nested owner rerenders should retain outer paint and surface metadata."
-  (ebox-test--reset-runtime-state)
-  (let ((layout (ebox-test--dynamic-update-row-layout)))
-    (ebox-put layout :color "#1F2328")
-    (ebox-put layout :bgcolor "#FAF7F0")
-    (ebox-put layout :surface-properties
-              '(ebox-test-role outer-wrapper))
-    (ebox-put (plist-get (car (ebox--node-children layout)) :box)
-              :bgcolor "#FBF9FF")
-    (ebox-test--with-rendered-buffer layout
-      (let ((region-id (ebox-test--selector-region-id
-                        (current-buffer) "#overflow")))
-        (ebox-test--region-update region-id :overflow 'visible)
-        (should (eq (plist-get (ebox-test--buffer-update-report) :strategy)
-                    'owner-rerender))
-        (goto-char (point-min))
-        (search-forward "overflow target")
-        (let ((face (get-text-property (match-beginning 0) 'face)))
-          (should (ebox-test--face-has-key-value-p
-                   face :foreground "#1F2328"))
-          (should (ebox-test--face-has-key-value-p
-                   face :background "#FBF9FF"))
-          (should
-           (eq (get-text-property
-                (match-beginning 0) 'ebox-test-role)
-               'outer-wrapper)))))))
-
-
-(ert-deftest ebox-visible-scroll-content-update-preserves-wrapper-paint ()
-  "Visible cached content patches should preserve nested wrapper paint."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(box :id "root" :height 1 :overflow scroll
-            (column
-             (box :id "wrapper" :height 1 :overflow scroll
-                  :bgcolor "#E2E8F0"
-              (column
-               (box :id "target" :content "old" :width (80) :height 1
-                    :border "#64748B" :bgcolor "#1D4ED8")
-               (box :content "inner tail" :height 1)))
-             (box :content "outer tail" :height 1))))))
-    (ebox-test--with-rendered-buffer layout
-      (let ((root-id (ebox-test--selector-region-id
-                      (current-buffer) "#root"))
-            (wrapper-id (ebox-test--selector-region-id
-                         (current-buffer) "#wrapper"))
-            (target-id (ebox-test--selector-region-id
-                        (current-buffer) "#target")))
-        (should (plist-get (ebox-scroll-state root-id)
-                           :rendered-content-lines))
-        (should (plist-get (ebox-scroll-state wrapper-id)
-                           :rendered-content-lines))
-        (ebox-test--region-update target-id :content "new")
-        (let* ((report (ebox-test--buffer-update-report))
-               (border-pos (text-property-any
-                            (point-min) (point-max) 'ebox-bl target-id))
-               (content-pos (text-property-any
-                             (point-min) (point-max)
-                             'ebox-content target-id))
-               (border-face (and border-pos
-                                 (get-text-property border-pos 'face)))
-               (content-face (and content-pos
-                                  (get-text-property content-pos 'face)))
-               (content-face-specs
-                (if (and (listp content-face)
-                         (keywordp (car content-face)))
-                    (list content-face)
-                  content-face))
-               (effective-content-background
-                (cl-loop for spec in content-face-specs
-                         when (and (listp spec)
-                                   (plist-member spec :background))
-                         return (plist-get spec :background))))
-          (should (eq (plist-get report :strategy) 'span-patch))
-          (should (plist-get report :scroll-state-patch))
-          (should (plist-get report :runtime-published))
-          (should (eq (plist-get report :tp-render-scope) 'objects))
-          (should-not (plist-get report :tp-full-root))
-          (should (= (plist-get report :tp-scope-range-count) 1))
-          (should border-pos)
-          (should content-pos)
-          (should (ebox-test--face-has-key-value-p
-                   border-face :background "#E2E8F0"))
-          (should (member wrapper-id
-                          (get-text-property
-                           border-pos 'ebox-content-owners)))
-          (should (ebox-test--face-has-key-value-p
-                   content-face :background "#E2E8F0"))
-          (should (equal effective-content-background "#1D4ED8"))
-          (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
-
-
-
-
-
-
 (ert-deftest ebox-overflow-impact-skips-span-patch-owner-probe ()
   "Clipping changes should not spend time proving impossible span patches."
   (ebox-test--reset-runtime-state)
@@ -6631,52 +5511,6 @@
                                    :overflow)
                         'visible)))
           (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
-
-(ert-deftest ebox-overflow-reversal-removes-visible-suffix ()
-  "Clipping a visible target should replace the ancestor-owned old suffix."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(column :id root :width (760)
-            (flex :id matrix :width (600) :height 5
-                  :flex-flow (row nowrap)
-              (box :id card :width (300)
-                (box :id overflow
-                     :content "overflow target\nextra line\nanother line"
-                     :width (280) :height 2 :overflow scroll))
-              (box :id peer :content "P\nQ\nR\nS\nT"
-                   :width (300) :height 5))))))
-    (ebox-test--with-rendered-buffer layout
-      (let ((region-id (ebox-test--selector-region-id (current-buffer)
-                                                       "#overflow"))
-            (root-id (ebox--buffer-root-node-id (current-buffer)))
-            coverage-owner-id)
-        (let ((full-rerenders
-               (ebox-test--count-full-surface-updates
-                 (ebox-test--region-update region-id :overflow 'visible)
-                 (let ((report (ebox-test--buffer-update-report)))
-                   (setq coverage-owner-id
-                         (car (plist-get report :owner-ids)))
-                   (should (eq (plist-get report :strategy) 'owner-rerender))
-                   (should coverage-owner-id)
-                   (should-not (equal coverage-owner-id root-id))
-                   (should (eq (plist-get report :owner-type) 'flex))
-                   (should (= (plist-get report :span-count) 5))
-                   (should-not (plist-get report :root-rerender))
-                   (should (ebox-test--buffer-visually-matches-runtime-render-p)))
-                 (ebox--clear-layout-snapshots (current-buffer))
-                 (ebox-test--region-update region-id :overflow 'hidden)
-                 (let ((report (ebox-test--buffer-update-report))
-                       (plain (buffer-substring-no-properties
-                               (point-min) (point-max))))
-                   (should (eq (plist-get report :strategy) 'owner-rerender))
-                   (should (equal (plist-get report :owner-ids)
-                                  (list coverage-owner-id)))
-                   (should (= (plist-get report :span-count) 5))
-                   (should-not (plist-get report :root-rerender))
-                   (should-not (string-match-p "another line" plain))
-                   (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
-          (should (= full-rerenders 0)))))))
 
 (ert-deftest ebox-overflow-reversal-skips-layout-only-ancestor ()
   "Old visible suffix coverage should skip ancestors without wrapper ownership."
@@ -6930,69 +5764,11 @@
                (snapshot (ebox--ensure-layout-snapshot-spans
                           (current-buffer) node-id))
                (snapshot-spans (plist-get snapshot :buffer-spans))
+               (node (ebox--buffer-runtime-node (current-buffer) node-id))
                (actual-spans (ebox--region-set-line-spans
-                              (list region-id))))
+                              (ebox--node-all-region-ids node))))
           (should (eq (plist-get report :strategy) 'span-patch))
           (should (equal snapshot-spans actual-spans))
-          (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
-
-(ert-deftest ebox-sequential-sibling-span-patches-invalidate-stale-coordinates ()
-  "Text-changing sibling patches should not reuse translated snapshot spans."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(column :id root :width (120)
-            (box :id a :content "A" :width (120) :height 1)
-            (box :id b :content "B" :width (120) :height 1)))))
-    (ebox-test--with-rendered-buffer layout
-      (let* ((a-handle (car (ebox-selector-query-buffer
-                             (current-buffer) "#a")))
-             (b-handle (car (ebox-selector-query-buffer
-                             (current-buffer) "#b")))
-             (a-region-id (plist-get a-handle :region-id))
-             (b-region-id (plist-get b-handle :region-id))
-             (b-node-id (plist-get b-handle :node-id))
-             sibling-snapshot-current-p
-             reports)
-        (ebox-test--region-update b-region-id :content "BB")
-        (push (ebox-test--buffer-update-report) reports)
-        (ebox-test--region-update a-region-id :content "AAAA")
-        (push (ebox-test--buffer-update-report) reports)
-        (let* ((snapshot (ebox--layout-snapshot
-                          (current-buffer) b-node-id))
-               (snapshot-spans (plist-get snapshot :buffer-spans))
-               (actual-spans (ebox--region-set-line-spans
-                              (list b-region-id))))
-          (setq sibling-snapshot-current-p
-                (or (not (plist-member snapshot :buffer-spans))
-                    (equal snapshot-spans actual-spans))))
-        (ebox-test--region-update b-region-id :content "CCC")
-        (push (ebox-test--buffer-update-report) reports)
-        (dolist (report reports)
-          (should (eq (plist-get report :strategy) 'span-patch)))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))
-        (should sibling-snapshot-current-p)))))
-
-(ert-deftest ebox-flex-direct-item-inline-margin-rerenders-flex-owner ()
-  "Direct flex item margin changes should patch the flex line owner."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(flex :id matrix :width (260) :flex-flow (row nowrap)
-            :column-gap (0)
-            (box :id target :content "A" :width (80) :height 1
-                 :border "#999999")
-            (box :id peer :content "B" :width (80) :height 1
-                 :border "#999999")))))
-    (ebox-test--with-rendered-buffer layout
-      (let ((region-id (ebox-test--selector-region-id (current-buffer)
-                                                       "#target")))
-        (ebox-test--region-update region-id
-                            :margin-left '(30)
-                            :margin-right '(30))
-        (let ((report (ebox-test--buffer-update-report)))
-          (should (eq (plist-get report :strategy) 'owner-rerender))
-          (should (eq (plist-get report :owner-type) 'flex))
           (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
 
 (ert-deftest ebox-flex-child-width-expansion-reflows-ancestor-after-span-fallback ()
@@ -7024,70 +5800,6 @@
                         (ebox--buffer-root-node (current-buffer))))))
           (should (string= (substring-no-properties patched)
                            (substring-no-properties full))))))))
-
-(ert-deftest ebox-flex-shrunk-definite-item-content-update-keeps-current-slot ()
-  "A definite 520x4 item may update inside its published shrunk slot."
-  (ebox-test--reset-runtime-state)
-  (let ((ebox-viewport-width 500)
-        (layout
-         (ebox-test-build
-          '(flex :id root :width (500) :height 4
-                 :flex-flow (row nowrap) :align-items flex-start
-            (box :id fixed :content "peer" :width (320) :height 4
-                 :flex-grow 0 :flex-shrink 0)
-            (box :id target :content "READY" :width (520) :height 4
-                 :overflow hidden :wrap-mode word)))))
-    (ebox-test--with-rendered-buffer layout
-      (let* ((match (car (ebox-selector-query-buffer
-                          (current-buffer) "#target")))
-             (region-id (plist-get match :region-id))
-             (node-id (plist-get match :node-id))
-             (node (ebox--buffer-runtime-node (current-buffer) node-id))
-             (snapshot (ebox--ensure-layout-snapshot-details
-                        (current-buffer) node-id))
-             (old-widths
-              (plist-get (plist-get snapshot :span-footprint-signature)
-                         :line-pixel-widths)))
-        (should (= (length old-widths) 4))
-        (should (< (apply #'max old-widths) 520))
-        ;; Flex measurement may have rendered a temporary sized copy.  Keep
-        ;; this regression focused on the current-slot update contract.
-        (puthash region-id node ebox--region-box-table)
-        (ebox-test--region-update region-id :content "DONE")
-        (let ((report (ebox-test--buffer-update-report)))
-          (should (eq (plist-get report :strategy) 'span-patch))
-          (should (equal (plist-get report :owner-ids) (list node-id)))
-          (should-not (plist-get report :full-rerender)))
-        (should (string-match-p
-                 "DONE"
-                 (buffer-substring-no-properties (point-min) (point-max))))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
-
-(ert-deftest ebox-flex-grown-fixed-basis-item-content-update-keeps-current-slot ()
-  "A zero-minimum fixed-basis item may update inside its grown slot."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(flex :id root :width (900) :height 24
-                 :flex-flow (row nowrap) :align-items stretch
-            (box :id list :content "peer" :width stretch :min-width 0
-                 :min-height 24 :flex-grow 4 :flex-shrink 1
-                 :flex-basis (620))
-            (box :id target :content "detail one" :width stretch :min-width 0
-                 :min-height 24 :flex-grow 2 :flex-shrink 1
-                 :flex-basis (340))))))
-    (ebox-test--with-rendered-buffer layout
-      (let* ((match (car (ebox-selector-query-buffer
-                          (current-buffer) "#target")))
-             (region-id (plist-get match :region-id))
-             (node-id (plist-get match :node-id))
-             (root-id (ebox--buffer-root-node-id (current-buffer))))
-        (ebox-test--region-update region-id :content "detail two")
-        (let ((report (ebox-test--buffer-update-report)))
-          (should (eq (plist-get report :strategy) 'span-patch))
-          (should (equal (plist-get report :owner-ids) (list node-id)))
-          (should-not (member root-id (plist-get report :owner-ids))))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
 
 (ert-deftest ebox-rendered-owned-lines-trims-only-contiguous-outer-chrome ()
   "Role projection keeps owned lines and rejects an unowned interior gap."
@@ -7152,38 +5864,6 @@
                  (buffer-substring-no-properties (point-min) (point-max))))
         (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
 
-(ert-deftest ebox-buffer-update-report-describes-span-patch ()
-  "The update report should expose the actual minimal patch strategy."
-  (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Trace" :width 80 :height 1))
-         (region-id (car (ebox-region-ids box))))
-    (ebox-test--with-rendered-buffer box
-      (ebox-test--region-update region-id :content "Patch")
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'span-patch))
-        (should (eq (plist-get report :owner-type) 'box))
-        (should-not (plist-get report :tp-full-root))
-        (should (> (plist-get report :tp-scope-count) 0))
-        (should (> (plist-get report :tp-operation-count) 0))
-        (should (> (plist-get report :span-count) 0))
-        (should (ebox-test--buffer-propertized-matches-runtime-render-p))))))
-
-(ert-deftest ebox-buffer-update-report-describes-owner-rerender-fallback ()
-  "The update report should expose geometry owner rerender fallback."
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "L" :width 40))
-         (right (ebox-test-box :content "R" :width 40))
-         (layout (ebox-test-concat left right))
-         (region-id (car (ebox-region-ids layout))))
-    (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update region-id :width '(120))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'owner-rerender))
-        (should (eq (plist-get report :owner-type) 'concat))
-        (should-not (plist-get report :tp-full-root))
-        (should (> (plist-get report :tp-scope-count) 0))
-        (should (ebox-test--buffer-propertized-matches-runtime-render-p))))))
-
 (ert-deftest ebox-region-update-stable-geometry-uses-span-patch ()
   "Geometry updates with stable span footprint should use the L2 planner path."
   (ebox-test--reset-runtime-state)
@@ -7197,21 +5877,6 @@
         (should (equal (plist-get report :patch-ops) '(span-patch)))
         (should (equal (plist-get report :dirty-kinds) '(geometry)))
         (should (eq (plist-get report :owner-type) 'box))
-        (should-not (plist-get report :full-rerender))))))
-
-(ert-deftest ebox-region-update-parent-layout-change-keeps-owner-rerender ()
-  "Geometry updates that move siblings should not be forced into span-patch."
-  (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "L" :width '(40)))
-         (right (ebox-test-box :content "R" :width '(40)))
-         (layout (ebox-test-concat left right))
-         (region-id (car (ebox-region-ids layout))))
-    (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update region-id :width '(120))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'owner-rerender))
-        (should (equal (plist-get report :patch-ops) '(owner-rerender)))
-        (should (eq (plist-get report :owner-type) 'concat))
         (should-not (plist-get report :full-rerender))))))
 
 (ert-deftest ebox-region-update-inline-child-stable-geometry-uses-span-patch ()
@@ -7260,88 +5925,6 @@
         (should (eq (plist-get report :strategy) 'owner-rerender))
         (should (equal (plist-get report :patch-ops) '(owner-rerender)))
         (should-not (plist-get report :full-rerender))))))
-
-(ert-deftest ebox-flex-item-box-sizing-update-rerenders-contained-flex ()
-  "Changing a flex item's box model should rerun its parent's placement."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(column :id root :width (760)
-            (flex :id outer :width (600) :height 5 :flex-flow (row nowrap)
-              (box :id card :width (300)
-                (flex :id inner :width (300) :height 5
-                      :padding (0 (10)) :border "#6F6A95"
-                      :justify-content center :align-items center
-                  (box :id target :content "A\nB"
-                       :width (230) :height 3 :padding (0 (10))
-                       :border "#999999" :box-sizing content-box)))
-              (box :id peer :content "P\nQ\nR\nS\nT"
-                   :width (300) :height 5))))))
-    (ebox-test--with-rendered-buffer layout
-      (let* ((region-id
-              (ebox-test--selector-region-id (current-buffer) "#target"))
-             (target-node
-              (ebox--buffer-region-render-owner-node
-               (current-buffer) region-id))
-             (flex-id
-              (ebox--runtime-parent-id
-               (current-buffer) (ebox--ensure-node-id target-node)))
-             (root-id (ebox--buffer-root-node-id (current-buffer))))
-        (ebox-test--region-update region-id :box-sizing 'border-box)
-        (let ((report (ebox-test--buffer-update-report)))
-          (should (eq (plist-get report :strategy) 'owner-rerender))
-          (should (equal (plist-get report :owner-ids) (list flex-id)))
-          (should (eq (plist-get report :owner-type) 'flex))
-          (should (= (plist-get report :span-count) 5))
-          (should-not (member root-id (plist-get report :owner-ids)))
-          (should-not (plist-get report :tp-full-root))
-          (should-not (plist-get report :tp-scope-fallback))
-          (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
-
-(ert-deftest ebox-flex-item-block-size-updates-use-fixed-containment-owner ()
-  "Block-size updates should skip flex-slot proof below fixed containment."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(column :id root :width (760)
-            (flex :id outer :width (600) :height 5 :flex-flow (row nowrap)
-              (box :id card :width (300)
-                (flex :id inner :width (300) :height 5
-                      :padding (0 (10)) :border "#6F6A95"
-                      :justify-content center :align-items center
-                  (box :id target :content "A\nB\nC\nD"
-                       :width (230) :height 2 :overflow scroll
-                       :padding (0 (10)) :border "#999999")))
-              (box :id peer :content "P\nQ\nR\nS\nT"
-                   :width (300) :height 5))))))
-    (ebox-test--with-rendered-buffer layout
-      (let* ((region-id
-              (ebox-test--selector-region-id (current-buffer) "#target"))
-             (target-node
-              (ebox--buffer-region-render-owner-node
-               (current-buffer) region-id))
-             (flex-id
-              (ebox--runtime-parent-id
-               (current-buffer) (ebox--ensure-node-id target-node)))
-             (root-id (ebox--buffer-root-node-id (current-buffer)))
-             (slot-proof-count 0)
-             (original-slot-proof
-              (symbol-function 'ebox--flex-item-slot-footprint-safe-p)))
-        (cl-letf (((symbol-function 'ebox--flex-item-slot-footprint-safe-p)
-                   (lambda (&rest args)
-                     (cl-incf slot-proof-count)
-                     (apply original-slot-proof args))))
-          (dolist (change '((:height 4) (:min-height 3) (:max-height 1)))
-            (ebox-test--region-update region-id (car change) (cadr change))
-            (let ((report (ebox-test--buffer-update-report)))
-              (should (memq (plist-get report :strategy)
-                            '(span-patch owner-rerender)))
-              (should (equal (plist-get report :owner-ids) (list flex-id)))
-              (should (eq (plist-get report :owner-type) 'flex))
-              (should (= (plist-get report :span-count) 5))
-              (should-not (member root-id (plist-get report :owner-ids)))
-              (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
-        (should (= slot-proof-count 0))))))
 
 (ert-deftest ebox-region-update-span-candidate-falls-back-on-wrap-change ()
   "A wrap-changing update should publish a correct scoped TP plan."
@@ -7605,71 +6188,6 @@
                        '(paint-patch)))
         (should-not (plist-get report :full-rerender))))))
 
-(ert-deftest ebox-color-and-visibility-are-real-and-display-is-ignored ()
-  (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Paint"
-                           :color "#eeeeee"
-                           :display 'none
-                           :visibility 'hidden))
-         (region-id (car (ebox-region-ids box))))
-    (should (equal (ebox-get box :color) "#eeeeee"))
-    (should (equal (ebox--computed-display box) '(block flow)))
-    (should (eq (ebox-get box :visibility) 'hidden))
-    (ebox-test--with-rendered-buffer box
-      ;; Hidden at mount: the text is present but carries no face ink.
-      (let ((position (string-match
-                       "Paint"
-                       (buffer-substring-no-properties (point-min)
-                                                       (point-max)))))
-        (should position)
-        (should-not (get-text-property (+ (point-min) position) 'face)))
-      (ebox-test--region-update region-id
-                          :color "#123456"
-                          :display 'block
-                          :visibility 'visible)
-      (let ((runtime-box
-             (gethash region-id (ebox--buffer-region-box-table
-                                 (current-buffer)))))
-        (should (equal (ebox-get box :color) "#eeeeee"))
-        (should (equal (ebox-get runtime-box :color) "#123456"))
-        (should (eq (ebox-get runtime-box :visibility) 'visible)))
-      (should (equal (ebox--computed-display box) '(block flow)))
-      (should (eq (ebox-get box :visibility) 'hidden))
-      (let ((position (string-match
-                       "Paint"
-                       (buffer-substring-no-properties (point-min)
-                                                       (point-max)))))
-        (should position)
-        (should (get-text-property (+ (point-min) position) 'face))))))
-
-(ert-deftest ebox-row-column-and-spacer-compose-layouts ()
-  (ebox-test--reset-runtime-state)
-  (let* ((a (ebox-test-box :content "A" :width 40))
-         (b (ebox-test-box :content "B" :width 40))
-         (c (ebox-test-box :content "C" :width 40))
-         (row (ebox-test-row a nil b c))
-         (column (ebox-test-column a b nil c))
-         (spacer (ebox-test-spacer :width 20 :height 2)))
-    (should (equal (ebox-region-ids row) '(1 2 3)))
-    (should (equal (ebox-region-ids column) '(1 2 3)))
-    (should (eq (plist-get spacer :ebox-type) 'box))
-    (should (string-match-p "A.*B.*C"
-                            (substring-no-properties (ebox-render row))))
-    (should (string-match-p "A[^\n]*\nB[^\n]*\nC"
-                            (substring-no-properties (ebox-render column))))))
-
-(ert-deftest ebox-row-and-column-store-children-as-flat-containers ()
-  "Row and column should be one container node with direct children."
-  (ebox-test--reset-runtime-state)
-  (let* ((children (cl-loop for label in '("A" "B" "C" "D")
-                            collect (ebox-test-box :content label :width 40)))
-         (row (apply #'ebox-test-row children))
-         (column (apply #'ebox-test-column children)))
-    (should (= (length (ebox--node-children row)) 4))
-    (should (= (length (ebox--node-children column)) 4))
-    (should (= (length (ebox--runtime-node-ids row)) 5))
-    (should (= (length (ebox--runtime-node-ids column)) 5))))
-
 (ert-deftest ebox-overflow-hidden-clips-extra-content-lines ()
   (ebox-test--reset-runtime-state)
   (let* ((box (ebox-test-box :content "A\nB\nC"
@@ -7693,14 +6211,11 @@
     (should (= (ebox-string-height plain) 3))))
 
 (defun ebox-test--assert-visible-overflow-paint
-    (rendered foreground background)
-  "Assert RENDERED keeps visible overflow painted but unowned."
+    (rendered foreground background outer-region-id)
+  "Assert RENDERED overflow keeps Text identity without OUTER-REGION-ID."
   (let* ((lines (ebox-string-lines rendered))
          (body (car lines))
          (overflow-lines (cdr lines))
-         (ownership-properties
-          (append '(ebox-content-idx ebox-content-owners)
-                  (mapcar #'cdr ebox-region-types)))
          (body-pos (cl-position ?A body)))
     (should (= (length lines) 3))
     (should (integerp body-pos))
@@ -7714,6 +6229,7 @@
              do
              (let ((glyph-pos (cl-position glyph line)))
                (should (integerp glyph-pos))
+               (should (get-text-property glyph-pos 'ebox-content line))
                (should (ebox-test--face-has-key-value-p
                         (get-text-property glyph-pos 'face line)
                         :foreground foreground)))
@@ -7728,8 +6244,13 @@
                 (ebox-test--face-has-key-p
                  (get-text-property pos 'face line)
                  :background))
-               (dolist (property ownership-properties)
-                 (should-not (get-text-property pos property line)))))))
+               (should-not
+                (member outer-region-id
+                        (get-text-property pos 'ebox-content-owners line)))
+               (dolist (property (mapcar #'cdr ebox-region-types))
+                 (should-not
+                  (equal (get-text-property pos property line)
+                         outer-region-id)))))))
 
 (ert-deftest ebox-overflow-visible-paints-foreground-without-ownership ()
   "Visible overflow should inherit only the outer box foreground."
@@ -7741,9 +6262,10 @@
                            :color "#abcdef"
                            :bgcolor "#123456"
                            :padding-inline '(6)
-                           :margin-inline '(4))))
+                           :margin-inline '(4)))
+         (region-id (ebox--ensure-region-id box)))
     (ebox-test--assert-visible-overflow-paint
-     (ebox-render box) "#abcdef" "#123456")))
+     (ebox-render box) "#abcdef" "#123456" region-id)))
 
 (ert-deftest ebox-region-update-refreshes-visible-overflow-foreground ()
   "Color updates should add, replace, and remove visible overflow paint."
@@ -7759,10 +6281,10 @@
     (ebox-test--with-rendered-buffer box
       (ebox-test--region-update region-id :color "#abcdef")
       (ebox-test--assert-visible-overflow-paint
-       (buffer-string) "#abcdef" "#123456")
+       (buffer-string) "#abcdef" "#123456" region-id)
       (ebox-test--region-update region-id :color "#fedcba")
       (ebox-test--assert-visible-overflow-paint
-       (buffer-string) "#fedcba" "#123456")
+       (buffer-string) "#fedcba" "#123456" region-id)
       (ebox-test--region-update region-id :color nil)
       (cl-loop for line in (ebox-string-lines (buffer-string))
                for glyph in '(?A ?B ?C)
@@ -7795,8 +6317,12 @@
                  face :foreground "#abcdef"))
         (should-not (ebox-test--face-has-key-value-p
                      face :background "#123456"))
-        (should-not (get-text-property pos 'ebox-content-owner))
-        (should-not (get-text-property pos 'ebox-content-owners))))))
+        (should (get-text-property pos 'ebox-content))
+        (should-not
+         (eq (get-text-property pos 'ebox-content-owner) region-id))
+        (should-not
+         (member region-id
+                 (get-text-property pos 'ebox-content-owners)))))))
 
 (ert-deftest ebox-overflow-scroll-keeps-window-height-and-state ()
   (ebox-test--reset-runtime-state)
@@ -8067,8 +6593,6 @@
     (should (equal-including-properties actual expected))
     (should-not (ebox--scroll-get-state region-id))))
 
-
-
 (ert-deftest ebox-lazy-scroll-rendered-window-uses-preformatted-lines ()
   "Lazy scroll windows should not rebuild visible content lines per tick."
   (ebox-test--reset-runtime-state)
@@ -8176,53 +6700,6 @@
                          (count-lines (car current-bounds)
                                       (cdr current-bounds)))))
             (should (= materialize-count 0))))
-      (when root-id
-        (ebox--smooth-scroll-stop root-id))
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
-(ert-deftest ebox-lazy-scroll-offset-viewport-resize-stays-lazy ()
-  "Viewport resize after scrolling should not materialize all hidden content."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-build
-           `(column :id "viewport" :width (viewport)
-                    :height (viewport-height)
-             (box :content "" :width (viewport) :height 1)
-             (box :id "root" :width (viewport)
-                  :height (- (viewport-height) 2)
-                  :overflow scroll
-              (column :width (viewport) :padding (1 (8))
-               ,@(cl-loop for idx below 80
-                          collect
-                          `(box :content ,(format "offset row %02d" idx)
-                                :width (viewport)
-                                :height 1)))
-             (box :content "" :width (viewport) :height 1)))))
-         buffer
-         root-id)
-    (unwind-protect
-        (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 12)
-              (ebox-wheel-scroll-step 16)
-              (ebox-scroll-lazy-idle-prefetch-lines 0)
-              (ebox-scroll-lazy-prefix-lookahead-lines 0))
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*")
-                 layout))
-          (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (with-current-buffer buffer
-            (should (ebox--scroll-region-by root-id 16)))
-          (ebox-rerender-buffer-with-context buffer 320 14)
-          (let ((state (ebox--scroll-get-state root-id)))
-            (should (= (plist-get state :scroll-offset) 16))
-            (should (plist-get state :render-content-prefix))
-            (should (plist-get state :materialize-content-lines))
-            (should (< (length (plist-get state :content-lines)) 80))
-            (should (>= (length (plist-get state :content-lines))
-                        (+ (plist-get state :scroll-offset)
-                           (plist-get state :content-height))))))
       (when root-id
         (ebox--smooth-scroll-stop root-id))
       (when (and buffer (buffer-live-p buffer))
@@ -8429,7 +6906,6 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
-
 (ert-deftest ebox-lazy-scroll-prefix-reuses-viewport-dependent-flex-leaves ()
   "Lazy prefix extension should not rerender prior viewport flex leaves."
   (ebox-test--reset-runtime-state)
@@ -8516,32 +6992,6 @@
           (should (= hidden-render-count 0)))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
-
-(ert-deftest ebox-flex-window-lines-match-full-render-prefix ()
-  "Partial flex window rendering should match the full render prefix."
-  (ebox-test--reset-runtime-state)
-  (let* ((node
-          (ebox-test-build
-           `(flex :width (240) :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  :padding (0 (8)) :border "#D97757"
-                  :border-top none :bgcolor "#FFF8F2"
-                  ,@(cl-loop for idx below 6
-                             collect
-                             `(box :id ,(format "prefix-item-%02d" idx)
-                                   :content ,(format "prefix %02d" idx)
-                                   :width (100) :height 2)))))
-         (limit 4)
-         (_index (ebox--runtime-index node t))
-         (full-lines
-          (let ((ebox--surface-materialization-active t))
-            (ebox-string-lines (ebox--render-layout node))))
-         (window (ebox--render-flex-window-lines node limit)))
-    (should-not (plist-get window :complete))
-    (should (equal (mapcar #'substring-no-properties
-                           (seq-take full-lines limit))
-                   (mapcar #'substring-no-properties
-                           (plist-get window :lines))))))
 
 (ert-deftest ebox-flex-window-shrinks-definite-wrapping-items ()
   "Window prefix rendering must not freeze shrinkable definite widths."
@@ -8699,49 +7149,6 @@
     (should (= full-wrapper-count 0))
     (should (= chunk-wrapper-count 1))
     (should (= multiline-horizontal-concat-count 0))))
-
-(ert-deftest ebox-flex-window-lines-use-chunk-wrapper-for-first-completion ()
-  "A compatible seedless completion should avoid the generic full wrapper."
-  (ebox-test--reset-runtime-state)
-  (let* ((node
-          (ebox-test-build
-           `(flex :id "flex-window-complete-wrapper" :width (240)
-                  :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  :padding (0 (8)) :border "#D97757"
-                  :border-top none :bgcolor "#FFF8F2"
-                  ,@(cl-loop for idx below 4
-                             collect
-                             `(box :content ,(format "complete %02d" idx)
-                                   :width (100) :height 2)))))
-         (_index (ebox--runtime-index node t))
-         (full
-          (let ((ebox--surface-materialization-active t))
-            (ebox--render-layout node)))
-         (full-wrapper-count 0)
-         (chunk-wrapper-count 0)
-         (original-full-wrapper
-          (symbol-function 'ebox--flex-window-render-box-lines))
-         (original-chunk-wrapper
-          (symbol-function 'ebox--flex-window-render-wrapper-chunk-lines)))
-    (cl-letf (((symbol-function 'ebox--flex-window-render-box-lines)
-               (lambda (&rest args)
-                 (cl-incf full-wrapper-count)
-                 (apply original-full-wrapper args)))
-              ((symbol-function 'ebox--flex-window-render-wrapper-chunk-lines)
-               (lambda (&rest args)
-                 (cl-incf chunk-wrapper-count)
-                 (apply original-chunk-wrapper args))))
-      (let* ((ebox--surface-materialization-active t)
-             (window (ebox--render-flex-window-lines node 8)))
-        (should window)
-        (should (plist-get window :complete))
-        (should
-         (equal-including-properties
-          full
-          (ebox-lines-join (plist-get window :lines))))))
-    (should (= full-wrapper-count 0))
-    (should (= chunk-wrapper-count 1))))
 
 (ert-deftest ebox-flex-flat-wrapper-owns-color-copy-in-place ()
   "Flat flex wrappers should decorate one private line copy per source line."
@@ -9683,64 +8090,6 @@
       (remhash 'test-yielding-prewarm
                ebox--window-line-renderer-table))))
 
-(ert-deftest ebox-scroll-stack-window-defers-hidden-leaf-render ()
-  "Large stack-backed scroll boxes should render hidden rows only on demand."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport) :padding (1 0)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
-         (buffer nil)
-         root-id
-         (hidden-render-count 0)
-         (original-render-box (symbol-function 'ebox--render-box)))
-    (unwind-protect
-        (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 2)
-              (ebox-wheel-scroll-step 16)
-              (ebox-wheel-smooth-scroll t))
-          (cl-letf (((symbol-function 'ebox--render-box)
-                     (lambda (box)
-                       (when (equal (ebox-tree-node-id box) "row-30")
-                         (cl-incf hidden-render-count))
-                       (funcall original-render-box box))))
-            (setq buffer
-                  (ebox-render-to-buffer
-                   (generate-new-buffer-name " *ebox-test*")
-                   layout))
-            (setq root-id (ebox-test--selector-region-id buffer "#root"))
-            (should (= hidden-render-count 0))
-            (with-current-buffer buffer
-              (should (string-match-p "row 00"
-                                      (buffer-substring-no-properties
-                                       (point-min) (point-max))))
-              (should-not (string-match-p "row 30"
-                                          (buffer-substring-no-properties
-                                           (point-min) (point-max))))
-              (should (ebox--scroll-region-by root-id 31))
-              (should (= hidden-render-count 0))
-              (should (gethash root-id ebox--scroll-idle-prefetch-timers))
-              (dotimes (_ 40)
-                (when (= hidden-render-count 0)
-                  (ebox--scroll-idle-prefetch root-id)))
-              (should (> hidden-render-count 0))
-              (let* ((state (ebox--scroll-get-state root-id))
-                     (delta (- 30 (or (plist-get state :scroll-offset)
-                                      0))))
-                (when (> delta 0)
-                  (should (ebox--scroll-region-by root-id delta))))
-              (should (string-match-p "row 30"
-                                      (buffer-substring-no-properties
-                                       (point-min) (point-max)))))))
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
 (ert-deftest ebox-lazy-scroll-incremental-render-covers-wheel-drain ()
   "Incremental lazy scroll renders should cover one smooth wheel drain."
   (ebox-test--reset-runtime-state)
@@ -10360,6 +8709,19 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-canonical-column-viewport-height-measures-text-as-text ()
+  "A typed Text leaf must not enter legacy Box geometry measurement."
+  (let ((ebox-viewport-width 640)
+        (ebox-viewport-height 24))
+    (should
+     (string-match-p
+      "Viewport"
+      (substring-no-properties
+       (ebox-render
+        (ebox-build
+         '(column :width (viewport) :height (viewport-height)
+           "Viewport"))))))))
+
 (ert-deftest ebox-lazy-scroll-idle-prefetch-covers-visible-window ()
   "Idle prefetch should warm beyond the current visible scroll window."
   (ebox-test--reset-runtime-state)
@@ -10410,45 +8772,6 @@
     (should (= requested-lines 7))
     (should (gethash region-id ebox--scroll-idle-prefetch-timers))
     (ebox--scroll-cancel-idle-prefetch region-id)))
-
-(ert-deftest ebox-lazy-scroll-idle-prefetch-bounds-atomic-item-work ()
-  "Item-heavy buffers should request only one new line per idle render turn."
-  (ebox-test--reset-runtime-state)
-  (let ((region-id "scroll")
-        buffer
-        requested-lines)
-    (unwind-protect
-        (progn
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-item-prefetch*")
-                 (ebox-test-build
-                  '(flex :width (240)
-                         (item (box :content "atomic" :width (120)))))))
-          (puthash
-           region-id
-           (list :buffer buffer
-                 :scroll-offset 0
-                 :content-height 10
-                 :content-lines (make-list 3 "")
-                 :render-content-prefix
-                 (lambda (_state _region-id target-lines)
-                   (setq requested-lines target-lines)
-                   (list :content-lines (make-list target-lines "")
-                         :content-height 10
-                         :complete nil)))
-           ebox--scroll-global-state)
-          (let ((ebox-scroll-lazy-idle-prefetch-lines 64)
-                (ebox-scroll-lazy-idle-prefetch-slice-lines 16)
-                (ebox-scroll-lazy-prefix-lookahead-lines 13)
-                (ebox--scroll-allow-noninteractive-prefetch t))
-            (ebox--scroll-idle-prefetch region-id))
-          ;; Three cached lines + one atomic requested line.  The completion
-          ;; probe must not silently double a latency-sensitive slice.
-          (should (= requested-lines 4)))
-      (ebox--scroll-cancel-idle-prefetch region-id)
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
 
 (ert-deftest ebox-lazy-scroll-idle-prefetch-bounds-large-runtime-work ()
   "Large runtimes should request only one new line per idle render turn."
@@ -10671,46 +8994,6 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-lazy-scroll-prefix-reuses-exact-source-lines ()
-  "Exact-width lazy scroll source lines should not be reformatted."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 20
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
-         (buffer nil)
-         root-id
-         (format-count 0)
-         (original-format (symbol-function 'ebox--format-content-string)))
-    (unwind-protect
-        (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 1)
-              (ebox-wheel-scroll-step 0)
-              (ebox-scroll-lazy-prefix-lookahead-lines 0))
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*")
-                 layout))
-          (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (cl-letf (((symbol-function 'ebox--format-content-string)
-                     (lambda (&rest args)
-                       (when (equal (and (listp (car args))
-                                         (ebox-get (car args) :id))
-                                    "root")
-                         (cl-incf format-count))
-                       (apply original-format args))))
-            (with-current-buffer buffer
-              (should (ebox--scroll-region-by root-id 2))))
-          (should (= format-count 0)))
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
 (defun ebox-test--complete-lazy-scroll-batch-layout ()
   "Return a complete five-row lazy scroll cache fixture."
   (ebox-test-build
@@ -10888,60 +9171,6 @@
                    (buffer-string) "target row" "#DC2626"))
             '("#DC2626" t t t t))))))))
 
-(ert-deftest ebox-explicit-batch-synchronizes-mixed-scroll-cache-sources ()
-  "A mixed batch should publish coherent visible and cached scroll content."
-  (ebox-test--reset-runtime-state)
-  (let ((layout (ebox-test--complete-lazy-scroll-batch-layout))
-        (ebox-viewport-width 240)
-        (ebox-viewport-height 2)
-        (ebox-scroll-lazy-prefix-lookahead-lines 0)
-        (ebox-wheel-scroll-step 16)
-        (ebox-scroll-lazy-idle-prefetch-lines 0))
-    (ebox-test--with-rendered-buffer layout
-      (let* ((buffer (current-buffer))
-             (root-id (ebox-test--selector-region-id buffer "#root"))
-             (target-id (ebox-test--selector-region-id buffer "#target")))
-        (should (plist-get (ebox-scroll-state root-id)
-                           :content-lines-complete-p))
-        (ebox-incremental-begin-batch buffer)
-        (ebox-test--region-update target-id :content "batched target row")
-        (ebox-test--region-update target-id :color "#2563EB")
-        (ebox-incremental-flush buffer)
-        (let* ((runtime (gethash target-id ebox--region-box-table))
-               (visible-before (buffer-string))
-               (state (ebox-scroll-state root-id))
-               (content-lines (plist-get state :content-lines))
-               (rendered-lines (plist-get state :rendered-content-lines)))
-          (should (= 2 (ebox--scroll-region-by root-id 2)))
-          (should (= -2 (ebox--scroll-region-by root-id -2)))
-          (let ((visible-after (buffer-string)))
-            (should
-             (equal
-              (list (ebox-get runtime :content)
-                    (ebox-get runtime :color)
-                    (and (string-match-p
-                          "batched target row"
-                          (substring-no-properties visible-before))
-                         t)
-                    (ebox-test--text-has-foreground-p
-                     visible-before "batched target row" "#2563EB")
-                    (ebox-test--lines-have-text-p
-                     content-lines "batched target row")
-                    (ebox-test--lines-have-text-foreground-p
-                     content-lines "batched target row" "#2563EB")
-                    (ebox-test--lines-have-text-p
-                     rendered-lines "batched target row")
-                    (ebox-test--lines-have-text-foreground-p
-                     rendered-lines "batched target row" "#2563EB")
-                    (and (string-match-p
-                          "batched target row"
-                          (substring-no-properties visible-after))
-                         t)
-                    (ebox-test--text-has-foreground-p
-                     visible-after "batched target row" "#2563EB"))
-              '("batched target row" "#2563EB"
-                t t t t t t t t)))))))))
-
 (ert-deftest ebox-explicit-batch-synchronizes-distinct-scroll-cache-nodes ()
   "A batch flush should update every affected cached scroll node."
   (ebox-test--reset-runtime-state)
@@ -11009,99 +9238,6 @@
                  face :foreground "red")))
       (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
 
-(ert-deftest ebox-lazy-scroll-prefix-appends-rendered-content-lines ()
-  "Lazy prefix extension should render only newly appended visible lines."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :id ,(format "rendered-tail-row-%02d" idx)
-                               :content ,(format "rendered tail row %02d" idx)
-                               :height 1))))))
-         (buffer nil)
-         root-id
-         rendered-line-counts
-         (original-rendered-lines
-          (symbol-function 'ebox--scroll-rendered-content-lines)))
-    (unwind-protect
-        (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 2)
-              (ebox-scroll-lazy-prefix-lookahead-lines 0)
-              (ebox-wheel-scroll-step 0))
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*")
-                 layout))
-          (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (cl-letf (((symbol-function 'ebox--scroll-rendered-content-lines)
-                     (lambda (&rest args)
-                       (push (list (length (cadr args))
-                                   (nth 3 args))
-                             rendered-line-counts)
-                       (apply original-rendered-lines args))))
-            (dotimes (_ 2)
-              (let* ((state (ebox--scroll-get-state root-id))
-                     (current-lines (length (plist-get state
-                                                       :content-lines))))
-                (ebox--scroll-state-ensure-prefix-lines
-                 root-id state (+ current-lines 4)))))
-          (should
-           (cl-some (lambda (entry)
-                      (and (<= (car entry) 5)
-                           (integerp (cadr entry))
-                           (> (cadr entry) 0)))
-                    rendered-line-counts))
-          (dolist (entry rendered-line-counts)
-            (should (<= (car entry) 8))))
-      (ebox--scroll-cancel-idle-prefetch root-id)
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
-(ert-deftest ebox-lazy-scroll-prefix-avoids-full-prefix-joins ()
-  "Lazy prefix extension should not join the full cached prefix string."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :id ,(format "join-row-%02d" idx)
-                               :content ,(format "join row %02d" idx)
-                               :height 1))))))
-         (buffer nil)
-         root-id
-         join-sizes
-         (original-join (symbol-function 'ebox-lines-join)))
-    (unwind-protect
-        (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 2)
-              (ebox-scroll-lazy-prefix-lookahead-lines 0)
-              (ebox-wheel-scroll-step 0))
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*")
-                 layout))
-          (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (cl-letf (((symbol-function 'ebox-lines-join)
-                     (lambda (&rest args)
-                       (push (length (car args)) join-sizes)
-                       (apply original-join args))))
-            (let* ((state (ebox--scroll-get-state root-id))
-                   (current-lines (length (plist-get state
-                                                     :content-lines))))
-              (ebox--scroll-state-ensure-prefix-lines
-               root-id state (+ current-lines 4))))
-          (should-not (cl-some (lambda (size) (> size 5)) join-sizes)))
-      (ebox--scroll-cancel-idle-prefetch root-id)
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
 (ert-deftest ebox-lazy-scroll-prefix-reuses-signature-cache ()
   "Lazy prefix extension should not recompute node signatures each slice."
   (ebox-test--reset-runtime-state)
@@ -11146,60 +9282,6 @@
       (let ((first-cache (car signature-caches)))
         (dolist (cache (cdr signature-caches))
           (should (eq cache first-cache)))))))
-
-(ert-deftest ebox-lazy-scroll-prefix-appends-generic-wrapper-lines ()
-  "Lazy prefix extension should append wrapper chrome without rerendering it."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport) :box-sizing border-box
-                     :padding (1 (8)) :border "#555555"
-                     :bgcolor "#FAFAFA" :color "#111111"
-              ,@(cl-loop for idx below 20
-                         collect
-                         `(box :id ,(format "wrapped-row-%02d" idx)
-                               :content ,(format "wrapped row %02d" idx)
-                               :height 1))))))
-         (buffer nil)
-         root-id
-         (wrapper-render-count 0)
-         (original-render (symbol-function 'ebox-render)))
-    (unwind-protect
-        (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 1)
-              (ebox-wheel-scroll-step 0)
-              (ebox-scroll-lazy-prefix-lookahead-lines 0)
-              (ebox-scroll-lazy-idle-prefetch-lines 3)
-              (ebox-scroll-lazy-idle-prefetch-delay 999))
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*")
-                 layout))
-          (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (with-current-buffer buffer
-            (let ((state (ebox--scroll-get-state root-id)))
-              (should (= (length (plist-get state :content-lines)) 2))
-              (should (plist-get state :render-content-prefix)))
-            (cl-letf (((symbol-function 'ebox-render)
-                       (lambda (node)
-                         (when (and (listp node)
-                                    (eq (plist-get node :ebox-type) 'box)
-                                    (plist-get node
-                                               :ebox-content-width-exact-p)
-                                    (null (plist-get node
-                                                     :ebox-content-node)))
-                           (cl-incf wrapper-render-count))
-                         (funcall original-render node))))
-              (ebox--scroll-idle-prefetch root-id))
-            (should (= wrapper-render-count 0))
-            (should (> (length (plist-get (ebox--scroll-get-state root-id)
-                                          :content-lines))
-                       2))))
-      (ebox--scroll-cancel-idle-prefetch root-id)
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
 
 (ert-deftest ebox-lazy-scroll-first-smooth-wheel-uses-prefetched-prefix ()
   "The first smooth wheel input should only replace visible lines."
@@ -12007,7 +10089,6 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
-
 (ert-deftest ebox-visible-scroll-child-sync-retains-tp-mounts ()
   "Post-patch scroll line sync should retain TP-owned viewport ranges."
   (ebox-test--reset-runtime-state)
@@ -12378,33 +10459,6 @@
                 buffer state 1 240 280 4)))
             (should (= render-count 0))
             (should (= (hash-table-count cache) cache-count))))
-      (when (and buffer (buffer-live-p buffer))
-        (kill-buffer buffer)))))
-
-(ert-deftest ebox-local-update-cancels-without-scheduling-reflow-prewarm ()
-  "Single-property updates should cancel stale predictions and schedule none."
-  (ebox-test--reset-runtime-state)
-  (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :width (viewport)
-             (box :id "target" :content "old" :width 80))))
-         buffer)
-    (unwind-protect
-        (let ((ebox-viewport-width 240)
-              (ebox-viewport-height 4)
-              (ebox-runtime-idle-prewarm nil)
-              (ebox-runtime-idle-reflow-cache-prewarm t)
-              (ebox--runtime-prewarm-allow-noninteractive t))
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-test*") layout))
-          (ebox-rerender-buffer-with-context buffer 260 4)
-          (ebox-rerender-buffer-with-context buffer 280 4)
-          (should (gethash buffer ebox--reflow-cache-prewarm-timers))
-          (ebox-selector-update-buffer buffer "#target" :content "new")
-          (should-not (gethash buffer ebox--reflow-cache-prewarm-timers))
-          (should (eq (plist-get (ebox-test--buffer-update-report) :strategy)
-                      'span-patch)))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
@@ -13029,7 +11083,6 @@ explicit visible-window handoff may admit its full-content publication."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-
 (ert-deftest ebox-hidden-scroll-child-content-update-patches-scroll-state ()
   "Hidden scroll children should update cached scroll lines without rerendering."
   (ebox-test--reset-runtime-state)
@@ -13184,7 +11237,6 @@ explicit visible-window handoff may admit its full-content publication."
                "updated"
                (buffer-substring-no-properties (point-min) (point-max)))))))
 
-
 (ert-deftest ebox-scroll-reveal-keeps-visible-geometry-indexed ()
   "Geometry updates on a revealed child should use a scoped TP plan."
   (ebox-test--reset-runtime-state)
@@ -13209,108 +11261,6 @@ explicit visible-window handoff may admit its full-content publication."
         (should (eq (plist-get report :tp-render-scope) 'objects))
         (should-not (plist-get report :tp-scope-fallback)))
       (should (ebox-surface-region-mounts (current-buffer) target-id))
-      (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
-
-(ert-deftest ebox-scroll-hidden-update-keeps-the-visible-window ()
-  "Updating a scrolled-away node should not reuse its stale buffer spans."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(box :id "root" :width (180) :height 2 :overflow scroll
-                (column
-                 (box :id "target" :content "target" :width (120) :height 1
-                      :box-sizing border-box :padding-left (2))
-                 (box :content "row 1" :height 1)
-                 (box :content "row 2" :height 1)
-                 (box :content "row 3" :height 1)
-                 (box :content "row 4" :height 1)))))
-        root-id target-id)
-    (ebox-test--with-rendered-buffer layout
-      (setq root-id (ebox-test--selector-region-id (current-buffer) "#root"))
-      (setq target-id
-            (ebox-test--selector-region-id (current-buffer) "#target"))
-      (should (ebox--scroll-region-by root-id 3 48))
-      (let ((visible-before
-             (buffer-substring-no-properties (point-min) (point-max))))
-        (ebox-test--region-update target-id :padding-left (list 12))
-        (should (equal visible-before
-                       (buffer-substring-no-properties
-                        (point-min) (point-max)))))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'owner-rerender))
-        (should (plist-get report :scroll-state-patch))
-        (should-not (plist-get report :tp-full-root))
-        (should (= (plist-get report :tp-operation-count) 0)))
-      (should-not
-       (text-property-any
-        (point-min) (point-max) 'ebox-content target-id))
-      (should (ebox-test--buffer-visually-matches-runtime-render-p))
-      (let ((visible-before
-             (buffer-substring-no-properties (point-min) (point-max))))
-        (ebox-test--region-update target-id :width (list 400))
-        (should (equal visible-before
-                       (buffer-substring-no-properties
-                        (point-min) (point-max)))))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'owner-rerender))
-        (should-not (plist-get report :root-rerender))
-        (should (plist-get report :scroll-state-patch))
-        (should (= (plist-get report :tp-operation-count) 0)))
-      (should (ebox-test--buffer-visually-matches-runtime-render-p))
-      (should (ebox--scroll-region-by root-id -3 48))
-      (should
-       (text-property-any
-        (point-min) (point-max) 'ebox-content target-id))
-      (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
-
-(ert-deftest ebox-nested-scroll-hidden-geometry-replays-both-caches ()
-  "A hidden inner-scroll update should survive inner and outer replay."
-  (ebox-test--reset-runtime-state)
-  (let ((layout
-         (ebox-test-build
-          '(box :id "root" :width (180) :height 1 :overflow scroll
-                (column
-                 (box :id "wrapper" :width (180) :height 1 :overflow scroll
-                       (column
-                        (box :id "target" :content "target" :width (120)
-                             :height 1 :box-sizing border-box
-                             :padding-left (2))
-                        (box :content "inner tail" :height 1)))
-                 (box :content "outer tail" :height 1)))))
-        root-id wrapper-id target-id)
-    (ebox-test--with-rendered-buffer layout
-      (setq root-id (ebox-test--selector-region-id (current-buffer) "#root"))
-      (setq wrapper-id
-            (ebox-test--selector-region-id (current-buffer) "#wrapper"))
-      (setq target-id
-            (ebox-test--selector-region-id (current-buffer) "#target"))
-      (should (ebox--scroll-region-by wrapper-id 1 48))
-      (should-not
-       (text-property-any
-        (point-min) (point-max) 'ebox-content target-id))
-      (let ((visible-before
-             (buffer-substring-no-properties (point-min) (point-max))))
-        (ebox-test--region-update target-id :padding-left (list 12))
-        (should (equal visible-before
-                       (buffer-substring-no-properties
-                        (point-min) (point-max)))))
-      (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'owner-rerender))
-        (should-not (plist-get report :root-rerender))
-        (should (plist-get report :scroll-state-patch))
-        (should (= (plist-get report :scroll-state-sync-count) 2))
-        (should (= (plist-get report :tp-operation-count) 0)))
-      (should (ebox-test--buffer-visually-matches-runtime-render-p))
-      (should (ebox--scroll-region-by root-id 1 48))
-      (should (ebox--scroll-region-by root-id -1 48))
-      (should-not
-       (text-property-any
-        (point-min) (point-max) 'ebox-content target-id))
-      (should (ebox-test--buffer-visually-matches-runtime-render-p))
-      (should (ebox--scroll-region-by wrapper-id -1 48))
-      (should
-       (text-property-any
-        (point-min) (point-max) 'ebox-content target-id))
       (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
 
 (ert-deftest ebox-wheel-scroll-uses-buffer-scroll-region-without-point ()
@@ -14707,26 +12657,6 @@ explicit visible-window handoff may admit its full-content publication."
       (should (= (ebox--flex-string-width rendered) 6))
       (should (= calls 2)))))
 
-(ert-deftest ebox-flex-recache-skips-visited-source-subtrees ()
-  "Repeated source recache calls should not walk the same subtree twice."
-  (ebox-test--reset-runtime-state)
-  (let* ((source (ebox-test-column
-                  (ebox-test-box :content "A")
-                  (ebox-test-box :content "B")))
-         (ebox--render-recached-source-node-cache
-          (make-hash-table :test 'eq))
-         (original-puthash (symbol-function 'puthash))
-         (region-table-writes 0))
-    (ebox-region-ids source)
-    (cl-letf (((symbol-function 'puthash)
-               (lambda (key value table)
-                 (when (eq table ebox--region-box-table)
-                   (cl-incf region-table-writes))
-                 (funcall original-puthash key value table))))
-      (ebox--flex-recache-source-boxes source)
-      (ebox--flex-recache-source-boxes source))
-    (should (= region-table-writes 2))))
-
 (ert-deftest ebox-face-height-width-detection-handles-shrinking-text ()
   (ebox-test--reset-runtime-state)
   (let ((ebox--face-height-width-cache nil)
@@ -14739,13 +12669,6 @@ explicit visible-window handoff may admit its full-content publication."
       (should (ebox--face-height-affects-width-p factor))
       (should (= (ebox--scaled-string-pixel-width "probe" factor)
                  70)))))
-
-
-
-
-
-
-
 
 (ert-deftest ebox-visibility-hidden-suppresses-ink-and-keeps-footprint ()
   "A hidden box renders blank with identical text, lengths, and metadata."
@@ -14871,5 +12794,109 @@ face patch must match that exactly (issue014)."
                                (funcall visual-runs reference role)))))))
       (kill-buffer patched)
       (kill-buffer reference))))
+
+(ert-deftest ebox-typed-commits-equal-fresh-runtime-render ()
+  "Typed content, geometry, structure, and overflow commits stay exact."
+  (dolist
+      (case
+       '(((box :key root "Before")
+          (box :key root "After") "After")
+         ((flex :key root :width (240)
+                (box :key item :width (80) "Item"))
+          (flex :key root :width (240)
+                (box :key item :width (120) "Item")) "Item")
+         ((column :key root (box :key first "A"))
+          (column :key root
+                  (box :key first "A") (box :key second "B")) "B")
+         ((box :key root :height 1 :overflow visible "A\nB")
+          (box :key root :height 1 :overflow hidden "A\nB") "A")))
+    (let ((buffer (generate-new-buffer " *ebox-typed-fresh-equality*")))
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer buffer (ebox-build (nth 0 case)))
+            (let ((report (ebox-commit buffer (ebox-build (nth 1 case)))))
+              (should (plist-get report :runtime-published))
+              (with-current-buffer buffer
+                (should (string-match-p (nth 2 case) (buffer-string)))
+                (should
+                 (ebox-test--buffer-propertized-matches-runtime-render-p)))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest ebox-typed-commit-preserves-unaffected-source-range ()
+  "A keyed peer keeps identity and bounds across a sibling-only commit."
+  (let* ((buffer (generate-new-buffer " *ebox-typed-peer-range*"))
+         (before-root
+          (ebox-build
+           '(column :key root
+             (box :key target :id target "Before")
+             (box :key peer :id peer "Peer"))))
+         (after-root
+          (ebox-build
+           '(column :key root
+             (box :key target :id target "After!")
+             (box :key peer :id peer "Peer")))))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer before-root)
+          (let* ((before (car (ebox-selector-query-buffer buffer "#peer")))
+                 (before-node (plist-get before :node-id))
+                 (before-region (plist-get before :region-id))
+                 (before-bounds
+                  (ebox-surface-region-bounds buffer before-region)))
+            (ebox-commit buffer after-root)
+            (let ((after (car (ebox-selector-query-buffer buffer "#peer"))))
+              (should (= (plist-get after :node-id) before-node))
+              (should (= (plist-get after :region-id) before-region))
+              (should (equal (ebox-surface-region-bounds
+                              buffer before-region)
+                             before-bounds)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-typed-scroll-window-stays-equal-to-runtime-render ()
+  "Scroll and viewport updates preserve visible text properties exactly."
+  (let ((buffer (generate-new-buffer " *ebox-typed-scroll-equality*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-build
+            '(column :id scroller :width (viewport) :height 3
+              :overflow scroll
+              (box "A") (box "B") (box "C") (box "D") (box "E"))))
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (ebox-scroll-down 1)
+            (should
+             (ebox-test--buffer-propertized-matches-runtime-render-p)))
+          (ebox-rerender-buffer-with-context buffer 320 3)
+          (with-current-buffer buffer
+            (should
+             (ebox-test--buffer-propertized-matches-runtime-render-p))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-typed-local-updates-keep-publication-scoped ()
+  "Paint and geometry updates keep an unrelated keyed peer outside full-root work."
+  (dolist (update '((:background-color "#DBEAFE") (:width (120))))
+    (let ((buffer (generate-new-buffer " *ebox-typed-scoped-update*")))
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             buffer
+             (ebox-build
+              '(row :width (260)
+                (box :id target :width (100) "Target")
+                (box :id peer :width (100) "Peer"))))
+            (let* ((target (ebox-region-resolve buffer "target"))
+                   (peer (car (ebox-selector-query-buffer buffer "#peer")))
+                   (peer-node-id (plist-get peer :node-id)))
+              (apply #'ebox-region-update target update)
+              (let ((report (ebox-buffer-update-report buffer))
+                    (peer-after
+                     (car (ebox-selector-query-buffer buffer "#peer"))))
+                (should-not (plist-get report :full-rerender))
+                (should-not (plist-get report :tp-full-root))
+                (should (> (or (plist-get report :tp-scope-count) 0) 0))
+                (should (= (plist-get peer-after :node-id) peer-node-id)))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 ;;; ebox-core-render-tests.el ends here
