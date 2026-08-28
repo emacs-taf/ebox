@@ -53,6 +53,8 @@
 (declare-function ebox-layout-config-props "ebox-layout-config" (config))
 (declare-function ebox-tree-node-children "ebox-tree" (node))
 (declare-function ebox-buffer--font-face "ebox-buffer-backend" (style))
+(declare-function ebox-buffer--text-decoration-face
+                  "ebox-buffer-backend" (style))
 (declare-function ebox--propertize-typography
                   "ebox-buffer-backend" (string style))
 (declare-function ebox--ensure-node-id "ebox" (node))
@@ -71,6 +73,7 @@
 (declare-function ebox--layout-children "ebox-tree" (node))
 (declare-function ebox-tree-layout-children "ebox-tree" (node))
 (declare-function ebox-tree-node-local-source-signature "ebox-tree" (node))
+(declare-function ebox-source--index-record "ebox-source" (index handle))
 (declare-function ebox-buffer-side-border-face
                   "ebox-buffer-backend" (color))
 (declare-function ebox--space-pixel-width "ebox-measure" ())
@@ -2419,7 +2422,7 @@ per call, and no call recursively visits the captured Ebox tree."
     (vconcat (nreverse nodes))))
 
 (defun ebox-native-reflow--retained-layout-signature
-    (node child-revisions flex-content-min-widths)
+    (node child-revisions flex-content-min-widths source-index)
   "Return exact retained compiler signature for NODE and CHILD-REVISIONS."
   (let ((wrapper (and (eq (plist-get node :ebox-type) 'flex)
                       (plist-get node :box))))
@@ -2430,6 +2433,12 @@ per call, and no call recursively visits the captured Ebox tree."
          (and wrapper (plist-get wrapper :region-id)))
      (ebox-tree-node-local-source-signature node)
      (and wrapper (ebox-tree-node-local-source-signature wrapper))
+     (and source-index
+          (when-let* ((handle (plist-get node :ebox-source-handle)))
+            (ebox-source--index-record source-index handle)))
+     (and source-index wrapper
+          (when-let* ((handle (plist-get wrapper :ebox-source-handle)))
+            (ebox-source--index-record source-index handle)))
      child-revisions
      (and (eq (plist-get node :ebox-type) 'flex)
           (mapcar
@@ -2455,11 +2464,17 @@ per call, and no call recursively visits the captured Ebox tree."
                     0))
                (flex-content-min-widths
                 (plist-get state :flex-content-min-widths))
+               (source-index (plist-get state :source-index))
                (touched-ids (plist-get state :native-touched-node-ids))
+               (inherited-dirty-ids
+                (plist-get state :native-inherited-dirty-node-ids))
                (touched-set
                 (and (plist-get state :native-topology-stable-p)
                      (plist-member state :native-touched-node-ids)
                      (proper-list-p touched-ids)
+                     (make-hash-table :test 'equal)))
+               (inherited-touched-set
+                (and touched-set inherited-dirty-ids
                      (make-hash-table :test 'equal)))
                (retained-fast-p
                 (and touched-set
@@ -2488,6 +2503,24 @@ per call, and no call recursively visits the captured Ebox tree."
                 (make-hash-table :test 'eq)))
           (dolist (node-id touched-ids)
             (when touched-set (puthash node-id t touched-set)))
+          (when (and touched-set inherited-dirty-ids)
+            (let ((inherited-set (make-hash-table :test 'equal)))
+              (dolist (node-id inherited-dirty-ids)
+                (puthash node-id t inherited-set))
+              (cl-labels
+                  ((mark
+                    (current inherited-p)
+                    (let* ((node-id (plist-get current :node-id))
+                           (inherited-p
+                            (or inherited-p (gethash node-id inherited-set))))
+                      (when inherited-p (puthash node-id t touched-set))
+                      (when inherited-p
+                        (puthash node-id t inherited-touched-set))
+                      (dolist (child
+                               (ebox-native-reflow--retained-layout-children
+                                current))
+                        (mark child inherited-p)))))
+                (mark node nil))))
           (cl-loop
            for template in ebox-native-reflow--compile-property-templates
            for index from 0
@@ -2521,9 +2554,12 @@ per call, and no call recursively visits the captured Ebox tree."
                          children))
                        (signature
                         (ebox-native-reflow--retained-layout-signature
-                         current child-revisions flex-content-min-widths))
+                         current child-revisions flex-content-min-widths
+                         source-index))
                        fragment entry)
                   (if (and cached
+                           (not (and inherited-touched-set
+                                     (gethash node-id inherited-touched-set)))
                            (equal signature (plist-get cached :signature)))
                       (setq fragment (plist-get cached :fragment)
                             entry cached)

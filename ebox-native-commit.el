@@ -32,6 +32,7 @@
 (declare-function ebox--literal-root-pixel-width "ebox" (box))
 (declare-function ebox-get "ebox" (box key))
 (declare-function ebox-style-cascade-active-p "ebox-style" ())
+(declare-function ebox-style-property "ebox-style" (name))
 (declare-function ebox-tree-node-key "ebox-tree" (source-index node))
 (declare-function ebox-tree--children-raw "ebox-tree" (node))
 (declare-function ebox--node-direct-viewport-width-dependent-p
@@ -104,6 +105,17 @@
           (push node-id result)
           (setq node-id (and parents (gethash node-id parents))))))
     (nreverse result)))
+
+(defun ebox-native-commit-inherited-dirty-node-ids (prepared)
+  "Return nodes whose PREPARED changes can alter descendant computed style."
+  (cl-loop
+   for entry in (plist-get prepared :dirty-set)
+   when (cl-some
+         (lambda (key)
+           (when-let* ((property (ebox-style-property key)))
+             (plist-get property :inherits)))
+         (plist-get entry :changed-keys))
+   collect (plist-get entry :node-id)))
 
 (defun ebox-native-commit--node-position-table (state)
   "Return NODE-ID to `(PARENT-ID . POSITION)' table for STATE."
@@ -325,6 +337,8 @@ the committed text/fragment bases, compiler postorder, and projection support."
                 old-state candidate-state))
       (plist-put candidate-state :native-topology-stable-p stable)
       (plist-put candidate-state :native-touched-node-ids layout-touched)
+      (plist-put candidate-state :native-inherited-dirty-node-ids
+                 (ebox-native-commit-inherited-dirty-node-ids prepared))
       (when context-axes-stable
         (plist-put candidate-state :viewport-dependent-node-ids-ready t)
         (plist-put candidate-state :viewport-dependent-node-ids

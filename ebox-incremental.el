@@ -9825,6 +9825,10 @@ role, and outside-complement compatibility before publication."
           (plist-put overrides :native-removed-node-ids
                      (plist-get prepared :removed-node-ids)))
     (setq overrides
+          (plist-put overrides :native-inherited-dirty-node-ids
+                     (plist-get candidate-state
+                                :native-inherited-dirty-node-ids)))
+    (setq overrides
           (plist-put
            overrides :native-topology-stable-p
            (plist-get candidate-state :native-topology-stable-p)))

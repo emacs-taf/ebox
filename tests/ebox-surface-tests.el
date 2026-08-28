@@ -2995,6 +2995,24 @@ participant and rollback contract without creating a real frame."
       (when (buffer-live-p buffer)
         (kill-buffer buffer))))
 
+(ert-deftest ebox-surface-native-full-frame-owns-full-publication-scope ()
+  "A complete native frame is authoritative for the whole TP surface."
+  (should
+   (ebox-surface--native-full-frame-p
+    '(:native-topology-stable-p t
+      :native-render-frame (:native-frame t :native-patch nil))
+    'native-frame))
+  (should-not
+   (ebox-surface--native-full-frame-p
+    '(:native-topology-stable-p t
+      :native-render-frame (:native-frame t :native-patch t))
+    'native-frame))
+  (should-not
+   (ebox-surface--native-full-frame-p
+    '(:native-topology-stable-p t
+      :native-render-frame (:native-frame t :native-patch nil))
+    'paint)))
+
 (provide 'ebox-surface-tests)
 
 ;;; ebox-surface-tests.el ends here

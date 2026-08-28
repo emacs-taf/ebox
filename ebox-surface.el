@@ -1458,6 +1458,14 @@ the projection roots a second time."
       (ebox-tree-clear-author-style-pending root))
     projection))
 
+(defun ebox-surface--native-full-frame-p (state projection-kind)
+  "Return non-nil when STATE owns a complete native surface frame."
+  (and (eq projection-kind 'native-frame)
+       (plist-get state :native-topology-stable-p)
+       (let ((frame (plist-get state :native-render-frame)))
+         (and (plist-get frame :native-frame)
+              (not (plist-get frame :native-patch))))))
+
 (defun ebox-surface--projection-result
     (context projection state output &optional projection-kind)
   "Complete CONTEXT PROJECTION for STATE from rendered OUTPUT."
@@ -1468,13 +1476,14 @@ the projection roots a second time."
          (owner-id (plist-get state :span-patch-owner-id))
          (scroll-fast-p (and (eq projection-kind 'scroll-patch)
                              (plist-get state :scroll-fast-window-p)))
-         (full-surface-p
-          (and scroll-fast-p
-               (plist-get state :retained-scroll-content-p)
-               root-id owner-id (= root-id owner-id)))
          (native-retained-p
           (and (eq projection-kind 'native-frame)
                (plist-get state :native-topology-stable-p)))
+         (full-surface-p
+          (or (and scroll-fast-p
+                   (plist-get state :retained-scroll-content-p)
+                   root-id owner-id (= root-id owner-id))
+              (ebox-surface--native-full-frame-p state projection-kind)))
          (previous-owned-ranges
           (plist-get state :previous-surface-owned-ranges))
          (node-objects

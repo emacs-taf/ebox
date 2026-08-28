@@ -4,6 +4,7 @@
 (require 'ert)
 (require 'ebox)
 (require 'ebox-native-commit)
+(require 'ebox-native-reflow)
 
 ;; These tests lock the named Elisp projection proofs.  Native commit has its
 ;; own focused contract tests below; disable runtime module discovery here so
@@ -2090,6 +2091,71 @@ remain retained identities."
               buffer "A longer notification" "#AAAAAA" "#BBBBBB"))
             (should-not mixed-output)))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-native-inherited-dirty-domain-is-schema-owned ()
+  "Native invalidation derives inherited propagation from the style schema."
+  (should
+   (equal '(7)
+          (ebox-native-commit-inherited-dirty-node-ids
+           '(:dirty-set
+             ((:node-id 7 :dirty-kind paint :changed-keys (:color)))))))
+  (should-not
+   (ebox-native-commit-inherited-dirty-node-ids
+    '(:dirty-set
+      ((:node-id 7 :dirty-kind paint
+                  :changed-keys (:background-color)))))))
+
+(ert-deftest ebox-native-retained-compiler-refreshes-inherited-descendants ()
+  "An inherited parent paint change cannot reuse a stale child fragment."
+  (require 'ebox-native-reflow)
+  (let* ((input
+          (ebox-test-box
+           :color "#111111"
+           (ebox-test-text "Paint" :color "#111111")))
+         (root (ebox-test-root input))
+         (_ids (ebox--runtime-node-ids root))
+         (source-index (ebox-test-source-index input))
+         (session
+          (ebox-native-reflow--make-session
+           :handle 'test :generation 0 :styles nil :layout-package nil
+           :layout-fragment-cache (make-hash-table :test 'equal)
+           :layout-fragment-revision 0))
+         (initial-state
+          (list :native-node-postorder
+                (ebox-native-reflow--retained-layout-postorder root)
+                :native-topology-stable-p nil
+                :source-index source-index))
+         (initial-package
+          (ebox-native-reflow--compile-retained-layout-package
+           session initial-state root))
+         (next (copy-tree root))
+         (next-child (car (ebox-tree-node-children next))))
+    (setf (ebox-native-reflow-session-styles session)
+          (plist-get initial-package :styles)
+          (ebox-native-reflow-session-layout-package session)
+          initial-package)
+    ;; Model a candidate computed-style projection: the child source record is
+    ;; unchanged, while its inherited runtime color follows the parent.
+    (plist-put next :color "#222222")
+    (plist-put next-child :color "#222222")
+    (let* ((root-id (plist-get next :node-id))
+           (next-state
+            (list :native-node-postorder
+                  (ebox-native-reflow--retained-layout-postorder next)
+                  :native-topology-stable-p t
+                  :native-touched-node-ids (list root-id)
+                  :native-inherited-dirty-node-ids (list root-id)
+                  :source-index source-index))
+           (package
+            (ebox-native-reflow--compile-retained-layout-package
+             session next-state next))
+           (document-root (plist-get (plist-get package :document) :root))
+           (style-id (plist-get document-root :content-foreground-style))
+           (styles (plist-get package :styles)))
+      (should (integerp style-id))
+      (should
+       (equal '(:foreground "#222222")
+              (plist-get (aref styles style-id) :face))))))
 
 (provide 'ebox-commit-tests)
 
