@@ -115,10 +115,23 @@
        (ebox--ensure-region-id box)))
     (_ nil)))
 
+(defun ebox-selector--root-and-index (value context)
+  "Return `(ROOT . SOURCE-INDEX)' from canonical input VALUE for CONTEXT."
+  (if (ebox-canonical-input-p value)
+      (cons (ebox-canonical-input--single-root value context)
+            (ebox-canonical-input--source-index value))
+    (error "%s requires one canonical Ebox input" context)))
+
 ;;;###autoload
 (defun ebox-selector-match-node-p (node selector)
   "Return non-nil when NODE matches structured ECSS SELECTOR."
-  (ecss-selector-match-p selector (ebox-tree-node-subject node)))
+  (pcase-let* ((`(,root . ,source-index)
+                 (ebox-selector--root-and-index
+                  node "ebox-selector-match-node-p"))
+                (source-index
+                 (ebox-tree-source-index root nil nil source-index)))
+    (ecss-selector-match-p
+     selector (ebox-tree-node-subject source-index root))))
 
 (defun ebox-selector--match-handle (node path selector)
   "Return a selector match handle for NODE on PATH."
@@ -128,12 +141,12 @@
         :path path
         :selector selector))
 
-(defun ebox-selector--matching-subject-entries (root ast)
-  "Return semantic ROOT entries whose ECSS subjects match AST."
+(defun ebox-selector--matching-subject-entries (root ast &optional source-index)
+  "Return semantic ROOT entries in SOURCE-INDEX whose subjects match AST."
   (cl-remove-if-not
    (lambda (entry)
      (ecss-selector-match-p ast (plist-get entry :subject)))
-   (plist-get (ebox-tree-subject-index root) :entries)))
+   (plist-get (ebox-tree-subject-index root source-index) :entries)))
 
 (defun ebox-selector--subject-entry-handle (entry selector)
   "Return a match handle for semantic subject ENTRY and SELECTOR."
@@ -143,10 +156,16 @@
 ;;;###autoload
 (defun ebox-selector-query-all (root selector)
   "Return document-ordered selector match handles under ROOT."
-  (let ((ast (ebox-selector-parse selector)))
+  (pcase-let* ((`(,root . ,source-index)
+                 (ebox-selector--root-and-index
+                  root "ebox-selector-query-all"))
+                (source-index
+                 (ebox-tree-source-index root nil nil source-index))
+                (ast (ebox-selector-parse selector)))
     (mapcar (lambda (entry)
               (ebox-selector--subject-entry-handle entry selector))
-            (ebox-selector--matching-subject-entries root ast))))
+            (ebox-selector--matching-subject-entries
+             root ast source-index))))
 
 (defun ebox-selector--resolve-buffer (buffer)
   "Return live buffer object for BUFFER, or signal a user error."
@@ -163,11 +182,13 @@
           (and region-id
                (gethash region-id
                         (plist-get state :region-surface-object-table))))
+         (source-index (plist-get state :source-index))
          (region-handle
           (and object
                (ebox-selector--live-region-handle
                 buffer object
-                (ebox-tree-node-id (plist-get handle :node))))))
+                (ebox-tree-node-id
+                 source-index (plist-get handle :node))))))
     (append handle
             (list :buffer buffer :region-handle region-handle))))
 
@@ -234,12 +255,12 @@
     (when (or id classes type)
       (cons t (ebox-selector--shortest-candidates candidates)))))
 
-(defun ebox-selector--indexed-entry-matches-p (entry ast)
-  "Return non-nil when indexed ENTRY matches ECSS selector AST."
+(defun ebox-selector--indexed-entry-matches-p (source-index entry ast)
+  "Return non-nil when SOURCE-INDEX ENTRY matches ECSS selector AST."
   (let ((subject
          (if (ebox-selector--relational-p ast)
-             (ebox-tree-subject-for-path (cdr entry))
-           (ebox-tree-node-subject (car entry)))))
+             (ebox-tree-subject-for-path source-index (cdr entry))
+           (ebox-tree-node-subject source-index (car entry)))))
     (ecss-selector-match-p ast subject)))
 
 (defun ebox-selector--entries-to-buffer-handles (entries selector buffer)
@@ -255,21 +276,25 @@
   "Return `(SUPPORTED . HANDLES)' for an indexed AST query in BUFFER."
   (when (ebox-selector--descendant-indexable-p ast)
     (when-let* ((indexed (ebox-selector--indexed-candidates buffer ast)))
-      (cons
-       t
-       (ebox-selector--entries-to-buffer-handles
-        (cl-remove-if-not
-         (lambda (entry) (ebox-selector--indexed-entry-matches-p entry ast))
-         (cdr indexed))
-        selector buffer)))))
+      (let ((source-index (ebox--buffer-source-index buffer)))
+        (cons
+         t
+         (ebox-selector--entries-to-buffer-handles
+          (cl-remove-if-not
+           (lambda (entry)
+             (ebox-selector--indexed-entry-matches-p
+              source-index entry ast))
+           (cdr indexed))
+          selector buffer))))))
 
-(defun ebox-selector--query-buffer-tree (root selector ast buffer)
-  "Return full semantic tree matches for ROOT, SELECTOR, AST, and BUFFER."
+(defun ebox-selector--query-buffer-tree
+    (root source-index selector ast buffer)
+  "Return semantic ROOT matches from SOURCE-INDEX for SELECTOR in BUFFER."
   (mapcar
    (lambda (entry)
      (ebox-selector--handle-with-buffer
       (ebox-selector--subject-entry-handle entry selector) buffer))
-   (ebox-selector--matching-subject-entries root ast)))
+   (ebox-selector--matching-subject-entries root ast source-index)))
 
 ;;;###autoload
 (defun ebox-selector-query-buffer (buffer selector)
@@ -278,7 +303,8 @@ Selector lookup reads the stored runtime root, not rendered buffer text
 properties.  Each returned handle includes `:buffer' in addition to the
 tree-query handle fields."
   (let* ((resolved-buffer (ebox-selector--resolve-buffer buffer))
-         (root (ebox--buffer-root-node resolved-buffer)))
+         (root (ebox--buffer-root-node resolved-buffer))
+         (source-index (ebox--buffer-source-index resolved-buffer)))
     (unless root
       (user-error "ebox-selector: buffer has no Ebox runtime state: %S"
                   resolved-buffer))
@@ -288,7 +314,7 @@ tree-query handle fields."
       (if indexed
           (cdr indexed)
         (ebox-selector--query-buffer-tree
-         root selector ast resolved-buffer)))))
+         root source-index selector ast resolved-buffer)))))
 
 (defun ebox-selector--skip-handle (handle reason)
   "Return a structured skip entry for HANDLE and REASON."

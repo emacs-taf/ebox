@@ -7,6 +7,7 @@
 ;; This suite locks child-range and Elisp projection semantics.  Native frame
 ;; execution is verified separately and must not replace the named fallback
 ;; strategies merely because a developer has built the optional module.
+(defvar ebox-native-reflow-module-path)
 (setq ebox-native-reflow-module-path nil)
 
 (defconst ebox-child-range-test--root
@@ -17,9 +18,40 @@
   "Return one declarative test item for KEY."
   (list :key key :value key))
 
+(defun ebox-child-range-test--node-key (item &optional source-index)
+  "Return ITEM's key from SOURCE-INDEX or its low-level fixture field."
+  (or (and (ebox-canonical-input-p item)
+           (ebox-tree-node-author-key
+            (ebox-test-source-index item) (ebox-test-root item)))
+      (and source-index
+           (ebox-tree-node-source-handle item)
+           (ebox-tree-node-author-key source-index item))
+      (plist-get item :key)))
+
+(defalias 'ebox-child-range-test--key
+  #'ebox-child-range-test--node-key)
+
+(defun ebox-child-range-test--input (items)
+  "Combine canonical fixture ITEMS into one Range replacement input."
+  (apply #'ebox-test-forest-input items))
+
+(defun ebox-child-range-test--host-ref-table (state)
+  "Return STATE's source-owned Host reference index."
+  (ebox-source--index-host-ref-table-view (plist-get state :source-index)))
+
+(defun ebox-child-range-test--build (segments &optional hash-function)
+  "Build low-level SEGMENTS with the fixture key contract."
+  (ebox-child-range--build
+   segments #'ebox-child-range-test--key hash-function))
+
+(defun ebox-child-range-test--replace (sequence ref items)
+  "Replace REF ITEMS using the fixture key contract."
+  (ebox-child-range--replace
+   sequence ref items #'ebox-child-range-test--key))
+
 (defun ebox-child-range-test--fixture (static-count range-items &optional hash)
   "Build STATIC-COUNT static segments followed by RANGE-ITEMS."
-  (ebox-child-range--build
+  (ebox-child-range-test--build
    (append
     (cl-loop for index below static-count
              collect (cons nil (list (ebox-child-range-test--item
@@ -65,8 +97,14 @@
 
 (ert-deftest ebox-child-range-render-signature-snapshots-item-identities ()
   "A cached Range signature must not follow later runtime identity mutation."
-  (let* ((item (ebox-test-box :content "item" :key 'item))
-         (sequence (ebox-child-range--build (list (cons 'range (list item)))))
+  (let* ((item-input (ebox-test-box (ebox-test-text "item") :key 'item))
+         (item (ebox-test-root item-input))
+         (source-index (ebox-test-source-index item-input))
+         (sequence
+          (ebox-child-range--build
+           (list (cons 'range (list item)))
+           (lambda (node)
+             (ebox-tree-node-author-key source-index node))))
          (published
           (aref (ebox-child-range--segment-payload
                  (ebox-child-range--lookup-ref sequence 'range))
@@ -86,7 +124,7 @@
     (pcase-let* ((`(,static-count ,height ,bound) case)
                  (old (ebox-child-range-test--fixture static-count '(old)))
                  (old-flat (ebox-child-range--flatten old))
-                 (result (ebox-child-range--replace
+                 (result (ebox-child-range-test--replace
                           old 'range
                           (mapcar #'ebox-child-range-test--item
                                   '(new-a new-b))))
@@ -141,7 +179,7 @@
   "Sparse hash work is bounded and unaffected segment branches remain shared."
   (let* ((old (ebox-child-range-test--fixture 100 '(old-a old-b)
                                               (lambda (_key) 0)))
-         (result (ebox-child-range--replace
+         (result (ebox-child-range-test--replace
                   old 'range
                   (mapcar #'ebox-child-range-test--item
                           '(new-a new-b new-c))))
@@ -192,12 +230,12 @@
 (ert-deftest ebox-child-range-gate-a-empty-order-and-duplicates ()
   "Empty ranges stay addressable and global ref/key uniqueness is exact."
   (let* ((empty (ebox-child-range-test--fixture 1 nil))
-         (one (car (ebox-child-range--replace
+         (one (car (ebox-child-range-test--replace
                     empty 'range (list (ebox-child-range-test--item 'one)))))
-         (many (car (ebox-child-range--replace
+         (many (car (ebox-child-range-test--replace
                      one 'range
                      (mapcar #'ebox-child-range-test--item '(two three)))))
-         (empty-again (car (ebox-child-range--replace many 'range nil))))
+         (empty-again (car (ebox-child-range-test--replace many 'range nil))))
     (should (= (length (ebox-child-range--segment-payload
                         (ebox-child-range--segment-at empty 1))) 0))
     (should (equal (mapcar (lambda (item) (plist-get item :key))
@@ -205,32 +243,32 @@
                    '((static 0) two three)))
     (should-not (cdr (ebox-child-range--flatten empty-again)))
     (should-error
-     (ebox-child-range--build
+     (ebox-child-range-test--build
       (list (cons 'same nil) (cons 'same nil))))
-    (should-error (ebox-child-range--build (list (cons nil nil))))
-    (should-error (ebox-child-range--build nil))
+    (should-error (ebox-child-range-test--build (list (cons nil nil))))
+    (should-error (ebox-child-range-test--build nil))
     (should-error
-     (ebox-child-range--build
+     (ebox-child-range-test--build
       (list (cons nil (list (ebox-child-range-test--item 'a)
                             (ebox-child-range-test--item 'b))))))
     (should-error
-     (ebox-child-range--build
+     (ebox-child-range-test--build
       (list (cons nil (list (ebox-child-range-test--item 'duplicate)))
             (cons 'range (list (ebox-child-range-test--item 'duplicate))))))
     (should-error
-     (ebox-child-range--build
+     (ebox-child-range-test--build
       (list (cons 'left (list (ebox-child-range-test--item 'duplicate)))
             (cons 'right (list (ebox-child-range-test--item 'duplicate))))))
     (should-error
-     (ebox-child-range--replace
+     (ebox-child-range-test--replace
       empty 'range
       (list (ebox-child-range--descriptor-create 'nested nil))))
     (should-error (ebox-child-range--descriptor-create nil nil))
     (should-error (ebox-child-range--descriptor-create 'bad '(one . two)))
-    (should-error (ebox-child-range--replace empty 'range '(one . two)))
+    (should-error (ebox-child-range-test--replace empty 'range '(one . two)))
     (should-error
-     (ebox-child-range--build (list (cons 'bad '(one . two)))))
-    (should-error (ebox-child-range--replace empty 'missing nil))))
+     (ebox-child-range-test--build (list (cons 'bad '(one . two)))))
+    (should-error (ebox-child-range-test--replace empty 'missing nil))))
 
 (ert-deftest ebox-child-range-gate-a-adjacent-refs-and-unkeyed-items ()
   "First, middle, and last Range refs stay O(1)-addressed and accept no key."
@@ -242,10 +280,10 @@
            (cons 'adjacent (list (ebox-child-range-test--item 'adjacent)))
            (cons nil (list (list :value 'unkeyed-static)))
            (cons 'last nil)))
-         (base (ebox-child-range--build segments)))
+         (base (ebox-child-range-test--build segments)))
     (dolist (entry '((first first-new) (middle middle-new) (last last-new)))
       (let* ((result
-              (ebox-child-range--replace
+              (ebox-child-range-test--replace
                base (car entry)
                (list (ebox-child-range-test--item (cadr entry)))))
              (new (car result))
@@ -270,17 +308,17 @@
 
 (ert-deftest ebox-child-range-integration-is-transparent-and-indexed ()
   "Compiled Range segments render as direct children and retain empty refs."
-  (let* ((static (ebox-test-box :key 'a :class "a" :content "A" :width '(40)))
-         (one (ebox-test-box :key 'b :class "b" :content "B" :width '(40)))
-         (two (ebox-test-box :key 'c :class "c" :content "C" :width '(40)))
+  (let* ((static (ebox-test-box :key 'a :class "a" (ebox-test-text "A") :width '(40)))
+         (one (ebox-test-box :key 'b :class "b" (ebox-test-text "B") :width '(40)))
+         (two (ebox-test-box :key 'c :class "c" (ebox-test-text "C") :width '(40)))
          (descriptor (ebox-child-range--descriptor-create 'items (list one two)))
          (empty (ebox-child-range--descriptor-create 'empty nil))
          (raw-items (ebox-child-range--descriptor-items descriptor))
          (ranged (ebox-test-column static empty descriptor))
          (direct (ebox-test-column
-                  (ebox-test-box :key 'a :class "a" :content "A" :width '(40))
-                  (ebox-test-box :key 'b :class "b" :content "B" :width '(40))
-                  (ebox-test-box :key 'c :class "c" :content "C" :width '(40))))
+                  (ebox-test-box :key 'a :class "a" (ebox-test-text "A") :width '(40))
+                  (ebox-test-box :key 'b :class "b" (ebox-test-text "B") :width '(40))
+                  (ebox-test-box :key 'c :class "c" (ebox-test-text "C") :width '(40))))
          (left (generate-new-buffer " *ebox-range-direct*"))
          (right (generate-new-buffer " *ebox-range-compiled*")))
     (unwind-protect
@@ -300,7 +338,7 @@
                            (ebox-string-lines
                             (with-current-buffer right (buffer-string))))))
           (should (eq raw-items (ebox-child-range--descriptor-items descriptor)))
-          (should (equal (mapcar (lambda (node) (plist-get node :key)) raw-items)
+          (should (equal (mapcar #'ebox-child-range-test--node-key raw-items)
                          '(b c)))
           (let* ((direct-state (ebox--buffer-render-state left))
                  (state (ebox--buffer-render-state right))
@@ -341,20 +379,20 @@
      'outer (list (ebox-child-range--descriptor-create 'nested nil)))))
   (should-error
    (ebox-test-column
-    (ebox-test-box :key 'duplicate :content "a")
+    (ebox-test-box :key 'duplicate (ebox-test-text "a"))
     (ebox-child-range--descriptor-create
-     'range (list (ebox-test-box :key 'duplicate :content "b")))))
+     'range (list (ebox-test-box :key 'duplicate (ebox-test-text "b"))))))
   (let ((buffer (generate-new-buffer " *ebox-range-invalid*")))
     (unwind-protect
         (progn
-          (ebox-render-to-buffer buffer (ebox-test-box :key 'root :content "old"))
+          (ebox-render-to-buffer buffer (ebox-test-box :key 'root (ebox-test-text "old")))
           (let ((before (with-current-buffer buffer (buffer-string)))
                 (state (ebox--buffer-render-state buffer)))
             (dolist
                 (root
                  (list
                   (ebox-child-range--descriptor-create
-                   'root (list (ebox-test-box :key 'x :content "x")))
+                   'root (list (ebox-test-box :key 'x (ebox-test-text "x"))))
                   (list :ebox-type 'box
                         :ebox-content-node
                         (ebox-child-range--descriptor-create 'scalar nil))
@@ -384,25 +422,25 @@
   "Ranges add no ECSS subject and preserve child/sibling cascade semantics."
   (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
          (direct-left
-          (ebox-test-box :key 'left :host-ref 'left :class "left"
-                       :content "L" :width '(40)))
+          (ebox-test-box :key 'left :source-identity 'left :class "left"
+                       (ebox-test-text "L") :width '(40)))
          (direct-right
-          (ebox-test-box :key 'right :host-ref 'right :class "right"
-                       :content "R" :width '(40)))
+          (ebox-test-box :key 'right :source-identity 'right :class "right"
+                       (ebox-test-text "R") :width '(40)))
          (range-left
-          (ebox-test-box :key 'left :host-ref 'left :class "left"
-                       :content "L" :width '(40)))
+          (ebox-test-box :key 'left :source-identity 'left :class "left"
+                       (ebox-test-text "L") :width '(40)))
          (range-right
-          (ebox-test-box :key 'right :host-ref 'right :class "right"
-                       :content "R" :width '(40)))
+          (ebox-test-box :key 'right :source-identity 'right :class "right"
+                       (ebox-test-text "R") :width '(40)))
          (left-range
           (ebox-child-range--descriptor-create 'left-range (list range-left)))
          (right-range
           (ebox-child-range--descriptor-create 'right-range (list range-right)))
-         (direct (plist-put (ebox-test-column direct-left direct-right)
-                            :class "parent"))
-         (ranged (plist-put (ebox-test-column left-range right-range)
-                            :class "parent"))
+         (direct (ebox-test-column
+                  :class "parent" direct-left direct-right))
+         (ranged (ebox-test-column
+                  :class "parent" left-range right-range))
          (direct-buffer (generate-new-buffer " *ebox-range-ecss-direct*"))
          (range-buffer (generate-new-buffer " *ebox-range-ecss-range*"))
          (original (symbol-function 'ebox-style-compute-subject))
@@ -441,44 +479,68 @@
             (should-not (plist-get node :surface-object)))
           (dolist (ref '(left right))
             (let* ((state (ebox--buffer-render-state range-buffer))
-                   (node-id (gethash ref (plist-get state :host-ref-table)))
+                   (node-id
+                    (gethash ref
+                             (ebox-child-range-test--host-ref-table state)))
                    (node (gethash node-id (plist-get state :node-table))))
               (should node-id)
-              (should (equal (plist-get node :key) ref)))))
+              (should (equal
+                       (ebox-child-range-test--node-key
+                        node (plist-get state :source-index))
+                       ref)))))
       (dolist (buffer (list direct-buffer range-buffer))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest ebox-child-range-path-copy-replaces-compiled-material-child ()
   "Tree path copying cannot ignore a child stored in a compiled sequence."
   (let* ((source
-         (ebox-test-column
-           (ebox-test-box :key 'static :content "static")
-           (ebox-child-range--descriptor-create
-            'items (list (ebox-test-box :key 'old :content "old")))))
-         (compiled (ebox-tree-copy-node-structure source))
+          (ebox-test-column
+           (ebox-test-box :key 'static (ebox-test-text "static"))
+           (ebox-test-child-range
+            'items (ebox-test-box :key 'old (ebox-test-text "old")))))
+         (compiled (ebox-tree-copy-node-structure (ebox-test-root source)))
          (old-child (cadr (ebox-tree-layout-children compiled)))
-         (new-child (ebox-test-box :key 'new :content "new"))
+         (new-input (ebox-test-box :key 'new (ebox-test-text "new")))
+         (new-child (ebox-test-root new-input))
+         (source-index
+          (ebox-test-source-index
+           (ebox-test-forest-input source new-input)))
          (unchanged (ebox-tree-copy-with-direct-child-replacements compiled nil))
          (copy (ebox-tree-copy-with-direct-child-replacements
-                compiled (list (cons old-child new-child)))))
+                compiled (list (cons old-child new-child))
+                (lambda (node)
+                  (ebox-child-range-test--node-key node source-index)))))
     (should (eq (plist-get unchanged :ebox-child-sequence)
                 (plist-get compiled :ebox-child-sequence)))
-    (should (equal (mapcar (lambda (node) (plist-get node :key))
+    (should (equal (mapcar (lambda (node)
+                             (ebox-child-range-test--node-key
+                              node source-index))
                            (ebox-tree-layout-children copy))
                    '(static new)))
-    (should (equal (mapcar (lambda (node) (plist-get node :key))
+    (should (equal (mapcar (lambda (node)
+                             (ebox-child-range-test--node-key
+                              node source-index))
                            (ebox-tree-layout-children compiled))
                    '(static old)))
-    (let* ((original (ebox-text-create :value "old"))
-           (range (ebox-child-range 'typed original))
-           (typed (ebox-box-create
-                   :layout (ebox-column-layout-create)
-                   :children (list range)))
+    (let* ((original (ebox-test-text "old"))
+           (range (ebox-test-child-range 'typed original))
+           (typed-input (ebox-test-column range))
+           (typed (ebox-test-root typed-input))
            (owned (car (ebox-box-node-children typed)))
-           (replacement (ebox-text-create :value "new"))
+           (replacement-input (ebox-test-text "new"))
+           (replacement (ebox-test-root replacement-input))
            (replaced
             (ebox-tree-copy-with-direct-child-replacements
              typed (list (cons owned replacement))))
+           (builder (ebox-source-builder-create))
+           (_typed-sources
+            (ebox-source-builder-import
+             builder (ebox-test-source-index typed-input)))
+           (_replacement-sources
+            (ebox-source-builder-import
+             builder (ebox-test-source-index replacement-input)))
+           (replaced-index
+            (ebox-tree-source-builder-snapshot builder (list replaced)))
            direct)
       (ebox-tree-for-each-direct-child
        replaced (lambda (child) (push child direct)))
@@ -489,36 +551,42 @@
                           (ebox-tree-semantic-children replaced)))
         (should (= (length view) 1))
         (should (eq (car view) replacement)))
-      (should (eq (ebox-tree-validate-declarative-root replaced) replaced))
-      (let ((removed
-             (ebox-tree-copy-with-direct-child-replacements
-              typed (list (cons owned nil)))))
-        (should-not (ebox-box-node-children removed))
-        (should-not (ebox-tree-layout-children removed))
-        (should-not (ebox-tree-semantic-children removed))
-        (should (eq (ebox-tree-validate-declarative-root removed)
-                    removed))))))
+      (should (eq (ebox-tree-validate-declarative-root
+                   replaced nil nil replaced-index)
+                  replaced))
+      (should-error
+       (ebox-tree-copy-with-direct-child-replacements
+        typed (list (cons owned nil)))
+       :type 'error))))
 
 (ert-deftest ebox-child-range-empty-sequence-is-authoritative ()
   "An all-empty sequence cannot fall through to legacy alias children."
-  (let* ((sequence (ebox-child-range--build (list (cons 'empty nil))))
-         (legacy (ebox-test-box :key 'legacy :content "legacy"))
+  (let* ((sequence (ebox-child-range-test--build (list (cons 'empty nil))))
+         (legacy (ebox-test-box :key 'legacy (ebox-test-text "legacy")))
          (node (list :ebox-type 'stack :ebox-child-sequence sequence
                      :top legacy :bottom legacy)))
     (should-not (ebox-tree-layout-children node))))
 
 (ert-deftest ebox-child-range-validator-covers-wrapper-and-scalar-slots ()
   "Flat Range compilation cannot hide wrappers or admit scalar descriptors."
-  (let* ((wrapper (ebox-test-box :key 'wrapper :host-ref 'wrapper :content "W"))
-         (item (ebox-test-box :key 'item :host-ref 'item :content "I"))
-         (descriptor (ebox-child-range--descriptor-create 'items (list item)))
+  (let* ((wrapper-input
+          (ebox-test-box :key 'wrapper :source-identity 'wrapper (ebox-test-text "W")))
+         (item-input
+          (ebox-test-box :key 'item :source-identity 'item (ebox-test-text "I")))
+         (wrapper (ebox-test-root wrapper-input))
+         (item (ebox-test-root item-input))
+         (descriptor (ebox-test-child-range 'items item-input))
          (source (list :ebox-type 'flex :display '(block flex)
-                       :box wrapper :children (list descriptor))))
-    (ebox-tree-validate-declarative-root source)
-    (let* ((copy (ebox-tree-copy-node-structure source))
-           (copy-wrapper (plist-get copy :box))
+                       :box wrapper :children (list descriptor)))
+         (typed-input (ebox-test-column descriptor))
+         (typed (ebox-test-root typed-input)))
+    (should-error (ebox-tree-copy-node-structure source) :type 'error)
+    (ebox-tree-validate-declarative-root
+     typed nil nil (ebox-test-source-index typed-input))
+    (let* ((copy (ebox-tree-copy-node-structure typed))
+           (copy-wrapper (car (ebox-tree-layout-children copy)))
            (copy-item (car (ebox-tree-layout-children copy))))
-      (should-not (eq wrapper copy-wrapper))
+      (should-not (eq item copy-wrapper))
       (should-not (eq item copy-item))
       (dolist (node (list wrapper item))
         (should-not (plist-get node :node-id))
@@ -528,39 +596,41 @@
      (ebox-tree-validate-declarative-root
       (list :ebox-type 'stack :display '(block column)
             :top (ebox-child-range--descriptor-create 'bad nil)
-            :bottom (ebox-test-box :key 'bottom :content "B"))))
+            :bottom (ebox-test-box :key 'bottom (ebox-test-text "B")))))
     (should-error
      (ebox-tree-validate-declarative-root
       (list :ebox-type 'flex :display '(block flex)
-            :box (ebox-test-box :key 'same :host-ref 'same :content "W")
+            :box (ebox-test-box :key 'same :source-identity 'same (ebox-test-text "W"))
             :children
             (list (ebox-child-range--descriptor-create
                    'items
-                   (list (ebox-test-box :key 'item :host-ref 'same
-                                      :content "I")))))))))
+                   (list (ebox-test-box :key 'item :source-identity 'same
+                                      (ebox-test-text "I"))))))))))
 
 (ert-deftest ebox-child-range-public-candidate-splices-and-reports ()
   "Public child Ranges support empty and repeated last-wins candidate splices."
   (let* ((buffer (generate-new-buffer " *ebox-public-range*"))
          (source
           (ebox-test-column
-           (ebox-test-box :key 'static :content "S")
-           (ebox-child-range 'items)))
+           (ebox-test-box :key 'static (ebox-test-text "S"))
+           (ebox-test-child-range 'items)))
          report)
     (unwind-protect
         (progn
           (ebox-render-to-buffer buffer source)
           (dolist (items
                    (list
-                    (list (ebox-test-box :key 'one :content "1"))
-                    (list (ebox-test-box :key 'two :content "2")
-                          (ebox-test-box :key 'three :content "3"))
-                    (list (ebox-test-box :key 'final :content "F"))
+                    (list (ebox-test-box :key 'one (ebox-test-text "1")))
+                    (list (ebox-test-box :key 'two (ebox-test-text "2"))
+                          (ebox-test-box :key 'three (ebox-test-text "3")))
+                    (list (ebox-test-box :key 'final (ebox-test-text "F")))
                     nil))
             (let ((candidate (ebox-candidate-begin buffer)))
-              (ebox-candidate-replace-range-ref candidate 'items items)
+              (ebox-candidate-replace-range-ref
+               candidate 'items (ebox-child-range-test--input items))
               (when items
-                (ebox-candidate-replace-range-ref candidate 'items items))
+                (ebox-candidate-replace-range-ref
+                 candidate 'items (ebox-child-range-test--input items)))
               (setq report (ebox-commit buffer candidate))
               (should (plist-get report :range-metrics))))
           (should (gethash 'items
@@ -576,41 +646,40 @@
            (cl-loop for id from 1 to 12
                     collect
                     (ebox-test-box
-                     :key id :content (format "row-%02d" id) :width '(420)
+                     :key id (ebox-test-text (format "row-%02d" id)) :width '(420)
                      :color (and (= id selected) "#2F6B43"))))
          (root ()
            (ebox-test-box
-            :width '(900) :color "#172033" :wrap-mode nil
-            :ebox-content-node
+            :width '(900) :color "#172033" :wrap-mode 'none
             (ebox-test-flex
              :width '(900)
              (ebox-test-box
-              :key 'list :width 'stretch :min-width 0 :wrap-mode nil
+              :key 'list :width 'stretch :min-width 0 :wrap-mode 'none
               :min-height 24 :padding '(2 2) :border "#687386"
               :flex-grow 2 :flex-shrink 1 :flex-basis '(600)
-              :ebox-content-node
               (ebox-test-column
-               (apply #'ebox-child-range 'items (rows 1))))
-             (ebox-test-box :key 'detail :host-ref 'detail
+               (apply #'ebox-test-child-range 'items (rows 1))))
+             (ebox-test-box :key 'detail :source-identity 'detail
                           :width 'stretch :min-width 0
                           :min-height 24 :padding '(2 2) :border "#687386"
                           :flex-grow 1 :flex-shrink 1 :flex-basis '(300)
-                          :content "detail-1")))))
+                          (ebox-test-text "detail-1"))))))
       (unwind-protect
           (progn
             (ebox-render-to-buffer buffer (root))
             (dolist (selected '(2 1 2))
               (let ((candidate (ebox-candidate-begin buffer)))
                   (ebox-candidate-replace-range-ref
-                   candidate 'items (rows selected))
+                   candidate 'items
+                   (ebox-child-range-test--input (rows selected)))
                   (ebox-candidate-replace-host-ref
                    candidate 'detail
-                   (ebox-test-box :key 'detail :host-ref 'detail
+                   (ebox-test-box :key 'detail :source-identity 'detail
                                 :width 'stretch :min-width 0
                                 :min-height 24 :padding '(2 2)
                                 :border "#687386"
                                 :flex-grow 1 :flex-shrink 1 :flex-basis '(300)
-                                :content (format "detail-%d" selected)))
+                                (ebox-test-text (format "detail-%d" selected))))
                   (let ((report (ebox-commit buffer candidate)))
                     (ert-info ((format "selected=%S report=%S"
                                        selected report))
@@ -638,7 +707,7 @@
         ((rows (keys)
            (mapcar (lambda (key)
                      (ebox-test-box :key key
-                                  :content (format "row-%s" key)))
+                                  (ebox-test-text (format "row-%s" key))))
                    keys))
          (row-id (key)
            (let* ((state (ebox--buffer-render-state buffer))
@@ -652,23 +721,28 @@
                                   (ebox-child-range--segment-payload segment)
                                   nil)
                                  :key (lambda (item)
-                                        (plist-get item :key)))))
+                                        (ebox-child-range-test--node-key
+                                         item
+                                         (plist-get state
+                                                    :source-index))))))
              (plist-get node :node-id))))
       (unwind-protect
           (progn
             (ebox-render-to-buffer
              buffer
              (ebox-test-column
-              (apply #'ebox-child-range 'items (rows '(1 2 3 4)))))
+              (apply #'ebox-test-child-range 'items (rows '(1 2 3 4)))))
             (let ((initial-1 (row-id 1))
                   (initial-4 (row-id 4)))
               (let ((candidate (ebox-candidate-begin buffer)))
                 (ebox-candidate-replace-range-ref
-                 candidate 'items (rows '(1 4)))
+                 candidate 'items
+                 (ebox-child-range-test--input (rows '(1 4))))
                 (ebox-commit buffer candidate))
               (let ((candidate (ebox-candidate-begin buffer)))
                 (ebox-candidate-replace-range-ref
-                 candidate 'items (rows '(1 2 3 4)))
+                 candidate 'items
+                 (ebox-child-range-test--input (rows '(1 2 3 4))))
                 (ebox-commit buffer candidate))
               (should (= initial-1 (row-id 1)))
               (should (= initial-4 (row-id 4)))
@@ -678,57 +752,59 @@
 (ert-deftest ebox-child-range-sole-child-keeps-public-layout-parent ()
   "Keep row/column material parents for one empty or populated Range."
   (dolist (case '((ebox-test-row row) (ebox-test-column column)))
-    (dolist (items (list nil (list (ebox-test-box :key 'one :content "1"))))
-      (let* ((range (apply #'ebox-child-range 'items items))
-             (parent (funcall (car case) range)))
+    (dolist (items (list nil (list (ebox-test-box :key 'one (ebox-test-text "1")))))
+      (let* ((range (apply #'ebox-test-child-range 'items items))
+             (parent-input (funcall (car case) range))
+             (parent (ebox-test-root parent-input)))
         (should-not (ebox-child-range--descriptor-p parent))
         (should (ebox-box-node-p parent))
         (should (eq (ebox-layout-config-kind (ebox-box-node-layout parent))
                     (cadr case)))
-        (should (equal (ebox-box-node-children parent) items))
+        (should (equal (ebox-box-node-children parent)
+                       (mapcar #'ebox-test-root items)))
         (should (equal (ebox-box-node-range-anchors parent)
                        (list (list :ref 'items :before 0
                                    :after (length items)))))
-        (should (stringp (ebox-render parent)))))))
+        (should (stringp (ebox-render parent-input)))))))
 
 (ert-deftest ebox-child-range-typed-box-preserves-transparent-range ()
   "Typed Box should retain Range identity outside its visual child model."
-  (let* ((before (ebox-text-create :value "before" :key 'before))
-         (first (ebox-text-create :value "A" :key 'first))
-         (second (ebox-text-create :value "B" :key 'second))
-         (after (ebox-text-create :value "after" :key 'after))
-         (range (ebox-child-range 'items first second))
+  (let* ((before (ebox-test-text "before" :key 'before))
+         (first (ebox-test-text "A" :key 'first))
+         (second (ebox-test-text "B" :key 'second))
+         (after (ebox-test-text "after" :key 'after))
+         (range (ebox-test-child-range 'items first second))
          (range-items (ebox-child-range--descriptor-items range))
-         (box (ebox-box-create
-               :layout (ebox-column-layout-create)
-               :children (list before range after)))
+         (box-input (ebox-test-column before range after))
+         (box (ebox-test-root box-input))
          (buffer (generate-new-buffer " *ebox-typed-range*")))
     (unwind-protect
         (progn
           (should (equal (ebox-box-node-children box)
-                         (list before first second after)))
+                         (mapcar #'ebox-test-root
+                                 (list before first second after))))
           (cl-mapc (lambda (actual expected)
                      (should (eq actual expected)))
                    (ebox-box-node-children box)
-                   (list before (car range-items) (cadr range-items) after))
+                   (mapcar #'ebox-test-root
+                           (list before (car range-items)
+                                 (cadr range-items) after)))
           (should (equal (ebox-box-node-range-anchors box)
                          '((:ref items :before 1 :after 3))))
-          (let* ((empty (ebox-child-range 'empty))
-                 (empty-box
-                  (ebox-box-create
-                   :layout (ebox-column-layout-create)
-                   :children (list before empty after))))
+          (let* ((empty (ebox-test-child-range 'empty))
+                 (empty-input (ebox-test-column before empty after))
+                 (empty-box (ebox-test-root empty-input)))
             (should (equal (ebox-box-node-children empty-box)
-                           (list before after)))
+                           (mapcar #'ebox-test-root (list before after))))
             (should (equal (ebox-box-node-range-anchors empty-box)
                            '((:ref empty :before 1 :after 1)))))
           (should
            (equal
             (mapcar (lambda (line)
                       (string-trim-right (substring-no-properties line)))
-                    (ebox-string-lines (ebox-render box)))
+                    (ebox-string-lines (ebox-render box-input)))
             '("before" "A" "B" "after")))
-          (ebox-render-to-buffer buffer box)
+          (ebox-render-to-buffer buffer box-input)
           (let* ((runtime-root (ebox--buffer-root-node buffer))
                  (snapshot
                   (ebox-tree-runtime-identity-snapshot runtime-root)))
@@ -739,7 +815,8 @@
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-text-create :value "C" :key 'replacement)))
+             (ebox-child-range-test--input
+              (list (ebox-test-text "C" :key 'replacement))))
             (ebox-commit buffer candidate))
           (should
            (equal
@@ -753,9 +830,10 @@
                 (before-style-text
                  (with-current-buffer buffer (buffer-string)))
                 (candidate (ebox-candidate-begin buffer)))
-            (ebox-candidate-replace-range-ref
-             candidate 'items
-             (list (ebox-test-build '(text :color "red" "B"))))
+             (ebox-candidate-replace-range-ref
+              candidate 'items
+              (ebox-child-range-test--input
+              (list (ebox-test-text "B" :color "red"))))
             (cl-letf (((symbol-function 'accept-change-group)
                        (lambda (_group) (error "reject styled Range"))))
               (should-error (ebox-commit buffer candidate) :type 'error))
@@ -766,7 +844,8 @@
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-test-build '(text :color "red" "B"))))
+             (ebox-child-range-test--input
+              (list (ebox-test-text "B" :color "red"))))
             (ebox-commit buffer candidate))
           (let* ((state (ebox--buffer-render-state buffer))
                  (root (plist-get state :root-node))
@@ -788,7 +867,8 @@
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-text-create :value "D" :key 'unstyled)))
+             (ebox-child-range-test--input
+              (list (ebox-test-text "D" :key 'unstyled))))
             (ebox-commit buffer candidate))
           (let* ((state (ebox--buffer-render-state buffer))
                  (root (plist-get state :root-node))
@@ -822,25 +902,32 @@
   "Typed Range rendering should not repeatedly flatten its child sequence."
   (let* ((items
           (cl-loop for index below 100
-                   collect (ebox-text-create
-                            :value (number-to-string index) :key index)))
-         (range (apply #'ebox-child-range 'items items))
-         (box (ebox-box-create
-               :layout (ebox-column-layout-create)
-               :children (list range)))
+                   collect (ebox-test-text
+                            (number-to-string index) :key index)))
+         (range (apply #'ebox-test-child-range 'items items))
+         (box-input (ebox-test-column range))
+         (box (ebox-test-root box-input))
          (original (symbol-function 'ebox-child-range--flatten))
          (calls 0))
     (cl-letf (((symbol-function 'ebox-child-range--flatten)
                (lambda (sequence)
                  (cl-incf calls)
                  (funcall original sequence))))
-      (ebox-render box))
+      (ebox-render box-input))
     (should (zerop calls))
-    (let* ((replacement (ebox-text-create :value "replacement" :key 'new))
+    (let* ((replacement-input
+            (ebox-test-text "replacement" :key 'new))
+           (replacement (ebox-test-root replacement-input))
+           (source-index
+            (ebox-test-source-index
+             (ebox-test-forest-input box-input replacement-input)))
            (updated
-            (car (ebox-child-range--replace
-                  (plist-get box :ebox-child-sequence)
-                  'items (list replacement))))
+            (car
+             (ebox-child-range--replace
+              (plist-get box :ebox-child-sequence)
+              'items (list replacement)
+              (lambda (node)
+                (ebox-child-range-test--node-key node source-index)))))
            (candidate (copy-sequence box)))
       (ebox-tree--put-child-sequence candidate updated)
       (setq calls 0)
@@ -848,7 +935,7 @@
                  (lambda (sequence)
                    (cl-incf calls)
                    (funcall original sequence))))
-        (ebox-tree-subject-index candidate)
+        (ebox-tree-subject-index candidate source-index)
         (ebox-tree-layout-children candidate))
       (should (= calls 1)))))
 
@@ -858,23 +945,28 @@
     (unwind-protect
         (progn
           (ebox-render-to-buffer buffer
-                                 (ebox-test-column (ebox-child-range 'items)))
+                                 (ebox-test-column (ebox-test-child-range 'items)))
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
-             candidate 'items (list (ebox-test-box :key 'one :content "1")))
+             candidate 'items
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'one (ebox-test-text "1")))))
             (cl-letf (((symbol-function 'accept-change-group)
                        (lambda (&rest _) (error "injected empty accept"))))
               (should-error (ebox-commit buffer candidate) :type 'error)))
           (should (equal "" (with-current-buffer buffer (buffer-string))))
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
-             candidate 'items (list (ebox-test-box :key 'one :content "1")))
+             candidate 'items
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'one (ebox-test-text "1")))))
             (let ((report (ebox-commit buffer candidate)))
               (should (plist-get report :empty-range-owner-fallback))))
           (should (string-match-p "1" (with-current-buffer buffer
                                         (buffer-string))))
           (let ((candidate (ebox-candidate-begin buffer)))
-            (ebox-candidate-replace-range-ref candidate 'items nil)
+            (ebox-candidate-replace-range-ref
+             candidate 'items (ebox-test-forest-input))
             (ebox-commit buffer candidate))
           (should (equal "" (with-current-buffer buffer (buffer-string)))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
@@ -885,29 +977,33 @@
          (static
           (cl-loop for index below 100
                    collect (ebox-test-box :key (list 'static index)
-                                        :content (number-to-string index))))
+                                        (ebox-test-text (number-to-string index)))))
          (root (apply #'ebox-test-column
                       (append static
-                              (list (ebox-child-range
+                              (list (ebox-test-child-range
                                      'items
-                                     (ebox-test-box :key 'old :content "old"))))))
+                                     (ebox-test-box :key 'old (ebox-test-text "old")))))))
          candidate logical trace deltas)
     (unwind-protect
         (progn
           (ebox-render-to-buffer buffer root)
           (setq candidate (ebox-candidate-begin buffer))
           (ebox-candidate-replace-range-ref
-           candidate 'items (list (ebox-test-box :key 'new :content "new")))
+           candidate 'items
+           (ebox-child-range-test--input
+            (list (ebox-test-box :key 'new (ebox-test-text "new")))))
           (setq trace (make-hash-table :test 'equal))
           (cl-letf (((symbol-function 'ebox-child-range--flatten)
                      (lambda (&rest _) (error "candidate flattened Range"))))
             (let ((ebox-incremental--candidate-path-copy-trace trace)
-                  (ebox-incremental--candidate-range-index-deltas nil))
+                  (ebox-incremental--candidate-range-index-deltas nil)
+                  (ebox-incremental--candidate-incoming-source-indexes
+                   (ebox-incremental--candidate-source-input-map candidate)))
               (setq logical
                     (ebox-incremental--candidate-logical-root candidate nil)
-                    deltas ebox-incremental--candidate-range-index-deltas))
-            (ebox-incremental--candidate-local-index-delta
-             (ebox-candidate--base-state candidate) logical trace deltas))
+                    deltas ebox-incremental--candidate-range-index-deltas)
+              (ebox-incremental--candidate-local-index-delta
+               (ebox-candidate--base-state candidate) logical trace deltas)))
           (let ((metrics (car (ebox-candidate--range-metrics candidate))))
             (should (= (plist-get metrics :segment-visits) 3))
             (should (= (plist-get metrics :unaffected-payload-visits) 0))))
@@ -921,14 +1017,18 @@
           (ebox-render-to-buffer
               buffer
             (ebox-test-column
-             (ebox-child-range 'left (ebox-test-box :key 'move :content "L"))
-             (ebox-child-range 'right (ebox-test-box :key 'stay :content "R"))))
+             (ebox-test-child-range
+              'left (ebox-test-box :key 'move (ebox-test-text "L")))
+             (ebox-test-child-range
+              'right (ebox-test-box :key 'stay (ebox-test-text "R")))))
           (let ((candidate (ebox-candidate-begin buffer)))
-            (ebox-candidate-replace-range-ref candidate 'left nil)
+            (ebox-candidate-replace-range-ref
+             candidate 'left (ebox-test-forest-input))
             (ebox-candidate-replace-range-ref
              candidate 'right
-             (list (ebox-test-box :key 'move :content "M")
-                   (ebox-test-box :key 'stay :content "R")))
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'move (ebox-test-text "M"))
+                    (ebox-test-box :key 'stay (ebox-test-text "R")))))
             (ebox-commit buffer candidate))
           (should (string-match-p "M" (with-current-buffer buffer
                                           (buffer-string)))))
@@ -943,9 +1043,9 @@
                    (append
                     (cl-loop for index below static-count
                              collect (ebox-test-box :key (list 'static index)
-                                                  :content "s"))
-                    (list (ebox-child-range
-                           'items (ebox-test-box :key 'old :content "o")))))))
+                                                  (ebox-test-text "s")))
+                    (list (ebox-test-child-range
+                           'items (ebox-test-box :key 'old (ebox-test-text "o"))))))))
       (unwind-protect
           (progn
             (ebox-render-to-buffer buffer root)
@@ -958,8 +1058,9 @@
                    report)
               (ebox-candidate-replace-range-ref
                candidate 'items
-               (list (ebox-test-box :key 'new-a :content "a")
-                     (ebox-test-box :key 'new-b :content "b")))
+               (ebox-child-range-test--input
+                (list (ebox-test-box :key 'new-a (ebox-test-text "a"))
+                      (ebox-test-box :key 'new-b (ebox-test-text "b")))))
               (cl-letf (((symbol-function 'ebox--runtime-index)
                          (lambda (&rest _) (error "unexpected full index"))))
                 (setq report (ebox-commit buffer candidate)))
@@ -1004,21 +1105,23 @@
         (progn
           (ebox-render-to-buffer
               buffer
-            (ebox-test-column (ebox-test-box :key 'a :host-ref 'a :content "a")
-                         (ebox-test-box :key 'b :content "b")))
+            (ebox-test-column (ebox-test-box :key 'a :source-identity 'a (ebox-test-text "a"))
+                         (ebox-test-box :key 'b (ebox-test-text "b"))))
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-host-ref
              candidate 'a
              (ebox-test-column
-              (ebox-test-box :key 'a :host-ref 'a :content "a")
-              (ebox-child-range 'introduced)))
+              (ebox-test-box :key 'a :source-identity 'a (ebox-test-text "a"))
+              (ebox-test-child-range 'introduced)))
             (should-error
-             (ebox-candidate-replace-range-ref candidate 'introduced nil))
+             (ebox-candidate-replace-range-ref
+              candidate 'introduced (ebox-test-forest-input)))
             (ebox-commit buffer candidate))
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
              candidate 'introduced
-             (list (ebox-test-box :key 'later :content "later")))
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'later (ebox-test-text "later")))))
             (ebox-commit buffer candidate))
           (should (string-match-p "later" (with-current-buffer buffer
                                               (buffer-string)))))
@@ -1033,14 +1136,13 @@
             (ebox-render-to-buffer
                 buffer
               (ebox-test-column
-               (plist-put
-                (ebox-test-column
-                 (ebox-test-box :key 'static :content "s")
-                 (ebox-child-range
-                  'items (ebox-test-box :key 'child :host-ref 'child
-                                      :content "old")))
-                :host-ref 'parent)
-               (ebox-test-box :key 'peer :content "peer")))
+               (ebox-test-column
+                :source-identity 'parent
+                (ebox-test-box :key 'static (ebox-test-text "s"))
+                (ebox-test-child-range
+                 'items (ebox-test-box :key 'child :source-identity 'child
+                                       (ebox-test-text "old"))))
+               (ebox-test-box :key 'peer (ebox-test-text "peer"))))
             (let ((candidate (ebox-candidate-begin buffer)))
               (dolist (operation (if (eq order 'host-first)
                                      '(host range) '(range host)))
@@ -1048,12 +1150,13 @@
                   ('host
                    (ebox-candidate-replace-host-ref
                     candidate 'parent
-                    (ebox-test-box :key 'parent-new :content "HOST-WINS")))
+                    (ebox-test-box :key 'parent-new (ebox-test-text "HOST-WINS"))))
                   ('range
                    (ebox-candidate-replace-range-ref
                     candidate 'items
-                    (list (ebox-test-box :key 'range-new
-                                       :content "range-loses"))))))
+                    (ebox-child-range-test--input
+                     (list (ebox-test-box :key 'range-new
+                                          (ebox-test-text "range-loses"))))))))
               (ebox-commit buffer candidate))
             (should (string-match-p "HOST-WINS"
                                     (with-current-buffer buffer
@@ -1068,18 +1171,20 @@
           (ebox-render-to-buffer
               buffer
             (ebox-test-column
-             (ebox-test-box :key 'static :content "s")
-             (ebox-child-range
-              'items (ebox-test-box :key 'child :host-ref 'child :content "0"))))
+             (ebox-test-box :key 'static (ebox-test-text "s"))
+             (ebox-test-child-range
+              'items (ebox-test-box :key 'child :source-identity 'child (ebox-test-text "0")))))
           (dotimes (turn 2)
             (let ((candidate (ebox-candidate-begin buffer)))
               (ebox-candidate-replace-host-ref
                candidate 'child
-               (ebox-test-box :key 'child :host-ref 'child
-                            :content (number-to-string (1+ turn))))
+               (ebox-test-box :key 'child :source-identity 'child
+                            (ebox-test-text (number-to-string (1+ turn)))))
               (ebox-commit buffer candidate))
             (let* ((state (ebox--buffer-render-state buffer))
-                   (current-id (gethash 'child (plist-get state :host-ref-table)))
+                   (current-id
+                    (gethash 'child
+                             (ebox-child-range-test--host-ref-table state)))
                    (node (gethash current-id (plist-get state :node-table))))
               (when node-id (should (equal node-id current-id)))
               (setq node-id current-id)
@@ -1096,31 +1201,30 @@
           (ebox-render-to-buffer
               buffer
             (ebox-test-column
-             (plist-put
-              (ebox-test-column
-               (ebox-test-box :key 'static :content "s")
-               (ebox-child-range
-                'items (ebox-test-box :key 'child :host-ref 'child
-                                    :content "old")))
-              :host-ref 'parent)
-             (ebox-test-box :key 'peer :content "peer")))
+             (ebox-test-column
+              :source-identity 'parent
+              (ebox-test-box :key 'static (ebox-test-text "s"))
+              (ebox-test-child-range
+               'items (ebox-test-box :key 'child :source-identity 'child
+                                     (ebox-test-text "old"))))
+             (ebox-test-box :key 'peer (ebox-test-text "peer"))))
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-host-ref
              candidate 'parent
-             (plist-put
-              (ebox-test-column
-               (ebox-test-box :key 'static :content "s2")
-               (ebox-child-range
-                'items (ebox-test-box :key 'child :host-ref 'child
-                                    :content "ancestor")))
-              :host-ref 'parent))
+             (ebox-test-column
+              :source-identity 'parent
+              (ebox-test-box :key 'static (ebox-test-text "s2"))
+              (ebox-test-child-range
+               'items (ebox-test-box :key 'child :source-identity 'child
+                                     (ebox-test-text "ancestor")))))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-test-box :key 'range :content "RANGE-LOSES")))
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'range (ebox-test-text "RANGE-LOSES")))))
             (ebox-candidate-replace-host-ref
              candidate 'child
-             (ebox-test-box :key 'child :host-ref 'child
-                          :content "DESCENDANT-WINS"))
+             (ebox-test-box :key 'child :source-identity 'child
+                          (ebox-test-text "DESCENDANT-WINS")))
             (ebox-commit buffer candidate))
           (let ((text (with-current-buffer buffer (buffer-string))))
             (should (string-match-p "DESCENDANT-WINS" text))
@@ -1135,8 +1239,8 @@
                  (append
                   (cl-loop for index below 500
                            collect (ebox-test-box :key (list 'static index)
-                                                :content "s"))
-                  (list (ebox-child-range 'items)))))
+                                                (ebox-test-text "s")))
+                  (list (ebox-test-child-range 'items)))))
          report)
     (unwind-protect
         (progn
@@ -1144,9 +1248,10 @@
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (cl-loop for index below 64
-                      collect (ebox-test-box :key (list 'new index)
-                                           :content "n")))
+             (ebox-child-range-test--input
+              (cl-loop for index below 64
+                       collect (ebox-test-box :key (list 'new index)
+                                              (ebox-test-text "n")))))
             (cl-letf (((symbol-function
                         'ebox-incremental--candidate-full-index-preparation)
                        (lambda (&rest _) (error "unexpected full preparation")))
@@ -1168,21 +1273,23 @@
             (ebox-render-to-buffer
                 buffer
               (ebox-test-column
-               (ebox-test-box :key 'static :content "s")
-               (ebox-child-range
-                'items (ebox-test-box :key 'child :host-ref 'child
-                                    :content "old"))))
+               (ebox-test-box :key 'static (ebox-test-text "s"))
+               (ebox-test-child-range
+                'items (ebox-test-box :key 'child :source-identity 'child
+                                    (ebox-test-text "old")))))
             (let ((candidate (ebox-candidate-begin buffer)))
               (dolist (operation (if (eq order 'host-first)
                                      '(host range) '(range host)))
                 (if (eq operation 'host)
                     (ebox-candidate-replace-host-ref
                      candidate 'child
-                     (ebox-test-box :key 'child :host-ref 'child
-                                  :content "HOST-LOSES"))
+                     (ebox-test-box :key 'child :source-identity 'child
+                                  (ebox-test-text "HOST-LOSES")))
                   (ebox-candidate-replace-range-ref
                    candidate 'items
-                   (list (ebox-test-box :key 'range :content "RANGE-WINS")))))
+                   (ebox-child-range-test--input
+                    (list (ebox-test-box :key 'range
+                                         (ebox-test-text "RANGE-WINS")))))))
               (ebox-commit buffer candidate))
             (let ((text (with-current-buffer buffer (buffer-string))))
               (should (string-match-p "RANGE-WINS" text))
@@ -1197,28 +1304,26 @@
             ((child (static-text range-ref range-key range-text)
                (let ((node
                       (ebox-test-column
-                       (ebox-test-box :key 'child-static :content static-text)
+                       :key 'child :source-identity 'child
+                       (ebox-test-box :key 'child-static (ebox-test-text static-text))
                        (if range-key
-                           (ebox-child-range
+                           (ebox-test-child-range
                             range-ref
-                            (ebox-test-box :key range-key :content range-text))
-                         (ebox-child-range range-ref)))))
-                 (plist-put node :key 'child)
-                 (plist-put node :host-ref 'child)
+                            (ebox-test-box :key range-key (ebox-test-text range-text)))
+                         (ebox-test-child-range range-ref)))))
                  node))
              (ancestor (child-node peer-text)
                (let ((node
                       (ebox-test-column
+                       :key 'ancestor :source-identity 'ancestor
                        child-node
-                       (ebox-test-box :key 'ancestor-peer :content peer-text))))
-                 (plist-put node :key 'ancestor)
-                 (plist-put node :host-ref 'ancestor)
+                       (ebox-test-box :key 'ancestor-peer (ebox-test-text peer-text)))))
                  node)))
           (ebox-render-to-buffer
               buffer
             (ebox-test-column
              (ancestor (child "s" 'old-ref nil nil) "p")
-             (ebox-test-box :key 'root-peer :content "r")))
+             (ebox-test-box :key 'root-peer (ebox-test-text "r"))))
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-host-ref
              candidate 'ancestor
@@ -1230,7 +1335,9 @@
           (let* ((state (ebox--buffer-render-state buffer))
                  (table (plist-get state :range-ref-table))
                  (record (gethash 'new-ref table))
-                 (child-id (gethash 'child (plist-get state :host-ref-table))))
+                 (child-id
+                  (gethash 'child
+                           (ebox-child-range-test--host-ref-table state))))
             (should-not (gethash 'old-ref table))
             (should record)
             (should (= (hash-table-count table) 1))
@@ -1245,19 +1352,20 @@
           (ebox-render-to-buffer
               buffer
             (ebox-test-column
-             (ebox-test-box :key 'host :host-ref 'host :content "old-host")
-             (ebox-child-range
-              'items (ebox-test-box :key 'old-range :content "old-range"))))
+             (ebox-test-box :key 'host :source-identity 'host (ebox-test-text "old-host"))
+             (ebox-test-child-range
+              'items (ebox-test-box :key 'old-range (ebox-test-text "old-range")))))
           (let* ((surface (with-current-buffer buffer ebox-surface--buffer-surface))
                  (revision (tp-surface-revision surface))
                  (candidate (ebox-candidate-begin buffer))
                  report)
             (ebox-candidate-replace-host-ref
              candidate 'host
-             (ebox-test-box :key 'host :host-ref 'host :content "new-host"))
+             (ebox-test-box :key 'host :source-identity 'host (ebox-test-text "new-host")))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-test-box :key 'new-range :content "new-range")))
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'new-range (ebox-test-text "new-range")))))
             (setq report
                   (ebox-commit buffer candidate
                                (lambda (_report) (cl-incf callbacks))))
@@ -1279,18 +1387,22 @@
           (ebox-render-to-buffer
               buffer
             (ebox-test-column
-             (ebox-test-box :key 'static :content "s")
-             (ebox-child-range
-              'items (ebox-test-box :key 'old :host-ref 'old :content "old"))))
+             (ebox-test-box :key 'static (ebox-test-text "s"))
+             (ebox-test-child-range
+              'items (ebox-test-box :key 'old :source-identity 'old (ebox-test-text "old")))))
           (let* ((old-state (ebox--buffer-render-state buffer))
                  (old-root (plist-get old-state :root-node))
                  (old-table (plist-get old-state :range-ref-table))
-                 (old-id (gethash 'old (plist-get old-state :host-ref-table)))
+                 (old-id
+                  (gethash 'old
+                           (ebox-child-range-test--host-ref-table old-state)))
                  (old-buffer (with-current-buffer buffer (buffer-string)))
                  (candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-test-box :key 'new :host-ref 'new :content "new")))
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'new :source-identity 'new
+                                   (ebox-test-text "new")))))
             (cl-letf (((symbol-function 'accept-change-group)
                        (lambda (_group) (error "reject final accept"))))
               (should-error
@@ -1302,14 +1414,16 @@
             (should (eq (ebox--buffer-render-state buffer) old-state))
             (should (eq (plist-get old-state :root-node) old-root))
             (should (eq (plist-get old-state :range-ref-table) old-table))
-            (should (= (gethash 'old (plist-get old-state :host-ref-table))
+            (should (= (gethash
+                        'old (ebox-child-range-test--host-ref-table old-state))
                        old-id))
             (should (equal (with-current-buffer buffer (buffer-string))
                            old-buffer)))
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-test-box :key 'new :content "new")))
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'new (ebox-test-text "new")))))
             (ebox-commit buffer candidate)))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
@@ -1321,9 +1435,9 @@
           (ebox-render-to-buffer
               buffer
             (ebox-test-column
-             (ebox-test-box :key 'static :content "s")
-             (ebox-child-range
-              'items (ebox-test-box :key 'old :content "old"))))
+             (ebox-test-box :key 'static (ebox-test-text "s"))
+             (ebox-test-child-range
+              'items (ebox-test-box :key 'old (ebox-test-text "old")))))
           (let* ((old-state (ebox--buffer-render-state buffer))
                  (old-root (plist-get old-state :root-node))
                  (old-range-table (plist-get old-state :range-ref-table))
@@ -1332,7 +1446,8 @@
                  trace)
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-test-box :key 'new :content "new")))
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'new (ebox-test-text "new")))))
             (should-error
              (ebox-commit
               buffer candidate
@@ -1347,7 +1462,8 @@
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-range-ref
              candidate 'items
-             (list (ebox-test-box :key 'new :content "new")))
+             (ebox-child-range-test--input
+              (list (ebox-test-box :key 'new (ebox-test-text "new")))))
             (ebox-commit buffer candidate))
           (should (string-match-p "new" (with-current-buffer buffer
                                             (buffer-string)))))

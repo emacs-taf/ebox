@@ -1,10 +1,9 @@
 ;;; ebox-node-factory.el --- Runtime box node factory -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Owns the legacy runtime box encoding used by render/layout modules during
-;; the typed canonical migration.  Higher programmatic constructors may lower
-;; through this factory, but author DSL parsing and buffer publication do not
-;; belong here.
+;; Owns private runtime box storage used by render/layout modules.  Higher
+;; programmatic constructors may lower through this factory, but author source
+;; facts, DSL parsing, and buffer publication do not belong here.
 
 ;;; Code:
 
@@ -63,8 +62,8 @@ leaving them absent would make the canonical node violate the Box contract.")
         (plist-put box key value)))
     box))
 
-(defun ebox-node-factory--create-expanded (expanded declarations)
-  "Create one runtime box from EXPANDED engine facts and DECLARATIONS."
+(defun ebox-node-factory--create-expanded (expanded)
+  "Create one runtime box from EXPANDED engine facts."
   (let ((controlled-scroll-offset-p
          (plist-member expanded :scroll-offset)))
     (let ((box (copy-sequence ebox-node-factory--box-longhand)))
@@ -72,32 +71,23 @@ leaving them absent would make the canonical node violate the Box contract.")
                do (plist-put box property value))
       (plist-put box :ebox-type 'box)
       (plist-put box :display '(block flow))
-      (plist-put box :ebox-style-declarations (copy-sequence declarations))
       (when controlled-scroll-offset-p
         (plist-put box :ebox-scroll-offset-controlled-p t))
       box)))
 
-(defun ebox-node-factory--create-text-expanded (expanded declarations)
-  "Create canonical Text storage from EXPANDED facts and DECLARATIONS."
+(defun ebox-node-factory--create-text-expanded (expanded)
+  "Create canonical Text storage from EXPANDED facts."
   (let ((node (copy-sequence ebox-node-factory--text-longhand)))
     (cl-loop for (property value) on expanded by #'cddr
              do (plist-put node property value))
     (plist-put node :ebox-type 'box)
     (plist-put node :display '(inline flow))
-    (plist-put node :ebox-style-declarations (copy-sequence declarations))
     node))
-
-(defun ebox-node-factory--create (plist declarations)
-  "Create one runtime box from normalized PLIST and DECLARATIONS.
-PLIST contains already-validated public engine inputs; DECLARATIONS are the
-single canonical author fact set retained for style projection."
-  (ebox-node-factory--create-expanded
-   (ebox-style-expand-ebox-plist plist) declarations))
 
 (defun ebox-node-factory--create-from-properties (&rest plist)
   "Create one private runtime box from evaluated engine PLIST."
-  (ebox-node-factory--create
-   plist (ebox-style-compile-declarations plist)))
+  (ebox-node-factory--create-expanded
+   (ebox-style-expand-ebox-plist plist)))
 
 (provide 'ebox-node-factory)
 

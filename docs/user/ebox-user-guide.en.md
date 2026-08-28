@@ -35,7 +35,7 @@ Children are always nested directly. A layout form is a Box with a selected
 child-layout algorithm, not a different kind of visual object.
 
 ```elisp
-(defvar ebox-guide-root
+(defvar ebox-guide-input
   (ebox-build
    '(column :padding (1 2)
             :border ((1) solid "#8A93A6")
@@ -44,6 +44,11 @@ child-layout algorithm, not a different kind of visual object.
                  (box :id "status" :background-color "#F4F6FB" "Inbox")
                  (box :background-color "#EEF2FF" "Archive")))))
 ```
+
+`ebox-build` returns an opaque `CanonicalEboxInput`. It keeps the canonical
+forest and its source generation together. Pass that value unchanged to the
+render and publication functions; ordinary author code does not extract or
+reassemble its internal nodes.
 
 Use `box` with geometry but no child when an empty rectangular area is needed.
 No extra node type is necessary.
@@ -125,13 +130,15 @@ parent. The child-layout algorithm still comes from the form name.
 
 `ebox-render` returns propertized text without changing a live buffer.
 `ebox-render-to-buffer` mounts a retained TP surface and returns its buffer.
+Both functions, and `ebox-display-buffer`, accept the opaque value returned by
+`ebox-build`.
 
 ```elisp
-(ebox-render ebox-guide-root)
-(ebox-render-to-buffer "*Ebox Guide*" ebox-guide-root)
+(ebox-render ebox-guide-input)
+(ebox-render-to-buffer "*Ebox Guide*" ebox-guide-input)
 ```
 
-Build a fresh root and use `ebox-commit` for an atomic update:
+Build a fresh canonical input and use `ebox-commit` for an atomic update:
 
 ```elisp
 (ebox-commit
@@ -139,7 +146,7 @@ Build a fresh root and use `ebox-commit` for an atomic update:
  (ebox-build
   '(column :padding (1 2)
            (text "Updated notes")
-           (box :key body "The new root is caller-owned."))))
+           (box :key body "The new input is caller-owned."))))
 ```
 
 Validation, rendering, or publication failure leaves the previous buffer and
@@ -198,19 +205,61 @@ examples.
 
 ## 9. Typed integration API
 
-Frameworks that already normalize author input may bypass the list DSL. They
-construct one TextNode with `ebox-text-create`, one typed LayoutConfig with the
-matching layout constructor, then one BoxNode with `ebox-box-create`.
+Frameworks that already normalize author input may bypass the list DSL. This
+is an integration API, not a second author grammar. One source builder owns
+the complete source generation. Each TextNode or BoxNode receives an opaque
+handle from that builder and node-owned facts projected from the same
+normalized declarations. The framework then seals the builder and transports
+the forest and source index together as one `CanonicalEboxInput`.
 
 ```elisp
-(ebox-box-create
- :layout (ebox-row-layout-create :item-gap 1 :cross-align 'center)
- :children (list (ebox-text-create :value "Left")
-                 (ebox-text-create :value "Right")))
+(let* ((builder (ebox-source-builder-create))
+       (root-declarations nil)
+       (left-declarations nil)
+       (right-declarations nil)
+       (root-handle
+        (ebox-source-builder-bind
+         builder :declarations root-declarations))
+       (left-handle
+        (ebox-source-builder-bind
+         builder :declarations left-declarations))
+       (right-handle
+        (ebox-source-builder-bind
+         builder :declarations right-declarations))
+       (left
+        (ebox-text-create
+         :value "Left"
+         :source-handle left-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'text left-declarations)))
+       (right
+        (ebox-text-create
+         :value "Right"
+         :source-handle right-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'text right-declarations)))
+       (root
+        (ebox-box-create
+         :layout (ebox-row-layout-create
+                  :item-gap 1 :cross-align 'center)
+         :children (list left right)
+         :source-handle root-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'row root-declarations))))
+  (ebox-canonical-input-create
+   (list root)
+   (ebox-source-builder-finish builder)))
 ```
 
-Here `:layout` and `:children` are fields of the evaluated typed constructor.
-They are not author properties and do not extend the seven-entry grammar.
+`ebox-source-builder-create`, `ebox-source-builder-bind`,
+`ebox-source-builder-finish`, `ebox-canonical-facts-from-declarations`, the
+typed node/layout constructors, and `ebox-canonical-input-create` belong to
+this integration boundary. Here `:layout`, `:children`, `:source-handle`, and
+`:owned-facts` are evaluated constructor fields. They are not author
+properties and do not extend the seven-entry grammar.
 
 ## 10. Optional native reflow and verification
 

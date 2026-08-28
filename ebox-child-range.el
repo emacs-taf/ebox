@@ -23,7 +23,7 @@
 
 (cl-defstruct (ebox-child-range--segment
                (:constructor ebox-child-range--make-segment))
-  ref payload)
+  ref payload keys)
 
 (cl-defstruct (ebox-child-range--segment-node
                (:constructor ebox-child-range--make-segment-node))
@@ -208,12 +208,17 @@ shallow copy owned by the persistent sequence."
   (ebox-child-range--make-descriptor :ref ref :items items))
 
 (defun ebox-child-range--build
-    (segments &optional hash-function retain-item-identities-p)
+    (segments key-function &optional hash-function retain-item-identities-p
+              segment-key-vectors)
   "Build an immutable child sequence from SEGMENTS.
 Each entry is `(REF . ITEMS)'; nil REF denotes one static child item.
-HASH-FUNCTION optionally supplies the stable key hash.  When
+KEY-FUNCTION returns each item's source-owned author key, or nil when this
+sequence is deliberately unkeyed.  HASH-FUNCTION optionally supplies the
+stable key hash.  When
 RETAIN-ITEM-IDENTITIES-P is non-nil, ITEMS are already-owned canonical nodes
-and the sequence retains those exact objects instead of copying them."
+and the sequence retains those exact objects instead of copying them.
+SEGMENT-KEY-VECTORS, when non-nil, supplies the already-derived key vector for
+each segment so structural copies never recover keys from source metadata."
   (unless (proper-list-p segments)
     (signal 'wrong-type-argument (list 'proper-list-p segments)))
   (let* ((count (length segments))
@@ -222,7 +227,13 @@ and the sequence retains those exact objects instead of copying them."
          (metrics (ebox-child-range--make-metrics))
          root key-root (refs (make-hash-table :test #'equal)) (index 0))
     (when (zerop count) (error "Ebox child sequence requires a segment"))
-    (dolist (entry segments)
+    (when (and segment-key-vectors
+               (/= (length segment-key-vectors) (length segments)))
+      (error "Ebox child sequence key vectors are misaligned"))
+    (cl-loop for entry in segments
+             for explicit-keys in (or segment-key-vectors
+                                      (make-list (length segments) nil))
+             do
       (let* ((ref (car entry))
              (items (cdr entry)))
         (unless (proper-list-p items)
@@ -232,16 +243,27 @@ and the sequence retains those exact objects instead of copying them."
         (when (and ref (gethash ref refs))
           (error "Ebox child Range ref is not unique: %S" ref))
         (when ref (puthash ref index refs))
-        (let ((payload (vconcat
-                        (mapcar (lambda (item)
-                                  (ebox-child-range--item-copy
-                                   item metrics retain-item-identities-p))
-                                items))))
+        (let* ((payload (vconcat
+                         (mapcar (lambda (item)
+                                   (ebox-child-range--item-copy
+                                    item metrics retain-item-identities-p))
+                                 items)))
+               (keys
+                (if explicit-keys
+                    (copy-sequence explicit-keys)
+                  (vconcat
+                   (mapcar (lambda (item)
+                             (and key-function
+                                  (funcall key-function item)))
+                           items)))))
+          (unless (= (length keys) (length payload))
+            (error "Ebox child sequence keys do not match payload"))
           (setq root (ebox-child-range--segment-insert
                       root height index
-                      (ebox-child-range--make-segment :ref ref :payload payload)))
+                      (ebox-child-range--make-segment
+                       :ref ref :payload payload :keys keys)))
           (dotimes (offset (length payload))
-            (let* ((item (aref payload offset)) (key (plist-get item :key)))
+            (let ((key (aref keys offset)))
               (when key
                 (setq key-root
                       (ebox-child-range--hash-change
@@ -252,14 +274,17 @@ and the sequence retains those exact objects instead of copying them."
      :root root :height height :count count :ref-index refs
      :key-root key-root :hash-function hash-function)))
 
-(defun ebox-child-range--replace (sequence ref items)
+(defun ebox-child-range--replace (sequence ref items key-function)
   "Return `(NEW-SEQUENCE . METRICS)' for SEQUENCE after replacing REF ITEMS."
-  (ebox-child-range--replace-many sequence (list (cons ref items))))
+  (ebox-child-range--replace-many
+   sequence (list (cons ref items)) key-function))
 
-(defun ebox-child-range--replace-many (sequence replacements &optional reuse-maps)
+(defun ebox-child-range--replace-many
+    (sequence replacements key-function &optional reuse-maps)
   "Replace RANGE REPLACEMENTS in SEQUENCE with one two-phase transaction.
 REUSE-MAPS is an alist from Range ref to proven `(NEW . OLD)' item indexes;
-those NEW items already name canonical published objects and are not copied."
+those NEW items already name canonical published objects and are not copied.
+KEY-FUNCTION returns the source-owned key for every replacement item."
   (let ((metrics (ebox-child-range--make-metrics))
         (missing (make-symbol "missing-range-ref"))
         (seen (make-hash-table :test #'equal)) records)
@@ -278,13 +303,18 @@ those NEW items already name canonical published objects and are not copied."
         (when (eq index missing)
           (error "Ebox child Range ref does not exist: %S" (car entry)))
         (let ((reuse-map (cdr (assoc (car entry) reuse-maps #'equal))))
-          (push (list (car entry) index
-                      (vconcat
-                       (cl-loop for item in (cdr entry) for offset from 0
-                                collect
-                                (if (assq offset reuse-map)
-                                    item
-                                  (ebox-child-range--item-copy item metrics)))))
+          (push (list
+                 (car entry) index
+                 (vconcat
+                  (cl-loop for item in (cdr entry) for offset from 0
+                           collect
+                           (if (assq offset reuse-map)
+                               item
+                             (ebox-child-range--item-copy item metrics))))
+                 (vconcat
+                  (mapcar (lambda (item)
+                            (and key-function (funcall key-function item)))
+                          (cdr entry))))
               records))))
     (setq records (nreverse records))
     (let ((key-root (ebox-child-range--sequence-key-root sequence))
@@ -300,24 +330,29 @@ those NEW items already name canonical published objects and are not copied."
                         root (ebox-child-range--sequence-height sequence)
                         (nth 1 record)
                         (ebox-child-range--make-segment
-                         :ref (car record) :payload (nth 2 record))
+                         :ref (car record) :payload (nth 2 record)
+                         :keys (nth 3 record))
                         metrics)))
                  (setq root (car result))
                  (list (car record) (nth 1 record) (cdr result)
-                       (nth 2 record))))
+                       (nth 2 record) (nth 3 record))))
              records))
       (dolist (record records)
-        (let ((payload (ebox-child-range--segment-payload (nth 2 record))))
+        (let* ((segment (nth 2 record))
+               (payload (ebox-child-range--segment-payload segment))
+               (keys (ebox-child-range--segment-keys segment)))
           (dotimes (offset (length payload))
             (ebox-child-range--metric-add metrics 'old-affected-payload-visits)
-            (when-let* ((key (plist-get (aref payload offset) :key)))
+            (when-let* ((key (aref keys offset)))
               (setq key-root
                     (ebox-child-range--hash-change
                      key-root key nil (funcall hash-function key) 0 t metrics))))))
       (dolist (record records)
-        (let ((index (nth 1 record)) (payload (nth 3 record)))
+        (let ((index (nth 1 record))
+              (payload (nth 3 record))
+              (keys (nth 4 record)))
           (dotimes (offset (length payload))
-            (when-let* ((key (plist-get (aref payload offset) :key)))
+            (when-let* ((key (aref keys offset)))
               (setq key-root
                     (ebox-child-range--hash-change
                      key-root key (cons index offset)
@@ -330,16 +365,17 @@ those NEW items already name canonical published objects and are not copied."
             metrics))))
 
 (defun ebox-child-range--replace-item-at
-    (sequence segment-index offset old-item new-item)
+    (sequence segment-index offset old-item new-item new-key)
   "Persistently replace OLD-ITEM by NEW-ITEM in SEQUENCE.
-SEGMENT-INDEX and OFFSET identify its exact material-child location."
+SEGMENT-INDEX and OFFSET identify its exact material-child location.  NEW-KEY
+is the replacement's source-owned author key."
   (let* ((segment (ebox-child-range--segment-at sequence segment-index))
          (payload (copy-sequence (ebox-child-range--segment-payload segment)))
+         (keys (copy-sequence (ebox-child-range--segment-keys segment)))
          (key-root (ebox-child-range--sequence-key-root sequence))
          (hash-function (ebox-child-range--sequence-hash-function sequence))
          (metrics (ebox-child-range--make-metrics))
-         (old-key (plist-get old-item :key))
-         (new-key (plist-get new-item :key)))
+         (old-key (aref keys offset)))
     (unless (eq (aref payload offset) old-item)
       (error "Ebox child sequence location is stale"))
     (when old-key
@@ -351,12 +387,14 @@ SEGMENT-INDEX and OFFSET identify its exact material-child location."
                       key-root new-key (cons segment-index offset)
                       (funcall hash-function new-key) 0 nil metrics)))
     (aset payload offset new-item)
+    (aset keys offset new-key)
     (let ((result
            (ebox-child-range--segment-replace
             (ebox-child-range--sequence-root sequence)
             (ebox-child-range--sequence-height sequence) segment-index
             (ebox-child-range--make-segment
-             :ref (ebox-child-range--segment-ref segment) :payload payload)
+             :ref (ebox-child-range--segment-ref segment)
+             :payload payload :keys keys)
             metrics)))
       (ebox-child-range--make-sequence
        :root (car result) :height (ebox-child-range--sequence-height sequence)

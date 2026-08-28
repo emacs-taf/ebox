@@ -24,6 +24,17 @@
                        ebox--scroll-global-state))
     (clrhash table)))
 
+(defun ebox-surface-test--producer (input &optional previous-state)
+  "Return an internal surface producer for canonical INPUT."
+  (ebox-surface-producer
+   (ebox-test-root input) previous-state nil
+   (list :source-base-index (ebox-test-source-index input))))
+
+(defun ebox-surface-test--render-runtime (state)
+  "Render retained runtime STATE through Ebox's private node boundary."
+  (ebox--render-node
+   (plist-get state :root-node) (plist-get state :source-index)))
+
 (defun ebox-surface-test--interactive-content ()
   "Return fresh interactive propertized content for projection tests."
   (let ((map (make-sparse-keymap)))
@@ -327,7 +338,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
   (list
    (cons 'box
          (lambda ()
-           (ebox-test-box :key 'box :content (ebox-surface-test--interactive-content)
+           (ebox-test-box :key 'box (ebox-test-text (ebox-surface-test--interactive-content))
                         :width '(120) :padding '(1 (4))
                         :border "#334155" :bgcolor "#E2E8F0"
                         :color "#0F172A")))
@@ -335,22 +346,22 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
          (lambda ()
            (ebox-test-column
             (ebox-test-row
-             (ebox-test-box :key 'left :content "Left" :width '(70)
+             (ebox-test-box :key 'left (ebox-test-text "Left") :width '(70)
                           :bgcolor "#DBEAFE" :color "#172554")
-             (ebox-test-box :key 'right :content "Right\nDetail" :width '(90)
+             (ebox-test-box :key 'right (ebox-test-text "Right\nDetail") :width '(90)
                           :bgcolor "#DCFCE7" :color "#14532D"))
-            (ebox-test-box :key 'footer :content "Footer" :width '(160)
+            (ebox-test-box :key 'footer (ebox-test-text "Footer") :width '(160)
                          :bgcolor "#F1F5F9" :color "#0F172A"))))
    (cons 'flex
          (lambda ()
            (ebox-test-flex
             :width '(210) :flex-wrap 'wrap :column-gap '(10)
             (ebox-test-flex-item
-             (ebox-test-box :key 'grow :content "Grow" :width '(80)
+             (ebox-test-box :key 'grow (ebox-test-text "Grow") :width '(80)
                           :bgcolor "#EDE9FE" :color "#2E1065")
              :flex-grow 1 :flex-basis '(80))
             (ebox-test-flex-item
-             (ebox-test-box :key 'fixed :content "Fixed" :width '(120)
+             (ebox-test-box :key 'fixed (ebox-test-text "Fixed") :width '(120)
                           :bgcolor "#FFEDD5" :color "#7C2D12")))))
    (cons 'grid
          (lambda ()
@@ -358,13 +369,13 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
             :width '(220) :grid-template-columns '((70) 1fr)
             :grid-template-rows '(2) :gap '(1 (8))
             :border "#475569"
-            (ebox-test-box :key 'grid-left :content "A\nAA"
+            (ebox-test-box :key 'grid-left (ebox-test-text "A\nAA")
                          :bgcolor "#E0F2FE" :color "#0C4A6E")
-            (ebox-test-box :key 'grid-right :content "B\nBB"
+            (ebox-test-box :key 'grid-right (ebox-test-text "B\nBB")
                          :bgcolor "#FCE7F3" :color "#831843"))))
    (cons 'overflow-scroll
          (lambda ()
-           (ebox-test-box :key 'scroll :content "zero\none\ntwo\nthree"
+           (ebox-test-box :key 'scroll (ebox-test-text "zero\none\ntwo\nthree")
                         :width '(100) :height 2 :overflow 'scroll
                         :bgcolor "#1E293B" :color "#F8FAFC")))))
 
@@ -373,11 +384,11 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
   (ebox-surface-test--reset-render-state)
   (let ((ebox-viewport-width 240)
         (ebox-viewport-height 12)
-        (node (funcall builder)))
+        (input (funcall builder)))
     (if projector-p
         (tp-surface-materialize-string
-         (ebox-surface-producer node))
-      (ebox-render node))))
+         (ebox-surface-test--producer input))
+      (ebox-render input))))
 
 (defun ebox-surface-test--project-row-column ()
   "Project the row/column fixture through the pure TP materializer."
@@ -588,12 +599,12 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
   "Serialize and optionally render the Ebox default foreground reset."
   (let* ((ebox-viewport-width 80)
          (ebox-viewport-height 20)
-         (node
+         (input
           (ebox-test-box
            :width 20
-           :ebox-content-node
-           (ebox-test--text
-            "native" '(:color ebox/default-foreground))))
+           (ebox-test-text
+             "native" :color 'ebox/default-foreground)))
+         (node (ebox-test-root input))
          (package (ebox-native-reflow--compile-layout-package node))
          (document (plist-get package :document))
          (styles (plist-get document :styles))
@@ -623,15 +634,16 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                             :fragment-span-template)))
         (should (equal-including-properties
                  (plist-get frame :rendered)
-                 (ebox-render node)))))))
+                 (ebox-render input)))))))
 
 (ert-deftest ebox-native-canonical-text-matches-elisp-render ()
   "Canonical Text IR must preserve Text output and paint properties exactly."
   (let* ((ebox-viewport-width 80)
          (ebox-viewport-height 20)
-         (text (ebox-text-create :value "native" :font-weight 'bold))
-         (node (ebox-box-create :layout (ebox-normal-layout-create)
-                                :children (list text)))
+         (text-input (ebox-test-text "native" :font-weight 'bold))
+         (text (ebox-test-root text-input))
+         (input (ebox-test-box text-input))
+         (node (ebox-test-root input))
          (package (ebox-native-reflow--compile-layout-package node))
          (root (plist-get (plist-get package :document) :root)))
     (should (eq (plist-get (plist-get package :document) :version) 2))
@@ -665,7 +677,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
   (let* ((ebox-viewport-width 80)
          (ebox-viewport-height 20)
          (content (propertize "native" 'face 'italic 'help-echo "source"))
-         (node (ebox-test-box :content content :width 20
+         (node (ebox-test-box (ebox-test-text content) :width 20
                             :color "#f0f0f0" :bgcolor "#101010"))
          (package (ebox-native-reflow--compile-layout-package node))
          (normal
@@ -809,28 +821,34 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
        (lambda ()
          (ebox-test-box
           :font-height 1.25
-          :ebox-content-node
-          (ebox-test-box :content "Inherited")))
+          (ebox-test-box (ebox-test-text "Inherited"))))
        t))
     (should (> calls 0))))
 
 (ert-deftest ebox-surface-inline-inheritance-crosses-transparent-layout ()
   "Transparent layout nodes do not consume inherited paint themselves."
-  (let ((closed
+  (let* ((closed-input
          (ebox-test-box
           :color "red"
-          :ebox-content-node
           (ebox-test-column
            (ebox-test-box
-            :ebox-content-node
-            (ebox-test--text "child" '(:color "blue"))))))
-        (open
+            (ebox-test-text "child" :color "blue")))))
+         (closed (ebox-test-root closed-input))
+         (open-input
          (ebox-test-box
           :color "red"
-          :ebox-content-node
-          (ebox-test-column (ebox-test-box :content "child")))))
-    (should-not (ebox-surface--inline-inheritance-required-p closed))
-    (should (ebox-surface--inline-inheritance-required-p open))))
+          (ebox-test-column (ebox-test-box (ebox-test-text "child")))))
+         (open (ebox-test-root open-input)))
+    (should-not
+     (ebox-surface--inline-inheritance-required-p
+      closed
+      (ebox-tree-source-index
+       closed nil nil (ebox-test-source-index closed-input))))
+    (should
+     (ebox-surface--inline-inheritance-required-p
+      open
+      (ebox-tree-source-index
+       open nil nil (ebox-test-source-index open-input))))))
 
 (ert-deftest ebox-box-content-cache-reuses-fixed-viewport-subtree ()
   "A fixed box content viewport should reuse its exact composite layout."
@@ -845,13 +863,16 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
          (ebox--scroll-global-state (make-hash-table :test 'equal))
          (ebox-viewport-width 240)
          (ebox-viewport-height 8)
-         (child
+         (child-input
           (ebox-test-column
            (ebox-test-box :key 'responsive-child
-                        :content "fixed local viewport"
+                        (ebox-test-text "fixed local viewport")
                         :width '(viewport)
                         :height 1)))
-         (wrapper (ebox-test-box :width '(160)))
+         (child (ebox-test-root child-input))
+         (wrapper-input (ebox-test-box :width '(160)))
+         (wrapper (ebox-test-root wrapper-input))
+         (ebox--surface-materialization-active t)
          (renders 0)
          (original (symbol-function
                     'ebox--render-cache-render-with-scroll-actions)))
@@ -986,7 +1007,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (setq surface
                 (tp-surface-mount
                  buffer
-                 (ebox-surface-producer
+                 (ebox-surface-test--producer
                   (funcall (cdr (assq 'box (ebox-surface-test--fixtures)))))
                  '(:capability content)))
           (let* ((state (tp-surface-client-state surface))
@@ -1006,8 +1027,9 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
   "One source description should mount into two independent TP surfaces."
   (ebox-surface-test--reset-render-state)
   (let* ((source
-          (ebox-test-box :key 'shared :content "Shared" :width '(100)
+          (ebox-test-box :key 'shared (ebox-test-text "Shared") :width '(100)
                        :bgcolor "#E2E8F0" :color "#0F172A"))
+         (source-node (ebox-test-root source))
          (first-buffer (generate-new-buffer " *ebox-surface-first*"))
          (second-buffer (generate-new-buffer " *ebox-surface-second*"))
          first second)
@@ -1015,11 +1037,11 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
         (progn
           (setq first
                 (tp-surface-mount
-                 first-buffer (ebox-surface-producer source)
+                 first-buffer (ebox-surface-test--producer source)
                  '(:capability content)))
           (setq second
                 (tp-surface-mount
-                 second-buffer (ebox-surface-producer source)
+                 second-buffer (ebox-surface-test--producer source)
                  '(:capability content)))
           (let* ((first-state (tp-surface-client-state first))
                  (second-state (tp-surface-client-state second))
@@ -1028,9 +1050,9 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
             (should-not (eq first-root second-root))
             (should-not (eq (plist-get first-root :surface-object)
                             (plist-get second-root :surface-object)))
-            (should-not (plist-member source :node-id))
-            (should-not (plist-member source :region-id))
-            (should-not (plist-member source :surface-object))))
+            (should-not (plist-member source-node :node-id))
+            (should-not (plist-member source-node :region-id))
+            (should-not (plist-member source-node :surface-object))))
       (dolist (surface (list first second))
         (when (and surface (tp-surface-live-p surface))
           (tp-surface-unmount surface)))
@@ -1046,22 +1068,22 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
     (unwind-protect
         (let* ((first-source
                 (ebox-test-row
-                 (ebox-test-box :key 'left :content "Left" :width '(60))
-                 (ebox-test-box :key 'right :content "Right" :width '(60))))
+                 (ebox-test-box :key 'left (ebox-test-text "Left") :width '(60))
+                 (ebox-test-box :key 'right (ebox-test-text "Right") :width '(60))))
                (_mount
                 (setq surface
                       (tp-surface-mount
-                       buffer (ebox-surface-producer first-source)
+                       buffer (ebox-surface-test--producer first-source)
                        '(:capability content))))
                (first-state (tp-surface-client-state surface))
                (left (ebox-surface-test--object-by-key first-state 'left))
                (right (ebox-surface-test--object-by-key first-state 'right))
                (next-source
                 (ebox-test-row
-                 (ebox-test-box :key 'right :content "Right!" :width '(60))
-                 (ebox-test-box :key 'left :content "Left!" :width '(60)))))
+                 (ebox-test-box :key 'right (ebox-test-text "Right!") :width '(60))
+                 (ebox-test-box :key 'left (ebox-test-text "Left!") :width '(60)))))
           (tp-surface-update
-           surface (ebox-surface-producer next-source first-state))
+           surface (ebox-surface-test--producer next-source first-state))
           (let ((next-state (tp-surface-client-state surface)))
             (should (eq left
                         (ebox-surface-test--object-by-key next-state 'left)))
@@ -1087,9 +1109,9 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (ebox-render-to-buffer
            buffer
            (ebox-test-column
-            (ebox-test-box :key 'target :id 'target :content "Before"
+            (ebox-test-box :key 'target :id 'target (ebox-test-text "Before")
                          :width '(100))
-            (ebox-test-box :key 'sibling :content "Sibling" :width '(100))))
+            (ebox-test-box :key 'sibling (ebox-test-text "Sibling") :width '(100))))
           (let* ((state (ebox--buffer-render-state buffer))
                  (contents
                   (with-current-buffer buffer
@@ -1131,20 +1153,21 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                  (funcall original producer))))
       (should (stringp
                (ebox-render
-                (ebox-test-box :content "Materialized" :width '(100))))))
+                (ebox-test-box (ebox-test-text "Materialized") :width '(100))))))
     (should (= calls 0))))
 
 (ert-deftest ebox-render-is-repeatable-without-consuming-runtime-identities ()
   "Ephemeral rendering should be exact and leave live identity counters alone."
   (ebox-surface-test--reset-render-state)
-  (let* ((source (ebox-test-box :content "Repeatable" :width '(100)))
+  (let* ((source (ebox-test-box (ebox-test-text "Repeatable") :width '(100)))
+         (source-node (ebox-test-root source))
          (first (ebox-render source))
          (second (ebox-render source)))
     (should (equal-including-properties first second))
     (should (= ebox--region-id-counter 0))
     (should (= ebox--runtime-node-id-counter 0))
-    (should-not (plist-member source :region-id))
-    (should-not (plist-member source :node-id))))
+    (should-not (plist-member source-node :region-id))
+    (should-not (plist-member source-node :node-id))))
 
 (ert-deftest ebox-render-to-buffer-mounts-one-tp-surface ()
   "The public buffer renderer should expose TP's committed client state."
@@ -1155,7 +1178,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
         (progn
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :content "Mounted" :width '(100)))
+            (ebox-test-box (ebox-test-text "Mounted") :width '(100)))
           (setq surface
                 (with-current-buffer buffer ebox-surface--buffer-surface))
           (should (tp-surface-live-p surface))
@@ -1176,7 +1199,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (ebox-runtime-idle-reflow-cache-prewarm nil))
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :content "Viewport" :width '(viewport)))
+            (ebox-test-box (ebox-test-text "Viewport") :width '(viewport)))
           (let* ((surface
                   (with-current-buffer buffer ebox-surface--buffer-surface))
                  (signals
@@ -1231,7 +1254,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                      (ebox-test-flex-item
                       (ebox-test-box
                        :key (list 'viewport-reflow-item index)
-                       :content (format "item-%02d" index)
+                       (ebox-test-text (format "item-%02d" index))
                        :width '(70)
                        :padding '(0 1)
                        :color "#172554"
@@ -1255,7 +1278,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                    (expected
                     (let ((ebox-viewport-width 320)
                           (ebox-viewport-height 6))
-                      (ebox-render (plist-get state :root-node))))
+                      (ebox-surface-test--render-runtime state)))
                    (actual
                     (with-current-buffer buffer
                       (buffer-substring (point-min) (point-max))))
@@ -1288,7 +1311,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (ebox-render-to-buffer
            buffer
            (ebox-test-box :key 'native-viewport-root
-                          :content "Viewport"
+                          (ebox-test-text "Viewport")
                           :width '(viewport)))
           (let* ((state (ebox--buffer-render-state buffer))
                  (session (list 'native-session))
@@ -1365,7 +1388,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (ebox-render-to-buffer
            buffer
            (ebox-test-box :key 'native-viewport-rollback
-                          :content "Viewport"
+                          (ebox-test-text "Viewport")
                           :width '(viewport)))
           (let* ((surface
                   (with-current-buffer buffer ebox-surface--buffer-surface))
@@ -1441,28 +1464,24 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (ebox-runtime-idle-prewarm nil)
               (ebox-runtime-idle-reflow-cache-prewarm nil))
           (setq stable-source
-                (let ((node
-                       (ebox-test-column
-                       (ebox-test-box :key 'stable-leaf
-                                     :content "zero\none\ntwo"
-                                     :width '(100)
-                                     :height 1
-                                     :overflow 'hidden
-                                     :surface-properties
-                                     '(help-echo "stable")))))
-                  (plist-put node :key 'stable-source)
-                  node))
+                (ebox-test-column
+                 :key 'stable-source
+                 (ebox-test-box :key 'stable-leaf
+                                (ebox-test-text "zero\none\ntwo")
+                                :width '(100)
+                                :height 1
+                                :overflow 'hidden
+                                :surface-properties
+                                '(help-echo "stable"))))
           (setq growing-source
-                (let ((node
-                       (ebox-test-column
-                        (ebox-test-box :key 'growing-leaf
-                                     :content "growing"
-                                     :width '(viewport)
-                                     :height 1
-                                     :color "#0F172A"
-                                     :bgcolor "#DBEAFE"))))
-                  (plist-put node :key 'growing-source)
-                  node))
+                (ebox-test-column
+                 :key 'growing-source
+                 (ebox-test-box :key 'growing-leaf
+                                (ebox-test-text "growing")
+                                :width '(viewport)
+                                :height 1
+                                :color "#0F172A"
+                                :bgcolor "#DBEAFE")))
           (cl-letf (((symbol-function 'ebox-native-commit-render)
                      (lambda (&rest _) nil)))
               (let* ((layout
@@ -1474,12 +1493,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                        (ebox-test-flex-item stable-source
                                        :flex-grow 0 :flex-basis '(120))
                        (ebox-test-flex-item growing-source
-                                       :flex-grow 1 :flex-basis '(80))))
-                     (items (plist-get layout :children)))
-                (setq stable-source
-                      (plist-get (car items) :node)
-                      growing-source
-                      (plist-get (cadr items) :node))
+                                           :flex-grow 1 :flex-basis '(80)))))
                 (ebox-render-to-buffer buffer layout))
               (let* ((old-state (ebox--buffer-render-state buffer))
                      (old-root-object
@@ -1501,7 +1515,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                       expected
                       (let ((ebox-viewport-width 360)
                             (ebox-viewport-height 6))
-                        (ebox-render (plist-get state :root-node)))
+                        (ebox-surface-test--render-runtime state))
                       actual
                       (with-current-buffer buffer
                         (buffer-substring (point-min) (point-max))))
@@ -1552,8 +1566,9 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 
 (ert-deftest ebox-flex-fragment-key-normalizes-only-height-independent-contexts ()
   "Retained Flex keys ignore height only after an explicit dependency proof."
-  (let ((ebox--layout-fragments-table (make-hash-table :test 'equal))
-        (node (ebox-test-box :content "stable" :width '(80))))
+  (let* ((ebox--layout-fragments-table (make-hash-table :test 'equal))
+         (input (ebox-test-box (ebox-test-text "stable") :width '(80)))
+         (node (ebox-test-root input)))
     (cl-labels
         ((key-at (height dependency)
            (let ((ebox-viewport-height height))
@@ -1567,7 +1582,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 (ert-deftest ebox-flex-fragment-key-includes-rendered-region-ownership ()
   "Retained Flex output must not replay stale region text properties."
   (let* ((ebox--layout-fragments-table (make-hash-table :test 'equal))
-         (source (ebox-test-box :content "stable" :width '(80)))
+         (source-input (ebox-test-box (ebox-test-text "stable") :width '(80)))
+         (source (ebox-test-root source-input))
          (first-key
           (ebox-fragment-flex-allocation-key
            source 'row 80 1 'stretch 80
@@ -1613,7 +1629,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (ebox-render-to-buffer
            buffer
            (ebox-test-box :class 'viewport-cascade
-                        :content "Cascade"
+                        (ebox-test-text "Cascade")
                         :width '(viewport)))
           (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
                      (lambda (&rest args)
@@ -1657,8 +1673,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
            (ebox-test-box
             :font-height 1.25
             :width '(viewport)
-            :ebox-content-node
-            (ebox-test-box :content "Inherited")))
+            (ebox-test-box (ebox-test-text "Inherited"))))
           (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
                      (lambda (&rest args)
                        (cl-incf ensured-node-count)
@@ -1669,7 +1684,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                  (expected
                   (let ((ebox-viewport-width 240)
                         (ebox-viewport-height 6))
-                    (ebox-render (plist-get state :root-node))))
+                    (ebox-surface-test--render-runtime state)))
                  (actual
                   (with-current-buffer buffer
                     (buffer-substring (point-min) (point-max)))))
@@ -1688,17 +1703,16 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
            (list
             (cons 'nested-scroll
                   (lambda ()
-                    (ebox-test-box :content "outer"
+                    (ebox-test-box (ebox-test-text "outer")
                                  :width '(viewport)
                                  :height 2
                                  :overflow 'scroll
-                                 :ebox-content-node
-                                 (ebox-test-box :content "zero\none\ntwo"
+                                 (ebox-test-box (ebox-test-text "zero\none\ntwo")
                                               :height 2
                                               :overflow 'scroll))))
             (cons 'visible-overflow
                   (lambda ()
-                    (ebox-test-box :content "one\ntwo"
+                    (ebox-test-box (ebox-test-text "one\ntwo")
                                  :width '(viewport)
                                  :height 1
                                  :overflow 'visible)))))
@@ -1738,7 +1752,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (ebox-render-to-buffer
            buffer
            (ebox-test-box :key 'root-scroll
-                        :content "zero\none\ntwo\nthree"
+                        (ebox-test-text "zero\none\ntwo\nthree")
                         :width '(viewport)
                         :height '(viewport-height)
                         :overflow 'scroll))
@@ -1752,7 +1766,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                  (expected
                   (let ((ebox-viewport-width 240)
                         (ebox-viewport-height 2))
-                    (ebox-render (plist-get state :root-node))))
+                    (ebox-surface-test--render-runtime state)))
                  (actual
                   (with-current-buffer buffer
                     (buffer-substring (point-min) (point-max)))))
@@ -1783,7 +1797,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                   (ebox-runtime-idle-reflow-cache-prewarm nil))
               (ebox-render-to-buffer
                buffer
-               (ebox-test-box :key name :content "One\nTwo"
+               (ebox-test-box :key name (ebox-test-text "One\nTwo")
                             :width (if (eq axes 'height)
                                        '(120)
                                      '(viewport))
@@ -1820,7 +1834,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (ebox-render-to-buffer
            buffer
            (ebox-test-box :key 'rollback
-                        :content "zero\none\ntwo\nthree"
+                        (ebox-test-text "zero\none\ntwo\nthree")
                         :width '(viewport)
                         :height '(viewport-height)
                         :overflow 'scroll))
@@ -1895,7 +1909,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (ebox-viewport-height 2))
           (ebox-render-to-buffer
               responsive
-            (ebox-test-box :content "zero\none\ntwo\nthree"
+            (ebox-test-box (ebox-test-text "zero\none\ntwo\nthree")
                          :width '(viewport)
                          :height '(viewport-height)
                          :overflow 'scroll))
@@ -1914,7 +1928,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
             (should (= (tp-signal-subscriber-count signal) 1)))
           (ebox-render-to-buffer
               static
-            (ebox-test-box :content "Static" :width '(100)))
+            (ebox-test-box (ebox-test-text "Static") :width '(100)))
           (setq static-signals
                 (with-current-buffer static ebox-surface--context-signals))
           (should (= (tp-signal-subscriber-count
@@ -1952,7 +1966,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (ebox-runtime-idle-reflow-cache-prewarm nil))
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :content "Static" :width '(100)))
+            (ebox-test-box (ebox-test-text "Static") :width '(100)))
           (let* ((surface
                   (with-current-buffer buffer ebox-surface--buffer-surface))
                  (signals
@@ -1992,7 +2006,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (ebox-runtime-idle-reflow-cache-prewarm nil))
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :content "Theme" :width '(100)))
+            (ebox-test-box (ebox-test-text "Theme") :width '(100)))
           (let* ((surface
                   (with-current-buffer buffer ebox-surface--buffer-surface))
                  (signals
@@ -2017,6 +2031,79 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                             (plist-get report :dirty-keys))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest ebox-inline-style-reuse-projects-onto-fresh-text-node ()
+  "A reused computed style must still materialize a fresh Text projection."
+  (let* ((builder (ebox-source-builder-create))
+         (parent-declarations
+          '(ebox/color foreground-slot
+            ebox/background-color background-slot))
+         (parent-handle
+          (ebox-source-builder-bind
+           builder :identity 'parent :declarations parent-declarations))
+         (child-handle
+          (ebox-source-builder-bind builder :identity 'child))
+         (child-facts (ebox-canonical-facts-from-declarations 'text nil))
+         (old-child
+          (ebox-text-create
+           :value "Old" :source-handle child-handle
+           :owned-facts child-facts))
+         (new-child
+          (ebox-text-create
+           :value "New" :source-handle child-handle
+           :owned-facts child-facts))
+         (parent
+          (ebox-box-create
+           :layout (ebox-normal-layout-create)
+           :children (list old-child)
+           :source-handle parent-handle
+           :owned-facts
+           (ebox-canonical-facts-from-declarations
+            'box parent-declarations)))
+         (input
+          (ebox-canonical-input-create
+           (list parent) (ebox-source-builder-finish builder)))
+         (source-index
+          (ebox-tree-source-index
+           parent nil nil (ebox-canonical-input--source-index input)))
+         (parent-subject (ebox-tree-node-subject source-index parent))
+         (child-subject (ebox-tree-node-subject source-index old-child))
+         (parent-style
+          (ebox-style-compute-subject
+           parent-subject parent-declarations))
+         (child-style
+          (progn
+            (setf (ecss-subject-parent child-subject) parent-subject)
+            (ebox-style-compute-subject child-subject nil parent-style)))
+         (old-nodes (make-hash-table :test #'eql))
+         (new-nodes (make-hash-table :test #'eql))
+         (parents (make-hash-table :test #'eql))
+         (old-state
+          (list :node-table old-nodes :parent-table parents
+                :source-index source-index))
+         (candidate
+          (list :node-table new-nodes :parent-table parents
+                :source-index source-index)))
+    (ebox-style-apply-computed parent parent-style)
+    (ebox-style-apply-computed old-child child-style)
+    (plist-put parent :node-id 1)
+    (plist-put old-child :node-id 2)
+    (plist-put new-child :node-id 2)
+    (puthash 1 parent old-nodes)
+    (puthash 2 old-child old-nodes)
+    (puthash 1 parent new-nodes)
+    (puthash 2 new-child new-nodes)
+    (puthash 2 1 parents)
+    (should-not (plist-get new-child :color))
+    (ebox-surface-prepare-inline-candidate-styles
+     old-state candidate '(1 2))
+    (should (eq child-style (plist-get new-child :ebox-computed-style)))
+    (should (eq 'foreground-slot (plist-get new-child :color)))
+    (should (equal "New" (ebox-text-node-value new-child)))
+    (should (eq child-handle (ebox-node-source-handle new-child)))
+    (dolist (property ebox-tree--participation-keys)
+      (should-not (plist-member new-child property)))
+    (should (eq 'background-slot (plist-get parent :bgcolor)))))
 
 (ert-deftest ebox-style-theme-delta-reuses-cascade-facts ()
   "Copy a paint-only Theme delta without rerunning ECSS cascade computation."
@@ -2097,7 +2184,8 @@ changes.  Geometry and non-inherited computed values must remain identical."
 
 (ert-deftest ebox-tree-source-signature-ignores-derived-width-proof ()
   "A layout-derived exact-width flag must not dirty declarative content."
-  (let* ((old (ebox-test-box :content "Stable" :width '(100)))
+  (let* ((input (ebox-test-box (ebox-test-text "Stable") :width '(100)))
+         (old (ebox-test-root input))
          (new (copy-tree old)))
     (plist-put old :ebox-content-width-exact-p nil)
     (plist-put new :ebox-content-width-exact-p t)
@@ -2216,7 +2304,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
   "The public mount path should never transfer ownership of its source tree."
   (ebox-surface-test--reset-render-state)
   (let* ((source
-          (ebox-test-box :key 'shared :content "Shared" :width '(100)))
+          (ebox-test-box :key 'shared (ebox-test-text "Shared") :width '(100)))
          (first (generate-new-buffer " *ebox-public-first*"))
          (second (generate-new-buffer " *ebox-public-second*")))
     (unwind-protect
@@ -2234,9 +2322,10 @@ changes.  Geometry and non-inherited computed values must remain identical."
           (should-not
            (eq (plist-get (ebox--buffer-root-node first) :surface-object)
                (plist-get (ebox--buffer-root-node second) :surface-object)))
-          (should-not (plist-member source :node-id))
-          (should-not (plist-member source :region-id))
-          (should-not (plist-member source :surface-object)))
+          (let ((source-node (ebox-test-root source)))
+            (should-not (plist-member source-node :node-id))
+            (should-not (plist-member source-node :region-id))
+            (should-not (plist-member source-node :surface-object))))
       (dolist (buffer (list first second))
         (when (buffer-live-p buffer)
           (kill-buffer buffer))))))
@@ -2246,7 +2335,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
   (ebox-surface-test--reset-render-state)
   (let* ((source (generate-new-buffer " *ebox-context-source*"))
          (target (generate-new-buffer " *ebox-context-target*"))
-         (node (ebox-test-box :content "MMMM" :width '(100)))
+         (node (ebox-test-box (ebox-test-text "MMMM") :width '(100)))
          (seen-buffers nil)
          (original (symbol-function 'ebox--render-layout)))
     (unwind-protect
@@ -2276,7 +2365,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
         (progn
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :key 'root :content "Before" :width '(100)))
+            (ebox-test-box :key 'root (ebox-test-text "Before") :width '(100)))
           (let* ((surface (with-current-buffer
                             buffer ebox-surface--buffer-surface))
                  (revision (tp-surface-revision surface))
@@ -2284,7 +2373,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
             (setq report
                   (ebox-commit
                    buffer
-                   (ebox-test-box :key 'root :content "After"
+                   (ebox-test-box :key 'root (ebox-test-text "After")
                                 :width '(100))))
             (should (= (tp-surface-revision surface) (1+ revision)))
             (should (plist-get report :runtime-published))
@@ -2302,7 +2391,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
         (progn
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :key 'root :content "Stable" :width '(100)))
+            (ebox-test-box :key 'root (ebox-test-text "Stable") :width '(100)))
           (let* ((surface (with-current-buffer
                             buffer ebox-surface--buffer-surface))
                  (state (tp-surface-client-state surface))
@@ -2313,7 +2402,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
             (should-error
              (ebox-commit
               buffer
-              (ebox-test-box :key 'root :content "Rejected" :width '(100))
+              (ebox-test-box :key 'root (ebox-test-text "Rejected") :width '(100))
               (lambda (_report) (error "Reject publication"))))
             (should (= (tp-surface-revision surface) revision))
             (should (eq (tp-surface-client-state surface) state))
@@ -2334,7 +2423,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
               (ebox-viewport-height 4))
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :key 'root :content "Stable"
+            (ebox-test-box :key 'root (ebox-test-text "Stable")
                          :width '(viewport)))
           (let* ((surface
                   (with-current-buffer buffer ebox-surface--buffer-surface))
@@ -2351,7 +2440,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
             (should-error
              (ebox-surface-mount-buffer
               buffer
-              (ebox-test-box :key 'root :content "Rejected"
+              (ebox-test-box :key 'root (ebox-test-text "Rejected")
                            :width '(viewport))
               (ebox--update-report nil 'root-rerender)
               (lambda (_report) (error "Reject context publication"))
@@ -2375,12 +2464,12 @@ changes.  Geometry and non-inherited computed values must remain identical."
         (progn
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :key 'root :content "Stable" :width '(100)))
+            (ebox-test-box :key 'root (ebox-test-text "Stable") :width '(100)))
           (should (gethash buffer ebox--buffer-render-state-table))
           (should-error
            (ebox-commit
             buffer
-            (ebox-test-box :key 'root :content "Rejected" :width '(100))
+            (ebox-test-box :key 'root (ebox-test-text "Rejected") :width '(100))
             (lambda (_report)
               (kill-buffer buffer)
               (error "Reject publication after teardown"))))
@@ -2397,13 +2486,13 @@ changes.  Geometry and non-inherited computed values must remain identical."
         (progn
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :key 'root :host-ref 'root
-                         :content "Before" :width '(100)))
+            (ebox-test-box :key 'root :source-identity 'root
+                         (ebox-test-text "Before") :width '(100)))
           (let ((candidate (ebox-candidate-begin buffer)))
             (ebox-candidate-replace-host-ref
              candidate 'root
-             (ebox-test-box :key 'root :host-ref 'root
-                          :content "After" :width '(100)))
+             (ebox-test-box :key 'root :source-identity 'root
+                          (ebox-test-text "After") :width '(100)))
             (let ((report (ebox-commit buffer candidate)))
               (should (equal report (ebox-buffer-update-report buffer)))
               (should (eq (plist-get report :constraint-source)
@@ -2441,7 +2530,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
   "One logical id should resolve to distinct handles on independent surfaces."
   (ebox-surface-test--reset-render-state)
   (let* ((source
-          (ebox-test-box :id "status" :content "Ready" :width '(100)))
+          (ebox-test-box :id "status" (ebox-test-text "Ready") :width '(100)))
          (first (generate-new-buffer " *ebox-handle-first*"))
          (second (generate-new-buffer " *ebox-handle-second*")))
     (unwind-protect
@@ -2473,8 +2562,8 @@ changes.  Geometry and non-inherited computed values must remain identical."
           (ebox-render-to-buffer
               buffer
             (ebox-test-column
-             (ebox-test-box :id "left" :content "Left" :width '(100))
-             (ebox-test-box :id "right" :content "Right" :width '(100))))
+             (ebox-test-box :id "left" (ebox-test-text "Left") :width '(100))
+             (ebox-test-box :id "right" (ebox-test-text "Right") :width '(100))))
           (let* ((surface (with-current-buffer
                             buffer ebox-surface--buffer-surface))
                  (revision (tp-surface-revision surface))
@@ -2501,7 +2590,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
         (progn
           (ebox-render-to-buffer
            buffer
-           (ebox-test-box :id "target" :content "before target after"
+           (ebox-test-box :id "target" (ebox-test-text "before target after")
                         :width '(200)))
           (with-current-buffer buffer (goto-char 4))
           (let ((point-before (with-current-buffer buffer (point))))
@@ -2520,7 +2609,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
         (progn
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :id "target" :content "Before" :width '(100)))
+            (ebox-test-box :id "target" (ebox-test-text "Before") :width '(100)))
           (let* ((match (car (ebox-selector-query-buffer buffer "#target")))
                  (region-id (plist-get match :region-id)))
             (should-error (ebox-region-update region-id :content "Wrong")
@@ -2541,7 +2630,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
         (progn
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :id "action" :content "Closed" :width '(100)))
+            (ebox-test-box :id "action" (ebox-test-text "Closed") :width '(100)))
           (let* ((match (car (ebox-selector-query-buffer buffer "#action")))
                  (handle (plist-get match :region-handle)))
             (should (ebox-region-handle-p handle))
@@ -2561,12 +2650,12 @@ changes.  Geometry and non-inherited computed values must remain identical."
           (ebox-render-to-buffer
               buffer
             (ebox-test-box :key 'old :id "old"
-                         :content "Old" :width '(100)))
+                         (ebox-test-text "Old") :width '(100)))
           (let ((handle (ebox-region-resolve buffer "old")))
             (ebox-commit
              buffer
              (ebox-test-box :key 'new :id "new"
-                          :content "New" :width '(100)))
+                          (ebox-test-text "New") :width '(100)))
             (should-error (ebox-region-update handle :content "Invalid")
                           :type 'user-error)))
       (when (buffer-live-p buffer)
@@ -2581,7 +2670,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
               (ebox-viewport-height 2))
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :id "scroll" :content "zero\none\ntwo\nthree"
+            (ebox-test-box :id "scroll" (ebox-test-text "zero\none\ntwo\nthree")
                          :width '(120) :height 2 :overflow 'scroll))
           (let* ((surface (with-current-buffer
                             buffer ebox-surface--buffer-surface))
@@ -2627,8 +2716,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
               (full-renders 0))
           (ebox-render-to-buffer
            buffer
-           (ebox-test-box :id "scroll" :content
-                        (mapconcat #'number-to-string (number-sequence 0 31) "\n")
+           (ebox-test-box :id "scroll" (ebox-test-text (mapconcat #'number-to-string (number-sequence 0 31) "\n"))
                         :width '(120) :height 2 :overflow 'scroll))
           (let* ((surface (with-current-buffer
                             buffer ebox-surface--buffer-surface))
@@ -2705,7 +2793,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
               (ebox-viewport-height 2))
           (ebox-render-to-buffer
            buffer
-           (ebox-test-box :id "scroll" :content "zero\none\ntwo\nthree"
+           (ebox-test-box :id "scroll" (ebox-test-text "zero\none\ntwo\nthree")
                         :width '(120) :height 2 :overflow 'scroll))
           (let* ((surface (with-current-buffer
                             buffer ebox-surface--buffer-surface))
@@ -2746,13 +2834,13 @@ the staged rendered window must not rerun the Flex wrapper layout."
           (cl-loop for index below 80
                    collect
                    (ebox-test-box :key (intern (format "flex-cell-%03d" index))
-                                :content (format "Cell %03d" index)
+                                (ebox-test-text (format "Cell %03d" index))
                                 :width '(80) :height 1)))
          (flex (apply #'ebox-test-flex :flex-flow '(row wrap)
                       :width '(180) :column-gap '(8) :row-gap 1
                       children))
          (root (ebox-test-box :key 'scroll-root :width '(180) :height 6
-                            :overflow 'scroll :ebox-content-node flex))
+                            :overflow 'scroll flex))
          (buffer (ebox-render-to-buffer
                   (generate-new-buffer-name " *ebox-incomplete-flex-scroll*")
                   root))
@@ -2791,7 +2879,7 @@ the staged rendered window must not rerun the Flex wrapper layout."
               (ebox-viewport-height 2))
           (ebox-render-to-buffer
               buffer
-            (ebox-test-box :id "scroll" :content "zero\none\ntwo\nthree"
+            (ebox-test-box :id "scroll" (ebox-test-text "zero\none\ntwo\nthree")
                          :width '(120) :height 2 :overflow 'scroll))
           (let* ((surface (with-current-buffer
                             buffer ebox-surface--buffer-surface))
@@ -2837,7 +2925,7 @@ participant and rollback contract without creating a real frame."
               (window-point 1))
           (ebox-render-to-buffer
            buffer
-           (ebox-test-box :id "native-scroll" :content "zero\none\ntwo\nthree"
+           (ebox-test-box :id "native-scroll" (ebox-test-text "zero\none\ntwo\nthree")
                         :width '(120) :height 2 :overflow 'scroll))
           (let* ((state (ebox--buffer-render-state buffer))
                  (region-id (car (plist-get state :scroll-region-ids)))

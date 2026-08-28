@@ -10,7 +10,7 @@ NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
 NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
-.PHONY: all check ci load compile test checkdoc core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests docs-contract-tests ci-contract-tests performance-evaluator visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
+.PHONY: all check ci load compile test checkdoc source-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests docs-contract-tests ci-contract-tests performance-evaluator visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
 
 all: check
 
@@ -25,7 +25,10 @@ compile:
 	rm -f *.elc tests/*.elc scripts/*.elc
 	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l ebox.el --eval '(ebox-byte-compile)'
 
-test: core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests docs-contract-tests ci-contract-tests
+test: source-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests docs-contract-tests ci-contract-tests
+
+source-tests:
+	$(EMACS_BATCH) -l tests/ebox-source-tests.el -f ert-run-tests-batch-and-exit
 
 core-tests:
 	$(EMACS_TEST) -l tests/ebox-core-render-tests.el -f ert-run-tests-batch-and-exit

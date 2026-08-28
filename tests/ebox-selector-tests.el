@@ -91,19 +91,25 @@
 (ert-deftest ebox-selector-queries-adjacent-and-general-siblings ()
   "Selector query should use TP sibling semantics on logical children."
   (ebox-selector-test--reset-runtime-state)
-  (let ((node (ebox-build
-               '(column
-                 (box :id first "A")
-                 (box :id second :class later "B")
-                 (box :id third :class later "C")))))
+  (let* ((node (ebox-build
+                '(column
+                  (box :id first "A")
+                  (box :id second :class later "B")
+                  (box :id third :class later "C"))))
+         (root (ebox-canonical-input--single-root node "selector test"))
+         (source-index
+          (ebox-tree-source-index
+           root nil nil (ebox-canonical-input--source-index node))))
     (should (equal
              (mapcar (lambda (match)
-                       (ebox-tree-node-id (plist-get match :node)))
+                       (ebox-tree-node-id
+                        source-index (plist-get match :node)))
                      (ebox-selector-query-all node "#first + #second"))
              '("second")))
     (should (equal
              (mapcar (lambda (match)
-                       (ebox-tree-node-id (plist-get match :node)))
+                       (ebox-tree-node-id
+                        source-index (plist-get match :node)))
                      (ebox-selector-query-all node "#first ~ .later"))
              '("second" "third")))))
 
@@ -126,11 +132,18 @@
 (ert-deftest ebox-selector-subject-exposes-only-explicit-metadata ()
   "Selector adaptation should not serialize Ebox runtime containers."
   (let* ((opaque (vector (make-hash-table :test #'eq)))
-         (node (list :ebox-type 'box :id 'card :class '(panel active)
-                     :selector-state '(focused) :state opaque
-                     :content "visible" :width 12 :render-cache opaque
-                     :selector-attributes '((role . button) (rank . 3))))
-         (subject (ebox-tree-node-subject node))
+         (input (ebox-test-box
+                 :id 'card :class '(panel active)
+                 :selector-state '(focused)
+                 (ebox-test-text "visible") :width 12
+                 :selector-attributes '((role . button) (rank . 3))))
+         (node (ebox-test-root input))
+         (_state (plist-put node :state opaque))
+         (_cache (plist-put node :render-cache opaque))
+         (source-index
+          (ebox-tree-source-index
+           node nil nil (ebox-test-source-index input)))
+         (subject (ebox-tree-node-subject source-index node))
          (attributes (ecss-subject-attributes subject)))
     (should (equal (ecss-subject-classes subject) '("panel" "active")))
     (should (equal (ecss-subject-states subject) '("focused")))
@@ -145,7 +158,7 @@
 (ert-deftest ebox-selector-queries-explicit-attributes ()
   "Attribute queries should read only explicit selector metadata."
   (let ((node (ebox-test-box
-               :content "Run"
+               (ebox-test-text "Run")
                :selector-attributes '((role . button)))))
     (should (= (length (ebox-selector-query-all node "[role=button]")) 1))
     (should-not (ebox-selector-query-all node "[content=Run]"))))

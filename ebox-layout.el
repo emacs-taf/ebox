@@ -64,6 +64,15 @@
 (defvar ebox--render-runtime-revision nil
   "Current buffer runtime revision for render-local cache validation.")
 
+(defvar ebox--render-source-index nil
+  "Read-only source generation for the current private render extent.")
+
+(defvar ebox--render-source-generations nil
+  "Ordered read-only source generations available to one proof transaction.")
+
+(defvar ebox--render-source-states nil
+  "Ordered retained runtime states available to one proof transaction.")
+
 (defvar ebox--region-id-counter)
 (defvar ebox--runtime-node-id-counter)
 (defvar ebox--region-box-table)
@@ -362,7 +371,7 @@ and its formatted content exactly fills the used height."
 (declare-function ebox-surface--candidate-root "ebox-surface"
                   (source preserve-identities-p))
 (declare-function ebox-surface--inline-inheritance-required-p "ebox-surface"
-                  (root))
+                  (root source-index))
 (declare-function ebox--add-render-face!
                   "ebox-render-context" (string start end face &optional append))
 
@@ -1387,7 +1396,7 @@ an inherited viewport."
                    :scroll-lookahead
                    ebox--scroll-window-initial-lookahead-lines-override
                    :scroll-disabled ebox--scroll-window-render-disabled)))
-         (ebox-render node))))))
+         (ebox--render-node node))))))
 
 (defun ebox--resolve-size-content-pixel (box value fallback)
   "Resolve a horizontal size VALUE to BOX content pixels.
@@ -1958,12 +1967,40 @@ region/node identities and render side tables for this one materialization."
           (ebox--render-cache-scroll-state-retained-cost-cache nil))
       (ebox--render-layout candidate))))
 
-;;;###autoload
-(defun ebox-render (node)
-  "Render layout NODE to a multi-line string through a TP materialization.
-NODE accepts every layout node supported by `ebox--render-layout'.  The
-materialized surface is ephemeral and creates no live buffer state."
-  (let ((rendered
+(defun ebox--render-node (node &optional base-source-index)
+  "Render private layout NODE with optional BASE-SOURCE-INDEX.
+NODE is already below the canonical input boundary.  Internal layout paths may
+also pass a pre-rendered string while an active surface owns runtime facts."
+  (let* ((explicit-source-index-p (and base-source-index t))
+         (handle (and (listp node) (ebox-tree-node-source-handle node)))
+         (node-id (and (listp node) (plist-get node :node-id)))
+         (base-source-index
+          (or base-source-index
+              (and node-id
+                   (cl-loop
+                    for state in ebox--render-source-states
+                    for table = (plist-get state :node-table)
+                    when (and (hash-table-p table)
+                              (eq node (gethash node-id table)))
+                    return (plist-get state :source-index)))
+              (and handle
+                   (cl-find-if
+                    (lambda (index)
+                      (and index
+                           (ebox-source-index-handle-member-p index handle)))
+                    ebox--render-source-generations))
+              ebox--render-source-index))
+         (inherited-source-index-p
+          (and (not explicit-source-index-p) base-source-index))
+         (ebox--render-source-index base-source-index)
+         (source-index
+          (and (not (stringp node))
+               (not ebox--surface-materialization-active)
+               (not ebox--render-runtime-revision)
+               (ebox-tree-source-index
+                node t ebox--render-root-parent-kind base-source-index
+                inherited-source-index-p)))
+         (rendered
          (if (or ebox--surface-materialization-active
                  ebox--render-runtime-revision)
              (ebox--render-layout node)
@@ -1971,7 +2008,8 @@ materialized surface is ephemeral and creates no live buffer state."
            (if (and (not (stringp node))
                     (not (ebox-style-cascade-active-p))
                     (zerop (ebox-tree-author-style-count node))
-                    (not (ebox-surface--inline-inheritance-required-p node)))
+                    (not (ebox-surface--inline-inheritance-required-p
+                          node source-index)))
                (let ((ebox--region-id-counter ebox--region-id-counter)
                      (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
                  (ebox--render-ephemeral-static node))
@@ -1979,10 +2017,24 @@ materialized surface is ephemeral and creates no live buffer state."
                    (ebox--region-id-counter ebox--region-id-counter)
                    (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
                (tp-surface-materialize-string
-                (ebox-surface-producer node nil t)))))))
+                (ebox-surface-producer
+                 node nil t
+                 (and base-source-index
+                      (list :source-base-index base-source-index)))))))))
     (unless ebox--paint-origin-capture-p
       (ebox--strip-paint-origins! rendered))
     rendered))
+
+;;;###autoload
+(defun ebox-render (input)
+  "Render canonical INPUT to a multi-line string through TP.
+INPUT atomically carries one typed Text/Box root and its source generation.
+The materialized surface is ephemeral and creates no live buffer state."
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (ebox--render-node
+   (ebox-canonical-input--single-root input "ebox-render")
+   (ebox-canonical-input--source-index input)))
 
 (defun ebox--width-pad (string extra-pixels)
   "Append a display-space of EXTRA-PIXELS to the right of every line in STRING.
@@ -2878,7 +2930,7 @@ are always resolved from BOX so no closure can retain a replaced runtime."
     (plist-put copy :content content)
     (plist-put copy :ebox-content-node nil)
     (plist-put copy :ebox-content-width-exact-p content-width-exact-p)
-    (prog1 (ebox-render copy)
+    (prog1 (ebox--render-node copy)
       (puthash region-id wrapper ebox--region-box-table))))
 
 (defun ebox--window-render-flat-wrapper-chunk-lines

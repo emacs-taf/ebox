@@ -30,13 +30,15 @@
                   (root &optional validate-participation-p root-parent-kind))
 (declare-function ebox-tree-validate-indexed-participation
                   "ebox-tree"
-                  (node-table parent-table node-ids &optional source))
+                  (node-table parent-table node-ids
+                              &optional source source-index))
 (declare-function ebox-tree-clear-runtime-identities
                   "ebox-tree" (root))
 (declare-function ebox-tree-copy-node-structure
                   "ebox-tree" (root))
 (declare-function ebox-tree-reconcile-runtime
-                  "ebox-tree" (old new))
+                  "ebox-tree"
+                  (old old-source-index new new-source-index))
 (declare-function ebox-tree-transfer-runtime-identity
                   "ebox-tree" (old new))
 (declare-function ebox-tree-runtime-identity-snapshot
@@ -153,6 +155,18 @@ arguments.")
 (defvar ebox-incremental--declarative-commit-buffer nil
   "Buffer whose declarative root commit currently owns publication.")
 
+(defvar ebox-incremental--source-base-index nil
+  "Transaction-local source facts transported by one canonical input.")
+
+(defvar ebox-incremental--previous-source-base-index nil
+  "Transaction-local previous source facts for one paired paint proof.")
+
+(defvar ebox-incremental--candidate-incoming-source-indexes nil
+  "Transaction-local handle to input-index map for one logical candidate.")
+
+(defvar ebox-incremental--candidate-full-source-base-index nil
+  "Transaction-local fact index for one broad candidate rebuild.")
+
 (cl-defstruct
     (ebox-candidate
      (:constructor ebox-incremental--make-candidate)
@@ -176,6 +190,7 @@ arguments.")
   "One logical anchor replacement and its optional semantic transition."
   anchor-id
   subtree
+  source-index
   old-semantic-key
   new-semantic-key)
 
@@ -184,14 +199,14 @@ arguments.")
      (:constructor ebox-incremental--make-candidate-range-replacement)
      (:conc-name ebox-incremental--candidate-range-replacement-))
   "One base-addressed child Range payload replacement."
-  ref items reuse-map)
+  ref items reuse-map source-indexes)
 
 (cl-defstruct
     (ebox-incremental--candidate-paint-patch
      (:constructor ebox-incremental--make-candidate-paint-patch)
      (:conc-name ebox-incremental--candidate-paint-patch-))
   "One base-addressed Host paint update without subtree replacement."
-  anchor-id node changed-keys)
+  anchor-id node source-index changed-keys)
 
 (cl-defstruct
     (ebox-incremental--detached-history
@@ -781,7 +796,7 @@ This normally does no work.  It rebuilds metadata only after a defensive
              (make-hash-table :test 'eq)))
         rendered)
     (let ((ebox--render-cache-scroll-state-region-ids region-ids))
-      (setq rendered (ebox-render node)))
+      (setq rendered (ebox--render-node node)))
     (ebox--render-cache-merge-scroll-region-ids
      region-ids parent-region-ids)
     (list rendered
@@ -921,7 +936,7 @@ CACHE-PROBE may supply a prior exact miss from an accelerator boundary."
                      (ebox--render-cache-probe node force))))
       (cond
        ((null probe)
-        (ebox-render node))
+        (ebox--render-node node))
        ((plist-member probe :rendered)
         (ebox--replay-render-output-provenance
          (plist-get probe :rendered)))
@@ -1041,10 +1056,12 @@ Keys are region-id, values are plists with :scroll-offset, :content-lines, etc."
        ((= count 0) (remhash type table))
        (t (puthash type count table))))))
 
-(defun ebox--runtime-index (root-node &optional collect-region-boxes)
+(defun ebox--runtime-index
+    (root-node &optional collect-region-boxes source-index)
   "Return persistent runtime indexes for ROOT-NODE.
 When COLLECT-REGION-BOXES is non-nil, collect `:region-box-table' during the
-same traversal in complete-render overwrite order."
+same traversal in complete-render overwrite order.  SOURCE-INDEX, when
+supplied, is the candidate-owned source snapshot for ROOT-NODE."
   (let ((node-table (make-hash-table :test 'equal))
         (parent-table (make-hash-table :test 'equal))
         (region-id-set (make-hash-table :test 'equal))
@@ -1057,7 +1074,8 @@ same traversal in complete-render overwrite order."
         (runtime-type-count-table (make-hash-table :test 'eq))
         native-node-postorder)
     (cl-labels ((index-host-ref (node node-id)
-                  (when-let* ((host-ref (plist-get node :host-ref)))
+                  (when-let* ((handle (plist-get node :ebox-source-handle))
+                              (host-ref (ebox-source--handle-id-view handle)))
                     (let ((count (hash-table-count host-ref-table)))
                       (puthash host-ref node-id host-ref-table)
                       (when (= count (hash-table-count host-ref-table))
@@ -1155,20 +1173,24 @@ same traversal in complete-render overwrite order."
                       (when native-layout-p
                         (push node native-node-postorder))))))
       (visit root-node nil t))
-    (let ((selector-index (ebox-tree-selector-index root-node)))
+    (setq source-index (or source-index (ebox-tree-source-index root-node)))
+    (setq source-index
+          (ebox-source--with-runtime-hosts source-index host-ref-table))
+    (let ()
       (list :node-table node-table
             :parent-table parent-table
             :region-id-set region-id-set
             :region-node-table region-node-table
             :region-box-table region-box-table
             :region-box-count-table region-box-count-table
-            :host-ref-table host-ref-table
             :range-ref-table range-ref-table
-            :selector-id-table (plist-get selector-index :selector-id-table)
+            :source-index source-index
+            :selector-id-table
+            (ebox-source--index-selector-table source-index 'id)
             :selector-class-table
-            (plist-get selector-index :selector-class-table)
+            (ebox-source--index-selector-table source-index 'class)
             :selector-type-table
-            (plist-get selector-index :selector-type-table)
+            (ebox-source--index-selector-table source-index 'type)
             :runtime-type-count-table runtime-type-count-table
             :native-node-postorder
             (vconcat (nreverse native-node-postorder))))))
@@ -1177,13 +1199,27 @@ same traversal in complete-render overwrite order."
   "Return BUFFER's state after materializing deferred selector indexes."
   (let ((state (ebox--buffer-render-state buffer)))
     (when (and state (plist-get state :selector-index-stale-p))
-      (let ((index (ebox-tree-selector-index
-                    (plist-get state :root-node))))
+      (let* ((source-index
+              (ebox-source--with-runtime-hosts
+               (ebox-tree-source-index
+                (plist-get state :root-node) nil nil
+                (plist-get state :source-index))
+               (ebox-source--index-host-ref-table-view
+                (plist-get state :source-index))))
+             (index
+              (list :selector-id-table
+                    (ebox-source--index-selector-table source-index 'id)
+                    :selector-class-table
+                    (ebox-source--index-selector-table source-index 'class)
+                    :selector-type-table
+                    (ebox-source--index-selector-table source-index 'type))))
+        (setq state (plist-put state :source-index source-index))
         (dolist (key '(:selector-id-table
                        :selector-class-table
                        :selector-type-table))
-          (plist-put state key (plist-get index key)))
-        (plist-put state :selector-index-stale-p nil)))
+          (setq state (plist-put state key (plist-get index key))))
+        (setq state (plist-put state :selector-index-stale-p nil))
+        (puthash buffer state ebox--buffer-render-state-table)))
     state))
 
 (defun ebox--new-buffer-render-state (root-node)
@@ -1211,8 +1247,8 @@ same traversal in complete-render overwrite order."
 (defun ebox--render-state-install-index (state index)
   "Install runtime INDEX tables into candidate STATE and return STATE."
   (dolist (key '(:node-table :parent-table :region-id-set :region-node-table
-                 :region-box-count-table :region-box-table :host-ref-table
-                 :range-ref-table
+                 :region-box-count-table :region-box-table
+                 :range-ref-table :source-index
                  :selector-id-table :selector-class-table
                  :selector-type-table :runtime-type-count-table
                  :native-node-postorder))
@@ -1239,6 +1275,10 @@ same traversal in complete-render overwrite order."
   "Return BUFFER's runtime parent table."
   (plist-get (ebox--buffer-render-state buffer) :parent-table))
 
+(defun ebox--buffer-source-index (buffer)
+  "Return BUFFER's retained immutable source index."
+  (plist-get (ebox--buffer-render-state buffer) :source-index))
+
 (defun ebox--buffer-region-id-set (buffer)
   "Return BUFFER's runtime region id set."
   (plist-get (ebox--buffer-render-state buffer) :region-id-set))
@@ -1253,7 +1293,9 @@ same traversal in complete-render overwrite order."
 
 (defun ebox--buffer-host-ref-table (buffer)
   "Return BUFFER's opaque host reference to runtime node id table."
-  (plist-get (ebox--buffer-render-state buffer) :host-ref-table))
+  (when-let* ((index
+               (plist-get (ebox--buffer-render-state buffer) :source-index)))
+    (ebox-source--index-host-ref-table-view index)))
 
 (defun ebox-incremental--range-ref-resolve (state ref)
   "Resolve REF in STATE to its parent, sequence, segment index, and rank."
@@ -2985,7 +3027,7 @@ its new minimum must still fit CURRENT-MAIN."
                     (ebox-style-no-soft-wrap-p
                      (ebox-get style-node :wrap-mode)))
                (ebox--with-buffer-render-context buffer
-                 (ebox-render style-node))
+                 (ebox--render-node style-node))
              "")))
       (<= (ebox--flex-min-main style-node rendered axis)
           current-main))))
@@ -3101,7 +3143,7 @@ CHANGED-KEYS must prove that reusing the allocation is safe."
                (ebox--flex-item-slot-sized-node
                 buffer node-id snapshot changed-keys)))
     (prog1
-        (ebox-render sized-node)
+        (ebox--render-node sized-node)
       ;; Rendering the sized copy reuses the stable region id.  Restore the
       ;; authoritative source object so later public updates never target the
       ;; temporary used-size copy.
@@ -3124,7 +3166,7 @@ CHANGED-KEYS must prove that reusing the allocation is safe."
       (let* ((rendered
               (or (ebox--render-node-in-current-flex-slot
                    buffer node-id snapshot changed-keys)
-                  (ebox-render node)))
+                  (ebox--render-node node)))
              (role-owned-lines-p
               (ebox--flex-item-fixed-basis-content-allocation-stable-p
                buffer node-id))
@@ -3258,7 +3300,9 @@ running expensive span and snapshot checks."
               (snapshot (ebox--ensure-layout-snapshot-spans buffer node-id))
               (spans (plist-get snapshot :buffer-spans)))
     (with-current-buffer buffer
-      (let* ((partial-slot (ebox--partial-slot-owner-p buffer node-id))
+      (let* ((ebox--render-source-index
+              (plist-get (ebox--buffer-render-state buffer) :source-index))
+             (partial-slot (ebox--partial-slot-owner-p buffer node-id))
              (coverage-flex
               (and allow-owned-overflow-coverage
                    (eq (ebox--display-inner node) 'flex)))
@@ -3842,6 +3886,7 @@ legacy callers."
                      :pending nil
                      :flush-count 0
                      :surface-candidate-root nil
+                     :surface-source-base-index nil
                      :surface-publisher nil)))
     (puthash buffer state ebox-incremental--batch-table)
     state))
@@ -3856,6 +3901,12 @@ legacy callers."
     (and (plist-get state :active)
          (plist-get state :surface-candidate-root))))
 
+(defun ebox-incremental-surface-batch-source-index (buffer)
+  "Return BUFFER's unpublished batch source index, or nil."
+  (let ((state (ebox-incremental--batch-state buffer)))
+    (and (plist-get state :active)
+         (plist-get state :surface-source-base-index))))
+
 (defun ebox-incremental-record-surface-region-change
     (buffer candidate-root region-id handle dirty-kind changed-keys
             old-style-values publisher)
@@ -3864,9 +3915,19 @@ CANDIDATE-ROOT is the accumulated unpublished tree.  REGION-ID and HANDLE
 identify the logical target, DIRTY-KIND, CHANGED-KEYS, and OLD-STYLE-VALUES
 describe the semantic change, and PUBLISHER commits the complete batch once
 during `ebox-incremental-flush'."
+  (ebox-incremental-record-surface-region-input-change
+   buffer candidate-root nil region-id handle dirty-kind changed-keys
+   old-style-values publisher))
+
+(defun ebox-incremental-record-surface-region-input-change
+    (buffer candidate-root source-base-index region-id handle dirty-kind
+            changed-keys old-style-values publisher)
+  "Record one batched region change and its candidate SOURCE-BASE-INDEX."
   (when (ebox-incremental-batching-p buffer)
     (let ((state (ebox-incremental--batch-state buffer)))
       (plist-put state :surface-candidate-root candidate-root)
+      (when source-base-index
+        (plist-put state :surface-source-base-index source-base-index))
       (plist-put state :surface-publisher publisher)
       (plist-put state :pending
                  (append
@@ -3965,10 +4026,12 @@ during `ebox-incremental-flush'."
         (error "Ebox batch has no TP surface publisher"))
       (let (report)
         (unwind-protect
-            (setq report
-                  (funcall
-                   surface-publisher buffer
-                   (plist-get state :surface-candidate-root) pending))
+            (let ((ebox-incremental--source-base-index
+                   (plist-get state :surface-source-base-index)))
+              (setq report
+                    (funcall
+                     surface-publisher buffer
+                     (plist-get state :surface-candidate-root) pending)))
           ;; A quit or render error during execution must leave the
           ;; batch active with its recorded changes still pending so a
           ;; later retry cannot silently publish a no-op.  If execution
@@ -4081,9 +4144,12 @@ during `ebox-incremental-flush'."
                     (dolist (child (ebox-tree--children-raw node))
                       (reject-range child)))))
               (reject-range item))
-            (ebox-tree-validate-declarative-root item)
-            (ebox-tree-clear-runtime-identities
-             (ebox-tree-copy-node-structure item))))
+            (let ((copy
+                   (ebox-tree-clear-runtime-identities
+                    (ebox-tree-copy-node-structure item))))
+              (ebox-tree-source-index
+               copy nil nil ebox-incremental--source-base-index t)
+              copy)))
         (cl-loop
          for item in next-items
          for index from 0
@@ -4097,13 +4163,32 @@ during `ebox-incremental-flush'."
                     (validate-new item))
                   owned)))
       (setq owned (nreverse owned))
-    (setf (ebox-candidate--range-replacements candidate)
-          (append
-           (cl-remove ref (ebox-candidate--range-replacements candidate)
-                      :key #'ebox-incremental--candidate-range-replacement-ref
-                      :test #'equal)
-           (list (ebox-incremental--make-candidate-range-replacement
-                  :ref ref :items owned :reuse-map (copy-tree reuse-map))))))
+      (let ((source-indexes (make-hash-table :test #'eq))
+            (base-source-index (plist-get base-state :source-index)))
+        (dolist (item owned)
+          (let ((handle (ebox-tree-node-source-handle item)))
+            (puthash
+             handle
+             (if (and handle
+                      (ebox-source-index-handle-member-p
+                       base-source-index handle))
+                 base-source-index
+               (if (and ebox-incremental--source-base-index
+                        (ebox-source-index-handle-member-p
+                         ebox-incremental--source-base-index handle))
+                   ebox-incremental--source-base-index
+                 (ebox-tree-source-index item)))
+             source-indexes)))
+        (setf (ebox-candidate--range-replacements candidate)
+              (append
+               (cl-remove
+                ref (ebox-candidate--range-replacements candidate)
+                :key #'ebox-incremental--candidate-range-replacement-ref
+                :test #'equal)
+               (list
+                (ebox-incremental--make-candidate-range-replacement
+                 :ref ref :items owned :reuse-map (copy-tree reuse-map)
+                 :source-indexes source-indexes))))))
   )
   candidate)
 
@@ -4142,11 +4227,12 @@ detached semantic variants of this stable anchor for bounded identity reuse."
       (error "Ebox candidate anchor does not exist: %S" node-id))
     (unless (and (listp next-subtree) (not (stringp next-subtree)))
       (error "Ebox candidate replacement must be an Ebox node"))
-    ;; Validate before copying so reused objects and cycles remain observable.
-    (ebox-tree-validate-declarative-root next-subtree)
-    (let ((replacement
-           (ebox-tree-clear-runtime-identities
-            (ebox-tree-copy-node-structure next-subtree))))
+    (let* ((replacement
+            (ebox-tree-clear-runtime-identities
+             (ebox-tree-copy-node-structure next-subtree)))
+           (source-index
+            (ebox-tree-source-index
+             replacement nil nil ebox-incremental--source-base-index)))
       ;; The new operation supersedes an earlier operation at the same anchor
       ;; and every earlier descendant operation.  An earlier ancestor stays
       ;; before a new descendant so the descendant is applied inside its
@@ -4173,6 +4259,7 @@ detached semantic variants of this stable anchor for bounded identity reuse."
                   (ebox-incremental--make-candidate-replacement
                    :anchor-id node-id
                    :subtree replacement
+                   :source-index source-index
                    :old-semantic-key old-semantic-key
                    :new-semantic-key new-semantic-key)))))))
     candidate))
@@ -4205,8 +4292,9 @@ have the same optional detached-identity meaning as in
   (let* ((missing (make-symbol "ebox-missing-host-ref"))
          (node-id
           (gethash host-ref
-                   (plist-get (ebox-candidate--base-state candidate)
-                              :host-ref-table)
+                   (ebox-source--index-host-ref-table-view
+                    (plist-get (ebox-candidate--base-state candidate)
+                               :source-index))
                    missing)))
     (when (eq node-id missing)
       (error "Ebox candidate host ref does not exist: %S" host-ref))
@@ -4221,7 +4309,7 @@ have the same optional detached-identity meaning as in
         ((visit
           (current)
           (when (and (listp current) (not (stringp current)))
-            (when (equal (plist-get current :host-ref) host-ref)
+            (when (equal (ebox-tree-node-source-identity current) host-ref)
               (throw 'found current))
             (dolist (child (ebox-tree--children-raw current))
               (visit child)))))
@@ -4244,7 +4332,11 @@ the patched Host's ancestor chain."
     (error "Ebox candidate is already sealed"))
   (let* ((state (ebox-candidate--base-state candidate))
          (missing (make-symbol "ebox-missing-host-ref"))
-         (node-id (gethash host-ref (plist-get state :host-ref-table) missing)))
+         (node-id
+          (gethash host-ref
+                   (ebox-source--index-host-ref-table-view
+                    (plist-get state :source-index))
+                   missing)))
     (when (eq node-id missing)
       (error "Ebox candidate host ref does not exist: %S" host-ref))
     (catch 'unsupported
@@ -4272,21 +4364,31 @@ the patched Host's ancestor chain."
                      (eq (plist-get previous-node :ebox-type)
                          (plist-get next-node :ebox-type)))
           (throw 'unsupported nil))
-        (let ((changed-keys
-               (ebox-incremental--candidate-local-changed-keys
-                previous-node next-node)))
+        (let* ((previous-source-index
+               (ebox-tree-source-index
+                 previous-subtree nil nil
+                 ebox-incremental--previous-source-base-index))
+               (next-source-index
+                (ebox-tree-source-index
+                 next-subtree nil nil ebox-incremental--source-base-index))
+               (changed-keys
+                (ebox-incremental--candidate-local-changed-keys
+                 previous-node previous-source-index
+                 next-node next-source-index)))
           (unless (cl-every
                    (lambda (key)
                      (memq key ebox--paint-style-signature-keys))
                    changed-keys)
             (throw 'unsupported nil))
-          (let ((patch (list :ebox-type (plist-get next-node :ebox-type)
-                             :host-ref host-ref)))
+          (let ((patch
+                 (list :ebox-type (plist-get next-node :ebox-type)
+                       :ebox-source-handle
+                       (ebox-tree-node-source-handle next-node))))
             (dolist (key changed-keys)
               (setq patch
                     (plist-put patch key
                                (copy-tree (plist-get next-node key)))))
-            (dolist (key '(:ebox-style-declarations :ebox-style-overrides))
+            (dolist (key '(:ebox-style-overrides))
               (when (plist-member next-node key)
                 (setq patch
                       (plist-put patch key
@@ -4301,6 +4403,7 @@ the patched Host's ancestor chain."
                    (list
                     (ebox-incremental--make-candidate-paint-patch
                      :anchor-id node-id :node patch
+                     :source-index next-source-index
                      :changed-keys changed-keys))))))
         candidate))))
 
@@ -4695,8 +4798,11 @@ either fresh or owned by a node that some replaced anchor is removing.
 Cost is proportional to the replacements, never to the page."
   (let* ((node-table (plist-get base-index :node-table))
          (parent-table (plist-get base-index :parent-table))
-         (host-ref-table (plist-get base-index :host-ref-table))
+         (base-source-index (plist-get base-index :source-index))
+         (host-ref-table
+          (ebox-source--index-host-ref-table-view base-source-index))
          (replacement-host-refs (make-hash-table :test 'equal))
+         (replacement-source-indexes (make-hash-table :test #'eq))
          (anchor-ids
           (mapcar
            #'ebox-incremental--candidate-replacement-anchor-id
@@ -4716,7 +4822,7 @@ Cost is proportional to the replacements, never to the page."
          (collect-host-refs (node acc)
            (if (or (not (listp node)) (stringp node))
                acc
-             (let ((ref (plist-get node :host-ref)))
+             (let ((ref (ebox-tree-node-source-identity node)))
                (when ref (push ref acc)))
              (dolist (child (ebox-tree--children-raw node) acc)
                (setq acc (collect-host-refs child acc))))))
@@ -4725,7 +4831,16 @@ Cost is proportional to the replacements, never to the page."
                 (ebox-incremental--candidate-replacement-anchor-id entry))
                (replacement
                 (ebox-incremental--candidate-replacement-subtree entry))
-               (replacement-key (plist-get replacement :key))
+               (replacement-source-index
+                (or
+                    (ebox-incremental--candidate-replacement-source-index entry)
+                    (gethash replacement replacement-source-indexes)
+                    (puthash replacement
+                             (ebox-tree-source-index replacement)
+                             replacement-source-indexes)))
+               (replacement-key
+                (ebox-tree-node-author-key
+                 replacement-source-index replacement))
                (parent-id (gethash node-id parent-table))
                (parent (and parent-id (gethash parent-id node-table))))
           ;; Sibling keys stay unique under the anchor's parent.
@@ -4734,15 +4849,27 @@ Cost is proportional to the replacements, never to the page."
               (let ((sibling-id (plist-get sibling :node-id)))
                 (when (and sibling-id
                            (not (equal sibling-id node-id))
-                           (equal (plist-get
-                                   (if-let*
-                                       ((sibling-replacement
-                                         (ebox-incremental--candidate-replacement-for-anchor
-                                          entries sibling-id)))
-                                       (ebox-incremental--candidate-replacement-subtree
-                                        sibling-replacement)
-                                     sibling)
-                                   :key)
+                           (equal
+                            (if-let*
+                                ((sibling-replacement
+                                  (ebox-incremental--candidate-replacement-for-anchor
+                                   entries sibling-id)))
+                                (let* ((subtree
+                                        (ebox-incremental--candidate-replacement-subtree
+                                         sibling-replacement))
+                                       (index
+                                        (or
+                                         (ebox-incremental--candidate-replacement-source-index
+                                          sibling-replacement)
+                                         (gethash subtree
+                                                  replacement-source-indexes)
+                                         (puthash
+                                          subtree
+                                          (ebox-tree-source-index subtree)
+                                          replacement-source-indexes))))
+                                  (ebox-tree-node-author-key index subtree))
+                              (ebox-tree-node-author-key
+                               base-source-index sibling))
                                   replacement-key))
                   (error
                    "Ebox declarative sibling key %S is not unique"
@@ -4835,6 +4962,10 @@ CURRENT-SNAPSHOT identifies the subtree identities being replaced."
 Use candidate-owned HISTORY for detached identity reuse."
   (let* ((replacement
           (ebox-incremental--candidate-replacement-subtree entry))
+         (old-source-index (plist-get state :source-index))
+         (replacement-source-index
+          (or (ebox-incremental--candidate-replacement-source-index entry)
+              (ebox-tree-source-index replacement)))
          (old-key
           (ebox-incremental--candidate-replacement-old-semantic-key entry))
          (new-key
@@ -4846,7 +4977,8 @@ Use candidate-owned HISTORY for detached identity reuse."
             (null new-key)
             (not (eq (plist-get old-anchor :ebox-type)
                      (plist-get replacement :ebox-type))))
-        (ebox-tree-reconcile-runtime old-anchor replacement)
+        (ebox-tree-reconcile-runtime
+         old-anchor old-source-index replacement replacement-source-index)
       (let* ((current (ebox-tree-runtime-identity-snapshot old-anchor))
              (old-history-key (list anchor-id old-key))
              (new-history-key (list anchor-id new-key)))
@@ -4864,10 +4996,14 @@ Use candidate-owned HISTORY for detached identity reuse."
                     state current historical))
               (progn
                 (ebox-tree-reconcile-runtime
-                 (plist-get historical :root) replacement)
+                 (plist-get historical :root)
+                 (ebox-tree-source-index (plist-get historical :root))
+                 replacement replacement-source-index)
                 (ebox-tree-transfer-runtime-identity
                  old-anchor replacement))
-            (ebox-tree-reconcile-runtime old-anchor replacement))))))
+            (ebox-tree-reconcile-runtime
+             old-anchor old-source-index
+             replacement replacement-source-index))))))
   (ebox-incremental--candidate-replacement-subtree entry))
 
 (defun ebox-incremental--candidate-node-logical-root
@@ -4881,7 +5017,7 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
            (base-index
             (list :node-table (plist-get state :node-table)
                   :parent-table (plist-get state :parent-table)
-                  :host-ref-table (plist-get state :host-ref-table)))
+                  :source-index (plist-get state :source-index)))
            (entries (ebox-candidate--replacements candidate)))
       (if (ebox-incremental--candidate-replacements-disjoint-p
            entries (plist-get base-index :parent-table))
@@ -4937,14 +5073,23 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
            root base-index replacements))))))
 
 (defun ebox-incremental--candidate-reconcile-range-items
-    (sequence ref items)
-  "Reconcile candidate ITEMS for REF against keyed/unkeyed SEQUENCE peers."
+    (sequence ref items old-source-index item-source-indexes)
+  "Reconcile ITEMS against REF using explicit generation source indexes."
   (let* ((segment (ebox-child-range--lookup-ref sequence ref))
          (old-payload (and segment (ebox-child-range--segment-payload segment)))
          (key-root (ebox-child-range--sequence-key-root sequence))
          (hash-function (ebox-child-range--sequence-hash-function sequence)))
-    (cl-loop for item in items for offset from 0 do
-             (let* ((key (plist-get item :key))
+    (cl-labels
+        ((item-key
+          (item)
+          (let ((index
+                 (gethash (ebox-tree-node-source-handle item)
+                          item-source-indexes)))
+            (unless index
+              (error "Ebox Range item has no candidate source index"))
+            (ebox-tree-node-author-key index item))))
+      (cl-loop for item in items for offset from 0 do
+             (let* ((key (item-key item))
                     (location
                      (and key
                           (ebox-child-range--hash-lookup
@@ -4957,17 +5102,23 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
                                  (cdr location)))
                        (and old-payload (< offset (length old-payload))
                             (aref old-payload offset)))))
-               (when (and old key (null (plist-get old :key))) (setq old nil))
-               (when (and old (null key) (plist-get old :key)) (setq old nil))
+               (let ((old-key
+                      (and old
+                           (ebox-tree-node-author-key
+                            old-source-index old))))
+                 (when (and old key (null old-key)) (setq old nil))
+                 (when (and old (null key) old-key) (setq old nil))
                ;; Positional fallback is valid only for unkeyed peers.  A
                ;; disappeared keyed item must never donate its runtime
                ;; identity to a newly introduced key at the same offset;
                ;; doing so leaves its old region properties in the candidate
                ;; output while the new region index has already retired them.
-               (when (and old key (plist-get old :key)
-                          (not (equal (plist-get old :key) key)))
-                 (setq old nil))
-               (ebox-tree-reconcile-runtime old item)))
+                 (when (and old key old-key (not (equal old-key key)))
+                   (setq old nil)))
+               (ebox-tree-reconcile-runtime
+                old old-source-index item
+                (gethash (ebox-tree-node-source-handle item)
+                         item-source-indexes)))))
     items))
 
 (defun ebox-incremental--candidate-canonical-range-reuse
@@ -5087,7 +5238,19 @@ but must re-enter the candidate indexes as a new object."
                      copy
                      (ebox-child-range--replace-item-at
                       sequence (plist-get location :segment-index)
-                      (plist-get location :offset) old-child new-child))
+                      (plist-get location :offset) old-child new-child
+                      (let* ((handle
+                              (ebox-tree-node-source-handle new-child))
+                             (incoming
+                              (and handle
+                                   (hash-table-p
+                                    ebox-incremental--candidate-incoming-source-indexes)
+                                   (gethash
+                                    handle
+                                    ebox-incremental--candidate-incoming-source-indexes)))
+                             (index
+                              (or incoming (plist-get state :source-index))))
+                        (ebox-tree-node-author-key index new-child))))
                     (when (eq (plist-get old-parent :ebox-kind) 'box)
                       (ebox-tree--set-author-style-count
                        copy
@@ -5156,6 +5319,9 @@ but must re-enter the candidate indexes as a new object."
                     (let ((items
                            (ebox-incremental--candidate-range-replacement-items
                             entry))
+                          (source-indexes
+                           (ebox-incremental--candidate-range-replacement-source-indexes
+                            entry))
                           (reuse-map
                            (ebox-incremental--candidate-range-replacement-reuse-map
                             entry)))
@@ -5170,7 +5336,8 @@ but must re-enter the candidate indexes as a new object."
                           (setq items canonical-items
                                 reuse-map effective-reuse-map)))
                       (ebox-incremental--candidate-reconcile-range-items
-                       sequence ref items)
+                       sequence ref items
+                       (plist-get state :source-index) source-indexes)
                       (cl-loop for item in items for offset from 0
                                for location =
                                (list :parent-node-id parent-id
@@ -5184,7 +5351,8 @@ but must re-enter the candidate indexes as a new object."
                                        location)
                                do (plist-put item :ebox-sequence-location
                                              location))
-                      (push (list ref items reuse-map) replacements)))))
+                      (push (list ref items reuse-map source-indexes)
+                            replacements)))))
               (when replacements
                 (let* ((ordered-replacements (nreverse replacements))
                        (range-pairs
@@ -5192,6 +5360,14 @@ but must re-enter the candidate indexes as a new object."
                                   (cons (nth 0 replacement)
                                         (nth 1 replacement)))
                                 ordered-replacements))
+                       (item-source-indexes
+                        (make-hash-table :test #'eq))
+                       (_item-source-indexes
+                        (dolist (replacement ordered-replacements)
+                          (maphash
+                           (lambda (handle index)
+                             (puthash handle index item-source-indexes))
+                           (nth 3 replacement))))
                        (old-payloads
                         (mapcar
                          (lambda (replacement)
@@ -5202,6 +5378,15 @@ but must re-enter the candidate indexes as a new object."
                          ordered-replacements))
                        (result (ebox-child-range--replace-many
                                 sequence range-pairs
+                                (lambda (item)
+                                  (let ((index
+                                         (gethash
+                                          (ebox-tree-node-source-handle item)
+                                          item-source-indexes)))
+                                    (unless index
+                                      (error
+                                       "Ebox Range item has no source index"))
+                                    (ebox-tree-node-author-key index item)))
                                 (mapcar
                                  (lambda (replacement)
                                    (cons (nth 0 replacement)
@@ -5293,6 +5478,7 @@ schema-inherited or custom property, descendants are path-copied as pending
 style consumers; the Style Adapter computes their values exactly once later."
   (let* ((state (ebox-candidate--base-state candidate))
          (parents (plist-get state :parent-table))
+         (source-index (plist-get state :source-index))
          (patch-table (make-hash-table :test #'equal))
          (patch-paths (make-hash-table :test #'equal))
          patch-ids)
@@ -5320,22 +5506,30 @@ style consumers; the Style Adapter computes their values exactly once later."
                     (and entry
                          (ebox-incremental--candidate-paint-patch-changed-keys
                           entry)))
-                   (old-declarations (ebox-style-node-declarations node))
+                   (old-declarations
+                    (ebox-style-node-declarations source-index node))
                    (next (if (or entry inherited-input-changed-p)
                              (copy-sequence node)
                            node)))
               (when entry
+                (plist-put next :ebox-source-handle
+                           (plist-get patch :ebox-source-handle))
                 (dolist (key changed-keys)
                   (plist-put next key (copy-tree (plist-get patch key))))
-                (dolist (key '(:ebox-style-declarations
-                               :ebox-style-overrides))
+                (dolist (key '(:ebox-style-overrides))
                   (when (plist-member patch key)
                     (plist-put
                      next key
                      (ebox-style-merge-declarations
                       (copy-tree (plist-get node key))
                       (copy-tree (plist-get patch key)))))))
-              (let* ((new-declarations (ebox-style-node-declarations next))
+              (let* ((new-declarations
+                      (ebox-style-node-declarations
+                       (if entry
+                           (ebox-incremental--candidate-paint-patch-source-index
+                            entry)
+                         source-index)
+                       next))
                      (descendant-input-changed-p
                       (or inherited-input-changed-p
                           (and entry
@@ -5710,8 +5904,8 @@ Return the same pure surface-input shape as
         :region-box-count-table (plist-get state :region-box-count-table)
         :region-box-table
         (ebox-incremental--candidate-region-box-table state)
-        :host-ref-table (plist-get state :host-ref-table)
         :range-ref-table (plist-get state :range-ref-table)
+        :source-index (plist-get state :source-index)
         :selector-id-table (plist-get state :selector-id-table)
         :selector-class-table (plist-get state :selector-class-table)
         :selector-type-table (plist-get state :selector-type-table)
@@ -5866,7 +6060,8 @@ complete preorder first-owner and postorder last-box semantics."
     owned))
 
 (defun ebox-incremental--candidate-dirty-set-from-touched
-    (old-state candidate-root touched &optional range-delta-table)
+    (old-state candidate-root candidate-source-index touched
+               &optional range-delta-table)
   "Return declarative dirty entries for path-local TOUCHED nodes."
   (let ((old-root (plist-get old-state :root-node))
         (range-created-node-ids
@@ -5889,7 +6084,8 @@ complete preorder first-owner and postorder last-box semantics."
                                    range-created-node-ids)))
             (let* ((changed-keys
                     (ebox-incremental--candidate-local-changed-keys
-                     old-node new-node))
+                     old-node (plist-get old-state :source-index)
+                     new-node candidate-source-index))
                    (range-delta
                     (and range-delta-table
                          (gethash (plist-get new-node :node-id)
@@ -5952,12 +6148,16 @@ complete preorder first-owner and postorder last-box semantics."
 (defun ebox-incremental--candidate-full-index-preparation
     (old-state candidate-root touched removed)
   "Return broad candidate preparation from TOUCHED and REMOVED nodes."
-  (let ((index (ebox--runtime-index candidate-root t)))
+  (let* ((source-index
+          (ebox-tree-source-index
+           candidate-root t nil
+           ebox-incremental--candidate-full-source-base-index))
+         (index (ebox--runtime-index candidate-root t source-index)))
     (setq index (plist-put index :selector-index-stale-p nil))
     (list :index index
           :dirty-set
           (ebox-incremental--candidate-dirty-set-from-touched
-           old-state candidate-root touched)
+           old-state candidate-root (plist-get index :source-index) touched)
           :participation-node-ids
           (ebox-incremental--candidate-participation-node-ids touched)
           :touched-count (length touched)
@@ -6106,8 +6306,13 @@ replace those O(n) table copies without changing this delta contract."
                (nreverse removed)))
         (if (and (null range-index-deltas)
                  (ebox-incremental--candidate-full-index-p old-state touched))
-            (ebox-incremental--candidate-full-index-preparation
-             old-state candidate-root touched removed)
+            (let ((ebox-incremental--candidate-full-source-base-index
+                   (ebox-tree-source-fact-index-delta
+                    (plist-get old-state :source-index)
+                    touched removed
+                    ebox-incremental--candidate-incoming-source-indexes)))
+              (ebox-incremental--candidate-full-index-preparation
+               old-state candidate-root touched removed))
           (progn
             ;; Local region owner repair needs ancestors before descendants.
             ;; A complete index rebuild already establishes that order itself.
@@ -6162,8 +6367,9 @@ replace those O(n) table copies without changing this delta contract."
                (region-box-table
                 (ebox-incremental--candidate-region-box-table old-state))
                (host-ref-table
-                (ebox-incremental--candidate-copy-index-table
-                 old-state :host-ref-table 'equal))
+                (copy-hash-table
+                 (ebox-source--index-host-ref-table-view
+                  (plist-get old-state :source-index))))
                (runtime-type-count-table
                 (ebox-incremental--candidate-copy-index-table
                  old-state :runtime-type-count-table 'eq))
@@ -6175,7 +6381,8 @@ replace those O(n) table copies without changing this delta contract."
                runtime-type-count-table node -1)
               (remhash node-id node-table)
               (remhash node-id parent-table)
-              (when-let* ((host-ref (plist-get node :host-ref)))
+              (when-let* ((host-ref
+                           (ebox-tree-node-source-identity node)))
                 (when (equal (gethash host-ref host-ref-table) node-id)
                   (remhash host-ref host-ref-table)))
               (when-let* ((record
@@ -6190,9 +6397,11 @@ replace those O(n) table copies without changing this delta contract."
           ;; merely because the other old binding had not been visited yet.
           (dolist (entry touched)
             (when-let* ((old-node (car entry))
-                        (old-host-ref (plist-get old-node :host-ref)))
+                        (old-host-ref
+                         (ebox-tree-node-source-identity old-node)))
               (let* ((new-node (nth 1 entry))
-                     (new-host-ref (plist-get new-node :host-ref))
+                     (new-host-ref
+                      (ebox-tree-node-source-identity new-node))
                      (node-id (plist-get old-node :node-id)))
                 (unless (equal old-host-ref new-host-ref)
                   (when (equal (gethash old-host-ref host-ref-table) node-id)
@@ -6235,10 +6444,12 @@ replace those O(n) table copies without changing this delta contract."
                   (remhash node-id parent-table))
                 ;; Replacement subtrees were validated before recording and
                 ;; checked against untouched Host refs before path copying.
-                (when-let* ((new-host-ref (plist-get new-node :host-ref)))
+                (when-let* ((new-host-ref
+                             (ebox-tree-node-source-identity new-node)))
                   (unless (and old-node
                                (equal new-host-ref
-                                      (plist-get old-node :host-ref)))
+                                      (ebox-tree-node-source-identity
+                                       old-node)))
                     (puthash new-host-ref node-id host-ref-table)))
                 (when (and new-record (not stable-unique-region-p))
                   (puthash (car new-record) t affected-region-ids))
@@ -6284,9 +6495,19 @@ replace those O(n) table copies without changing this delta contract."
                   (dolist (delta range-index-deltas)
                     (puthash (plist-get delta :parent-id) delta
                              range-delta-table)))
+                 (candidate-source-index
+                  (let ((ebox-tree--incoming-source-indexes
+                         ebox-incremental--candidate-incoming-source-indexes))
+                    (ebox-source--with-runtime-hosts
+                     (ebox-tree-source-index-delta
+                      (plist-get old-state :source-index)
+                      touched removed node-table parent-table candidate-root)
+                     host-ref-table)))
                  (dirty-set
                   (ebox-incremental--candidate-dirty-set-from-touched
-                   old-state candidate-root touched range-delta-table))
+                   old-state candidate-root
+                   candidate-source-index
+                   touched range-delta-table))
                  (structure-p
                   (cl-some
                    (lambda (entry)
@@ -6305,19 +6526,19 @@ replace those O(n) table copies without changing this delta contract."
                         :region-node-table region-node-table
                         :region-box-count-table region-box-count-table
                         :region-box-table region-box-table
-                        :host-ref-table host-ref-table
                         :range-ref-table
                         (ebox-incremental--candidate-range-ref-overlay
                          old-state path-copy-trace)
-                        ;; Paths contain ancestor objects, so a path copy makes
-                        ;; selector indexes stale even when selector metadata
-                        ;; itself did not change.  Rebuild on first query.
+                        :source-index candidate-source-index
                         :selector-id-table
-                        (plist-get old-state :selector-id-table)
+                        (ebox-source--index-selector-table
+                         candidate-source-index 'id)
                         :selector-class-table
-                        (plist-get old-state :selector-class-table)
+                        (ebox-source--index-selector-table
+                         candidate-source-index 'class)
                         :selector-type-table
-                        (plist-get old-state :selector-type-table)
+                        (ebox-source--index-selector-table
+                         candidate-source-index 'type)
                         :runtime-type-count-table runtime-type-count-table
                         :selector-index-stale-p t
                         :native-node-postorder native-node-postorder)))
@@ -6382,16 +6603,30 @@ recognized from its first untouched sibling without walking the whole tree."
      (ebox-style-expand-ebox-plist
       (ebox-style-declaration-properties old all-properties))
      (ebox-style-expand-ebox-plist
-      (ebox-style-declaration-properties new all-properties)))))
+     (ebox-style-declaration-properties new all-properties)))))
 
-(defun ebox-incremental--candidate-local-changed-keys (old new)
-  "Return real source changes between published OLD and candidate NEW.
+(defun ebox-incremental--candidate-source-record (source-index node)
+  "Return NODE's borrowed immutable record from candidate SOURCE-INDEX.
+Private generated layout nodes have no source handle.  A canonical node whose
+handle is absent from its generation index violates the candidate boundary."
+  (when-let* ((handle (ebox-tree-node-source-handle node)))
+    (or (ebox-source--index-record source-index handle)
+        (error "Ebox candidate source handle is absent from its index"))))
+
+(defun ebox-incremental--candidate-local-changed-keys
+    (old old-source-index new new-source-index)
+  "Return real source changes between OLD and NEW generation facts.
 
 Published nodes carry computed ECSS longhands while fresh candidate nodes are
 still declaration-stage values.  Compare non-style facts directly and compare
 canonical declarations only after expanding them to the engine longhands used
-by impact classification; the declaration container itself is not geometry."
-  (let (seen changed)
+by impact classification; the declaration container itself is not geometry.
+Each immutable source record is resolved once for this node pair."
+  (let ((old-record
+         (ebox-incremental--candidate-source-record old-source-index old))
+        (new-record
+         (ebox-incremental--candidate-source-record new-source-index new))
+        seen changed source-changed)
     (dolist (source (list old new))
       (let ((plist source))
         (while plist
@@ -6399,8 +6634,7 @@ by impact classification; the declaration container itself is not geometry."
             (pop plist)
             (unless (or (memq key seen)
                         (memq key ebox-tree--excluded-source-keys)
-                        (memq key '(:props :raw-props
-                                    :ebox-style-declarations))
+                        (memq key '(:props :raw-props))
                         (ebox-style--property key))
               (push key seen)
               (let ((old-entry (plist-member old key))
@@ -6411,14 +6645,43 @@ by impact classification; the declaration container itself is not geometry."
                               (cadr old-entry) (cadr new-entry)))
                   (push key changed))))))))
     (setq changed (nreverse changed))
-    (unless (ebox-style-declarations-equal-p
-             (ebox-style-node-declarations old)
-             (ebox-style-node-declarations new))
-      (dolist (key (ebox-incremental--declaration-changed-keys
-                    (ebox-style-node-declarations old)
-                    (ebox-style-node-declarations new)))
+    (unless (eq old-record new-record)
+      (cl-labels
+          ((record-change
+            (key old-value new-value)
+            (unless (equal-including-properties old-value new-value)
+              (push key source-changed))))
+        (record-change
+         :key (and old-record (ebox-source-record-key old-record))
+         (and new-record (ebox-source-record-key new-record)))
+        (record-change
+         :id (and old-record (ebox-source-record-id old-record))
+         (and new-record (ebox-source-record-id new-record)))
+        (record-change
+         :class (and old-record (ebox-source-record-classes old-record))
+         (and new-record (ebox-source-record-classes new-record)))
+        ;; ID and key are independent metadata fields above.  SourceRecord
+        ;; attributes contain only the author's explicit selector attributes,
+        ;; so their changes are neither recomputed nor reported twice.
+        (record-change
+         :selector-attributes
+         (and old-record (ebox-source-record-attributes old-record))
+         (and new-record (ebox-source-record-attributes new-record)))
+        (record-change
+         :selector-state
+         (and old-record (ebox-source-record-states old-record))
+         (and new-record (ebox-source-record-states new-record)))))
+    (setq changed (nconc changed (nreverse source-changed)))
+    (let ((old-declarations
+           (ebox-style--node-declarations-from-record old old-record))
+          (new-declarations
+           (ebox-style--node-declarations-from-record new new-record)))
+      (unless (ebox-style-declarations-equal-p
+               old-declarations new-declarations)
+        (dolist (key (ebox-incremental--declaration-changed-keys
+                      old-declarations new-declarations))
         (unless (memq key changed)
-          (setq changed (append changed (list key))))))
+            (setq changed (append changed (list key)))))))
     changed))
 
 (defun ebox-incremental--declarative-dirty-set
@@ -6443,7 +6706,8 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
          (when-let* ((old-node (gethash node-id old-table)))
            (let* ((changed-keys
                    (ebox-incremental--candidate-local-changed-keys
-                    old-node new-node))
+                    old-node (plist-get old-state :source-index)
+                    new-node (plist-get candidate-index :source-index)))
                   (children-changed
                    (not
                     (ebox-incremental--node-child-ids-equal-p
@@ -6501,7 +6765,11 @@ candidate therefore owns its cache tables until TP commits the generation."
   ;; Every mutable cache is replaced below and isolated once after the
   ;; candidate fields are installed.  Copying OLD-STATE's cache tables here as
   ;; well only copied values that were immediately discarded.
-  (let ((state (copy-sequence old-state)))
+  (let* ((source-index
+          (or (plist-get candidate-index :source-index)
+              (plist-get prepared :source-index)
+              (ebox-tree-source-index candidate-root)))
+         (state (copy-sequence old-state)))
     (dolist
         (entry
          `((:root-node ,candidate-root)
@@ -6557,16 +6825,15 @@ candidate therefore owns its cache tables until TP commits the generation."
             ,(plist-get candidate-index :region-box-count-table))
            (:region-box-table
             ,(plist-get candidate-index :region-box-table))
-           (:host-ref-table
-            ,(plist-get candidate-index :host-ref-table))
            (:range-ref-table
             ,(plist-get candidate-index :range-ref-table))
+           (:source-index ,source-index)
            (:selector-id-table
-            ,(plist-get candidate-index :selector-id-table))
+            ,(ebox-source--index-selector-table source-index 'id))
            (:selector-class-table
-            ,(plist-get candidate-index :selector-class-table))
+            ,(ebox-source--index-selector-table source-index 'class))
            (:selector-type-table
-            ,(plist-get candidate-index :selector-type-table))
+            ,(ebox-source--index-selector-table source-index 'type))
            (:runtime-type-count-table
             ,(plist-get candidate-index :runtime-type-count-table))
            (:selector-index-stale-p
@@ -6672,9 +6939,10 @@ derive render changes from the computed fragment style signatures."
                  (not new-node)
                  (not (plist-get new-node :ebox-candidate-computed-style-p)))
              entry
-           (let* ((source-keys
-                   (ebox-incremental--candidate-local-changed-keys
-                    old-node new-node))
+           (let* (;; Source-stage dirty planning already materialized this
+                  ;; exact node-local delta.  Computed projection consumes it;
+                  ;; it must not resolve the same generation facts again.
+                  (source-keys (plist-get entry :changed-keys))
                   (metadata-keys
                    (cl-remove-if-not
                     (lambda (key)
@@ -6709,7 +6977,7 @@ derive render changes from the computed fragment style signatures."
 
 (defun ebox-incremental--prepare-declarative-runtime
     (buffer old-state candidate-root &optional logical-candidate-p
-            local-preparation scroll-patch-p)
+            local-preparation scroll-patch-p source-index)
   "Prepare CANDIDATE-ROOT for BUFFER without mutating its published runtime."
   (let* ((old-root (plist-get old-state :root-node))
          (render-cache
@@ -6720,7 +6988,24 @@ derive render changes from the computed fragment style signatures."
               (make-hash-table :test 'equal))))
     (let* ((candidate-index
             (or (plist-get local-preparation :index)
-                (ebox--runtime-index candidate-root t)))
+                (ebox--runtime-index candidate-root t source-index)))
+           (candidate-source-index
+            (or (plist-get candidate-index :source-index)
+                (plist-get local-preparation :source-index)
+                (ebox-tree-source-index candidate-root)))
+           (_source-index
+            (progn
+              (plist-put candidate-index :source-index
+                         candidate-source-index)
+              (plist-put candidate-index :selector-id-table
+                         (ebox-source--index-selector-table
+                          candidate-source-index 'id))
+              (plist-put candidate-index :selector-class-table
+                         (ebox-source--index-selector-table
+                          candidate-source-index 'class))
+              (plist-put candidate-index :selector-type-table
+                         (ebox-source--index-selector-table
+                          candidate-source-index 'type))))
            (candidate-region-box-table
             (plist-get candidate-index :region-box-table))
            (candidate-subject-table
@@ -6745,7 +7030,8 @@ derive render changes from the computed fragment style signatures."
          (plist-get candidate-index :node-table)
          (plist-get candidate-index :parent-table)
          (plist-get local-preparation :participation-node-ids)
-         (if styles-prepared-p 'computed 'author)))
+         (if styles-prepared-p 'computed 'author)
+         candidate-source-index))
       (when styles-prepared-p
         ;; The local style adapter has consumed every pending author fact on
         ;; the touched paths.  Clear the exact retained subtree counts before
@@ -6837,17 +7123,44 @@ derive render changes from the computed fragment style signatures."
   "Prepare newly built NEXT-ROOT for BUFFER without mutating publication."
   (unless (and (listp next-root) (not (stringp next-root)))
     (error "Ebox declarative root must be an Ebox node"))
-  ;; Validate before copying so shared references and cycles remain visible.
-  (ebox-tree-validate-declarative-root next-root t)
   (let* ((candidate-root
           (ebox-tree-clear-runtime-identities
            (ebox-tree-copy-node-structure next-root)))
+         (candidate-source-index
+          (ebox-tree-source-index
+           candidate-root t nil ebox-incremental--source-base-index))
          (old-root (plist-get old-state :root-node)))
     ;; Failed preparation may leave harmless allocator gaps, but cannot publish
     ;; duplicate runtime identities.
-    (ebox-tree-reconcile-runtime old-root candidate-root)
+    (ebox-tree-reconcile-runtime
+     old-root (plist-get old-state :source-index)
+     candidate-root candidate-source-index)
     (ebox-incremental--prepare-declarative-runtime
-     buffer old-state candidate-root nil)))
+     buffer old-state candidate-root nil nil nil candidate-source-index)))
+
+(defun ebox-incremental--candidate-source-input-map (candidate)
+  "Return exact source-handle inputs carried by CANDIDATE operations."
+  (let ((table (make-hash-table :test #'eq)))
+    (dolist (replacement (ebox-candidate--replacements candidate))
+      (let ((index
+             (ebox-incremental--candidate-replacement-source-index
+              replacement)))
+        (dolist (handle (ebox-source-index-handles index))
+          (puthash handle index table))))
+    (dolist (replacement (ebox-candidate--range-replacements candidate))
+      (maphash
+       (lambda (_handle index)
+         (dolist (handle (ebox-source-index-handles index))
+           (puthash handle index table)))
+       (ebox-incremental--candidate-range-replacement-source-indexes
+        replacement)))
+    (dolist (patch (ebox-candidate--paint-patches candidate))
+      (let ((index
+             (ebox-incremental--candidate-paint-patch-source-index patch)))
+        (when index
+          (dolist (handle (ebox-source-index-handles index))
+            (puthash handle index table)))))
+    table))
 
 (defun ebox-incremental--prepare-logical-candidate
     (buffer old-state candidate)
@@ -6855,18 +7168,24 @@ derive render changes from the computed fragment style signatures."
   (let* ((path-copy-trace (make-hash-table :test 'equal))
          (detached-history
           (ebox-incremental--copy-detached-history old-state))
+         (incoming-source-indexes
+          (ebox-incremental--candidate-source-input-map candidate))
          range-index-deltas
          (candidate-root
           (let ((ebox-incremental--candidate-path-copy-trace path-copy-trace)
-                (ebox-incremental--candidate-range-index-deltas nil))
+                (ebox-incremental--candidate-range-index-deltas nil)
+                (ebox-incremental--candidate-incoming-source-indexes
+                 incoming-source-indexes))
             (prog1
                 (ebox-incremental--candidate-logical-root
                  candidate detached-history)
               (setq range-index-deltas
                     ebox-incremental--candidate-range-index-deltas))))
          (local-preparation
-          (ebox-incremental--candidate-local-index-delta
-           old-state candidate-root path-copy-trace range-index-deltas)))
+          (let ((ebox-incremental--candidate-incoming-source-indexes
+                 incoming-source-indexes))
+            (ebox-incremental--candidate-local-index-delta
+             old-state candidate-root path-copy-trace range-index-deltas))))
     ;; Replaced subtrees were validated when they were recorded; the
     ;; untouched published remainder was validated when it was itself
     ;; published, and path copying introduces no new sibling or ref
@@ -7581,8 +7900,7 @@ because it could address a run whose topology the closure just replaced."
                       (memq key ebox--paint-style-signature-keys)))
                 changed-keys)
                (ebox-incremental--same-root-surface-identity-p
-                (plist-get old-state :root-node)
-                (plist-get candidate-state :root-node))
+                old-state candidate-state)
                (ebox-incremental--span-patch-identity-stable-p
                 buffer old-state candidate-state prepared dirty-id)
                (null (plist-get old-state :scroll-region-ids))
@@ -8086,8 +8404,11 @@ the surface is allowed to reuse retained TP objects."
               (and old-node new-node
                    (eq (plist-get old-node :ebox-type)
                        (plist-get new-node :ebox-type))
-                   (equal (plist-get old-node :key)
-                          (plist-get new-node :key))
+                   (equal
+                    (ebox-tree-node-author-key
+                     (plist-get old-state :source-index) old-node)
+                    (ebox-tree-node-author-key
+                     (plist-get candidate-state :source-index) new-node))
                    (equal (gethash node-id old-parent-table)
                           (gethash node-id new-parent-table)))))
           (delq nil touched)))))
@@ -8227,6 +8548,8 @@ the complete proof."
          (new-nodes (plist-get candidate-state :node-table))
          (old-parents (plist-get old-state :parent-table))
          (new-parents (plist-get candidate-state :parent-table))
+         (old-source-index (plist-get old-state :source-index))
+         (new-source-index (plist-get candidate-state :source-index))
          (entries signature)
          (valid (and signature
                      (equal (plist-get certificate :root-id)
@@ -8259,8 +8582,8 @@ the complete proof."
                    (or (null next-id) (equal old-parent next-id))
                    (eq (plist-get old-node :ebox-type)
                        (plist-get new-node :ebox-type))
-                   (equal (ebox-tree-node-key old-node)
-                          (ebox-tree-node-key new-node))
+                   (equal (ebox-tree-node-key old-source-index old-node)
+                          (ebox-tree-node-key new-source-index new-node))
                    ;; This certificate describes OWNER-ID's allocation in its
                    ;; parent, not the contents it allocates internally.  A
                    ;; Range owner is expected to replace its children while
@@ -8959,8 +9282,11 @@ metadata; this predicate only authorizes the local attempt."
                  old-node new-node
                  (eq (plist-get old-node :ebox-type)
                      (plist-get new-node :ebox-type))
-                 (equal (plist-get old-node :key)
-                        (plist-get new-node :key))
+                 (equal
+                  (ebox-tree-node-author-key
+                   (plist-get old-state :source-index) old-node)
+                  (ebox-tree-node-author-key
+                   (plist-get candidate-state :source-index) new-node))
                  (ebox-incremental--node-child-ids-equal-p
                   old-node new-node)
                  (or local-typography-p
@@ -8969,8 +9295,7 @@ metadata; this predicate only authorizes the local attempt."
                             (ebox-incremental--layout-slot-style-signature
                              new-node)))
                  (ebox-incremental--same-root-surface-identity-p
-                  (plist-get old-state :root-node)
-                  (plist-get candidate-state :root-node))
+                  old-state candidate-state)
                  (ebox-incremental--span-patch-identity-stable-p
                   buffer old-state candidate-state prepared owner-id)
                  (ebox--layout-snapshot-detailed-p snapshot)
@@ -9204,8 +9529,7 @@ role, and outside-complement compatibility before publication."
                           (ebox-incremental--layout-slot-style-signature
                            new-node))
                    (ebox-incremental--same-root-surface-identity-p
-                    (plist-get old-state :root-node)
-                    (plist-get candidate-state :root-node))
+                    old-state candidate-state)
                    (null (plist-get old-state :scroll-region-ids))
                    (not (ebox--node-visible-overflow-p old-node))
                    (not (ebox--node-visible-overflow-p new-node))
@@ -9290,8 +9614,7 @@ role, and outside-complement compatibility before publication."
                         (ebox-incremental--layout-slot-style-signature new-node))
                  (equal (ebox-tree-display-inner old-node) 'column)
                  (ebox-incremental--same-root-surface-identity-p
-                  (plist-get old-state :root-node)
-                  (plist-get candidate-state :root-node))
+                  old-state candidate-state)
                  (null (plist-get old-state :scroll-region-ids))
                  (not (ebox-tree-node-visible-overflow-p old-node))
                  (not (ebox-tree-node-visible-overflow-p new-node))
@@ -9479,6 +9802,7 @@ role, and outside-complement compatibility before publication."
                 :runtime-revision
                 (plist-get candidate-state :runtime-revision)
                 :display-signature (plist-get prepared :display-signature)
+                :source-index (plist-get candidate-state :source-index)
                 :scroll-state-table (plist-get prepared :scroll-state-table))
           (ebox-incremental--native-runtime-overrides candidate-state)
           (list :source-path-copied-p source-path-copied-p
@@ -9557,8 +9881,8 @@ role, and outside-complement compatibility before publication."
              :region-box-count-table
              (plist-get candidate-state :region-box-count-table)
              :region-box-table (plist-get candidate-state :region-box-table)
-             :host-ref-table (plist-get candidate-state :host-ref-table)
              :range-ref-table (plist-get candidate-state :range-ref-table)
+             :source-index (plist-get candidate-state :source-index)
              :selector-id-table (plist-get candidate-state :selector-id-table)
              :selector-class-table
              (plist-get candidate-state :selector-class-table)
@@ -9632,12 +9956,17 @@ role, and outside-complement compatibility before publication."
              :scroll-patch-region-id nil
              :scroll-state-transaction nil)))))
 
-(defun ebox-incremental--same-root-surface-identity-p (old-root new-root)
-  "Return non-nil when OLD-ROOT and NEW-ROOT retain one TP root object."
-  (and (eq (plist-get old-root :ebox-type)
-           (plist-get new-root :ebox-type))
-       (equal (ebox-tree-node-key old-root)
-              (ebox-tree-node-key new-root))))
+(defun ebox-incremental--same-root-surface-identity-p
+    (old-state candidate-state)
+  "Return non-nil when OLD-STATE and CANDIDATE-STATE retain one TP root."
+  (let ((old-root (plist-get old-state :root-node))
+        (new-root (plist-get candidate-state :root-node)))
+    (and (eq (plist-get old-root :ebox-type)
+             (plist-get new-root :ebox-type))
+         (equal
+          (ebox-tree-node-key (plist-get old-state :source-index) old-root)
+          (ebox-tree-node-key
+           (plist-get candidate-state :source-index) new-root)))))
 
 (defun ebox-incremental--surface-commit-input
     (buffer old-state prepared)
@@ -9650,6 +9979,17 @@ role, and outside-complement compatibility before publication."
           (ebox-incremental--candidate-state
            old-state (plist-get prepared :root)
            (plist-get prepared :index) prepared))
+         (ebox--render-source-index
+          (plist-get candidate-state :source-index))
+         (ebox--render-source-generations
+          (list (plist-get candidate-state :source-index)
+                (plist-get old-state :source-index)))
+         (ebox--render-source-states (list candidate-state old-state))
+         (_selector-index-stale
+          (when (and (plist-get candidate-state :source-index)
+                     (ebox-source--index-derived-stale-p
+                      (plist-get candidate-state :source-index)))
+            (plist-put candidate-state :selector-index-stale-p t)))
          (structural-dirty-p
           (cl-some (lambda (entry)
                      (eq (plist-get entry :dirty-kind) 'structure))
@@ -9771,8 +10111,7 @@ role, and outside-complement compatibility before publication."
                  (plist-get prepared :dirty-set)))))))
          (same-root-identity-p
           (ebox-incremental--same-root-surface-identity-p
-           (plist-get old-state :root-node)
-           (plist-get candidate-state :root-node)))
+           old-state candidate-state))
          (scope-node-ids
           (and same-root-identity-p
                (delete-dups
@@ -9878,25 +10217,61 @@ Return the intermediate candidate state, owner plan, projection proof, and
 whether NEXT-ROOT shares untouched published nodes."
   (let* ((ebox-incremental--allocated-slot-proof-cache
           (make-hash-table :test 'equal))
+         (source-base-index
+          (or ebox-incremental--source-base-index
+              (and isolated-candidate-p
+                   (plist-get old-state :source-index))))
          (path-copied-p
           (and isolated-candidate-p
                (ebox-incremental--candidate-shares-published-node-p
                 old-state next-root)))
+         (incoming-source-indexes
+          (when ebox-incremental--source-base-index
+            (let ((table (make-hash-table :test #'eq)))
+              (dolist (handle
+                       (ebox-source--index-local-handles
+                        ebox-incremental--source-base-index))
+                (puthash handle ebox-incremental--source-base-index table))
+              table)))
          (local-preparation
           (and path-copied-p
-               (ebox-incremental--candidate-local-index-delta
-                old-state next-root)))
+               (let ((ebox-incremental--candidate-incoming-source-indexes
+                      incoming-source-indexes))
+                 (ebox-incremental--candidate-local-index-delta
+                  old-state next-root))))
+         (source-index
+          (and source-base-index
+               (not local-preparation)
+               (if (ebox-source--index-node-subjects source-base-index)
+                   ;; Region/property candidates preserve validated topology;
+                   ;; their source rebind already patches the one exact subject
+                   ;; handle, so rebuilding every tree-derived subject would
+                   ;; turn an O(changed) update back into O(all).
+                   source-base-index
+                 (ebox-tree-source-index
+                  next-root nil nil source-base-index))))
          (prepared
           (if isolated-candidate-p
               (ebox-incremental--prepare-declarative-runtime
                buffer old-state next-root nil local-preparation
-               skip-span-proof-p)
+               skip-span-proof-p source-index)
             (ebox-incremental--prepare-declarative-root
              buffer old-state next-root)))
          (candidate-state
           (ebox-incremental--candidate-state
            old-state (plist-get prepared :root)
            (plist-get prepared :index) prepared))
+         (ebox--render-source-index
+          (plist-get candidate-state :source-index))
+         (ebox--render-source-generations
+          (list (plist-get candidate-state :source-index)
+                (plist-get old-state :source-index)))
+         (ebox--render-source-states (list candidate-state old-state))
+         (_selector-index-stale
+          (when (and (plist-get candidate-state :source-index)
+                     (ebox-source--index-derived-stale-p
+                      (plist-get candidate-state :source-index)))
+            (plist-put candidate-state :selector-index-stale-p t)))
          (formatting-proof
           (and (not scroll-transaction-p)
                (not (cl-some
@@ -10089,7 +10464,7 @@ When RETAIN-NATIVE-P is non-nil, preserve its committed native frame bases."
         :region-id-set (plist-get state :region-id-set)
         :region-node-table (plist-get state :region-node-table)
         :region-box-count-table (plist-get state :region-box-count-table)
-        :host-ref-table (plist-get state :host-ref-table)
+        :source-index (plist-get state :source-index)
         :range-ref-table (plist-get state :range-ref-table)
         :selector-id-table (plist-get state :selector-id-table)
         :selector-class-table (plist-get state :selector-class-table)
@@ -10280,7 +10655,6 @@ fresh by the mixed projection."
     :region-node-table (plist-get candidate-state :region-node-table)
     :region-box-count-table (plist-get candidate-state :region-box-count-table)
     :region-box-table (plist-get candidate-state :region-box-table)
-    :host-ref-table (plist-get candidate-state :host-ref-table)
     :range-ref-table (plist-get candidate-state :range-ref-table)
     :selector-id-table (plist-get candidate-state :selector-id-table)
     :selector-class-table (plist-get candidate-state :selector-class-table)
@@ -10300,6 +10674,7 @@ fresh by the mixed projection."
             style-context-stable-p)
   "Prepare BUFFER for VIEWPORT-WIDTH, VIEWPORT-HEIGHT, AXES, and DISPLAY-SIGNATURE."
   (let* ((old-state (ebox--buffer-render-state buffer))
+         (ebox--render-source-index (plist-get old-state :source-index))
          (change (ebox--viewport-constraint-change buffer axes))
          (display-changed
           (not (equal display-signature

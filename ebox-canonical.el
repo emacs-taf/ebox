@@ -12,9 +12,11 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'ebox-layout-config)
+(require 'ebox-source)
 (require 'ebox-style)
 (require 'ebox-node-factory)
 (require 'ebox-child-range)
+(require 'ebox-tree)
 
 (defun ebox-canonical--validate-plist (plist context)
   "Validate PLIST shape for error CONTEXT and return PLIST."
@@ -53,39 +55,191 @@
       (error "%s accepts %S at most once" context field))
     (and values (cons t (car values)))))
 
-(defconst ebox-canonical--source-metadata-fields
-  '(:source-handle :key :class :id)
-  "Source facts accepted by both canonical Text and Box constructors.")
+(defconst ebox-canonical--source-fields
+  '(:source-handle)
+  "Opaque source input accepted by canonical Text and Box constructors.")
 
 (defvar ebox-canonical--declaration-fact-cache
   (make-hash-table :test #'eq :weakness 'key)
   "Declaration-identity keyed validated canonical node facts.")
 
-(defun ebox-canonical--source-metadata (plist context)
-  "Return detached source metadata from PLIST for CONTEXT.
-Every metadata field is optional but may occur at most once."
-  (let (metadata)
-    (dolist (field ebox-canonical--source-metadata-fields)
-      (when-let* ((entry (ebox-canonical--optional-field
-                          plist field context)))
-        (setq metadata
-              (append metadata (list field (cdr entry))))))
-    metadata))
+(defvar ebox-canonical--source-builder nil
+  "Transaction-local source builder available during typed tree assembly.")
 
-(defun ebox-canonical--apply-source-metadata (node metadata)
-  "Attach canonical source METADATA to runtime NODE and return NODE."
-  (while metadata
-    (let ((field (pop metadata))
-          (value (pop metadata)))
-      (plist-put node
-                 (pcase field
-                   (:source-handle :ebox-source-handle)
-                   (_ field))
-                 value)
-      ;; `:host-ref' is the private retained-geometry projection of the
-      ;; source-owned handle.  It is not a second public identity field.
-      (when (and (eq field :source-handle) value)
-        (plist-put node :host-ref value))))
+(cl-defstruct (ebox-canonical-facts
+               (:constructor ebox-canonical--make-facts))
+  "Already computed node-owned projection of one source declaration set."
+  engine-properties style-required-p specified-property-ids)
+
+(cl-defstruct (ebox-canonical-input
+               (:constructor ebox-canonical--make-input)
+               (:conc-name ebox-canonical-input--))
+  "Atomic transport of a canonical forest and its source generation."
+  nodes source-index range-anchors)
+
+(defun ebox-canonical--validate-input-source-ownership (nodes source-index)
+  "Validate that NODES reference exactly SOURCE-INDEX's source generation."
+  (let ((seen-nodes (make-hash-table :test #'eq))
+        (seen-handles (make-hash-table :test #'eq))
+        preorder-handles)
+    (cl-labels
+        ((visit
+          (node)
+          (unless (or (ebox-text-node-p node) (ebox-box-node-p node))
+            (error "Ebox canonical input contains a noncanonical node: %S" node))
+          (when (gethash node seen-nodes)
+            (error "Ebox canonical input reuses one node object"))
+          (puthash node t seen-nodes)
+          (let ((handle (ebox-node-source-handle node)))
+            (unless (and (ebox-source-handle-p handle)
+                         (ebox-source-index-handle-member-p
+                          source-index handle))
+              (error
+               "Ebox canonical source is absent from its input generation"))
+            (when (gethash handle seen-handles)
+              (error "Ebox canonical input reuses one source handle"))
+            (puthash handle t seen-handles)
+            (push handle preorder-handles))
+          (when (ebox-box-node-p node)
+            (mapc #'visit (ebox-box-node-children node)))))
+      (mapc #'visit nodes))
+    (setq preorder-handles (nreverse preorder-handles))
+    (unless (= (hash-table-count seen-handles)
+               (ebox-source--table-size
+                (ebox-source--index-handle-records source-index)))
+      (error "Ebox canonical input contains unreferenced source facts"))
+    (ebox-source--with-order source-index preorder-handles)))
+
+(defun ebox-canonical-input-create (nodes source-index &optional range-anchors)
+  "Return one opaque canonical input for ordered forest NODES.
+SOURCE-INDEX owns every source fact referenced by NODES.  RANGE-ANCHORS are
+nonvisual structural addresses transported with the same generation."
+  (unless (and (proper-list-p nodes)
+               (cl-every (lambda (node)
+                           (and (listp node) (not (stringp node))))
+                         nodes))
+    (error "Ebox canonical input nodes must be a proper node forest: %S"
+           nodes))
+  (unless (ebox-source-index-p source-index)
+    (signal 'wrong-type-argument (list 'ebox-source-index-p source-index)))
+  (setq source-index
+        (ebox-canonical--validate-input-source-ownership nodes source-index))
+  (ebox-canonical--make-input
+   :nodes (copy-sequence nodes)
+   :source-index source-index
+   :range-anchors (copy-tree range-anchors)))
+
+(defun ebox-canonical-input-roots (input)
+  "Return a shallow copy of canonical INPUT's ordered forest roots.
+This is a read-only structural view; it does not adopt INPUT's source facts
+into another candidate."
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (copy-sequence (ebox-canonical-input--nodes input)))
+
+(defun ebox-canonical-input-import-roots (input roots builder)
+  "Import INPUT facts owned by selected top-level ROOTS into BUILDER.
+Each ROOT must be an exact, unique member of INPUT's forest.  The selected
+subtrees retain their existing nodes, handles, and immutable records without
+adopting facts from unselected roots.  Return a shallow copy of ROOTS."
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (ebox-source--builder-assert-open builder)
+  (unless (proper-list-p roots)
+    (error "Ebox canonical selected roots must be a proper list: %S" roots))
+  (let ((available (make-hash-table :test #'eq))
+        (selected (make-hash-table :test #'eq))
+        (source-index (ebox-canonical-input--source-index input)))
+    (dolist (root (ebox-canonical-input--nodes input))
+      (puthash root t available))
+    (cl-labels
+        ((import-node
+          (node)
+          (let* ((handle (ebox-node-source-handle node))
+                 (record (ebox-source--index-record source-index handle)))
+            (unless record
+              (error "Ebox canonical selected root has no source facts"))
+            (ebox-source--builder-add-record builder handle record))
+          (when (ebox-box-node-p node)
+            (mapc #'import-node (ebox-box-node-children node)))))
+      (dolist (root roots)
+        (unless (gethash root available)
+          (error "Ebox canonical selected root is outside its input"))
+        (when (gethash root selected)
+          (error "Ebox canonical selected root occurs more than once"))
+        (puthash root t selected)
+        (import-node root))))
+  (copy-sequence roots))
+
+(defun ebox-canonical-input--single-root (input context)
+  "Return INPUT's only root node, or signal for error CONTEXT."
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (let ((nodes (ebox-canonical-input--nodes input)))
+    (unless (= (length nodes) 1)
+      (error "%s requires exactly one canonical root" context))
+    (car nodes)))
+
+(defun ebox-canonical-input-root-host-ref (input)
+  "Return INPUT's detached single-root publication reference.
+This framework-integration port keeps `ebox-source-handle' opaque: Ebox first
+validates that the canonical root's exact handle belongs to INPUT's immutable
+source generation, then returns only the author-owned publication reference."
+  (let* ((root (ebox-canonical-input--single-root
+                input "ebox-canonical-input-root-host-ref"))
+         (handle (plist-get root :ebox-source-handle))
+         (source-index (ebox-canonical-input--source-index input)))
+    (unless (and (ebox-source-handle-p handle)
+                 (ebox-source-index-handle-member-p source-index handle))
+      (error "Ebox canonical root source is absent from its input generation"))
+    (ebox-source-handle-id handle)))
+
+(defun ebox-canonical-input-equal-p (left right)
+  "Return non-nil when canonical inputs LEFT and RIGHT are exactly equivalent.
+The comparison includes the ordered forest, transparent Range anchors, source
+identity order, and every immutable author fact.  Derived selector/runtime
+indexes are deliberately excluded because they are projections of these
+canonical inputs, not additional source authority."
+  (and (ebox-canonical-input-p left)
+       (ebox-canonical-input-p right)
+       (equal-including-properties
+        (ebox-canonical-input--nodes left)
+        (ebox-canonical-input--nodes right))
+       (equal-including-properties
+        (ebox-canonical-input--range-anchors left)
+        (ebox-canonical-input--range-anchors right))
+       (let ((left-handles
+              (ebox-source-index-handles
+               (ebox-canonical-input--source-index left)))
+             (right-handles
+              (ebox-source-index-handles
+               (ebox-canonical-input--source-index right)))
+             (left-index (ebox-canonical-input--source-index left))
+             (right-index (ebox-canonical-input--source-index right)))
+         (and (= (length left-handles) (length right-handles))
+              (cl-every
+               (lambda (left-handle right-handle)
+                 (and
+                  (equal-including-properties
+                   (ebox-source--handle-id-view left-handle)
+                   (ebox-source--handle-id-view right-handle))
+                  (equal-including-properties
+                   (ebox-source--index-record left-index left-handle)
+                   (ebox-source--index-record right-index right-handle))))
+               left-handles right-handles)))))
+
+(defun ebox-canonical--source-handle (plist context)
+  "Return the one opaque source handle from PLIST for CONTEXT."
+  (let ((handle (ebox-canonical--required-field
+                 plist :source-handle context)))
+    (unless (ebox-source-handle-p handle)
+      (error "%s :source-handle must be opaque Ebox source: %S"
+             context handle))
+    handle))
+
+(defun ebox-canonical--apply-source-handle (node handle)
+  "Attach opaque source HANDLE to runtime NODE and return NODE."
+  (plist-put node :ebox-source-handle handle)
   node)
 
 (defun ebox-canonical--text-measurement-property-p (property)
@@ -171,6 +325,25 @@ and author TAG."
                           '(paint typography))))))
             nil))))
 
+(defun ebox-canonical-facts-from-declarations (tag declarations)
+  "Return immutable node-owned facts for TAG from DECLARATIONS.
+Source declarations stay behind the source handle; the returned value contains
+only the current canonical-node projection needed before G4c separates paint."
+  (let ((predicate
+         (if (eq tag 'text)
+             #'ebox-canonical--text-measurement-property-p
+           #'ebox-canonical--box-frame-property-p)))
+    (pcase-let ((`(,canonical ,engine ,style-required-p)
+                 (ebox-canonical--node-properties
+                  nil (and declarations (cons t declarations))
+                  predicate
+                  (if (eq tag 'text) "Ebox Text" "Ebox Box") tag)))
+      (ebox-canonical--make-facts
+       :engine-properties engine
+       :style-required-p style-required-p
+       :specified-property-ids
+       (cl-loop for (id _value) on canonical by #'cddr collect id)))))
+
 (defun ebox-node-kind (node)
   "Return canonical NODE kind, or nil for a legacy runtime node."
   (and (listp node) (plist-get node :ebox-kind)))
@@ -247,41 +420,57 @@ and author TAG."
                  children))
         (push (cons nil (list entry)) segments)
         (push entry material)))
-    (list (nreverse material)
-          (and range-p
-               (ebox-child-range--build (nreverse segments) nil t)))))
+    (setq material (nreverse material)
+          segments (nreverse segments))
+    (when (and range-p (not (ebox-source-builder-p
+                             ebox-canonical--source-builder)))
+      (error "Ebox Range children require one canonical source builder"))
+    (let ((source-builder (and range-p ebox-canonical--source-builder)))
+      (list material
+            (and range-p
+                 (ebox-child-range--build
+                  segments
+                  (lambda (node)
+                    (when-let* ((record
+                                (ebox-source--builder-record
+                                 source-builder
+                                 (ebox-node-source-handle node))))
+                      (ebox-source-record-key record)))
+                  nil t))))))
 
 ;;;###autoload
 (defun ebox-text-create (&rest plist)
   "Create a canonical TextNode from evaluated PLIST.
 
-`:value' is required and must be one string.  `:source-handle', `:key',
-`:class', and `:id' are optional source facts.  Direct properties are limited
-to text measurement.  `:declarations' may carry one already-normalized Text
-author fact set so paint is projected without reparsing."
+`:value' is required and must be one string.  `:source-handle' is required and
+is the only author source input.  Direct properties are limited to already
+computed Text measurement facts."
   (ebox-canonical--validate-plist plist "ebox-text-create")
   (let* ((value (ebox-canonical--required-field
                  plist :value "Ebox Text"))
-         (declarations-field (ebox-canonical--optional-field
-                              plist :declarations "Ebox Text"))
-         (source-metadata (ebox-canonical--source-metadata plist "Ebox Text"))
+         (source-handle (ebox-canonical--source-handle plist "Ebox Text"))
+         (facts (ebox-canonical--required-field
+                 plist :owned-facts "Ebox Text"))
          (props (ebox-canonical--without-keys
-                 plist (append '(:value :declarations)
-                               ebox-canonical--source-metadata-fields))))
+                 plist
+                 (append '(:value :owned-facts)
+                         ebox-canonical--source-fields))))
     (unless (stringp value)
       (error "Ebox Text :value must be a string: %S" value))
-    (pcase-let* ((`(,declarations ,engine-props ,style-required-p)
-                   (ebox-canonical--node-properties
-                    props declarations-field
-                    #'ebox-canonical--text-measurement-property-p
-                    "Ebox Text" 'text))
-                  (node
-                   (ebox-node-factory--create-text-expanded
-                    (append engine-props (list :content value))
-                    declarations)))
+    (when props
+      (error "Ebox Text accepts only normalized owned facts"))
+    (when (not (ebox-canonical-facts-p facts))
+      (error "Ebox Text :owned-facts must be canonical facts: %S" facts))
+    (pcase-let* ((engine-props
+                  (ebox-canonical-facts-engine-properties facts))
+                 (style-required-p
+                  (ebox-canonical-facts-style-required-p facts))
+                 (node
+                  (ebox-node-factory--create-text-expanded
+                   (append engine-props (list :content value)))))
       (plist-put node :ebox-kind 'text)
       (plist-put node :ebox-text-value value)
-      (ebox-canonical--apply-source-metadata node source-metadata)
+      (ebox-canonical--apply-source-handle node source-handle)
       (plist-put node :display '(inline flow))
       (plist-put node :ebox-author-style-count
                  (if style-required-p 1 0))
@@ -295,24 +484,24 @@ author fact set so paint is projected without reparsing."
 
 `:layout' must occur exactly once as an `ebox-layout-config'.
 `:children' is a list of canonical nodes.  Every Layout accepts zero or more
-children according to its own formatting algorithm.  `:declarations' may
-carry one already-normalized Box author fact set."
+children according to its own formatting algorithm.  `:source-handle' is the
+only author source input."
   (ebox-canonical--validate-plist plist "ebox-box-create")
   (let* ((layout (ebox-canonical--required-field
                   plist :layout "Ebox Box"))
          (children-field (ebox-canonical--optional-field
                           plist :children "Ebox Box"))
-         (declarations-field (ebox-canonical--optional-field
-                              plist :declarations "Ebox Box"))
          (outer-field (ebox-canonical--optional-field
                        plist :outer "Ebox Box"))
-         (source-metadata (ebox-canonical--source-metadata plist "Ebox Box"))
+         (source-handle (ebox-canonical--source-handle plist "Ebox Box"))
+         (facts (ebox-canonical--required-field
+                 plist :owned-facts "Ebox Box"))
          (children (if children-field (cdr children-field) nil))
          child-sequence
          (outer (if outer-field (cdr outer-field) 'block))
          (props (ebox-canonical--without-keys
-                 plist (append '(:layout :children :outer :declarations)
-                               ebox-canonical--source-metadata-fields))))
+                 plist (append '(:layout :children :outer :owned-facts)
+                               ebox-canonical--source-fields))))
     (unless (ebox-layout-config-p layout)
       (error "Ebox Box :layout must be a typed layout config: %S"
              layout))
@@ -329,22 +518,28 @@ carry one already-normalized Box author fact set."
                   '(normal row column flex grid))
       (error "Ebox Box Layout is not implemented: %S"
              (ebox-layout-config-kind layout)))
-    (pcase-let* ((tag (if (eq (ebox-layout-config-kind layout) 'normal)
-                           'box
-                         (ebox-layout-config-kind layout)))
-                  (`(,declarations ,engine-props ,style-required-p)
-                   (ebox-canonical--node-properties
-                    props declarations-field
-                    #'ebox-canonical--box-frame-property-p
-                    "Ebox Box" tag))
-                  (node (ebox-node-factory--create-expanded
-                         engine-props declarations)))
+    (when props
+      (error "Ebox Box accepts only normalized owned facts"))
+    (when (not (ebox-canonical-facts-p facts))
+      (error "Ebox Box :owned-facts must be canonical facts: %S" facts))
+    (pcase-let* ((`(,canonical-declarations ,engine-props ,style-required-p)
+                   (list
+                    (ebox-canonical-facts-specified-property-ids facts)
+                    (ebox-canonical-facts-engine-properties facts)
+                    (ebox-canonical-facts-style-required-p facts)))
+                  (node (ebox-node-factory--create-expanded engine-props)))
       (plist-put node :ebox-kind 'box)
       (plist-put node :ebox-layout-config layout)
       (plist-put node :children children)
+      (when (plist-member canonical-declarations
+                          (ebox-style-schema-id :min-width))
+        (plist-put node :ebox-explicit-min-width-p t))
+      (when (plist-member canonical-declarations
+                          (ebox-style-schema-id :min-height))
+        (plist-put node :ebox-explicit-min-height-p t))
       (when child-sequence
         (plist-put node :ebox-child-sequence child-sequence))
-      (ebox-canonical--apply-source-metadata node source-metadata)
+      (ebox-canonical--apply-source-handle node source-handle)
       (plist-put node :display
                  (list outer
                        (pcase (ebox-layout-config-kind layout)

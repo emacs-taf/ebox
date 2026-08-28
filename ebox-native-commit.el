@@ -32,7 +32,7 @@
 (declare-function ebox--literal-root-pixel-width "ebox" (box))
 (declare-function ebox-get "ebox" (box key))
 (declare-function ebox-style-cascade-active-p "ebox-style" ())
-(declare-function ebox-tree-node-key "ebox-tree" (node))
+(declare-function ebox-tree-node-key "ebox-tree" (source-index node))
 (declare-function ebox-tree--children-raw "ebox-tree" (node))
 (declare-function ebox--node-direct-viewport-width-dependent-p
                   "ebox-incremental" (node))
@@ -77,8 +77,11 @@
                                (gethash node-id new-parents missing))
                         (eq (plist-get old-node :ebox-type)
                             (plist-get node :ebox-type))
-                        (equal (ebox-tree-node-key old-node)
-                               (ebox-tree-node-key node)))
+                        (equal
+                         (ebox-tree-node-key
+                          (plist-get old-state :source-index) old-node)
+                         (ebox-tree-node-key
+                          (plist-get candidate-state :source-index) node)))
              (setq stable nil))))
        new-nodes))
     (when stable
@@ -144,8 +147,11 @@ type, key, parent, and sibling position are identical."
                       (plist-get new-root :node-id))
                (eq (plist-get old-root :ebox-type)
                    (plist-get new-root :ebox-type))
-               (equal (ebox-tree-node-key old-root)
-                      (ebox-tree-node-key new-root))
+               (equal
+                (ebox-tree-node-key
+                 (plist-get old-state :source-index) old-root)
+                (ebox-tree-node-key
+                 (plist-get candidate-state :source-index) new-root))
                (hash-table-p old-nodes) (hash-table-p new-nodes)
                (hash-table-p old-objects)))
          result)
@@ -178,8 +184,13 @@ type, key, parent, and sibling position are identical."
                          (null old-object)
                          (not (eq (plist-get old-node :ebox-type)
                                   (plist-get node :ebox-type)))
-                         (not (equal (ebox-tree-node-key old-node)
-                                     (ebox-tree-node-key node)))))
+                         (not
+                          (equal
+                           (ebox-tree-node-key
+                            (plist-get old-state :source-index) old-node)
+                           (ebox-tree-node-key
+                            (plist-get candidate-state :source-index)
+                            node)))))
                     (touched-p
                      (or replacement-p
                          (gethash node-id requested)

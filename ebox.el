@@ -23,7 +23,7 @@
   "Directory containing the active Ebox Lisp sources.")
 
 (defconst ebox--compile-sources
-  '("ebox-cache.el" "ebox-style.el" "ebox-layout-config.el"
+  '("ebox-cache.el" "ebox-source.el" "ebox-style.el" "ebox-layout-config.el"
     "ebox-node-factory.el"
     "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
@@ -41,6 +41,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'ebox-cache)
+(require 'ebox-source)
 (require 'ebox-style)
 (require 'ebox-layout-config)
 (require 'ebox-node-factory)
@@ -413,20 +414,9 @@ caller, such as the Playground preview, renders against a concrete window.")
   (plist-get box property))
 
 (defun ebox-put (box property value)
-  "Set PROPERTY to VALUE in BOX and return the modified box.
-Registered style properties also update BOX's canonical ECSS declarations so a
-later cascade computes from the public mutation instead of stale source data."
-  (when-let* ((declaration
-              (ebox-style-compile-declarations (list property value))))
-    (plist-put
-     box :ebox-style-declarations
-     (ebox-style-merge-declarations
-      (plist-get box :ebox-style-declarations) declaration))
-    (when (plist-get box :ebox-style-wrapper)
-      (plist-put
-       box :ebox-style-overrides
-       (ebox-style-merge-declarations
-        (plist-get box :ebox-style-overrides) declaration))))
+  "Set private runtime PROPERTY to VALUE in BOX and return BOX.
+Author declarations are immutable source-index facts and cannot be mutated
+through this low-level plist helper."
   (plist-put box property value))
 
 ;;;###autoload
@@ -677,10 +667,14 @@ ALIGN can be `top', `center', or `bottom'."
 ;;;###autoload
 (defun ebox-region-ids (node)
   "Return NODE's region ids in document order.
-NODE can be an unrendered layout tree or an already-rendered string.
+NODE may be a canonical Ebox input, an internal layout tree, or a rendered
+string.  Canonical inputs must contain exactly one root.
 For layout trees, missing ids are assigned to box plists and remain stable
 for later renders and dynamic updates."
   (cond
+   ((ebox-canonical-input-p node)
+    (ebox-region-ids
+     (ebox-canonical-input--single-root node "ebox-region-ids")))
    ((stringp node)
     (ebox--string-region-ids node))
    ((not (listp node)) nil)
@@ -730,56 +724,6 @@ for later renders and dynamic updates."
   (ebox--runtime-node-ids node)
   node)
 
-(defun ebox--runtime-node-key (node)
-  "Return NODE's explicit runtime key, or nil."
-  (when (and (listp node)
-             (plist-member node :key))
-    (plist-get node :key)))
-
-(defun ebox--runtime-same-type-p (old new)
-  "Return non-nil when OLD and NEW have the same runtime node type."
-  (and (listp old)
-       (listp new)
-       (eq (plist-get old :ebox-type)
-           (plist-get new :ebox-type))))
-
-(defun ebox--runtime-node-id-by-key (node key)
-  "Return the first runtime node id under NODE whose :key equals KEY."
-  (when (and key
-             (listp node)
-             (not (stringp node)))
-    (or (when (equal (ebox--runtime-node-key node) key)
-          (ebox--ensure-node-id node))
-        (cl-some (lambda (child)
-                   (ebox--runtime-node-id-by-key child key))
-                 (ebox--node-children node)))))
-
-(defun ebox--keyed-runtime-children (children)
-  "Return a KEY -> child hash table for explicitly keyed CHILDREN."
-  (let ((table (make-hash-table :test 'equal)))
-    (dolist (child children)
-      (when-let* ((key (ebox--runtime-node-key child)))
-        (puthash key child table)))
-    table))
-
-(defun ebox--runtime-positional-match (old-child new-child)
-  "Return OLD-CHILD when NEW-CHILD can reuse its positional identity."
-  (when (and (not (ebox--runtime-node-key old-child))
-             (not (ebox--runtime-node-key new-child))
-             (ebox--runtime-same-type-p old-child new-child))
-    old-child))
-
-(defun ebox--runtime-keyed-match (old-keyed new-child)
-  "Return the keyed old child that should match NEW-CHILD."
-  (when-let* ((key (ebox--runtime-node-key new-child)))
-    (let ((old-child (gethash key old-keyed)))
-      (when (ebox--runtime-same-type-p old-child new-child)
-        old-child))))
-
-(defun ebox--assign-runtime-node-id-from-match (old new)
-  "Assign NEW retained runtime identity from OLD when possible."
-  (ebox-tree-transfer-runtime-identity old new))
-
 (defun ebox--reconcile-runtime-tree (old new)
   "Transfer stable runtime identities from OLD to matching nodes in NEW.
 
@@ -788,12 +732,14 @@ matches an old sibling with the same key and node type; unkeyed children may
 reuse same-position ids when their node type is unchanged.  Retained boxes
 also keep their region ids so buffer properties remain aligned with runtime
 indexes.  This prepares component identity without exposing a component API."
-  (ebox-tree-reconcile-runtime old new))
+  (ebox-tree-reconcile-runtime
+   old (ebox-tree-source-index old)
+   new (ebox-tree-source-index new)))
 
 ;;;###autoload
 (defun ebox-build (dsl)
-  "Build an Ebox node from an ETML-style list DSL."
-  (ebox-dsl-build dsl))
+  "Compile an Ebox author form into one opaque canonical input."
+  (ebox-dsl-build-input dsl))
 
 ;;; ============================================================
 ;;; Property Rules: 配置驱动的 Shorthand/Longhand 映射
@@ -3691,6 +3637,14 @@ FALLBACK is the Emacs scroll command to call when ebox cannot scroll."
     (max ebox-scroll-step
          (- (window-body-height nil) next-screen-context-lines))))
 
+(defun ebox--scroll-page-fallback-argument (requested residual arg)
+  "Return the native page argument for REQUESTED, RESIDUAL, and prefix ARG.
+Nil preserves Emacs' native whole-page boundary behavior when no Ebox owner
+consumed an unprefixed request.  A prefix or partial residual remains an exact
+line count so scroll distance is neither duplicated nor dropped."
+  (and (or arg (/= (abs residual) (abs requested)))
+       (abs residual)))
+
 (defun ebox--wheel-region-ids (event)
   "Return ebox scroll candidate region ids under mouse wheel EVENT."
   (when-let* ((start (ignore-errors (event-start event)))
@@ -3814,7 +3768,8 @@ With prefix ARG, scroll by that many content lines."
     (ebox--scroll-by
      delta
      (lambda (n)
-       (scroll-up-command n)))))
+       (scroll-up-command
+        (ebox--scroll-page-fallback-argument delta n arg))))))
 
 ;;;###autoload
 (defun ebox-scroll-page-up (&optional arg)
@@ -3825,7 +3780,8 @@ With prefix ARG, scroll by that many content lines."
     (ebox--scroll-by
      delta
      (lambda (n)
-       (scroll-down-command n)))))
+       (scroll-down-command
+        (ebox--scroll-page-fallback-argument delta n arg))))))
 
 (defun ebox--region-id-at-pos (pos)
   "Return the owning ebox region-id at POS, if any."
@@ -3911,8 +3867,9 @@ Defaults to the current buffer."
   (when-let* ((text (ebox--region-update-direct-text-node box)))
     (ebox-text-node-value text)))
 
-(defun ebox--region-update-analysis (box expanded declarations)
-  "Return change analysis for BOX, EXPANDED fields, and DECLARATIONS."
+(defun ebox--region-update-analysis
+    (source-index box expanded declarations)
+  "Return change analysis for BOX in SOURCE-INDEX and new DECLARATIONS."
   (let (content-seen
         content-value
         style-changed-p
@@ -3936,7 +3893,7 @@ Defaults to the current buffer."
       (user-error "Ebox content update requires one direct Text child"))
     (list :changed-p
           (or (not (equal declarations
-                          (plist-get box :ebox-style-declarations)))
+                          (ebox-style-node-declarations source-index box)))
               style-changed-p
               (and content-seen
                    (not (equal (ebox--region-update-content-value box)
@@ -3972,17 +3929,24 @@ cannot be changed through the unpublished batch root."
         (ebox-tree-copy-node-structure (plist-get state :root-node)))))
 
 (defun ebox--surface-region-apply-props
-    (root region-id expanded declarations)
+    (root source-index region-id expanded declarations)
   "Apply DECLARATIONS then EXPANDED fields to REGION-ID in ROOT."
-  (let ((box (ebox--root-region-box root region-id)) changed-keys)
+  (let ((box (ebox--root-region-box root region-id))
+        (candidate-source-index source-index)
+        changed-keys)
     (unless box
       (user-error "Ebox region handle no longer resolves to a box"))
     (let ((declarations-changed
            (not (ebox-style-declarations-equal-p
                  declarations
-                 (plist-get box :ebox-style-declarations)))))
+                 (ebox-style-node-declarations source-index box)))))
       (when declarations-changed
-        (plist-put box :ebox-style-declarations declarations))
+        (let* ((old-handle (ebox-tree-node-source-handle box))
+               (binding
+                (ebox-source-index-rebind
+                 source-index old-handle :declarations declarations)))
+          (setq candidate-source-index (car binding))
+          (plist-put box :ebox-source-handle (cdr binding))))
     (cl-loop for (key value) on expanded by #'cddr
              for target-key = (ebox--region-update-normalize-property key)
              when (or (eq target-key :content)
@@ -4001,7 +3965,8 @@ cannot be changed through the unpublished batch root."
                        "Ebox content update requires one direct Text child"))
                   (plist-put box target-key value))
              and do (push target-key changed-keys)))
-    (nreverse changed-keys)))
+    (list :changed-keys (nreverse changed-keys)
+          :source-index candidate-source-index)))
 
 (defun ebox--surface-region-no-op-report (state region-id handle)
   "Return and store a no-op report for STATE, REGION-ID, and HANDLE."
@@ -4223,6 +4188,9 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
 (defun ebox--surface-region-update-target (buffer region-id handle props)
   "Apply PROPS to BUFFER REGION-ID through TP for optional HANDLE."
   (let* ((state (ebox--buffer-render-state buffer))
+         (source-index
+          (or (ebox-incremental-surface-batch-source-index buffer)
+              (plist-get state :source-index)))
          (published-root (plist-get state :root-node))
          (candidate-box
           (or (ebox--root-region-box published-root region-id)
@@ -4230,13 +4198,16 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
          (expanded (ebox--expand-plist props))
          (declarations
           (ebox-style-merge-declarations
-           (plist-get candidate-box :ebox-style-declarations)
+           (ebox-style-node-declarations
+            source-index candidate-box)
            (ebox-style-compile-declarations props)))
          (old-style-values
           (and (plist-member expanded :overflow)
                (list :overflow (ebox-get candidate-box :overflow))))
          (analysis
-          (ebox--region-update-analysis candidate-box expanded declarations)))
+          (ebox--region-update-analysis
+           source-index
+           candidate-box expanded declarations)))
     (dolist (key (plist-get analysis :unknown-keys))
       (message "ebox-region-update: unknown key %S (ignored)" key))
     (if (not (plist-get analysis :changed-p))
@@ -4261,28 +4232,33 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
                (candidate-root
                 (ebox--surface-region-candidate-root
                  buffer state region-id content-only-p))
-               (changed-keys
+               (applied
                 (ebox--surface-region-apply-props
-                 candidate-root region-id expanded declarations))
+                 candidate-root source-index
+                 region-id expanded declarations))
+               (changed-keys (plist-get applied :changed-keys))
+               (candidate-source-index (plist-get applied :source-index))
                (dirty-kind
                 (ebox--region-update-dirty-kind changed-keys))
                (constraint-change
                 (ebox--region-constraint-change
                  buffer region-id dirty-kind changed-keys)))
-          (if (ebox-incremental-record-surface-region-change
-               buffer candidate-root region-id handle dirty-kind
-               changed-keys old-style-values
+          (if (ebox-incremental-record-surface-region-input-change
+               buffer candidate-root candidate-source-index
+               region-id handle dirty-kind changed-keys old-style-values
                #'ebox--publish-surface-region-batch)
               (progn
                 (ebox--cancel-buffer-runtime-prewarm buffer)
                 nil)
-            (ebox--publish-scoped-region-candidate
-             buffer candidate-root region-id changed-keys
-             (append (if handle
-                         (list :region-handle handle)
-                       (list :region-id region-id))
-                     (ebox--constraint-change-report-props
-                      constraint-change)))))))))
+            (let ((ebox-incremental--source-base-index
+                   candidate-source-index))
+              (ebox--publish-scoped-region-candidate
+               buffer candidate-root region-id changed-keys
+               (append (if handle
+                           (list :region-handle handle)
+                         (list :region-id region-id))
+                       (ebox--constraint-change-report-props
+                        constraint-change))))))))))
 
 ;;;###autoload
 (defun ebox-region-update (handle &rest props)
@@ -4394,16 +4370,18 @@ Examples:
     (cons present observer)))
 
 ;;;###autoload
-(defun ebox-render-to-buffer (buffer-or-name node &optional options)
-  "Render layout NODE into BUFFER-OR-NAME and return the buffer.
-NODE is a typed TextNode/BoxNode or a pre-rendered string.
+(defun ebox-render-to-buffer (buffer-or-name input &optional options)
+  "Render canonical INPUT into BUFFER-OR-NAME and return the buffer.
+INPUT atomically carries one typed Text/Box root and its source generation.
 OPTIONS accepts only `:observer'.  Its function receives the buffer and flat
 TP/Ebox reports after accepted initial publication and later commits."
   (declare (indent 1))
-  (unless (stringp node)
-    ;; Validate opaque host identities before preparing a target generation.
-    (ebox-tree-validate-host-refs node))
-  (let* ((observer-option (ebox--render-observer-option options))
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (let* ((node (ebox-canonical-input--single-root
+                input "ebox-render-to-buffer"))
+         (source-base-index (ebox-canonical-input--source-index input))
+         (observer-option (ebox--render-observer-option options))
          (buffer (get-buffer-create buffer-or-name))
          (old-observer (ebox-surface-buffer-observer buffer))
          (old-bridge (with-current-buffer buffer ebox-surface--tp-observer))
@@ -4417,7 +4395,10 @@ TP/Ebox reports after accepted initial publication and later commits."
                  buffer 'mount
                  (lambda ()
                    (ebox--with-render-gc
-                     (ebox-surface-mount-buffer buffer node)
+                     (ebox-surface-mount-buffer
+                      buffer node nil nil nil
+                      (and source-base-index
+                           (list :source-base-index source-base-index)))
                      (with-current-buffer buffer
                        (goto-char (point-min))
                        (add-hook 'kill-buffer-hook
@@ -4522,8 +4503,6 @@ ITEMS are declarative nodes.  Child Range descriptors cannot be nested."
                    (dolist (child (ebox-tree--children-raw node))
                      (reject-range child)))))
       (reject-range item)))
-  (ebox-tree-validate-declarative-root
-   (list :ebox-type 'stack :display '(block column) :children items))
   (ebox-child-range--descriptor-create
    range-ref
    (mapcar (lambda (item)
@@ -4533,59 +4512,95 @@ ITEMS are declarative nodes.  Child Range descriptors cannot be nested."
 
 ;;;###autoload
 (defun ebox-candidate-replace
-    (candidate node-id next-subtree
+    (candidate node-id input
                &optional old-semantic-key new-semantic-key)
-  "Replace NODE-ID in CANDIDATE with declarative NEXT-SUBTREE.
+  "Replace NODE-ID in CANDIDATE with canonical INPUT.
 OLD-SEMANTIC-KEY and NEW-SEMANTIC-KEY may identify a stable anchor's detached
 semantic variants so a later return can reuse bounded runtime identity.
 Return CANDIDATE for convenient transaction construction."
-  (ebox-incremental-candidate-replace
-   candidate node-id next-subtree old-semantic-key new-semantic-key))
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (let ((ebox-incremental--source-base-index
+         (ebox-canonical-input--source-index input)))
+    (ebox-incremental-candidate-replace
+     candidate node-id
+     (ebox-canonical-input--single-root input "ebox-candidate-replace")
+     old-semantic-key new-semantic-key)))
 
 ;;;###autoload
 (defun ebox-candidate-replace-host-ref
-    (candidate host-ref next-subtree
+    (candidate host-ref input
                &optional old-semantic-key new-semantic-key)
-  "Replace HOST-REF in CANDIDATE with declarative NEXT-SUBTREE.
+  "Replace HOST-REF in CANDIDATE with canonical INPUT.
 HOST-REF is resolved against the exact published runtime captured by
 `ebox-candidate-begin'.  OLD-SEMANTIC-KEY and NEW-SEMANTIC-KEY have the same
 optional detached-identity meaning as in `ebox-candidate-replace'.
 Return CANDIDATE."
-  (ebox-incremental-candidate-replace-host-ref
-   candidate host-ref next-subtree old-semantic-key new-semantic-key))
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (let ((ebox-incremental--source-base-index
+         (ebox-canonical-input--source-index input)))
+    (ebox-incremental-candidate-replace-host-ref
+     candidate host-ref
+     (ebox-canonical-input--single-root
+      input "ebox-candidate-replace-host-ref")
+     old-semantic-key new-semantic-key)))
 
 ;;;###autoload
 (defun ebox-candidate-patch-host-paint
-    (candidate host-ref previous-subtree next-subtree)
-  "Patch HOST-REF paint from declarative OLD/NEW subtrees in CANDIDATE.
+    (candidate host-ref previous-input next-input)
+  "Patch HOST-REF paint from canonical PREVIOUS-INPUT/NEXT-INPUT in CANDIDATE.
 Only node-local paint fields may differ.  The Host's children and runtime
 identities are retained instead of being copied as a replacement subtree.
 Return CANDIDATE when accepted, or nil when the delta needs ordinary subtree
 replacement."
-  (ebox-incremental-candidate-patch-host-paint
-   candidate host-ref previous-subtree next-subtree))
+  (dolist (input (list previous-input next-input))
+    (unless (ebox-canonical-input-p input)
+      (signal 'wrong-type-argument (list 'ebox-canonical-input-p input))))
+  (let ((ebox-incremental--previous-source-base-index
+         (ebox-canonical-input--source-index previous-input))
+        (ebox-incremental--source-base-index
+         (ebox-canonical-input--source-index next-input)))
+    (ebox-incremental-candidate-patch-host-paint
+     candidate host-ref
+     (ebox-canonical-input--single-root
+      previous-input "ebox-candidate-patch-host-paint previous input")
+     (ebox-canonical-input--single-root
+      next-input "ebox-candidate-patch-host-paint next input"))))
 
 ;;;###autoload
 (defun ebox-candidate-replace-range-ref
-    (candidate range-ref next-items &optional reuse-map)
-  "Replace RANGE-REF, retaining slots named by proven REUSE-MAP."
-  (ebox-incremental-candidate-replace-range-ref
-   candidate range-ref next-items reuse-map))
+    (candidate range-ref input &optional reuse-map)
+  "Replace RANGE-REF from canonical INPUT, retaining proven REUSE-MAP slots."
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (let ((ebox-incremental--source-base-index
+         (ebox-canonical-input--source-index input)))
+    (ebox-incremental-candidate-replace-range-ref
+     candidate range-ref
+     (copy-sequence (ebox-canonical-input--nodes input))
+     reuse-map)))
 
 ;;;###autoload
-(defun ebox-candidate-replace-root (candidate next-root)
-  "Replace CANDIDATE's exact implicit root with declarative NEXT-ROOT.
+(defun ebox-candidate-replace-root (candidate input)
+  "Replace CANDIDATE's exact implicit root with canonical INPUT.
 The root address is private, base-bound, and cannot collide with host refs.
 Repeated calls are last-wins and absorb all descendant candidate operations."
-  (ebox-incremental-candidate-replace-root candidate next-root))
+  (unless (ebox-canonical-input-p input)
+    (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
+  (let ((ebox-incremental--source-base-index
+         (ebox-canonical-input--source-index input)))
+    (ebox-incremental-candidate-replace-root
+     candidate
+     (ebox-canonical-input--single-root input "ebox-candidate-replace-root"))))
 
 ;;;###autoload
 (defun ebox-commit
     (buffer-or-name next-root &optional framework-publish framework-rollback)
   "Atomically commit declarative NEXT-ROOT into BUFFER-OR-NAME.
 
-NEXT-ROOT may be a newly built Ebox node tree or a one-shot logical candidate
-from `ebox-candidate-begin'.  A complete root is copied into a buffer-owned
+NEXT-ROOT must be a canonical Ebox input or a one-shot logical candidate from
+`ebox-candidate-begin'.  A complete root is copied into a buffer-owned
 runtime.  A logical candidate path-copies replaced ancestor chains, shares
 untouched subtrees, and isolates retained scroll nodes before proof rendering.
 Both forms reconcile Ebox-owned identity,
@@ -4617,10 +4632,29 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
                (error
                 "Ebox declarative commit requires an existing live buffer: %S"
                 buffer-or-name))
-             (let* ((commit-input
-                     (if (ebox-candidate-p next-root)
-                         (ebox-incremental-consume-candidate buffer next-root)
-                       (ebox-incremental-prepare-root-commit buffer next-root)))
+             (unless (or (ebox-canonical-input-p next-root)
+                         (ebox-candidate-p next-root))
+               (signal 'wrong-type-argument
+                       (list '(or ebox-canonical-input-p ebox-candidate-p)
+                             next-root)))
+             (let* ((canonical-input
+                     (and (ebox-canonical-input-p next-root) next-root))
+                    (source-base-index
+                     (and canonical-input
+                          (ebox-canonical-input--source-index
+                           canonical-input)))
+                    (next-root
+                     (if canonical-input
+                         (ebox-canonical-input--single-root
+                          canonical-input "ebox-commit")
+                       next-root))
+                    (commit-input
+                     (let ((ebox-incremental--source-base-index
+                            source-base-index))
+                       (if (ebox-candidate-p next-root)
+                           (ebox-incremental-consume-candidate buffer next-root)
+                         (ebox-incremental-prepare-root-commit
+                          buffer next-root))))
                     (source (plist-get commit-input :root))
                     (callback
                      (or framework-publish
@@ -4707,11 +4741,11 @@ through dirty-set and patch-set execution before falling back to root rerender."
      (plist-get state :viewport-height))))
 
 ;;;###autoload
-(defun ebox-display-buffer (buffer-or-name node)
-  "Render NODE to BUFFER-OR-NAME through TP and display the buffer."
+(defun ebox-display-buffer (buffer-or-name input)
+  "Render canonical INPUT to BUFFER-OR-NAME through TP and display it."
   (declare (indent 1))
   (delete-other-windows)
-  (switch-to-buffer (ebox-render-to-buffer buffer-or-name node)))
+  (switch-to-buffer (ebox-render-to-buffer buffer-or-name input)))
 
 (defconst ebox-public-api
   '(ebox-buffer-mode

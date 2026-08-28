@@ -37,9 +37,9 @@ Ebox 需要 Emacs 29.1 或更高版本，并依赖 ECSS 与 TP。包管理器应
                 (box "Right")))))
 ```
 
-普通 author DSL 统一通过 `ebox-build`。框架集成可以直接组合
-`ebox-text-create`、typed LayoutConfig constructor 和 `ebox-box-create`；这个
-evaluated API 不是第二套 author 语法。
+普通 author DSL 统一通过 `ebox-build`。框架集成可以用一个
+`ebox-source-builder` 组合 typed node，再把 forest 与同一代 source facts 封装为一个
+`CanonicalEboxInput`；这个 evaluated API 不是第二套 author 语法。
 
 ## 如何选择布局
 
@@ -55,12 +55,12 @@ Flex/Grid participation property 直接属于子 `box`，不需要额外 wrapper
 
 - `ebox-render` 返回带属性文本，不发布 live buffer；
 - `ebox-render-to-buffer` 挂载 retained surface；
-- `ebox-commit` 原子发布重新构建的 root；
+- `ebox-commit` 原子发布重新构建的 canonical input；
 - `ebox-buffer-update-report` 返回最近一次成功更新报告；
 - `ebox-rerender-buffer-with-context` 应用显式 viewport 变化。
 
-Ebox 会在分配 runtime identity 前复制 author 输入，因此同一棵已构建树可以挂载到
-多个 buffer，而不会共享 live ownership。
+Ebox 会在分配 runtime identity 前复制 canonical input，因此同一个 built value 可以
+挂载到多个 buffer，而不会共享 live ownership。
 
 ## 可选 native 模块
 

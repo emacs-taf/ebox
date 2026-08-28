@@ -10,6 +10,7 @@
 (require 'subr-x)
 (require 'ecss)
 (require 'tp-style)
+(require 'ebox-source)
 (require 'ebox-layout-config)
 
 (defvar ebox--longhand)
@@ -1314,23 +1315,41 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
   "Return non-nil when STYLE PROPERTY has a declaration winner."
   (ecss-computed-style-specified-p style property))
 
-(defun ebox-style-node-declarations (node)
-  "Return NODE's immutable canonical ECSS declarations.
-Callers that need to mutate the declaration spine must copy it first."
-  (let ((declarations (plist-get node :ebox-style-declarations)))
+(defun ebox-style--node-declarations-from-record (node record)
+  "Return NODE's author declarations from borrowed immutable source RECORD."
+  (let ((declarations
+         (and record (ebox-source-record-declarations record))))
     (if (memq (plist-get node :ebox-type) '(flex grid))
         (ebox-style-merge-declarations
          declarations
          (plist-get (plist-get node :box) :ebox-style-overrides))
       declarations)))
 
-(defun ebox-style-node-specified-value (node name &optional missing)
+(defun ebox-style-node-declarations (source-index node)
+  "Return NODE's immutable author declarations from candidate SOURCE-INDEX.
+Private generated layout nodes have no author source and therefore contribute
+no declarations of their own."
+  (ebox-style--node-declarations-from-record
+   node
+   (when-let* ((handle (plist-get node :ebox-source-handle)))
+     (ebox-source--index-record source-index handle))))
+
+(defun ebox-style-node-specified-value
+    (node name &optional missing source-index)
   "Return NODE's canonical specified value for author property NAME.
 Return MISSING when NAME is valid but not specified.  Aliases resolve to the
-same canonical property id, so callers never inspect backend plist fields."
+same canonical property id, so callers never inspect backend plist fields.
+NODE may be a canonical input with one root.  A mounted raw node requires its
+explicit generation SOURCE-INDEX; facts are never recovered from its handle."
+  (when (ebox-canonical-input-p node)
+    (setq source-index (ebox-canonical-input--source-index node)
+          node (ebox-canonical-input--single-root
+                node "ebox-style-node-specified-value")))
+  (unless (ebox-source-index-p source-index)
+    (error "Ebox specified-value lookup requires a source index"))
   (let ((id (or (ebox-style-schema-id name)
                 (error "Unknown Ebox property: %S" name)))
-        (declarations (ebox-style-node-declarations node)))
+        (declarations (ebox-style-node-declarations source-index node)))
     (if (plist-member declarations id)
         (plist-get declarations id)
       missing)))
@@ -1583,12 +1602,49 @@ until their private encoding is removed."
         (setq tail (cddr tail)))))
   node)
 
+(defconst ebox-style--item-projection-properties
+  '(:order :flex-grow :flex-shrink :flex-basis :align-self
+    :grid-column :grid-row :grid-column-span :grid-row-span)
+  "Canonical node fields owned by computed parent participation style.")
+
+(defun ebox-style--transfer-node-property (old new property)
+  "Transfer style-owned PROPERTY presence and value from OLD to NEW."
+  (if (plist-member old property)
+      (plist-put new property (plist-get old property))
+    (ebox-style--delete-node-property new property)))
+
+(defun ebox-style--computed-projection-transferable-p (old new style)
+  "Return non-nil when OLD's STYLE projection is exact for canonical NEW.
+Display axes and typed layout config combine style with the fresh node's base
+structure.  They must already agree; otherwise the ordinary projection path
+recomputes that combination from NEW."
+  (and (memq (plist-get new :ebox-kind) '(text box))
+       (eq (plist-get old :ebox-kind) (plist-get new :ebox-kind))
+       (eq (plist-get old :ebox-type) (plist-get new :ebox-type))
+       (eq style (plist-get old :ebox-computed-style))
+       (equal (plist-get old :display) (plist-get new :display))
+       (equal (plist-get old :ebox-layout-config)
+              (plist-get new :ebox-layout-config))))
+
+(defun ebox-style--transfer-computed-projection (old new style)
+  "Transfer OLD's materialized STYLE projection onto fresh canonical NEW.
+OLD and NEW must have the same canonical kind and source-stable computed
+style.  Content, children, source/runtime identity, and scroll state remain
+owned by NEW; only fields owned by the unchanged computed style are shared."
+  (unless (ebox-style--computed-projection-transferable-p old new style)
+    (error "Ebox computed projection transfer requires source-stable peers"))
+  (plist-put new :ebox-computed-style style)
+  (cl-loop for (property _value) on ebox--longhand by #'cddr
+           unless (memq property '(:content :scroll-offset))
+           do (ebox-style--transfer-node-property old new property))
+  (dolist (property ebox-style--item-projection-properties)
+    (ebox-style--transfer-node-property old new property))
+  new)
+
 (defun ebox-style--apply-item (node style &optional snapshot)
   "Apply computed Flex/Grid item fields from STYLE to NODE."
   (let ((values (ebox-style--context-values style 'item nil snapshot)))
-    (dolist (property '(:order :flex-grow :flex-shrink :flex-basis :align-self
-                        :grid-column :grid-row
-                        :grid-column-span :grid-row-span))
+    (dolist (property ebox-style--item-projection-properties)
       (ebox-style--delete-node-property node property))
     (cl-loop for (property value) on values by #'cddr
              do (plist-put node property value)))

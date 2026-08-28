@@ -101,7 +101,9 @@
 (defun ebox-visual-check-report ()
   "Return visual verification report based on rendered text properties."
   (let* ((layout (ebox-visual-check-layout))
-         (ids-before (ebox-region-ids layout))
+         (ids-before
+          (ebox-region-ids
+           (ebox-canonical-input--single-root layout "Ebox visual check")))
          (buffer (generate-new-buffer " *ebox-visual-check-report*")))
     (unwind-protect
         (progn

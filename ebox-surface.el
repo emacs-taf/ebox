@@ -527,8 +527,8 @@ continues to own its inline text directly."
        (or (eq (plist-get node :ebox-kind) 'text)
            (null (plist-get node :ebox-kind)))))
 
-(defun ebox-surface--inline-inheritance-required-p (root)
-  "Return non-nil when inline styles in ROOT require an ECSS cascade.
+(defun ebox-surface--inline-inheritance-required-p (root source-index)
+  "Return non-nil when ROOT in SOURCE-INDEX requires an ECSS cascade.
 An empty stylesheet still needs a cascade when an inherited declaration can
 reach a descendant that does not declare the same property.  Other inline
 declarations are already projected into the candidate engine fields at node
@@ -539,7 +539,8 @@ construction time and can use the static projection path."
       (let* ((entry (pop pending))
              (node (car entry))
              (inherited (cdr entry))
-             (declarations (ebox-style-node-declarations node)))
+             (declarations
+              (ebox-style-node-declarations source-index node)))
         (when (cl-some (lambda (property)
                          (and (ebox-surface--inherited-style-consumer-p node)
                               (memq property inherited)
@@ -1189,6 +1190,11 @@ PREVIOUS-STATE's node-object table."
          (node-root
           (tp-object-ensure context surface-root
                             ebox-surface--nodes-key 'ebox/nodes))
+         (source-index
+          (or (plist-get state-overrides :source-index)
+              (and (eq root (plist-get previous-state :root-node))
+                   (plist-get previous-state :source-index))
+              (ebox-tree-source-index root)))
          (range-splice-p
           (and (eq projection-kind 'mixed-owner-reflow)
                (ebox-surface--mixed-range-splice-p state-overrides)))
@@ -1223,16 +1229,29 @@ PREVIOUS-STATE's node-object table."
                 stylesheet-signature)))
          (bindings-by-subject (make-hash-table :test 'eq))
          (states-by-subject (make-hash-table :test 'eq))
-         (subjects (when (and style-required-p
-                              (not (and (eq projection-kind 'native-frame)
-                                        (plist-get state-overrides
-                                                   :native-topology-stable-p)))
-                              (not (and (memq projection-kind
-                                         '(owner-scoped scroll-patch
-                                           formatting-context-reflow
-                                           mixed-owner-reflow))
-                                        (not range-splice-p))))
-                     (ebox-tree-subject-index root)))
+         (subjects-required-p
+          (and style-required-p
+               (not (and (eq projection-kind 'native-frame)
+                         (plist-get state-overrides
+                                    :native-topology-stable-p)))
+               (not (and (memq projection-kind
+                                '(owner-scoped scroll-patch
+                                  formatting-context-reflow
+                                  mixed-owner-reflow))
+                         (not range-splice-p)))))
+         (_materialized-source-index
+          (when (and subjects-required-p
+                     (ebox-source--index-derived-stale-p source-index))
+            ;; A local candidate patches exact handle→subject ancestry in
+            ;; O(changed) while marking document-order selector views stale.
+            ;; Style projection consumes that patched table directly; only a
+            ;; fact-only input with no subjects needs a full tree derivation.
+            (unless (ebox-source--index-node-subjects source-index)
+              (setq source-index
+                    (ebox-tree-source-index
+                     root t ebox--render-root-parent-kind source-index)))))
+         (subjects (when subjects-required-p
+                     (ebox-tree-subject-index root source-index)))
          (selector-tree-snapshot
           (if (and (memq projection-kind
                     '(owner-scoped scroll-patch
@@ -1258,14 +1277,16 @@ PREVIOUS-STATE's node-object table."
     (cond
      ((eq projection-kind 'native-frame)
         (ebox-surface--project-node-delta
-         context root previous-state state-overrides node-root objects-by-node
+         context root source-index previous-state state-overrides
+         node-root objects-by-node
          (and subjects (plist-get subjects :node-subject-table))
          bindings-by-subject states-by-subject style-state-table
          stylesheet-signature selector-tree-token
          stylesheet-subject-local-p))
      (range-splice-p
       (ebox-surface--project-node-delta
-       context root previous-state state-overrides node-root objects-by-node
+       context root source-index previous-state state-overrides
+       node-root objects-by-node
        (and subjects (plist-get subjects :node-subject-table))
        bindings-by-subject states-by-subject style-state-table
        stylesheet-signature selector-tree-token
@@ -1278,7 +1299,7 @@ PREVIOUS-STATE's node-object table."
      (t
       (tp-object-retain context node-root)
       (ebox-surface--ensure-node-tree
-       context node-root root objects-by-node
+       context node-root root source-index objects-by-node
        (and subjects (plist-get subjects :node-subject-table))
        bindings-by-subject states-by-subject style-state-table
        stylesheet-signature
@@ -1288,6 +1309,7 @@ PREVIOUS-STATE's node-object table."
       (ebox-tree-clear-author-style-pending root))
     (list :surface-root surface-root
           :node-root node-root
+          :source-index source-index
           :objects-by-node objects-by-node
           :style-binding-states style-state-table
           :stylesheet-signature stylesheet-signature
@@ -1309,7 +1331,8 @@ PREVIOUS-STATE's node-object table."
   objects-by-node)
 
 (defun ebox-surface--project-node-delta
-    (context root previous-state state-overrides node-root objects-by-node
+    (context root source-index previous-state state-overrides
+             node-root objects-by-node
              subject-table bindings-by-subject states-by-subject
              style-state-table stylesheet-signature selector-tree-token
              stylesheet-subject-local-p)
@@ -1333,7 +1356,9 @@ PREVIOUS-STATE's node-object table."
       (maphash
        (lambda (node-id node)
          (when subject-table
-           (when-let* ((subject (gethash node subject-table))
+           (when-let* ((subject
+                        (ebox-source--subject-table-get
+                         subject-table (ebox-tree-node-source-handle node)))
                        (object (gethash node-id old-objects))
                        (style-state (gethash object style-state-table))
                        (binding (plist-get style-state :binding)))
@@ -1365,7 +1390,8 @@ PREVIOUS-STATE's node-object table."
             (error "Ebox native projection has an unordered node delta"))
           (let ((object
                  (tp-object-ensure-at context parent
-                                      (ebox-surface--node-key node)
+                                      (ebox-surface--node-key
+                                       source-index node)
                                       (ebox-surface--node-kind node)
                                       position)))
             (tp-object-retain context object)
@@ -1373,7 +1399,7 @@ PREVIOUS-STATE's node-object table."
                 (tp-object-reuse context object)
               (when subject-table
                 (ebox-surface--apply-node-style
-                 object node subject-table bindings-by-subject
+                 source-index object node subject-table bindings-by-subject
                  states-by-subject style-state-table stylesheet-signature
                  selector-tree-token stylesheet-subject-local-p)))
             (plist-put node :surface-object object)
@@ -1389,7 +1415,7 @@ PREVIOUS-STATE's node-object table."
     objects-by-node))
 
 (defun ebox-surface--complete-projection
-    (context root style-required-p projection)
+    (context root source-index style-required-p projection)
   "Complete a retained PROJECTION for ROOT after a local proof miss.
 The initial span attempt already owns the surface and node-root identities in
 CONTEXT, so full fallback must populate those same objects instead of creating
@@ -1411,10 +1437,10 @@ the projection roots a second time."
          (bindings-by-subject (make-hash-table :test 'eq))
          (states-by-subject (make-hash-table :test 'eq))
          (subjects (when style-required-p
-                     (ebox-tree-subject-index root))))
+                     (ebox-tree-subject-index root source-index))))
     (tp-object-retain context node-root)
     (ebox-surface--ensure-node-tree
-     context node-root root objects-by-node
+     context node-root root source-index objects-by-node
      (and subjects (plist-get subjects :node-subject-table))
      bindings-by-subject states-by-subject style-state-table
      stylesheet-signature
@@ -1884,9 +1910,7 @@ identities while always discarding TP handles and render-cache attachments.
 VALIDATED-P means the caller owns a current topology certificate for SOURCE."
   (unless (and (listp source) (not (stringp source)))
     (error "Ebox surface source must be an Ebox node"))
-  (unless validated-p
-    (ebox-tree-validate-declarative-root
-     source t ebox--render-root-parent-kind))
+  (ignore validated-p)
   (let ((candidate (ebox-tree-copy-node-structure source)))
     (if preserve-identities-p
         (ebox-surface--clear-runtime-attachments candidate)
@@ -1908,10 +1932,13 @@ published generation so a failed transaction has no cache state to restore."
             (setq copy (plist-put copy key (copy-hash-table value)))))))
     copy))
 
-(defun ebox-surface--reconcile-candidate (root previous-state)
-  "Reconcile styled ROOT with PREVIOUS-STATE runtime identities."
+(defun ebox-surface--reconcile-candidate
+    (root source-index previous-state)
+  "Reconcile ROOT identities using SOURCE-INDEX and PREVIOUS-STATE."
   (when-let* ((previous-root (plist-get previous-state :root-node)))
-    (ebox-tree-reconcile-runtime previous-root root))
+    (ebox-tree-reconcile-runtime
+     previous-root (plist-get previous-state :source-index)
+     root source-index))
   root)
 
 (defun ebox-surface--source-region-id-set (source)
@@ -1933,11 +1960,11 @@ published generation so a failed transaction has no cache state to restore."
       (not (ebox--runtime-region-id-conflict
             (ebox-surface--source-region-id-set source) buffer))))
 
-(defun ebox-surface--node-key (node &optional positional-p)
-  "Return NODE's namespaced sibling key, or nil for positional identity."
+(defun ebox-surface--node-key (source-index node &optional positional-p)
+  "Return NODE's SOURCE-INDEX sibling key, or nil when positional."
   (when-let* ((key (and (not positional-p)
                         (not (plist-get node :ebox-sequence-location))
-                        (plist-get node :key))))
+                        (ebox-tree-node-author-key source-index node))))
     (list 'ebox/key key)))
 
 (defun ebox-surface--node-kind (node)
@@ -1945,14 +1972,16 @@ published generation so a failed transaction has no cache state to restore."
   (list 'ebox/node (plist-get node :ebox-type)))
 
 (defun ebox-surface--node-style-binding
-    (object node subject bindings-by-subject states-by-subject style-state-table
+    (source-index object node subject bindings-by-subject states-by-subject
+            style-state-table
             stylesheet-signature selector-tree-token
             stylesheet-subject-local-p)
   "Install and return NODE style binding on OBJECT for SUBJECT."
   (let* ((parent (ecss-subject-parent subject))
          (parent-binding (and parent (gethash parent bindings-by-subject)))
          (parent-style-state (and parent (gethash parent states-by-subject)))
-         (declarations (ebox-style-node-declarations node))
+         (declarations
+          (ebox-tree-node-source-declarations source-index node))
          (old-state (gethash object style-state-table))
          (old-binding (and old-state (plist-get old-state :binding)))
          (selector-context-stable-p
@@ -2113,9 +2142,10 @@ published generation so a failed transaction has no cache state to restore."
           (puthash key style ebox-surface--inline-style-value-cache)
           style)))))
 
-(defun ebox-surface--closed-canonical-node-p (node)
-  "Return non-nil when NODE needs only closed inherited style projection."
-  (let ((declarations (ebox-style-node-declarations node)))
+(defun ebox-surface--closed-canonical-node-p (source-index node)
+  "Return non-nil when NODE in SOURCE-INDEX needs closed inheritance."
+  (let ((declarations
+         (ebox-tree-node-source-declarations source-index node)))
     (and (eq (plist-get node :ebox-type) 'box)
          (memq (plist-get node :ebox-kind) '(box text))
          (not (ebox-style-cascade-active-p))
@@ -2132,7 +2162,7 @@ the unpublished node and parent tables.  Unchanged declaration/subject chains
 reuse their exact prior style; changed nodes compute once against the prepared
 candidate parent style.  Stylesheet rules deliberately disable this local
 path because selector scope may extend outside NODE-IDS.  Return the prepared
-node-to-subject table when the requested local preparation was completed."
+source-handle-to-subject table when the requested local preparation completed."
   (let ((stylesheet-signature (ebox-surface--stylesheet-signature)))
     (when (and node-ids
                (ebox-surface--stylesheet-subject-local-p
@@ -2140,10 +2170,12 @@ node-to-subject table when the requested local preparation was completed."
       (let ((old-nodes (plist-get old-state :node-table))
             (new-nodes (plist-get candidate-index :node-table))
             (parents (plist-get candidate-index :parent-table))
+            (old-source-index (plist-get old-state :source-index))
+            (new-source-index (plist-get candidate-index :source-index))
             (resolved (make-hash-table :test 'equal))
             (visiting (make-hash-table :test 'equal))
             (subjects-by-id (make-hash-table :test 'equal))
-            (subjects-by-node (make-hash-table :test 'eq))
+            (subjects-by-handle (make-hash-table :test 'eq))
             (ebox-surface--inline-style-value-cache
              (make-hash-table :test 'equal)))
         (cl-labels
@@ -2176,19 +2208,25 @@ node-to-subject table when the requested local preparation was completed."
                           (and old-node
                                (plist-get old-node :ebox-computed-style)))
                          (declarations
-                          (and node (ebox-style-node-declarations node)))
+                          (and node
+                               (ebox-tree-node-source-declarations
+                                new-source-index node)))
                          (old-declarations
                           (and old-node
-                               (ebox-style-node-declarations old-node)))
+                               (ebox-tree-node-source-declarations
+                                old-source-index old-node)))
                          (subject
                           (and node
                                (or (gethash node-id subjects-by-id)
                                    (let ((created
-                                          (ebox-tree-node-subject node)))
+                                          (ebox-tree-node-subject
+                                           new-source-index node)))
                                      (setf (ecss-subject-parent created)
                                            parent-subject)
                                      (puthash node-id created subjects-by-id)
-                                     (puthash node created subjects-by-node)
+                                     (puthash
+                                      (ebox-tree-node-source-handle node)
+                                      created subjects-by-handle)
                                      created))))
                          (old-subject
                           (and old-node
@@ -2203,7 +2241,8 @@ node-to-subject table when the requested local preparation was completed."
                                                old-state
                                                :style-binding-states))))
                                   (plist-get state :subject))
-                                (ebox-tree-node-subject old-node))))
+                                (ebox-tree-node-subject
+                                 old-source-index old-node))))
                          (source-stable-p
                           (and old-node
                                (equal parent-id old-parent-id)
@@ -2222,9 +2261,14 @@ node-to-subject table when the requested local preparation was completed."
                                     parent-style)))))
                     (when (and node style (not (eq node old-node)))
                       (cond
-                       (source-stable-p)
+                       ((and source-stable-p
+                             (ebox-style--computed-projection-transferable-p
+                              old-node node style))
+                        (ebox-style--transfer-computed-projection
+                         old-node node style))
                        ((and (null (plist-get node :ebox-computed-style))
-                             (ebox-surface--closed-canonical-node-p node))
+                             (ebox-surface--closed-canonical-node-p
+                              new-source-index node))
                         (ebox-style-apply-closed-inheritance node style))
                        (t
                         (ebox-style-apply-computed node style)))
@@ -2236,11 +2280,12 @@ node-to-subject table when the requested local preparation was completed."
           (dolist (node-id node-ids)
             (when (gethash node-id new-nodes)
               (resolve node-id))))
-        subjects-by-node))))
+        subjects-by-handle))))
 
-(defun ebox-surface--node-style-binding-required-p (node)
-  "Return non-nil when selector-free NODE needs its own style binding."
-  (let ((declarations (ebox-style-node-declarations node)))
+(defun ebox-surface--node-style-binding-required-p (source-index node)
+  "Return non-nil when NODE in SOURCE-INDEX needs its own style binding."
+  (let ((declarations
+         (ebox-tree-node-source-declarations source-index node)))
     (or (ebox-surface--style-consuming-node-p node)
         (cl-some (lambda (property)
                    (plist-member declarations property))
@@ -2250,14 +2295,17 @@ node-to-subject table when the requested local preparation was completed."
                               (string-prefix-p "--" (symbol-name property)))))))
 
 (defun ebox-surface--apply-node-style
-    (object node subject-table bindings-by-subject states-by-subject
+    (source-index object node subject-table bindings-by-subject states-by-subject
             style-state-table
             stylesheet-signature selector-tree-token
             stylesheet-subject-local-p)
   "Compute and apply NODE style using retained OBJECT and SUBJECT-TABLE."
-  (when-let* ((subject (gethash node subject-table)))
+  (when-let* ((subject
+               (ebox-source--subject-table-get
+                subject-table (ebox-tree-node-source-handle node))))
     (if (and (hash-table-p ebox-surface--inline-style-value-cache)
-             (not (ebox-surface--node-style-binding-required-p node)))
+             (not (ebox-surface--node-style-binding-required-p
+                   source-index node)))
         (when-let* ((parent (ecss-subject-parent subject))
                     (binding (gethash parent bindings-by-subject)))
           (puthash subject binding bindings-by-subject)
@@ -2269,13 +2317,15 @@ node-to-subject table when the requested local preparation was completed."
       (let ((style
              (tp-binding-read
               (ebox-surface--node-style-binding
-               object node subject bindings-by-subject states-by-subject
+               source-index object node subject
+               bindings-by-subject states-by-subject
                style-state-table
                stylesheet-signature selector-tree-token
                stylesheet-subject-local-p))))
         (unless (equal style (plist-get node :ebox-computed-style))
           (if (and (null (plist-get node :ebox-computed-style))
-                   (ebox-surface--closed-canonical-node-p node))
+                   (ebox-surface--closed-canonical-node-p
+                    source-index node))
               (ebox-style-apply-closed-inheritance node style)
             (ebox-style-apply-computed node style)))))))
 
@@ -2309,6 +2359,7 @@ dependencies, or any malformed index conservatively preserves root planning."
   (let ((objects (plist-get state :surface-node-object-table))
         (style-states (plist-get state :style-binding-states))
         (candidate-nodes (plist-get candidate-state :node-table))
+        (candidate-source-index (plist-get candidate-state :source-index))
         (stylesheet-signature
          (let* ((cache ebox-incremental--allocated-slot-proof-cache)
                 (missing (make-symbol "ebox-stylesheet-proof-missing"))
@@ -2337,7 +2388,8 @@ dependencies, or any malformed index conservatively preserves root planning."
                                    (plist-get style-state :subject)))
                      (candidate-declarations
                       (and candidate-node
-                           (ebox-style-node-declarations candidate-node)))
+                           (ebox-tree-node-source-declarations
+                            candidate-source-index candidate-node)))
                      (locally-computed-p
                       (and candidate-node
                            (plist-get candidate-node
@@ -2355,9 +2407,11 @@ dependencies, or any malformed index conservatively preserves root planning."
                               (ebox-style--paint-declarations-equivalent-p
                                (plist-get style-state :declarations)
                                candidate-declarations))
-                          (equal (ebox-tree-node-id candidate-node)
+                          (equal (ebox-tree-node-id
+                                  candidate-source-index candidate-node)
                                  (ecss-subject-id subject))
-                          (equal (ebox-tree-node-classes candidate-node)
+                          (equal (ebox-tree-node-classes
+                                  candidate-source-index candidate-node)
                                  (ecss-subject-classes subject))
                           (equal (ebox-tree-metadata-string
                                   (ebox-tree-node-selector-type candidate-node))
@@ -2368,9 +2422,11 @@ dependencies, or any malformed index conservatively preserves root planning."
                               (cons
                                (substring (symbol-name (car attribute)) 1)
                                (cdr attribute)))
-                            (ebox-tree-node-attributes candidate-node))
+                            (ebox-tree-node-attributes
+                             candidate-source-index candidate-node))
                            (ecss-subject-attributes subject))
-                          (equal (ebox-tree-node-state candidate-node)
+                          (equal (ebox-tree-node-state
+                                  candidate-source-index candidate-node)
                                  (ecss-subject-states subject))))
                      (equal stylesheet-signature
                             (plist-get style-state :stylesheet-signature))
@@ -2378,7 +2434,7 @@ dependencies, or any malformed index conservatively preserves root planning."
           dirty-set))))
 
 (defun ebox-surface--ensure-node-tree
-    (context parent node table subject-table bindings-by-subject
+    (context parent node source-index table subject-table bindings-by-subject
              states-by-subject style-state-table stylesheet-signature
              selector-tree-token stylesheet-subject-local-p
              &optional parent-kind positional-p)
@@ -2386,14 +2442,16 @@ dependencies, or any malformed index conservatively preserves root planning."
   (ebox--ensure-node-id node)
   (let ((object
          (tp-object-ensure context parent
-                           (ebox-surface--node-key node positional-p)
+                           (ebox-surface--node-key
+                            source-index node positional-p)
                            (ebox-surface--node-kind node))))
     (tp-object-retain context object)
     (plist-put node :surface-object object)
     (puthash node object table)
     (when subject-table
       (ebox-surface--apply-node-style
-       object node subject-table bindings-by-subject states-by-subject
+       source-index object node subject-table
+       bindings-by-subject states-by-subject
        style-state-table
        stylesheet-signature selector-tree-token
        stylesheet-subject-local-p))
@@ -2402,7 +2460,8 @@ dependencies, or any malformed index conservatively preserves root planning."
        node
        (lambda (child)
          (ebox-surface--ensure-node-tree
-         context object child table subject-table bindings-by-subject
+          context object child source-index table subject-table
+          bindings-by-subject
           states-by-subject style-state-table stylesheet-signature
           selector-tree-token stylesheet-subject-local-p
           child-kind (and (plist-get node :ebox-child-sequence) t)))))
@@ -3610,16 +3669,27 @@ box with wrapper chrome falls back to the retained wrapper renderer."
          (hash-table-p (plist-get state :region-node-table))
          (hash-table-p (plist-get state :region-box-count-table))
          (hash-table-p (plist-get state :region-box-table))
-         (hash-table-p (plist-get state :host-ref-table))
+         (hash-table-p
+          (and (plist-get state :source-index)
+               (ebox-source--index-host-ref-table-view
+                (plist-get state :source-index))))
          (hash-table-p (plist-get state :range-ref-table))
          (vectorp (plist-get state :native-node-postorder)))))
 
 (defun ebox-surface--finish-runtime-state (state)
   "Install or retain the prepared runtime indexes in candidate STATE."
   (unless (ebox-surface--runtime-index-ready-p state)
-    (ebox--render-state-install-index
-     state (ebox--runtime-index (plist-get state :root-node) t))
-    (plist-put state :runtime-index-prepared-p t))
+    (setq state
+          (ebox--render-state-install-index
+           state
+           (ebox--runtime-index
+            (plist-get state :root-node) t (plist-get state :source-index))))
+    (setq state (plist-put state :runtime-index-prepared-p t)))
+  (setq state
+        (plist-put state :selector-index-stale-p
+                   (and (plist-get state :source-index)
+                        (ebox-source--index-derived-stale-p
+                         (plist-get state :source-index)))))
   state)
 
 (defun ebox-surface--role-ids-from-properties (properties)
@@ -4872,9 +4942,28 @@ published runtime and must be consumed without clearing those shared nodes."
                        (not source-path-copied-p))
                   (ebox-surface--isolated-viewport-overrides state-overrides)
                 state-overrides))
+             (source-base-index
+              (plist-get state-overrides :source-base-index))
+             (source-index
+              (or (plist-get state-overrides :source-index)
+                  (and source-base-index
+                       (ebox-tree-source-index
+                        root t ebox--render-root-parent-kind
+                        source-base-index))
+                  (and (eq root (plist-get previous-state :root-node))
+                       (plist-get previous-state :source-index))
+                  (ebox-tree-source-index
+                   root t ebox--render-root-parent-kind)))
+             (_source-index
+              (progn
+                (setq state-overrides (copy-sequence state-overrides))
+                (cl-remf state-overrides :source-base-index)
+                (setq state-overrides
+                      (plist-put state-overrides :source-index source-index))))
              (inline-inheritance-required-p
               (unless (or scroll-fast-p retained-runtime-source-p)
-                (ebox-surface--inline-inheritance-required-p root)))
+                (ebox-surface--inline-inheritance-required-p
+                 root source-index)))
              (author-style-pending-p
               (> (ebox-tree-author-style-count root) 0))
              (cascade-required-p
@@ -4893,9 +4982,13 @@ published runtime and must be consumed without clearing those shared nodes."
              (ebox-surface--projection-start
                context root style-required-p projection-kind previous-state
                state-overrides)))
+      (setq source-index (plist-get projection :source-index)
+            state-overrides
+            (plist-put state-overrides :source-index source-index))
       (unless (or source-isolated-p source-path-copied-p
                   retained-runtime-source-p)
-        (ebox-surface--reconcile-candidate root previous-state))
+        (ebox-surface--reconcile-candidate
+         root source-index previous-state))
              (let* ((context-axis-facts
                      (and
                       signals
@@ -4963,6 +5056,7 @@ published runtime and must be consumed without clearing those shared nodes."
                root previous-state state-overrides projection-kind
                stylesheet-active-p cascade-required-p axes viewport-width
                viewport-height display-signature scroll-offsets)))
+        (plist-put state :source-index source-index)
         (when reuse-context-axes-p
           (plist-put state :viewport-dependent-node-ids
                      (plist-get context-axis-facts
@@ -5040,13 +5134,15 @@ published runtime and must be consumed without clearing those shared nodes."
                        span-output
                      (setq projection
                            (ebox-surface--complete-projection
-                            context root style-required-p projection))
+                            context root source-index
+                            style-required-p projection))
                        (setq state
                              (ebox-surface--projection-state
                               root previous-state state-overrides nil
                               stylesheet-active-p cascade-required-p axes
                               viewport-width viewport-height display-signature
                               scroll-offsets))
+                       (plist-put state :source-index source-index)
                        (plist-put state :style-binding-states
                                   (plist-get projection :style-binding-states))
                        (plist-put state :selector-tree-snapshot

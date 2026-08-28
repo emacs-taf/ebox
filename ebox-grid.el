@@ -773,7 +773,7 @@ size for start/center/end alignment unless it would overflow its track."
         (plist-put copy :content rendered)
         (plist-put copy :ebox-content-node nil)
         (plist-put copy :ebox-content-width-exact-p t)
-        (prog1 (ebox-render copy)
+        (prog1 (ebox--render-node copy)
           (puthash region-id box ebox--region-box-table)))
     rendered))
 

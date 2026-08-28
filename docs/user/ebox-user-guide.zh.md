@@ -31,7 +31,7 @@ Ebox 文档由 Text 和 Box 节点组成。author 语法只有七个入口：
 子节点始终直接嵌套。布局 form 只是选择了子布局算法的 Box，不是另一种视觉对象。
 
 ```elisp
-(defvar ebox-guide-root
+(defvar ebox-guide-input
   (ebox-build
    '(column :padding (1 2)
             :border ((1) solid "#8A93A6")
@@ -40,6 +40,10 @@ Ebox 文档由 Text 和 Box 节点组成。author 语法只有七个入口：
                  (box :id "status" :background-color "#F4F6FB" "Inbox")
                  (box :background-color "#EEF2FF" "Archive")))))
 ```
+
+`ebox-build` 返回不透明的 `CanonicalEboxInput`，把 canonical forest 与对应的 source
+generation 保持为一个整体。普通 author 代码只需把这个值原样传给渲染和发布函数，
+不要取出或重新组装其中的内部 node。
 
 需要空矩形区域时，使用只有几何 property、没有子节点的 `box`，不需要额外节点类型。
 
@@ -115,14 +119,15 @@ placement property 同样直接属于子 `box`。
 ## 5. 渲染与发布
 
 `ebox-render` 返回带属性文本，不修改 live buffer；`ebox-render-to-buffer` 挂载
-retained TP surface 并返回 buffer。
+retained TP surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
+`ebox-build` 返回的不透明值。
 
 ```elisp
-(ebox-render ebox-guide-root)
-(ebox-render-to-buffer "*Ebox Guide*" ebox-guide-root)
+(ebox-render ebox-guide-input)
+(ebox-render-to-buffer "*Ebox Guide*" ebox-guide-input)
 ```
 
-重新构建 root 后，用 `ebox-commit` 原子更新：
+重新构建 canonical input 后，用 `ebox-commit` 原子更新：
 
 ```elisp
 (ebox-commit
@@ -130,7 +135,7 @@ retained TP surface 并返回 buffer。
  (ebox-build
   '(column :padding (1 2)
            (text "Updated notes")
-           (box :key body "The new root is caller-owned."))))
+           (box :key body "The new input is caller-owned."))))
 ```
 
 验证、渲染或发布失败时，旧 buffer 与 runtime 状态保持不变。
@@ -184,19 +189,59 @@ retained TP surface 并返回 buffer。
 
 ## 9. Typed 集成 API
 
-已经完成 author normalization 的框架可以绕过 list DSL：用 `ebox-text-create`
-构造 TextNode，用对应 layout constructor 构造 typed LayoutConfig，再用
-`ebox-box-create` 构造 BoxNode。
+已经完成 author normalization 的框架可以绕过 list DSL；这是集成 API，不是第二套
+author 语法。一个 source builder 拥有完整 source generation。每个 TextNode 或
+BoxNode 都取得该 builder 返回的不透明 handle，并使用由同一份 normalized
+declarations 投影出的 node-owned facts。最后封存 builder，把 forest 与 source index
+作为一个 `CanonicalEboxInput` 传递。
 
 ```elisp
-(ebox-box-create
- :layout (ebox-row-layout-create :item-gap 1 :cross-align 'center)
- :children (list (ebox-text-create :value "Left")
-                 (ebox-text-create :value "Right")))
+(let* ((builder (ebox-source-builder-create))
+       (root-declarations nil)
+       (left-declarations nil)
+       (right-declarations nil)
+       (root-handle
+        (ebox-source-builder-bind
+         builder :declarations root-declarations))
+       (left-handle
+        (ebox-source-builder-bind
+         builder :declarations left-declarations))
+       (right-handle
+        (ebox-source-builder-bind
+         builder :declarations right-declarations))
+       (left
+        (ebox-text-create
+         :value "Left"
+         :source-handle left-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'text left-declarations)))
+       (right
+        (ebox-text-create
+         :value "Right"
+         :source-handle right-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'text right-declarations)))
+       (root
+        (ebox-box-create
+         :layout (ebox-row-layout-create
+                  :item-gap 1 :cross-align 'center)
+         :children (list left right)
+         :source-handle root-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'row root-declarations))))
+  (ebox-canonical-input-create
+   (list root)
+   (ebox-source-builder-finish builder)))
 ```
 
-这里的 `:layout` 和 `:children` 是 evaluated typed constructor 的字段，不是 author
-property，也没有扩展七入口语法。
+`ebox-source-builder-create`、`ebox-source-builder-bind`、
+`ebox-source-builder-finish`、`ebox-canonical-facts-from-declarations`、typed
+node/layout constructor 与 `ebox-canonical-input-create` 只属于集成边界。这里的
+`:layout`、`:children`、`:source-handle` 与 `:owned-facts` 是 evaluated constructor
+字段，不是 author property，也没有扩展七入口语法。
 
 ## 10. 可选 native reflow 与验证
 

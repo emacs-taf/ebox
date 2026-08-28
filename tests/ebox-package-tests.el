@@ -50,7 +50,7 @@
 (ert-deftest ebox-facade-loads-internal-model-modules ()
   "The public ebox facade should load all internal foundation modules."
   (require 'ebox)
-  (dolist (feature '(ebox-cache ebox-style ebox-tree ebox-measure
+  (dolist (feature '(ebox-cache ebox-source ebox-style ebox-tree ebox-measure
                                 ebox-layout-config
                                 ebox-node-factory
                                 ebox-fragment ebox-layout ebox-flex ebox-grid
@@ -77,8 +77,16 @@
          "--eval"
          (concat
           "(progn (require 'ebox-canonical) "
-          "(unless (ebox-text-node-p (ebox-text-create :value \"A\")) "
-          "  (error \"Typed Text autoload failed\")))")))))))
+          "(let* ((builder (ebox-source-builder-create)) "
+          "       (handle (ebox-source-builder-bind "
+          "                builder :declarations nil)) "
+          "       (node (ebox-text-create "
+          "              :value \"A\" :source-handle handle "
+          "              :owned-facts "
+          "              (ebox-canonical-facts-from-declarations "
+          "               'text nil)))) "
+          "  (unless (ebox-text-node-p node) "
+          "    (error \"Typed Text autoload failed\"))))")))))))
 
 (ert-deftest ebox-facade-defines-native-workflow-without-loading-it ()
   "The facade should define native commands without loading the subsystem."
@@ -121,7 +129,8 @@
   (should (commandp 'ebox-byte-compile))
   (should
    (equal ebox--compile-sources
-          '("ebox-cache.el" "ebox-style.el" "ebox-layout-config.el"
+          '("ebox-cache.el" "ebox-source.el" "ebox-style.el"
+            "ebox-layout-config.el"
             "ebox-node-factory.el"
             "ebox-child-range.el"
             "ebox-tree.el" "ebox-measure.el"

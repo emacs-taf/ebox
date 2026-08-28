@@ -11,8 +11,12 @@
 
 (require 'subr-x)
 (require 'ecss-selector)
+(require 'ebox-source)
 (require 'ebox-style)
 (require 'ebox-child-range)
+
+(defvar ebox-tree--incoming-source-indexes nil
+  "Transaction-local handle to incoming source-index map for one delta.")
 (require 'ebox-layout-config)
 
 (declare-function ebox-get "ebox" (box property))
@@ -93,10 +97,24 @@ their private props encoding.  Callers receive a detached value."
    ((stringp value) value)
    (t (format "%s" value))))
 
-(defun ebox-tree-node-id (node)
-  "Return NODE's selector id string from `:id', or nil."
-  (and (listp node)
-       (ebox-tree-metadata-string (plist-get node :id))))
+(defun ebox-tree-node-source-handle (node)
+  "Return canonical NODE's opaque source handle, or nil."
+  (and (listp node) (plist-get node :ebox-source-handle)))
+
+(defun ebox-tree-node-source-identity (node)
+  "Return canonical NODE's opaque source identity, or nil."
+  (when-let* ((handle (ebox-tree-node-source-handle node)))
+    (ebox-source--handle-id-view handle)))
+
+(defun ebox-tree-node-id (source-index node)
+  "Return NODE's selector id string from SOURCE-INDEX, or nil."
+  (when-let* ((handle (ebox-tree-node-source-handle node)))
+    (ebox-source--index-id-view source-index handle)))
+
+(defun ebox-tree-node-source-declarations (source-index node)
+  "Return NODE's canonical declarations from SOURCE-INDEX, or nil."
+  (when-let* ((handle (ebox-tree-node-source-handle node)))
+    (ebox-source--index-declarations-view source-index handle)))
 
 (defun ebox-tree--metadata-tokens (value)
   "Return VALUE as a list of normalized selector metadata tokens."
@@ -106,20 +124,25 @@ their private props encoding.  Callers receive a detached value."
     (delq nil (mapcar #'ebox-tree-metadata-string value)))
    (t (list (ebox-tree-metadata-string value)))))
 
-(defun ebox-tree-node-classes (node)
-  "Return NODE's selector class strings from `:class'."
-  (and (listp node)
-       (ebox-tree--metadata-tokens (plist-get node :class))))
+(defun ebox-tree-node-classes (source-index node)
+  "Return NODE's selector class strings from SOURCE-INDEX."
+  (when-let* ((handle (ebox-tree-node-source-handle node)))
+    (ebox-source--index-classes-view source-index handle)))
 
-(defun ebox-tree-node-state (node)
-  "Return NODE's selector state tokens from `:selector-state'."
-  (and (listp node)
-       (ebox-tree--metadata-tokens (plist-get node :selector-state))))
+(defun ebox-tree-node-state (source-index node)
+  "Return NODE's selector state tokens from SOURCE-INDEX."
+  (when-let* ((handle (ebox-tree-node-source-handle node)))
+    (ebox-source--index-states-view source-index handle)))
 
-(defun ebox-tree-node-key (node)
-  "Return NODE's selector key string from `:key', or nil."
-  (and (listp node)
-       (ebox-tree-metadata-string (plist-get node :key))))
+(defun ebox-tree-node-author-key (source-index node)
+  "Return NODE's raw author key from SOURCE-INDEX."
+  (when-let* ((handle (ebox-tree-node-source-handle node)))
+    (ebox-source--index-key-view source-index handle)))
+
+(defun ebox-tree-node-key (source-index node)
+  "Return NODE's selector key string from SOURCE-INDEX, or nil."
+  (ebox-tree-metadata-string
+   (ebox-tree-node-author-key source-index node)))
 
 (defun ebox-tree--selector-attribute-key (key)
   "Return canonical keyword selector attribute KEY."
@@ -138,19 +161,18 @@ their private props encoding.  Callers receive a detached value."
    ((numberp value) (number-to-string value))
    (t (copy-tree value))))
 
-(defun ebox-tree-node-attributes (node)
-  "Return NODE's explicit selector attributes plus built-in id and key."
+(defun ebox-tree-node-attributes (source-index node)
+  "Return NODE's selector attributes from SOURCE-INDEX plus id and key."
   (when (listp node)
     (let ((attributes
            (delq nil
-                 (list (when-let* ((id (ebox-tree-node-id node)))
+                 (list (when-let* ((id (ebox-tree-node-id source-index node)))
                          (cons :id id))
-                       (when-let* ((key (ebox-tree-node-key node)))
+                       (when-let* ((key (ebox-tree-node-key source-index node)))
                          (cons :key key))))))
-      (dolist (attribute (plist-get node :selector-attributes))
-        (unless (consp attribute)
-          (error "Ebox selector attributes must be an alist: %S"
-                 (plist-get node :selector-attributes)))
+      (dolist (attribute
+               (when-let* ((handle (ebox-tree-node-source-handle node)))
+                 (ebox-source--index-attributes-view source-index handle)))
         (push (cons (ebox-tree--selector-attribute-key (car attribute))
                     (ebox-tree--selector-attribute-value (cdr attribute)))
               attributes))
@@ -345,7 +367,8 @@ NODE must already be a shallow copy.  Return the possibly updated plist."
           (plist-put node property replacement)))
     node))
 
-(defun ebox-tree-copy-with-direct-child-replacements (node replacements)
+(defun ebox-tree-copy-with-direct-child-replacements
+    (node replacements &optional key-function)
   "Return a shallow copy of NODE with direct child REPLACEMENTS applied.
 
 REPLACEMENTS is an alist of (OLD-CHILD . NEW-CHILD) pairs.  OLD-CHILD is
@@ -391,25 +414,7 @@ still copied while every nested value remains shared."
         (dolist (replacement replacements)
           (let* ((old (car replacement)) (new (cdr replacement))
                  (location (and old (plist-get old :ebox-sequence-location)))
-                 (key (and old (plist-get old :key)))
-                 (key-location
-                  (and (null location) key
-                       (ebox-child-range--hash-lookup
-                        (ebox-child-range--sequence-key-root updated) key
-                        (funcall
-                         (ebox-child-range--sequence-hash-function updated)
-                         key)))))
-            (when key-location
-              (let* ((segment (ebox-child-range--segment-at
-                               updated (car key-location)))
-                     (candidate (aref
-                                 (ebox-child-range--segment-payload segment)
-                                 (cdr key-location))))
-                (when (eq candidate old)
-                  (setq location
-                        (list :parent-node-id (plist-get node :node-id)
-                              :segment-index (car key-location)
-                              :offset (cdr key-location))))))
+                 old-key)
             (unless location
               (unless identity-locations
                 (setq identity-locations (make-hash-table :test #'eq))
@@ -429,6 +434,11 @@ still copied while every nested value remains shared."
             (when (and location
                        (equal (plist-get location :parent-node-id)
                               (plist-get node :node-id)))
+              (let* ((segment
+                      (ebox-child-range--segment-at
+                       updated (plist-get location :segment-index)))
+                     (keys (ebox-child-range--segment-keys segment)))
+                (setq old-key (aref keys (plist-get location :offset))))
               (cl-incf style-delta
                        (- (ebox-tree-author-style-count new)
                           (ebox-tree-author-style-count old)))
@@ -436,22 +446,20 @@ still copied while every nested value remains shared."
                   (setq updated
                         (ebox-child-range--replace-item-at
                          updated (plist-get location :segment-index)
-                         (plist-get location :offset) old new)
+                         (plist-get location :offset) old new
+                         (if key-function
+                             (funcall key-function new)
+                           (if (or (null old-key)
+                                   (equal
+                                    (ebox-tree-node-source-identity old)
+                                    (ebox-tree-node-source-identity new)))
+                               old-key
+                             (error
+                              "Ebox Range replacement requires source key facts"))))
                         changed t)
                 (setq fallback t)))))
         (when fallback
-          (let (segments)
-            (dotimes (index (ebox-child-range--sequence-count sequence))
-              (let* ((segment (ebox-child-range--segment-at sequence index))
-                     (items (append
-                             (ebox-child-range--segment-payload segment) nil)))
-                (push (cons (ebox-child-range--segment-ref segment)
-                            (ebox-tree--replace-direct-child-list
-                             items replacements))
-                      segments)))
-            (setq updated (ebox-child-range--build
-                           (nreverse segments) nil t)
-                  changed t)))
+          (error "Ebox Range item removal requires a Range transaction"))
         (when changed
           (setq copy
                 (if (plist-member copy :children)
@@ -469,7 +477,9 @@ still copied while every nested value remains shared."
 The returned tree owns distinct node plists and child lists.  Values such as
 keymaps, callbacks, Host references, and surface-property payloads retain their
 original object identity."
-  (cl-labels
+  (let ((seen (make-hash-table :test #'eq))
+        (active (make-hash-table :test #'eq)))
+    (cl-labels
       ((without (plist key)
          (cl-loop for (property value) on plist by #'cddr
                   unless (eq property key) append (list property value)))
@@ -477,6 +487,13 @@ original object identity."
         (node)
         (if (or (not (listp node)) (stringp node))
             node
+          (when (gethash node active)
+            (error "Ebox declarative tree contains a cycle"))
+          (when (gethash node seen)
+            (error "Ebox declarative tree reuses one node object"))
+          (puthash node t seen)
+          (puthash node t active)
+          (prog1
           (let* ((type (plist-get node :ebox-type))
                  (material-p (or (memq type '(concat stack flex grid))
                                  (plist-get node :ebox-child-sequence)))
@@ -485,12 +502,16 @@ original object identity."
                                 (plist-get node :ebox-child-sequence)))
                  (has-range (cl-some #'ebox-child-range--descriptor-p raw)))
             (if (or has-range sequence)
-                (let ((copy (copy-sequence node)) segments)
+                (let ((copy (copy-sequence node)) segments segment-keys)
+                  (when has-range
+                    (error "Ebox declarative Range must be normalized before copy"))
                   (if sequence
                       (dotimes (index
                                 (ebox-child-range--sequence-count sequence))
                         (let ((segment
                                (ebox-child-range--segment-at sequence index)))
+                          (push (ebox-child-range--segment-keys segment)
+                                segment-keys)
                           (push
                            (cons (ebox-child-range--segment-ref segment)
                                  (mapcar #'copy-node
@@ -507,7 +528,8 @@ original object identity."
                                        (ebox-child-range--descriptor-items entry)))
                                 segments)
                         (push (cons nil (list (copy-node entry))) segments))))
-                  (setq segments (nreverse segments))
+                  (setq segments (nreverse segments)
+                        segment-keys (nreverse segment-keys))
                   (pcase type
                     ((or 'flex 'grid)
                      (when-let* ((box (plist-get node :box)))
@@ -518,7 +540,8 @@ original object identity."
                      (setq copy (without (without copy :top) :bottom))))
                   (ebox-tree--put-child-sequence
                    copy
-                   (ebox-child-range--build segments nil t)
+                   (ebox-child-range--build
+                    segments nil nil t segment-keys)
                    (cl-mapcan (lambda (segment)
                                 (copy-sequence (cdr segment)))
                               segments)))
@@ -528,8 +551,9 @@ original object identity."
                       (mapcar (lambda (child)
                                 (cons child (copy-node child)))
                               (ebox-tree--children-raw node)))))
-                copy))))))
-    (copy-node root)))
+                copy)))
+            (remhash node active)))))
+      (copy-node root))))
 
 (defun ebox-tree--runtime-identity-node-shell
     (node node-id-set region-id-set)
@@ -542,8 +566,8 @@ Record its identities in NODE-ID-SET and REGION-ID-SET."
       (error "Ebox runtime identity snapshot found a node without identity"))
     (puthash node-id t node-id-set)
     (setq shell (list :ebox-type type :node-id node-id))
-    (when (plist-member node :key)
-      (setq shell (plist-put shell :key (plist-get node :key))))
+    (when-let* ((handle (ebox-tree-node-source-handle node)))
+      (setq shell (plist-put shell :ebox-source-handle handle)))
     (when (eq type 'box)
       (let ((region-id (plist-get node :region-id)))
         (unless region-id
@@ -617,33 +641,12 @@ Renderable child nodes are assigned stable runtime ids before returning."
         (ebox--ensure-node-id child)))
     children))
 
-(defun ebox-tree-validate-host-refs (root)
-  "Reject duplicate non-nil `:host-ref' values below ROOT and return ROOT.
-Host references are root-global opaque metadata and are compared with `equal'."
-  (let ((host-refs (make-hash-table :test 'equal))
-        (seen (make-hash-table :test 'eq))
-        (active (make-hash-table :test 'eq)))
-    (cl-labels
-        ((visit (node)
-           (when (and (listp node) (not (stringp node)))
-             ;; Let the complete declarative validator report cycles.  This
-             ;; focused preflight is also used by initial buffer mounting,
-             ;; where it must remain finite for malformed graphs.
-             (unless (gethash node active)
-               (when-let* ((host-ref (plist-get node :host-ref)))
-                 (let ((count (hash-table-count host-refs)))
-                   (puthash host-ref t host-refs)
-                   (when (= count (hash-table-count host-refs))
-                     (error
-                      "Ebox declarative tree uses duplicate host ref %S"
-                      host-ref))))
-               (unless (gethash node seen)
-                 (puthash node t seen)
-                 (puthash node t active)
-                 (ebox-tree-for-each-direct-child node #'visit)
-                 (remhash node active))))))
-      (visit root))
-    root))
+(defun ebox-tree-validate-host-refs (root &optional source-index)
+  "Validate ROOT's unique opaque source identities and return ROOT.
+SOURCE-INDEX owns Host lookup identity.  Building it rejects duplicate source
+handles, reused node objects, and cycles without consulting node metadata."
+  (or source-index (ebox-tree-source-index root))
+  root)
 
 (defconst ebox-tree--common-participation-keys
   '(:order :align-self)
@@ -668,27 +671,31 @@ Host references are root-global opaque metadata and are compared with `equal'."
   (and style
        (ebox-style--specified-property-p style (ebox-style-schema-id key))))
 
-(defun ebox-tree--declarations-specify-participation-p (node key)
-  "Return non-nil when NODE author declarations specify participation KEY."
+(defun ebox-tree--declarations-specify-participation-p
+    (source-index node key)
+  "Return non-nil when NODE in SOURCE-INDEX specifies participation KEY."
   (and (listp node)
-       (plist-member (ebox-style-node-declarations node)
+       (plist-member (ebox-style-node-declarations source-index node)
                      (ebox-style-schema-id key))))
 
-(defun ebox-tree--author-specifies-participation-p (node key)
-  "Return non-nil when NODE's author source specifies participation KEY."
-  (or (ebox-tree--declarations-specify-participation-p node key)
+(defun ebox-tree--author-specifies-participation-p
+    (source-index node key)
+  "Return non-nil when NODE's SOURCE-INDEX specifies participation KEY."
+  (or (ebox-tree--declarations-specify-participation-p
+       source-index node key)
       (and (null (plist-get node :ebox-computed-style))
            (plist-member node key))))
 
-(defun ebox-tree--node-participation-keys (node source)
-  "Return NODE participation keys from AUTHOR or COMPUTED SOURCE."
+(defun ebox-tree--node-participation-keys (source-index node source)
+  "Return NODE participation keys from SOURCE-INDEX or COMPUTED SOURCE."
   (let ((style (plist-get node :ebox-computed-style))
         keys)
     (dolist (key ebox-tree--participation-keys)
       (when
           (pcase source
             ('author
-             (ebox-tree--author-specifies-participation-p node key))
+             (ebox-tree--author-specifies-participation-p
+              source-index node key))
             ('computed
              (and (plist-member node key)
                   (ebox-tree--style-specifies-participation-p style key)))
@@ -705,9 +712,11 @@ Host references are root-global opaque metadata and are compared with `equal'."
         (kind kind))))
 
 (defun ebox-tree--validate-node-parent-participation
-    (node parent-kind source)
+    (node parent-kind source &optional source-index)
   "Validate NODE participation under PARENT-KIND from AUTHOR or COMPUTED SOURCE."
-  (let ((keys (ebox-tree--node-participation-keys node source)))
+  (let ((keys
+         (ebox-tree--node-participation-keys
+          source-index node source)))
     (when keys
       (when (eq (plist-get node :ebox-kind) 'text)
         (error "Ebox Text cannot carry participation properties: %S" keys))
@@ -734,7 +743,7 @@ Host references are root-global opaque metadata and are compared with `equal'."
     (and parent (ebox-tree--child-layout-kind parent nil))))
 
 (defun ebox-tree-validate-indexed-participation
-    (node-table parent-table node-ids &optional source)
+    (node-table parent-table node-ids &optional source source-index)
   "Validate NODE-IDS in indexed final tree using AUTHOR or COMPUTED SOURCE."
   (setq source (or source 'author))
   (dolist (node-id (delete-dups (copy-sequence node-ids)))
@@ -742,92 +751,20 @@ Host references are root-global opaque metadata and are compared with `equal'."
       (ebox-tree--validate-node-parent-participation
        node
        (ebox-tree--indexed-parent-context node-id node-table parent-table)
-       source)))
+       source source-index)))
   node-table)
 
 (defun ebox-tree-validate-declarative-root
-    (root &optional validate-participation-p root-parent-kind)
+    (root &optional validate-participation-p root-parent-kind source-index)
   "Validate ROOT for one declarative runtime commit.
 
 The runtime tree must be a proper tree: a node object cannot appear in two
 locations, cycles are rejected, explicit sibling keys must be unique, and
 non-nil host references must be unique across the root.  Keys are sibling-local
 and all explicit identities are compared with `equal'.  Return ROOT on success."
-  (when (ebox-child-range--descriptor-p root)
-    (error "Ebox child Range descriptor cannot be the root"))
-  (ebox-tree-validate-host-refs root)
-  (let ((seen (make-hash-table :test 'eq))
-        (active (make-hash-table :test 'eq))
-        (range-refs (make-hash-table :test 'equal)))
-    (cl-labels
-        ((visit (node parent-kind)
-           (when (and (listp node) (not (stringp node)))
-             (when (gethash node active)
-               (error "Ebox declarative tree contains a cycle"))
-             (when (gethash node seen)
-               (error "Ebox declarative tree reuses one node object"))
-             (puthash node t seen)
-             (puthash node t active)
-             (when validate-participation-p
-               (ebox-tree--validate-node-parent-participation
-                node parent-kind 'author))
-             (let* ((keys (make-hash-table :test 'equal))
-                    (type (plist-get node :ebox-type))
-                    (raw (and (memq type '(box concat stack flex grid))
-                              (plist-get node :children)))
-                    children)
-               (when (and raw (not (proper-list-p raw)))
-                 (error "Ebox material children must be a proper list"))
-               (when-let* ((sequence (plist-get node :ebox-child-sequence)))
-                 (dotimes (index
-                           (ebox-child-range--sequence-count sequence))
-                   (when-let* ((ref
-                                (ebox-child-range--segment-ref
-                                 (ebox-child-range--segment-at sequence index))))
-                     (when (gethash ref range-refs)
-                       (error "Ebox child Range ref is not unique: %S" ref))
-                     (puthash ref t range-refs))))
-               (if (plist-get node :ebox-child-sequence)
-                   (ebox-tree-for-each-direct-child
-                    node (lambda (child) (push child children)))
-                 (dolist (entry (ebox-tree--children-raw node))
-                   (if (ebox-child-range--descriptor-p entry)
-                       (progn
-                         (unless (and (proper-list-p raw) (memq entry raw))
-                           (error "Ebox child Range descriptor is invalid in a scalar slot"))
-                         (let ((ref (ebox-child-range--descriptor-ref entry))
-                               (items (ebox-child-range--descriptor-items entry)))
-                           (unless (and ref (proper-list-p items))
-                             (error "Ebox child Range descriptor is invalid"))
-                           (when (gethash ref range-refs)
-                             (error "Ebox child Range ref is not unique: %S" ref))
-                           (puthash ref t range-refs)
-                           (dolist (item items)
-                             (when (ebox-child-range--descriptor-p item)
-                               (error "Nested child Range descriptors are reserved"))
-                             (unless (and (listp item) (not (stringp item)))
-                               (error "Ebox child Range item must be a node"))
-                             (push item children))))
-                     (push entry children))))
-               (dolist (child (nreverse children))
-                 (when (and (eq (plist-get node :ebox-kind) 'box)
-                            (not (memq (plist-get child :ebox-kind)
-                                       '(text box))))
-                   (error
-                    "Canonical Ebox Box child must be Text or Box: %S"
-                    child))
-                 (when-let* ((key (and (listp child)
-                                      (not (stringp child))
-                                      (plist-get child :key))))
-                     (when (gethash key keys)
-                       (error "Ebox declarative siblings use duplicate key %S"
-                              key))
-                     (puthash key t keys))
-                 (visit child
-                        (ebox-tree--child-layout-kind node parent-kind)))
-             (remhash node active)))))
-      (visit root root-parent-kind))
-    root))
+  (ebox-tree-source-index
+   root validate-participation-p root-parent-kind source-index)
+  root)
 
 (defun ebox-tree-clear-runtime-identities (root)
   "Clear Ebox-owned runtime identity fields below ROOT and return ROOT."
@@ -861,6 +798,7 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
   (append ebox-tree--runtime-source-keys
           ebox-tree--child-source-keys
           '(:ebox-style-overrides
+            :ebox-source-handle
             :ebox-grid-config
             :ebox-computed-style :ebox-style-wrapper
             :ebox-style-generated-wrapper
@@ -873,7 +811,7 @@ Computed styles, projection counters, duplicate Text storage, and legacy wrapper
 overrides are derived side state.")
 
 (defconst ebox-tree-metadata-source-keys
-  '(:key :id :class :host-ref)
+  '(:key :id :class :selector-attributes :selector-state)
   "Declarative metadata keys that do not directly change rendered text.")
 
 (defun ebox-tree--plist-keys (plist)
@@ -1025,13 +963,14 @@ candidate runtime index agree."
     (plist-put new :node-id (ebox--next-runtime-node-id)))
   new)
 
-(defun ebox-tree-reconcile-runtime (old new)
-  "Transfer stable keyed and positional runtime identity from OLD to NEW."
+(defun ebox-tree-reconcile-runtime
+    (old old-source-index new new-source-index)
+  "Transfer runtime identity from OLD to NEW using their source indexes."
   (cl-labels
       ((node-key
-        (node)
-        (when (and (listp node) (plist-member node :key))
-          (plist-get node :key)))
+        (source-index node)
+        (and node
+             (ebox-tree-node-author-key source-index node)))
        (same-type-p
         (old-node new-node)
         (and (listp old-node)
@@ -1039,18 +978,18 @@ candidate runtime index agree."
              (eq (plist-get old-node :ebox-type)
                  (plist-get new-node :ebox-type))))
        (keyed-children
-        (children)
+        (source-index children)
         (let ((table (make-hash-table :test 'equal)))
           (dolist (child children table)
-            (when-let* ((key (node-key child)))
+            (when-let* ((key (node-key source-index child)))
               (puthash key child table)))))
        (match-child
         (old-children old-keyed new-child index)
-        (if-let* ((key (node-key new-child)))
+        (if-let* ((key (node-key new-source-index new-child)))
             (let ((old-child (gethash key old-keyed)))
               (and (same-type-p old-child new-child) old-child))
           (let ((old-child (nth index old-children)))
-            (and (not (node-key old-child))
+            (and (not (node-key old-source-index old-child))
                  (same-type-p old-child new-child)
                  old-child))))
        (reconcile
@@ -1060,7 +999,8 @@ candidate runtime index agree."
           (let* ((old-children
                   (and old-node (ebox-tree--children-raw old-node)))
                  (new-children (ebox-tree--children-raw new-node))
-                 (old-keyed (keyed-children old-children)))
+                 (old-keyed
+                  (keyed-children old-source-index old-children)))
             (cl-loop for new-child in new-children
                      for index from 0
                      do (reconcile
@@ -1104,81 +1044,409 @@ candidate runtime index agree."
     ('grid (ebox-tree-layout-children node))
     (_ (ebox-tree-children node))))
 
-(defun ebox-tree-selector-index (root)
-  "Return id, class, and type indexes over ROOT's logical selector tree."
-  (let ((id-table (make-hash-table :test #'equal))
-        (class-table (make-hash-table :test #'equal))
-        (type-table (make-hash-table :test #'eq)))
-    (cl-labels
-        ((prepend (table key entry)
-           (puthash key (cons entry (gethash key table)) table))
-         (visit (node path)
-           (when (and (listp node) (not (stringp node)))
-             (let* ((current-path (append path (list node)))
-                    (entry (cons node current-path)))
-               (when-let* ((id (ebox-tree-node-id node)))
-                 (prepend id-table id entry))
-               (dolist (class (ebox-tree-node-classes node))
-                 (prepend class-table class entry))
-               (when-let* ((type (ebox-tree-node-selector-type node)))
-                 (prepend type-table type entry))
-               (dolist (child (ebox-tree-semantic-children node))
-                 (visit child current-path))))))
-      (visit root nil))
-    (dolist (table (list id-table class-table type-table))
-      (maphash (lambda (key entries)
-                 (puthash key (nreverse entries) table))
-               table))
-    (list :selector-id-table id-table
-          :selector-class-table class-table
-          :selector-type-table type-table)))
-
-(defun ebox-tree-node-subject (node)
-  "Return a detached ECSS selector subject representing NODE."
+(defun ebox-tree--subject-from-record (node record)
+  "Return one ECSS selector subject for NODE and source RECORD."
   (ecss-subject-create
    :type (ebox-tree-metadata-string (ebox-tree-node-selector-type node))
-   :id (ebox-tree-node-id node)
-   :classes (ebox-tree-node-classes node)
+   :id (ebox-source-record-id record)
+   :classes (ebox-source-record-classes record)
    :attributes
    (mapcar (lambda (attribute)
              (cons (substring (symbol-name (car attribute)) 1)
                    (cdr attribute)))
-           (ebox-tree-node-attributes node))
-   :states (ebox-tree-node-state node)))
+           (let ((attributes
+                  (delq
+                   nil
+                   (list
+                    (when-let* ((id (ebox-source-record-id record)))
+                      (cons :id id))
+                    (when-let* ((key
+                                 (ebox-tree-metadata-string
+                                  (ebox-source-record-key record))))
+                      (cons :key key))))))
+             (dolist (attribute (ebox-source-record-attributes record))
+               (push (cons
+                      (ebox-tree--selector-attribute-key (car attribute))
+                      (ebox-tree--selector-attribute-value (cdr attribute)))
+                     attributes))
+             (nreverse attributes)))
+   :states (ebox-source-record-states record)))
 
-(defun ebox-tree-subject-index (root)
-  "Return ECSS subjects and semantic node paths below ROOT in document order."
-  (let ((node-subject-table (make-hash-table :test #'eq))
+(defun ebox-tree-node-subject (source-index node)
+  "Return SOURCE-INDEX's retained ECSS selector subject for NODE."
+  (or (ebox-source--index-node-subject source-index node)
+      (error "Ebox selector node is absent from its source index")))
+
+(defun ebox-tree-source-builder-snapshot (builder roots)
+  "Return a sealed source-index slice for canonical ROOTS in open BUILDER."
+  (unless (proper-list-p roots)
+    (signal 'wrong-type-argument (list 'proper-list-p roots)))
+  (let ((slice (ebox-source-builder-create))
+        (seen (make-hash-table :test #'eq)))
+    (cl-labels
+        ((visit (node)
+           (when (and (listp node) (not (stringp node)))
+             (when-let* ((handle (ebox-tree-node-source-handle node)))
+               (unless (gethash handle seen)
+                 (puthash handle t seen)
+                 (ebox-source--builder-add-record
+                  slice handle
+                  (or (ebox-source--builder-record builder handle)
+                      (error "Ebox source builder does not own canonical node")))))
+             (ebox-tree-for-each-direct-child node #'visit))))
+      (dolist (root roots) (visit root)))
+    (ebox-source-builder-finish slice)))
+
+(defun ebox-tree-source-index
+    (root &optional validate-participation-p root-parent-kind base-source-index
+          allow-unreferenced-sources-p)
+  "Build one immutable source and selector index for canonical ROOT.
+When VALIDATE-PARTICIPATION-P is non-nil, validate ROOT-PARENT-KIND during the
+same traversal.  Topology, Range addresses, source identities, and sibling
+keys are always validated.  BASE-SOURCE-INDEX, when non-nil, is the fact-only
+index transported with the canonical input; records are never recovered from
+opaque handles on that path."
+  (when (ebox-child-range--descriptor-p root)
+    (error "Ebox child Range descriptor cannot be the root"))
+  (let ((subjects (make-hash-table :test #'equal))
+        (node-subjects (make-hash-table :test #'eq))
+        (id-table (make-hash-table :test #'equal))
+        (class-table (make-hash-table :test #'equal))
+        (type-table (make-hash-table :test #'eq))
+        (seen (make-hash-table :test #'eq))
+        (active (make-hash-table :test #'eq))
+        (range-refs (make-hash-table :test #'equal))
+        (used-handles (make-hash-table :test #'eq))
         entries)
     (cl-labels
-        ((visit (node path)
+        ((prepend (table key entry)
+           (puthash key (cons entry (gethash key table)) table))
+         (record-for (node)
+           (when-let* ((handle (ebox-tree-node-source-handle node)))
+             (or (and base-source-index
+                      (ebox-source--index-record base-source-index handle))
+                 (error "Ebox canonical source is absent from its input index"))))
+         (record-key (node)
+           (when-let* ((record (record-for node)))
+             (ebox-source-record-key record)))
+         (record-participation-keys (node record)
+           (let ((declarations (ebox-source-record-declarations record)) keys)
+             (dolist (key ebox-tree--participation-keys)
+               (when (or (plist-member declarations (ebox-style-schema-id key))
+                         (and (null (plist-get node :ebox-computed-style))
+                              (plist-member node key)))
+                 (push key keys)))
+             (nreverse keys)))
+         (validate-participation (node record parent-kind)
+           (when validate-participation-p
+             (let ((keys (record-participation-keys node record)))
+               (when keys
+                 (when (eq (plist-get node :ebox-kind) 'text)
+                   (error "Ebox Text cannot carry participation properties: %S"
+                          keys))
+                 (pcase parent-kind
+                   ('flex
+                    (when (cl-intersection
+                           keys ebox-tree--grid-participation-keys :test #'eq)
+                      (error
+                       "Grid participation requires a direct Grid parent: %S"
+                       keys)))
+                   ('grid
+                    (when (cl-intersection
+                           keys ebox-tree--flex-participation-keys :test #'eq)
+                      (error
+                       "Flex participation requires a direct Flex parent: %S"
+                       keys)))
+                   (_
+                    (error
+                     "Ebox participation requires a Flex or Grid parent: %S"
+                     keys)))))))
+         (material-children (node)
+           (let* ((type (plist-get node :ebox-type))
+                  (raw (and (memq type '(box concat stack flex grid))
+                            (plist-get node :children)))
+                  children)
+             (when (and raw (not (proper-list-p raw)))
+               (error "Ebox material children must be a proper list"))
+             (if-let* ((sequence (plist-get node :ebox-child-sequence)))
+                 (progn
+                   (dotimes (index (ebox-child-range--sequence-count sequence))
+                     (when-let* ((ref
+                                  (ebox-child-range--segment-ref
+                                   (ebox-child-range--segment-at
+                                    sequence index))))
+                       (when (gethash ref range-refs)
+                         (error "Ebox child Range ref is not unique: %S" ref))
+                       (puthash ref t range-refs)))
+                   (ebox-tree-for-each-direct-child
+                    node (lambda (child) (push child children))))
+               (dolist (entry (ebox-tree--children-raw node))
+                 (if (ebox-child-range--descriptor-p entry)
+                     (progn
+                       (unless (and (proper-list-p raw) (memq entry raw))
+                         (error
+                          "Ebox child Range descriptor is invalid in a scalar slot"))
+                       (let ((ref (ebox-child-range--descriptor-ref entry))
+                             (items (ebox-child-range--descriptor-items entry)))
+                         (unless (and ref (proper-list-p items))
+                           (error "Ebox child Range descriptor is invalid"))
+                         (when (gethash ref range-refs)
+                           (error "Ebox child Range ref is not unique: %S" ref))
+                         (puthash ref t range-refs)
+                         (dolist (item items)
+                           (when (ebox-child-range--descriptor-p item)
+                             (error "Nested child Range descriptors are reserved"))
+                           (unless (and (listp item) (not (stringp item)))
+                             (error "Ebox child Range item must be a node"))
+                           (push item children))))
+                   (push entry children))))
+             (nreverse children)))
+         (visit-children (node path parent-kind)
+           (let ((keys (make-hash-table :test #'equal)) result)
+             (dolist (child (material-children node))
+               (when (and (eq (plist-get node :ebox-kind) 'box)
+                          (not (memq (plist-get child :ebox-kind) '(text box))))
+                 (error "Canonical Ebox Box child must be Text or Box: %S"
+                        child))
+               (when-let* ((key (record-key child)))
+                 (when (gethash key keys)
+                   (error "Ebox declarative siblings use duplicate key %S" key))
+                 (puthash key t keys))
+               (setq result
+                     (nconc
+                      result
+                      (visit child path
+                             (ebox-tree--child-layout-kind node parent-kind)))))
+             result))
+         (visit (node path parent-kind)
            (when (and (listp node) (not (stringp node)))
-             (let* ((subject (ebox-tree-node-subject node))
+             (when (gethash node active)
+               (error "Ebox declarative tree contains a cycle"))
+             (when (gethash node seen)
+               (error "Ebox declarative tree reuses one node object"))
+             (puthash node t seen)
+             (puthash node t active)
+             (let* ((handle (plist-get node :ebox-source-handle))
                     (current-path (append path (list node))))
-               (puthash node subject node-subject-table)
-               (push (list :node node :path current-path :subject subject)
-                     entries)
-               (ecss-subject-set-children
-                subject
-                (delq nil
-                      (mapcar (lambda (child) (visit child current-path))
-                              (ebox-tree-semantic-children node))))
-               subject))))
-      (let ((root-subject (visit root nil)))
-        (list :root-subject root-subject
-              :entries (nreverse entries)
-              :node-subject-table node-subject-table)))))
+               (if (null handle)
+                   (prog1
+                       (visit-children node current-path parent-kind)
+                     (remhash node active))
+                 (let* ((record (record-for node))
+                        (identity (ebox-source--handle-id-view handle))
+                        (subject
+                         (ebox-tree--subject-from-record node record))
+                        (entry (cons node current-path)))
+                   (puthash handle t used-handles)
+                   (validate-participation node record parent-kind)
+                   (when (gethash identity subjects)
+                     (error "Ebox source identity is not unique: %S" identity))
+                   (puthash identity subject subjects)
+                   (puthash handle subject node-subjects)
+                   (push (list :node node :path current-path :subject subject
+                               :source-handle handle)
+                         entries)
+                   (when-let* ((id (ebox-source-record-id record)))
+                     (prepend id-table id entry))
+                   (dolist (class (ebox-source-record-classes record))
+                     (prepend class-table class entry))
+                   (when-let* ((type (ebox-tree-node-selector-type node)))
+                     (prepend type-table type entry))
+                   (ecss-subject-set-children
+                    subject (visit-children node current-path parent-kind))
+                   (remhash node active)
+                   (list subject)))))))
+      (let* ((root-subjects (visit root nil root-parent-kind))
+             (root-subject (car root-subjects)))
+        (dolist (table (list id-table class-table type-table))
+          (maphash (lambda (key values)
+                     (puthash key (nreverse values) table))
+                   table))
+        (when (and base-source-index
+                   (not allow-unreferenced-sources-p)
+                   (/= (hash-table-count used-handles)
+                       (ebox-source-table-count
+                        (ebox-source--index-handle-records
+                         base-source-index))))
+          (error "Ebox canonical input contains unreferenced source facts"))
+        (ebox-source--with-derived
+         (or base-source-index
+             (ebox-source-builder-finish (ebox-source-builder-create)))
+         :subjects subjects :node-subjects node-subjects
+         :entries (nreverse entries)
+         :root-subject root-subject
+         :selector-id-table id-table
+         :selector-class-table class-table
+         :selector-type-table type-table)))))
 
-(defun ebox-tree-subject-for-path (path)
-  "Return an ECSS subject chain for the root-to-node Ebox PATH."
-  (let (parent subject)
-    (dolist (node path)
-      (when (and (listp node) (not (stringp node)))
-        (setq subject (ebox-tree-node-subject node))
-        (when parent
-          (ecss-subject-set-children parent (list subject)))
-        (setq parent subject)))
-    subject))
+(defun ebox-tree-source-handle-order (root)
+  "Return canonical source handles below ROOT in document preorder."
+  (let (handles)
+    (cl-labels
+        ((visit
+          (node)
+          (when-let* ((handle (ebox-tree-node-source-handle node)))
+            (push handle handles))
+          (ebox-tree-for-each-direct-child node #'visit)))
+      (visit root))
+    (nreverse handles)))
+
+(defun ebox-tree-source-fact-index-delta
+    (old-index touched removed incoming-source-indexes &optional final-order)
+  "Return fact-only OLD-INDEX after local TOUCHED and REMOVED changes."
+  (let ((removed-handles nil)
+        (added-handles nil)
+        (replacement-pairs nil)
+        (removed-seen (make-hash-table :test #'eq))
+        (added-seen (make-hash-table :test #'eq)))
+    (cl-labels
+        ((remove-handle
+          (node)
+          (when-let* ((handle (ebox-tree-node-source-handle node)))
+            (unless (gethash handle removed-seen)
+              (puthash handle t removed-seen)
+              (push handle removed-handles))))
+         (add-handle
+          (node)
+          (when-let* ((handle (ebox-tree-node-source-handle node)))
+            (unless (gethash handle added-seen)
+              (puthash handle t added-seen)
+              (push handle added-handles)))))
+      (dolist (node removed) (remove-handle node))
+      (dolist (entry touched)
+        (let* ((old (car entry))
+               (new (nth 1 entry))
+               (old-handle (and old (ebox-tree-node-source-handle old)))
+               (new-handle (ebox-tree-node-source-handle new)))
+          (unless (eq old-handle new-handle)
+            (when old (remove-handle old))
+            (add-handle new)
+            (when (and old-handle new-handle)
+              (push (cons old-handle new-handle) replacement-pairs)))))
+      (ebox-source--index-replace-handles
+       old-index (nreverse removed-handles)
+       (nreverse added-handles) incoming-source-indexes
+       (nreverse replacement-pairs) final-order))))
+
+(defun ebox-tree-source-index-delta
+    (old-index touched removed node-table parent-table root)
+  "Return a candidate source index from OLD-INDEX and local tree changes.
+TOUCHED entries are `(OLD NEW PARENT-ID CHILDREN-CHANGED)'.  REMOVED contains
+retired nodes.  NODE-TABLE and PARENT-TABLE describe the final candidate.
+Records update in O(changed); selector/document-order views remain explicitly
+stale until a query or full projection materializes them."
+      (let* ((structural-p
+              (or removed
+                  (cl-some (lambda (entry)
+                             (or (null (car entry)) (nth 3 entry)))
+                           touched)))
+             (final-order
+              (and structural-p (ebox-tree-source-handle-order root)))
+             (index
+              (ebox-tree-source-fact-index-delta
+               old-index touched removed ebox-tree--incoming-source-indexes
+               final-order))
+             (base-subjects
+              (or (ebox-source--index-subjects old-index)
+                  (ebox-source--flat-table
+                   (make-hash-table :test #'equal) #'equal)))
+             (base-node-subjects
+              (or (ebox-source--index-node-subjects old-index)
+                  (ebox-source--flat-table
+                   (make-hash-table :test #'eq) #'eq)))
+             (removed-identities (make-hash-table :test #'equal))
+             (removed-handles (make-hash-table :test #'eq))
+             (added-subjects (make-hash-table :test #'equal))
+             (added-node-subjects (make-hash-table :test #'eq)))
+        (cl-labels
+            ((remove-node
+              (node)
+              (when-let* ((handle (ebox-tree-node-source-handle node)))
+                (puthash handle t removed-handles)
+                (puthash (ebox-source--handle-id-view handle) t
+                         removed-identities)))
+             (node-subject
+              (handle)
+              (or (gethash handle added-node-subjects)
+                  (and (not (gethash handle removed-handles))
+                       (ebox-source--table-value
+                        base-node-subjects handle)))))
+          (dolist (node removed) (remove-node node))
+          (dolist (entry touched)
+            (when-let* ((old (car entry))) (remove-node old)))
+        ;; TOUCHED is preorder, so a copied parent subject is installed before
+        ;; its child and local inheritance can bind without a tree scan.
+          (dolist (entry touched)
+            (let* ((node (nth 1 entry))
+                   (handle (ebox-tree-node-source-handle node)))
+              (when handle
+                (let* ((record (or (ebox-source--index-record index handle)
+                                   (error "Ebox candidate source is absent")))
+                       (subject (ebox-tree--subject-from-record node record))
+                       (parent-id (nth 2 entry))
+                       parent-subject)
+                  (while (and parent-id (null parent-subject))
+                    (when-let* ((parent (gethash parent-id node-table)))
+                      (when-let* ((parent-handle
+                                  (ebox-tree-node-source-handle parent)))
+                        (setq parent-subject (node-subject parent-handle))))
+                    (unless parent-subject
+                      (setq parent-id (gethash parent-id parent-table))))
+                  (setf (ecss-subject-parent subject) parent-subject)
+                  (puthash (ebox-source--handle-id-view handle)
+                           subject added-subjects)
+                  (puthash handle subject added-node-subjects)))))
+          (let* ((subjects
+                  (ebox-source--table-overlay
+                   base-subjects added-subjects removed-identities
+                   (+ (- (ebox-source--table-size base-subjects)
+                         (hash-table-count removed-identities))
+                      (hash-table-count added-subjects))))
+                 (node-subjects
+                  (ebox-source--table-overlay
+                   base-node-subjects added-node-subjects removed-handles
+                   (+ (- (ebox-source--table-size base-node-subjects)
+                         (hash-table-count removed-handles))
+                      (hash-table-count added-node-subjects)))))
+            (ebox-source--with-derived
+             index
+             :subjects subjects :node-subjects node-subjects
+             :entries (ebox-source--index-entries old-index)
+             :root-subject
+             (when-let* ((root-handle (ebox-tree-node-source-handle root)))
+               (ebox-source--table-value node-subjects root-handle))
+             :selector-id-table (ebox-source--index-selector-id-table old-index)
+             :selector-class-table
+             (ebox-source--index-selector-class-table old-index)
+             :selector-type-table
+             (ebox-source--index-selector-type-table old-index)
+             :derived-stale-p t)))))
+
+(defun ebox-tree-selector-index (root)
+  "Return derived selector views over ROOT's unique source index."
+  (let ((index (ebox-tree-source-index root)))
+    (list :source-index index
+          :selector-id-table
+          (ebox-source--index-selector-table index 'id)
+          :selector-class-table
+          (ebox-source--index-selector-table index 'class)
+          :selector-type-table
+          (ebox-source--index-selector-table index 'type))))
+
+(defun ebox-tree-subject-index (root &optional source-index)
+  "Return ECSS subject views over ROOT's SOURCE-INDEX.
+Build a temporary index only for an unmounted tree query."
+  (let ((index (or source-index (ebox-tree-source-index root))))
+    (list :source-index index
+          :root-subject (ebox-source--index-root-subject-view index)
+          :entries (ebox-source--index-entries-view index)
+          :node-subject-table
+          (ebox-source--index-node-subject-table-view index))))
+
+(defun ebox-tree-subject-for-path (source-index path)
+  "Return SOURCE-INDEX's retained subject for the final node on PATH."
+  (when-let* ((node (car (last path))))
+    (ebox-tree-node-subject source-index node)))
 
 (defun ebox-tree-flex-participation-props (node)
   "Return raw flex item participation props attached to NODE."

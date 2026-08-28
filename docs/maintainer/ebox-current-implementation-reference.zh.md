@@ -18,6 +18,7 @@
 | --- | --- |
 | `ebox.el` | 公共门面、构造辅助函数、渲染、基于 TP 的 buffer 入口、滚动、commit 与 byte compile。 |
 | `ebox-cache.el` | 测量/渲染缓存记录、失效和缓存报告。 |
+| `ebox-source.el` | opaque source handle、不可变 author source record 与 candidate source index。 |
 | `ebox-style.el` | ECSS property schema、declaration 与 cascade、shorthand 展开、computed style、颜色、border 和 dirty effect。 |
 | `ebox-tree.el` | 节点遍历、逻辑子节点访问、ECSS subject 适配、identity、父路径、key 和树 snapshot。 |
 | `ebox-child-range.el` | 不可变 weighted segment trie、稀疏持久 key trie、Range replacement 与 Gate A metrics。 |

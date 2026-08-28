@@ -9,6 +9,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ebox-source)
 (require 'ebox-style)
 (require 'ebox-canonical)
 (require 'ebox-flex)
@@ -19,10 +20,11 @@
      (:constructor ebox-dsl--make-properties))
   "Normalized properties for one canonical Text or Box author source."
   tag
-  source-metadata
+  source-handle
   outer
   layout
-  declarations)
+  declarations
+  owned-facts)
 
 (defconst ebox-dsl--box-tags
   '(box row column flex grid)
@@ -31,10 +33,6 @@
 (defconst ebox-dsl--source-fields
   '(:key :class :id)
   "Shared source metadata accepted by Ebox author surfaces.")
-
-(defun ebox-dsl--source-handle ()
-  "Return one opaque identity for a normalized author node."
-  (make-symbol "ebox-source"))
 
 (defun ebox-dsl--validate-plist (plist context)
   "Validate PLIST shape for CONTEXT and return PLIST."
@@ -70,16 +68,10 @@
            when (memq key keys)
            append (list key value)))
 
-(defun ebox-dsl--source-metadata
-    (properties source-handle context)
-  "Return source metadata from PROPERTIES and SOURCE-HANDLE for CONTEXT."
-  (let ((metadata (list :source-handle source-handle)))
-    (dolist (field ebox-dsl--source-fields)
-      (when-let* ((entry (ebox-dsl--optional-field
-                          properties field context)))
-        (setq metadata
-              (append metadata (list field (cdr entry))))))
-    metadata))
+(defun ebox-dsl--source-field (properties field context)
+  "Return optional source FIELD value from PROPERTIES for CONTEXT."
+  (when-let* ((entry (ebox-dsl--optional-field properties field context)))
+    (cdr entry)))
 
 (defun ebox-dsl--compile-style (tag properties context)
   "Compile and validate TAG author PROPERTIES for CONTEXT."
@@ -110,8 +102,8 @@
        (error "%s rejected layout config: %s"
               context (error-message-string err))))))
 
-(defun ebox-dsl--normalize-properties (tag properties source-handle)
-  "Project evaluated TAG PROPERTIES for opaque SOURCE-HANDLE.
+(defun ebox-dsl--normalize-properties (tag properties source source-builder)
+  "Project evaluated TAG PROPERTIES for author SOURCE.
 
 TAG is `text', `box', `row', `column', `flex', or `grid'.  The returned
 `ebox-dsl--properties' contains typed constructor inputs, source metadata,
@@ -148,14 +140,22 @@ function."
              tag style-properties context)))
       (ebox-dsl--make-properties
        :tag tag
-       :source-metadata
-       (ebox-dsl--source-metadata
-        properties source-handle context)
+       :source-handle
+       (ebox-source-builder-bind
+        source-builder
+        :key (ebox-dsl--source-field properties :key context)
+        :id (ebox-dsl--source-field properties :id context)
+        :class (ebox-dsl--source-field properties :class context)
+        :declarations declarations
+        :provenance (list :adapter 'ebox-dsl :tag tag
+                          :source-present-p (not (null source))))
        :outer outer
        :layout
        (ebox-dsl--layout-config
         tag declarations extensions context)
-       :declarations declarations))))
+       :declarations declarations
+       :owned-facts
+       (ebox-canonical-facts-from-declarations tag declarations)))))
 
 (defconst ebox-dsl--tags '(text box row column flex grid)
   "The complete Ebox author tag set.")
@@ -196,7 +196,7 @@ function."
           (setq children (append children (list item))))))
     (cons properties children)))
 
-(defun ebox-dsl--build-text (_source items)
+(defun ebox-dsl--build-text (source items source-builder)
   "Build one canonical TextNode from author ITEMS."
   (let* ((split (ebox-dsl--split items))
          (properties (car split))
@@ -206,53 +206,66 @@ function."
     (unless (stringp (car payloads))
       (error "Ebox text payload must be a string: %S" (car payloads)))
     (let* ((plan (ebox-dsl--normalize-properties
-                  'text properties (ebox-dsl--source-handle)))
+                  'text properties source source-builder))
            (node
-            (apply #'ebox-text-create
-                   (append (list :value (car payloads))
-                           (ebox-dsl--properties-source-metadata plan)
-                           (list :declarations
-                                 (ebox-dsl--properties-declarations plan))))))
+            (ebox-text-create
+             :value (car payloads)
+             :owned-facts (ebox-dsl--properties-owned-facts plan)
+             :source-handle (ebox-dsl--properties-source-handle plan))))
       node)))
 
-(defun ebox-dsl--build-box (tag _source items)
+(defun ebox-dsl--build-box (tag source items source-builder)
   "Build canonical BoxNode TAG from author ITEMS."
   (let* ((split (ebox-dsl--split items))
          (properties (car split))
          (child-forms (cdr split))
          (plan (ebox-dsl--normalize-properties
-                tag properties (ebox-dsl--source-handle)))
-         (children (mapcar #'ebox-dsl-build child-forms))
+                tag properties source source-builder))
+         (children
+          (mapcar (lambda (child)
+                    (ebox-dsl-build child source-builder))
+                  child-forms))
          (node
           (apply #'ebox-box-create
                  (append
                   (list :layout (ebox-dsl--properties-layout plan)
                         :outer (ebox-dsl--properties-outer plan)
                         :children children
-                        :declarations
-                        (ebox-dsl--properties-declarations plan))
-                  (ebox-dsl--properties-source-metadata plan)))))
+                        :owned-facts (ebox-dsl--properties-owned-facts plan)
+                        :source-handle
+                        (ebox-dsl--properties-source-handle plan))))))
     node))
 
-(defun ebox-dsl-build (dsl)
+(defun ebox-dsl-build (dsl source-builder)
   "Build one canonical Ebox node from inert author DSL.
 
 The complete grammar is String plus `text', `box', `row', `column', `flex',
 and `grid'.  Strings normalize to Text.  The five Box forms select a typed
 LayoutConfig; no form accepts `:content', `:layout', or a raw runtime node."
+  (unless (ebox-source-builder-p source-builder)
+    (signal 'wrong-type-argument
+            (list 'ebox-source-builder-p source-builder)))
   (cond
    ((stringp dsl)
-    (ebox-dsl--build-text dsl (list dsl)))
+    (ebox-dsl--build-text dsl (list dsl) source-builder))
    ((not (and (consp dsl) (symbolp (car dsl))))
     (error "Ebox build: invalid author node %S" dsl))
    ((not (memq (car dsl) ebox-dsl--tags))
     (error "Ebox build: unknown author tag %S" (car dsl)))
    ((eq (car dsl) 'text)
     (ebox-dsl--build-text
-     dsl (ebox-dsl--unquote-properties (cdr dsl))))
+     dsl (ebox-dsl--unquote-properties (cdr dsl)) source-builder))
    (t
     (ebox-dsl--build-box
-     (car dsl) dsl (ebox-dsl--unquote-properties (cdr dsl))))))
+     (car dsl) dsl (ebox-dsl--unquote-properties (cdr dsl))
+     source-builder))))
+
+(defun ebox-dsl-build-input (dsl)
+  "Compile inert DSL into one atomic canonical Ebox input."
+  (let* ((builder (ebox-source-builder-create))
+         (root (ebox-dsl-build dsl builder))
+         (source-index (ebox-source-builder-finish builder)))
+    (ebox-canonical-input-create (list root) source-index)))
 
 (provide 'ebox-dsl)
 

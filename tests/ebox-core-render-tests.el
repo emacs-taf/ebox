@@ -13,6 +13,7 @@
 ;; Core tests assert named Elisp render/patch strategies.  Keep optional local
 ;; native artifacts from replacing those strategies; native execution has
 ;; separate module and integration gates.
+(defvar ebox-native-reflow-module-path)
 (setq ebox-native-reflow-module-path nil)
 
 (defvar ebox--scroll-window-initial-lookahead-lines-override nil)
@@ -91,6 +92,30 @@
 (defun ebox-test--runtime-root (buffer)
   "Return BUFFER's surface-owned runtime root."
   (plist-get (ebox--buffer-render-state buffer) :root-node))
+
+(defun ebox-test--input-content-pixel (input)
+  "Return INPUT's used content width at the private layout boundary."
+  (let ((ebox--render-source-index (ebox-test-source-index input)))
+    (ebox--content-pixel (ebox-test-root input))))
+
+(defun ebox-test--input-total-pixel (input)
+  "Return INPUT's used outer width at the private layout boundary."
+  (let ((ebox--render-source-index (ebox-test-source-index input)))
+    (ebox--total-pixel (ebox-test-root input))))
+
+(defun ebox-test--input-content-height (input line-count)
+  "Return INPUT's used content height for LINE-COUNT layout lines."
+  (let ((ebox--render-source-index (ebox-test-source-index input)))
+    (ebox--content-height (ebox-test-root input) line-count)))
+
+(defun ebox-test--render-input-node (input)
+  "Render INPUT through the private node boundary with its retained facts."
+  (ebox--render-node (ebox-test-root input) (ebox-test-source-index input)))
+
+(defun ebox-test--call-input-node (function input &rest arguments)
+  "Call private node FUNCTION for INPUT with its retained source generation."
+  (let ((ebox--render-source-index (ebox-test-source-index input)))
+    (apply function (ebox-test-root input) arguments)))
 
 (defun ebox-test--selector-node (buffer selector)
   "Return the first runtime node matching SELECTOR in BUFFER."
@@ -228,7 +253,7 @@
 (ert-deftest ebox-scroll-prefix-publishes-private-line-with-suffix-paint ()
   "A cached hidden source line should not rebuild the rendered prefix."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "" :width 20 :height 2))
+  (let* ((box (ebox-test-box (ebox-test-text "") :width 20 :height 2))
          (content-lines '("zero" "one" "two" "three"))
          (state (list :content-lines (seq-take content-lines 3)
                       :rendered-content-lines
@@ -240,7 +265,7 @@
           (symbol-function 'ebox--scroll-rendered-content-lines))
          (renderer
           (ebox--scroll-window-prefix-renderer
-           box '(:stack ignored) 20 2 nil content-lines)))
+           (ebox-test-root box) '(:stack ignored) 20 2 nil content-lines)))
     (cl-letf (((symbol-function 'ebox--render-scroll-window-source)
                (lambda (&rest _)
                  (cl-incf source-renders)
@@ -401,15 +426,16 @@
   (let* ((ebox-viewport-width 240)
          (ebox-viewport-height 6)
          (layout
-          (ebox-test-build
-           '(box :width (viewport) :height (viewport-height)
-             :bgcolor "#151A23"
-             (column
-              (box :width (viewport) :height 1 :bgcolor "#202938"
-                   "surface")
-              (box :width (viewport) :height 1 "transparent")
-              (box :width (viewport) :height 1 :bgcolor "#29364A"
-                   "surface-two")))))
+          (ebox-test-box :width '(viewport) :height '(viewport-height) :bgcolor
+	       "#151A23"
+	       (ebox-test-column
+		(ebox-test-box :width '(viewport) :height 1 :bgcolor
+			       "#202938" (ebox-test-text "surface"))
+		(ebox-test-box :width '(viewport) :height 1
+			       (ebox-test-text "transparent"))
+		(ebox-test-box :width '(viewport) :height 1 :bgcolor
+			       "#29364A"
+			       (ebox-test-text "surface-two")))))
          (lines (ebox-string-lines (ebox-render layout))))
     (should (= (length lines) 6))
     (dolist (line lines)
@@ -430,7 +456,7 @@
     (ebox-style-add-rule
      ".card" '(:color "#F8FAFC" :bgcolor "#1E293B")
      :layer 'components)
-    (let* ((node (ebox-test-box :class 'card :content "Cascade" :width '(96)))
+    (let* ((node (ebox-test-box :class 'card (ebox-test-text "Cascade") :width '(96)))
            (face (ebox-test--first-content-face (ebox-render node))))
       (should (ebox-test--face-has-key-value-p
                face :foreground "#F8FAFC"))
@@ -568,9 +594,9 @@
   "A child nil color should block inheritance without inheriting background."
   (ebox-test--reset-runtime-state)
   (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
-         (root (ebox-test-build
-                '(box :class panel :wrap-mode none :width (96)
-                  (box :id child :color nil :width (96) "Child")))))
+         (root (ebox-test-box :class 'panel :wrap-mode 'none :width '(96)
+	       (ebox-test-box :id 'child :color nil :width '(96)
+			      (ebox-test-text "Child")))))
     (ebox-style-add-rule
      ".panel" '(:color "#E2E8F0" :bgcolor "#0F172A")
      :layer 'components)
@@ -614,8 +640,8 @@
            (substring-no-properties
             (ebox-render
              (ebox-test-flex
-              (ebox-test-box :content "A")
-              (ebox-test-box :content "B"))))))
+              (ebox-test-box (ebox-test-text "A"))
+              (ebox-test-box (ebox-test-text "B")))))))
       (should (equal (mapcar #'string-trim-right
                              (split-string rendered "\n"))
                      '("A" "B"))))))
@@ -626,9 +652,9 @@
   (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
     (ebox-style-add-rule ".card" '(:color "#94A3B8") :layer 'base)
     (ebox-style-add-rule ".card" '(:color "#38BDF8") :layer 'components)
-    (let* ((rule-node (ebox-test-box :class 'card :content "Rule"))
+    (let* ((rule-node (ebox-test-box :class 'card (ebox-test-text "Rule")))
            (inline-node
-            (ebox-test-box :class 'card :content "Inline" :color "#F8FAFC")))
+            (ebox-test-box :class 'card (ebox-test-text "Inline") :color "#F8FAFC")))
       (should
        (equal (ebox-test--effective-face-value
                (ebox-test--first-content-face (ebox-render rule-node))
@@ -655,8 +681,8 @@
     (ebox-style-add-rule ".placed" '(:grid-column 2) :layer 'layout)
     (ebox-test--with-rendered-buffer
         (ebox-test-grid
-         (ebox-test-box :class 'placed :content "Placed")
-         (ebox-test-box :content "Auto"))
+         (ebox-test-box :class 'placed (ebox-test-text "Placed"))
+         (ebox-test-box (ebox-test-text "Auto")))
       (let* ((root (ebox-test--runtime-root (current-buffer)))
              (config (plist-get root :ebox-layout-config))
              (props (ebox-layout-config-props config))
@@ -673,11 +699,10 @@
   "Font computed values should reach child text before pixel measurement."
   (ebox-test--reset-runtime-state)
   (let* ((root
-          (ebox-test-build
-           '(box :wrap-mode none
-             :font-family "Parent Family"
-             :font-height 1.25 :font-weight bold
-             (box :id child :font-family "Child Family" "MMMM"))))
+          (ebox-test-box :wrap-mode 'none :font-family "Parent Family"
+	       :font-height 1.25 :font-weight 'bold
+	       (ebox-test-box :id 'child :font-family "Child Family"
+			      (ebox-test-text "MMMM"))))
          measured-face)
     (cl-letf (((symbol-function 'ebox--string-pixel-width)
                (lambda (string)
@@ -711,11 +736,11 @@
          (child "#1D4ED8")
          (rendered
           (ebox-render
-           (ebox-test-build
-            `(column :width (120) :height 5 :padding-block 1
-              :bgcolor ,parent
-              (box :width (120) :height 1 :margin-bottom 1
-               :bgcolor ,child "Child")))))
+           (ebox-test-column :width '(120) :height 5 :padding-block 1 :bgcolor
+		  parent
+		  (ebox-test-box :width '(120) :height 1
+				 :margin-bottom 1 :bgcolor child
+				 (ebox-test-text "Child")))))
          (lines (ebox-string-lines rendered)))
     (should (= (length lines) 5))
     (dolist (line lines)
@@ -746,7 +771,7 @@
   "A pure paint change should not recompute spatial layout."
   (ebox-test--reset-runtime-state)
   (let* ((target
-          (ebox-test-box :id 'target :content "Paint" :width '(60)
+          (ebox-test-box :id 'target (ebox-test-text "Paint") :width '(60)
                        :color "#E2E8F0" :bgcolor "#1E293B"))
          (root
           (ebox-test-flex
@@ -777,9 +802,8 @@
 (ert-deftest ebox-live-mount-uses-runtime-copy-and-leaves-source-stable ()
   "Live publication should update a surface copy without mutating SOURCE."
   (ebox-test--reset-runtime-state)
-  (let* ((source (ebox-test-build
-                  '(box :id root :width (120) :color "#111111"
-                    :height 1 :overflow scroll "before\nhidden")))
+  (let* ((source (ebox-test-box :id 'root :width '(120) :color "#111111" :height 1
+	       :overflow 'scroll (ebox-test-text "before\nhidden")))
          (source-before (copy-tree source))
          (buffer (generate-new-buffer " *ebox-live-copy-source*")))
     (unwind-protect
@@ -787,9 +811,8 @@
           (ebox-render-to-buffer buffer source)
           (ebox-commit
            buffer
-           (ebox-test-build
-            '(box :id root :width (140) :color "#222222"
-              :height 1 :overflow scroll "after\nhidden")))
+           (ebox-test-box :id 'root :width '(140) :color "#222222" :height 1
+	       :overflow 'scroll (ebox-test-text "after\nhidden")))
           (should (equal source source-before))
           (with-current-buffer buffer
             (should (string-match-p "after" (buffer-string)))
@@ -800,9 +823,8 @@
 (ert-deftest ebox-live-mount-allows-one-source-on-independent-surfaces ()
   "One immutable source should mount and update independently in two buffers."
   (ebox-test--reset-runtime-state)
-  (let* ((source (ebox-test-build
-                  '(box :id root :width (120) :height 1
-                    :overflow scroll "owned\nhidden")))
+  (let* ((source (ebox-test-box :id 'root :width '(120) :height 1 :overflow 'scroll
+	       (ebox-test-text "owned\nhidden")))
          (source-before (copy-tree source))
          first-buffer second-buffer)
     (unwind-protect
@@ -816,13 +838,13 @@
                  (generate-new-buffer-name " *ebox-live-second*")
                  source))
           (ebox-commit first-buffer
-                       (ebox-test-build '(box :id root "first changed")))
+                       (ebox-test-box :id 'root (ebox-test-text "first changed")))
           (with-current-buffer first-buffer
             (should (string-match-p "first changed" (buffer-string))))
           (with-current-buffer second-buffer
             (should-not (string-match-p "first changed" (buffer-string))))
           (ebox-commit second-buffer
-                       (ebox-test-build '(box :id root "second changed")))
+                       (ebox-test-box :id 'root (ebox-test-text "second changed")))
           (with-current-buffer second-buffer
             (should (string-match-p "second changed" (buffer-string))))
           (with-current-buffer first-buffer
@@ -835,7 +857,7 @@
 (ert-deftest ebox-live-mount-kill-invalidates-handle ()
   "Killing a surface buffer should invalidate its region handles."
   (ebox-test--reset-runtime-state)
-  (let* ((old-source (ebox-test-build '(box :id old :width 120 "old")))
+  (let* ((old-source (ebox-test-box :id 'old :width 120 (ebox-test-text "old")))
          (source-before (copy-tree old-source))
          primary-buffer secondary-buffer)
     (unwind-protect
@@ -854,7 +876,7 @@
                  (generate-new-buffer-name " *ebox-live-secondary*")
                  old-source))
           (ebox-commit secondary-buffer
-                       (ebox-test-build '(box :id old :width 120 "reused")))
+                       (ebox-test-box :id 'old :width 120 (ebox-test-text "reused")))
           (with-current-buffer secondary-buffer
             (should (string-match-p "reused" (buffer-string))))
           (should (equal old-source source-before)))
@@ -865,10 +887,8 @@
 (ert-deftest ebox-wrapper-child-nodes-are-in-runtime-index ()
   "A wrapper box's child layout should remain visible in runtime state."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column :padding 1
-                  (box :content "One")
-                  (box :content "Two"))))
+  (let* ((node (ebox-test-column :padding 1 (ebox-test-box (ebox-test-text "One"))
+		  (ebox-test-box (ebox-test-text "Two"))))
          buffer)
     (unwind-protect
         (progn
@@ -888,24 +908,28 @@
   "A later flex wrapper should not replace an earlier duplicate region owner."
   (ebox-test--reset-runtime-state)
   (let* ((region-id 9001)
-         (plain (ebox-test-box :content "First" :width '(80)))
+         (plain (ebox-test-box (ebox-test-text "First") :width '(80)))
          (flex (ebox-test-flex :width '(120)
-                          (ebox-test-box :content "Later" :width '(80))))
-         (wrapper (plist-get flex :box))
-         (layout (ebox-test-column plain flex)))
-    (ebox-put plain :region-id region-id)
+                          (ebox-test-box (ebox-test-text "Later") :width '(80))))
+         (wrapper (ebox-test-root flex))
+         (layout (ebox-test-column plain flex))
+         (plain-node (ebox-test-root plain))
+         (layout-node (ebox-test-root layout)))
+    (ebox-put plain-node :region-id region-id)
     (ebox-put wrapper :region-id region-id)
-    (let* ((index (ebox--runtime-index layout))
+    (let* ((index (ebox--runtime-index
+                   layout-node nil (ebox-test-source-index layout)))
            (table (plist-get index :region-node-table))
-           (expected (car (ebox--node-path-to-region layout region-id))))
-      (should (eq expected plain))
+           (expected (car (ebox--node-path-to-region
+                           layout-node region-id))))
+      (should (eq expected plain-node))
       (should (equal (gethash region-id table)
                      (ebox--ensure-node-id expected))))))
 
 (ert-deftest ebox-region-render-owner-index-falls-back-for-legacy-state ()
   "A runtime state without the new table should retain recursive lookup."
   (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-box :content "Flex child" :width '(80)))
+  (let* ((child (ebox-test-box (ebox-test-text "Flex child") :width '(80)))
          (flex (ebox-test-flex :width '(120) :padding 1 child))
          (wrapper (plist-get flex :box)))
     (ebox-test--with-rendered-buffer flex
@@ -942,8 +966,8 @@
   (ebox-test--reset-runtime-state)
   (let* ((layout (ebox-test-flex
                   :flex-wrap 'wrap
-                  (ebox-test-box :content "A" :width '(100))
-                  (ebox-test-box :content "B" :width '(100))))
+                  (ebox-test-box (ebox-test-text "A") :width '(100))
+                  (ebox-test-box (ebox-test-text "B") :width '(100))))
          (ids-before nil)
          buffer)
     (unwind-protect
@@ -963,24 +987,37 @@
 (ert-deftest ebox-runtime-reconcile-preserves-keyed-child-id ()
   "Keyed children should keep runtime ids across structural rebuilds."
   (ebox-test--reset-runtime-state)
-  (let* ((old (ebox--runtime-tree
-               (ebox-test-column
-                (ebox-test-box :key 'a :content "A" :width 40)
-                (ebox-test-box :key 'b :content "B" :width 40))))
-         (old-b-id (ebox--runtime-node-id-by-key old 'b))
-         (new (ebox--reconcile-runtime-tree
-               old
-               (ebox-test-column
-                (ebox-test-box :key 'x :content "X" :width 40)
-                (ebox-test-box :key 'b :content "B2" :width 40)))))
-    (should (equal (ebox--runtime-node-id-by-key new 'b) old-b-id))))
+  (let* ((old-input
+          (ebox-test-column
+           (ebox-test-box :key 'a (ebox-test-text "A") :width 40)
+           (ebox-test-box :key 'b (ebox-test-text "B") :width 40)))
+         (old (ebox--runtime-tree (ebox-test-root old-input)))
+         (old-b-id
+          (plist-get
+           (car (ebox-selector-query-all old-input "[key=b]")) :node-id))
+         (new-input
+          (ebox-test-column
+           (ebox-test-box :key 'x (ebox-test-text "X") :width 40)
+           (ebox-test-box :key 'b (ebox-test-text "B2") :width 40)))
+         (new
+          (ebox-tree-reconcile-runtime
+           old (ebox-test-source-index old-input)
+           (ebox-test-root new-input) (ebox-test-source-index new-input))))
+    (should
+     (equal
+      (plist-get
+       (car (ebox-selector-query-all
+             (ebox-canonical-input-create
+              (list new) (ebox-test-source-index new-input))
+             "[key=b]"))
+       :node-id)
+      old-b-id))))
 
 (ert-deftest ebox-tree-helpers-see-wrapper-child-nodes ()
   "Tree helpers should see wrapper children without rendering static content."
-  (let* ((node (ebox-test-build
-                '(column :padding 1
-                  (box :content "Child" :width (120)))))
-         (children (ebox-tree-children node)))
+  (let* ((node (ebox-test-column :padding 1
+		  (ebox-test-box (ebox-test-text "Child") :width '(120))))
+         (children (ebox-tree-children (ebox-test-root node))))
     (should children)
     (should (plist-get (car children) :node-id))))
 
@@ -1295,12 +1332,14 @@
   "Portable scroll templates rebind complete state to the candidate box."
   (ebox-test--reset-runtime-state)
   (let* ((buffer (generate-new-buffer " *ebox-portable-scroll-cache*"))
-         (old-box (ebox-test-box :content "old" :scroll-offset 0))
-         (node-id (ebox--ensure-node-id old-box))
-         (candidate-box (ebox-test-box :content "candidate" :scroll-offset 0))
+         (old-box (ebox-test-box (ebox-test-text "old") :scroll-offset 0))
+         (old-node (ebox-test-root old-box))
+         (node-id (ebox--ensure-node-id old-node))
+         (candidate-box (ebox-test-box (ebox-test-text "candidate") :scroll-offset 0))
+         (candidate-node (ebox-test-root candidate-box))
          (node-table (make-hash-table :test 'eql))
          (template
-          (list :box old-box
+          (list :box old-node
                 :content-lines '("alpha" "beta")
                 :rendered-content-lines '("alpha")
                 :content-height 1
@@ -1313,8 +1352,8 @@
                 :portable-p t
                 :restorable-p t))
          (ebox--render-cache-scroll-state-restorable-p nil))
-    (plist-put candidate-box :node-id node-id)
-    (puthash node-id candidate-box node-table)
+    (plist-put candidate-node :node-id node-id)
+    (puthash node-id candidate-node node-table)
     (puthash buffer (list :node-table node-table)
              ebox--buffer-render-state-table)
     (puthash entry metadata ebox--render-cache-entry-side-effects-table)
@@ -1324,7 +1363,7 @@
           (should (ebox--render-cache-entry-reusable-p entry))
           (ebox--render-cache-replay-entry-side-effects entry)
           (let ((state (ebox--scroll-get-state 'scroll)))
-            (should (eq (plist-get state :box) candidate-box))
+            (should (eq (plist-get state :box) candidate-node))
             (should (equal (plist-get state :content-lines)
                            '("alpha" "beta")))
             (should (equal (plist-get state :rendered-content-lines)
@@ -1341,7 +1380,7 @@
          (actions
           (list
            (list 'set 'scroll
-                 (list :box (ebox-test-box :content "old" :scroll-offset 0)
+                 (list :box (ebox-test-box (ebox-test-text "old") :scroll-offset 0)
                        :content-lines '("alpha")
                        :render-content-prefix prefix-renderer
                        :materialize-content-lines materializer))))
@@ -1402,14 +1441,13 @@
          (ebox-runtime-idle-prewarm nil)
          (ebox-runtime-idle-reflow-cache-prewarm nil)
          (layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport)
-              (flex :width (viewport) :gap 1
-                ,@(cl-loop for index below 8
-                           collect
-                           `(box :id ,(format "card-%d" index)
-                                 :content ,(format "card %d" index)
-                                 :width 72 :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport)
+	       (apply #'ebox-test-flex
+       (append (list :width '(viewport) :gap 1)
+	       (cl-loop for index below 8 collect
+			(ebox-test-box :id (format "card-%d" index)
+				       (ebox-test-text (format "card %d" index)) :width
+				       72 :height 1))))))
          buffer)
     (unwind-protect
         (let ((ebox-viewport-width 240))
@@ -1430,15 +1468,14 @@
   "A cached subtree must restore lazy scroll state for its render context."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(column :id "viewport" :width (viewport)
-             (box :id "scroll" :width (viewport) :height 4
-                  :overflow scroll
-               (column :width (viewport)
-                ,@(cl-loop for index below 32
-                           collect
-                           `(box :content ,(format "cached row %02d" index)
-                                 :width (viewport) :height 1)))))))
+          (ebox-test-column :id "viewport" :width '(viewport)
+		  (ebox-test-box :id "scroll" :width '(viewport)
+				 :height 4 :overflow 'scroll
+				 (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for index below 32 collect
+			(ebox-test-box (ebox-test-text (format "cached row %02d" index))
+				       :width '(viewport) :height 1)))))))
          buffer
          scroll-id)
     (unwind-protect
@@ -1486,9 +1523,9 @@
   "An exact prepared root should bypass layout once and never affect children."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :width (240)
-             (box :id "child" :content "prepared" :height 1))))
+          (ebox-test-box :id "root" :width '(240)
+	       (ebox-test-box :id "child" (ebox-test-text "prepared") :height
+			      1)))
          buffer)
     (unwind-protect
         (let ((ebox-viewport-width 900)
@@ -1537,7 +1574,7 @@
 (ert-deftest ebox-prepared-root-render-rejects-stale-runtime ()
   "A stale prepared root should fall back without entering later updates."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build '(box :id "root" :width (240) :content "old")))
+  (let* ((layout (ebox-test-box :id "root" :width '(240) (ebox-test-text "old")))
          buffer
          (fallback-count 0))
     (unwind-protect
@@ -1570,7 +1607,7 @@
                 (let ((ebox--prepared-root-render prepared)
                       (ebox--render-cache-table
                        (make-hash-table :test 'equal)))
-                  (cl-letf (((symbol-function 'ebox-render)
+                  (cl-letf (((symbol-function 'ebox--render-node)
                              (lambda (&rest _)
                                (cl-incf fallback-count)
                                "fresh")))
@@ -1585,9 +1622,9 @@
   "Viewport predictions should reuse one nonmutating isolated live tree."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :width (viewport)
-             (box :content "viewport scratch" :width (viewport) :height 1))))
+          (ebox-test-box :id "root" :width '(viewport)
+	       (ebox-test-box (ebox-test-text "viewport scratch") :width
+			      '(viewport) :height 1)))
          buffer)
     (unwind-protect
         (let ((ebox-viewport-width 240)
@@ -1622,9 +1659,9 @@
   "Ordinary root prediction should run only after an idle interval."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :width (240)
-             (box :content "scheduled ordinary root" :height 1))))
+          (ebox-test-box :id "root" :width '(240)
+	       (ebox-test-box (ebox-test-text "scheduled ordinary root")
+			      :height 1)))
          buffer
          scheduled-delay
          scheduled-repeat
@@ -1748,7 +1785,7 @@
   "A TP paint slot should recolor retained output without property rewrites."
   (let* ((slot (tp-paint-slot-create '(:foreground "red")))
          (face (tp-paint-slot-face slot))
-         (rendered (ebox-render (ebox-test-box :content "paint" :color slot)))
+         (rendered (ebox-render (ebox-test-box (ebox-test-text "paint") :color slot)))
          (property (get-text-property 0 'face rendered)))
     (should (eq face property))
     (tp-paint-slot-update slot '(:foreground "blue"))
@@ -1852,18 +1889,20 @@
 (ert-deftest ebox-scroll-rendered-content-lines-preserve-text-paint-in-place ()
   "Scroll ownership should preserve Text paint and add Box background."
   (let* ((box (ebox-test-box :width 120 :bgcolor "#F4F5F6"))
+         (ebox--render-source-index (ebox-test-source-index box))
          (region-id 901)
          (source (propertize "child" 'ebox-content 77
                             'ebox-content-owner 77
                             'ebox-content-owners '(77)
                             'face '(:foreground "#112233")))
          (source-before (copy-sequence source))
-         (filler (ebox-pixel-space (ebox--content-pixel box)))
+         (filler (ebox-pixel-space
+                  (ebox-test--input-content-pixel box)))
          (expected
           (ebox--propertize-colors
            (ebox--propertize-content-line source region-id 4 filler)
            nil
-           (ebox-get box :bgcolor)))
+           (ebox-style-node-specified-value box :bgcolor)))
          (copying-owner-count 0)
          (original-copying-owner
           (symbol-function 'ebox--add-content-owner))
@@ -1874,7 +1913,7 @@
                  (apply original-copying-owner args))))
       (setq actual
             (car (ebox--scroll-rendered-content-lines
-                  box (list source) region-id 4))))
+                  (ebox-test-root box) (list source) region-id 4))))
     (should (equal-including-properties source source-before))
     (should (equal-including-properties actual expected))
     (should (= copying-owner-count 0))))
@@ -1882,7 +1921,7 @@
 (ert-deftest ebox-box-render-coalesces-foreground-background-pass ()
   "Foreground and background should not each copy the rendered box lines."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "paint"
+  (let* ((box (ebox-test-box (ebox-test-text "paint")
                            :width 12 :height 1
                            :color "#112233"
                            :bgcolor "#ddeeff"))
@@ -1907,7 +1946,7 @@
 
 (ert-deftest ebox-incremental-update-scheduler-batches-multiple-style-changes ()
   "Scheduler seed should coalesce multiple property changes into one flush."
-  (let* ((node (ebox-test-box :content "Batch" :border-color "#111111"))
+  (let* ((node (ebox-test-box (ebox-test-text "Batch") :border-color "#111111"))
          (id (car (ebox-region-ids node))))
     (ebox-test--with-rendered-buffer node
       (ebox-incremental-begin-batch (current-buffer))
@@ -1925,10 +1964,9 @@
   (dolist (order '((parent child) (child parent)))
     (ebox-test--reset-runtime-state)
     (let ((layout
-           (ebox-test-build
-            '(box :id parent :width (120) :color "black"
-              (box :id child :content "Child" :width (120)
-                   :color "black")))))
+           (ebox-test-box :id 'parent :width '(120) :color "black"
+	       (ebox-test-box :id 'child (ebox-test-text "Child") :width
+			      '(120) :color "black"))))
       (ebox-test--with-rendered-buffer layout
         (let* ((buffer (current-buffer))
                (parent-id (ebox-test--selector-region-id buffer "#parent"))
@@ -1950,10 +1988,9 @@
   "Ancestor paint must run before a descendant text-changing operation."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id parent :width (160) :color "black"
-            (box :id child :content "Child" :width (120)
-                 :color "blue")))))
+         (ebox-test-box :id 'parent :width '(160) :color "black"
+	       (ebox-test-box :id 'child (ebox-test-text "Child") :width
+			      '(120) :color "blue"))))
     (ebox-test--with-rendered-buffer layout
       (let* ((buffer (current-buffer))
              (parent-id (ebox-test--selector-region-id buffer "#parent"))
@@ -1971,30 +2008,51 @@
 
 (defun ebox-test--multi-row-batch-flex-layout ()
   "Return a wrapped flex fixture with targets on separate rows."
-  (ebox-test-build
-   '(flex :id matrix :width (500) :flex-flow (row wrap)
-     :column-gap (12) :row-gap 1 :padding (0 (12))
-     :border "#999999"
-     (column :width (210) :border "#999999"
-      (box :content "Title A" :width (190))
-      (box :id target-a :content "Target A" :width (160)
-           :height 3 :padding (0 (8)) :border "#999999"
-           :text-align right)
-      (box :content "Metric A" :width (190) :height 2))
-     (column :width (210) :border "#999999"
-      (box :content "Peer A" :width (190))
-      (box :content "Same first row" :width (190) :height 3)
-      (box :content "Metric B" :width (190) :height 2))
-     (column :width (210) :border "#999999"
-      (box :content "Title B" :width (190))
-      (box :id target-b :content "Target B" :width (160)
-           :height 3 :padding (0 (8)) :border "#999999"
-           :text-align right)
-      (box :content "Metric C" :width (190) :height 2))
-     (column :width (210) :border "#999999"
-      (box :content "Peer B" :width (190))
-      (box :content "Same second row" :width (190) :height 3)
-      (box :content "Metric D" :width (190) :height 2)))))
+  (ebox-test-flex :id 'matrix :width '(500) :flex-flow '(row wrap)
+		:column-gap '(12) :row-gap 1 :padding '(0 (12))
+		:border "#999999"
+		(ebox-test-column :width '(210) :border "#999999"
+				  (ebox-test-box (ebox-test-text "Title A")
+						 :width '(190))
+				  (ebox-test-box :id 'target-a
+						 (ebox-test-text "Target A")
+						 :width '(160) :height
+						 3 :padding '(0 (8))
+						 :border "#999999"
+						 :text-align 'right)
+				  (ebox-test-box (ebox-test-text "Metric A")
+						 :width '(190) :height
+						 2))
+		(ebox-test-column :width '(210) :border "#999999"
+				  (ebox-test-box (ebox-test-text "Peer A")
+						 :width '(190))
+				  (ebox-test-box (ebox-test-text "Same first row")
+						 :width '(190) :height
+						 3)
+				  (ebox-test-box (ebox-test-text "Metric B")
+						 :width '(190) :height
+						 2))
+		(ebox-test-column :width '(210) :border "#999999"
+				  (ebox-test-box (ebox-test-text "Title B")
+						 :width '(190))
+				  (ebox-test-box :id 'target-b
+						 (ebox-test-text "Target B")
+						 :width '(160) :height
+						 3 :padding '(0 (8))
+						 :border "#999999"
+						 :text-align 'right)
+				  (ebox-test-box (ebox-test-text "Metric C")
+						 :width '(190) :height
+						 2))
+		(ebox-test-column :width '(210) :border "#999999"
+				  (ebox-test-box (ebox-test-text "Peer B")
+						 :width '(190))
+				  (ebox-test-box (ebox-test-text "Same second row")
+						 :width '(190) :height
+						 3)
+				  (ebox-test-box (ebox-test-text "Metric D")
+						 :width '(190) :height
+						 2))))
 
 (ert-deftest ebox-explicit-batch-multiple-flex-rows-skip-line-fast-path ()
   "Dirty descendants on separate flex rows must rerender in either order."
@@ -2052,20 +2110,18 @@
 (ert-deftest ebox-layout-module-renders-row-and-column-through-facade ()
   "Facade rendering should still use extracted layout owners."
   (let ((rendered (ebox-render
-                   (ebox-test-build
-                    '(column
-                      (row
-                       (box :content "A" :width (40))
-                       (box :content "B" :width (40))))))))
+                   (ebox-test-column
+ (ebox-test-row (ebox-test-box (ebox-test-text "A") :width '(40))
+		(ebox-test-box (ebox-test-text "B") :width '(40)))))))
     (should (string-match-p "A" rendered))
     (should (string-match-p "B" rendered))))
 
 (ert-deftest ebox-layout-snapshot-details-include-footprint-signatures ()
   "Detailed snapshots should expose explicit L2 footprint signatures."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Footprint" :width '(120)
+  (let* ((box (ebox-test-box (ebox-test-text "Footprint") :width '(120)
                            :height 1 :border t))
-         (node-id (ebox--ensure-node-id box)))
+         (node-id (ebox--ensure-node-id (ebox-test-root box))))
     (ebox-test--with-rendered-buffer box
       (let* ((snapshot (ebox--ensure-layout-snapshot-details
                         (current-buffer) node-id))
@@ -2105,13 +2161,13 @@
                             :border "#64748B" :bgcolor "#F8FAFC"
                             :flex-flow '(row wrap)
                             (ebox-test-box
-                             :content (format "A%d" index)
+                             (ebox-test-text (format "A%d" index))
                              :width 60 :bgcolor "#DBEAFE")
                             (ebox-test-box
-                             :content (format "B%d" index)
+                             (ebox-test-text (format "B%d" index))
                              :width 60 :bgcolor "#DCFCE7")
                             (ebox-test-box
-                             :content (format "C%d" index)
+                             (ebox-test-text (format "C%d" index))
                              :width 60 :bgcolor "#FEF3C7")))))
          (calls 0)
          (original (symbol-function 'ebox--pos-region-ids))
@@ -2141,7 +2197,7 @@
                   (cl-loop for index below 12
                            collect
                            (ebox-test-box
-                            :content (format "Row %02d" index)
+                            (ebox-test-text (format "Row %02d" index))
                             :width (+ 40 (* index 2))))))
          (multiline-width-calls 0)
          (original (symbol-function 'ebox--string-pixel-width)))
@@ -2194,7 +2250,7 @@
 (ert-deftest ebox-dirty-set-classifies-paint-only-change ()
   "A color-only change should produce paint dirty, not geometry dirty."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Paint" :width 80
+  (let* ((box (ebox-test-box (ebox-test-text "Paint") :width 80
                            :border '(1 solid "red")))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -2214,8 +2270,8 @@
         layout)
     (setq layout
           (ebox-test-flex :flex-wrap 'wrap
-            (ebox-test-box :content "A" :width '(120))
-            (ebox-test-box :content "B" :width '(120))))
+            (ebox-test-box (ebox-test-text "A") :width '(120))
+            (ebox-test-box (ebox-test-text "B") :width '(120))))
     (unwind-protect
         (progn
           (setq buffer
@@ -2238,10 +2294,9 @@
 (ert-deftest ebox-dirty-set-classifies-wrapper-child-viewport-geometry ()
   "Viewport reflow under a wrapper should produce geometry dirty, not no-op."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column :padding 1
-                  (box :content "Text that wraps differently when narrow"
-                       :wrap-mode word))))
+  (let* ((node (ebox-test-column :padding 1
+		  (ebox-test-box (ebox-test-text "Text that wraps differently when narrow")
+				 :wrap-mode 'word)))
          buffer)
     (unwind-protect
         (progn
@@ -2261,7 +2316,7 @@
 (ert-deftest ebox-patch-set-paints-without-rendered-text-replace ()
   "Paint-only dirty entries should produce paint-patch ops."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Paint" :width 80
+  (let* ((box (ebox-test-box (ebox-test-text "Paint") :width 80
                            :border '(1 solid "red")))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -2278,7 +2333,7 @@
   (ebox-test--reset-runtime-state)
   (let* ((layout (ebox-test-flex
                   :border "#5E7F6A" :bgcolor "#F8FCF8"
-                  (ebox-test-box :content "A" :width 60
+                  (ebox-test-box (ebox-test-text "A") :width 60
                                :bgcolor "#DCEBDD")))
          (region-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
@@ -2297,8 +2352,8 @@
         layout)
     (setq layout
           (ebox-test-flex :flex-wrap 'wrap
-            (ebox-test-box :content "A" :width '(120))
-            (ebox-test-box :content "B" :width '(120))))
+            (ebox-test-box (ebox-test-text "A") :width '(120))
+            (ebox-test-box (ebox-test-text "B") :width '(120))))
     (unwind-protect
         (progn
           (setq buffer
@@ -2324,10 +2379,10 @@
   "Viewport resize should publish the correct column scope through TP."
   (ebox-test--reset-runtime-state)
   (let* ((top (ebox-test-box
-               :content "Top text should wrap into more lines when narrow."
+               (ebox-test-text "Top text should wrap into more lines when narrow.")
                :wrap-mode 'word))
          (bottom (ebox-test-box
-                  :content "Bottom text should also survive after top grows."
+                  (ebox-test-text "Bottom text should also survive after top grows.")
                   :wrap-mode 'word))
          (layout (ebox-test-column top bottom))
          buffer)
@@ -2357,7 +2412,7 @@
 (ert-deftest ebox-viewport-rerender-noops-without-viewport-deps ()
   "Viewport resize should not rerender when no node depends on viewport width."
   (ebox-test--reset-runtime-state)
-  (let ((layout (ebox-test-box :content "Fixed" :width 80))
+  (let ((layout (ebox-test-box (ebox-test-text "Fixed") :width 80))
         buffer)
     (unwind-protect
         (progn
@@ -2378,8 +2433,8 @@
 (ert-deftest ebox-region-width-update-report-describes-constraint-change ()
   "Ordinary box geometry updates should use the shared constraint-change model."
   (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "Left" :width 60))
-         (right (ebox-test-box :content "Right" :width 60))
+  (let* ((left (ebox-test-box (ebox-test-text "Left") :width 60))
+         (right (ebox-test-box (ebox-test-text "Right") :width 60))
          (layout (ebox-test-row left right))
          (left-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
@@ -2401,13 +2456,12 @@
   (let* ((ebox-viewport-width 240)
          (ebox-viewport-height 2)
          (layout
-          (ebox-test-build
-           '(box :id "root" :width (240) :height (viewport-height)
-                 :overflow scroll
-             (column
-              (box :content "first" :width (viewport))
-              (box :content "second" :width (viewport))
-              (box :content "third" :width (viewport))))))
+          (ebox-test-box :id "root" :width '(240) :height '(viewport-height)
+	       :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "first") :width '(viewport))
+		(ebox-test-box (ebox-test-text "second") :width '(viewport))
+		(ebox-test-box (ebox-test-text "third") :width '(viewport)))))
          (root-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
       (ebox-test--region-update root-id :width '(160))
@@ -2420,11 +2474,10 @@
 (ert-deftest ebox-wrapper-child-width-update-promotes-to-wrapper-context ()
   "Child geometry inside a wrapper should promote to the wrapper formatting context."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column :padding 1
-                  (row
-                   (box :content "Left" :width (60))
-                   (box :content "Right" :width (60))))))
+  (let* ((node (ebox-test-column :padding 1
+		  (ebox-test-row
+		   (ebox-test-box (ebox-test-text "Left") :width '(60))
+		   (ebox-test-box (ebox-test-text "Right") :width '(60)))))
          (ids (ebox-region-ids node))
          (left-id (nth 1 ids)))
     (ebox-test--with-rendered-buffer node
@@ -2446,12 +2499,11 @@
 (ert-deftest ebox-patch-set-uses-wrapper-owner-for-contained-layout-change ()
   "Contained layout changes should patch a real owner instead of vanishing."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column
-                  (box :content "Stable header" :width (180))
-                  (column :padding 1
-                   (box :content "Child text wraps under the wrapper viewport"
-                        :wrap-mode word)))))
+  (let* ((node (ebox-test-column
+ (ebox-test-box (ebox-test-text "Stable header") :width '(180))
+ (ebox-test-column :padding 1
+		   (ebox-test-box (ebox-test-text "Child text wraps under the wrapper viewport")
+				  :wrap-mode 'word))))
          buffer)
     (unwind-protect
         (progn
@@ -2478,7 +2530,7 @@
                   (cl-loop for index below 24
                            collect
                            (ebox-test-box
-                            :content (format "Fluid %02d" index)
+                            (ebox-test-text (format "Fluid %02d" index))
                             :border t))))
          buffer)
     (unwind-protect
@@ -2518,7 +2570,7 @@
                   (cl-loop for index below 12
                            collect
                            (ebox-test-box
-                            :content (format "Fluid section %02d" index)
+                            (ebox-test-text (format "Fluid section %02d" index))
                             :border t))))
          buffer)
     (unwind-protect
@@ -2553,10 +2605,10 @@
           "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu")
          (layout (apply
                   #'ebox-test-column
-                  (cl-loop for _index below 12
+                  (cl-loop repeat 12
                            collect
                            (ebox-test-box
-                            :content content
+                            (ebox-test-text content)
                             :width 'viewport
                             :wrap-mode 'word
                             :border t))))
@@ -2587,10 +2639,10 @@
           "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu")
          (layout (apply
                   #'ebox-test-column
-                  (cl-loop for _index below 12
+                  (cl-loop repeat 12
                            collect
                            (ebox-test-box
-                            :content content
+                            (ebox-test-text content)
                             :width 'viewport
                             :wrap-mode 'word
                             :border t))))
@@ -2622,7 +2674,7 @@
 (ert-deftest ebox-buffer-render-context-selects-target-buffer ()
   "Buffer render contexts should evaluate render-sensitive work in target buffers."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-box :content "context target"))
+  (let* ((node (ebox-test-box (ebox-test-text "context target")))
          (buffer nil)
          (other nil)
          seen-buffer)
@@ -2645,7 +2697,7 @@
 (ert-deftest ebox-buffer-render-context-preserves-caller-state-binding ()
   "Render context internals should not capture a caller's STATE variable."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-box :content "context state"))
+  (let* ((node (ebox-test-box (ebox-test-text "context state")))
          (buffer nil)
          (state 'caller-scroll-state)
          seen-state)
@@ -2860,7 +2912,7 @@
   (ebox-test--reset-runtime-state)
   (let ((buffer (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
-                 (ebox-test-box :content "before"))))
+                 (ebox-test-box (ebox-test-text "before")))))
     (unwind-protect
         (let ((noninteractive nil)
               (gc-cons-threshold 1000)
@@ -2881,7 +2933,7 @@
                     ((symbol-function 'cancel-timer) #'ignore))
             (let ((token (ebox-render-burst-begin)))
               (ebox-commit
-               buffer (ebox-test-box :content "after")
+               buffer (ebox-test-box (ebox-test-text "after"))
                (lambda (_report)
                  (setq observed-depth ebox--deferred-render-gc-depth)))
               (should (= observed-depth 2))
@@ -2944,7 +2996,7 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
-                 (ebox-test-box :content "before")))
+                 (ebox-test-box (ebox-test-text "before"))))
           (let ((noninteractive nil)
                 (gc-cons-threshold 1000)
                 (gc-cons-percentage 0.1)
@@ -2957,7 +3009,7 @@
             (unwind-protect
                 (progn
                   (ebox-commit
-                   buffer (ebox-test-box :content "after")
+                   buffer (ebox-test-box (ebox-test-text "after"))
                    (lambda (_report)
                      (setq observed-threshold gc-cons-threshold)))
                   (should (= observed-threshold 4000))
@@ -2984,7 +3036,7 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
-                 (ebox-test-box :width '(viewport) :content "resize")))
+                 (ebox-test-box :width '(viewport) (ebox-test-text "resize"))))
           (let ((noninteractive nil)
                 (gc-cons-threshold 1000)
                 (gc-cons-percentage 0.1)
@@ -3044,7 +3096,7 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
-                 (ebox-test-box :width '(viewport) :content "resize")))
+                 (ebox-test-box :width '(viewport) (ebox-test-text "resize"))))
           (let ((noninteractive t)
                 (gc-cons-threshold 1000)
                 (gc-cons-percentage 0.1)
@@ -3116,7 +3168,7 @@
                      (cl-loop for index below 4
                               collect
                               (ebox-test-box
-                               :content (format "S%d-%d" section index)
+                               (ebox-test-text (format "S%d-%d" section index))
                                :width 80
                                :height 1))))))
          buffer)
@@ -3158,7 +3210,7 @@
                      (cl-loop for index below 4
                               collect
                               (ebox-test-box
-                               :content (format "S%d-%d" section index)
+                               (ebox-test-text (format "S%d-%d" section index))
                                :width 80
                                :height 1))))))
          buffer)
@@ -3198,13 +3250,13 @@
   "Block padding should publish through its parent without rebuilding line indexes."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(column :id "root" :width (480)
-            (box :id "target" :content "mixed padding"
-                 :width (220) :height 3 :box-sizing border-box
-                 :padding (0 (8)) :border "#999999")
-            (box :content "peer" :width (220) :height 3
-                 :border "#999999"))))
+         (ebox-test-column :id "root" :width '(480)
+		  (ebox-test-box :id "target" (ebox-test-text "mixed padding")
+				 :width '(220) :height 3 :box-sizing
+				 'border-box :padding '(0 (8)) :border
+				 "#999999")
+		  (ebox-test-box (ebox-test-text "peer") :width '(220) :height
+				 3 :border "#999999")))
         (index-build-count 0))
     (ebox-test--with-rendered-buffer layout
       (let ((region-id (ebox-test--selector-region-id (current-buffer)
@@ -3228,12 +3280,13 @@
   "Published public bounds should agree with TP-owned mount snapshots."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(column :id "root" :width (480)
-            (box :id "target" :width (220) :height 1
-                 :border "#999999" "target")
-            (box :id "peer" :width (220) :height 1
-                 :border "#999999" "peer")))))
+         (ebox-test-column :id "root" :width '(480)
+		  (ebox-test-box :id "target" :width '(220) :height 1
+				 :border "#999999"
+				 (ebox-test-text "target"))
+		  (ebox-test-box :id "peer" :width '(220) :height 1
+				 :border "#999999"
+				 (ebox-test-text "peer")))))
     (ebox-test--with-rendered-buffer layout
       (let* ((target-id (ebox-test--selector-region-id (current-buffer)
                                                        "#target"))
@@ -3281,7 +3334,7 @@
                      (cl-loop for index below 4
                               collect
                               (ebox-test-box
-                               :content (format "S%d-%d" section index)
+                               (ebox-test-text (format "S%d-%d" section index))
                                :width 80
                                :height 1))))))
          buffer)
@@ -3317,7 +3370,7 @@
            (cl-loop for index below 12
                     collect
                     (ebox-test-box
-                     :content (format "Item %02d" index)
+                     (ebox-test-text (format "Item %02d" index))
                      :width 80
                      :height 1))))
          buffer)
@@ -3352,7 +3405,7 @@
            (cl-loop for index below 10
                     collect
                     (ebox-test-box
-                     :content (format "Stretch %02d" index)
+                     (ebox-test-text (format "Stretch %02d" index))
                      :width 80))))
          buffer)
     (unwind-protect
@@ -3384,7 +3437,7 @@
            (cl-loop for index below 12
                     collect
                     (ebox-test-box
-                     :content (format "Measured %02d" index)
+                     (ebox-test-text (format "Measured %02d" index))
                      :width 80
                      :height 1))))
          buffer)
@@ -3425,10 +3478,10 @@
                     :flex-flow '(row wrap)
                     :column-gap '(8)
                     (ebox-test-box
-                     :content (format "A%d" index)
+                     (ebox-test-text (format "A%d" index))
                      :width 48 :height 1)
                     (ebox-test-box
-                     :content (format "B%d" index)
+                     (ebox-test-text (format "B%d" index))
                      :width 48 :height 1))))
          (layout
           (apply
@@ -3438,7 +3491,7 @@
            :column-gap '(8)
            (mapcar (lambda (inner)
                      (ebox-test-column
-                      (ebox-test-box :content "Static card"
+                      (ebox-test-box (ebox-test-text "Static card")
                                    :width 180
                                    :height 1)
                       inner))
@@ -3475,9 +3528,9 @@
            (cl-loop for index below 6
                     collect
                     (ebox-test-column
-                     (ebox-test-box :content (format "Card %d" index)
+                     (ebox-test-box (ebox-test-text (format "Card %d" index))
                                   :width 96 :height 1)
-                     (ebox-test-box :content "Body" :width 96 :height 2)))))
+                     (ebox-test-box (ebox-test-text "Body") :width 96 :height 2)))))
          buffer)
     (unwind-protect
         (progn
@@ -3495,10 +3548,10 @@
 (ert-deftest ebox-render-cacheability-rejects-viewport-dependent-wrapper-child ()
   "Wrapper boxes with viewport-dependent child layout should not reuse static render cache."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column :padding 1
-                  (box :content "Auto child follows viewport"
-                       :wrap-mode word)))))
+  (let* ((node (ebox-test-root
+                (ebox-test-column :padding 1
+		  (ebox-test-box (ebox-test-text "Auto child follows viewport")
+				 :wrap-mode 'word)))))
     (let ((ebox--render-cache-table (make-hash-table :test 'equal))
           (ebox--viewport-dependent-subtree-cache
            (make-hash-table :test 'eq)))
@@ -3507,10 +3560,10 @@
 (ert-deftest ebox-render-cacheability-allows-definite-width-wrapper-child ()
   "Definite-width boxes bound descendant viewport-dependent layout."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column :width (210) :padding 1
-                  (box :content "Child wraps inside the card"
-                       :wrap-mode word)))))
+  (let* ((node (ebox-test-root
+                (ebox-test-column :width '(210) :padding 1
+		  (ebox-test-box (ebox-test-text "Child wraps inside the card")
+				 :wrap-mode 'word)))))
     (let ((ebox--render-cache-table (make-hash-table :test 'equal))
           (ebox--viewport-dependent-subtree-cache
            (make-hash-table :test 'eq)))
@@ -3520,7 +3573,7 @@
 (ert-deftest ebox-region-width-update-invalidates-viewport-dependencies ()
   "Width updates can change which boxes participate in viewport resize."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Resizable" :width 80))
+  (let* ((box (ebox-test-box (ebox-test-text "Resizable") :width 80))
          (box-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (ebox-rerender-buffer-with-context (current-buffer) 260)
@@ -3533,10 +3586,10 @@
 (ert-deftest ebox-viewport-dependencies-include-wrapper-child-layout ()
   "Viewport dependency discovery should see lazy child layout under wrapper boxes."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column :padding 1
-                  (box :content "Auto child follows the preview width"
-                       :wrap-mode word))))
+  (let* ((node (ebox-test-root
+                (ebox-test-column :padding 1
+		  (ebox-test-box (ebox-test-text "Auto child follows the preview width")
+				 :wrap-mode 'word))))
          (child (car (ebox--node-children node)))
          (ids (let ((ebox-viewport-width 360))
                 (ebox--runtime-node-ids node)
@@ -3548,10 +3601,10 @@
 (ert-deftest ebox-viewport-dependencies-stop-at-definite-width-wrapper ()
   "Definite wrappers should contain descendant viewport dependencies."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-build
-                '(column :width (210) :padding 1
-                  (box :content "Auto child wraps inside the fixed card"
-                       :wrap-mode word))))
+  (let* ((node (ebox-test-root
+                (ebox-test-column :width '(210) :padding 1
+		  (ebox-test-box (ebox-test-text "Auto child wraps inside the fixed card")
+				 :wrap-mode 'word))))
          (child (car (ebox--node-children node)))
          (ids (let ((ebox-viewport-width 360))
                 (ebox--runtime-node-ids node)
@@ -3565,12 +3618,9 @@
   (let* ((viewport-width 120)
          (node (let ((ebox-viewport-width viewport-width)
                      (ebox-viewport-height 2))
-                 (ebox-test-build
-                  '(column :width (120)
-                    (box :id child
-                     :content "One\nTwo\nThree\nFour"
-                     :height (viewport-height)
-                     :overflow scroll)))))
+                 (ebox-test-column :width '(120)
+		  (ebox-test-box :id 'child (ebox-test-text "One\nTwo\nThree\nFour") :height
+				 '(viewport-height) :overflow 'scroll))))
          buffer)
     (unwind-protect
         (progn
@@ -3601,14 +3651,22 @@
 (ert-deftest ebox-viewport-dependency-axes-classify-both-dimensions ()
   "A node may depend on width, height, or both viewport axes."
   (ebox-test--reset-runtime-state)
-  (let* ((width-only (ebox-test-box :content "Width" :width '(viewport)))
-         (height-only (ebox-test-box :content "Height"
-                                   :width '(120)
-                                   :height '(viewport-height)))
-         (both (ebox-test-box :content "Both"
-                            :width '(viewport)
-                            :height '(viewport-height)))
-         (layout (ebox-test-column width-only height-only both)))
+  (let* ((width-only-input
+          (ebox-test-box (ebox-test-text "Width") :width '(viewport)))
+         (height-only-input
+          (ebox-test-box (ebox-test-text "Height")
+                         :width '(120)
+                         :height '(viewport-height)))
+         (both-input
+          (ebox-test-box (ebox-test-text "Both")
+                         :width '(viewport)
+                         :height '(viewport-height)))
+         (layout-input
+          (ebox-test-column width-only-input height-only-input both-input))
+         (width-only (ebox-test-root width-only-input))
+         (height-only (ebox-test-root height-only-input))
+         (both (ebox-test-root both-input))
+         (layout (ebox-test-root layout-input)))
     (let ((ebox-viewport-width 360)
           (ebox-viewport-height 12)
           (ebox--viewport-dependent-node-ids-cache
@@ -3629,9 +3687,8 @@
   "Width-only viewport rerender should not dirty height-only roots."
   (ebox-test--reset-runtime-state)
   (let* ((node (let ((ebox-viewport-height 4))
-                 (ebox-test-build
-                  '(column :width (120) :height (viewport-height)
-                    (box :content "Static" :width (120))))))
+                 (ebox-test-column :width '(120) :height '(viewport-height)
+		  (ebox-test-box (ebox-test-text "Static") :width '(120)))))
          buffer)
     (unwind-protect
         (progn
@@ -3651,7 +3708,7 @@
   "Fixed width should retain vertical dependencies without exposing width-only ones."
   (ebox-test--reset-runtime-state)
   (let* ((width-only
-          (ebox-test-box :content "Width" :width '(viewport)))
+          (ebox-test-box (ebox-test-text "Width") :width '(viewport)))
          (ordinary-height-nodes
           (cl-loop for (property value)
                    in '((:height (viewport-height))
@@ -3659,7 +3716,7 @@
                         (:max-height (+ (viewport-height) 1)))
                    collect
                    (apply #'ebox-test-box
-                          :content "Ordinary"
+                          (ebox-test-text "Ordinary")
                           (list property value))))
          (flex-height-nodes
           (cl-loop for (property value)
@@ -3670,29 +3727,34 @@
                    (apply #'ebox-test-flex
                           (append
                            (list property value)
-                           (list (ebox-test-box :content "Flex"))))))
+                           (list (ebox-test-box (ebox-test-text "Flex")))))))
          (layout
           (apply #'ebox-test-column
                  (append (list width-only)
                          ordinary-height-nodes
                          flex-height-nodes)))
-         (node (ebox-test-box :width '(210)
-                            :wrap-mode nil
-                            :ebox-content-node layout))
+         (node (ebox-test-root
+                (ebox-test-box :width '(210)
+                               :wrap-mode 'none
+                               layout)))
          (ids (let ((ebox-viewport-width 360)
                     (ebox-viewport-height 12))
                 (ebox--runtime-node-ids node)
                 (ebox--viewport-dependent-node-ids node))))
-    (should-not (member (plist-get width-only :node-id) ids))
+    (should-not (member (plist-get (ebox-test-root width-only) :node-id)
+                        ids))
     (dolist (vertical-node (append ordinary-height-nodes flex-height-nodes))
-      (should (member (plist-get vertical-node :node-id) ids)))))
+      (should (member (plist-get (ebox-test-root vertical-node) :node-id)
+                      ids)))))
 
 (ert-deftest ebox-viewport-dependencies-ignore-flex-item-wrapper-auto-width ()
   "Flex item wrappers should not be dirty only because their own width is auto."
   (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-box :content "A" :width 80))
-         (item (ebox-test-flex-item child))
-         (node (ebox-test-flex :width 240 item))
+  (let* ((child-input (ebox-test-box (ebox-test-text "A") :width 80))
+         (item-input (ebox-test-flex-item child-input))
+         (node (ebox-test-root (ebox-test-flex :width 240 item-input)))
+         (child (ebox-test-root child-input))
+         (item (ebox-test-root item-input))
          (ids (let ((ebox-viewport-width 360))
                 (ebox--runtime-node-ids node)
                 (ebox--viewport-dependent-node-ids node))))
@@ -3702,7 +3764,7 @@
 (ert-deftest ebox-buffer-viewport-dependency-cache-recomputes-after-style-change ()
   "Changing responsive style should publish its exact viewport dependency."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Resizable" :width 80))
+  (let* ((box (ebox-test-box (ebox-test-text "Resizable") :width 80))
          (box-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (ebox-rerender-buffer-with-context (current-buffer) 320)
@@ -3730,10 +3792,10 @@
                     :flex-flow '(row wrap)
                     :column-gap '(8)
                     (ebox-test-box
-                     :content (format "A%d" index)
+                     (ebox-test-text (format "A%d" index))
                      :width 48 :height 1)
                     (ebox-test-box
-                     :content (format "B%d" index)
+                     (ebox-test-text (format "B%d" index))
                      :width 48 :height 1))))
          (layout
           (apply
@@ -3743,7 +3805,7 @@
            :column-gap '(8)
            (mapcar (lambda (inner)
                      (ebox-test-column
-                      (ebox-test-box :content "Static card"
+                      (ebox-test-box (ebox-test-text "Static card")
                                    :width 180
                                    :height 1)
                       inner))
@@ -3772,15 +3834,16 @@
   "Viewport resize should not recapture every lightweight snapshot eagerly."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(column :width (viewport)
-             ,@(cl-loop for idx below 24
-                        collect
-                        `(box :id ,(format "resize-snapshot-%02d" idx)
-                              :content ,(format "row %02d" idx)
-                              :width (viewport)
-                              :height 1)))))
-         (node-count (length (ebox--runtime-node-ids layout)))
+          (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 24 collect
+			(ebox-test-box :id
+				       (format "resize-snapshot-%02d"
+					       idx)
+				       (ebox-test-text (format "row %02d" idx)) :width
+				       '(viewport) :height 1)))))
+         (layout-node (ebox-test-root layout))
+         (node-count (length (ebox--runtime-node-ids layout-node)))
          buffer
          (snapshot-count 0)
          (original (symbol-function 'ebox--node-layout-snapshot)))
@@ -3803,14 +3866,13 @@
   "Viewport resize should republish region ranges through TP mounts."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(column :width (viewport)
-             ,@(cl-loop for idx below 24
-                        collect
-                        `(box :id ,(format "resize-mount-%02d" idx)
-                              :content ,(format "row %02d" idx)
-                              :width (viewport)
-                              :height 1)))))
+          (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 24 collect
+			(ebox-test-box :id
+				       (format "resize-mount-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :width
+				       '(viewport) :height 1)))))
          buffer
          target-id)
     (unwind-protect
@@ -3839,10 +3901,11 @@
   (let* ((layout
           (ebox-test-flex
            :width 240
-           (ebox-test-column
-            (ebox-test-box :content "A" :width 80)
-            (ebox-test-box :content "B" :width 80))))
-         (node-count (length (ebox--runtime-node-ids layout)))
+         (ebox-test-column
+            (ebox-test-box (ebox-test-text "A") :width 80)
+            (ebox-test-box (ebox-test-text "B") :width 80))))
+         (layout-node (ebox-test-root layout))
+         (node-count (length (ebox--runtime-node-ids layout-node)))
          (signature-count 0)
          (original (symbol-function 'ebox--render-cache-plist-signature))
          (ebox--render-cache-signature-cache
@@ -3851,8 +3914,8 @@
                (lambda (&rest args)
                  (cl-incf signature-count)
                  (apply original args))))
-      (ebox--render-cache-node-signature layout)
-      (ebox--render-cache-node-signature layout))
+      (ebox--render-cache-node-signature layout-node)
+      (ebox--render-cache-node-signature layout-node))
     (should (= signature-count node-count))))
 
 (ert-deftest ebox-render-cache-value-signature-preserves-dotted-pairs ()
@@ -3866,7 +3929,8 @@
 (ert-deftest ebox-render-cache-signature-includes-inline-auto-width-context ()
   "Row intrinsic sizing must not reuse a cross-axis stretch render."
   (ebox-test--reset-runtime-state)
-  (let ((node (ebox-test-box :content "context-sensitive")))
+  (let ((node (ebox-test-root
+               (ebox-test-box (ebox-test-text "context-sensitive")))))
     (let ((normal (let ((ebox--inline-auto-width-intrinsic-p nil))
                     (ebox--render-cache-node-signature node)))
           (intrinsic (let ((ebox--inline-auto-width-intrinsic-p t))
@@ -3876,7 +3940,8 @@
 (ert-deftest ebox-render-cache-signature-includes-intrinsic-layout-context ()
   "Final layout must not reuse an intrinsic measurement render."
   (ebox-test--reset-runtime-state)
-  (let ((node (ebox-test-box :content "context-sensitive" :width '(80))))
+  (let ((node (ebox-test-root
+               (ebox-test-box (ebox-test-text "context-sensitive") :width '(80)))))
     (let ((final (let ((ebox--intrinsic-layout-measurement nil))
                    (ebox--render-cache-node-signature node)))
           (intrinsic (let ((ebox--intrinsic-layout-measurement t))
@@ -3886,7 +3951,8 @@
 (ert-deftest ebox-render-cache-signature-includes-rendered-region-identity ()
   "Cached render strings should never cross distinct region identities."
   (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "Stable" :width 80))
+  (let* ((left (ebox-test-root
+                (ebox-test-box (ebox-test-text "Stable") :width 80)))
          (right (copy-tree left)))
     (plist-put left :node-id 1)
     (plist-put right :node-id 1)
@@ -3899,7 +3965,8 @@
 (ert-deftest ebox-render-cache-probe-reuses-first-render-output ()
   "The first cache probe should retain the identity used by its output."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-box :content "Stable" :width 80))
+  (let* ((node (ebox-test-root
+                (ebox-test-box (ebox-test-text "Stable") :width 80)))
          (ebox--surface-materialization-active t)
          (ebox--render-cache-table (make-hash-table :test 'equal))
          (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
@@ -3918,7 +3985,7 @@
 (ert-deftest ebox-render-transaction-snapshots-display-signature ()
   "One render transaction should sample its display signature once."
   (ebox-test--reset-runtime-state)
-  (let ((node (ebox-test-box :content "A" :width 80))
+  (let ((node (ebox-test-root (ebox-test-box (ebox-test-text "A") :width 80)))
         (calls 0))
     (cl-letf (((symbol-function 'ebox--display-signature)
                (lambda ()
@@ -3931,7 +3998,7 @@
 (ert-deftest ebox-render-transaction-nesting-reuses-display-signature ()
   "A nested render transaction should reuse the outer display snapshot."
   (ebox-test--reset-runtime-state)
-  (let ((node (ebox-test-box :content "A" :width 80))
+  (let ((node (ebox-test-root (ebox-test-box (ebox-test-text "A") :width 80)))
         (calls 0))
     (cl-letf (((symbol-function 'ebox--display-signature)
                (lambda ()
@@ -3944,7 +4011,7 @@
 (ert-deftest ebox-render-transactions-refresh-display-signature ()
   "Separate render transactions should sample display state independently."
   (ebox-test--reset-runtime-state)
-  (let ((node (ebox-test-box :content "A" :width 80))
+  (let ((node (ebox-test-root (ebox-test-box (ebox-test-text "A") :width 80)))
         (calls 0)
         signatures)
     (cl-letf (((symbol-function 'ebox--display-signature)
@@ -4007,9 +4074,10 @@
 (ert-deftest ebox-render-cache-signature-keeps-viewport-axes-with-snapshot ()
   "Display snapshots should not collapse width or height cache dimensions."
   (ebox-test--reset-runtime-state)
-  (let ((node (ebox-test-box :content "A"
-                           :width '(viewport)
-                           :height '(viewport-height)))
+  (let ((node (ebox-test-root
+               (ebox-test-box (ebox-test-text "A")
+                              :width '(viewport)
+                              :height '(viewport-height))))
         signatures)
     (cl-letf (((symbol-function 'ebox--display-signature)
                (lambda () '(display stable))))
@@ -4028,9 +4096,10 @@
 (ert-deftest ebox-render-cache-signature-ignores-unrelated-viewport-height ()
   "Width-only subtree signatures should survive unrelated height changes."
   (ebox-test--reset-runtime-state)
-  (let* ((node (ebox-test-column
-                (ebox-test-box :content "A" :width '(viewport))
-                (ebox-test-box :content "B" :width 80)))
+  (let* ((node (ebox-test-root
+                (ebox-test-column
+                 (ebox-test-box (ebox-test-text "A") :width '(viewport))
+                 (ebox-test-box (ebox-test-text "B") :width 80))))
          (left (let ((ebox-viewport-width 320)
                      (ebox-viewport-height 10))
                  (ebox--render-cache-node-signature node)))
@@ -4046,9 +4115,10 @@
           (ebox-test-flex
            :width 240
            (ebox-test-column
-            (ebox-test-box :content "A" :width 80)
-            (ebox-test-box :content "B" :width 80))))
-         (node-count (length (ebox--runtime-node-ids layout)))
+            (ebox-test-box (ebox-test-text "A") :width 80)
+            (ebox-test-box (ebox-test-text "B") :width 80))))
+         (layout-node (ebox-test-root layout))
+         (node-count (length (ebox--runtime-node-ids layout-node)))
          (signature-count 0)
          (original (symbol-function 'ebox--render-cache-plist-signature))
          buffer)
@@ -4067,9 +4137,9 @@
                        (cl-incf signature-count)
                        (apply original args))))
             (ebox--with-buffer-render-context buffer
-              (ebox--render-cache-node-body-signature layout))
+              (ebox--render-cache-node-body-signature layout-node))
             (ebox--with-buffer-render-context buffer
-              (ebox--render-cache-node-body-signature layout)))
+              (ebox--render-cache-node-body-signature layout-node)))
           (should (= signature-count node-count)))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
@@ -4077,7 +4147,8 @@
 (ert-deftest ebox-render-cache-plist-signature-avoids-append-churn ()
   "Render cache plist signatures should be built linearly."
   (ebox-test--reset-runtime-state)
-  (let ((node (ebox-test-box :content "Signature" :width 80 :border t))
+  (let ((node (ebox-test-root
+               (ebox-test-box (ebox-test-text "Signature") :width 80 :border t)))
         (original-append (symbol-function 'append))
         (append-calls 0))
     (cl-letf (((symbol-function 'append)
@@ -4093,7 +4164,10 @@
   (let* ((content (ebox-lines-join
                    (list (ebox-pixel-space 80)
                          (ebox-pixel-space 80))))
-         (box (ebox-test-box :content content :width 80 :wrap-mode nil))
+         (box-input
+          (ebox-test-box (ebox-test-text content) :width 80 :wrap-mode 'none))
+         (box (ebox-test-root box-input))
+         (ebox--render-source-index (ebox-test-source-index box-input))
          (measure-count 0)
          (original (symbol-function 'ebox--string-pixel-width)))
     (plist-put box :ebox-content-width-exact-p t)
@@ -4108,8 +4182,11 @@
   "Exact uniform lines should bypass proven no-op word/char formatting."
   (ebox-test--reset-runtime-state)
   (dolist (wrap-mode '(word char))
-    (let* ((box (ebox-test-box :content "" :width '(120)
-                             :wrap-mode wrap-mode :text-align 'left))
+    (let* ((box-input
+            (ebox-test-box (ebox-test-text "") :width '(120)
+                           :wrap-mode wrap-mode :text-align 'left))
+           (box (ebox-test-root box-input))
+           (ebox--render-source-index (ebox-test-source-index box-input))
            (pixel-width (ebox--content-pixel box))
            (line (propertize (ebox-pixel-space pixel-width)
                              'face '(:foreground "#123456")))
@@ -4137,9 +4214,12 @@
   (dolist (case '((kp left 120)
                   (word center 120)
                   (char left 119)))
-    (let* ((box (ebox-test-box :content "" :width '(120)
-                             :wrap-mode (nth 0 case)
-                             :text-align (nth 1 case)))
+    (let* ((box-input
+            (ebox-test-box (ebox-test-text "") :width '(120)
+                           :wrap-mode (nth 0 case)
+                           :text-align (nth 1 case)))
+           (box (ebox-test-root box-input))
+           (ebox--render-source-index (ebox-test-source-index box-input))
            (content (ebox-pixel-space 120))
            (wrap-count 0)
            (original-wrap (symbol-function 'ebox--wrap-text)))
@@ -4154,9 +4234,9 @@
 (ert-deftest ebox-transparent-preformatted-box-fast-path-is-exact ()
   "Transparent exact-width wrappers should match the generic box pipeline."
   (ebox-test--reset-runtime-state)
-  (let* ((child-a (ebox-test-box :content "A" :width '(viewport) :border t
+  (let* ((child-a (ebox-test-box (ebox-test-text "A") :width '(viewport) :border t
                                :region-id 'child-a))
-         (child-b (ebox-test-box :content "B" :width '(viewport) :border t
+         (child-b (ebox-test-box (ebox-test-text "B") :width '(viewport) :border t
                                :region-id 'child-b))
          (parent (ebox-test-column
                   :width '(viewport) :region-id 'parent child-a child-b))
@@ -4172,8 +4252,10 @@
 (ert-deftest ebox-flat-preformatted-fast-path-keeps-intrinsic-scroll-state ()
   "Intrinsic flat rendering must not clear the published scroll state."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "" :width '(40) :wrap-mode nil
-                           :region-id 'intrinsic-wrapper))
+  (let* ((box-input
+          (ebox-test-box (ebox-test-text "") :width '(40) :wrap-mode 'none
+                         :region-id 'intrinsic-wrapper))
+         (box (ebox-test-root box-input))
          (content (ebox-pixel-space 40))
          (state (list :scroll-offset 0 :sentinel t))
          region-id)
@@ -4182,7 +4264,7 @@
     (setq region-id (ebox--ensure-region-id box))
     (puthash region-id state ebox--scroll-global-state)
     (let ((ebox--intrinsic-layout-measurement t))
-      (ebox-render box))
+      (ebox-test--render-input-node box-input))
     (should (eq (gethash region-id ebox--scroll-global-state) state))))
 
 (ert-deftest ebox-flat-preformatted-blank-line-preserves-child-owner-segments ()
@@ -4200,8 +4282,11 @@
            'ebox-content 'right 'ebox-content-idx 0
            'ebox-content-owner 'right 'ebox-content-owners '(right)
            'face '(:foreground "#112233")))
-         (box (ebox-test-box :content "" :width 100 :wrap-mode nil
-                           :bgcolor "#DDEEFF"))
+         (box-input
+          (ebox-test-box (ebox-test-text "") :width 100 :wrap-mode 'none
+                         :bgcolor "#DDEEFF"))
+         (box (ebox-test-root box-input))
+         (ebox--render-source-index (ebox-test-source-index box-input))
          (rendered
           (car
            (ebox--window-render-flat-wrapper-chunk-lines
@@ -4227,22 +4312,24 @@
 (ert-deftest ebox-transparent-preformatted-fast-path-keeps-intrinsic-scroll-state ()
   "Intrinsic transparent rendering must not clear the published scroll state."
   (ebox-test--reset-runtime-state)
-  (let* ((child (ebox-test-box :content "" :width '(40) :wrap-mode nil
-                             :region-id 'transparent-child))
-         (parent (ebox-test-box :content "" :width '(40) :wrap-mode nil
-                              :region-id 'transparent-parent
-                              :ebox-content-node child))
+  (let* ((child-input
+          (ebox-test-box (ebox-test-text "") :width '(40) :wrap-mode 'none
+                         :region-id 'transparent-child))
+         (child (ebox-test-root child-input))
+         (parent (ebox-test-box (ebox-test-text "") :width '(40) :wrap-mode 'none
+                                :region-id 'transparent-parent
+                                child-input))
          (content (ebox-pixel-space 40))
          (state (list :scroll-offset 0 :sentinel t))
          region-id)
     (plist-put child :content content)
     (plist-put child :ebox-content-width-exact-p t)
-    (ebox-render parent)
+    (ebox-test--render-input-node parent)
     (clrhash ebox--region-box-table)
-    (setq region-id (ebox--ensure-region-id parent))
+    (setq region-id (ebox--ensure-region-id (ebox-test-root parent)))
     (puthash region-id state ebox--scroll-global-state)
     (let ((ebox--intrinsic-layout-measurement t))
-      (ebox-render parent))
+      (ebox-test--render-input-node parent))
     (should (eq (gethash region-id ebox--scroll-global-state) state))))
 
 (ert-deftest ebox-flat-preformatted-fixed-box-rejects-layout-work ()
@@ -4252,11 +4339,12 @@
                   ("one\ntwo\nthree\nfour" hidden top)
                   ("one\ntwo\nthree" scroll top)
                   ("one\ntwo\nthree" hidden center)))
-    (let* ((box
+    (let* ((box-input
             (ebox-test-box
-             :content (nth 0 case) :width '(120) :height 5
+             (ebox-test-text (nth 0 case)) :width '(120) :height 5
              :box-sizing 'border-box :overflow (nth 1 case)
-             :vertical-align (nth 2 case) :wrap-mode nil))
+             :vertical-align (nth 2 case) :wrap-mode 'none))
+           (box (ebox-test-root box-input))
            (calls 0)
            (original
             (symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)))
@@ -4265,7 +4353,7 @@
                  (lambda (&rest arguments)
                    (cl-incf calls)
                    (apply original arguments))))
-        (ebox-render box))
+        (ebox-test--render-input-node box-input))
       (should (= calls 0)))))
 
 (ert-deftest ebox-string-pixel-width-cache-ignores-ebox-ownership-metadata ()
@@ -4291,7 +4379,7 @@
 (ert-deftest ebox-buffer-update-report-includes-dirty-and-patch-summary ()
   "Update reports should show dirty and patch-set summaries."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Report" :width 80
+  (let* ((box (ebox-test-box (ebox-test-text "Report") :width 80
                            :border '(1 solid "red")))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -4307,8 +4395,8 @@
 (ert-deftest ebox-buffer-update-report-is-buffer-local ()
   "Updating one rendered buffer should not replace another buffer's report."
   (ebox-test--reset-runtime-state)
-  (let* ((first-box (ebox-test-box :content "First" :width '(80)))
-         (second-box (ebox-test-box :content "Second" :width '(80)))
+  (let* ((first-box (ebox-test-box (ebox-test-text "First") :width '(80)))
+         (second-box (ebox-test-box (ebox-test-text "Second") :width '(80)))
          (first-id (car (ebox-region-ids first-box)))
          first-buffer second-buffer)
     (unwind-protect
@@ -4340,7 +4428,7 @@
 (ert-deftest ebox-buffer-update-report-returns-defensive-copy ()
   "The public accessor should not return mutable render-state storage."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Copy" :width '(80)))
+  (let* ((box (ebox-test-box (ebox-test-text "Copy") :width '(80)))
          buffer)
     (unwind-protect
         (progn
@@ -4377,7 +4465,7 @@
 (ert-deftest ebox-region-update-return-matches-buffer-update-report ()
   "A direct region update should return the report stored on its buffer."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Return" :width '(80)
+  (let* ((box (ebox-test-box (ebox-test-text "Return") :width '(80)
                            :color "#111111"))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -4388,7 +4476,7 @@
 (ert-deftest ebox-region-update-no-op-replaces-stale-buffer-report ()
   "A direct unchanged update should publish its own no-op report."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "No-op" :width '(80)
+  (let* ((box (ebox-test-box (ebox-test-text "No-op") :width '(80)
                            :color "#111111"))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -4405,7 +4493,7 @@
 (ert-deftest ebox-batched-region-update-keeps-prior-report-until-flush ()
   "Batched region updates should return nil and publish only on flush."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Batch" :width '(80)
+  (let* ((box (ebox-test-box (ebox-test-text "Batch") :width '(80)
                            :color "#111111"))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -4425,9 +4513,9 @@
 (ert-deftest ebox-batch-flush-stores-report-on-flushed-buffer-only ()
   "Empty and non-empty flushes should update only the target buffer report."
   (ebox-test--reset-runtime-state)
-  (let* ((first-box (ebox-test-box :content "First" :width '(80)
+  (let* ((first-box (ebox-test-box (ebox-test-text "First") :width '(80)
                                  :color "#111111"))
-         (second-box (ebox-test-box :content "Second" :width '(80)
+         (second-box (ebox-test-box (ebox-test-text "Second") :width '(80)
                                   :color "#111111"))
          (second-id (car (ebox-region-ids second-box)))
          first-buffer second-buffer)
@@ -4475,7 +4563,7 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*")
-                 (ebox-test-box :content "Hello" :width 40)))
+                 (ebox-test-box (ebox-test-text "Hello") :width 40)))
           (should (eq (current-buffer) origin))
           (should (buffer-live-p buffer))
           (with-current-buffer buffer
@@ -4494,7 +4582,7 @@
         (with-current-buffer buffer
           (use-local-map parent-map)
           (ebox-render-to-buffer buffer-name
-            (ebox-test-box :content "Hello" :width 40))
+            (ebox-test-box (ebox-test-text "Hello") :width 40))
           (should (eq (current-local-map) parent-map))
           (should (eq (lookup-key (current-local-map) (kbd "x")) #'ignore)))
       (when (buffer-live-p buffer)
@@ -4503,7 +4591,7 @@
 (ert-deftest ebox-buffer-kill-clears-region-runtime-caches ()
   "Killing an ebox buffer should clear region-scoped runtime cache entries."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC" :width 80 :height 1
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC") :width 80 :height 1
                            :overflow 'scroll))
          (region-id (car (ebox-region-ids box)))
          (buffer (ebox-render-to-buffer
@@ -4518,7 +4606,7 @@
 (ert-deftest ebox-buffer-kill-discards-buffer-owned-runtime-state ()
   "Killing an Ebox buffer should discard every buffer-keyed runtime entry."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Lifecycle" :color "#111111"))
+  (let* ((box (ebox-test-box (ebox-test-text "Lifecycle") :color "#111111"))
          (region-id (car (ebox-region-ids box)))
          buffer surface handle)
     (unwind-protect
@@ -4560,10 +4648,10 @@
 
 (ert-deftest ebox-geometry-update-rerenders-root-once-safely ()
   (ebox-test--reset-runtime-state)
-  (let* ((top (ebox-test-box :content "Top" :width 60))
-         (left (ebox-test-box :content "L" :width 40))
-         (right (ebox-test-box :content "R" :width 40))
-         (layout (ebox-test-stack top (ebox-test-concat left right)))
+  (let* ((top (ebox-test-box (ebox-test-text "Top") :width 60))
+         (left (ebox-test-box (ebox-test-text "L") :width 40))
+         (right (ebox-test-box (ebox-test-text "R") :width 40))
+         (layout (ebox-test-column top (ebox-test-row left right)))
          (ids (ebox-region-ids layout))
          (left-id (nth 1 ids)))
     (ebox-test--with-rendered-buffer layout
@@ -4578,10 +4666,10 @@
   "A pure border color change should patch owned spans, not rebuild the root."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(row
-            (box :id left :width 40 :border "red" "L")
-            (box :id right :width 40 :border "green" "R")))))
+         (ebox-test-row
+ (ebox-test-box :id 'left :width 40 :border "red" (ebox-test-text "L"))
+ (ebox-test-box :id 'right :width 40 :border "green"
+		(ebox-test-text "R")))))
     (ebox-test--with-rendered-buffer layout
       (let ((left-id (ebox-test--selector-region-id
                       (current-buffer) "#left")))
@@ -4599,25 +4687,24 @@
 (ert-deftest ebox-flex-row-border-color-update-patches-region-role ()
   "Paint-only updates inside flex rows should not fall back to root rerender."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(flex :flex-flow (row wrap) :column-gap (12)
-                    :padding (0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
-                    (column
-                     (box :id left :content "Left" :width (120)
-                          :padding (0 (8)) :border "#D97757")
-                     (box :content "Body" :width (120)
-                          :padding (0 (8))
-                          :border-right "#D97757"
-                          :border-bottom "#D97757"
-                          :border-left "#D97757"))
-                    (column
-                     (box :id right :content "Right" :width (120)
-                          :padding (0 (8)) :border "#5E7F6A")
-                     (box :content "Body" :width (120)
-                          :padding (0 (8))
-                          :border-right "#5E7F6A"
-                          :border-bottom "#5E7F6A"
-                          :border-left "#5E7F6A")))))
+  (let* ((layout (ebox-test-flex :flex-flow '(row wrap) :column-gap '(12) :padding
+		'(0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
+		(ebox-test-column
+		 (ebox-test-box :id 'left (ebox-test-text "Left") :width
+				'(120) :padding '(0 (8)) :border
+				"#D97757")
+		 (ebox-test-box (ebox-test-text "Body") :width '(120) :padding
+				'(0 (8)) :border-right "#D97757"
+				:border-bottom "#D97757" :border-left
+				"#D97757"))
+		(ebox-test-column
+		 (ebox-test-box :id 'right (ebox-test-text "Right") :width
+				'(120) :padding '(0 (8)) :border
+				"#5E7F6A")
+		 (ebox-test-box (ebox-test-text "Body") :width '(120) :padding
+				'(0 (8)) :border-right "#5E7F6A"
+				:border-bottom "#5E7F6A" :border-left
+				"#5E7F6A"))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -4642,31 +4729,26 @@
 (ert-deftest ebox-paint-update-synthesizes-missing-horizontal-border-surface ()
   "Adding a missing top/bottom paint surface should patch from region anchors."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(flex :flex-flow (row wrap) :column-gap (12)
-                    :padding (0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
-                    (column
-                     (box :id left :content "Left" :width (120)
-                          :padding (0 (8))
-                          :border-top "#D97757"
-                          :border-right "#D97757"
-                          :border-left "#D97757")
-                     (box :content "Body" :width (120)
-                          :padding (0 (8))
-                          :border-right "#D97757"
-                          :border-bottom "#D97757"
-                          :border-left "#D97757"))
-                    (column
-                     (box :content "Right" :width (120)
-                          :padding (0 (8))
-                          :border-top "#5E7F6A"
-                          :border-right "#5E7F6A"
-                          :border-left "#5E7F6A")
-                     (box :content "Body" :width (120)
-                          :padding (0 (8))
-                          :border-right "#5E7F6A"
-                          :border-bottom "#5E7F6A"
-                          :border-left "#5E7F6A")))))
+  (let* ((layout (ebox-test-flex :flex-flow '(row wrap) :column-gap '(12) :padding
+		'(0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
+		(ebox-test-column
+		 (ebox-test-box :id 'left (ebox-test-text "Left") :width
+				'(120) :padding '(0 (8)) :border-top
+				"#D97757" :border-right "#D97757"
+				:border-left "#D97757")
+		 (ebox-test-box (ebox-test-text "Body") :width '(120) :padding
+				'(0 (8)) :border-right "#D97757"
+				:border-bottom "#D97757" :border-left
+				"#D97757"))
+		(ebox-test-column
+		 (ebox-test-box (ebox-test-text "Right") :width '(120)
+				:padding '(0 (8)) :border-top
+				"#5E7F6A" :border-right "#5E7F6A"
+				:border-left "#5E7F6A")
+		 (ebox-test-box (ebox-test-text "Body") :width '(120) :padding
+				'(0 (8)) :border-right "#5E7F6A"
+				:border-bottom "#5E7F6A" :border-left
+				"#5E7F6A"))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -4694,31 +4776,26 @@
 (ert-deftest ebox-paint-projection-keeps-old-fragment-metadata-immutable ()
   "Paint projection should not mutate the previous state's fragment metadata."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(flex :flex-flow (row wrap) :column-gap (12)
-                    :padding (0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
-                    (column
-                     (box :id left :content "Left" :width (120)
-                          :padding (0 (8))
-                          :border-top "#D97757"
-                          :border-right "#D97757"
-                          :border-left "#D97757")
-                     (box :content "Body" :width (120)
-                          :padding (0 (8))
-                          :border-right "#D97757"
-                          :border-bottom "#D97757"
-                          :border-left "#D97757"))
-                    (column
-                     (box :content "Right" :width (120)
-                          :padding (0 (8))
-                          :border-top "#5E7F6A"
-                          :border-right "#5E7F6A"
-                          :border-left "#5E7F6A")
-                     (box :content "Body" :width (120)
-                          :padding (0 (8))
-                          :border-right "#5E7F6A"
-                          :border-bottom "#5E7F6A"
-                          :border-left "#5E7F6A")))))
+  (let* ((layout (ebox-test-flex :flex-flow '(row wrap) :column-gap '(12) :padding
+		'(0 (12)) :border "#D97757" :bgcolor "#FFF8F2"
+		(ebox-test-column
+		 (ebox-test-box :id 'left (ebox-test-text "Left") :width
+				'(120) :padding '(0 (8)) :border-top
+				"#D97757" :border-right "#D97757"
+				:border-left "#D97757")
+		 (ebox-test-box (ebox-test-text "Body") :width '(120) :padding
+				'(0 (8)) :border-right "#D97757"
+				:border-bottom "#D97757" :border-left
+				"#D97757"))
+		(ebox-test-column
+		 (ebox-test-box (ebox-test-text "Right") :width '(120)
+				:padding '(0 (8)) :border-top
+				"#5E7F6A" :border-right "#5E7F6A"
+				:border-left "#5E7F6A")
+		 (ebox-test-box (ebox-test-text "Body") :width '(120) :padding
+				'(0 (8)) :border-right "#5E7F6A"
+				:border-bottom "#5E7F6A" :border-left
+				"#5E7F6A"))))
          (left-id (plist-get
                    (car (ebox-selector-query-all layout "#left"))
                    :region-id)))
@@ -4746,7 +4823,7 @@
     (let* ((property (nth 0 case))
            (removed-role (nth 1 case))
            (kept-roles (nth 2 case))
-           (layout (ebox-test-box :content "Border"
+           (layout (ebox-test-box (ebox-test-text "Border")
                                 :width 80
                                 :padding '(0 (8))
                                 :border "#D97757"))
@@ -4776,7 +4853,7 @@
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-box
-           :content "Border" :width 80
+           (ebox-test-text "Border") :width 80
            :border-left-pixel 2 :border-left-color "#AA0000"
            :border-right-pixel 2 :border-right-color "#AA0000"))
          (region-id (car (ebox-region-ids layout))))
@@ -4809,12 +4886,11 @@
   "Runtime rerender should resolve viewport-sized boxes with the new context."
   (ebox-test--reset-runtime-state)
   (let* ((node (let ((ebox-viewport-width 240))
-                 (ebox-test-build
-                  '(box :content "Viewport" :width (viewport) :border t))))
+                 (ebox-test-box (ebox-test-text "Viewport") :width '(viewport) :border t)))
          buffer)
     (unwind-protect
         (progn
-          (should (eq (plist-get node :width) 'viewport))
+          (should (eq (ebox-get (ebox-test-root node) :width) 'viewport))
           (let ((ebox-viewport-width 240))
             (setq buffer
                   (ebox-render-to-buffer
@@ -4836,11 +4912,8 @@
   "Runtime rerender should resolve viewport-height boxes with the new context."
   (ebox-test--reset-runtime-state)
   (let* ((node (let ((ebox-viewport-height 2))
-                 (ebox-test-build
-                  '(box :content "One\nTwo\nThree\nFour"
-                    :width (120)
-                    :height (viewport-height)
-                    :overflow scroll))))
+                 (ebox-test-box (ebox-test-text "One\nTwo\nThree\nFour") :width '(120) :height
+	       '(viewport-height) :overflow 'scroll)))
          buffer)
     (unwind-protect
         (progn
@@ -4867,20 +4940,38 @@
   "Stable flex-contained geometry changes should stop before root."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(column :id root :width (520) :padding (1 (18))
-             (flex :id matrix :flex-flow (row wrap)
-              :column-gap (12) :row-gap 1 :padding (0 (12))
-              :border "#999999"
-              (column :width (210) :border "#999999"
-               (box :content "Title" :width (190))
-               (box :id target :content "width target\nsame height"
-                    :width (160) :height 3
-                    :padding (0 (8)) :border "#999999")
-               (box :content "Metric" :width (190)))
-              (column :width (210) :border "#999999"
-               (box :content "Other" :width (190))
-               (box :content "Still here" :width (190)))))))
+          (ebox-test-column :id 'root :width '(520) :padding '(1 (18))
+		  (ebox-test-flex :id 'matrix :flex-flow '(row wrap)
+				  :column-gap '(12) :row-gap 1
+				  :padding '(0 (12)) :border "#999999"
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Title")
+						     :width '(190))
+						    (ebox-test-box :id
+								   'target
+								   (ebox-test-text "width target\nsame height")
+								   :width
+								   '(160)
+								   :height
+								   3
+								   :padding
+								   '(0
+								     (8))
+								   :border
+								   "#999999")
+						    (ebox-test-box
+						     (ebox-test-text "Metric")
+						     :width '(190)))
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Other")
+						     :width '(190))
+						    (ebox-test-box
+						     (ebox-test-text "Still here")
+						     :width '(190))))))
          (target (car (ebox-selector-query-all layout "#target")))
          (target-id (plist-get target :region-id)))
     (ebox-test--with-rendered-buffer layout
@@ -4896,7 +4987,7 @@
 (defun ebox-test--nested-width-containment-layout (&optional height)
   "Return a nested flex width-update fixture with optional fixed HEIGHT."
   (let* ((target
-          (ebox-test-box :content "width target\nready to grow"
+          (ebox-test-box (ebox-test-text "width target\nready to grow")
                        :width '(190) :height 3 :padding '(0 (10))
                        :border "#999999"))
          (owner
@@ -4909,16 +5000,16 @@
                   (list target))))
          (card
           (ebox-test-column
-           (ebox-test-box :content "Width" :width '(300) :height 2)
+           (ebox-test-box (ebox-test-text "Width") :width '(300) :height 2)
            owner
-           (ebox-test-box :content "The target stays in this card"
+           (ebox-test-box (ebox-test-text "The target stays in this card")
                         :width '(300) :height 3)
-           (ebox-test-box :content "Metric" :width '(300) :height 4)))
+           (ebox-test-box (ebox-test-text "Metric") :width '(300) :height 4)))
          (peer
           (ebox-test-column
-           (ebox-test-box :content "Peer" :width '(300) :height 2)
-           (ebox-test-box :content "Stable peer" :width '(300) :height 5)
-           (ebox-test-box :content "Footer" :width '(300) :height 7)))
+           (ebox-test-box (ebox-test-text "Peer") :width '(300) :height 2)
+           (ebox-test-box (ebox-test-text "Stable peer") :width '(300) :height 5)
+           (ebox-test-box (ebox-test-text "Footer") :width '(300) :height 7)))
          (layout
           (ebox-test-flex :width '(720) :flex-flow '(row wrap)
                      :column-gap '(12) card peer)))
@@ -4928,16 +5019,16 @@
   "A visible-overflow flex wrapper must not contain child width changes."
   (ebox-test--reset-runtime-state)
   (let* ((target
-          (ebox-test-box :content "child" :width '(190)
+          (ebox-test-box (ebox-test-text "child") :width '(190)
                        :height 5 :min-height 5))
          (owner
           (ebox-test-flex :width '(300) :height 2 :overflow 'visible
                      :align-items 'flex-start target))
          (layout
-          (ebox-test-stack owner
-                      (ebox-test-box :content "footer" :width '(300)
+          (ebox-test-column owner
+                      (ebox-test-box (ebox-test-text "footer") :width '(300)
                                    :height 2)))
-         (owner-node-id (ebox--ensure-node-id owner)))
+         (owner-node-id (ebox--ensure-node-id (ebox-test-root owner))))
     (ebox-test--with-rendered-buffer layout
       (should (= (ebox-string-height (ebox-render owner)) 5))
       (should-not (ebox--definite-containment-formatting-context-p
@@ -4965,20 +5056,38 @@
   "Flex main footprint changes should not render a large flex owner twice."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(column :id root :width (520) :padding (1 (18))
-             (flex :id matrix :flex-flow (row wrap)
-              :column-gap (12) :row-gap 1 :padding (0 (12))
-              :border "#999999"
-              (column :width (210) :border "#999999"
-               (box :content "Title" :width (190))
-               (box :id target :content "width target\nsame height"
-                    :width (160) :height 3
-                    :padding (0 (8)) :border "#999999")
-               (box :content "Metric" :width (190)))
-              (column :width (210) :border "#999999"
-               (box :content "Other" :width (190))
-               (box :content "Still here" :width (190)))))))
+          (ebox-test-column :id 'root :width '(520) :padding '(1 (18))
+		  (ebox-test-flex :id 'matrix :flex-flow '(row wrap)
+				  :column-gap '(12) :row-gap 1
+				  :padding '(0 (12)) :border "#999999"
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Title")
+						     :width '(190))
+						    (ebox-test-box :id
+								   'target
+								   (ebox-test-text "width target\nsame height")
+								   :width
+								   '(160)
+								   :height
+								   3
+								   :padding
+								   '(0
+								     (8))
+								   :border
+								   "#999999")
+						    (ebox-test-box
+						     (ebox-test-text "Metric")
+						     :width '(190)))
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Other")
+						     :width '(190))
+						    (ebox-test-box
+						     (ebox-test-text "Still here")
+						     :width '(190))))))
          (target (car (ebox-selector-query-all layout "#target")))
          (target-id (plist-get target :region-id)))
     (ebox-test--with-rendered-buffer layout
@@ -4998,14 +5107,14 @@
                              nil
                            (or width '(2600))))
          (target
-          (ebox-test-box :id "target" :content "width target\nmoves sibling layout"
+          (ebox-test-box :id "target" (ebox-test-text "width target\nmoves sibling layout")
                        :width '(160) :height 3 :padding '(0 (8))
                        :border "#999999"))
          (first
           (ebox-test-column
-           (ebox-test-box :content "Title" :width '(190))
+           (ebox-test-box (ebox-test-text "Title") :width '(190))
            target
-           (ebox-test-box :content "Metric" :width '(190) :height 4))))
+           (ebox-test-box (ebox-test-text "Metric") :width '(190) :height 4))))
     (apply #'ebox-test-flex
            (append (list :flex-flow '(row wrap)
                          :column-gap '(12)
@@ -5019,13 +5128,13 @@
                             collect
                             (ebox-test-column
                              (ebox-test-box
-                              :content (format "Title %02d" index)
+                              (ebox-test-text (format "Title %02d" index))
                               :width '(190))
-                             (ebox-test-box :content "Peer\nsame row"
+                             (ebox-test-box (ebox-test-text "Peer\nsame row")
                                           :width '(190) :height 3
                                           :padding '(0 (8))
                                           :border "#999999")
-                             (ebox-test-box :content "Metric"
+                             (ebox-test-box (ebox-test-text "Metric")
                                           :width '(190) :height 4)))))))
 
 (ert-deftest ebox-flex-owner-update-keeps-unrelated-snapshots-current ()
@@ -5056,61 +5165,160 @@
 
 (defun ebox-test--dynamic-update-row-layout ()
   "Return a small flex-row layout shaped like the dynamic update matrix."
-  (ebox-test-build
-   '(column :id root :width (1200) :padding (1 (18))
-     (flex :id matrix :flex-flow (row wrap)
-      :column-gap (12) :row-gap 1 :padding (0 (12))
-      :border "#999999"
-      (column :width (210) :border "#999999"
-       (box :content "Reference\nshort" :width (190))
-       (box :id scroll :content "line 1\nline 2\nline 3\nline 4"
-            :width (190) :height 2 :padding (0 (8))
-            :border "#999999" :overflow scroll)
-       (box :content "Metric" :width (190) :height 4))
-      (column :width (210) :border "#999999"
-       (box :content "Height\nowner" :width (190))
-       (box :id height :content "height target\nexpands block"
-            :width (190) :height 2 :padding (0 (8))
-            :border "#999999")
-       (box :content "Metric" :width (190) :height 4))
-      (column :width (210) :border "#999999"
-       (box :content "Margin\nslot stable" :width (190))
-       (box :id margin :content "margin target\nparent placement"
-            :width (170) :height 3 :padding (0 (8))
-            :border "#999999")
-       (box :content "Metric" :width (190) :height 4))
-      (column :width (210) :border "#999999"
-       (box :content "Overflow\nowner" :width (190))
-       (box :id overflow :content "overflow target\nextra line\nanother line"
-            :width (190) :height 2 :padding (0 (8))
-            :border "#999999" :overflow scroll)
-       (box :content "Metric" :width (190) :height 4))
-      (column :width (210) :border "#999999"
-       (box :content "Tall peer\nkeeps row slot" :width (190))
-       (box :content "tall\npeer\nsets\nline\ncross" :width (190)
-            :height 5 :padding (0 (8)) :border "#999999")
-       (box :content "Metric" :width (190) :height 4))))))
+  (ebox-test-column :id 'root :width '(1200) :padding '(1 (18))
+		  (ebox-test-flex :id 'matrix :flex-flow '(row wrap)
+				  :column-gap '(12) :row-gap 1
+				  :padding '(0 (12)) :border "#999999"
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Reference\nshort")
+						     :width '(190))
+						    (ebox-test-box :id
+								   'scroll
+								   (ebox-test-text "line 1\nline 2\nline 3\nline 4")
+								   :width
+								   '(190)
+								   :height
+								   2
+								   :padding
+								   '(0
+								     (8))
+								   :border
+								   "#999999"
+								   :overflow
+								   'scroll)
+						    (ebox-test-box
+						     (ebox-test-text "Metric")
+						     :width '(190)
+						     :height 4))
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Height\nowner")
+						     :width '(190))
+						    (ebox-test-box :id
+								   'height
+								   (ebox-test-text "height target\nexpands block")
+								   :width
+								   '(190)
+								   :height
+								   2
+								   :padding
+								   '(0
+								     (8))
+								   :border
+								   "#999999")
+						    (ebox-test-box
+						     (ebox-test-text "Metric")
+						     :width '(190)
+						     :height 4))
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Margin\nslot stable")
+						     :width '(190))
+						    (ebox-test-box :id
+								   'margin
+								   (ebox-test-text "margin target\nparent placement")
+								   :width
+								   '(170)
+								   :height
+								   3
+								   :padding
+								   '(0
+								     (8))
+								   :border
+								   "#999999")
+						    (ebox-test-box
+						     (ebox-test-text "Metric")
+						     :width '(190)
+						     :height 4))
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Overflow\nowner")
+						     :width '(190))
+						    (ebox-test-box :id
+								   'overflow
+								   (ebox-test-text "overflow target\nextra line\nanother line")
+								   :width
+								   '(190)
+								   :height
+								   2
+								   :padding
+								   '(0
+								     (8))
+								   :border
+								   "#999999"
+								   :overflow
+								   'scroll)
+						    (ebox-test-box
+						     (ebox-test-text "Metric")
+						     :width '(190)
+						     :height 4))
+				  (ebox-test-column :width '(210)
+						    :border "#999999"
+						    (ebox-test-box
+						     (ebox-test-text "Tall peer\nkeeps row slot")
+						     :width '(190))
+						    (ebox-test-box
+						     (ebox-test-text "tall\npeer\nsets\nline\ncross")
+						     :width '(190)
+						     :height 5
+						     :padding '(0 (8))
+						     :border "#999999")
+						    (ebox-test-box
+						     (ebox-test-text "Metric")
+						     :width '(190)
+						     :height 4)))))
 
 (defun ebox-test--dynamic-update-tight-row-layout ()
   "Return a flex-row layout whose target growth exceeds its old item slot."
-  (ebox-test-build
-   '(column :id root :width (720)
-     (box :content "Header" :width (720))
-     (column :id panel :width (720) :border "#999999"
-      (flex :id matrix :flex-flow (row wrap)
-       :column-gap (12) :row-gap 1 :padding (0 (12))
-      :border "#999999"
-      (column :width (210) :border "#999999"
-       (box :content "Height\nowner" :width (190))
-       (box :id height :content "height target\nexpands block"
-            :width (190) :height 2 :padding (0 (8))
-            :border "#999999")
-       (box :content "Metric" :width (190) :height 2))
-      (column :width (210) :border "#999999"
-       (box :content "Peer" :width (190))
-       (box :content "peer\nsame row" :width (190)
-            :height 2 :padding (0 (8)) :border "#999999")
-       (box :content "Metric" :width (190) :height 2)))))))
+  (ebox-test-column :id 'root :width '(720)
+		  (ebox-test-box (ebox-test-text "Header") :width '(720))
+		  (ebox-test-column :id 'panel :width '(720) :border
+				    "#999999"
+				    (ebox-test-flex :id 'matrix
+						    :flex-flow
+						    '(row wrap)
+						    :column-gap '(12)
+						    :row-gap 1
+						    :padding '(0 (12))
+						    :border "#999999"
+						    (ebox-test-column
+						     :width '(210)
+						     :border "#999999"
+						     (ebox-test-box
+						      (ebox-test-text "Height\nowner")
+						      :width '(190))
+						     (ebox-test-box
+						      :id 'height
+						      (ebox-test-text "height target\nexpands block")
+						      :width '(190)
+						      :height 2
+						      :padding
+						      '(0 (8)) :border
+						      "#999999")
+						     (ebox-test-box
+						      (ebox-test-text "Metric") :width
+						      '(190) :height 2))
+						    (ebox-test-column
+						     :width '(210)
+						     :border "#999999"
+						     (ebox-test-box
+						      (ebox-test-text "Peer")
+						      :width '(190))
+						     (ebox-test-box
+						      (ebox-test-text "peer\nsame row")
+						      :width '(190)
+						      :height 2
+						      :padding
+						      '(0 (8)) :border
+						      "#999999")
+						     (ebox-test-box
+						      (ebox-test-text "Metric") :width
+						      '(190) :height 2))))))
 
 (defun ebox-test--selector-region-id (buffer selector)
   "Return the first editable region id matching SELECTOR in BUFFER."
@@ -5145,22 +5353,28 @@
 
 (defun ebox-test--buffer-visually-matches-runtime-render-p ()
   "Return non-nil when current buffer visually equals its runtime root render."
-  (let* ((ebox--scroll-global-state (make-hash-table :test 'equal))
+  (let* ((state (ebox--buffer-render-state (current-buffer)))
+         (ebox--scroll-global-state (make-hash-table :test 'equal))
          (ebox--region-box-table (make-hash-table :test 'equal))
          (expected
           (ebox--with-buffer-render-context (current-buffer)
-            (ebox-render (ebox--buffer-root-node (current-buffer))))))
+            (ebox--render-node
+             (plist-get state :root-node)
+             (plist-get state :source-index)))))
     (ebox-test--rendered-visually-equal-p
      (buffer-substring (point-min) (point-max))
      expected)))
 
 (defun ebox-test--buffer-propertized-matches-runtime-render-p ()
   "Return non-nil when the current buffer exactly matches a runtime render."
-  (let* ((ebox--scroll-global-state (make-hash-table :test 'equal))
+  (let* ((state (ebox--buffer-render-state (current-buffer)))
+         (ebox--scroll-global-state (make-hash-table :test 'equal))
          (ebox--region-box-table (make-hash-table :test 'equal))
          (expected
           (ebox--with-buffer-render-context (current-buffer)
-            (ebox-render (ebox--buffer-root-node (current-buffer))))))
+            (ebox--render-node
+             (plist-get state :root-node)
+             (plist-get state :source-index)))))
     (equal-including-properties
      (buffer-substring (point-min) (point-max)) expected)))
 
@@ -5182,13 +5396,10 @@
   "TP scroll publication must preserve per-character display properties."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id scroll
-            :content "第 1 行\n第 2 行\n第 3 行\n第 4 行"
-            :width (230) :height 2 :padding (0 (10))
-            :border "#9CA3AF" :bgcolor "#F8FAFC"
-            :color "#3D3A35" :text-align center
-            :overflow scroll :scroll-offset 0))))
+         (ebox-test-box :id 'scroll (ebox-test-text "第 1 行\n第 2 行\n第 3 行\n第 4 行") :width '(230)
+	       :height 2 :padding '(0 (10)) :border "#9CA3AF" :bgcolor
+	       "#F8FAFC" :color "#3D3A35" :text-align 'center
+	       :overflow 'scroll :scroll-offset 0)))
     (ebox-test--with-rendered-buffer layout
       (let ((region-id (ebox-test--selector-region-id (current-buffer)
                                                        "#scroll"))
@@ -5210,11 +5421,8 @@
   "Scroll marker patches should not shift later buffer positions."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id scroll :content
-            "x\nsubstantially longer visible line"
-            :width (180) :height 1 :overflow scroll
-            :scroll-offset 0))))
+         (ebox-test-box :id 'scroll (ebox-test-text "x\nsubstantially longer visible line") :width '(180)
+	       :height 1 :overflow 'scroll :scroll-offset 0)))
     (ebox-test--with-rendered-buffer layout
       (let* ((region-id (ebox-test--selector-region-id (current-buffer)
                                                        "#scroll"))
@@ -5236,12 +5444,11 @@
   "Nested scroll updates should atomically survive outer cache replay."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id root :width (180) :height 2 :overflow scroll
-                (column
-                 (box :id inner :width (180) :height 2 :overflow scroll
-                      :content "inner 0\ninner 1\ninner 2\ninner 3")
-                 (box :content "outer 0\nouter 1" :height 2)))))
+         (ebox-test-box :id 'root :width '(180) :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id 'inner :width '(180) :height 2
+			       :overflow 'scroll (ebox-test-text "inner 0\ninner 1\ninner 2\ninner 3"))
+		(ebox-test-box (ebox-test-text "outer 0\nouter 1") :height 2))))
         root-id inner-id)
     (ebox-test--with-rendered-buffer layout
       (setq root-id (ebox-test--selector-region-id (current-buffer) "#root")
@@ -5271,13 +5478,12 @@
   "Child-layout scroll boxes should publish one retained viewport update."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :height 2 :overflow scroll
-             (column
-              (box :id "a" :content "A" :height 1)
-              (box :id "b" :content "B" :height 1)
-              (box :id "c" :content "C" :height 1)
-              (box :id "d" :content "D" :height 1)))))
+          (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id "a" (ebox-test-text "A") :height 1)
+		(ebox-test-box :id "b" (ebox-test-text "B") :height 1)
+		(ebox-test-box :id "c" (ebox-test-text "C") :height 1)
+		(ebox-test-box :id "d" (ebox-test-text "D") :height 1))))
          (root-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
       (let* ((state (ebox--scroll-get-state root-id))
@@ -5302,17 +5508,15 @@
   "Fast scroll window patches should keep scroll box padding and border."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :height 4 :box-sizing border-box
-             :overflow scroll
-             :padding-top 1 :padding-bottom 1
-             :border-top-p t :border-top-color "red"
-             :border-bottom-p t :border-bottom-color "blue"
-             (column
-              (box :id "a" :content "A" :height 1)
-              (box :id "b" :content "B" :height 1)
-              (box :id "c" :content "C" :height 1)
-              (box :id "d" :content "D" :height 1)))))
+          (ebox-test-box :id "root" :height 4 :box-sizing 'border-box :overflow
+	       'scroll :padding-top 1 :padding-bottom 1 :border-top-p
+	       t :border-top-color "red" :border-bottom-p t
+	       :border-bottom-color "blue"
+	       (ebox-test-column
+		(ebox-test-box :id "a" (ebox-test-text "A") :height 1)
+		(ebox-test-box :id "b" (ebox-test-text "B") :height 1)
+		(ebox-test-box :id "c" (ebox-test-text "C") :height 1)
+		(ebox-test-box :id "d" (ebox-test-text "D") :height 1))))
          (root-id (car (ebox-region-ids layout)))
          )
     (ebox-test--with-rendered-buffer layout
@@ -5406,14 +5610,18 @@
   "Fixed border-box padding changes should remain an internal fragment impact."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(column :id root :width (480)
-            (flex :id row :flex-flow (row nowrap) :column-gap (12)
-             (box :id padding :content "padding target"
-                  :width (190) :height 3 :box-sizing border-box
-                  :padding (0 (8)) :border "#999999")
-             (box :content "peer" :width (190) :height 3
-                  :border "#999999"))))))
+         (ebox-test-column :id 'root :width '(480)
+		  (ebox-test-flex :id 'row :flex-flow '(row nowrap)
+				  :column-gap '(12)
+				  (ebox-test-box :id 'padding (ebox-test-text "padding target")
+						 :width '(190) :height
+						 3 :box-sizing
+						 'border-box :padding
+						 '(0 (8)) :border
+						 "#999999")
+				  (ebox-test-box (ebox-test-text "peer")
+						 :width '(190) :height
+						 3 :border "#999999")))))
     (ebox-test--with-rendered-buffer layout
       (let ((region-id (ebox-test--selector-region-id (current-buffer)
                                                        "#padding")))
@@ -5430,14 +5638,18 @@
   "Mixed block/inline padding shorthand should not promote to a root rerender."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(column :id root :width (480)
-            (flex :id row :flex-flow (row nowrap) :column-gap (12)
-             (box :id padding :content "padding target"
-                  :width (190) :height 4 :box-sizing border-box
-                  :padding (0 (8)) :border "#999999")
-             (box :content "peer" :width (190) :height 4
-                  :border "#999999"))))))
+         (ebox-test-column :id 'root :width '(480)
+		  (ebox-test-flex :id 'row :flex-flow '(row nowrap)
+				  :column-gap '(12)
+				  (ebox-test-box :id 'padding (ebox-test-text "padding target")
+						 :width '(190) :height
+						 4 :box-sizing
+						 'border-box :padding
+						 '(0 (8)) :border
+						 "#999999")
+				  (ebox-test-box (ebox-test-text "peer")
+						 :width '(190) :height
+						 4 :border "#999999")))))
     (ebox-test--with-rendered-buffer layout
       (let* ((match (car (ebox-selector-query-buffer
                           (current-buffer) "#padding")))
@@ -5468,10 +5680,9 @@
   "Border-box padding cannot claim a fixed footprint without a content line."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id padding :content "padding target"
-                :width (190) :height 4 :box-sizing border-box
-                :padding 2 :border "#999999"))))
+         (ebox-test-box :id 'padding (ebox-test-text "padding target") :width '(190)
+	       :height 4 :box-sizing 'border-box :padding 2 :border
+	       "#999999")))
     (ebox-test--with-rendered-buffer layout
       (let* ((match (car (ebox-selector-query-buffer
                           (current-buffer) "#padding")))
@@ -5568,13 +5779,13 @@
 (ert-deftest ebox-overflow-reversal-skips-layout-only-ancestor ()
   "Old visible suffix coverage should skip ancestors without wrapper ownership."
   (ebox-test--reset-runtime-state)
-  (let* ((target (ebox-test-box :content "A\nB\nC" :height 1
+  (let* ((target (ebox-test-box (ebox-test-text "A\nB\nC") :height 1
                               :overflow 'visible))
          (region-id (car (ebox-region-ids target)))
-         (inner (ebox-test-stack target (ebox-test-box :content "TAIL")))
-         (layout (ebox-test-stack inner (ebox-test-box :content "ROOT TAIL")))
-         (inner-id (ebox--ensure-node-id inner))
-         (root-id (ebox--ensure-node-id layout)))
+         (inner (ebox-test-column target (ebox-test-box (ebox-test-text "TAIL"))))
+         (layout (ebox-test-column inner (ebox-test-box (ebox-test-text "ROOT TAIL"))))
+         (inner-id (ebox--ensure-node-id (ebox-test-root inner)))
+         (root-id (ebox--ensure-node-id (ebox-test-root layout))))
     (ebox-test--with-rendered-buffer layout
       (ebox--clear-layout-snapshots (current-buffer))
       (ebox-test--region-update region-id :overflow 'hidden)
@@ -5590,14 +5801,14 @@
 (ert-deftest ebox-overflow-reversal-skips-visible-wrapper-ancestor ()
   "A visible wrapper cannot cover its own old unowned overflow suffix."
   (ebox-test--reset-runtime-state)
-  (let* ((target (ebox-test-box :content "A\nB\nC" :height 1
+  (let* ((target (ebox-test-box (ebox-test-text "A\nB\nC") :height 1
                               :overflow 'visible))
          (region-id (car (ebox-region-ids target)))
-         (wrapper (ebox-test-box :ebox-content-node target :width '(100)
+         (wrapper (ebox-test-box target :width '(100)
                                :height 1 :overflow 'visible))
-         (layout (ebox-test-stack wrapper (ebox-test-box :content "TAIL")))
-         (wrapper-id (ebox--ensure-node-id wrapper))
-         (root-id (ebox--ensure-node-id layout)))
+         (layout (ebox-test-column wrapper (ebox-test-box (ebox-test-text "TAIL"))))
+         (wrapper-id (ebox--ensure-node-id (ebox-test-root wrapper)))
+         (root-id (ebox--ensure-node-id (ebox-test-root layout))))
     (ebox-test--with-rendered-buffer layout
       (ebox--clear-layout-snapshots (current-buffer))
       (ebox-test--region-update region-id :overflow 'hidden)
@@ -5614,13 +5825,19 @@
   "Coverage should climb above an enclosing visible wrapper's old footprint."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(column :id root :width (100)
-            (box :id outer :width (100) :height 2 :overflow visible
-              (box :id inner :width (100)
-                (box :id target :content "A\nB\nC" :height 1
-                     :overflow visible)))
-            (box :content "TAIL")))))
+         (ebox-test-column :id 'root :width '(100)
+		  (ebox-test-box :id 'outer :width '(100) :height 2
+				 :overflow 'visible
+				 (ebox-test-box :id 'inner :width
+						'(100)
+						(ebox-test-box :id
+							       'target
+							       (ebox-test-text "A\nB\nC")
+							       :height
+							       1
+							       :overflow
+							       'visible)))
+		  (ebox-test-box (ebox-test-text "TAIL")))))
     (ebox-test--with-rendered-buffer layout
       (let* ((region-id (ebox-test--selector-region-id
                          (current-buffer) "#target"))
@@ -5652,11 +5869,11 @@
     (let* ((old-overflow (car transition))
            (new-overflow (cadr transition))
            (layout
-            (ebox-test-build
-             `(flex :id root :width (200)
-               (box :id target :content "A\nB\nC" :width (80) :height 1
-                    :overflow ,old-overflow)
-               (box :id peer :content "P" :width (80) :height 1)))))
+            (ebox-test-flex :id 'root :width '(200)
+		(ebox-test-box :id 'target (ebox-test-text "A\nB\nC") :width
+			       '(80) :height 1 :overflow old-overflow)
+		(ebox-test-box :id 'peer (ebox-test-text "P") :width '(80)
+			       :height 1))))
       (ebox-test--with-rendered-buffer layout
         (let* ((region-id (ebox-test--selector-region-id
                            (current-buffer) "#target"))
@@ -5681,12 +5898,13 @@
     (let* ((old-overflow (car transition))
            (new-overflow (cadr transition))
            (layout
-            (ebox-test-build
-             `(flex :id root :width (220)
-               (box :id card :width (100)
-                 (box :id target :content "A\nB\nC" :width (80) :height 1
-                      :overflow ,old-overflow))
-               (box :id peer :content "P" :width (80) :height 1)))))
+            (ebox-test-flex :id 'root :width '(220)
+		(ebox-test-box :id 'card :width '(100)
+			       (ebox-test-box :id 'target (ebox-test-text "A\nB\nC") :width '(80)
+					      :height 1 :overflow
+					      old-overflow))
+		(ebox-test-box :id 'peer (ebox-test-text "P") :width '(80)
+			       :height 1))))
       (ebox-test--with-rendered-buffer layout
         (let* ((region-id (ebox-test--selector-region-id
                            (current-buffer) "#target"))
@@ -5712,14 +5930,13 @@
   "A batch should carry pre-mutation overflow into coverage planning."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(column :id root :width (100)
-            (box :id wrapper :width (100)
-              (column
-               (box :id target :content "A\nB\nC" :height 1
-                    :overflow visible)
-               (box :content "TAIL")))
-            (box :content "ROOT TAIL")))))
+         (ebox-test-column :id 'root :width '(100)
+		  (ebox-test-box :id 'wrapper :width '(100)
+				 (ebox-test-column
+				  (ebox-test-box :id 'target (ebox-test-text "A\nB\nC") :height 1
+						 :overflow 'visible)
+				  (ebox-test-box (ebox-test-text "TAIL"))))
+		  (ebox-test-box (ebox-test-text "ROOT TAIL")))))
     (ebox-test--with-rendered-buffer layout
       (let* ((region-id (ebox-test--selector-region-id
                          (current-buffer) "#target"))
@@ -5749,24 +5966,39 @@
   "Multiple owner replacements normalize shifted spans before scoped refresh."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(column :id root :width (760)
-            (flex :id top-matrix :width (600) :height 5
-                  :flex-flow (row nowrap)
-              (box :id top-card :width (300)
-                (box :id top-target
-                     :content "top A\nsubstantially longer top overflow\ntop C"
-                     :width (280) :height 2 :overflow scroll))
-              (box :content "top P\ntop Q\ntop R\ntop S\ntop T"
-                   :width (300) :height 5))
-            (flex :id bottom-matrix :width (600) :height 5
-                  :flex-flow (row nowrap)
-              (box :id bottom-card :width (300)
-                (box :id bottom-target
-                     :content "bottom A\nbottom overflow\nbottom C"
-                     :width (280) :height 2 :overflow scroll))
-              (box :content "bottom P\nbottom Q\nbottom R\nbottom S\nbottom T"
-                   :width (300) :height 5))))))
+         (ebox-test-column :id 'root :width '(760)
+		  (ebox-test-flex :id 'top-matrix :width '(600)
+				  :height 5 :flex-flow '(row nowrap)
+				  (ebox-test-box :id 'top-card :width
+						 '(300)
+						 (ebox-test-box :id
+								'top-target
+								(ebox-test-text "top A\nsubstantially longer top overflow\ntop C")
+								:width
+								'(280)
+								:height
+								2
+								:overflow
+								'scroll))
+				  (ebox-test-box (ebox-test-text "top P\ntop Q\ntop R\ntop S\ntop T")
+						 :width '(300) :height
+						 5))
+		  (ebox-test-flex :id 'bottom-matrix :width '(600)
+				  :height 5 :flex-flow '(row nowrap)
+				  (ebox-test-box :id 'bottom-card
+						 :width '(300)
+						 (ebox-test-box :id
+								'bottom-target
+								(ebox-test-text "bottom A\nbottom overflow\nbottom C")
+								:width
+								'(280)
+								:height
+								2
+								:overflow
+								'scroll))
+				  (ebox-test-box (ebox-test-text "bottom P\nbottom Q\nbottom R\nbottom S\nbottom T")
+						 :width '(300) :height
+						 5)))))
     (ebox-test--with-rendered-buffer layout
       (let ((top-region-id
              (ebox-test--selector-region-id (current-buffer) "#top-target"))
@@ -5824,29 +6056,37 @@
   "Failed promoted span patches must fall back to a layout-safe ancestor."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(flex :id matrix :width (680) :flex-flow (row wrap)
-            :column-gap (12) :row-gap 1
-            (column :width (210) :border "#999999"
-             (box :content "Title A" :width (190))
-             (box :id target :content "width target\nmoves sibling layout"
-                  :width (160) :height 3
-                  :padding (0 (8)) :border "#999999"))
-            (column :width (210) :border "#999999"
-             (box :content "Title B" :width (190))
-             (box :content "Still here" :width (190)))
-            (column :width (210) :border "#999999"
-             (box :content "Title C" :width (190))
-             (box :content "Third card" :width (190)))))))
+         (ebox-test-flex :id 'matrix :width '(680) :flex-flow '(row wrap)
+		:column-gap '(12) :row-gap 1
+		(ebox-test-column :width '(210) :border "#999999"
+				  (ebox-test-box (ebox-test-text "Title A")
+						 :width '(190))
+				  (ebox-test-box :id 'target (ebox-test-text "width target\nmoves sibling layout")
+						 :width '(160) :height
+						 3 :padding '(0 (8))
+						 :border "#999999"))
+		(ebox-test-column :width '(210) :border "#999999"
+				  (ebox-test-box (ebox-test-text "Title B")
+						 :width '(190))
+				  (ebox-test-box (ebox-test-text "Still here")
+						 :width '(190)))
+		(ebox-test-column :width '(210) :border "#999999"
+				  (ebox-test-box (ebox-test-text "Title C")
+						 :width '(190))
+				  (ebox-test-box (ebox-test-text "Third card")
+						 :width '(190))))))
     (ebox-test--with-rendered-buffer layout
       (let* ((match (car (ebox-selector-query-buffer
                           (current-buffer) "#target")))
              (region-id (plist-get match :region-id)))
         (ebox-test--region-update region-id :width '(250))
         (let* ((patched (buffer-string))
-               (full (ebox--with-buffer-render-context (current-buffer)
-                       (ebox-render
-                        (ebox--buffer-root-node (current-buffer))))))
+               (full
+                (ebox--with-buffer-render-context (current-buffer)
+                  (ebox--render-node
+                   (ebox--buffer-root-node (current-buffer))
+                   (plist-get (ebox--buffer-render-state (current-buffer))
+                              :source-index)))))
           (should (string= (substring-no-properties patched)
                            (substring-no-properties full))))))))
 
@@ -5884,13 +6124,13 @@
   (ebox-test--reset-runtime-state)
   (let ((ebox-viewport-width 300)
         (layout
-         (ebox-test-build
-          '(flex :id root :width (300) :height 1
-                 :flex-flow (row nowrap) :align-items flex-start
-            (box :id target :content "A" :width auto :height 1
-                 :overflow hidden :wrap-mode word)
-            (box :id peer :content "P" :width (40) :height 1
-                 :flex-grow 0 :flex-shrink 0)))))
+         (ebox-test-flex :id 'root :width '(300) :height 1 :flex-flow
+		'(row nowrap) :align-items 'flex-start
+		(ebox-test-box :id 'target (ebox-test-text "A") :width 'auto
+			       :height 1 :overflow 'hidden :wrap-mode
+			       'word)
+		(ebox-test-box :id 'peer (ebox-test-text "P") :width '(40)
+			       :height 1 :flex-grow 0 :flex-shrink 0))))
     (ebox-test--with-rendered-buffer layout
       (let* ((match (car (ebox-selector-query-buffer
                           (current-buffer) "#target")))
@@ -5916,7 +6156,7 @@
 (ert-deftest ebox-region-update-stable-geometry-uses-span-patch ()
   "Geometry updates with stable span footprint should use the L2 planner path."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Align" :width '(120) :height 1
+  (let* ((box (ebox-test-box (ebox-test-text "Align") :width '(120) :height 1
                            :text-align 'left))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -5931,10 +6171,10 @@
 (ert-deftest ebox-region-update-inline-child-stable-geometry-uses-span-patch ()
   "Stable internal changes inside an inline child should not rerender siblings."
   (ebox-test--reset-runtime-state)
-  (let* ((left (ebox-test-box :content "Left" :width '(80) :height 1
+  (let* ((left (ebox-test-box (ebox-test-text "Left") :width '(80) :height 1
                             :text-align 'left))
-         (right (ebox-test-box :content "Right" :width '(80) :height 1))
-         (layout (ebox-test-concat left right))
+         (right (ebox-test-box (ebox-test-text "Right") :width '(80) :height 1))
+         (layout (ebox-test-row left right))
          (left-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
       (ebox-test--region-update left-id :text-align 'center)
@@ -5952,7 +6192,7 @@
 (ert-deftest ebox-region-update-border-box-inline-change-uses-span-patch ()
   "Border-box left/right spacing can be internal when outer width is fixed."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Pad" :width '(120) :height 1
+  (let* ((box (ebox-test-box (ebox-test-text "Pad") :width '(120) :height 1
                            :box-sizing 'border-box))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -5965,7 +6205,7 @@
 (ert-deftest ebox-region-update-content-box-inline-change-rerenders-owner ()
   "Content-box left/right spacing changes the parent-facing outer width."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Pad" :width '(120) :height 1
+  (let* ((box (ebox-test-box (ebox-test-text "Pad") :width '(120) :height 1
                            :box-sizing 'content-box))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
@@ -5978,7 +6218,7 @@
 (ert-deftest ebox-region-update-span-candidate-falls-back-on-wrap-change ()
   "A wrap-changing update should publish a correct scoped TP plan."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "abcdefghijklmnopqrstuvwxyz"
+  (let* ((box (ebox-test-box (ebox-test-text "abcdefghijklmnopqrstuvwxyz")
                            :width '(120)
                            :box-sizing 'border-box
                            :wrap-mode 'char))
@@ -6016,7 +6256,7 @@
     (pcase-let ((`(,property ,value ,expected) case))
       (ert-info ((format "property %S" property))
         (ebox-test--reset-runtime-state)
-        (let* ((box (ebox-test-box :content "Paint" :width '(120)
+        (let* ((box (ebox-test-box (ebox-test-text "Paint") :width '(120)
                                  :height 1))
                (region-id (car (ebox-region-ids box))))
           (ebox-test--with-rendered-buffer box
@@ -6044,7 +6284,7 @@
     (pcase-let ((`(,property ,value ,expected ,_strategy) case))
       (ert-info ((format "property %S" property))
         (ebox-test--reset-runtime-state)
-        (let* ((box (ebox-test-box :content "Alpha\nBeta\nGamma\nDelta"
+        (let* ((box (ebox-test-box (ebox-test-text "Alpha\nBeta\nGamma\nDelta")
                                  :width '(160)
                                  :height 2
                                  :overflow 'scroll
@@ -6074,11 +6314,12 @@
 
 (ert-deftest ebox-bgcolor-update-mutates-box-and-keeps-content ()
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Color" :width 60 :bgcolor "#111111"))
+  (let* ((box (ebox-test-box (ebox-test-text "Color") :width 60 :bgcolor "#111111"))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (ebox-test--region-update region-id :bgcolor "#222222")
-      (should (equal (ebox-get box :bgcolor) "#111111"))
+      (should (equal (ebox-style-node-specified-value box :bgcolor)
+                     "#111111"))
       (should (equal (ebox-get (gethash region-id
                                         (ebox--buffer-region-box-table
                                          (current-buffer)))
@@ -6092,17 +6333,21 @@
   "Background color spellings should share one engine longhand and paint path."
   (ebox-test--reset-runtime-state)
   (let* ((background-box
-          (ebox-test-box :content "Color" :width 60
+          (ebox-test-box (ebox-test-text "Color") :width 60
                        :background-color "#111111"))
          (bgcolor-box
-          (ebox-test-box :content "Color" :width 60 :bgcolor "#111111"))
+          (ebox-test-box (ebox-test-text "Color") :width 60 :bgcolor "#111111"))
          (background-face
           (ebox-test--first-content-face (ebox-render background-box)))
          (bgcolor-face
           (ebox-test--first-content-face (ebox-render bgcolor-box))))
-    (should (equal (ebox-get background-box :bgcolor) "#111111"))
-    (should (equal (ebox-get bgcolor-box :bgcolor) "#111111"))
-    (should-not (plist-member background-box :background-color))
+    (should (equal (ebox-style-node-specified-value
+                    background-box :bgcolor)
+                   "#111111"))
+    (should (equal (ebox-style-node-specified-value bgcolor-box :bgcolor)
+                   "#111111"))
+    (should-not (plist-member (ebox-test-root background-box)
+                              :background-color))
     (should (equal background-face bgcolor-face))
     (should (ebox-test--face-has-key-value-p
              background-face :background "#111111"))
@@ -6112,10 +6357,13 @@
         (let ((runtime-box
                (gethash region-id (ebox--buffer-region-box-table
                                    (current-buffer)))))
-          (should (equal (ebox-get background-box :bgcolor) "#111111"))
+          (should (equal (ebox-style-node-specified-value
+                          background-box :bgcolor)
+                         "#111111"))
           (should (equal (ebox-get runtime-box :bgcolor) "#222222"))
           (should-not (plist-member runtime-box :background-color)))
-        (should-not (plist-member background-box :background-color))
+        (should-not (plist-member (ebox-test-root background-box)
+                                  :background-color))
         (should (ebox-test--face-has-key-value-p
                  (ebox-test--first-content-face (buffer-string))
                  :background "#222222"))
@@ -6128,17 +6376,18 @@
 (ert-deftest ebox-vertical-align-middle-alias-matches-center ()
   "Creation and updates should normalize middle to center before rendering."
   (ebox-test--reset-runtime-state)
-  (let ((middle (ebox-test-box :content "X" :height 3
+  (let ((middle (ebox-test-box (ebox-test-text "X") :height 3
                              :vertical-align 'middle)))
     (should (equal (ebox--expand-property :vertical-align 'middle)
                    '(:vertical-align center)))
-    (should (eq (ebox-get middle :vertical-align) 'center))
+    (should (eq (ebox-get (ebox-test-root middle) :vertical-align)
+                'center))
     (should (= (cl-position-if
                 (lambda (line)
                   (string-match-p "X" (substring-no-properties line)))
                 (ebox-string-lines (ebox-render middle)))
                1))
-    (let* ((updated (ebox-test-box :content "X" :height 3
+    (let* ((updated (ebox-test-box (ebox-test-text "X") :height 3
                                  :vertical-align 'top))
            (region-id (car (ebox-region-ids updated))))
       (ebox-test--with-rendered-buffer updated
@@ -6146,7 +6395,9 @@
         (search-forward "X")
         (should (= (line-number-at-pos (match-beginning 0)) 1))
         (ebox-test--region-update region-id :vertical-align 'middle)
-        (should (eq (ebox-get updated :vertical-align) 'top))
+        (should (eq (ebox-style-node-specified-value
+                     updated :vertical-align)
+                    'top))
         (should (eq (ebox-get (gethash region-id
                                        (ebox--buffer-region-box-table
                                         (current-buffer)))
@@ -6161,7 +6412,7 @@
 
 (ert-deftest ebox-update-reuses-shorthand-property-expansion ()
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Box" :width 60))
+  (let* ((box (ebox-test-box (ebox-test-text "Box") :width 60))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (ebox-test--region-update region-id
@@ -6171,7 +6422,7 @@
       (let ((runtime-box
              (gethash region-id (ebox--buffer-region-box-table
                                  (current-buffer)))))
-        (should (= (ebox-get box :padding-top-height) 0))
+        (should (= (ebox-get (ebox-test-root box) :padding-top-height) 0))
         (should (= (ebox-get runtime-box :padding-top-height) 1))
         (should (= (ebox-get runtime-box :padding-right-pixel)
                    (* 2 (ebox--space-pixel-width))))
@@ -6184,7 +6435,7 @@
 (ert-deftest ebox-region-update-adds-absent-shorthand-properties-incrementally ()
   "Shorthand updates should locate the same box and patch without root rebuilds."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Absent properties" :width '(160)))
+  (let* ((box (ebox-test-box (ebox-test-text "Absent properties") :width '(160)))
          (region-id (car (ebox-region-ids box)))
          (ids-before (ebox-region-ids box)))
     (ebox-test--with-rendered-buffer box
@@ -6202,11 +6453,11 @@
                     runtime-box))
         (should-not (eq runtime-box box))
         (should (equal (ebox-region-ids box) ids-before))
-        (should (= (ebox-get box :padding-top-height) 0))
-        (should (= (ebox-get box :padding-right-pixel) 0))
-        (should (= (ebox-get box :border-left-pixel) 0))
-        (should (null (ebox-get box :border-right-color)))
-        (should (= (ebox-get box :margin-left-pixel) 0))
+        (should (= (ebox-get (ebox-test-root box) :padding-top-height) 0))
+        (should (= (ebox-get (ebox-test-root box) :padding-right-pixel) 0))
+        (should (= (ebox-get (ebox-test-root box) :border-left-pixel) 0))
+        (should (null (ebox-get (ebox-test-root box) :border-right-color)))
+        (should (= (ebox-get (ebox-test-root box) :margin-left-pixel) 0))
         (should (= (ebox-get runtime-box :padding-top-height) 1))
         (should (= (ebox-get runtime-box :padding-right-pixel)
                    (* 2 (ebox--space-pixel-width))))
@@ -6225,7 +6476,7 @@
                (ebox-test--region-update region-id
                                    :background-color "#fed7aa"))))
         (should (= full-rerenders 0)))
-      (should (null (ebox-get box :bgcolor)))
+      (should (null (ebox-style-node-specified-value box :bgcolor)))
       (should (equal (ebox-get (gethash region-id
                                         (ebox--buffer-region-box-table
                                          (current-buffer)))
@@ -6239,7 +6490,7 @@
 
 (ert-deftest ebox-overflow-hidden-clips-extra-content-lines ()
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC")
                            :height 1
                            :overflow 'hidden))
          (plain (substring-no-properties (ebox-render box))))
@@ -6250,7 +6501,7 @@
 
 (ert-deftest ebox-overflow-visible-appends-extra-content-lines ()
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC")
                            :height 1
                            :overflow 'visible))
          (plain (substring-no-properties (ebox-render box))))
@@ -6304,7 +6555,7 @@
 (ert-deftest ebox-overflow-visible-paints-foreground-without-ownership ()
   "Visible overflow should inherit only the outer box foreground."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC")
                            :width '(40)
                            :height 1
                            :overflow 'visible
@@ -6312,14 +6563,14 @@
                            :bgcolor "#123456"
                            :padding-inline '(6)
                            :margin-inline '(4)))
-         (region-id (ebox--ensure-region-id box)))
+         (region-id (ebox--ensure-region-id (ebox-test-root box))))
     (ebox-test--assert-visible-overflow-paint
      (ebox-render box) "#abcdef" "#123456" region-id)))
 
 (ert-deftest ebox-region-update-refreshes-visible-overflow-foreground ()
   "Color updates should add, replace, and remove visible overflow paint."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC")
                            :width '(40)
                            :height 1
                            :overflow 'visible
@@ -6347,7 +6598,7 @@
 (ert-deftest ebox-owner-rerender-keeps-visible-overflow-unowned ()
   "Owner rerenders should not restore box ownership to visible overflow."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC")
                            :width '(40)
                            :height 1
                            :overflow 'scroll
@@ -6375,7 +6626,7 @@
 
 (ert-deftest ebox-overflow-scroll-keeps-window-height-and-state ()
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC")
                            :height 1
                            :overflow 'scroll))
          (region-id (car (ebox-region-ids box))))
@@ -6398,7 +6649,7 @@
   "Scroll commands should let the buffer move when the box has no scroll work."
   (ebox-test--reset-runtime-state)
   (with-temp-buffer
-    (insert (ebox-render (ebox-test-box :content "short" :height 1)))
+    (insert (ebox-render (ebox-test-box (ebox-test-text "short") :height 1)))
     (insert "\n")
     (dotimes (index 40)
       (insert (format "tail-%02d\n" index)))
@@ -6414,12 +6665,11 @@
 (ert-deftest ebox-scroll-bubbles-from-child-to-scrollable-ancestor ()
   "Key scrolling over a child box should scroll the nearest scrollable ancestor."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 2 :overflow scroll
-                        (column
-                         (box :id "child" :content "A" :height 1)
-                         (box :content "B" :height 1)
-                         (box :content "C" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id "child" (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1)
+		(ebox-test-box (ebox-test-text "C") :height 1))))
          (ids (ebox-region-ids layout))
          (root-id (car ids)))
     (ebox-test--with-rendered-buffer layout
@@ -6458,7 +6708,7 @@
 (ert-deftest ebox-wheel-scroll-falls-back-for-non-scrollable-region ()
   "Mouse wheel over a normal box should keep default buffer scrolling."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "short" :height 1))
+  (let* ((box (ebox-test-box (ebox-test-text "short") :height 1))
          (region-id (car (ebox-region-ids box)))
          mwheel-args)
     (ebox-test--with-rendered-buffer box
@@ -6473,7 +6723,7 @@
 (ert-deftest ebox-wheel-scroll-consumes-scrollable-region ()
   "Mouse wheel should still scroll an overflow='scroll box when it can."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC")
                            :height 1
                            :overflow 'scroll))
          (region-id (car (ebox-region-ids box)))
@@ -6493,12 +6743,11 @@
 (ert-deftest ebox-wheel-scroll-bubbles-from-child-to-scrollable-ancestor ()
   "Mouse wheel scrolling over a child box should scroll its scrollable ancestor."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 2 :overflow scroll
-                        (column
-                         (box :id "child" :content "A" :height 1)
-                         (box :content "B" :height 1)
-                         (box :content "C" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id "child" (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1)
+		(ebox-test-box (ebox-test-text "C") :height 1))))
          (ids (ebox-region-ids layout))
          (root-id (car ids))
          (child-id (cadr ids))
@@ -6521,14 +6770,15 @@
 (ert-deftest ebox-scroll-state-is-created-only-for-scrollable-boxes ()
   "Non-overflowing boxes should not inflate the global scroll hit-test table."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(column
-                    (box :id "short-a" :content "A" :height 1)
-                    (box :id "short-b" :content "B" :height 1)
-                    (box :id "root" :height 1 :overflow scroll
-                         (column
-                          (box :content "C" :height 1)
-                          (box :content "D" :height 1))))))
+  (let* ((layout (ebox-test-column (ebox-test-box :id "short-a" (ebox-test-text "A") :height 1)
+		  (ebox-test-box :id "short-b" (ebox-test-text "B") :height 1)
+		  (ebox-test-box :id "root" :height 1 :overflow
+				 'scroll
+				 (ebox-test-column
+				  (ebox-test-box (ebox-test-text "C") :height
+						 1)
+				  (ebox-test-box (ebox-test-text "D") :height
+						 1)))))
          root-id short-a-id short-b-id)
     (ebox-test--with-rendered-buffer layout
       (setq root-id (ebox-test--selector-region-id (current-buffer) "#root"))
@@ -6543,11 +6793,10 @@
 (ert-deftest ebox-scroll-hit-test-uses-owner-stack-before-mount-lookup ()
   "Wheel hit testing should avoid TP mount lookup when owners suffice."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 1 :overflow scroll
-                        (column
-                         (box :id "child" :content "A" :height 1)
-                         (box :content "B" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 1 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id "child" (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1))))
          (root-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
       (goto-char (point-min))
@@ -6560,14 +6809,14 @@
 (ert-deftest ebox-chrome-free-scroll-render-reuses-propertized-prefix-lines ()
   "A chrome-free scroll box should not propertize its visible prefix twice."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "row-1\nrow-2\nrow-3"
+  (let* ((box (ebox-test-box (ebox-test-text "row-1\nrow-2\nrow-3")
                            :width 120
                            :height 2
                            :overflow 'scroll
                            :color "#112233"
                            :bgcolor "#ddeeff"))
-         (region-id (ebox--ensure-region-id box))
-         (reference (ebox-test-box :content "row-1\nrow-2\nrow-3"
+         (region-id (ebox--ensure-region-id (ebox-test-root box)))
+         (reference (ebox-test-box (ebox-test-text "row-1\nrow-2\nrow-3")
                                  :width 120
                                  :height 2
                                  :overflow 'hidden
@@ -6576,7 +6825,7 @@
          (original (symbol-function 'ebox--propertize-content-line))
          (root-propertize-count 0)
          actual)
-    (plist-put reference :region-id region-id)
+    (plist-put (ebox-test-root reference) :region-id region-id)
     (cl-letf (((symbol-function 'ebox--propertize-content-line)
                (lambda (line owner idx fallback)
                  (when (equal owner region-id)
@@ -6603,15 +6852,15 @@
           (concat (propertize "alpha" 'face '(:weight bold)
                               'help-echo "rich")
                   "\n \nomega"))
-         (box (ebox-test-box :content content
+         (box (ebox-test-box (ebox-test-text content)
                            :width 140
                            :height 5
                            :overflow 'scroll
                            :vertical-align 'top
                            :color "#112233"
                            :bgcolor "#ddeeff"))
-         (region-id (ebox--ensure-region-id box))
-         (reference (ebox-test-box :content content
+         (region-id (ebox--ensure-region-id (ebox-test-root box)))
+         (reference (ebox-test-box (ebox-test-text content)
                                  :width 140
                                  :height 5
                                  :overflow 'hidden
@@ -6619,7 +6868,8 @@
                                  :color "#112233"
                                  :bgcolor "#ddeeff"))
          (expected (progn
-                     (plist-put reference :region-id region-id)
+                     (plist-put (ebox-test-root reference)
+                                :region-id region-id)
                      (ebox-render reference)))
          (original-align (symbol-function 'ebox--lines-align-vertical))
          (original-maplines (symbol-function 'ebox--maplines))
@@ -6646,15 +6896,14 @@
   "Lazy scroll windows should not rebuild visible content lines per tick."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id)
     (unwind-protect
@@ -6683,20 +6932,20 @@
   "Viewport resize must preserve lazy scroll's fixed viewport fast path."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(column :id "viewport" :width (viewport)
-                    :height (viewport-height)
-             (box :content "" :width (viewport) :height 1)
-             (box :id "root" :width (viewport)
-                  :height (- (viewport-height) 2)
-                  :overflow scroll
-              (column :width (viewport) :padding (1 (8))
-               ,@(cl-loop for idx below 80
-                          collect
-                          `(box :content ,(format "row %02d" idx)
-                                :width (viewport)
-                                :height 1)))
-             (box :content "" :width (viewport) :height 1)))))
+          (ebox-test-column :id "viewport" :width '(viewport) :height
+		  '(viewport-height)
+		  (ebox-test-box (ebox-test-text "") :width '(viewport)
+				 :height 1)
+		  (ebox-test-box :id "root" :width '(viewport) :height
+				 '(- (viewport-height) 2) :overflow
+				 'scroll
+				 (apply #'ebox-test-column
+       (append (list :width '(viewport) :padding '(1 (8)))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box (ebox-test-text (format "row %02d" idx)) :width
+				       '(viewport) :height 1))))
+				 (ebox-test-box (ebox-test-text "") :width
+						'(viewport) :height 1))))
          buffer
          root-id
          mount-bounds
@@ -6758,16 +7007,14 @@
   "Flex intrinsic measurement should not render lazy scroll window content."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport)
-                 :height (- (viewport-height) 2)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :content ,(format "measurement row %02d" idx)
-                               :width (viewport)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(- (viewport-height) 2) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box (ebox-test-text (format "measurement row %02d"
+					       idx))
+				       :width '(viewport) :height 1))))))
          (calls 0)
          rendered)
     (cl-letf (((symbol-function 'ebox--render-scroll-window-source)
@@ -6790,16 +7037,13 @@
   "Interactive scrolling should extend a lazy prefix even with idle prefetch off."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport)
-                 :height (- (viewport-height) 10)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :content ,(format "sync row %02d" idx)
-                               :width (viewport)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(- (viewport-height) 10) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box (ebox-test-text (format "sync row %02d" idx))
+				       :width '(viewport) :height 1))))))
          buffer
          root-id)
     (unwind-protect
@@ -6839,16 +7083,13 @@
   "A bounded GUI cache miss should extend and scroll in one Ebox commit."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport)
-                 :height (- (viewport-height) 10)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :content ,(format "gui row %02d" idx)
-                               :width (viewport)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(- (viewport-height) 10) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box (ebox-test-text (format "gui row %02d" idx))
+				       :width '(viewport) :height 1))))))
          buffer
          root-id
          (prefix-count 0))
@@ -6906,16 +7147,13 @@
   "A caller-provided prefix budget should synchronously extend GUI lazy scrolls."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport)
-                 :height (- (viewport-height) 10)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :content ,(format "budget row %02d" idx)
-                               :width (viewport)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(- (viewport-height) 10) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box (ebox-test-text (format "budget row %02d" idx))
+				       :width '(viewport) :height 1))))))
          buffer
          root-id
          (prefix-count 0))
@@ -6960,20 +7198,22 @@
   (ebox-test--reset-runtime-state)
   (let* ((flex-section
           (lambda (label)
-            `(flex :width (viewport) :flex-flow (row wrap)
-                   ,@(cl-loop for idx below 4
-                              collect
-                              `(box :content ,(format "%s-%d" label idx)
-                                    :width (110)
-                                    :height 1)))))
+            (apply #'ebox-test-flex
+                   (append
+                    (list :width '(viewport) :flex-flow '(row wrap))
+                    (cl-loop for idx below 4
+                             collect
+                             (ebox-test-box
+                              (ebox-test-text (format "%s-%d" label idx))
+                              :width '(110)
+                              :height 1))))))
          (layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,(funcall flex-section "a")
-              (spacer :height 1)
-              ,(funcall flex-section "b")))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (ebox-test-column :width '(viewport)
+				 (funcall flex-section "a")
+				 (ebox-test-box :height 1)
+				 (funcall flex-section "b"))))
          (buffer nil)
          root-id
          (flex-render-count 0)
@@ -7005,18 +7245,18 @@
   "Lazy scroll prefixes should not render hidden row-wrap flex rows."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              (box :id "head" :content "head" :width (viewport) :height 1)
-              (flex :width (viewport) :flex-flow (row wrap)
-                    :row-gap 0 :column-gap 0
-                    ,@(cl-loop for idx below 12
-                               collect
-                               `(box :id ,(format "item-%02d" idx)
-                                     :content ,(format "item %02d" idx)
-                                     :width (100) :height 2)))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (ebox-test-column :width '(viewport)
+				 (ebox-test-box :id "head" (ebox-test-text "head") :width
+						'(viewport) :height 1)
+				 (apply #'ebox-test-flex
+       (append
+	(list :width '(viewport) :flex-flow '(row wrap) :row-gap 0
+	      :column-gap 0)
+	(cl-loop for idx below 12 collect
+		 (ebox-test-box :id (format "item-%02d" idx) (ebox-test-text (format "item %02d" idx)) :width '(100)
+				:height 2)))))))
          (buffer nil)
          (hidden-render-count 0)
          (original-render-box (symbol-function 'ebox--render-box)))
@@ -7046,15 +7286,15 @@
   "Window prefix rendering must not freeze shrinkable definite widths."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :width (160) :flex-flow (row wrap)
-             (box :id "shrink-a" :content "alpha beta gamma delta"
-                  :width (200) :height 2)
-             (box :id "shrink-b" :content "second row content"
-                  :width (160) :height 2))))
+          (ebox-test-flex :width '(160) :flex-flow '(row wrap)
+		(ebox-test-box :id "shrink-a" (ebox-test-text "alpha beta gamma delta") :width '(200)
+			       :height 2)
+		(ebox-test-box :id "shrink-b" (ebox-test-text "second row content") :width '(160)
+			       :height 2)))
          (limit 2)
          (full-lines (ebox-string-lines (ebox-render node)))
-         (window (ebox--render-flex-window-lines node limit)))
+         (window (ebox-test--call-input-node
+                  #'ebox--render-flex-window-lines node limit)))
     ;; A nil window means the full-render fallback takes over, which is
     ;; also correct.  Produced window lines must match the full
     ;; renderer's prefix geometry instead of freezing the declared
@@ -7069,24 +7309,26 @@
   "Char-wrapped flex prefixes should use the full-render fallback."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :width (100) :wrap-mode char :flex-flow (row wrap)
-                  :row-gap 0 :column-gap 0
-                  ,@(cl-loop for char across "ABCD"
-                             collect
-                             `(box :content ,(char-to-string char)
-                                   :width (150) :height 1)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :width '(100) :wrap-mode 'char :flex-flow '(row wrap)
+	      :row-gap 0 :column-gap 0)
+	(cl-loop for char across "ABCD" collect
+		 (ebox-test-box (ebox-test-text (char-to-string char)) :width
+				'(150) :height 1)))))
          (full-lines (ebox-string-lines (ebox-render node)))
          (expected-signatures
           (mapcar #'ebox-test--visual-line-signature
                   (seq-take full-lines 3)))
          (ebox--render-cache-table (make-hash-table :test 'equal))
          (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
-         (first (ebox--render-stack-window-lines node 1))
+         (first (ebox-test--call-input-node
+                 #'ebox--render-stack-window-lines node 1))
          (extended
-          (ebox--render-stack-window-lines
-           node 3 (plist-get first :cache)))
-         (producer (ebox--render-node-window-lines node 3))
+          (ebox-test--call-input-node
+           #'ebox--render-stack-window-lines node 3 (plist-get first :cache)))
+         (producer (ebox-test--call-input-node
+                    #'ebox--render-node-window-lines node 3))
          (actual-signatures
           (mapcar #'ebox-test--visual-line-signature
                   (plist-get extended :lines))))
@@ -7097,24 +7339,26 @@
   "Non-left-aligned flex prefixes should use the full-render fallback."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :width (100) :text-align center :flex-flow (row wrap)
-                  :row-gap 0 :column-gap 0
-                  ,@(cl-loop for char across "ABCDEF"
-                             collect
-                             `(box :content ,(char-to-string char)
-                                   :width (50) :height 1)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :width '(100) :text-align 'center :flex-flow '(row wrap)
+	      :row-gap 0 :column-gap 0)
+	(cl-loop for char across "ABCDEF" collect
+		 (ebox-test-box (ebox-test-text (char-to-string char)) :width
+				'(50) :height 1)))))
          (full-lines (ebox-string-lines (ebox-render node)))
          (expected-signatures
           (mapcar #'ebox-test--visual-line-signature
                   (seq-take full-lines 3)))
          (ebox--render-cache-table (make-hash-table :test 'equal))
          (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
-         (first (ebox--render-stack-window-lines node 1))
+         (first (ebox-test--call-input-node
+                 #'ebox--render-stack-window-lines node 1))
          (extended
-          (ebox--render-stack-window-lines
-           node 3 (plist-get first :cache)))
-         (producer (ebox--render-node-window-lines node 3))
+          (ebox-test--call-input-node
+           #'ebox--render-stack-window-lines node 3 (plist-get first :cache)))
+         (producer (ebox-test--call-input-node
+                    #'ebox--render-node-window-lines node 3))
          (actual-signatures
           (mapcar #'ebox-test--visual-line-signature
                   (plist-get extended :lines))))
@@ -7129,7 +7373,7 @@
                  (cl-loop for index below 20
                           collect
                           (ebox-test-box
-                           :content (format "row %02d" index)
+                           (ebox-test-text (format "row %02d" index))
                            :height 1))))
          (full (ebox-string-lines (ebox-render node)))
          (render-count 0)
@@ -7138,7 +7382,8 @@
                (lambda (&rest arguments)
                  (cl-incf render-count)
                  (apply original arguments))))
-      (let ((window (ebox--render-stack-window-lines node 3)))
+      (let ((window (ebox-test--call-input-node
+                     #'ebox--render-stack-window-lines node 3)))
         (should-not (plist-get window :complete))
         (should
          (equal (mapcar #'substring-no-properties (seq-take full 3))
@@ -7154,19 +7399,15 @@
   "A seedless flex prefix should avoid the generic full wrapper renderer."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :id "flex-window-wrapper" :width (240)
-                  :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  :padding (0 (8))
-                  :border-right "#D97757"
-                  :border-bottom "#D97757"
-                  :border-left "#D97757"
-                  :bgcolor "#FFF8F2"
-                  ,@(cl-loop for idx below 8
-                             collect
-                             `(box :content ,(format "wrapper %02d" idx)
-                                   :width (100) :height 2)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :id "flex-window-wrapper" :width '(240) :flex-flow
+	      '(row wrap) :row-gap 1 :column-gap 0 :padding '(0 (8))
+	      :border-right "#D97757" :border-bottom "#D97757"
+	      :border-left "#D97757" :bgcolor "#FFF8F2")
+	(cl-loop for idx below 8 collect
+		 (ebox-test-box (ebox-test-text (format "wrapper %02d" idx))
+				:width '(100) :height 2)))))
          (full-lines (ebox-string-lines (ebox-render node)))
          (full-wrapper-count 0)
          (chunk-wrapper-count 0)
@@ -7190,7 +7431,8 @@
                  (cl-incf multiline-horizontal-concat-count)
                  (apply original-horizontal-concat args))))
       (let* ((ebox--surface-materialization-active t)
-             (window (ebox--render-flex-window-lines node 4)))
+             (window (ebox-test--call-input-node
+                      #'ebox--render-flex-window-lines node 4)))
         (should window)
         (should-not (plist-get window :complete))
         (should (= (length (plist-get window :lines)) 4))
@@ -7216,7 +7458,8 @@
                             'ebox-content-owners '(77)))
          (source-before (copy-sequence source))
          (expected
-          (ebox--flex-window-render-wrapper-chunk-lines
+          (ebox-test--call-input-node
+           #'ebox--flex-window-render-wrapper-chunk-lines
            box (list source) 0 t))
          (copying-owner-count 0)
          (original-copying-owner
@@ -7227,7 +7470,8 @@
                  (cl-incf copying-owner-count)
                  (apply original-copying-owner args))))
       (setq actual
-            (ebox--flex-window-render-wrapper-chunk-lines
+            (ebox-test--call-input-node
+             #'ebox--flex-window-render-wrapper-chunk-lines
              box (list source) 0 t)))
     (should (equal-including-properties source source-before))
     (should
@@ -7240,14 +7484,14 @@
   "Repeated flex window renders should reuse the render cache."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-         `(flex :width (240) :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  ,@(cl-loop for idx below 8
-                             collect
-                             `(box :id ,(format "cache-item-%02d" idx)
-                                   :content ,(format "cache %02d" idx)
-                                   :width (100) :height 2)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :width '(240) :flex-flow '(row wrap) :row-gap 1
+	      :column-gap 0)
+	(cl-loop for idx below 8 collect
+		 (ebox-test-box :id (format "cache-item-%02d" idx)
+				(ebox-test-text (format "cache %02d" idx))
+				:width '(100) :height 2)))))
          (ebox--render-cache-table (make-hash-table :test 'equal))
          (row-render-count 0)
          (original-render-row-line
@@ -7256,24 +7500,26 @@
                (lambda (&rest args)
                  (cl-incf row-render-count)
                  (apply original-render-row-line args))))
-      (should (ebox--render-flex-window-lines node 4))
+      (should (ebox-test--call-input-node
+               #'ebox--render-flex-window-lines node 4))
       (let ((after-first row-render-count))
         (should (> after-first 0))
-        (should (ebox--render-flex-window-lines node 4))
+        (should (ebox-test--call-input-node
+                 #'ebox--render-flex-window-lines node 4))
         (should (= row-render-count after-first))))))
 
 (ert-deftest ebox-flex-window-lines-reuses-node-cache-signature ()
   "One flex window render should not repeatedly compute the node signature."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :width (240) :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  ,@(cl-loop for idx below 8
-                             collect
-                             `(box :id ,(format "sig-item-%02d" idx)
-                                   :content ,(format "sig %02d" idx)
-                                   :width (100) :height 2)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :width '(240) :flex-flow '(row wrap) :row-gap 1
+	      :column-gap 0)
+	(cl-loop for idx below 8 collect
+		 (ebox-test-box :id (format "sig-item-%02d" idx)
+				(ebox-test-text (format "sig %02d" idx))
+				:width '(100) :height 2)))))
          (ebox--render-cache-table (make-hash-table :test 'equal))
          (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
          (signature-count 0)
@@ -7281,29 +7527,26 @@
           (symbol-function 'ebox--render-cache-node-signature)))
     (cl-letf (((symbol-function 'ebox--render-cache-node-signature)
                (lambda (&rest args)
-                 (when (eq (car args) node)
+                 (when (eq (car args) (ebox-test-root node))
                    (cl-incf signature-count))
                  (apply original-signature args))))
-      (should (ebox--render-flex-window-lines node 4)))
+      (should (ebox-test--call-input-node
+               #'ebox--render-flex-window-lines node 4)))
     (should (<= signature-count 2))))
 
 (ert-deftest ebox-flex-window-prefix-extension-reuses-wrapper-lines ()
   "Extending a flex prefix should not rerender prior wrapper lines."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :id "flex-prefix-wrapper" :width (240)
-                  :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  :padding (0 (8))
-                  :border-right "#D97757"
-                  :border-bottom "#D97757"
-                  :border-left "#D97757"
-                  :bgcolor "#FFF8F2"
-                  ,@(cl-loop for idx below 8
-                             collect
-                             `(box :content ,(format "extend %02d" idx)
-                                   :width (100) :height 2)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :id "flex-prefix-wrapper" :width '(240) :flex-flow
+	      '(row wrap) :row-gap 1 :column-gap 0 :padding '(0 (8))
+	      :border-right "#D97757" :border-bottom "#D97757"
+	      :border-left "#D97757" :bgcolor "#FFF8F2")
+	(cl-loop for idx below 8 collect
+		 (ebox-test-box (ebox-test-text (format "extend %02d" idx))
+				:width '(100) :height 2)))))
          (full-lines (mapcar #'substring-no-properties
                              (ebox-string-lines (ebox-render node))))
          (ebox--render-cache-table (make-hash-table :test 'equal))
@@ -7315,9 +7558,11 @@
                               "flex-prefix-wrapper")
                    (cl-incf generic-wrapper-render-count))
                  (funcall original-render-box box))))
-      (should (ebox--render-flex-window-lines node 4))
+      (should (ebox-test--call-input-node
+               #'ebox--render-flex-window-lines node 4))
       (should (= generic-wrapper-render-count 0))
-      (let ((window (ebox--render-flex-window-lines node 8)))
+      (let ((window (ebox-test--call-input-node
+                     #'ebox--render-flex-window-lines node 8)))
         (should window)
         (should (= generic-wrapper-render-count 0))
         (should (equal (seq-take full-lines 8)
@@ -7328,18 +7573,15 @@
   "Extending a flex prefix should not rejoin the whole cached prefix."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :width (240) :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  :padding (0 (8))
-                  :border-right "#D97757"
-                  :border-bottom "#D97757"
-                  :border-left "#D97757"
-                  :bgcolor "#FFF8F2"
-                  ,@(cl-loop for idx below 16
-                             collect
-                             `(box :content ,(format "piece %02d" idx)
-                                   :width (100) :height 2)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :width '(240) :flex-flow '(row wrap) :row-gap 1
+	      :column-gap 0 :padding '(0 (8)) :border-right "#D97757"
+	      :border-bottom "#D97757" :border-left "#D97757" :bgcolor
+	      "#FFF8F2")
+	(cl-loop for idx below 16 collect
+		 (ebox-test-box (ebox-test-text (format "piece %02d" idx))
+				:width '(100) :height 2)))))
          (ebox--render-cache-table (make-hash-table :test 'equal))
          join-piece-counts
          (original-join-pieces
@@ -7348,9 +7590,11 @@
                (lambda (pieces)
                  (push (length pieces) join-piece-counts)
                  (funcall original-join-pieces pieces))))
-      (should (ebox--render-flex-window-lines node 4))
+      (should (ebox-test--call-input-node
+               #'ebox--render-flex-window-lines node 4))
       (setq join-piece-counts nil)
-      (should (ebox--render-flex-window-lines node 8)))
+      (should (ebox-test--call-input-node
+               #'ebox--render-flex-window-lines node 8)))
     (should join-piece-counts)
     (should-not (cl-some (lambda (count) (> count 4))
                          join-piece-counts))))
@@ -7359,20 +7603,16 @@
   "A complete flex source should not full-render bottom chrome before LIMIT."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :id "flex-complete-prefix" :width (240)
-                  :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  :padding (0 (8) 2 (8))
-                  :margin-bottom 2
-                  :border-right "#D97757"
-                  :border-bottom "#D97757"
-                  :border-left "#D97757"
-                  :bgcolor "#FFF8F2"
-                  ,@(cl-loop for idx below 2
-                             collect
-                             `(box :content ,(format "complete %02d" idx)
-                                   :width (100) :height 8)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :id "flex-complete-prefix" :width '(240) :flex-flow
+	      '(row wrap) :row-gap 1 :column-gap 0 :padding
+	      '(0 (8) 2 (8)) :margin-bottom 2 :border-right "#D97757"
+	      :border-bottom "#D97757" :border-left "#D97757" :bgcolor
+	      "#FFF8F2")
+	(cl-loop for idx below 2 collect
+		 (ebox-test-box (ebox-test-text (format "complete %02d" idx))
+				:width '(100) :height 8)))))
          (limit 4)
          (full-lines (ebox-string-lines (ebox-render node)))
          (complete-wrapper-count 0)
@@ -7384,7 +7624,8 @@
                    (cl-incf complete-wrapper-count))
                  (funcall original-render-box-lines
                           node content complete limit))))
-      (let ((window (ebox--render-flex-window-lines node limit)))
+      (let ((window (ebox-test--call-input-node
+                     #'ebox--render-flex-window-lines node limit)))
         (should window)
         (should-not (plist-get window :complete))
         (should (= complete-wrapper-count 0))
@@ -7406,33 +7647,31 @@
   "Completing a cached flex prefix should append bottom border without full render."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :id "flex-complete-border" :width (240)
-                  :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  :padding (0 (8))
-                  :border-right "#D97757"
-                  :border-bottom "#D97757"
-                  :border-left "#D97757"
-                  :bgcolor "#FFF8F2"
-                  ,@(cl-loop for idx below 4
-                             collect
-                             `(box :content ,(format "border %02d" idx)
-                                   :width (100) :height 2)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :id "flex-complete-border" :width '(240) :flex-flow
+	      '(row wrap) :row-gap 1 :column-gap 0 :padding '(0 (8))
+	      :border-right "#D97757" :border-bottom "#D97757"
+	      :border-left "#D97757" :bgcolor "#FFF8F2")
+	(cl-loop for idx below 4 collect
+		 (ebox-test-box (ebox-test-text (format "border %02d" idx))
+				:width '(100) :height 2)))))
          (ebox--render-cache-table (make-hash-table :test 'equal))
          (full-lines (mapcar #'substring-no-properties
                              (ebox-string-lines (ebox-render node))))
          (complete-wrapper-count 0)
          (original-render-box-lines
           (symbol-function 'ebox--flex-window-render-box-lines)))
-    (should (ebox--render-flex-window-lines node 4))
+    (should (ebox-test--call-input-node
+             #'ebox--render-flex-window-lines node 4))
     (cl-letf (((symbol-function 'ebox--flex-window-render-box-lines)
                (lambda (node content complete limit)
                  (when complete
                    (cl-incf complete-wrapper-count))
                  (funcall original-render-box-lines
                           node content complete limit))))
-      (let ((window (ebox--render-flex-window-lines node 8)))
+      (let ((window (ebox-test--call-input-node
+                     #'ebox--render-flex-window-lines node 8)))
         (should window)
         (should (plist-get window :complete))
         (should (= complete-wrapper-count 0))
@@ -7444,22 +7683,22 @@
   "A failed flex completion should not publish half-appended cache lists."
   (ebox-test--reset-runtime-state)
   (let* ((node
-          (ebox-test-build
-           `(flex :id "flex-atomic-prefix" :width (240)
-                  :flex-flow (row wrap)
-                  :row-gap 1 :column-gap 0
-                  :padding (0 (8))
-                  :border-right "#D97757"
-                  :border-bottom "#D97757"
-                  :border-left "#D97757"
-                  ,@(cl-loop for idx below 4
-                             collect
-                             `(box :content ,(format "atomic %02d" idx)
-                                   :width (100) :height 2)))))
+          (apply #'ebox-test-flex
+       (append
+	(list :id "flex-atomic-prefix" :width '(240) :flex-flow
+	      '(row wrap) :row-gap 1 :column-gap 0 :padding '(0 (8))
+	      :border-right "#D97757" :border-bottom "#D97757"
+	      :border-left "#D97757")
+	(cl-loop for idx below 4 collect
+		 (ebox-test-box (ebox-test-text (format "atomic %02d" idx))
+				:width '(100) :height 2)))))
          (ebox--render-cache-table (make-hash-table :test 'equal))
-         (context (ebox--flex-window-cache-context node)))
-    (should (ebox--render-flex-window-lines node 4))
-    (let* ((before (ebox--flex-window-prefix-cache-lookup node context))
+         (context (ebox-test--call-input-node
+                   #'ebox--flex-window-cache-context node)))
+    (should (ebox-test--call-input-node
+             #'ebox--render-flex-window-lines node 4))
+    (let* ((before (ebox-test--call-input-node
+                    #'ebox--flex-window-prefix-cache-lookup node context))
            (before-lines (plist-get before :lines))
            (before-content-lines (plist-get before :content-lines))
            (before-line-count (plist-get before :line-count))
@@ -7467,8 +7706,11 @@
       (cl-letf (((symbol-function 'ebox--flex-window-complete-tail-line)
                  (lambda (&rest _)
                    (error "injected flex completion failure"))))
-        (should-error (ebox--render-flex-window-lines node 8)))
-      (let ((after (ebox--flex-window-prefix-cache-lookup node context)))
+        (should-error
+         (ebox-test--call-input-node
+          #'ebox--render-flex-window-lines node 8)))
+      (let ((after (ebox-test--call-input-node
+                    #'ebox--flex-window-prefix-cache-lookup node context)))
         (should (eq before-lines (plist-get after :lines)))
         (should (eq before-content-lines
                     (plist-get after :content-lines)))
@@ -7478,7 +7720,8 @@
                    (length (plist-get after :lines))))
         (should (= (plist-get after :content-line-count)
                    (length (plist-get after :content-lines)))))
-      (should (plist-get (ebox--render-flex-window-lines node 8)
+      (should (plist-get (ebox-test--call-input-node
+                          #'ebox--render-flex-window-lines node 8)
                          :complete)))))
 
 (ert-deftest ebox-stack-window-completion-reconciles-declared-prefix-tail ()
@@ -7565,24 +7808,28 @@
   (should
    (= 1
       (ebox--flex-window-completion-prefix-tail-rewrite-count
-       (list :box (ebox-test-box :border-bottom-p t
-                               :padding-bottom 0)))))
+       (list :box (ebox-test-root
+                   (ebox-test-box :border-bottom-p t
+                                  :padding-bottom 0))))))
   (should
    (= 1
       (ebox--flex-window-completion-prefix-tail-rewrite-count
-       (list :box (ebox-test-box :border-bottom-p t
-                               :padding-bottom 0
-                               :margin-bottom 2)))))
+       (list :box (ebox-test-root
+                   (ebox-test-box :border-bottom-p t
+                                  :padding-bottom 0
+                                  :margin-bottom 2))))))
   (should
    (= 0
       (ebox--flex-window-completion-prefix-tail-rewrite-count
-       (list :box (ebox-test-box :border-bottom-p t
-                               :padding-bottom 2)))))
+       (list :box (ebox-test-root
+                   (ebox-test-box :border-bottom-p t
+                                  :padding-bottom 2))))))
   (should
    (= 0
       (ebox--flex-window-completion-prefix-tail-rewrite-count
-       (list :box (ebox-test-box :border-bottom-p nil
-                               :padding-bottom 0))))))
+       (list :box (ebox-test-root
+                   (ebox-test-box :border-bottom-p nil
+                                  :padding-bottom 0)))))))
 
 (ert-deftest ebox-flex-window-cache-rejects-short-incomplete-exact-hit ()
   "An underfilled exact-limit cache must resume from its prefix seed."
@@ -7607,8 +7854,9 @@
 (ert-deftest ebox-byte-compiled-scroll-window-binds-wrapper-viewport ()
   "Compiled lazy rendering must dynamically bind the wrapper content width."
   (ebox-test--reset-runtime-state)
-  (let* ((wrapper (ebox-test-box :content "" :width '(278) :wrap-mode nil))
-         (source (list :stack :test-stack :wrapper wrapper))
+  (let* ((wrapper (ebox-test-box (ebox-test-text "") :width '(278) :wrap-mode 'none))
+         (source (list :stack :test-stack
+                       :wrapper (ebox-test-root wrapper)))
          observed-viewport)
     (cl-letf (((symbol-function 'ebox--render-stack-window-lines)
                (lambda (&rest _args)
@@ -7622,8 +7870,9 @@
 (ert-deftest ebox-scroll-window-wrapper-applies-declared-prefix-rewrite ()
   "Wrapper prefix reuse should rerender only a declared changed range."
   (ebox-test--reset-runtime-state)
-  (let* ((wrapper (ebox-test-box :content "" :width 20 :wrap-mode nil))
-         (source (list :stack :test-stack :wrapper wrapper))
+  (let* ((wrapper (ebox-test-box (ebox-test-text "") :width 20 :wrap-mode 'none))
+         (source (list :stack :test-stack
+                       :wrapper (ebox-test-root wrapper)))
          (plain-tail "tail")
          (complete-tail
           (ebox--propertize-underline "tail" "blue"))
@@ -7687,12 +7936,13 @@
 (ert-deftest ebox-scroll-window-wrapper-maps-top-chrome-rewrite-ranges ()
   "Wrapper reuse should include top chrome only when source line zero changes."
   (ebox-test--reset-runtime-state)
-  (let ((wrapper (ebox-test-box :content "" :width 20 :wrap-mode nil
+  (let ((wrapper (ebox-test-box (ebox-test-text "") :width 20 :wrap-mode 'none
                               :margin-top 1 :padding-top 2)))
     (cl-labels
         ((mapped-range (source-range)
            (let* ((source
-                   (list :stack :test-stack :wrapper wrapper))
+                   (list :stack :test-stack
+                         :wrapper (ebox-test-root wrapper)))
                   (source-lines (list "head" "body"))
                   (calls 0))
              (cl-letf
@@ -7730,14 +7980,15 @@
 (ert-deftest ebox-scroll-prefix-renderer-applies-equal-length-prefix-rewrite ()
   "Equal-length completion should rerender only its declared changed line."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "" :width 20 :height 1
-                           :wrap-mode nil))
+  (let* ((box (ebox-test-box (ebox-test-text "") :width 20 :height 1
+                           :wrap-mode 'none))
          (plain-lines '("head" "body" "tail"))
          (source-lines (copy-sequence plain-lines))
          (complete-tail
           (ebox--propertize-underline "tail" "blue"))
          (renderer
-          (ebox--scroll-window-prefix-renderer box :test-source 20 4))
+          (ebox--scroll-window-prefix-renderer
+           (ebox-test-root box) :test-source 20 4))
          (rendered-line-count 0)
          (original-renderer
           (symbol-function 'ebox--scroll-rendered-content-lines)))
@@ -7789,11 +8040,12 @@
 (ert-deftest ebox-scroll-prefix-projects-wrapper-top-chrome-delta ()
   "A published prefix should reuse a source cache with hidden top chrome."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "" :width 20 :height 1
-                           :wrap-mode nil))
-         (wrapper (ebox-test-box :content "" :width 20 :wrap-mode nil
+  (let* ((box (ebox-test-box (ebox-test-text "") :width 20 :height 1
+                           :wrap-mode 'none))
+         (wrapper (ebox-test-box (ebox-test-text "") :width 20 :wrap-mode 'none
                                :padding-top 2 :margin-top 1))
-         (source (list :stack :test-stack :wrapper wrapper))
+         (source (list :stack :test-stack
+                       :wrapper (ebox-test-root wrapper)))
          stack-lines
          stack-tail
          (stack-count 0)
@@ -7802,7 +8054,8 @@
          (original-renderer
           (symbol-function 'ebox--scroll-rendered-content-lines))
          (renderer
-          (ebox--scroll-window-prefix-renderer box source 20 4)))
+          (ebox--scroll-window-prefix-renderer
+           (ebox-test-root box) source 20 4)))
     (cl-letf (((symbol-function 'ebox--render-stack-window-lines)
                (lambda (_stack limit &optional _cache)
                  (cl-incf calls)
@@ -7857,8 +8110,8 @@
 (ert-deftest ebox-scroll-prefix-exact-extension-scans-only-appended-lines ()
   "A long exact prefix should retain its cons cells and scan only its delta."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "" :width 20 :height 1
-                           :wrap-mode nil))
+  (let* ((box (ebox-test-box (ebox-test-text "") :width 20 :height 1
+                           :wrap-mode 'none))
          (source-lines
           (cl-loop for idx below 1000 collect (format "line-%d" idx)))
          (source-tail (last source-lines))
@@ -7990,8 +8243,8 @@
 (ert-deftest ebox-scroll-prefix-renderer-failure-keeps-published-pair-atomic ()
   "A failed rendered delta should preserve both published prefix lists."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "" :width 20 :height 1
-                           :wrap-mode nil))
+  (let* ((box (ebox-test-box (ebox-test-text "") :width 20 :height 1
+                           :wrap-mode 'none))
          (source-lines (list "line-0" "line-1" "line-2"))
          (source-tail (last source-lines))
          (calls 0)
@@ -8002,7 +8255,7 @@
          (ebox--render-cache-table (make-hash-table :test 'equal))
          (renderer
           (ebox--scroll-window-prefix-renderer
-           box :test-source 20 4)))
+           (ebox-test-root box) :test-source 20 4)))
     (cl-letf
         (((symbol-function 'ebox--render-scroll-window-source)
           (lambda (_source _limit &optional cache)
@@ -8106,11 +8359,11 @@
   "A prewarm-only prefix slice should yield once, then publish exact content."
   (ebox-test--reset-runtime-state)
   (let* ((node (list :ebox-type 'test-yielding-prewarm))
-         (box (ebox-test-box :content "" :width 20 :height 1
-                           :wrap-mode nil :overflow 'scroll))
+         (box (ebox-test-box (ebox-test-text "") :width 20 :height 1
+                           :wrap-mode 'none :overflow 'scroll))
          (renderer
           (ebox--scroll-window-prefix-renderer
-           box (list :stack node) 20 1))
+           (ebox-test-root box) (list :stack node) 20 1))
          (prewarm-count 0)
          (render-count 0))
     (unwind-protect
@@ -8154,15 +8407,15 @@
   "Incremental lazy scroll renders should cover one smooth wheel drain."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "budget-row-%02d" idx)
-                               :content ,(format "budget row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id
+				       (format "budget-row-%02d" idx)
+				       (ebox-test-text (format "budget row %02d" idx))
+				       :height 1))))))
          (limits nil)
          (original-render-source
           (symbol-function 'ebox--render-scroll-window-source)))
@@ -8184,15 +8437,14 @@
   "Small lazy scroll steps should not materialize the whole source."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id
          (hidden-render-count 0)
@@ -8202,7 +8454,10 @@
               (ebox-viewport-height 2))
           (cl-letf (((symbol-function 'ebox--render-box)
                      (lambda (box)
-                       (when (equal (ebox-tree-node-id box) "row-30")
+                       (when (equal
+                              (ebox-tree-node-id
+                               (ebox-test-source-index layout) box)
+                              "row-30")
                          (cl-incf hidden-render-count))
                        (funcall original-render-box box))))
             (setq buffer
@@ -8231,15 +8486,15 @@
   "Large lazy scroll misses should schedule prefetch without inline render."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "cache-row-%02d" idx)
-                               :content ,(format "cache row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id
+				       (format "cache-row-%02d" idx)
+				       (ebox-test-text (format "cache row %02d" idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          (prefix-count 0)
@@ -8292,15 +8547,17 @@
   "Smooth scroll cache misses should keep moving with bounded prefix render."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "smooth-cache-row-%02d" idx)
-                               :content ,(format "smooth cache row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id
+				       (format "smooth-cache-row-%02d"
+					       idx)
+				       (ebox-test-text (format "smooth cache row %02d"
+					       idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          (prefix-count 0)
@@ -8353,15 +8610,17 @@
   "Smooth scroll cache misses should extend a bounded prefix without stalling."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "smooth-inline-row-%02d" idx)
-                               :content ,(format "smooth inline row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id
+				       (format
+					"smooth-inline-row-%02d" idx)
+				       (ebox-test-text (format
+					"smooth inline row %02d" idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          (prefix-count 0)
@@ -8414,15 +8673,17 @@
   "Large smooth pending input should not render a large lazy prefix at once."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 200
-                         collect
-                         `(box :id ,(format "smooth-large-row-%03d" idx)
-                               :content ,(format "smooth large row %03d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 200 collect
+			(ebox-test-box :id
+				       (format "smooth-large-row-%03d"
+					       idx)
+				       (ebox-test-text (format "smooth large row %03d"
+					       idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          (prefix-count 0)
@@ -8470,15 +8731,17 @@
   "Idle prefetch should not compete with an active smooth scroll timer."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "smooth-defer-row-%02d" idx)
-                               :content ,(format "smooth defer row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id
+				       (format "smooth-defer-row-%02d"
+					       idx)
+				       (ebox-test-text (format "smooth defer row %02d"
+					       idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          (prefix-count 0))
@@ -8523,15 +8786,17 @@
   "Smooth scroll should not pause at a lazy prefix boundary."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "smooth-resume-row-%02d" idx)
-                               :content ,(format "smooth resume row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id
+				       (format
+					"smooth-resume-row-%02d" idx)
+				       (ebox-test-text (format
+					"smooth resume row %02d" idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          (prefix-count 0))
@@ -8578,15 +8843,14 @@
   "Repeated lazy scroll steps should keep TP mounts valid."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id
          (hidden-render-count 0)
@@ -8597,7 +8861,10 @@
               (ebox-viewport-height 2))
           (cl-letf (((symbol-function 'ebox--render-box)
                      (lambda (box)
-                       (when (equal (ebox-tree-node-id box) "row-30")
+                       (when (equal
+                              (ebox-tree-node-id
+                               (ebox-test-source-index layout) box)
+                              "row-30")
                          (cl-incf hidden-render-count))
                        (funcall original-render-box box))))
             (setq buffer
@@ -8636,15 +8903,14 @@
   "Repeated lazy scroll steps should reuse a prefetched lazy prefix."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id
          (prefix-count 0))
@@ -8682,15 +8948,14 @@
   "Idle prefetch should fill lazy scroll lines before wheel ticks need them."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id
          (prefix-count 0))
@@ -8731,14 +8996,13 @@
   "Lazy prefix slices should retain the initial render's display cache."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :content ,(format "repeated row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box (ebox-test-text (format "repeated row %02d" idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          caches)
@@ -8958,15 +9222,14 @@
   "Successful lazy scroll steps should schedule the next generic prefetch."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id)
     (unwind-protect
@@ -8990,15 +9253,14 @@
   "Smooth scroll should prefetch only after the active animation stops."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id)
     (unwind-protect
@@ -9056,17 +9318,21 @@
 
 (defun ebox-test--complete-lazy-scroll-batch-layout ()
   "Return a complete five-row lazy scroll cache fixture."
-  (ebox-test-build
-   '(box :id "root" :width (viewport) :height (viewport-height)
-         :overflow scroll
-     (column :width (viewport)
-      (box :content "row 00" :height 1)
-      (box :id "target" :content "target row" :height 1
-           :color "#111111")
-      (box :id "second-target" :content "second target row" :height 1
-           :color "#111111")
-      (box :content "row 03" :height 1)
-      (box :content "row 04" :height 1)))))
+  (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (ebox-test-column :width '(viewport)
+				 (ebox-test-box (ebox-test-text "row 00")
+						:height 1)
+				 (ebox-test-box :id "target" (ebox-test-text "target row") :height 1
+						:color "#111111")
+				 (ebox-test-box :id "second-target"
+						(ebox-test-text "second target row")
+						:height 1 :color
+						"#111111")
+				 (ebox-test-box (ebox-test-text "row 03")
+						:height 1)
+				 (ebox-test-box (ebox-test-text "row 04")
+						:height 1))))
 
 (defun ebox-test--text-has-foreground-p (string text color)
   "Return non-nil when TEXT in STRING has foreground COLOR."
@@ -9095,15 +9361,14 @@
   "Extending a lazy prefix should not replay producer caches from before an update."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 12
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 12 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (ebox-viewport-width 240)
          (ebox-viewport-height 2)
          (ebox-scroll-lazy-prefix-lookahead-lines 0)
@@ -9128,15 +9393,14 @@
   "Extending a lazy prefix should preserve committed content until batch flush."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 12
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 12 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (ebox-viewport-width 240)
          (ebox-viewport-height 2)
          (ebox-scroll-lazy-prefix-lookahead-lines 0)
@@ -9268,7 +9532,7 @@
 (ert-deftest ebox-explicit-batch-flush-retries-after-quit ()
   "A quit during a batch flush must keep the recorded changes retryable."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Batch retry" :color "black"))
+  (let* ((box (ebox-test-box (ebox-test-text "Batch retry") :color "black"))
          (id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (let ((buffer (current-buffer)))
@@ -9302,26 +9566,25 @@
   "Lazy prefix extension should not recompute node signatures each slice."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll)))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll))
          (source-node
-          (ebox-test-build
-           `(column :width (viewport)
-             (flex :id "signature-flex" :width (viewport)
-                   :flex-flow (row wrap)
-                   :row-gap 1 :column-gap (8)
-                   :padding (0 (12))
-                   :border-right "#D97757"
-                   :border-bottom "#D97757"
-                   :border-left "#D97757"
-                   ,@(cl-loop for idx below 24
-                              collect
-                              `(box :content ,(format "signature %02d" idx)
-                                    :width (100) :height 2))))))
-         (source (list :stack source-node))
+          (ebox-test-column :width '(viewport)
+		  (apply #'ebox-test-flex
+       (append
+	(list :id "signature-flex" :width '(viewport) :flex-flow
+	      '(row wrap) :row-gap 1 :column-gap '(8) :padding
+	      '(0 (12)) :border-right "#D97757" :border-bottom
+	      "#D97757" :border-left "#D97757")
+	(cl-loop for idx below 24 collect
+		 (ebox-test-box (ebox-test-text (format "signature %02d" idx))
+				:width '(100) :height 2))))))
+         (combined-input (ebox-test-forest-input layout source-node))
+         (ebox--render-source-index
+          (ebox-test-source-index combined-input))
+         (source (list :stack (ebox-test-root source-node)))
          (renderer (ebox--scroll-window-prefix-renderer
-                    layout source 240 2 nil nil))
+                    (ebox-test-root layout) source 240 2 nil nil))
          signature-caches
          (original-node-signature
           (symbol-function 'ebox--render-cache-node-signature)))
@@ -9349,15 +9612,14 @@
   "The first smooth wheel input should only replace visible lines."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id
          (prefix-count 0))
@@ -9402,15 +9664,15 @@
   "Post-resize lazy scroll should not extend prefixes inside smooth ticks."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "resize-row-%02d" idx)
-                               :content ,(format "resize row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id
+				       (format "resize-row-%02d" idx)
+				       (ebox-test-text (format "resize row %02d" idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          (prefix-count 0))
@@ -9457,15 +9719,15 @@
   "Viewport rerender should warm lazy scroll prefixes before fast scrolling."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 80
-                         collect
-                         `(box :id ,(format "urgent-row-%02d" idx)
-                               :content ,(format "urgent row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 80 collect
+			(ebox-test-box :id
+				       (format "urgent-row-%02d" idx)
+				       (ebox-test-text (format "urgent row %02d" idx))
+				       :height 1))))))
          (buffer nil)
          root-id
          delays
@@ -9495,14 +9757,13 @@
   "Smooth scrolling should keep render GC settings until the animation stops."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id
          (old-threshold gc-cons-threshold)
@@ -9553,12 +9814,11 @@
   "A parent paint-patch must not clobber a child's own declared paint."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id parent :width (120) :color "black"
-            (column :width (120)
-              (box :id child :content "Child" :width (120)
-                   :color "blue")
-              (box :id plain :content "Plain" :width (120)))))))
+         (ebox-test-box :id 'parent :width '(120) :color "black"
+	       (ebox-test-column :width '(120)
+				 (ebox-test-box :id 'child (ebox-test-text "Child") :width '(120)
+						:color "blue")
+				 (ebox-test-box :id 'plain (ebox-test-text "Plain") :width '(120))))))
     (ebox-test--with-rendered-buffer layout
       (let* ((buffer (current-buffer))
              (parent-id (ebox-test--selector-region-id buffer "#parent")))
@@ -9582,14 +9842,13 @@
   "Intrinsic measurement must not reset live scroll offsets or state."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 20
-                         collect
-                         `(box :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 20 collect
+			(ebox-test-box (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id)
     (unwind-protect
@@ -9611,7 +9870,10 @@
             ;; flag bound; the measurement render must be side-effect
             ;; free for the published runtime.
             (let ((ebox--intrinsic-layout-measurement t))
-              (ebox-render box))
+              (ebox--render-node
+               box
+               (plist-get (ebox--buffer-render-state buffer)
+                          :source-index)))
             (should (equal (ebox-get box :scroll-offset) 5)))
           (let ((state (ebox--scroll-get-state root-id)))
             (should state)
@@ -9623,9 +9885,7 @@
   "A quit during viewport reflow must not wedge later same-size reflows."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :width (viewport)
-                 :content "viewport reflow retry")))
+          (ebox-test-box :id "root" :width '(viewport) (ebox-test-text "viewport reflow retry")))
          (buffer nil))
     (unwind-protect
         (let ((ebox-viewport-width 240))
@@ -9657,14 +9917,13 @@
   "Coalesced wheel events must not leak the deferred GC lease depth."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id
          (old-threshold gc-cons-threshold)
@@ -9707,15 +9966,14 @@
   "Smooth wheel clamp should extend lazy scroll prefixes without full render."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id
          (hidden-render-count 0)
@@ -9726,7 +9984,10 @@
               (ebox-wheel-scroll-step 16))
           (cl-letf (((symbol-function 'ebox--render-box)
                      (lambda (box)
-                       (when (equal (ebox-tree-node-id box) "row-30")
+                       (when (equal
+                              (ebox-tree-node-id
+                               (ebox-test-source-index layout) box)
+                              "row-30")
                          (cl-incf hidden-render-count))
                        (funcall original-render-box box))))
             (setq buffer
@@ -9750,15 +10011,14 @@
   "Hidden updates inside lazy scroll windows should stay deferred."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 32
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 32 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          (buffer nil)
          root-id target-id next-target-id
          (materialize-count 0)
@@ -9841,14 +10101,13 @@
   "A clean offscreen prefix extension should not stall the live window."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for index below 40
-                         collect
-                         `(box :content ,(format "row %02d" index)
-                               :width (300) :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for index below 40 collect
+			(ebox-test-box (ebox-test-text (format "row %02d" index))
+				       :width '(300) :height 1))))))
          root-id
          (ebox-viewport-width 300)
          (ebox-viewport-height 2)
@@ -9874,14 +10133,13 @@
   "A visibly changed prefix should publish atomically without offset motion."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-              (column :width (viewport)
-                ,@(cl-loop for index below 40
-                           collect
-                           `(box :content ,(format "row %02d" index)
-                                 :width (300) :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for index below 40 collect
+			(ebox-test-box (ebox-test-text (format "row %02d" index))
+				       :width '(300) :height 1))))))
          root-id
          (ebox-viewport-width 300)
          (ebox-viewport-height 2)
@@ -9921,20 +10179,23 @@
   "A visible slot miss should publish rebuilt lazy lines before returning."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              (flex :width (300) :height 5 :padding (0 (10))
-                    :border "#6F6A95" :justify-content center
-                    :align-items center
-                (box :id "target" :content "width target\nexpands"
-                     :width (190) :height 3 :padding (0 (10))
-                     :border "#9CA3AF" :text-align center))
-              ,@(cl-loop for index below 40
-                         collect
-                         `(box :content ,(format "row %02d" index)
-                               :width (300) :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append
+	(list :width '(viewport)
+	      (ebox-test-flex :width '(300) :height 5 :padding
+			      '(0 (10)) :border "#6F6A95"
+			      :justify-content 'center :align-items
+			      'center
+			      (ebox-test-box :id "target" (ebox-test-text "width target\nexpands")
+					     :width '(190) :height 3
+					     :padding '(0 (10))
+					     :border "#9CA3AF"
+					     :text-align 'center)))
+	(cl-loop for index below 40 collect
+		 (ebox-test-box (ebox-test-text (format "row %02d" index))
+				:width '(300) :height 1))))))
          root-id target-id
          (ebox-viewport-width 300)
          (ebox-viewport-height 5)
@@ -9980,15 +10241,14 @@
   "Hidden updates should patch cached lazy prefix lines before deferring."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          buffer
          root-id)
     (unwind-protect
@@ -10027,15 +10287,14 @@
   "Deferred hidden updates should be visible when lazy prefix reaches them."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 40
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 40 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          buffer
          root-id
          (materialize-count 0))
@@ -10075,9 +10334,9 @@
 (ert-deftest ebox-lazy-scroll-dirty-prefix-rebinds-signature-cache ()
   "Dirty lazy prefixes should rebind the render signature cache before rendering."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "" :width 10))
+  (let* ((box (ebox-test-box (ebox-test-text "") :width 10))
          (renderer (ebox--scroll-window-prefix-renderer
-                    box :test-source 120 4))
+                    (ebox-test-root box) :test-source 120 4))
          first-cache
          second-cache
          (render-count 0))
@@ -10110,16 +10369,14 @@
   "Visible content plus paint updates should patch scroll lines directly."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 8
-                         collect
-                         `(box :id ,(format "metric-%02d" idx)
-                               :content "待运行"
-                               :width (120)
-                               :height 2))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 8 collect
+			(ebox-test-box :id (format "metric-%02d" idx)
+				       (ebox-test-text "待运行") :width '(120)
+				       :height 2))))))
          buffer
          root-id)
     (unwind-protect
@@ -10155,16 +10412,14 @@
   "Post-patch scroll line sync should retain TP-owned viewport ranges."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 8
-                         collect
-                         `(box :id ,(format "metric-%02d" idx)
-                               :content "待运行"
-                               :width (120)
-                               :height 2))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 8 collect
+			(ebox-test-box :id (format "metric-%02d" idx)
+				       (ebox-test-text "待运行") :width '(120)
+				       :height 2))))))
          buffer
          root-id)
     (unwind-protect
@@ -10195,15 +10450,14 @@
   "Paint updates and later scrolling should retain TP-owned ranges."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 24
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 24 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :height
+				       1))))))
          buffer
          root-id)
     (unwind-protect
@@ -10242,9 +10496,8 @@
   "A scroll-free root reflow should not inspect scroll containment."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(column :width (viewport)
-              (box :content "resize" :width (viewport)))))
+          (ebox-test-column :width '(viewport)
+		  (ebox-test-box (ebox-test-text "resize") :width '(viewport))))
          buffer
          (containment-count 0)
          (original-containment
@@ -10276,16 +10529,14 @@
   "Hidden geometry changes in lazy scroll windows should not rerender roots."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 32
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :width (120)
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 32 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :width
+				       '(120) :height 1))))))
          (buffer nil)
          target-id)
     (unwind-protect
@@ -10309,16 +10560,14 @@
   "Paint-only updates should not pay lazy scroll geometry deferral costs."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (column :width (viewport)
-              ,@(cl-loop for idx below 32
-                         collect
-                         `(box :id ,(format "row-%02d" idx)
-                               :content ,(format "row %02d" idx)
-                               :color "#111111"
-                               :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append (list :width '(viewport))
+	       (cl-loop for idx below 32 collect
+			(ebox-test-box :id (format "row-%02d" idx)
+				       (ebox-test-text (format "row %02d" idx)) :color
+				       "#111111" :height 1))))))
          (buffer nil)
          target-id)
     (unwind-protect
@@ -10393,9 +10642,9 @@
   "Predictive warming should start from the first valid resize velocity."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :width (viewport) :height 2
-             (box :content "steady" :width (viewport) :height 1))))
+          (ebox-test-box :id "root" :width '(viewport) :height 2
+	       (ebox-test-box (ebox-test-text "steady") :width '(viewport)
+			      :height 1)))
          buffer
          scheduled-delay
          scheduled-repeat
@@ -10438,15 +10687,14 @@
   "Predicted renders should publish only persistent render-cache entries."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-             (flex :width (viewport) :gap 1
-               ,@(cl-loop for index below 8
-                          collect
-                          `(box :id ,(format "card-%d" index)
-                                :content ,(format "card %d" index)
-                                :width 72 :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-flex
+       (append (list :width '(viewport) :gap 1)
+	       (cl-loop for index below 8 collect
+			(ebox-test-box :id (format "card-%d" index)
+				       (ebox-test-text (format "card %d" index)) :width
+				       72 :height 1))))))
          buffer)
     (unwind-protect
         (let ((ebox-viewport-width 240)
@@ -10496,8 +10744,7 @@
   "A stale predicted render should exit before touching render caches."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :width (viewport) :content "stale")))
+          (ebox-test-box :id "root" :width '(viewport) (ebox-test-text "stale")))
          buffer
          (render-count 0)
          (original-render (symbol-function 'ebox-render)))
@@ -10528,14 +10775,12 @@
   "Idle prewarm should prepare shared update state without materializing scrolls."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height 2 :overflow scroll
-                 (column
-                  ,@(cl-loop for idx below 40
-                             collect
-                             `(box :id ,(format "row-%02d" idx)
-                                   :content ,(format "row %02d" idx)
-                                   :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height 2 :overflow
+	       'scroll
+	       (apply #'ebox-test-column
+       (append
+	(cl-loop for idx below 40 collect
+		 (ebox-test-box :id (format "row-%02d" idx) (ebox-test-text (format "row %02d" idx)) :height 1))))))
          (buffer nil)
          root-id
          expected-viewport-ids
@@ -10593,12 +10838,11 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-visible-prewarm*")
-                 (ebox-test-build
-                  '(box :id "root" :height 2 :overflow scroll
-                        (column
-                         (box :content "one" :height 1)
-                         (box :content "two" :height 1)
-                         (box :content "three" :height 1))))))
+                 (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "one") :height 1)
+		(ebox-test-box (ebox-test-text "two") :height 1)
+		(ebox-test-box (ebox-test-text "three") :height 1)))))
           ;; Rendering happened before the buffer had a window, so the
           ;; original job is allowed to finish without native materializing.
           (ebox--runtime-prewarm-drain buffer)
@@ -10648,12 +10892,11 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-native-scroll-opt-in*")
-                 (ebox-test-build
-                  '(box :id "root" :height 2 :overflow scroll
-                        (column
-                         (box :content "one" :height 1)
-                         (box :content "two" :height 1)
-                         (box :content "three" :height 1))))))
+                 (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "one") :height 1)
+		(ebox-test-box (ebox-test-text "two") :height 1)
+		(ebox-test-box (ebox-test-text "three") :height 1)))))
           (let ((state (ebox--buffer-render-state buffer)))
             (cl-letf (((symbol-function
                         'ebox--native-buffer-scroll-root-region-id)
@@ -10683,13 +10926,12 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-native-scroll-viewport*")
-                 (ebox-test-build
-                  '(box :id "root" :width (viewport) :height 2
-                        :overflow scroll
-                        (column
-                         (box :content "one" :height 1)
-                         (box :content "two" :height 1)
-                         (box :content "three" :height 1))))))
+                 (ebox-test-box :id "root" :width '(viewport) :height 2 :overflow
+	       'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "one") :height 1)
+		(ebox-test-box (ebox-test-text "two") :height 1)
+		(ebox-test-box (ebox-test-text "three") :height 1)))))
           (let* ((state (ebox--buffer-render-state buffer))
                  (region-id (car (plist-get state :scroll-region-ids))))
             (cl-letf (((symbol-function 'get-buffer-window)
@@ -10706,12 +10948,12 @@ explicit visible-window handoff may admit its full-content publication."
   "Prewarm should index current scroll lines while lazy prefix work is active."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           '(box :id "root" :height 2 :overflow scroll
-                 (column
-                  (box :id "target" :content "target" :height 1)
-                  (box :id "row-1" :content "row 1" :height 1)
-                  (box :id "row-2" :content "row 2" :height 1)))))
+          (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id "target" (ebox-test-text "target") :height
+			       1)
+		(ebox-test-box :id "row-1" (ebox-test-text "row 1") :height 1)
+		(ebox-test-box :id "row-2" (ebox-test-text "row 2") :height 1))))
          (buffer nil)
          root-id)
     (unwind-protect
@@ -10745,11 +10987,10 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-prewarm-test*")
-                 (ebox-test-build
-                  '(box :id "root" :height 2 :overflow scroll
-                        (column
-                         (box :content "row 0" :height 1)
-                         (box :content "row 1" :height 1))))))
+                 (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "row 0") :height 1)
+		(ebox-test-box (ebox-test-text "row 1") :height 1)))))
           (setq root-id (ebox-test--selector-region-id buffer "#root"))
           (let* ((state (ebox-scroll-state root-id))
                  (job (gethash buffer ebox--runtime-prewarm-jobs)))
@@ -10787,11 +11028,10 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-prewarm-test*")
-                 (ebox-test-build
-                  '(box :id "root" :height 2 :overflow scroll
-                        (column
-                         (box :content "row 0" :height 1)
-                         (box :content "row 1" :height 1))))))
+                 (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "row 0") :height 1)
+		(ebox-test-box (ebox-test-text "row 1") :height 1)))))
           (setq root-id (ebox-test--selector-region-id buffer "#root"))
           (let ((state (ebox-scroll-state root-id)))
             (setq state (plist-put state :render-content-prefix t))
@@ -10874,12 +11114,11 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-prewarm-test*")
-                 (ebox-test-build
-                  '(box :height 2 :overflow scroll
-                        (column
-                         (box :content "row 0" :height 1)
-                         (box :content "row 1" :height 1)
-                         (box :content "row 2" :height 1))))))
+                 (ebox-test-box :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "row 0") :height 1)
+		(ebox-test-box (ebox-test-text "row 1") :height 1)
+		(ebox-test-box (ebox-test-text "row 2") :height 1)))))
           (cl-letf (((symbol-function 'current-idle-time)
                      (lambda () (seconds-to-time 0.4)))
                     ((symbol-function 'ebox--runtime-prewarm-schedule-timer)
@@ -10900,10 +11139,8 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-prewarm-test*")
-                 (ebox-test-build
-                  '(column
-                    (box :id "a" :content "A")
-                    (box :id "b" :content "B")))))
+                 (ebox-test-column (ebox-test-box :id "a" (ebox-test-text "A"))
+		  (ebox-test-box :id "b" (ebox-test-text "B")))))
           (should (gethash buffer ebox--runtime-prewarm-jobs))
           (ebox--bump-buffer-runtime-revision buffer)
           (should-not (ebox--runtime-prewarm-step buffer))
@@ -10921,10 +11158,8 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-prewarm-test*")
-                 (ebox-test-build
-                  '(column
-                    (box :id "target" :content "old")
-                    (box :id "sibling" :content "same")))))
+                 (ebox-test-column (ebox-test-box :id "target" (ebox-test-text "old"))
+		  (ebox-test-box :id "sibling" (ebox-test-text "same")))))
           (ebox--runtime-prewarm-drain buffer)
           (should-not (gethash buffer ebox--runtime-prewarm-jobs))
           (let ((target-id
@@ -10950,7 +11185,7 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-prewarm-test*")
-                 (ebox-test-build '(box :id "target" :content "old"))))
+                 (ebox-test-box :id "target" (ebox-test-text "old"))))
           (should (gethash buffer ebox--runtime-prewarm-jobs))
           (let ((target-id
                  (ebox-test--selector-region-id buffer "#target")))
@@ -10975,11 +11210,9 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-prewarm-test*")
-                 (ebox-test-build
-                  '(column
-                    (box :content "row 0")
-                    (box :content "row 1")
-                    (box :content "row 2")))))
+                 (ebox-test-column (ebox-test-box (ebox-test-text "row 0"))
+		  (ebox-test-box (ebox-test-text "row 1"))
+		  (ebox-test-box (ebox-test-text "row 2")))))
           (ebox--cancel-buffer-runtime-prewarm buffer)
           (let ((node-table (ebox--buffer-node-table buffer))
                 (original-maphash (symbol-function 'maphash)))
@@ -11015,15 +11248,14 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-prewarm-test*")
-                 (ebox-test-build
-                  '(box :width (210)
-                        (column
-                         (box :id "width-only" :width (viewport))
-                         (box :id "height-only"
-                              :height (viewport-height))
-                         (flex :id "flex-height"
-                               :min-height (- (viewport-height) 1)
-                               (box :content "Flex")))))))
+                 (ebox-test-box :width '(210)
+	       (ebox-test-column
+		(ebox-test-box :id "width-only" :width '(viewport))
+		(ebox-test-box :id "height-only" :height
+			       '(viewport-height))
+		(ebox-test-flex :id "flex-height" :min-height
+				'(- (viewport-height) 1)
+				(ebox-test-box (ebox-test-text "Flex")))))))
           (let* ((state (ebox--buffer-render-state buffer))
                  (root (plist-get state :root-node))
                  (expected-axes
@@ -11074,10 +11306,9 @@ explicit visible-window handoff may admit its full-content publication."
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-axis-proof*")
-                 (ebox-test-build
-                  '(column :width (viewport)
-                     (box :content "A" :height 1)
-                     (box :content "B" :height 1)))))
+                 (ebox-test-column :width '(viewport)
+		  (ebox-test-box (ebox-test-text "A") :height 1)
+		  (ebox-test-box (ebox-test-text "B") :height 1))))
           (let ((original-axes
                  (symbol-function 'ebox-surface--context-axes))
                 (original-validation
@@ -11119,13 +11350,12 @@ explicit visible-window handoff may admit its full-content publication."
   "Late cached-line slices should not restart traversal from the list head."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :height 2 :overflow scroll
-                 (column
-                  ,@(cl-loop for idx below 40
-                             collect
-                             `(box :content ,(format "row %02d" idx)
-                                   :height 1))))))
+          (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append
+	(cl-loop for idx below 40 collect
+		 (ebox-test-box (ebox-test-text (format "row %02d" idx))
+				:height 1))))))
          (buffer nil)
          (nth-count 0)
          (original-nth (symbol-function 'nth)))
@@ -11148,12 +11378,11 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-hidden-scroll-child-content-update-patches-scroll-state ()
   "Hidden scroll children should update cached scroll lines without rerendering."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 1 :overflow scroll
-                        (column
-                         (box :content "visible" :height 1)
-                         (box :id "target" :content "old" :height 1)
-                         (box :content "tail" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 1 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "visible") :height 1)
+		(ebox-test-box :id "target" (ebox-test-text "old") :height 1)
+		(ebox-test-box (ebox-test-text "tail") :height 1))))
          root-id target-id)
     (ebox-test--with-rendered-buffer layout
       (setq root-id (ebox-test--selector-region-id (current-buffer) "#root"))
@@ -11179,12 +11408,13 @@ explicit visible-window handoff may admit its full-content publication."
   "Lazy scroll children in the current visible range should patch immediately."
   (ebox-test--reset-runtime-state)
   (let* ((children (cl-loop for idx below 40
-                            collect `(box :id ,(format "row-%02d" idx)
-                                          :content ,(format "row %02d" idx)
-                                          :height 1)))
-         (layout (ebox-test-build
-                  `(box :id "root" :height 2 :overflow scroll
-                        (column ,@children))))
+                            collect
+                            (ebox-test-box
+                             :id (format "row-%02d" idx)
+                             (ebox-test-text (format "row %02d" idx))
+                             :height 1)))
+         (layout (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (apply #'ebox-test-column (append children))))
          root-id target-id)
     (ebox-test--with-rendered-buffer layout
       (setq root-id (ebox-test--selector-region-id (current-buffer) "#root"))
@@ -11209,18 +11439,21 @@ explicit visible-window handoff may admit its full-content publication."
   "An empty fixed box in a visible scene must not be mistaken for hidden."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-build
-           `(box :id "root" :width (viewport) :height (viewport-height)
-                 :overflow scroll
-              (column :width (viewport)
-                (flex :id "scene" :width (viewport) :height 4
-                      :align-items center :justify-content center
-                  (box :id "target" :content "SEED" :width (180) :height 3
-                       :overflow hidden :bgcolor "#DDEAE4"))
-                ,@(cl-loop for index below 40
-                           collect
-                           `(box :content ,(format "row %02d" index)
-                                 :height 1))))))
+          (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (apply #'ebox-test-column
+       (append
+	(list :width '(viewport)
+	      (ebox-test-flex :id "scene" :width '(viewport) :height 4
+			      :align-items 'center :justify-content
+			      'center
+			      (ebox-test-box :id "target" (ebox-test-text "SEED") :width '(180)
+					     :height 3 :overflow
+					     'hidden :bgcolor
+					     "#DDEAE4")))
+	(cl-loop for index below 40 collect
+		 (ebox-test-box (ebox-test-text (format "row %02d" index))
+				:height 1))))))
          (ebox-viewport-width 300)
          (ebox-viewport-height 4)
          (ebox-scroll-lazy-prefix-lookahead-lines 12)
@@ -11259,17 +11492,19 @@ explicit visible-window handoff may admit its full-content publication."
   "A sibling update must not materialize an unrelated lazy scroll state."
   (ebox-test--reset-runtime-state)
   (let* ((rows (cl-loop for index below 40
-                        collect `(box :id ,(format "row-%02d" index)
-                                      :content ,(format "row %02d" index)
-                                      :height 1)))
+                        collect
+                        (ebox-test-box
+                         :id (format "row-%02d" index)
+                         (ebox-test-text (format "row %02d" index))
+                         :height 1)))
          (layout
-          (ebox-test-build
-           `(column :width (viewport)
-              (box :id "rail" :content "ready" :width (viewport)
-                   :height 1)
-              (box :id "root" :width (viewport)
-                   :height (viewport-height) :overflow scroll
-                (column ,@rows)))))
+          (ebox-test-column :width '(viewport)
+		  (ebox-test-box :id "rail" (ebox-test-text "ready") :width
+				 '(viewport) :height 1)
+		  (ebox-test-box :id "root" :width '(viewport) :height
+				 '(viewport-height) :overflow 'scroll
+				 (apply #'ebox-test-column
+					(append rows)))))
          (ebox-viewport-width 240)
          (ebox-viewport-height 3)
          (ebox-scroll-lazy-prefix-lookahead-lines 0)
@@ -11303,14 +11538,14 @@ explicit visible-window handoff may admit its full-content publication."
   "Geometry updates on a revealed child should use a scoped TP plan."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id "root" :width (180) :height 2 :overflow scroll
-                (column
-                 (box :content "row 0" :height 1)
-                 (box :content "row 1" :height 1)
-                 (box :content "row 2" :height 1)
-                 (box :id "target" :content "target" :width (120) :height 1
-                      :box-sizing border-box :padding-left (2))))))
+         (ebox-test-box :id "root" :width '(180) :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "row 0") :height 1)
+		(ebox-test-box (ebox-test-text "row 1") :height 1)
+		(ebox-test-box (ebox-test-text "row 2") :height 1)
+		(ebox-test-box :id "target" (ebox-test-text "target") :width
+			       '(120) :height 1 :box-sizing
+			       'border-box :padding-left '(2)))))
         root-id target-id)
     (ebox-test--with-rendered-buffer layout
       (setq root-id (ebox-test--selector-region-id (current-buffer) "#root"))
@@ -11328,12 +11563,11 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-wheel-scroll-uses-buffer-scroll-region-without-point ()
   "Wheel events from fringe-like areas should still scroll the ebox page."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 2 :overflow scroll
-                        (column
-                         (box :content "A" :height 1)
-                         (box :content "B" :height 1)
-                         (box :content "C" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 2 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1)
+		(ebox-test-box (ebox-test-text "C") :height 1))))
          (root-id (car (ebox-region-ids layout)))
          mwheel-called)
     (ebox-test--with-rendered-buffer layout
@@ -11410,17 +11644,21 @@ explicit visible-window handoff may admit its full-content publication."
   "Nested boxes should consume their capacity before the native buffer."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id "outer" :height 4 :overflow scroll
-            (column
-             (box :id "middle" :height 2 :overflow scroll
-              (column
-               (box :id "inner" :content "inner 0\ninner 1"
-                    :height 1 :overflow scroll)
-               (box :content "middle 0" :height 1)
-               (box :content "middle 1" :height 1)
-               (box :content "middle 2" :height 1)))
-             (box :content "outer 0\nouter 1" :height 2))))))
+         (ebox-test-box :id "outer" :height 4 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id "middle" :height 2 :overflow
+			       'scroll
+			       (ebox-test-column
+				(ebox-test-box :id "inner" (ebox-test-text "inner 0\ninner 1")
+					       :height 1 :overflow
+					       'scroll)
+				(ebox-test-box (ebox-test-text "middle 0")
+					       :height 1)
+				(ebox-test-box (ebox-test-text "middle 1")
+					       :height 1)
+				(ebox-test-box (ebox-test-text "middle 2")
+					       :height 1)))
+		(ebox-test-box (ebox-test-text "outer 0\nouter 1") :height 2)))))
     (ebox-test--with-rendered-buffer layout
       (let* ((surface (with-current-buffer
                         (current-buffer) ebox-surface--buffer-surface))
@@ -11577,9 +11815,7 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-scroll-fast-report-uses-boolean-proof-flag ()
   "Retained-window proof payload should not leak into the public report."
   (ebox-test--reset-runtime-state)
-  (let ((layout (ebox-test-build
-                 '(box :id "root" :content "A\nB"
-                       :height 1 :overflow scroll))))
+  (let ((layout (ebox-test-box :id "root" (ebox-test-text "A\nB") :height 1 :overflow 'scroll)))
     (ebox-test--with-rendered-buffer layout
       (let ((region-id (ebox-test--selector-region-id
                         (current-buffer) "#root")))
@@ -11605,12 +11841,11 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-smooth-wheel-scroll-moves-immediately-then-drains ()
   "Smooth wheel scrolling should respond immediately and drain pending lines."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 1 :overflow scroll
-                        (column
-                         (box :content "A" :height 1)
-                         (box :content "B" :height 1)
-                         (box :content "C" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 1 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1)
+		(ebox-test-box (ebox-test-text "C") :height 1))))
          (root-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
       (let ((ebox-wheel-smooth-scroll-lines-per-tick 1)
@@ -11628,13 +11863,12 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-smooth-wheel-scroll-coalesces-while-timer-active ()
   "Further wheel input should queue behind the active timer, not edit at once."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 1 :overflow scroll
-                        (column
-                         (box :content "A" :height 1)
-                         (box :content "B" :height 1)
-                         (box :content "C" :height 1)
-                         (box :content "D" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 1 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1)
+		(ebox-test-box (ebox-test-text "C") :height 1)
+		(ebox-test-box (ebox-test-text "D") :height 1))))
          (root-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
       (let ((ebox-wheel-smooth-scroll-lines-per-tick 1)
@@ -11657,13 +11891,12 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-smooth-wheel-scroll-clamps-pending-to-range ()
   "Large smooth wheel input should not leave an oversized timer backlog."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 1 :overflow scroll
-                        (column
-                         (box :content "A" :height 1)
-                         (box :content "B" :height 1)
-                         (box :content "C" :height 1)
-                         (box :content "D" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 1 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1)
+		(ebox-test-box (ebox-test-text "C") :height 1)
+		(ebox-test-box (ebox-test-text "D") :height 1))))
          (root-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
       (let ((ebox-wheel-smooth-scroll-lines-per-tick 1)
@@ -11685,15 +11918,14 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-page-scroll-bubbles-from-child-to-scrollable-ancestor ()
   "Page scrolling over a child box should scroll the nearest scrollable ancestor."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height 3 :overflow scroll
-                        (column
-                         (box :id "child" :content "A" :height 1)
-                         (box :content "B" :height 1)
-                         (box :content "C" :height 1)
-                         (box :content "D" :height 1)
-                         (box :content "E" :height 1)
-                         (box :content "F" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height 3 :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id "child" (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1)
+		(ebox-test-box (ebox-test-text "C") :height 1)
+		(ebox-test-box (ebox-test-text "D") :height 1)
+		(ebox-test-box (ebox-test-text "E") :height 1)
+		(ebox-test-box (ebox-test-text "F") :height 1))))
          (root-id (car (ebox-region-ids layout)))
          fallback-called)
     (ebox-test--with-rendered-buffer layout
@@ -11715,16 +11947,42 @@ explicit visible-window handoff may admit its full-content publication."
         (should (string-match-p "F" plain))
         (should-not (string-match-p "A" plain))))))
 
+(ert-deftest ebox-page-scroll-preserves-native-page-fallback-semantics ()
+  "Whole-page fallback should stay native; residuals should stay exact."
+  (let (down-argument up-argument partial-p)
+    (cl-letf (((symbol-function 'ebox--scroll-page-lines)
+               (lambda (&optional arg)
+                 (if arg (prefix-numeric-value arg) 10)))
+              ((symbol-function 'ebox--scroll-by)
+               (lambda (delta fallback)
+                 (funcall fallback (if partial-p 2 (abs delta)))))
+              ((symbol-function 'scroll-up-command)
+               (lambda (&optional arg) (setq down-argument arg)))
+              ((symbol-function 'scroll-down-command)
+               (lambda (&optional arg) (setq up-argument arg))))
+      (ebox-scroll-page-down)
+      (ebox-scroll-page-up)
+      (should-not down-argument)
+      (should-not up-argument)
+      (ebox-scroll-page-down 7)
+      (ebox-scroll-page-up 7)
+      (should (= down-argument 7))
+      (should (= up-argument 7))
+      (setq partial-p t)
+      (ebox-scroll-page-down)
+      (ebox-scroll-page-up)
+      (should (= down-argument 2))
+      (should (= up-argument 2)))))
+
 (ert-deftest ebox-scroll-rerender-preserves-viewport-height-context ()
   "Scroll rerender fallback should keep viewport-height boxes clipped."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "root" :height (viewport-height) :overflow scroll
-                        (column
-                         (box :id "child" :content "A" :height 1)
-                         (box :content "B" :height 1)
-                         (box :content "C" :height 1)
-                         (box :content "D" :height 1)))))
+  (let* ((layout (ebox-test-box :id "root" :height '(viewport-height) :overflow 'scroll
+	       (ebox-test-column
+		(ebox-test-box :id "child" (ebox-test-text "A") :height 1)
+		(ebox-test-box (ebox-test-text "B") :height 1)
+		(ebox-test-box (ebox-test-text "C") :height 1)
+		(ebox-test-box (ebox-test-text "D") :height 1))))
          (root-id (car (ebox-region-ids layout))))
     (let ((ebox-viewport-height 2))
       (ebox-test--with-rendered-buffer layout
@@ -11750,7 +12008,7 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-wheel-scroll-falls-back-at-scroll-boundary ()
   "Mouse wheel should bubble to the buffer when inner scroll is at its edge."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC")
                            :height 1
                            :overflow 'scroll))
          (region-id (car (ebox-region-ids box)))
@@ -11832,7 +12090,7 @@ explicit visible-window handoff may admit its full-content publication."
 
 (ert-deftest ebox-border-box-max-height-includes-vertical-padding ()
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A\nB\nC\nD"
+  (let* ((box (ebox-test-box (ebox-test-text "A\nB\nC\nD")
                            :box-sizing 'border-box
                            :max-height 3
                            :padding '(1 0)
@@ -11845,39 +12103,39 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-content-box-min-height-wins-when-min-exceeds-max ()
   "Content-box height conflicts should use the minimum as the used height."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A"
+  (let* ((box (ebox-test-box (ebox-test-text "A")
                            :box-sizing 'content-box
                            :min-height 5
                            :max-height 3
                            :padding '(1 0)
                            :overflow 'hidden))
          (rendered (ebox-render box)))
-    (should (= (ebox--content-height box 1) 5))
+    (should (= (ebox-test--input-content-height box 1) 5))
     (should (= (ebox-string-height rendered) 7))))
 
 (ert-deftest ebox-border-box-min-height-wins-when-min-exceeds-max ()
   "Border-box height conflicts should use the minimum as the outer height."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "A"
+  (let* ((box (ebox-test-box (ebox-test-text "A")
                            :box-sizing 'border-box
                            :min-height 5
                            :max-height 3
                            :padding '(1 0)
                            :overflow 'hidden))
          (rendered (ebox-render box)))
-    (should (= (ebox--content-height box 1) 3))
+    (should (= (ebox-test--input-content-height box 1) 3))
     (should (= (ebox-string-height rendered) 5))))
 
 (ert-deftest ebox-border-box-max-width-includes-horizontal-padding-and-border ()
   (ebox-test--reset-runtime-state)
-  (let ((box (ebox-test-box :content "abc abc abc abc abc abc abc abc abc abc"
+  (let ((box (ebox-test-box (ebox-test-text "abc abc abc abc abc abc abc abc abc abc")
                           :box-sizing 'border-box
                           :max-width '(100)
                           :padding-inline '(20)
                           :border-left '(10)
                           :border-right '(10)
                           :overflow 'hidden)))
-    (should (<= (ebox--total-pixel box) 100))))
+    (should (<= (ebox-test--input-total-pixel box) 100))))
 
 (ert-deftest ebox-auto-width-without-viewport-uses-max-content-across-all-lines ()
   "Omitted :width should fall back to the widest unwrapped content line."
@@ -11886,11 +12144,11 @@ explicit visible-window handoff may admit its full-content publication."
          (expected (apply #'max
                           (mapcar #'ebox--string-pixel-width
                                   (ebox-string-lines content))))
-         (box (ebox-test-box :content content))
+         (box (ebox-test-box (ebox-test-text content)))
          (rendered (ebox-render box))
          (widths (mapcar #'ebox--string-pixel-width
                          (ebox-string-lines rendered))))
-    (should (= (ebox--content-pixel box) expected))
+    (should (= (ebox-test--input-content-pixel box) expected))
     (should (cl-every (lambda (width) (= width expected)) widths))))
 
 (ert-deftest ebox-auto-width-stretches-to-viewport-when-available ()
@@ -11899,21 +12157,21 @@ explicit visible-window handoff may admit its full-content publication."
   (let ((ebox-viewport-width 240))
     (dolist (width-value '(nil auto))
       (let ((box (apply #'ebox-test-box
-                        (append (list :content "short line wraps into viewport"
-                                      :padding-inline '(20)
+                        (ebox-test-text "short line wraps into viewport")
+                        (append (list :padding-inline '(20)
                                       :border-left '(10)
                                       :border-right '(10)
                                       :margin-inline '(5))
                                 (when width-value
                                   (list :width width-value))))))
-        (should (= (ebox--total-pixel box) 240))))))
+        (should (= (ebox-test--input-total-pixel box) 240))))))
 
 (ert-deftest ebox-explicit-width-can-overflow-containing-block ()
   "A definite width remains definite even when the containing block is narrower."
   (ebox-test--reset-runtime-state)
   (let* ((ebox-viewport-width 120)
          (content "alpha beta gamma delta")
-         (box (ebox-test-box :content content :width '(220) :wrap-mode 'word))
+         (box (ebox-test-box (ebox-test-text content) :width '(220) :wrap-mode 'word))
          (rendered (ebox-render box))
          (widths (mapcar #'ebox--string-pixel-width
                          (ebox-string-lines rendered))))
@@ -11925,10 +12183,9 @@ explicit visible-window handoff may admit its full-content publication."
   "A column wrapper width should contain auto-sized children."
   (ebox-test--reset-runtime-state)
   (let* ((ebox-viewport-width 1000)
-         (node (ebox-test-build
-                '(column :width (120)
-                  (box :content "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega"
-                       :wrap-mode word))))
+         (node (ebox-test-column :width '(120)
+		  (ebox-test-box (ebox-test-text "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega")
+				 :wrap-mode 'word)))
          (rendered (ebox-render node))
          (plain (substring-no-properties rendered))
          (widths (mapcar #'ebox--string-pixel-width
@@ -11944,9 +12201,7 @@ explicit visible-window handoff may admit its full-content publication."
   (ebox-test--reset-runtime-state)
   (let ((ebox-viewport-width 1000))
     (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 7)))
-      (let* ((node (ebox-test-build
-                    '(column :width (400)
-                      (box :content "X"))))
+      (let* ((node (ebox-test-column :width '(400) (ebox-test-box (ebox-test-text "X"))))
              (widths (mapcar #'ebox--string-pixel-width
                              (ebox-string-lines (ebox-render node)))))
         (should (equal widths '(400)))))))
@@ -11955,12 +12210,14 @@ explicit visible-window handoff may admit its full-content publication."
   "A column wrapper width should become the viewport for nested auto flex."
   (ebox-test--reset-runtime-state)
   (let* ((ebox-viewport-width 1000)
-         (node (ebox-test-build
-                '(column :width (240)
-                  (flex :flex-wrap wrap :column-gap (10)
-                        (box :content "A" :width (100))
-                        (box :content "B" :width (100))
-                        (box :content "C" :width (100))))))
+         (node (ebox-test-column :width '(240)
+		  (ebox-test-flex :flex-wrap 'wrap :column-gap '(10)
+				  (ebox-test-box (ebox-test-text "A") :width
+						 '(100))
+				  (ebox-test-box (ebox-test-text "B") :width
+						 '(100))
+				  (ebox-test-box (ebox-test-text "C") :width
+						 '(100)))))
          (rendered (ebox-render node))
          (plain-lines (ebox-string-lines
                        (substring-no-properties rendered)))
@@ -11976,8 +12233,8 @@ explicit visible-window handoff may admit its full-content publication."
   (ebox-test--reset-runtime-state)
   (let* ((ebox-viewport-width 200)
          (node (ebox-test-column
-                (ebox-test-box :content "Auto row")
-                (ebox-test-box :content "Fixed row" :width '(300))))
+                (ebox-test-box (ebox-test-text "Auto row"))
+                (ebox-test-box (ebox-test-text "Fixed row") :width '(300))))
          (widths (mapcar #'ebox--string-pixel-width
                          (ebox-string-lines (ebox-render node)))))
     (should (equal widths '(200 300)))))
@@ -11988,21 +12245,21 @@ explicit visible-window handoff may admit its full-content publication."
   (let* ((content "aa bbbb")
          (max-content (ebox--string-pixel-width content))
          (min-content (ebox--string-pixel-width "bbbb")))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content :width 'auto))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content) :width 'auto))
                max-content))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content :width 'max-content))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content) :width 'max-content))
                max-content))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content :width 'min-content))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content) :width 'min-content))
                min-content))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content
-                             :width '(80)
-                             :max-width 'none))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content)
+                               :width '(80)
+                               :max-width 'none))
                80))
-    (should-error (ebox-test-box :content content :width 'none)
+    (should-error (ebox-test-box (ebox-test-text content) :width 'none)
                   :type 'error)))
 
 (ert-deftest ebox-max-content-wrapper-measures-composite-child-intrinsically ()
@@ -12015,10 +12272,9 @@ explicit visible-window handoff may admit its full-content publication."
          (node
           (ebox-test-box
            :width 'max-content
-           :ebox-content-node
            (apply #'ebox-test-column
                   (mapcar (lambda (line)
-                            (ebox-test-box :content line))
+                            (ebox-test-box (ebox-test-text line)))
                           lines))))
          (widths
           (mapcar #'ebox--string-pixel-width
@@ -12028,7 +12284,7 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-definite-width-skips-unused-max-content-measurement ()
   "A definite preferred width should not evaluate its unused auto fallback."
   (ebox-test--reset-runtime-state)
-  (let ((box (ebox-test-box :content "measurement must stay cold"
+  (let ((box (ebox-test-box (ebox-test-text "measurement must stay cold")
                           :width '(80)))
         (measurements 0)
         (original (symbol-function 'ebox--content-max-pixel)))
@@ -12036,7 +12292,7 @@ explicit visible-window handoff may admit its full-content publication."
                (lambda (candidate)
                  (cl-incf measurements)
                  (funcall original candidate))))
-      (should (= (ebox--content-pixel box) 80))
+      (should (= (ebox-test--input-content-pixel box) 80))
       (should (= measurements 0)))))
 
 (ert-deftest ebox-definite-width-still-resolves-intrinsic-constraints ()
@@ -12044,7 +12300,7 @@ explicit visible-window handoff may admit its full-content publication."
   (ebox-test--reset-runtime-state)
   (let* ((content "intrinsic constraint")
          (expected (ebox--string-pixel-width content))
-         (box (ebox-test-box :content content
+         (box (ebox-test-box (ebox-test-text content)
                            :width '(20)
                            :min-width 'max-content))
          (measurements 0)
@@ -12053,20 +12309,20 @@ explicit visible-window handoff may admit its full-content publication."
                (lambda (candidate)
                  (cl-incf measurements)
                  (funcall original candidate))))
-      (should (= (ebox--content-pixel box) expected))
+      (should (= (ebox-test--input-content-pixel box) expected))
       (should (= measurements 1)))))
 
 (ert-deftest ebox-auto-width-keeps-max-content-fallback-without-viewport ()
   "An unresolved auto width should retain its intrinsic max-content fallback."
   (ebox-test--reset-runtime-state)
-  (let ((box (ebox-test-box :content "auto fallback"))
+  (let ((box (ebox-test-box (ebox-test-text "auto fallback")))
         (measurements 0)
         (original (symbol-function 'ebox--content-max-pixel)))
     (cl-letf (((symbol-function 'ebox--content-max-pixel)
                (lambda (candidate)
                  (cl-incf measurements)
                  (funcall original candidate))))
-      (should (> (ebox--content-pixel box) 0))
+      (should (> (ebox-test--input-content-pixel box) 0))
       (should (= measurements 1)))))
 
 (ert-deftest ebox-fit-content-width-clamps-between-min-and-max-content ()
@@ -12078,18 +12334,18 @@ explicit visible-window handoff may admit its full-content publication."
          (between (+ min-content (/ (- max-content min-content) 2))))
     (should (< min-content between))
     (should (< between max-content))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content
-                             :width (list 'fit-content (list between))))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content)
+                               :width (list 'fit-content (list between))))
                between))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content
-                             :width (list 'fit-content (list 1))))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content)
+                               :width (list 'fit-content (list 1))))
                min-content))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content
-                             :width (list 'fit-content
-                                          (list (+ max-content 50)))))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content)
+                               :width (list 'fit-content
+                                            (list (+ max-content 50)))))
                max-content))))
 
 (ert-deftest ebox-fit-content-keyword-uses-stretch-when-viewport-is-definite ()
@@ -12100,8 +12356,8 @@ explicit visible-window handoff may admit its full-content publication."
          (max-content (ebox--string-pixel-width content))
          (stretch (+ min-content (/ (- max-content min-content) 2)))
          (ebox-viewport-width stretch))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content :width 'fit-content))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content) :width 'fit-content))
                stretch))))
 
 (ert-deftest ebox-min-and-max-width-keywords-constrain-preferred-width ()
@@ -12111,27 +12367,27 @@ explicit visible-window handoff may admit its full-content publication."
          (min-content (ebox--string-pixel-width "widest"))
          (max-content (ebox--string-pixel-width content))
          (between (+ min-content (/ (- max-content min-content) 2))))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content
-                             :width '(1)
-                             :min-width 'max-content))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content)
+                               :width '(1)
+                               :min-width 'max-content))
                max-content))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content
-                             :width (list (+ max-content 50))
-                             :max-width 'min-content))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content)
+                               :width (list (+ max-content 50))
+                               :max-width 'min-content))
                min-content))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content
-                             :width '(1)
-                             :min-width (list 'fit-content
-                                              (list between))))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content)
+                               :width '(1)
+                               :min-width (list 'fit-content
+                                                (list between))))
                between))
-    (should (= (ebox--content-pixel
-                (ebox-test-box :content content
-                             :width (list (+ max-content 50))
-                             :max-width (list 'fit-content
-                                              (list between))))
+    (should (= (ebox-test--input-content-pixel
+                (ebox-test-box (ebox-test-text content)
+                               :width (list (+ max-content 50))
+                               :max-width (list 'fit-content
+                                                (list between))))
                between))))
 
 (ert-deftest ebox-stretch-and-contain-width-fill-viewport-margin-box ()
@@ -12139,13 +12395,13 @@ explicit visible-window handoff may admit its full-content publication."
   (ebox-test--reset-runtime-state)
   (let ((ebox-viewport-width 240))
     (dolist (keyword '(stretch contain))
-      (let ((box (ebox-test-box :content "x"
+      (let ((box (ebox-test-box (ebox-test-text "x")
                               :width keyword
                               :padding-inline '(20)
                               :border-left '(10)
                               :border-right '(10)
                               :margin-inline '(5))))
-        (should (= (ebox--total-pixel box) 240))))))
+        (should (= (ebox-test--input-total-pixel box) 240))))))
 
 (ert-deftest ebox-max-width-clamps-used-width-before-content-minimum ()
   "A max-width smaller than one glyph should constrain used width."
@@ -12154,28 +12410,28 @@ explicit visible-window handoff may admit its full-content publication."
              (lambda (_string) 60))
             ((symbol-function 'ebox--max-char-pixel)
              (lambda (_string) 60)))
-    (let ((box (ebox-test-box :content "W"
+    (let ((box (ebox-test-box (ebox-test-text "W")
                             :max-width '(20)
                             :wrap-mode 'char)))
-      (should (= (ebox--content-pixel box) 20))
-      (should (= (ebox--total-pixel box) 20)))))
+      (should (= (ebox-test--input-content-pixel box) 20))
+      (should (= (ebox-test--input-total-pixel box) 20)))))
 
 (ert-deftest ebox-min-width-wins-when-min-width-exceeds-max-width ()
   "CSS width constraints make min-width override max-width conflicts."
   (ebox-test--reset-runtime-state)
-  (let ((box (ebox-test-box :content "short"
+  (let ((box (ebox-test-box (ebox-test-text "short")
                           :width '(40)
                           :min-width '(120)
                           :max-width '(80))))
-    (should (= (ebox--content-pixel box) 120))
-    (should (= (ebox--total-pixel box) 120))))
+    (should (= (ebox-test--input-content-pixel box) 120))
+    (should (= (ebox-test--input-total-pixel box) 120))))
 
 (ert-deftest ebox-width-properties-reject-negative-values ()
   "Width, min-width, and max-width should reject negative lengths."
   (ebox-test--reset-runtime-state)
-  (should-error (ebox-test-box :content "bad" :width '(-1)) :type 'error)
-  (should-error (ebox-test-box :content "bad" :min-width '(-1)) :type 'error)
-  (should-error (ebox-test-box :content "bad" :max-width '(-1)) :type 'error))
+  (should-error (ebox-test-box (ebox-test-text "bad") :width '(-1)) :type 'error)
+  (should-error (ebox-test-box (ebox-test-text "bad") :min-width '(-1)) :type 'error)
+  (should-error (ebox-test-box (ebox-test-text "bad") :max-width '(-1)) :type 'error))
 
 (ert-deftest ebox-edge-properties-reject-negative-values ()
   "Public edge properties and engine longhands should reject negatives."
@@ -12188,7 +12444,7 @@ explicit visible-window handoff may admit its full-content publication."
                    (:border-top-width -1)
                    (:border-left-pixel -1)))
     (should-error
-     (apply #'ebox-test-box (append '(:content "bad") props))
+     (apply #'ebox-test-box (ebox-test-text "bad") props)
      :type 'error)))
 
 (ert-deftest ebox-line-min-content-skips-discarded-space-measurements ()
@@ -12216,7 +12472,7 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-region-update-valid-paint-and-invalid-edge-is-atomic ()
   "Invalid geometry should fail before a valid sibling property mutates."
   (ebox-test--reset-runtime-state)
-  (let* ((box (ebox-test-box :content "Atomic"
+  (let* ((box (ebox-test-box (ebox-test-text "Atomic")
                            :width '(120)
                            :bgcolor "#111111"
                            :padding-left-pixel 2))
@@ -12227,16 +12483,19 @@ explicit visible-window handoff may admit its full-content publication."
                            :bgcolor "#222222"
                            :padding-left-pixel -1)
        :type 'error)
-      (should (equal (ebox-get box :bgcolor) "#111111"))
-      (should (= (ebox-get box :padding-left-pixel) 2)))))
+      (should (equal (ebox-style-node-specified-value box :bgcolor)
+                     "#111111"))
+      (should (= (ebox-style-node-specified-value
+                  box :padding-left-pixel)
+                 2)))))
 
 (ert-deftest ebox-region-update-no-op-skips-rollback-snapshot ()
   "A legal no-op should return before discovering rollback scope."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id "root" :width (240) :height 1 :overflow scroll
-             (box :id "target" :content "same" :width (120))))))
+         (ebox-test-box :id "root" :width '(240) :height 1 :overflow 'scroll
+	       (ebox-test-box :id "target" (ebox-test-text "same") :width
+			      '(120)))))
     (ebox-test--with-rendered-buffer layout
       (let ((target-id
              (ebox-test--selector-region-id (current-buffer) "#target")))
@@ -12257,13 +12516,13 @@ explicit visible-window handoff may admit its full-content publication."
   "A child rollback snapshot should retain its scroll owner's box identity."
   (ebox-test--reset-runtime-state)
   (let ((layout
-         (ebox-test-build
-          '(box :id "root" :width (viewport) :height (viewport-height)
-                :overflow scroll
-             (column :width (viewport)
-               (box :id "target" :content "paint" :width (120)
-                    :color "#111111")
-               (box :content "tail" :width (120)))))))
+         (ebox-test-box :id "root" :width '(viewport) :height
+	       '(viewport-height) :overflow 'scroll
+	       (ebox-test-column :width '(viewport)
+				 (ebox-test-box :id "target" (ebox-test-text "paint") :width '(120)
+						:color "#111111")
+				 (ebox-test-box (ebox-test-text "tail") :width
+						'(120))))))
     (let ((ebox-viewport-width 240)
           (ebox-viewport-height 1))
       (ebox-test--with-rendered-buffer layout
@@ -12290,8 +12549,7 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-region-update-rolls-back-when-rerender-fails ()
   "A failed local rerender must leave model, buffer, and report unchanged."
   (ebox-test--reset-runtime-state)
-  (let* ((layout (ebox-test-build
-                  '(box :id "target" :content "before" :width (120))))
+  (let* ((layout (ebox-test-box :id "target" (ebox-test-text "before") :width '(120)))
          (report-before 'keep-report))
     (ebox-test--with-rendered-buffer layout
       (let* ((buffer (current-buffer))
@@ -12320,7 +12578,7 @@ explicit visible-window handoff may admit its full-content publication."
          (lines (ebox-string-lines
                  (substring-no-properties
                   (ebox-render
-                   (ebox-test-box :content content
+                   (ebox-test-box (ebox-test-text content)
                                 :width (list width)
                                 :wrap-mode 'word))))))
     (should (= (length lines) 2))
@@ -12377,7 +12635,7 @@ explicit visible-window handoff may admit its full-content publication."
                (lambda (text width)
                  (setq justify-args (list text width))
                  text)))
-      (ebox-render (ebox-test-box :content "abc"
+      (ebox-render (ebox-test-box (ebox-test-text "abc")
                                 :width '(100)
                                 :wrap-mode 'kp)))
     (should require-called)
@@ -12393,11 +12651,11 @@ explicit visible-window handoff may admit its full-content publication."
              (lambda (&rest _)
                "abc\nx")))
     (dolist (align '(center right))
-      (let* ((box (ebox-test-box :content "ignored"
+      (let* ((box (ebox-test-box (ebox-test-text "ignored")
                                :width '(100)
                                :wrap-mode 'kp
                                :text-align align))
-             (width (ebox--content-pixel box))
+             (width (ebox-test--input-content-pixel box))
              (rendered (ebox-render box))
              (line (car (ebox-string-lines rendered)))
              (expected (ebox--pixel-reach "abc" width align)))
@@ -12413,7 +12671,7 @@ explicit visible-window handoff may admit its full-content publication."
              (lambda (_text width)
                (concat (ebox-pixel-space width) "\nshort"))))
     (let* ((rendered (ebox-render
-                      (ebox-test-box :content "ignored"
+                      (ebox-test-box (ebox-test-text "ignored")
                                    :width '(100)
                                    :wrap-mode 'kp)))
            (widths (mapcar #'ebox-string-pixel-width
@@ -12423,7 +12681,7 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-content-face-keeps-foreground-and-background ()
   (ebox-test--reset-runtime-state)
   (let* ((rendered (ebox-render
-                    (ebox-test-box :content "Face"
+                    (ebox-test-box (ebox-test-text "Face")
                                  :width 40
                                  :color "#abcdef"
                                  :bgcolor "#123456")))
@@ -12434,7 +12692,7 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-border-faces-keep-side-specific-properties ()
   (ebox-test--reset-runtime-state)
   (let* ((rendered (ebox-render
-                    (ebox-test-box :content "Border"
+                    (ebox-test-box (ebox-test-text "Border")
                                  :width 60
                                  :padding '(1 1)
                                  :border '(1 "#ff0000"))))
@@ -12463,7 +12721,7 @@ explicit visible-window handoff may admit its full-content publication."
                        sentinel
                      (funcall original-frame-parameter frame parameter)))))
         (let* ((rendered (ebox-render
-                          (ebox-test-box :content "Border"
+                          (ebox-test-box (ebox-test-text "Border")
                                        :width 60
                                        :padding '(1 1)
                                        :border t)))
@@ -12484,7 +12742,7 @@ explicit visible-window handoff may admit its full-content publication."
   (require 'face-remap)
   (let* ((text-scale-mode-amount 2)
          (rendered (ebox-render
-                    (ebox-test-box :content "Border"
+                    (ebox-test-box (ebox-test-text "Border")
                                  :width 120
                                  :padding '(0 (8))
                                  :border '(1 "#ff0000"))))
@@ -12510,7 +12768,7 @@ explicit visible-window handoff may admit its full-content publication."
   (require 'face-remap)
   (let* ((text-scale-mode-amount -2)
          (rendered (ebox-render
-                    (ebox-test-box :content "Border"
+                    (ebox-test-box (ebox-test-text "Border")
                                  :width 120
                                  :padding '(0 (8))
                                  :border '(1 "#ff0000"))))
@@ -12534,7 +12792,7 @@ explicit visible-window handoff may admit its full-content publication."
 (ert-deftest ebox-horizontal-borders-do-not-cover-horizontal-margins ()
   (ebox-test--reset-runtime-state)
   (let* ((rendered (ebox-render
-                    (ebox-test-box :content "Border"
+                    (ebox-test-box (ebox-test-text "Border")
                                  :width 80
                                  :margin '(0 (8) 0 (8))
                                  :border '(1 "#ff0000"))))
@@ -12736,7 +12994,7 @@ explicit visible-window handoff may admit its full-content publication."
   "A hidden box renders blank with identical text, lengths, and metadata."
   (let* ((make-box
           (lambda (visibility)
-            (ebox-test-box :content "Hello" :width (list 90)
+            (ebox-test-box (ebox-test-text "Hello") :width (list 90)
                          :border '(1 solid "#AA3311") :bgcolor "#223344"
                          :color "#FFFFFF" :padding '(0 1)
                          :visibility visibility)))
@@ -12772,14 +13030,13 @@ publication with properties intact."
   (let* ((buffer (generate-new-buffer " *ebox-visibility*"))
          (root (ebox-test-box
                 :width (list 300)
-                :ebox-content-node
                 (ebox-test-column
-                 (ebox-test-box :content "Header line" :id 'header
+                 (ebox-test-box (ebox-test-text "Header line") :id 'header
                               :width (list 300))
-                 (ebox-test-box :content "Secret content" :id 'secret
+                 (ebox-test-box (ebox-test-text "Secret content") :id 'secret
                               :width (list 300) :border t
                               :bgcolor "#224466" :color "#FFFFFF")
-                 (ebox-test-box :content "Footer line" :id 'footer
+                 (ebox-test-box (ebox-test-text "Footer line") :id 'footer
                               :width (list 300))))))
     (unwind-protect
         (progn
@@ -12817,9 +13074,8 @@ face patch must match that exactly (issue014)."
              :id 'parent :width (list 400)
              :border (list '(4) 'solid parent-color)
              :padding '(1 (12))
-             :ebox-content-node
              (ebox-test-column
-              (ebox-test-box :id 'child :content "CHILD" :width (list 200)
+              (ebox-test-box :id 'child (ebox-test-text "CHILD") :width (list 200)
                            :border '((4) solid "#00AA00"))))))
          (visual-runs
           (lambda (buffer role)

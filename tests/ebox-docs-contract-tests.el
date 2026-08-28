@@ -132,13 +132,18 @@
   (require 'ebox)
   (let ((text-forms '("short" (text "explicit"))))
     (dolist (form text-forms)
-      (should (ebox-text-node-p (ebox-build form)))))
+      (should
+       (ebox-text-node-p
+        (ebox-canonical-input--single-root
+         (ebox-build form) "Ebox documented Text form")))))
   (dolist (entry '((box "normal")
                    (row (box "row child"))
                    (column (box "column child"))
                    (flex (box "flex child"))
                    (grid (box "grid child"))))
-    (let* ((node (ebox-build entry))
+    (let* ((node
+            (ebox-canonical-input--single-root
+             (ebox-build entry) "Ebox documented Box form"))
            (layout (ebox-box-node-layout node)))
       (should (ebox-box-node-p node))
       (should (eq (ebox-layout-config-kind layout)

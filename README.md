@@ -41,8 +41,9 @@ field-based child syntax.
 ```
 
 Use `ebox-build` for the public author DSL. Framework integrations may instead
-construct typed nodes with `ebox-text-create`, a typed LayoutConfig constructor,
-and `ebox-box-create`; that evaluated API is not a second author grammar.
+assemble typed nodes with one `ebox-source-builder`, then seal the forest and
+its source generation as one `CanonicalEboxInput`; that evaluated API is not a
+second author grammar.
 
 ## Layout choices
 
@@ -59,12 +60,12 @@ do not require a wrapper node.
 
 - `ebox-render` returns propertized text without publishing a live buffer.
 - `ebox-render-to-buffer` mounts a retained surface.
-- `ebox-commit` atomically publishes a newly built root.
+- `ebox-commit` atomically publishes a newly built canonical input.
 - `ebox-buffer-update-report` returns the last successful update report.
 - `ebox-rerender-buffer-with-context` applies an explicit viewport change.
 
-Ebox copies author input before assigning runtime identity, so one built tree
-may be mounted in multiple buffers without sharing live ownership.
+Ebox copies canonical input before assigning runtime identity, so one built
+value may be mounted in multiple buffers without sharing live ownership.
 
 ## Optional native module
 

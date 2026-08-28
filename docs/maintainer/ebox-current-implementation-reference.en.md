@@ -18,6 +18,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | --- | --- |
 | `ebox.el` | Public facade, construction helpers, rendering, TP-backed buffer entry points, scrolling, commit, and byte compilation. |
 | `ebox-cache.el` | Measurement/render cache records, invalidation, and cache reports. |
+| `ebox-source.el` | Opaque source handles, immutable author source records, and candidate source indexes. |
 | `ebox-style.el` | ECSS property schemas, declarations and cascade, shorthand expansion, computed style, colors, borders, and dirty effects. |
 | `ebox-tree.el` | Node traversal, logical child access, ECSS subject adaptation, identity, parent paths, keys, and tree snapshots. |
 | `ebox-child-range.el` | Immutable weighted segment trie, sparse persistent key trie, Range replacement, and Gate A metrics. |

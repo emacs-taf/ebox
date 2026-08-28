@@ -639,8 +639,10 @@ grapheme."
 
 (defun ebox--flex-explicit-min-main-p (box axis)
   "Return non-nil when BOX declares a main-axis minimum explicitly."
-  (let ((property (if (eq axis 'row) 'ebox/min-width 'ebox/min-height)))
-    (plist-member (plist-get box :ebox-style-declarations) property)))
+  (plist-get box
+             (if (eq axis 'row)
+                 :ebox-explicit-min-width-p
+               :ebox-explicit-min-height-p)))
 
 (defun ebox--flex-box-main-constraint (box axis property)
   "Return BOX's total main-axis size constraint from PROPERTY."
@@ -746,14 +748,8 @@ grapheme."
          (- target outer-size))))
 
 (defun ebox--flex-copy-put-size (copy property value)
-  "Set COPY size PROPERTY to VALUE in engine fields and ECSS declarations."
-  (plist-put copy property value)
-  (plist-put
-   copy :ebox-style-declarations
-   (ebox-style-merge-declarations
-    (plist-get copy :ebox-style-declarations)
-    (ebox-style-compile-declarations
-     (list property (if (eq property :width) (list value) value))))))
+  "Set COPY's layout-computed size PROPERTY to VALUE."
+  (plist-put copy property value))
 
 (defun ebox--flex-copy-node-for-size (node axis main cross stretch)
   "Return NODE or a copy with flex-computed MAIN/CROSS size."
@@ -1142,7 +1138,7 @@ Return a sized render entry containing the rendered string and dimensions."
                (t
                 (ebox--flex-bind-source-viewport
                  source item-viewport
-                 (lambda () (ebox-render (or node source))))))))
+                 (lambda () (ebox--render-node (or node source))))))))
         (ebox--flex-recache-source-boxes source)
         (when (and (not fragment-entry)
                    main
@@ -1646,7 +1642,7 @@ metadata and rendering decisions."
         (plist-put copy :content rendered)
         (plist-put copy :ebox-content-node nil)
         (plist-put copy :ebox-content-width-exact-p t)
-        (prog1 (ebox-render copy)
+        (prog1 (ebox--render-node copy)
           (puthash region-id box ebox--region-box-table)))
     rendered))
 
@@ -1891,7 +1887,7 @@ a prefix of the eventual full wrapper render."
                 (plist-put copy :content content)
                 (plist-put copy :ebox-content-node nil)
                 (plist-put copy :ebox-content-width-exact-p t)
-                (prog1 (ebox-render copy)
+                (prog1 (ebox--render-node copy)
                   (puthash region-id box ebox--region-box-table)))
             content))
          (lines (ebox-string-lines rendered)))

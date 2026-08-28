@@ -274,10 +274,19 @@
 
 (defun ebox-performance-evaluator--runtime-output (buffer)
   "Return a fresh propertized render of BUFFER's current runtime root."
-  (let ((ebox--scroll-global-state (make-hash-table :test #'equal))
-        (ebox--region-box-table (make-hash-table :test #'equal)))
+  (let* ((state (ebox--buffer-render-state buffer))
+         (ebox--scroll-global-state (make-hash-table :test #'equal))
+         (ebox--region-box-table (make-hash-table :test #'equal)))
     (ebox--with-buffer-render-context buffer
-      (ebox-render (ebox--buffer-root-node buffer)))))
+      (ebox--render-node
+       (ebox--buffer-root-node buffer) (plist-get state :source-index)))))
+
+(defun ebox-performance-evaluator--surface-producer (input)
+  "Return a one-shot TP producer for canonical INPUT."
+  (ebox-surface-producer
+   (ebox-canonical-input--single-root input "Ebox performance evaluator")
+   nil t
+   (list :source-base-index (ebox-canonical-input--source-index input))))
 
 (defun ebox-performance-evaluator--static-fixture
     (&optional styled target-content)
@@ -334,8 +343,8 @@
     (ebox-performance-evaluator--reset-runtime-state)
     (let ((expected
            (tp-surface-materialize-string
-            (ebox-surface-producer
-             (ebox-performance-evaluator--static-fixture) nil t))))
+            (ebox-performance-evaluator--surface-producer
+             (ebox-performance-evaluator--static-fixture)))))
       (ebox-performance-evaluator--reset-runtime-state)
       (let* ((measurement
               (ebox-performance-evaluator--measure
@@ -367,8 +376,8 @@
     (let ((ebox-performance-evaluator--active nil)
           (expected
            (tp-surface-materialize-string
-            (ebox-surface-producer
-             (ebox-performance-evaluator--static-fixture t) nil t))))
+            (ebox-performance-evaluator--surface-producer
+             (ebox-performance-evaluator--static-fixture t)))))
       (ebox-performance-evaluator--reset-runtime-state)
       (let* ((measurement
               (ebox-performance-evaluator--measure

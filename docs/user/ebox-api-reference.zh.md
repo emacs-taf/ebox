@@ -29,6 +29,10 @@ STRING
 每种 Box form 都接受零个或多个直接嵌套的 Text/Box 子节点。form 名称选择 Normal、
 Row、Column、Flex 或 Grid 子布局；author 不通过 property 传入布局选择器。
 
+`ebox-build` 返回一个不透明的 `CanonicalEboxInput`，以原子整体携带有序 canonical
+forest 和拥有其 author facts 的 source generation。普通 author 代码只把这个值原样
+传给 Ebox 渲染/发布函数，不取出 node，也不构造 source index。
+
 ```elisp
 (ebox-build
  '(column :padding (1 2)
@@ -69,27 +73,83 @@ Ebox；context/value 组合无效时会直接报错。
 
 ## 2. Evaluated typed construction
 
-已经拥有 author parsing 的框架可以直接构造 canonical node：
+已经拥有 author parsing 的框架可以使用 evaluated 集成 API；它不是第二套 author
+语法。一个 `ebox-source-builder` 拥有完整 source generation；每个 typed node 都携带
+该 builder 返回的 handle，以及由同一份 normalized declarations 投影出的 node-owned
+facts。最后用一个 `CanonicalEboxInput` 同时传递 forest 与封存的 source index：
 
 ```elisp
-(let ((layout (ebox-column-layout-create
-               :item-gap 1 :cross-align 'stretch)))
-  (ebox-box-create
-   :layout layout
-   :children (list (ebox-text-create :value "One")
-                   (ebox-text-create :value "Two"))))
+(let* ((builder (ebox-source-builder-create))
+       (root-declarations nil)
+       (left-declarations nil)
+       (right-declarations nil)
+       (root-handle
+        (ebox-source-builder-bind
+         builder :declarations root-declarations))
+       (left-handle
+        (ebox-source-builder-bind
+         builder :declarations left-declarations))
+       (right-handle
+        (ebox-source-builder-bind
+         builder :declarations right-declarations))
+       (left
+        (ebox-text-create
+         :value "Left"
+         :source-handle left-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'text left-declarations)))
+       (right
+        (ebox-text-create
+         :value "Right"
+         :source-handle right-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'text right-declarations)))
+       (root
+        (ebox-box-create
+         :layout (ebox-row-layout-create
+                  :item-gap 1 :cross-align 'center)
+         :children (list left right)
+         :source-handle root-handle
+         :owned-facts
+         (ebox-canonical-facts-from-declarations
+          'row root-declarations))))
+  (ebox-canonical-input-create
+   (list root)
+   (ebox-source-builder-finish builder)))
 ```
 
-- `ebox-text-create` 要求 `:value STRING`；
+- `ebox-source-builder-create` 开始且只开始一次 mutable source assembly；
+- `ebox-source-builder-bind` 保存 normalized source facts，并返回只含 identity 的
+  opaque handle；
+- `ebox-source-builder-finish` 分离并封存 builder 的 immutable fact index；封存后
+  builder 拒绝继续修改；
+- `ebox-canonical-facts-from-declarations` 从传给 source builder 的同一份 normalized
+  declarations 投影 node-owned facts；
+- `ebox-text-create` 要求 `:value`、`:source-handle` 与 `:owned-facts`；
 - `ebox-normal-layout-create` 构造 Normal LayoutConfig；
 - `ebox-row-layout-create` 与 `ebox-column-layout-create` 接受
   `:item-gap` 和 `:cross-align`；
 - `ebox-flex-layout-create` 构造经过验证的 Flex LayoutConfig；
 - `ebox-grid-layout-create` 构造经过验证的 Grid LayoutConfig；
-- `ebox-box-create` 要求一个 typed `:layout` 值，并接受 typed node 的
-  `:children` list。
+- `ebox-box-create` 要求 `:layout`、`:source-handle` 与 `:owned-facts`，并接受 typed
+  node 的 `:children` list；
+- `ebox-canonical-input-create` 把有序 node forest 与拥有其中全部 handle 的唯一
+  source index 组合为一个值；这个边界验证精确 handle 集合，并从 forest 的最终
+  preorder 封存 source order，不依赖 bottom-up 构造顺序。
+- `ebox-canonical-input-root-host-ref` 返回经过验证的 single-root input 的分离发布
+  地址，不暴露其中的 source handle；
+- `ebox-canonical-input-roots` 返回 exact top-level roots 的 shallow、只读副本，
+  不会把 source facts 导入另一个 candidate；
+- `ebox-canonical-input-import-roots` 只接受该 input 中 exact、唯一的 top-level
+  roots 与一个 open source builder；它只导入选中 subtree 的 facts，保留 node、
+  source-handle 与 immutable record identity，绝不接管未选 root 的 facts；
+- `ebox-canonical-input-equal-p` 比较完整 canonical forest、Range anchor、source
+  identity 和 immutable source facts，用于 no-op 证明。
 
-最后两个 field 只属于 evaluated 集成契约，不是 author property，也不是另一套 DSL。
+这些 source builder、fact/input constructor 与 typed node/layout constructor 只属于
+evaluated 集成契约；其中的 field 不是 author property，也不是另一套 DSL。
 
 typed 模块还公开 `ebox-node-kind`、`ebox-text-node-p`、`ebox-box-node-p`、
 `ebox-node-source-handle`、`ebox-text-node-value`、`ebox-box-node-layout`、
@@ -100,10 +160,10 @@ typed 模块还公开 `ebox-node-kind`、`ebox-text-node-p`、`ebox-box-node-p`�
 
 | 函数 | 契约 |
 | --- | --- |
-| `ebox-render` | 返回带属性字符串，不发布 live buffer。 |
-| `ebox-render-to-buffer` | 复制 built root，挂载 retained TP surface，启用 `ebox-buffer-mode` 并返回 buffer；可选 plist 只接受 `:observer FUNCTION`。 |
-| `ebox-display-buffer` | 走 retained 路径渲染，删除其他 window 后切换到结果。 |
-| `ebox-commit` | 原子发布重新构建的 root 或 one-shot logical candidate。 |
+| `ebox-render` | 接收 single-root `CanonicalEboxInput`，返回带属性字符串，不发布 live buffer。 |
+| `ebox-render-to-buffer` | 接收 single-root `CanonicalEboxInput`，挂载 retained TP surface，启用 `ebox-buffer-mode` 并返回 buffer；可选 plist 只接受 `:observer FUNCTION`。 |
+| `ebox-display-buffer` | 接收 single-root `CanonicalEboxInput`，走 retained 路径渲染，删除其他 window 后切换到结果。 |
+| `ebox-commit` | 原子发布 single-root `CanonicalEboxInput` 或 `ebox-candidate-begin` 返回的 one-shot logical candidate。 |
 | `ebox-buffer-set-observer` | 给已经 mounted 的 buffer 设置或移除一个 function observer。 |
 | `ebox-buffer-update-report` | 返回最近一次成功更新报告的防御性副本。 |
 | `ebox-rerender-buffer-with-context` | 应用显式 viewport width 与可选 height，同时保留 identity。 |
@@ -142,18 +202,22 @@ observer 为 nil 时，Ebox 不创建 observation context，不取 timestamp/GC 
 | `ebox-region-ids` | 按文档顺序返回当前底层 region id。 |
 | `ebox-region-resolve` | 把 mounted buffer 中一个逻辑 `:id` 解析为不透明、surface-scoped 的 handle。 |
 | `ebox-region-update` | 通过一次 retained transaction 应用支持的可变样式或滚动 property。 |
-| `ebox-child-range` | 从 typed node 构造透明、可寻址的 child Range descriptor。 |
+| `ebox-child-range` | 仅供框架集成：在组装 typed canonical input 时构造非视觉、可寻址的 child Range descriptor。 |
 | `ebox-candidate-begin` | 在 one-shot candidate 中捕获当前准确 mounted generation。 |
-| `ebox-candidate-replace` | 替换一个 candidate node address。 |
-| `ebox-candidate-replace-range-ref` | 替换一个透明 child Range payload。 |
-| `ebox-candidate-replace-root` | 替换 candidate 的私有 root address。 |
-| `ebox-candidate-replace-host-ref` | 替换一个 framework-owned opaque host reference。 |
-| `ebox-candidate-patch-host-paint` | 记录经过证明的 paint-only host patch；需要 replacement 时返回 nil。 |
+| `ebox-candidate-replace` | 用 single-root `CanonicalEboxInput` 替换一个 candidate node address。 |
+| `ebox-candidate-replace-range-ref` | 用 forest-valued `CanonicalEboxInput` 替换一个透明 child Range payload。 |
+| `ebox-candidate-replace-root` | 用 single-root `CanonicalEboxInput` 替换 candidate 的私有 root address。 |
+| `ebox-candidate-replace-host-ref` | 用 single-root `CanonicalEboxInput` 替换一个 framework-owned opaque host reference。 |
+| `ebox-candidate-patch-host-paint` | 比较 previous/next single-root canonical input；记录经过证明的 paint-only host patch，需要 replacement 时返回 nil。 |
 | `ebox-host-ref-bounds` | 返回 opaque host reference 当前不含 margin 的 bounds。 |
 | `ebox-host-ref-position` | 返回其当前第一个位置。 |
 
 handle 和位置只属于一个 live publication generation；对象被删除后要重新解析。
 candidate 被 commit 封存后不能复用。
+
+author DSL 没有 Range form。普通 author 只组合直接嵌套的 Text/Box child，不调用
+`ebox-child-range`；Range address 只服务已经拥有 semantic child range 与 candidate
+update 的框架。
 
 ## 5. Selector
 
@@ -198,8 +262,7 @@ native 模块只是加速器，不是正确性依赖。加载包不会构建它�
 
 - 构造：`ebox-build`、`ebox-text-create`、`ebox-normal-layout-create`、
   `ebox-row-layout-create`、`ebox-column-layout-create`、
-  `ebox-flex-layout-create`、`ebox-grid-layout-create`、`ebox-box-create`、
-  `ebox-child-range`；
+  `ebox-flex-layout-create`、`ebox-grid-layout-create`、`ebox-box-create`；
 - 渲染/发布：`ebox-render`、`ebox-render-to-buffer`、`ebox-display-buffer`、
   `ebox-commit`、`ebox-buffer-set-observer`、`ebox-buffer-update-report`、
   `ebox-rerender-buffer-with-context`、`ebox-viewport-window-width`、
@@ -208,6 +271,7 @@ native 模块只是加速器，不是正确性依赖。加载包不会构建它�
 - Candidate/identity：`ebox-candidate-begin`、`ebox-candidate-replace`、
   `ebox-candidate-replace-range-ref`、`ebox-candidate-replace-root`、
   `ebox-candidate-replace-host-ref`、`ebox-candidate-patch-host-paint`、
+  `ebox-child-range`、
   `ebox-region-ids`、`ebox-region-resolve`、`ebox-region-update`、
   `ebox-host-ref-bounds`、`ebox-host-ref-position`；
 - Selector：`ebox-selector-parse`、`ebox-selector-match-node-p`、
