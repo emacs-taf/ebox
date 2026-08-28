@@ -129,7 +129,7 @@
   (should (commandp 'ebox-byte-compile))
   (should
    (equal ebox--compile-sources
-          '("ebox-cache.el" "ebox-source.el" "ebox-style.el"
+          '("ebox-cache.el" "ebox-source.el" "ebox-font.el" "ebox-style.el"
             "ebox-layout-config.el"
             "ebox-node-factory.el"
             "ebox-child-range.el"

@@ -36,7 +36,7 @@
   (ecss-stylesheet-create))
 
 (defconst ebox-style--border-styles
-  '(none hidden dotted dashed solid double groove ridge inset outset)
+  '(none solid)
   "Valid CSS border-style keywords accepted by Ebox style parsing.")
 
 (defconst ebox-style--default-foreground 'ebox/default-foreground
@@ -44,227 +44,317 @@
 
 (defconst ebox-style--property-definitions
   '((:name :color :id ebox/color :initial nil :inherits t
-     :contexts (box) :group paint :dirty-kind paint :signature paint
-     :normalizer color)
+     :contexts (text box) :group paint :dirty-kind paint :signature paint
+     :normalizer color :validator color)
     (:name :background-color :id ebox/background-color :aliases (:bgcolor)
-     :initial nil :contexts (box) :group paint :dirty-kind paint
-     :signature paint :normalizer color)
-    (:name :font :id ebox/font :initial nil :inherits t :contexts (box)
-     :group typography :dirty-kind geometry :signature layout
-     :validator font)
+     :initial nil :contexts (text box) :group paint :dirty-kind paint
+     :signature paint :normalizer color :validator color)
     (:name :font-family :id ebox/font-family :initial nil :inherits t
-     :contexts (box) :group typography :dirty-kind geometry :signature layout
+     :contexts (text box) :group typography :dirty-kind geometry :signature layout
      :validator font-family)
-    (:name :font-height :id ebox/font-height :aliases (:font-size)
-     :initial nil :inherits t :contexts (box) :group typography
-     :dirty-kind geometry :signature layout :validator font-height)
-    (:name :font-weight :id ebox/font-weight :initial nil :inherits t
-     :contexts (box) :group typography :dirty-kind geometry :signature layout
-     :validator font-attribute)
-    (:name :font-slant :id ebox/font-slant :initial nil :inherits t
-     :contexts (box) :group typography :dirty-kind geometry :signature layout
-     :validator font-attribute)
+    (:name :font-size :id ebox/font-size
+     :initial nil :inherits t :contexts (text box) :group typography
+     :dirty-kind geometry :signature layout :validator font-size)
+    (:name :font-weight :id ebox/font-weight :initial normal :inherits t
+     :contexts (text box) :group typography :dirty-kind geometry :signature layout
+     :validator font-weight)
+    (:name :font-style :id ebox/font-style :aliases (:font-slant)
+     :initial normal :inherits t
+     :contexts (text box) :group typography :dirty-kind geometry :signature layout
+     :validator font-style)
+    (:name :text-decoration-line :id ebox/text-decoration-line :initial none
+     :contexts (text box) :group paint :dirty-kind paint :signature paint
+     :validator text-decoration-line)
+    (:name :text-decoration-color :id ebox/text-decoration-color
+     :initial currentColor :contexts (text box) :group paint :dirty-kind paint
+     :signature paint :normalizer color :validator color)
+    (:name :text-decoration-style :id ebox/text-decoration-style :initial solid
+     :contexts (text box) :group paint :dirty-kind paint :signature paint
+     :validator text-decoration-style)
     (:name :box-sizing :id ebox/box-sizing :initial border-box
-     :contexts (box) :group geometry :dirty-kind geometry :signature layout)
-    (:name :width :id ebox/width :initial nil :contexts (box flex grid)
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout)
+    (:name :width :id ebox/width :initial auto
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
      :validator horizontal-size)
-    (:name :min-width :id ebox/min-width :initial 0 :contexts (box)
+    (:name :min-width :id ebox/min-width :initial 0
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator horizontal-size)
-    (:name :max-width :id ebox/max-width :initial nil :contexts (box)
+     :validator min-horizontal-size)
+    (:name :max-width :id ebox/max-width :initial none
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator horizontal-size)
-    (:name :height :id ebox/height :initial nil :contexts (box flex grid)
-     :group geometry :dirty-kind geometry :signature layout)
-    (:name :min-height :id ebox/min-height :initial 0 :contexts (box)
-     :group geometry :dirty-kind geometry :signature layout)
-    (:name :max-height :id ebox/max-height :initial nil :contexts (box)
-     :group geometry :dirty-kind geometry :signature layout)
-    (:name :padding-block-start :id ebox/padding-block-start
-     :aliases (:padding-top :padding-top-height) :initial 0 :contexts (box)
+     :validator max-horizontal-size)
+    (:name :height :id ebox/height :initial auto
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
-    (:name :padding-inline-end :id ebox/padding-inline-end
-     :aliases (:padding-right :padding-right-pixel) :initial 0 :contexts (box)
+     :validator vertical-size)
+    (:name :min-height :id ebox/min-height :initial 0
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
-    (:name :padding-block-end :id ebox/padding-block-end
-     :aliases (:padding-bottom :padding-bottom-height) :initial 0 :contexts (box)
+     :validator min-vertical-size)
+    (:name :max-height :id ebox/max-height :initial none
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
-    (:name :padding-inline-start :id ebox/padding-inline-start
-     :aliases (:padding-left :padding-left-pixel) :initial 0 :contexts (box)
+     :validator max-vertical-size)
+    (:name :padding-top :id ebox/padding-top :initial 0
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
      :validator nonnegative-size)
-    (:name :margin-block-start :id ebox/margin-block-start
-     :aliases (:margin-top :margin-top-height) :initial 0 :contexts (box)
+    (:name :padding-right :id ebox/padding-right :initial 0
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
      :validator nonnegative-size)
-    (:name :margin-inline-end :id ebox/margin-inline-end
-     :aliases (:margin-right :margin-right-pixel) :initial 0 :contexts (box)
+    (:name :padding-bottom :id ebox/padding-bottom :initial 0
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
      :validator nonnegative-size)
-    (:name :margin-block-end :id ebox/margin-block-end
-     :aliases (:margin-bottom :margin-bottom-height) :initial 0 :contexts (box)
+    (:name :padding-left :id ebox/padding-left :initial 0
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
      :validator nonnegative-size)
-    (:name :margin-inline-start :id ebox/margin-inline-start
-     :aliases (:margin-left :margin-left-pixel) :initial 0 :contexts (box)
+    (:name :padding-block-start :id ebox/padding-block-start :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :padding-inline-end :id ebox/padding-inline-end :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :padding-block-end :id ebox/padding-block-end :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :padding-inline-start :id ebox/padding-inline-start :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-top :id ebox/margin-top :initial 0
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-right :id ebox/margin-right :initial 0
+     :contexts (box row column flex grid)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-bottom :id ebox/margin-bottom :initial 0
+     :contexts (box row column flex grid)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-left :id ebox/margin-left :initial 0
+     :contexts (box row column flex grid)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-block-start :id ebox/margin-block-start :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-inline-end :id ebox/margin-inline-end :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-block-end :id ebox/margin-block-end :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :validator nonnegative-size)
+    (:name :margin-inline-start :id ebox/margin-inline-start :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
      :validator nonnegative-size)
     (:name :border-top-width :id ebox/border-top-width
-     :initial nil :contexts (box)
-     :group geometry :dirty-kind geometry :signature layout)
+     :initial 0 :contexts (box row column flex grid)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator border-width)
     (:name :border-right-width :id ebox/border-right-width
-     :aliases (:border-right-pixel) :initial nil :contexts (box)
+     :initial 0 :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator border-width)
     (:name :border-bottom-width :id ebox/border-bottom-width
-     :initial nil :contexts (box)
-     :group geometry :dirty-kind geometry :signature layout)
+     :initial 0 :contexts (box row column flex grid)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator border-width)
     (:name :border-left-width :id ebox/border-left-width
-     :aliases (:border-left-pixel) :initial nil :contexts (box)
+     :initial 0 :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
-    (:name :border-top-style :id ebox/border-top-style :initial nil
-     :contexts (box) :group structure :dirty-kind structure :signature layout)
-    (:name :border-right-style :id ebox/border-right-style :initial nil
-     :contexts (box) :group structure :dirty-kind structure :signature layout)
-    (:name :border-bottom-style :id ebox/border-bottom-style :initial nil
-     :contexts (box) :group structure :dirty-kind structure :signature layout)
-    (:name :border-left-style :id ebox/border-left-style :initial nil
-     :contexts (box) :group structure :dirty-kind structure :signature layout)
-    (:name :border-top-color :id ebox/border-top-color :initial nil
-     :contexts (box) :group paint :dirty-kind paint :signature paint
-     :normalizer color)
-    (:name :border-right-color :id ebox/border-right-color :initial nil
-     :contexts (box) :group paint :dirty-kind paint :signature paint
-     :normalizer color)
-    (:name :border-bottom-color :id ebox/border-bottom-color :initial nil
-     :contexts (box) :group paint :dirty-kind paint :signature paint
-     :normalizer color)
-    (:name :border-left-color :id ebox/border-left-color :initial nil
-     :contexts (box) :group paint :dirty-kind paint :signature paint
-     :normalizer color)
-    (:name :text-align :id ebox/text-align :initial left :contexts (box)
-     :group geometry :dirty-kind geometry :signature layout)
-    (:name :vertical-align :id ebox/vertical-align :initial top :contexts (box)
-     :group geometry :dirty-kind geometry :signature layout
-     :normalizer vertical-align)
-    (:name :overflow :id ebox/overflow :initial scroll :contexts (box)
-     :group structure :dirty-kind geometry :signature layout)
-    (:name :wrap-mode :id ebox/wrap-mode :initial word :inherits t
+     :validator border-width)
+    (:name :border-top-style :id ebox/border-top-style :initial none
+     :contexts (box row column flex grid) :group structure
+     :dirty-kind structure :signature layout :validator border-style)
+    (:name :border-right-style :id ebox/border-right-style :initial none
+     :contexts (box row column flex grid) :group structure
+     :dirty-kind structure :signature layout :validator border-style)
+    (:name :border-bottom-style :id ebox/border-bottom-style :initial none
+     :contexts (box row column flex grid) :group structure
+     :dirty-kind structure :signature layout :validator border-style)
+    (:name :border-left-style :id ebox/border-left-style :initial none
+     :contexts (box row column flex grid) :group structure
+     :dirty-kind structure :signature layout :validator border-style)
+    (:name :border-top-color :id ebox/border-top-color :initial currentColor
+     :contexts (box row column flex grid) :group paint
+     :dirty-kind paint :signature paint
+     :normalizer color :validator color)
+    (:name :border-right-color :id ebox/border-right-color :initial currentColor
+     :contexts (box row column flex grid) :group paint
+     :dirty-kind paint :signature paint
+     :normalizer color :validator color)
+    (:name :border-bottom-color :id ebox/border-bottom-color
+     :initial currentColor :contexts (box row column flex grid)
+     :group paint :dirty-kind paint :signature paint
+     :normalizer color :validator color)
+    (:name :border-left-color :id ebox/border-left-color :initial currentColor
+     :contexts (box row column flex grid) :group paint
+     :dirty-kind paint :signature paint
+     :normalizer color :validator color)
+    (:name :text-align :id ebox/text-align :initial left :inherits t
      :contexts (box)
+     :author-contexts (box)
+     :group geometry :dirty-kind geometry :signature layout)
+    (:name :overflow :id ebox/overflow :initial scroll
+     :contexts (box row column flex grid) :group structure
+     :dirty-kind geometry :signature layout
+     :impacts (geometry paint) :projections (layout paint))
+    (:name :wrap-mode :id ebox/wrap-mode :initial word :inherits t
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
      :validator wrap-mode)
-    (:name :visibility :id ebox/visibility :initial visible :contexts (box)
+    (:name :visibility :id ebox/visibility :initial visible :inherits t
+     :contexts (box row column flex grid)
      :group paint :dirty-kind paint :signature paint)
-    (:name :display :id ebox/display :initial nil :contexts (node)
+    (:name :outer :id ebox/outer :initial block
+     :contexts (box row column flex grid)
      :group structure :dirty-kind structure :signature structure
-     :validator display)
-    (:name :outer :id ebox/outer :initial block :contexts (node)
-     :group structure :dirty-kind structure :signature structure
-     :validator outer)
-    (:name :layout :id ebox/layout :initial normal :contexts (node)
-     :group structure :dirty-kind structure :signature structure
-     :validator layout)
-    (:name :flex-direction :id ebox/flex-direction :initial nil
-     :contexts (flex) :group geometry :dirty-kind geometry :signature layout)
-    (:name :flex-wrap :id ebox/flex-wrap :initial nil :contexts (flex)
-     :group geometry :dirty-kind geometry :signature layout)
-    (:name :justify-content :id ebox/justify-content :initial nil
-     :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout)
-    (:name :align-items :id ebox/align-items :initial nil
-     :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout)
-    (:name :align-content :id ebox/align-content :initial nil
-     :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout)
-    (:name :justify-items :id ebox/justify-items :initial nil
-     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
-    (:name :row-gap :id ebox/row-gap :aliases (:grid-row-gap) :initial nil
+     :validator outer :impacts (structure geometry)
+     :projections (structure layout))
+    (:name :item-gap :id ebox/item-gap :initial 0 :contexts (row column)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator nonnegative-integer)
+    (:name :cross-align :id ebox/cross-align :initial stretch
+     :contexts (row column) :group geometry :dirty-kind geometry
+     :signature layout :validator cross-align)
+    (:name :flex-direction :id ebox/flex-direction :initial row
+     :contexts (flex) :group geometry :dirty-kind geometry :signature layout
+     :validator flex-direction)
+    (:name :flex-wrap :id ebox/flex-wrap :initial nowrap :contexts (flex)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator flex-wrap)
+    (:name :justify-content :id ebox/justify-content :initial flex-start
+     :contexts (flex grid) :group geometry :dirty-kind geometry
+     :signature layout :validator justify-content)
+    (:name :align-items :id ebox/align-items :initial stretch
+     :contexts (flex grid) :group geometry :dirty-kind geometry
+     :signature layout :validator align-items)
+    (:name :align-content :id ebox/align-content :initial stretch
+     :contexts (flex grid) :group geometry :dirty-kind geometry
+     :signature layout :validator align-content)
+    (:name :justify-items :id ebox/justify-items :initial stretch
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout
+     :validator justify-items)
+    (:name :row-gap :id ebox/row-gap :initial 0
      :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout
      :validator nonnegative-size)
-    (:name :column-gap :id ebox/column-gap :aliases (:grid-column-gap)
-     :initial nil :contexts (flex grid) :group geometry :dirty-kind geometry
+    (:name :column-gap :id ebox/column-gap
+     :initial 0 :contexts (flex grid) :group geometry :dirty-kind geometry
      :signature layout :validator nonnegative-size)
-    (:name :order :id ebox/order :initial nil :contexts (item)
-     :group geometry :dirty-kind geometry :signature layout)
-    (:name :flex-grow :id ebox/flex-grow :initial nil :contexts (item)
+    (:name :order :id ebox/order :initial 0 :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout :validator order)
+    (:name :flex-grow :id ebox/flex-grow :initial 0 :contexts (item)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-number)
-    (:name :flex-shrink :id ebox/flex-shrink :initial nil :contexts (item)
+     :validator flex-factor)
+    (:name :flex-shrink :id ebox/flex-shrink :initial 1 :contexts (item)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-number)
-    (:name :flex-basis :id ebox/flex-basis :initial nil :contexts (item)
+     :validator flex-factor)
+    (:name :flex-basis :id ebox/flex-basis :initial auto :contexts (item)
      :group geometry :dirty-kind geometry :signature layout
      :validator horizontal-size)
-    (:name :align-self :id ebox/align-self :initial nil :contexts (item)
-     :group geometry :dirty-kind geometry :signature layout)
+    (:name :align-self :id ebox/align-self :initial auto :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator align-self)
+    (:name :justify-self :id ebox/justify-self :initial auto :contexts (item)
+     :group geometry :dirty-kind geometry :signature layout
+     :validator justify-self)
     (:name :grid-template-columns :id ebox/grid-template-columns :initial nil
-     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout
+     :validator grid-track-list)
     (:name :grid-template-rows :id ebox/grid-template-rows :initial nil
-     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
-    (:name :grid-auto-columns :id ebox/grid-auto-columns :initial nil
-     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
-    (:name :grid-auto-rows :id ebox/grid-auto-rows :initial nil
-     :contexts (grid) :group geometry :dirty-kind geometry :signature layout)
-    (:name :grid-auto-flow :id ebox/grid-auto-flow :initial nil
-     :contexts (grid) :group structure :dirty-kind structure :signature layout)
-    (:name :grid-column :id ebox/grid-column :initial nil :contexts (item)
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout
+     :validator grid-track-list)
+    (:name :grid-auto-columns :id ebox/grid-auto-columns :initial auto
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout
+     :validator grid-track)
+    (:name :grid-auto-rows :id ebox/grid-auto-rows :initial auto
+     :contexts (grid) :group geometry :dirty-kind geometry :signature layout
+     :validator grid-track)
+    (:name :grid-auto-flow :id ebox/grid-auto-flow :initial row
+     :contexts (grid) :group structure :dirty-kind structure :signature layout
+     :validator grid-auto-flow)
+    (:name :grid-column :id ebox/grid-column :initial auto :contexts (item)
      :group geometry :dirty-kind geometry :signature layout
      :validator grid-placement)
-    (:name :grid-row :id ebox/grid-row :initial nil :contexts (item)
+    (:name :grid-row :id ebox/grid-row :initial auto :contexts (item)
      :group geometry :dirty-kind geometry :signature layout
      :validator grid-placement)
-    (:name :grid-column-span :id ebox/grid-column-span :initial nil
-     :contexts (item) :group geometry :dirty-kind geometry :signature layout
-     :validator positive-integer)
-    (:name :grid-row-span :id ebox/grid-row-span :initial nil
-     :contexts (item) :group geometry :dirty-kind geometry :signature layout
-     :validator positive-integer)
+    (:name :grid-column-span :id ebox/grid-column-span
+     :shorthand grid-column-span :validator positive-integer
+     :contexts (item) :group geometry :dirty-kind geometry :signature layout)
+    (:name :grid-row-span :id ebox/grid-row-span
+     :shorthand grid-row-span :validator positive-integer
+     :contexts (item) :group geometry :dirty-kind geometry :signature layout)
     (:name :padding :id ebox/padding :shorthand padding
-     :impacts (geometry) :projections (layout))
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint))
     (:name :padding-inline :id ebox/padding-inline :shorthand padding-inline
-     :impacts (geometry) :projections (layout))
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint))
     (:name :padding-block :id ebox/padding-block :shorthand padding-block
-     :impacts (geometry) :projections (layout))
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint))
     (:name :margin :id ebox/margin :shorthand margin
+     :contexts (box row column flex grid)
      :impacts (geometry) :projections (layout))
     (:name :margin-inline :id ebox/margin-inline :shorthand margin-inline
+     :contexts (box row column flex grid)
      :impacts (geometry) :projections (layout))
     (:name :margin-block :id ebox/margin-block :shorthand margin-block
+     :contexts (box row column flex grid)
      :impacts (geometry) :projections (layout))
     (:name :border :id ebox/border :shorthand border
-     :impacts (geometry structure paint) :projections (layout paint))
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint))
     (:name :border-top :id ebox/border-top :shorthand border-top
-     :impacts (geometry structure paint) :projections (layout paint))
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint))
     (:name :border-right :id ebox/border-right :shorthand border-right
-     :impacts (geometry structure paint) :projections (layout paint))
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint))
     (:name :border-bottom :id ebox/border-bottom :shorthand border-bottom
-     :impacts (geometry structure paint) :projections (layout paint))
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint))
     (:name :border-left :id ebox/border-left :shorthand border-left
-     :impacts (geometry structure paint) :projections (layout paint))
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint))
     (:name :border-top-p :id ebox/border-top-p
      :shorthand border-top-present :validator boolean
-     :exclusive-outputs t
-     :impacts (geometry structure) :projections (layout)
-     :group structure :dirty-kind structure :signature layout)
-    (:name :border-bottom-p :id ebox/border-bottom-p
-     :shorthand border-bottom-present :validator boolean
-     :exclusive-outputs t
-     :impacts (geometry structure) :projections (layout)
+     :contexts (box row column flex grid)
+     :impacts (geometry paint) :projections (layout paint)
      :group structure :dirty-kind structure :signature layout)
     (:name :border-width :id ebox/border-width :shorthand border-width
+     :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout)
     (:name :border-style :id ebox/border-style :shorthand border-style
+     :contexts (box row column flex grid)
      :group structure :dirty-kind structure :signature layout)
     (:name :border-color :id ebox/border-color :shorthand border-color
+     :contexts (box row column flex grid)
      :group paint :dirty-kind paint :signature paint)
     (:name :gap :id ebox/gap :shorthand gap
+     :contexts (flex grid)
      :group geometry :dirty-kind geometry :signature layout)
     (:name :flex-flow :id ebox/flex-flow :shorthand flex-flow
+     :contexts (flex)
      :group geometry :dirty-kind geometry :signature layout)
     (:name :flex :id ebox/flex :shorthand flex
+     :contexts (item)
      :group geometry :dirty-kind geometry :signature layout))
   "Canonical Ebox property schemas and public aliases.")
 
@@ -335,37 +425,37 @@
   "Classify border shorthand ITEM as width, style, or color."
   (cond
    ((numberp item) (cons 'width item))
-   ((and (listp item) (numberp (car item)) (null (cdr item)))
-    (cons 'width item))
    ((memq item ebox-style--border-styles) (cons 'style item))
-   (t (cons 'color item))))
+   ((or (stringp item) (tp-paint-slot-p item)) (cons 'color item))
+   (t (error "Invalid Ebox border component: %S" item))))
 
 (defun ebox-style--split-wsc (value)
   "Split VALUE into border width, style, and color."
   (cond
    ((null value) (list nil nil nil))
-   ((eq value t)
-    (list '(1) 'solid (frame-parameter nil 'foreground-color)))
    ((atom value)
     (let ((classified (ebox-style--wsc-classify value)))
       (pcase (car classified)
         ('width (list (cdr classified) nil nil))
         ('style (list nil (cdr classified) nil))
-        ('color (list '(1) 'solid (cdr classified))))))
-   ((keywordp (car value))
-    (list (plist-get value :width)
-          (plist-get value :style)
-          (plist-get value :color)))
-   ((listp value)
-    (let (width style color)
+        ('color (list 1 'solid (cdr classified))))))
+   ((proper-list-p value)
+    (let (width style color width-p style-p color-p)
       (dolist (item value)
         (let ((classified (ebox-style--wsc-classify item)))
           (pcase (car classified)
-            ('width (setq width (cdr classified)))
-            ('style (setq style (cdr classified)))
-            ('color (setq color (cdr classified))))))
-      (list (or width '(1)) (or style 'solid) color)))
-   (t (list '(1) 'solid value))))
+            ('width
+             (when width-p (error "Duplicate Ebox border width in %S" value))
+             (setq width-p t width (cdr classified)))
+            ('style
+             (when style-p (error "Duplicate Ebox border style in %S" value))
+             (setq style-p t style (cdr classified)))
+            ('color
+             (when color-p (error "Duplicate Ebox border color in %S" value))
+             (setq color-p t color (cdr classified))))))
+      (list (or width 1) (or style 'solid) color)))
+   (t (error "Ebox border must be a color or proper component list: %S"
+             value))))
 
 (defun ebox-style--atom-consp (list)
   "Return non-nil when LIST is a strict dotted pair of atoms."
@@ -375,22 +465,8 @@
        (atom (cdr list))))
 
 (defun ebox-style--parse-color (color)
-  "Resolve COLOR, returning nil for an unspecified Emacs color."
-  (let ((resolved
-         (cond
-          ((eq t color) (face-attribute 'default :foreground nil t))
-          ((null color) nil)
-          ((stringp color) color)
-          ((ebox-style--atom-consp color)
-           (pcase (frame-parameter nil 'background-mode)
-             ('light (car color))
-             ('dark (cdr color))
-             (_ (car color))))
-          (t color))))
-    (unless (member resolved '(nil unspecified unspecified-fg unspecified-bg
-                                  "unspecified" "unspecified-fg"
-                                  "unspecified-bg"))
-      resolved)))
+  "Return a detached canonical COLOR value without consulting a frame."
+  (if (stringp color) (copy-sequence color) color))
 
 (defun ebox-style--trbl-declarations (properties value)
   "Expand VALUE across four namespaced PROPERTIES."
@@ -482,10 +558,6 @@
   "Expand boolean top-border VALUE to canonical width and style."
   (ebox-style--border-present-declarations 'top value))
 
-(defun ebox-style--border-bottom-present-shorthand (value)
-  "Expand boolean bottom-border VALUE to canonical width and style."
-  (ebox-style--border-present-declarations 'bottom value))
-
 (defun ebox-style--border-component-shorthand (component value)
   "Expand border COMPONENT VALUE across all physical sides."
   (ebox-style--trbl-declarations
@@ -510,9 +582,24 @@
   "Expand gap VALUE to row and column gaps."
   (ebox-style--pair-declarations '(ebox/row-gap ebox/column-gap) value))
 
+(defun ebox-style--grid-column-span-shorthand (value)
+  "Expand Grid column span VALUE into canonical auto placement."
+  (unless (and (integerp value) (> value 0))
+    (error "Ebox grid-column-span must be a positive integer: %S" value))
+  (list 'ebox/grid-column (list :span value)))
+
+(defun ebox-style--grid-row-span-shorthand (value)
+  "Expand Grid row span VALUE into canonical auto placement."
+  (unless (and (integerp value) (> value 0))
+    (error "Ebox grid-row-span must be a positive integer: %S" value))
+  (list 'ebox/grid-row (list :span value)))
+
 (defun ebox-style--flex-flow-shorthand (value)
   "Expand flex-flow VALUE to direction and wrapping longhands."
-  (let ((values (if (listp value) value (list value))) direction wrap)
+  (unless (and (proper-list-p value) (= (length value) 2))
+    (error "Ebox flex-flow requires one direction and one wrap value: %S"
+           value))
+  (let ((values value) direction wrap)
     (setq direction
           (cl-find-if (lambda (item)
                         (memq item '(row row-reverse column column-reverse)))
@@ -520,27 +607,31 @@
           wrap (cl-find-if (lambda (item)
                              (memq item '(nowrap wrap wrap-reverse)))
                            values))
+    (unless (and direction wrap)
+      (error "Ebox flex-flow requires one direction and one wrap value: %S"
+             value))
     (list 'ebox/flex-direction direction 'ebox/flex-wrap wrap)))
 
 (defun ebox-style--flex-shorthand (value)
   "Expand flex item VALUE to grow, shrink, and basis longhands."
   (pcase value
-    ((pred numberp) (list 'ebox/flex-grow value 'ebox/flex-shrink 1
-                          'ebox/flex-basis 0))
+    ((and (pred numberp) (guard (>= value 0)))
+     (list 'ebox/flex-grow value 'ebox/flex-shrink 1
+           'ebox/flex-basis 0))
     ('none '(ebox/flex-grow 0 ebox/flex-shrink 0 ebox/flex-basis auto))
     ('auto '(ebox/flex-grow 1 ebox/flex-shrink 1 ebox/flex-basis auto))
     ('initial '(ebox/flex-grow 0 ebox/flex-shrink 1 ebox/flex-basis auto))
-    ((pred listp)
-     (list 'ebox/flex-grow (or (nth 0 value) 0)
-           'ebox/flex-shrink (or (nth 1 value) 1)
-           'ebox/flex-basis (if (> (length value) 2) (nth 2 value) 'auto)))
-    (_ '(ebox/flex-grow 0 ebox/flex-shrink 1 ebox/flex-basis auto))))
+    ((and (pred proper-list-p) (guard (= (length value) 3)))
+     (list 'ebox/flex-grow (nth 0 value)
+           'ebox/flex-shrink (nth 1 value)
+           'ebox/flex-basis (nth 2 value)))
+    (_ (error "Ebox flex requires none, auto, initial, a factor, or (grow shrink basis): %S"
+              value))))
 
 (defun ebox-style--normalizer (name)
   "Return schema normalizer named NAME."
   (pcase name
     ('color #'ebox-style--parse-color)
-    ('vertical-align (lambda (value) (if (eq value 'middle) 'center value)))
     (_ #'identity)))
 
 (defun ebox-style--negative-numeric-size-p (value)
@@ -550,9 +641,55 @@
            (numberp (car value))
            (< (car value) 0))))
 
+(defun ebox-style--nonnegative-real-p (value)
+  "Return non-nil when VALUE is a nonnegative real number."
+  (and (numberp value) (>= value 0)))
+
+(defun ebox-style--pixel-size-p (value)
+  "Return non-nil when VALUE is a one-element nonnegative pixel size."
+  (and (proper-list-p value) (= (length value) 1)
+       (ebox-style--nonnegative-real-p (car value))))
+
 (defun ebox-style--nonnegative-size-p (value)
-  "Return non-nil when VALUE is not a negative numeric size."
-  (not (ebox-style--negative-numeric-size-p value)))
+  "Return non-nil when VALUE is one canonical edge size."
+  (or (ebox-style--nonnegative-real-p value)
+      (ebox-style--pixel-size-p value)))
+
+(defun ebox-style--horizontal-size-p (value)
+  "Return non-nil when VALUE is a canonical horizontal size."
+  (or (ebox-style--nonnegative-real-p value)
+      (ebox-style--pixel-size-p value)
+      (memq value '(viewport auto min-content max-content
+                    fit-content stretch contain))
+      (equal value '(viewport))
+      (and (proper-list-p value) (= (length value) 2)
+           (eq (car value) 'fit-content)
+           (ebox-style--horizontal-size-p (cadr value)))))
+
+(defun ebox-style--min-horizontal-size-p (value)
+  "Return non-nil when VALUE is a canonical minimum horizontal size."
+  (and (not (eq value 'none)) (ebox-style--horizontal-size-p value)))
+
+(defun ebox-style--max-horizontal-size-p (value)
+  "Return non-nil when VALUE is a canonical maximum horizontal size."
+  (or (eq value 'none) (ebox-style--horizontal-size-p value)))
+
+(defun ebox-style--vertical-size-p (value)
+  "Return non-nil when VALUE is a canonical vertical size."
+  (or (ebox-style--nonnegative-real-p value)
+      (memq value '(viewport-height auto))
+      (equal value '(viewport-height))))
+
+(defun ebox-style--min-vertical-size-p (value)
+  "Return non-nil when VALUE is a canonical minimum vertical size."
+  (ebox-style--nonnegative-real-p value))
+
+(defun ebox-style--max-vertical-size-p (value)
+  "Return non-nil when VALUE is a canonical maximum vertical size."
+  (or (ebox-style--nonnegative-real-p value)
+      (eq value 'none)
+      (eq value 'viewport-height)
+      (equal value '(viewport-height))))
 
 (defun ebox-style--nonnegative-number-p (value)
   "Return non-nil when VALUE is nil or a non-negative number."
@@ -565,6 +702,7 @@
 (defun ebox-style--grid-placement-p (value)
   "Return non-nil when VALUE is a valid public Grid placement."
   (or (null value)
+      (eq value 'auto)
       (and (integerp value) (> value 0))
       (and (proper-list-p value)
            (pcase value
@@ -573,39 +711,169 @@
              (`(,start :span ,span)
               (and (integerp start) (> start 0)
                    (integerp span) (> span 0)))
+             (`(:span ,span)
+              (and (integerp span) (> span 0)))
              (`(,start ,end)
               (and (integerp start) (> start 0)
                    (integerp end) (> end start)))))))
-
-(defun ebox-style--display-p (value)
-  "Return non-nil when VALUE is nil or an Ebox display pair."
-  (or (null value)
-      (and (listp value) (= (length value) 2)
-           (cl-every #'symbolp value))))
 
 (defun ebox-style--outer-p (value)
   "Return non-nil when VALUE is an Ebox outer participation value."
   (memq value '(inline block)))
 
-(defun ebox-style--layout-p (value)
-  "Return non-nil when VALUE is an Ebox child layout value."
-  (memq value '(normal row column flex grid)))
-
-(defun ebox-style--font-p (value)
-  "Return non-nil when VALUE is an Ebox font face specification."
-  (or (null value) (symbolp value) (stringp value) (proper-list-p value)))
-
 (defun ebox-style--font-family-p (value)
   "Return non-nil when VALUE is an Ebox font family."
-  (or (null value) (stringp value) (symbolp value)))
+  (or (null value)
+      (and (stringp value) (not (string-empty-p value)))
+      (symbolp value)))
 
-(defun ebox-style--font-height-p (value)
-  "Return non-nil when VALUE is an Emacs face height."
-  (or (null value) (numberp value) (functionp value)))
+(defun ebox-style--color-p (value)
+  "Return non-nil when VALUE is a canonical or deferred color fact."
+  (or (null value) (stringp value) (eq value 'currentColor)
+      (tp-paint-slot-p value)))
 
-(defun ebox-style--font-attribute-p (value)
-  "Return non-nil when VALUE is a symbolic font attribute."
-  (or (null value) (symbolp value)))
+(defun ebox-style--font-size-p (value)
+  "Return non-nil when VALUE is a positive CSS reference-pixel size."
+  (or (null value) (and (numberp value) (> value 0))))
+
+(defun ebox-style--font-weight-p (value)
+  "Return non-nil when VALUE is a canonical CSS font weight."
+  (or (null value)
+      (memq value '(normal bold bolder lighter
+                    100 200 300 400 500 600 700 800 900))))
+
+(defun ebox-style--font-style-p (value)
+  "Return non-nil when VALUE is a canonical CSS font style."
+  (or (null value) (memq value '(normal italic oblique))))
+
+(defun ebox-style--border-width-p (value)
+  "Return non-nil when VALUE is an exact nonnegative pixel width."
+  (and (integerp value) (>= value 0)))
+
+(defun ebox-style--border-style-p (value)
+  "Return non-nil when VALUE is a supported canonical border style."
+  (memq value '(none solid)))
+
+(defun ebox-style--text-decoration-line-p (value)
+  "Return non-nil when VALUE is a canonical text-decoration line set."
+  (let ((values (if (listp value) value (list value))))
+    (or (equal values '(none))
+        (and values
+             (cl-every (lambda (item)
+                         (memq item '(underline overline line-through)))
+                       values)
+             (= (length values)
+                (length (delete-dups (copy-sequence values))))))))
+
+(defun ebox-style--text-decoration-style-p (value)
+  "Return non-nil when VALUE is a canonical text-decoration style."
+  (memq value '(solid double dotted dashed wavy)))
+
+(defun ebox-style--nonnegative-integer-p (value)
+  "Return non-nil when VALUE is a nonnegative integer."
+  (and (integerp value) (>= value 0)))
+
+(defun ebox-style--cross-align-p (value)
+  "Return non-nil when VALUE is a Row/Column cross alignment."
+  (memq value '(start center end stretch)))
+
+(defun ebox-style--flex-direction-p (value)
+  "Return non-nil when VALUE is a canonical Flex direction."
+  (memq value '(row row-reverse column column-reverse)))
+
+(defun ebox-style--flex-wrap-p (value)
+  "Return non-nil when VALUE is a canonical Flex wrapping mode."
+  (memq value '(nowrap wrap wrap-reverse)))
+
+(defun ebox-style--justify-content-p (value)
+  "Return non-nil when VALUE is a canonical content justification."
+  (memq value '(normal start end flex-start flex-end center stretch
+                space-between space-around space-evenly)))
+
+(defun ebox-style--align-items-p (value)
+  "Return non-nil when VALUE is a canonical item alignment."
+  (memq value '(normal start end stretch flex-start flex-end center baseline)))
+
+(defun ebox-style--align-content-p (value)
+  "Return non-nil when VALUE is a canonical multi-line alignment."
+  (memq value '(normal start end stretch flex-start flex-end center
+                space-between space-around space-evenly)))
+
+(defun ebox-style--justify-items-p (value)
+  "Return non-nil when VALUE is a canonical Grid item justification."
+  (memq value '(stretch start end center)))
+
+(defun ebox-style--align-self-p (value)
+  "Return non-nil when VALUE is a canonical parent-relative alignment."
+  (memq value '(auto normal start end stretch flex-start flex-end
+                center baseline)))
+
+(defun ebox-style--grid-auto-flow-p (value)
+  "Return non-nil when VALUE is a canonical Grid auto-flow axis."
+  (memq value '(row column)))
+
+(defun ebox-style--grid-fixed-track-p (value)
+  "Return non-nil when VALUE is one nonnegative fixed Grid track."
+  (or (ebox-style--nonnegative-real-p value)
+      (and (proper-list-p value) (= (length value) 1)
+           (ebox-style--nonnegative-real-p (car value)))))
+
+(defun ebox-style--grid-fr-track-p (value)
+  "Return non-nil when VALUE is one positive fractional Grid track."
+  (and (proper-list-p value) (= (length value) 2)
+       (eq (car value) 'fr)
+       (numberp (cadr value)) (> (cadr value) 0)))
+
+(defun ebox-style--grid-track-p (value &optional allow-repeat)
+  "Return non-nil when VALUE is one Grid track.
+ALLOW-REPEAT permits a top-level repeat expression."
+  (cond
+   ((memq value '(auto min-content max-content)) t)
+   ((ebox-style--grid-fixed-track-p value) t)
+   ((ebox-style--grid-fr-track-p value) t)
+   ((and (proper-list-p value) (= (length value) 3)
+         (eq (car value) 'minmax))
+    (let ((minimum (cadr value)) (maximum (caddr value)))
+      (and (not (and (consp minimum)
+                     (memq (car minimum) '(minmax repeat))))
+           (not (and (consp maximum)
+                     (memq (car maximum) '(minmax repeat))))
+           (ebox-style--grid-track-p minimum nil)
+           (not (ebox-style--grid-fr-track-p minimum))
+           (ebox-style--grid-track-p maximum nil))))
+   ((and allow-repeat (proper-list-p value) (= (length value) 3)
+         (eq (car value) 'repeat)
+         (integerp (cadr value)) (> (cadr value) 0))
+    (let ((body (caddr value)))
+      (or (ebox-style--grid-track-p body nil)
+          (and (proper-list-p body) body
+               (cl-every (lambda (track)
+                           (ebox-style--grid-track-p track nil))
+                         body)))))
+   (t nil)))
+
+(defun ebox-style--grid-track-list-p (value)
+  "Return non-nil when VALUE is a valid Grid track list."
+  (or (null value)
+      (and (proper-list-p value) value
+           (cl-every (lambda (track)
+                       (ebox-style--grid-track-p track t))
+                     value))))
+
+(defun ebox-style--grid-auto-track-p (value)
+  "Return non-nil when VALUE denotes at most one implicit Grid track."
+  (or (null value)
+      (ebox-style--grid-track-p value nil)
+      (and (proper-list-p value) (= (length value) 1)
+           (ebox-style--grid-track-p (car value) nil))))
+
+(defun ebox-style--order-p (value)
+  "Return non-nil when VALUE is an integer parent ordering key."
+  (integerp value))
+
+(defun ebox-style--justify-self-p (value)
+  "Return non-nil when VALUE is a canonical Grid self alignment."
+  (memq value '(auto stretch start end center)))
 
 (defun ebox-style--wrap-mode-p (value)
   "Return non-nil when VALUE is a public Box wrapping mode."
@@ -624,18 +892,41 @@ generated wrappers that already contain exact line breaks."
 (defun ebox-style--validator (name)
   "Return schema validator named NAME."
   (pcase name
-    ((or 'horizontal-size 'nonnegative-size)
-     #'ebox-style--nonnegative-size-p)
+    ('horizontal-size #'ebox-style--horizontal-size-p)
+    ('min-horizontal-size #'ebox-style--min-horizontal-size-p)
+    ('max-horizontal-size #'ebox-style--max-horizontal-size-p)
+    ('vertical-size #'ebox-style--vertical-size-p)
+    ('min-vertical-size #'ebox-style--min-vertical-size-p)
+    ('max-vertical-size #'ebox-style--max-vertical-size-p)
+    ('nonnegative-size #'ebox-style--nonnegative-size-p)
     ('nonnegative-number #'ebox-style--nonnegative-number-p)
     ('positive-integer #'ebox-style--positive-integer-p)
     ('grid-placement #'ebox-style--grid-placement-p)
-    ('display #'ebox-style--display-p)
     ('outer #'ebox-style--outer-p)
-    ('layout #'ebox-style--layout-p)
-    ('font #'ebox-style--font-p)
     ('font-family #'ebox-style--font-family-p)
-    ('font-height #'ebox-style--font-height-p)
-    ('font-attribute #'ebox-style--font-attribute-p)
+    ('color #'ebox-style--color-p)
+    ('font-size #'ebox-style--font-size-p)
+    ('font-weight #'ebox-style--font-weight-p)
+    ('font-style #'ebox-style--font-style-p)
+    ('border-width #'ebox-style--border-width-p)
+    ('border-style #'ebox-style--border-style-p)
+    ('text-decoration-line #'ebox-style--text-decoration-line-p)
+    ('text-decoration-style #'ebox-style--text-decoration-style-p)
+    ('nonnegative-integer #'ebox-style--nonnegative-integer-p)
+    ('cross-align #'ebox-style--cross-align-p)
+    ('flex-direction #'ebox-style--flex-direction-p)
+    ('flex-wrap #'ebox-style--flex-wrap-p)
+    ('justify-content #'ebox-style--justify-content-p)
+    ('align-items #'ebox-style--align-items-p)
+    ('align-content #'ebox-style--align-content-p)
+    ('justify-items #'ebox-style--justify-items-p)
+    ('align-self #'ebox-style--align-self-p)
+    ('grid-auto-flow #'ebox-style--grid-auto-flow-p)
+    ('grid-track-list #'ebox-style--grid-track-list-p)
+    ('grid-track #'ebox-style--grid-auto-track-p)
+    ('order #'ebox-style--order-p)
+    ('flex-factor #'ebox-style--nonnegative-number-p)
+    ('justify-self #'ebox-style--justify-self-p)
     ('wrap-mode #'ebox-style--wrap-mode-p)
     ('boolean (lambda (value) (memq value '(nil t))))
     (_ (lambda (_value) t))))
@@ -656,11 +947,12 @@ generated wrappers that already contain exact line breaks."
      (border-bottom . ebox-style--border-bottom-shorthand)
      (border-left . ebox-style--border-left-shorthand)
      (border-top-present . ebox-style--border-top-present-shorthand)
-     (border-bottom-present . ebox-style--border-bottom-present-shorthand)
      (border-width . ebox-style--border-width-shorthand)
      (border-style . ebox-style--border-style-shorthand)
      (border-color . ebox-style--border-color-shorthand)
      (gap . ebox-style--gap-shorthand)
+     (grid-column-span . ebox-style--grid-column-span-shorthand)
+     (grid-row-span . ebox-style--grid-row-span-shorthand)
      (flex-flow . ebox-style--flex-flow-shorthand)
      (flex . ebox-style--flex-shorthand))))
 
@@ -680,15 +972,71 @@ generated wrappers that already contain exact line breaks."
 
 (defun ebox-style--schema-impacts (property)
   "Return immutable impact classes for PROPERTY metadata."
-  (or (plist-get property :impacts)
-      (and (eq (plist-get property :group) 'typography)
-           '(geometry paint))
-      (list (plist-get property :dirty-kind))))
+  (let ((name (plist-get property :name))
+        (group (plist-get property :group)))
+    (or (plist-get property :impacts)
+        (and (eq group 'typography) '(geometry paint))
+        (and (or (string-prefix-p ":padding" (symbol-name name))
+                 (and (string-prefix-p ":border" (symbol-name name))
+                      (not (string-suffix-p "-color" (symbol-name name)))
+                      (not (eq name :border-color))))
+             '(geometry paint))
+        (list (plist-get property :dirty-kind)))))
 
 (defun ebox-style--schema-projections (property)
   "Return immutable projection owners for PROPERTY metadata."
-  (or (plist-get property :projections)
-      (delq nil (list (plist-get property :signature)))))
+  (let ((name (plist-get property :name))
+        (group (plist-get property :group))
+        (contexts (plist-get property :contexts)))
+    (or (plist-get property :projections)
+        (cond
+         ((eq group 'typography) '(measurement paint))
+         ((memq 'item contexts) '(parent-participation))
+         ((or (string-prefix-p ":padding" (symbol-name name))
+              (and (string-prefix-p ":border" (symbol-name name))
+                   (not (string-suffix-p "-color" (symbol-name name)))
+                   (not (eq name :border-color))))
+          '(layout paint))
+         ((eq group 'paint) '(paint))
+         ((eq group 'structure) '(structure layout))
+         (t '(layout))))))
+
+(defun ebox-style--schema-domain-owner (property)
+  "Return the domain owner of PROPERTY's computed projection."
+  (let ((name (plist-get property :name))
+        (group (plist-get property :group))
+        (contexts (plist-get property :contexts)))
+    (cond
+     ((eq group 'typography) 'font-metrics-projection)
+     ((memq 'item contexts) 'direct-parent-layout)
+     ((eq group 'paint) 'tp-contribution)
+     ((or (memq name '(:gap :flex-flow))
+          (cl-some
+           (lambda (tag)
+             (memq name (ebox-layout-config-property-names tag)))
+           '(row column flex grid)))
+      'ebox-layout-config)
+     (t 'ebox-box-frame))))
+
+(defun ebox-style--schema-metadata (property)
+  "Return detached, complete registry metadata for PROPERTY."
+  (let ((metadata (copy-tree property)))
+    (setq metadata
+          (plist-put metadata :namespace
+                     (if (memq (plist-get property :name)
+                               '(:wrap-mode :item-gap :cross-align
+                                 :border-top-p :grid-column-span
+                                 :grid-row-span))
+                         'ebox
+                       'css)))
+    (setq metadata
+          (plist-put metadata :owner
+                     (ebox-style--schema-domain-owner property)))
+    (setq metadata
+          (plist-put metadata :impacts
+                     (ebox-style--schema-impacts property)))
+    (plist-put metadata :projections
+               (ebox-style--schema-projections property))))
 
 (defun ebox-style--schema-definition (property)
   "Return one ECSS package definition for Ebox PROPERTY metadata."
@@ -699,7 +1047,7 @@ generated wrappers that already contain exact line breaks."
                (copy-sequence (plist-get property :aliases)))
          :impacts (ebox-style--schema-impacts property)
          :projections (ebox-style--schema-projections property)
-         :metadata property)
+         :metadata (ebox-style--schema-metadata property))
    (ebox-style--schema-options property)))
 
 (defconst ebox-style--schema-package
@@ -711,11 +1059,12 @@ generated wrappers that already contain exact line breaks."
 
 (defconst ebox-style--property-index
   (let ((table (make-hash-table :test #'eq)))
-    (dolist (property ebox-style--property-definitions table)
-      (puthash (plist-get property :id) property table)
-      (puthash (plist-get property :name) property table)
-      (dolist (alias (plist-get property :aliases))
-        (puthash alias property table))))
+    (dolist (source ebox-style--property-definitions table)
+      (let ((property (ebox-style--schema-metadata source)))
+        (puthash (plist-get property :id) property table)
+        (puthash (plist-get property :name) property table)
+        (dolist (alias (plist-get property :aliases))
+          (puthash alias property table)))))
   "Ebox-owned immutable lookup index over property definitions.")
 
 (defconst ebox-style-schemas
@@ -837,44 +1186,6 @@ consume them even though Ebox does not interpret their names."
              and do (puthash id name seen)))
   plist)
 
-(defun ebox-style--author-property-output-ids (name value)
-  "Return canonical output IDs produced by author NAME and VALUE."
-  (when-let* ((property (ebox-style--property name)))
-    (if-let* ((shorthand-name (plist-get property :shorthand))
-              (expander (ebox-style--shorthand shorthand-name)))
-        (cl-loop for (id _output) on (funcall expander value) by #'cddr
-                 collect id)
-      (list (plist-get property :id)))))
-
-(defun ebox-style--validate-exclusive-properties (plist)
-  "Reject author properties whose canonical outputs overlap in PLIST."
-  (let (entries)
-    (cl-loop for (name value) on plist by #'cddr
-             for property = (ebox-style--property name)
-             when property
-             do (push (list :name name :value value :property property)
-                      entries))
-    (when (cl-some (lambda (entry)
-                     (plist-get (plist-get entry :property)
-                                :exclusive-outputs))
-                   entries)
-      (dolist (entry entries)
-        (when (plist-get (plist-get entry :property) :exclusive-outputs)
-          (let ((outputs
-                 (ebox-style--author-property-output-ids
-                  (plist-get entry :name) (plist-get entry :value))))
-            (dolist (other entries)
-              (unless (eq entry other)
-                (when (cl-intersection
-                       outputs
-                       (ebox-style--author-property-output-ids
-                        (plist-get other :name) (plist-get other :value))
-                       :test #'eq)
-                  (error "Ebox property %S cannot be combined with %S"
-                         (plist-get entry :name)
-                         (plist-get other :name))))))))))
-  plist)
-
 (defun ebox-style--declaration-cache-key (plist strict)
   "Return a stable style-only cache key for PLIST and STRICT.
 Non-style node properties such as content, Host references, and callbacks do
@@ -900,13 +1211,46 @@ not affect declaration compilation and are intentionally excluded."
   (pcase validator
     ('nonnegative-number
      (and (numberp value) (< value 0)))
-    ((or 'horizontal-size 'nonnegative-size)
-     (ebox-style--negative-numeric-size-p value))
+    ('horizontal-size (not (ebox-style--horizontal-size-p value)))
+    ('min-horizontal-size (not (ebox-style--min-horizontal-size-p value)))
+    ('max-horizontal-size (not (ebox-style--max-horizontal-size-p value)))
+    ('vertical-size (not (ebox-style--vertical-size-p value)))
+    ('min-vertical-size (not (ebox-style--min-vertical-size-p value)))
+    ('max-vertical-size (not (ebox-style--max-vertical-size-p value)))
+    ('nonnegative-size (not (ebox-style--nonnegative-size-p value)))
     ('positive-integer
      (and (numberp value) (not (ebox-style--positive-integer-p value))))
     ('grid-placement
      (and (or (numberp value) (proper-list-p value))
           (not (ebox-style--grid-placement-p value))))
+    ('font-family (not (ebox-style--font-family-p value)))
+    ('color (not (ebox-style--color-p value)))
+    ('font-size (not (ebox-style--font-size-p value)))
+    ('font-weight (not (ebox-style--font-weight-p value)))
+    ('font-style (not (ebox-style--font-style-p value)))
+    ('border-width (not (ebox-style--border-width-p value)))
+    ('border-style (not (ebox-style--border-style-p value)))
+    ('text-decoration-line
+     (not (ebox-style--text-decoration-line-p value)))
+    ('text-decoration-style
+     (not (ebox-style--text-decoration-style-p value)))
+    ('nonnegative-integer
+     (not (ebox-style--nonnegative-integer-p value)))
+    ('cross-align (not (ebox-style--cross-align-p value)))
+    ('flex-direction (not (ebox-style--flex-direction-p value)))
+    ('flex-wrap (not (ebox-style--flex-wrap-p value)))
+    ('justify-content (not (ebox-style--justify-content-p value)))
+    ('align-items (not (ebox-style--align-items-p value)))
+    ('align-content (not (ebox-style--align-content-p value)))
+    ('justify-items (not (ebox-style--justify-items-p value)))
+    ('align-self (not (ebox-style--align-self-p value)))
+    ('grid-auto-flow (not (ebox-style--grid-auto-flow-p value)))
+    ('grid-track-list (not (ebox-style--grid-track-list-p value)))
+    ('grid-track (not (ebox-style--grid-auto-track-p value)))
+    ('order (not (ebox-style--order-p value)))
+    ('flex-factor
+     (and (numberp value) (not (ebox-style--nonnegative-number-p value))))
+    ('justify-self (not (ebox-style--justify-self-p value)))
     ('wrap-mode
      (not (ebox-style--wrap-mode-p value)))))
 
@@ -920,14 +1264,37 @@ not affect declaration compilation and are intentionally excluded."
                      (plist-get schema :name) value))
   declarations)
 
-(defun ebox-style--merge-ordered-author-declarations (declarations)
-  "Expand ordered Ebox DECLARATIONS as distinct normalization groups.
-Ebox currently preserves CSS shorthand/longhand declaration order, while its
-own author validator rejects exact aliases and explicitly exclusive outputs."
-  (apply #'ecss-merge-declarations
-         ebox-style-schemas
-         (cl-loop for (property value) on declarations by #'cddr
-                  collect (list property value))))
+(defconst ebox-style--edge-projection-groups
+  '((:padding-top ebox/padding-top ebox/padding-block-start)
+    (:padding-right ebox/padding-right ebox/padding-inline-end)
+    (:padding-bottom ebox/padding-bottom ebox/padding-block-end)
+    (:padding-left ebox/padding-left ebox/padding-inline-start)
+    (:margin-top ebox/margin-top ebox/margin-block-start)
+    (:margin-right ebox/margin-right ebox/margin-inline-end)
+    (:margin-bottom ebox/margin-bottom ebox/margin-block-end)
+    (:margin-left ebox/margin-left ebox/margin-inline-start))
+  "Canonical facts sharing one fixed horizontal-tb/ltr physical edge.")
+
+(defconst ebox-style--edge-projection-targets
+  (cl-loop for (target . properties) in ebox-style--edge-projection-groups
+           append (mapcar (lambda (property) (cons property target))
+                          properties))
+  "Canonical edge property to fixed physical projection target.")
+
+(defun ebox-style--validate-edge-projection-conflicts (declarations)
+  "Reject canonical DECLARATIONS that target one physical edge twice."
+  (let ((seen (make-hash-table :test #'eq)))
+    (cl-loop for (property _value) on declarations by #'cddr
+             for target = (alist-get property
+                                    ebox-style--edge-projection-targets)
+             when target
+             do (when-let* ((previous (gethash target seen)))
+                  (signal 'ecss-invalid-declaration
+                          (list :duplicate-edge-target target
+                                :first-property previous
+                                :second-property property)))
+             and do (puthash target property seen)))
+  declarations)
 
 (defun ebox-style-compile-declarations (plist &optional strict)
   "Compile Ebox PLIST aliases to ECSS schema declarations.
@@ -935,7 +1302,6 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
   (unless (ebox-style--valid-plist-p plist)
     (user-error "Ebox style declarations must be an even property list"))
   (ebox-style--validate-no-duplicate-properties plist)
-  (ebox-style--validate-exclusive-properties plist)
   (let* ((cache-key (ebox-style--declaration-cache-key plist strict))
          (missing (make-symbol "ebox-style-declaration-cache-missing"))
          (cached (gethash cache-key ebox-style--declaration-cache missing)))
@@ -953,28 +1319,23 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
                                   property)))
         (let ((compiled
                (ebox-style--validate-declaration-values
-                (ebox-style--merge-ordered-author-declarations canonical))))
+                (ebox-style--validate-edge-projection-conflicts
+                 (ecss-expand-declarations ebox-style-schemas canonical)))))
           (when (>= (hash-table-count ebox-style--declaration-cache)
                     ebox-style--declaration-cache-max-entries)
             (clrhash ebox-style--declaration-cache))
           (puthash cache-key compiled ebox-style--declaration-cache)
           (copy-sequence compiled))))))
 
-(defconst ebox-style--text-form-properties
-  '(:color :background-color
-    :font :font-family :font-height :font-weight :font-slant)
-  "Canonical property names accepted by the Text author form.")
-
 (defun ebox-style--form-property-allowed-p (tag property)
   "Return non-nil when author TAG accepts PROPERTY metadata."
-  (let ((name (plist-get property :name))
-        (contexts (plist-get property :contexts)))
-    (if (eq tag 'text)
-        (memq name ebox-style--text-form-properties)
-      (or (memq 'box contexts)
-          (memq 'item contexts)
-          (and (memq tag '(flex grid))
-               (memq tag contexts))))))
+  (let ((contexts (plist-get property :contexts))
+        (author-contexts (plist-get property :author-contexts)))
+    (if author-contexts
+        (memq tag author-contexts)
+      (or (memq tag contexts)
+          (and (not (eq tag 'text))
+               (or (memq 'box contexts) (memq 'item contexts)))))))
 
 (defun ebox-style-validate-form-declarations (tag declarations)
   "Validate canonical DECLARATIONS for Text/Box author TAG."
@@ -998,10 +1359,27 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
   (ebox-style--validate-declaration-values declarations)
   declarations)
 
+(defun ebox-style--validate-author-values (plist)
+  "Reject explicit author values outside the public property grammars.
+An ECSS schema may use nil as an internal initial value, but nil is not an
+author value unless the public grammar is boolean."
+  (unless (ebox-style--valid-plist-p plist)
+    (user-error "Ebox style declarations must be an even property list"))
+  (cl-loop for (name value) on plist by #'cddr
+           for property = (ebox-style--property name)
+           when (and property
+                     (null value)
+                     (not (eq (plist-get property :validator) 'boolean)))
+           do (error "ebox: invalid value for %S: nil"
+                     (plist-get property :name)))
+  plist)
+
 (defun ebox-style-compile-form (tag plist)
   "Compile evaluated author PLIST once and validate it for TAG."
   (ebox-style-validate-form-declarations
-   tag (ebox-style-compile-declarations plist t)))
+   tag
+   (ebox-style-compile-declarations
+    (ebox-style--validate-author-values plist) t)))
 
 (defun ebox-style-declaration-properties (declarations predicate)
   "Return canonical author properties in DECLARATIONS matching PREDICATE."
@@ -1062,6 +1440,8 @@ ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
 
 (defconst ebox-style--paint-delta-properties
   '(ebox/color ebox/background-color
+    ebox/text-decoration-line ebox/text-decoration-color
+    ebox/text-decoration-style ebox/visibility
     ebox/border-top-color ebox/border-right-color
     ebox/border-bottom-color ebox/border-left-color)
   "Canonical paint properties that may change without changing geometry.")
@@ -1273,13 +1653,34 @@ child colors are handled by `ebox-style--theme-parent-delta-computed'."
   (plist-get (ecss-computed-style-values style)
              (ebox-style-schema-id property)))
 
+(defvar ebox-style--computed-snapshot-cache
+  (make-hash-table :test #'eq :weakness 'key)
+  "Immutable Ebox projection snapshots keyed by computed style identity.")
+
 (defun ebox-style--computed-snapshot (style &optional specified-p)
-  "Return one detached ECSS values snapshot for STYLE projection.
-When SPECIFIED-P is non-nil, include declaration-winner facts."
-  (list (ecss-computed-style-values style)
-        (ecss-computed-style-active-properties style)
-        (and specified-p
-             (ecss-computed-style-specified-properties style))))
+  "Return one internal immutable ECSS snapshot for STYLE projection.
+When SPECIFIED-P is non-nil, include declaration-winner facts.  Ebox
+materializes each immutable computed style once per snapshot shape; callers
+must treat the returned values as read-only."
+  (let* ((entry
+          (or (gethash style ebox-style--computed-snapshot-cache)
+              (let ((created (vector nil nil)))
+                (puthash style created ebox-style--computed-snapshot-cache)
+                created)))
+         (index (if specified-p 1 0))
+         (snapshot (aref entry index)))
+    (or snapshot
+        (let* ((other (aref entry (- 1 index)))
+               (values (if other (nth 0 other)
+                         (ecss-computed-style-values style)))
+               (active (if other (nth 1 other)
+                         (ecss-computed-style-active-properties style)))
+               (created
+                (list values active
+                      (and specified-p
+                           (ecss-computed-style-specified-properties style)))))
+          (aset entry index created)
+          created))))
 
 (defun ebox-style--snapshot-active-p (snapshot property)
   "Return non-nil when SNAPSHOT actively contributes PROPERTY."
@@ -1310,6 +1711,26 @@ SNAPSHOT reuses a previously detached ECSS values snapshot when supplied."
                 (plist-put result (plist-get property :name)
                            (plist-get values id))))))
     result))
+
+(defun ebox-style--project-edge-values (style values snapshot)
+  "Resolve logical/physical VALUES through STYLE's cross-property winners.
+SNAPSHOT supplies the already-read computed value table."
+  (let* ((edge-names
+          (mapcar (lambda (entry)
+                    (ebox-style-canonical-name (car entry)))
+                  ebox-style--edge-projection-targets))
+         (result
+          (cl-loop for (property value) on values by #'cddr
+                   unless (memq property edge-names)
+                   append (list property value))))
+    (dolist (group ebox-style--edge-projection-groups result)
+      (let* ((target (car group))
+             (winner
+              (ecss-computed-style-precedence-winner style (cdr group))))
+        (when winner
+          (setq result
+                (plist-put result target
+                           (plist-get (car snapshot) winner))))))))
 
 (defun ebox-style--specified-property-p (style property)
   "Return non-nil when STYLE PROPERTY has a declaration winner."
@@ -1371,7 +1792,9 @@ explicit generation SOURCE-INDEX; facts are never recovered from its handle."
 (defun ebox-style--apply-engine-values (box values)
   "Project public style VALUES into BOX engine fields."
   (ebox-style--reset-box-engine-style box)
-  (let ((expanded (ebox-style-expand-ebox-plist values)))
+  (let ((expanded
+         (ebox-style--expand-engine-plist
+          (ebox-style--without-font-values values))))
     (cl-loop for (property value) on expanded by #'cddr
              do (plist-put box property value)))
   box)
@@ -1394,10 +1817,11 @@ explicit generation SOURCE-INDEX; facts are never recovered from its handle."
     (if (not (eq cached missing))
         cached
       (let ((expanded
-             (ebox-style-expand-ebox-plist
-              (if text-p
-                  (ebox-style--text-values style snapshot)
-                (ebox-style--box-values style snapshot)))))
+             (ebox-style--expand-engine-plist
+              (ebox-style--without-font-values
+               (if text-p
+                   (ebox-style--text-values style snapshot)
+                 (ebox-style--box-values style snapshot))))))
         (puthash style expanded cache)
         expanded))))
 
@@ -1411,7 +1835,10 @@ explicit generation SOURCE-INDEX; facts are never recovered from its handle."
 (defun ebox-style--box-values (style &optional snapshot)
   "Return computed box values ready for Ebox engine projection."
   (let* ((snapshot (or snapshot (ebox-style--computed-snapshot style)))
-         (values (ebox-style--context-values style 'box nil snapshot)))
+         (values
+          (ebox-style--project-edge-values
+           style (ebox-style--context-values style 'box nil snapshot)
+           snapshot)))
     (when (and (ebox-style--snapshot-active-p snapshot :color)
                (null (plist-get values :color)))
       (setq values
@@ -1420,32 +1847,48 @@ explicit generation SOURCE-INDEX; facts are never recovered from its handle."
 
 (defun ebox-style--text-values (style snapshot)
   "Return computed STYLE values owned by canonical Text."
-  (cl-loop for (name value) on (ebox-style--box-values style snapshot)
-           by #'cddr
-           when (or (ebox-style-property-accepted-p 'text name)
-                    (eq name :wrap-mode))
-           append (list name value)))
+  (let ((values (ebox-style--context-values style 'text nil snapshot)))
+    (when (and (ebox-style--snapshot-active-p snapshot :color)
+               (null (plist-get values :color)))
+      (setq values
+            (plist-put values :color ebox-style--default-foreground)))
+    ;; Wrap policy is authored only by Box, then inherited as Text's
+    ;; measurement input without creating a second Text author property.
+    (when (ebox-style--snapshot-active-p snapshot :wrap-mode)
+      (setq values
+            (plist-put values :wrap-mode
+                       (plist-get (car snapshot) 'ebox/wrap-mode))))
+    values))
 
-(defun ebox-style--closed-inheritance-values (style)
+(defconst ebox-style--font-property-names
+  '(:font-family :font-size :font-weight :font-style)
+  "Canonical font inputs owned by one FontMetricsProjection.")
+
+(defun ebox-style--without-font-values (values)
+  "Return computed VALUES without canonical font inputs."
+  (cl-loop for (property value) on values by #'cddr
+           unless (memq property ebox-style--font-property-names)
+           append (list property value)))
+
+(defun ebox-style--closed-inheritance-values (style &optional snapshot)
   "Return STYLE's immutable canonical inheritance projection."
   (let* ((missing (make-symbol "ebox-inheritance-missing"))
          (cached (gethash style ebox-style--closed-inheritance-cache missing)))
     (if (not (eq cached missing))
         cached
-      (let* ((snapshot (ebox-style--computed-snapshot style))
+      (let* ((snapshot (or snapshot (ebox-style--computed-snapshot style)))
              (values (ebox-style--box-values style snapshot))
              result)
-        (dolist (property '(:color :font :font-family :font-height
-                            :font-weight :font-slant :wrap-mode))
+        (dolist (property '(:color :wrap-mode))
           (when (plist-member values property)
             (setq result
                   (plist-put result property (plist-get values property)))))
         (puthash style result ebox-style--closed-inheritance-cache)
         result))))
 
-(defun ebox-style-apply-closed-inheritance (node style)
+(defun ebox-style-apply-closed-inheritance (node style &optional snapshot)
   "Apply only closed computed inheritance from STYLE to fresh canonical NODE."
-  (let ((values (ebox-style--closed-inheritance-values style)))
+  (let ((values (ebox-style--closed-inheritance-values style snapshot)))
     (plist-put node :ebox-computed-style style)
     (cl-loop for (property value) on values by #'cddr
              do (plist-put node property value)))
@@ -1461,7 +1904,7 @@ until their private encoding is removed."
 
 (defconst ebox-style--container-wrapper-neutral-properties
   '(:width :height :box-sizing :color
-    :font :font-family :font-height :font-weight :font-slant)
+    :font-family :font-size :font-weight :font-style)
   "Container properties that do not require an internal visual wrapper.")
 
 (defun ebox-style--container-wrapper-needed-p (style &optional snapshot)
@@ -1506,21 +1949,6 @@ until their private encoding is removed."
     (unless (ebox-style--specified-property-p style 'ebox/wrap-mode)
       (plist-put wrapper :wrap-mode nil))))
 
-(defun ebox-style--grid-values (values)
-  "Translate canonical container VALUES to Grid engine property names."
-  (let ((row-present (plist-member values :row-gap))
-        (column-present (plist-member values :column-gap)))
-    (when row-present
-      (setq values
-            (plist-put values :grid-row-gap (plist-get values :row-gap))))
-    (when column-present
-      (setq values
-            (plist-put values :grid-column-gap
-                       (plist-get values :column-gap))))
-    (cl-loop for (property value) on values by #'cddr
-             unless (memq property '(:row-gap :column-gap))
-             append (list property value))))
-
 (defun ebox-style--apply-container (node style &optional snapshot)
   "Apply computed STYLE to Flex or Grid NODE."
   (let* ((type (plist-get node :ebox-type))
@@ -1529,10 +1957,7 @@ until their private encoding is removed."
          (values
           (append (ebox-style--context-values style 'box nil snapshot)
                   (ebox-style--context-values style type nil snapshot)))
-         (raw (append metadata
-                      (if (eq type 'grid)
-                          (ebox-style--grid-values values)
-                        values))))
+         (raw (append metadata values)))
     (plist-put node :raw-props raw)
     (plist-put node :props
                (if (eq type 'flex)
@@ -1604,7 +2029,7 @@ until their private encoding is removed."
 
 (defconst ebox-style--item-projection-properties
   '(:order :flex-grow :flex-shrink :flex-basis :align-self
-    :grid-column :grid-row :grid-column-span :grid-row-span)
+    :grid-column :grid-row :justify-self)
   "Canonical node fields owned by computed parent participation style.")
 
 (defun ebox-style--transfer-node-property (old new property)
@@ -1650,44 +2075,32 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
              do (plist-put node property value)))
   node)
 
-(defun ebox-style--apply-display-axes (node style snapshot)
-  "Apply computed display and public axes from STYLE SNAPSHOT to NODE."
-  (let* ((display-specified-p
-          (ebox-style--specified-property-p style 'ebox/display))
-         (outer-specified-p
-          (ebox-style--specified-property-p style 'ebox/outer))
-         (layout-specified-p
-          (ebox-style--specified-property-p style 'ebox/layout)))
+(defun ebox-style--apply-display-axes (node style)
+  "Apply computed public outer participation from STYLE to NODE."
+  (let ((outer-specified-p
+         (ebox-style--specified-property-p style 'ebox/outer)))
     (if (eq (plist-get node :ebox-kind) 'text)
         (progn
-          (when (or display-specified-p outer-specified-p layout-specified-p)
+          (when outer-specified-p
             (error "Ebox Text is fixed inline and rejects display axes"))
           (plist-put node :display '(inline flow)))
-      (when (ebox-style--snapshot-active-p snapshot :display)
-        (plist-put node :display
-                   (ebox-style-computed-value style :display)))
-      (when (or outer-specified-p layout-specified-p)
-        (let* ((display (or (plist-get node :display) '(block flow)))
-               (outer (if outer-specified-p
-                          (ebox-style-computed-value style :outer)
-                        (car display)))
-               (layout (if layout-specified-p
-                           (ebox-style-computed-value style :layout)
-                         (cadr display))))
+      (when outer-specified-p
+        (let ((display (or (plist-get node :display) '(block flow))))
           (plist-put node :display
-                     (list outer (if (eq layout 'normal) 'flow layout)))))))
+                     (list (ebox-style-computed-value style :outer)
+                           (cadr display)))))))
   node)
 
-(defun ebox-style-apply-computed (node style)
+(defun ebox-style-apply-computed (node style &optional snapshot)
   "Apply ECSS computed STYLE consequences to semantic Ebox NODE."
   (unless (ecss-computed-style-p style)
     (signal 'wrong-type-argument (list 'ecss-computed-style-p style)))
   (let* ((type (plist-get node :ebox-type))
          (config (plist-get node :ebox-layout-config))
          (kind (and config (ebox-layout-config-kind config)))
-         (snapshot (ebox-style--computed-snapshot style t)))
+         (snapshot (or snapshot (ebox-style--computed-snapshot style t))))
     (plist-put node :ebox-computed-style style)
-    (ebox-style--apply-display-axes node style snapshot)
+    (ebox-style--apply-display-axes node style)
     (cond
      ((or (memq (plist-get node :ebox-kind) '(text box))
           (eq type 'box))
@@ -1730,7 +2143,7 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
                      (list (car entry) (cdr entry)))
                    entries))))
 
-(defconst ebox-style-ebox-property-rules
+(defconst ebox-style--engine-projection-rules
   '((:padding :expand (:padding-top :padding-right
                                     :padding-bottom :padding-left)
               :mode trbl)
@@ -1788,17 +2201,17 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
                                               :border-bottom-color
                                               :border-left-color)
                    :mode trbl)
-    (:border-top-width :to :border-top-p :conv bool)
-    (:border-top-style :to nil)
+    (:border-top-width :to :border-top-pixel :conv border-pixel)
+    (:border-top-style :to :border-top-style)
     (:border-top-color :to :border-top-color :conv color)
-    (:border-bottom-width :to :border-bottom-p :conv bool)
-    (:border-bottom-style :to nil)
+    (:border-bottom-width :to :border-bottom-pixel :conv border-pixel)
+    (:border-bottom-style :to :border-bottom-style)
     (:border-bottom-color :to :border-bottom-color :conv color)
-    (:border-left-width :to :border-left-pixel :conv pixel)
-    (:border-left-style :to nil)
+    (:border-left-width :to :border-left-pixel :conv border-pixel)
+    (:border-left-style :to :border-left-style)
     (:border-left-color :to :border-left-color :conv color)
-    (:border-right-width :to :border-right-pixel :conv pixel)
-    (:border-right-style :to nil)
+    (:border-right-width :to :border-right-pixel :conv border-pixel)
+    (:border-right-style :to :border-right-style)
     (:border-right-color :to :border-right-color :conv color)
     (:width :to :width :conv preferred-size)
     (:min-width :to :min-width :conv min-size)
@@ -1806,24 +2219,32 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
     (:height :to :height)
     (:min-height :to :min-height)
     (:max-height :to :max-height)
+    (:outer :to nil)
     (:content :to :content)
     (:box-sizing :to :box-sizing)
     (:color :to :color :conv color)
     (:background-color :to :bgcolor :conv color)
     (:bgcolor :to :bgcolor :conv color)
+    (:text-decoration-line :to :text-decoration-line)
+    (:text-decoration-color :to :text-decoration-color :conv color)
+    (:text-decoration-style :to :text-decoration-style)
     (:text-align :to :text-align)
-    (:vertical-align :to :vertical-align :conv vertical-align)
     (:overflow :to :overflow)
     (:wrap-mode :to :wrap-mode)
     (:display :to nil)
     (:visibility :to :visibility))
-  "Compatibility rules that expand public Ebox properties to engine keys.")
+  "Canonical property projections into private runtime storage keys.")
 
 (defun ebox-style--convert (value converter)
   "Convert VALUE using Ebox engine CONVERTER."
   (pcase converter
     ('pixel (or (ebox--nonnegative-horizontal-size-pixels value nil) 0))
     ('size-pixel (or (ebox--nonnegative-horizontal-size-pixels value nil) 0))
+    ('border-pixel
+     (unless (ebox-style--border-width-p value)
+       (error "ebox: border width must be a nonnegative integer pixel value: %S"
+              value))
+     value)
     ('preferred-size
      (ebox--normalize-horizontal-size-value
       value ebox--preferred-size-keywords))
@@ -1840,11 +2261,6 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
              (error "ebox: line values cannot be negative: %S" value))
            value)
        0))
-    ('bool
-     (when (ebox-style--negative-numeric-size-p value)
-       (error "ebox: border width values cannot be negative: %S" value))
-     (and value (not (eq value 0))))
-    ('vertical-align (if (eq value 'middle) 'center value))
     ('color (ebox-style--parse-color value))
     (_ value)))
 
@@ -1854,7 +2270,7 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
     :margin-left-pixel :margin-right-pixel
     :margin-top-height :margin-bottom-height
     :border-left-pixel :border-right-pixel
-    :border-top-p :border-bottom-p)
+    :border-top-pixel :border-bottom-pixel)
   "Engine edge longhands that cannot represent negative geometry.")
 
 (defun ebox-style--validate-edge-longhands (plist)
@@ -1868,6 +2284,18 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
           (error "ebox: %S cannot be negative: %S" property value))))
     plist))
 
+(defun ebox-style--apply-border-used-widths (plist)
+  "Return PLIST with border widths resolved against their styles.
+Canonical width remains in the computed style; private engine pixels are the
+used geometry and become zero when the corresponding style is not `solid'."
+  (dolist (side '(top right bottom left) plist)
+    (let ((width-key (intern (format ":border-%s-pixel" side)))
+          (style-key (intern (format ":border-%s-style" side))))
+      (when (or (plist-member plist width-key)
+                (plist-member plist style-key))
+        (unless (eq (plist-get plist style-key) 'solid)
+          (setq plist (plist-put plist width-key 0)))))))
+
 (defun ebox-style--split-value (value mode n)
   "Split VALUE according to MODE for N targets."
   (pcase mode
@@ -1878,10 +2306,10 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
     (_ (make-list n value))))
 
 (defun ebox-style--get-ebox-rule (property)
-  "Return Ebox compatibility expansion rule for PROPERTY."
-  (cdr (assq property ebox-style-ebox-property-rules)))
+  "Return Ebox private engine projection rule for PROPERTY."
+  (cdr (assq property ebox-style--engine-projection-rules)))
 
-(defun ebox-style-expand-ebox-property (property value)
+(defun ebox-style--expand-engine-property (property value)
   "Expand public Ebox PROPERTY with VALUE to engine longhands."
   (let ((rule (ebox-style--get-ebox-rule property)))
     (cond
@@ -1890,7 +2318,7 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
       (let* ((targets (plist-get rule :expand))
              (mode (plist-get rule :mode))
              (parts (ebox-style--split-value value mode (length targets))))
-        (cl-mapcan #'ebox-style-expand-ebox-property targets parts)))
+        (cl-mapcan #'ebox-style--expand-engine-property targets parts)))
      ((plist-member rule :to)
       (let ((target (plist-get rule :to))
             (converter (plist-get rule :conv)))
@@ -1899,16 +2327,83 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
           nil)))
      (t (list property value)))))
 
-(defun ebox-style-expand-ebox-plist (plist)
-  "Expand PLIST using Ebox compatibility property rules."
+(defun ebox-style--engine-projection-targets (property)
+  "Return private engine keys potentially projected from PROPERTY."
+  (let* ((name (or (ebox-style-canonical-name property) property))
+         (rule (ebox-style--get-ebox-rule name)))
+    (cond
+     ((null rule) (list name))
+     ((plist-get rule :expand)
+      (delete-dups
+       (cl-mapcan #'ebox-style--engine-projection-targets
+                  (plist-get rule :expand))))
+     ((plist-member rule :to)
+      (when-let* ((target (plist-get rule :to)))
+        (list target)))
+     (t (list name)))))
+
+(defun ebox-style--expand-engine-plist (plist)
+  "Project canonical PLIST into private Ebox runtime fields."
   (let (expanded)
     (while plist
       (let ((property (pop plist))
             (value (pop plist)))
         (setq expanded
               (nconc expanded
-                     (ebox-style-expand-ebox-property property value)))))
-    (ebox-style--validate-edge-longhands expanded)))
+                     (ebox-style--expand-engine-property property value)))))
+    (ebox-style--apply-border-used-widths
+     (ebox-style--validate-edge-longhands expanded))))
+
+(defun ebox-style--border-delta-value
+    (declarations full-declarations style name)
+  "Return border NAME from delta, complete declarations, STYLE, or initial."
+  (let* ((definition (ebox-style--property name))
+         (id (plist-get definition :id)))
+    (cond
+     ((plist-member declarations id) (plist-get declarations id))
+     ((plist-member full-declarations id) (plist-get full-declarations id))
+     ((and style (ecss-computed-style-p style))
+      (ebox-style-computed-value style name))
+     (t (copy-tree (plist-get definition :initial))))))
+
+(defun ebox-style--expand-engine-delta
+    (declarations full-declarations current-style)
+  "Project canonical DECLARATIONS against CURRENT-STYLE.
+Ordinary properties remain change-local.  Border width/style pairs are
+completed from FULL-DECLARATIONS and CURRENT-STYLE before deriving their used
+engine pixels."
+  (let (ordinary affected-sides)
+    (cl-loop for (id value) on declarations by #'cddr
+             for definition = (ebox-style--property id)
+             for name = (plist-get definition :name)
+             for side = (cl-loop for candidate in '(top right bottom left)
+                                 when (memq name
+                                            (list
+                                             (intern (format
+                                                      ":border-%s-width"
+                                                      candidate))
+                                             (intern (format
+                                                      ":border-%s-style"
+                                                      candidate))))
+                                 return candidate)
+             if side do (cl-pushnew side affected-sides)
+             else do (setq ordinary (append ordinary (list name value))))
+    (let ((expanded (ebox-style--expand-engine-plist ordinary)))
+      (dolist (side (nreverse affected-sides) expanded)
+        (let ((width-name (intern (format ":border-%s-width" side)))
+              (style-name (intern (format ":border-%s-style" side))))
+          (setq expanded
+                (append
+                 expanded
+                 (ebox-style--expand-engine-plist
+                  (list width-name
+                        (ebox-style--border-delta-value
+                         declarations full-declarations
+                         current-style width-name)
+                        style-name
+                        (ebox-style--border-delta-value
+                         declarations full-declarations
+                         current-style style-name))))))))))
 
 (provide 'ebox-style)
 

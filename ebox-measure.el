@@ -8,6 +8,7 @@
 
 (require 'cl-lib)
 (require 'ebox-cache)
+(require 'ebox-font)
 
 (declare-function ebox--register-render-owned-text-value
                   "ebox-render-context" (property value))
@@ -251,21 +252,29 @@ switching those layers must not invalidate Ebox measurement caches."
 This is the public, text-scale-aware measurement used by Ebox layout code."
   (ebox--string-pixel-width string))
 
-(defun ebox--display-signature ()
-  "Return the current display signature for pixel measurement caches."
-  (list (frame-parameter nil 'font)
-        (frame-parameter nil 'font-backend)
-        (frame-parameter nil 'line-spacing)
-        (frame-parameter nil 'internal-border-width)
-        (face-attribute 'default :family nil t)
-        (face-attribute 'default :height nil t)
-        (face-attribute 'default :weight nil t)
-        (face-attribute 'default :slant nil t)
-        (face-attribute 'default :width nil t)
-        (face-attribute 'default :foreground nil t)
-        (face-attribute 'default :background nil t)
+(defun ebox--display-signature-for-frame (frame)
+  "Return the pixel-measurement capability signature for FRAME."
+  (list frame
+        (frame-parameter frame 'font)
+        (frame-parameter frame 'font-backend)
+        (frame-parameter frame 'line-spacing)
+        (face-attribute 'default :family frame t)
+        (face-attribute 'default :height frame t)
+        (face-attribute 'default :weight frame t)
+        (face-attribute 'default :slant frame t)
+        (face-attribute 'default :width frame t)
         (ebox--measurement-face-remapping)
-        (and (boundp 'text-scale-mode-amount) text-scale-mode-amount)))
+        (and (boundp 'text-scale-mode-amount) text-scale-mode-amount)
+        (and (boundp 'text-scale-mode-step) text-scale-mode-step)))
+
+(defun ebox--display-signature-for-window (window)
+  "Return the pixel-measurement capability signature for live WINDOW."
+  (ebox--display-signature-for-frame
+   (if (window-live-p window) (window-frame window) (selected-frame))))
+
+(defun ebox--display-signature ()
+  "Return the selected frame's pixel-measurement capability signature."
+  (ebox--display-signature-for-frame (selected-frame)))
 
 (defsubst ebox--current-display-signature ()
   "Return the render snapshot or sample the current display signature."
@@ -336,6 +345,7 @@ Nested uses reuse the outer validation."
   "Clear pixel width caches after font or named face metrics change."
   (clrhash ebox--char-width-cache)
   (ebox--clear-string-pixel-width-cache)
+  (ebox-font-clear-cache)
   (setq ebox--space-pixel-cache nil)
   (setq ebox--face-height-width-cache nil)
   (setq ebox--display-signature-cache (ebox--display-signature)))

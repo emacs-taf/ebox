@@ -242,9 +242,11 @@ canonical inputs, not additional source authority."
   (plist-put node :ebox-source-handle handle)
   node)
 
-(defun ebox-canonical--text-measurement-property-p (property)
-  "Return non-nil when PROPERTY belongs to canonical Text measurement."
-  (eq (plist-get property :group) 'typography))
+(defun ebox-canonical--text-engine-property-p (_property)
+  "Return non-nil for a Text fact materializable without a Surface.
+Canonical Text style currently consists of paint facts and host-resolved font
+facts.  Neither is a constructor-owned measurement field."
+  nil)
 
 (defun ebox-canonical--box-frame-property-p (property)
   "Return non-nil when PROPERTY belongs to Box geometry or participation."
@@ -284,20 +286,18 @@ and author TAG."
                           declarations
                           (lambda (property)
                             (or (funcall predicate property)
-                                (memq (plist-get property :group)
-                                      '(paint typography)))))
+                                (eq (plist-get property :group) 'paint))))
                          (ebox-style-declarations-require-projection-p
                           declarations
                           (lambda (property)
                             (or (funcall predicate property)
-                                (memq (plist-get property :group)
-                                      '(paint typography))
+                                (eq (plist-get property :group) 'paint)
                                 (and (memq tag '(flex grid))
                                      (memq tag
                                            (plist-get property
                                                       :contexts)))))))))
               (setf (nth 1 facts)
-                    (ebox-style-expand-ebox-plist (nth 1 facts)))
+                    (ebox-style--expand-engine-plist (nth 1 facts)))
               (puthash tag facts by-tag)
               facts))))
     (let ((declarations
@@ -316,13 +316,12 @@ and author TAG."
                do (error "%s does not accept %S"
                          context (plist-get property :name)))
       (list declarations
-            (ebox-style-expand-ebox-plist
+            (ebox-style--expand-engine-plist
              (ebox-style-declaration-properties
               declarations
               (lambda (property)
                 (or (funcall predicate property)
-                    (memq (plist-get property :group)
-                          '(paint typography))))))
+                    (eq (plist-get property :group) 'paint)))))
             nil))))
 
 (defun ebox-canonical-facts-from-declarations (tag declarations)
@@ -331,7 +330,7 @@ Source declarations stay behind the source handle; the returned value contains
 only the current canonical-node projection needed before G4c separates paint."
   (let ((predicate
          (if (eq tag 'text)
-             #'ebox-canonical--text-measurement-property-p
+             #'ebox-canonical--text-engine-property-p
            #'ebox-canonical--box-frame-property-p)))
     (pcase-let ((`(,canonical ,engine ,style-required-p)
                  (ebox-canonical--node-properties

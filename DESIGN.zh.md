@@ -30,7 +30,7 @@ Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过
 
 ## 布局范围
 
-Ebox 支持字符和像素尺寸、padding、margin、border、颜色、Emacs face/font property、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。支持的 typography 子集是 `:font`、`:font-family`、`:font-height`/`:font-size`、`:font-weight` 和 `:font-slant`。CSS 兼容性有意是部分实现：百分比、绝对定位、z-index、阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
+Ebox 支持以列或像素表示的横向尺寸、以行表示的纵向尺寸、padding、margin、像素 border、颜色、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。公共 typography 子集是 `:font-family`、以 CSS reference pixel 表示的 `:font-size`、`:font-weight` 和 `:font-style`；`:font-slant` 只是 `:font-style` 的精确 parse-time alias。Emacs face 与文本属性只属于最终 adapter，不是 Ebox 作者属性。CSS 兼容性有意是部分实现：百分比、绝对定位、z-index、阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
 
 ## 验证规则
 

@@ -177,7 +177,11 @@
                      (should pixelwise)
                      (if (eq window 'current-frame-window) 901 333)))
                   ((symbol-function 'window-body-height)
-                   (lambda (_window &optional _pixelwise) 31)))
+                   (lambda (_window &optional _pixelwise) 31))
+                  ((symbol-function 'ebox--display-signature-for-window)
+                   (lambda (window)
+                     (should (eq window 'current-frame-window))
+                     'current-frame-capability)))
           (let ((values (ebox-surface--context-values buffer nil nil)))
             (should (= 899 (plist-get values :viewport-width)))
             (should (= 31 (plist-get values :viewport-height)))))
@@ -366,7 +370,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
    (cons 'grid
          (lambda ()
            (ebox-test-grid
-            :width '(220) :grid-template-columns '((70) 1fr)
+            :width '(220) :grid-template-columns '((70) (fr 1))
             :grid-template-rows '(2) :gap '(1 (8))
             :border "#475569"
             (ebox-test-box :key 'grid-left (ebox-test-text "A\nAA")
@@ -602,9 +606,10 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
          (input
           (ebox-test-box
            :width 20
-           (ebox-test-text
-             "native" :color 'ebox/default-foreground)))
+           (ebox-test-text "native")))
          (node (ebox-test-root input))
+         (text-node (car (ebox-box-node-children node)))
+         (_ (plist-put text-node :color 'ebox/default-foreground))
          (package (ebox-native-reflow--compile-layout-package node))
          (document (plist-get package :document))
          (styles (plist-get document :styles))
@@ -820,7 +825,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (ebox-surface-test--render-fresh
        (lambda ()
          (ebox-test-box
-          :font-height 1.25
+          :font-size 16
           (ebox-test-box (ebox-test-text "Inherited"))))
        t))
     (should (> calls 0))))
@@ -1253,7 +1258,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                      collect
                      (ebox-test-flex-item
                       (ebox-test-box
-                       :key (list 'viewport-reflow-item index)
+                       :key (format "viewport-reflow-item-%d" index)
                        (ebox-test-text (format "item-%02d" index))
                        :width '(70)
                        :padding '(0 1)
@@ -1671,7 +1676,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (ebox-render-to-buffer
            buffer
            (ebox-test-box
-            :font-height 1.25
+            :font-size 16
             :width '(viewport)
             (ebox-test-box (ebox-test-text "Inherited"))))
           (cl-letf (((symbol-function 'ebox-surface--ensure-node-tree)
@@ -2014,8 +2019,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                     ebox-surface--context-signals))
                  (revision (tp-surface-revision surface))
                  (next-signature '(ebox-test-theme dark)))
-            (cl-letf (((symbol-function 'ebox--display-signature)
-                       (lambda () next-signature)))
+            (cl-letf (((symbol-function 'ebox--display-signature-for-window)
+                       (lambda (_window) next-signature)))
               (ebox-rerender-buffer-with-context buffer 120 4))
             (should (= (tp-surface-revision surface) (1+ revision)))
             (should (equal
@@ -2034,10 +2039,12 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 
 (ert-deftest ebox-inline-style-reuse-projects-onto-fresh-text-node ()
   "A reused computed style must still materialize a fresh Text projection."
-  (let* ((builder (ebox-source-builder-create))
+  (let* ((foreground "#0F172A")
+         (background "#F8FAFC")
+         (builder (ebox-source-builder-create))
          (parent-declarations
-          '(ebox/color foreground-slot
-            ebox/background-color background-slot))
+          (list 'ebox/color foreground
+                'ebox/background-color background))
          (parent-handle
           (ebox-source-builder-bind
            builder :identity 'parent :declarations parent-declarations))
@@ -2098,12 +2105,12 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
     (ebox-surface-prepare-inline-candidate-styles
      old-state candidate '(1 2))
     (should (eq child-style (plist-get new-child :ebox-computed-style)))
-    (should (eq 'foreground-slot (plist-get new-child :color)))
+    (should (equal foreground (plist-get new-child :color)))
     (should (equal "New" (ebox-text-node-value new-child)))
     (should (eq child-handle (ebox-node-source-handle new-child)))
     (dolist (property ebox-tree--participation-keys)
       (should-not (plist-member new-child property)))
-    (should (eq 'background-slot (plist-get parent :bgcolor)))))
+    (should (equal background (plist-get parent :bgcolor)))))
 
 (ert-deftest ebox-style-theme-delta-reuses-cascade-facts ()
   "Copy a paint-only Theme delta without rerunning ECSS cascade computation."
@@ -2177,7 +2184,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
                    (ecss-computed-style-values delta)))
     (let ((parent-font-new
            (ebox-style-compute-subject
-            parent '(ebox/color "#222222" ebox/font-height 2.0))))
+            parent '(ebox/color "#222222" ebox/font-size 20))))
       (should-not
        (ebox-style--theme-parent-delta-computed
         style declarations parent-old parent-font-new)))))
@@ -2194,16 +2201,16 @@ changes.  Geometry and non-inherited computed values must remain identical."
     (should-not (memq :ebox-content-width-exact-p
                       (ebox-tree-node-local-changed-keys old new)))))
 
-(ert-deftest ebox-tree-grid-source-signature-canonicalizes-layout-aliases ()
-  "Equivalent Grid gap/paint aliases must not become geometry dirtiness."
+(ert-deftest ebox-tree-grid-source-signature-canonicalizes-gap-shorthand ()
+  "Equivalent Grid gap forms must not become geometry dirtiness."
   (let ((old (list :ebox-type 'grid
                    :raw-props '(:width stretch
-                                :grid-template-columns (1fr 1fr)
-                                :grid-row-gap 1 :grid-column-gap (12)
+                                :grid-template-columns ((fr 1) (fr 1))
+                                :row-gap 1 :column-gap (12)
                                 :color "#252A2E" :background-color "#F8F5EE")))
         (new (list :ebox-type 'grid
                    :raw-props '(:width stretch
-                                :grid-template-columns (1fr 1fr)
+                                :grid-template-columns ((fr 1) (fr 1))
                                 :gap (1 (12))
                                 :color "#F2EEE4" :bgcolor "#1B1F20"))))
     (should-not (memq :props (ebox-tree-node-local-changed-keys old new)))
@@ -2218,10 +2225,10 @@ changes.  Geometry and non-inherited computed values must remain identical."
                                 :padding-inline-end 2
                                 :padding-block-end 0
                                 :padding-inline-start 2
-                                :border-top-width (1)
-                                :border-right-width (1)
-                                :border-bottom-width (1)
-                                :border-left-width (1)
+                                :border-top-width 1
+                                :border-right-width 1
+                                :border-bottom-width 1
+                                :border-left-width 1
                                 :border-top-style solid
                                 :border-right-style solid
                                 :border-bottom-style solid
@@ -2237,7 +2244,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
                    :raw-props '(:width stretch
                                 :gap (1 (12))
                                 :padding (0 2)
-                                :border ((1) solid "#687386")
+                                :border (1 solid "#687386")
                                 :align-items center
                                 :color "#F2EEE4"
                                 :bgcolor "#1B1F20"))))
@@ -2249,11 +2256,11 @@ changes.  Geometry and non-inherited computed values must remain identical."
   (let* ((parent (ecss-subject-create :type "box"))
          (child (ecss-subject-create :type "box" :parent parent))
          (parent-old
-          (ebox-style-compute-subject
-           parent '(ebox/font-height 1.0)))
+         (ebox-style-compute-subject
+           parent '(ebox/font-size 16)))
          (parent-new
-          (ebox-style-compute-subject
-           parent '(ebox/font-height 2.0)))
+         (ebox-style-compute-subject
+           parent '(ebox/font-size 20)))
          (declarations '(ebox/color "#ffffff"))
          (style
           (ebox-style-compute-subject child declarations parent-old)))

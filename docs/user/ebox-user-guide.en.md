@@ -38,7 +38,7 @@ child-layout algorithm, not a different kind of visual object.
 (defvar ebox-guide-input
   (ebox-build
    '(column :padding (1 2)
-            :border ((1) solid "#8A93A6")
+            :border (1 solid "#8A93A6")
             (text :color "#263244" "Research notes")
             (row :item-gap 1
                  (box :id "status" :background-color "#F4F6FB" "Inbox")
@@ -94,7 +94,7 @@ child `box`.
 ```elisp
 (ebox-build
  '(grid :width (640)
-        :grid-template-columns ((200) 1fr 1fr)
+        :grid-template-columns ((200) (fr 1) (fr 1))
         :grid-template-rows (1 1)
         :gap (1 (12))
         (box :grid-column (1 :span 3) "Header")
@@ -117,7 +117,7 @@ Text Box geometry.
  '(box :width (420)
        :padding (1 2)
        :margin (0 1)
-       :border ((1) solid "#8A93A6")
+       :border (1 solid "#8A93A6")
        :color "#263244"
        :background-color "#FFFFFF"
        "A readable panel"))

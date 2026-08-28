@@ -113,7 +113,7 @@
                 sum (ebox-dsl-test--tree-count child predicate)))))
 
 (ert-deftest ebox-style-expands-ebox-aliases-to-canonical-longhands ()
-  "Existing Ebox aliases should normalize to CSS-like longhand properties."
+  "Approved aliases and shorthands should produce canonical longhands."
   (let ((style (ebox-style-compute
                 (list :bgcolor "#ffffff"
                       :padding '(1 2)
@@ -124,7 +124,7 @@
     (should (= (plist-get style :padding-inline-end) 2))
     (should (= (plist-get style :padding-block-end) 1))
     (should (= (plist-get style :padding-inline-start) 2))
-    (should (= (plist-get style :margin-inline-start) 3))
+    (should (= (plist-get style :margin-left) 3))
     (should (equal (plist-get style :border-color) "#333333"))))
 
 (ert-deftest ebox-style-classifies-incremental-effects ()
@@ -134,14 +134,22 @@
   (should (eq (ebox-style-dirty-kind :padding-inline-start) 'geometry))
   (should (eq (ebox-style-dirty-kind :width) 'geometry))
   (should (eq (ebox-style-dirty-kind :outer) 'structure))
-  (should (eq (ebox-style-dirty-kind :layout) 'structure))
-  (should (eq (ebox-style-dirty-kind :display) 'structure)))
+  (should-not (ebox-style-dirty-kind :layout))
+  (should-not (ebox-style-dirty-kind :display)))
 
 (ert-deftest ebox-typed-form-projects-outer-and-layout-to-display ()
   "A typed Box form should project its two axes to one display pair."
   (let ((node (ebox-build '(flex :outer inline "A"))))
     (should (equal (ebox--computed-display (ebox-dsl-test--root node))
                    '(inline flex)))))
+
+(ert-deftest ebox-inline-outer-participates-in-the-cascade ()
+  "An inline outer declaration should outrank a matching stylesheet rule."
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+    (ebox-style-add-rule ".card" '(:outer block))
+    (let ((node (ebox-dsl-test--root
+                 (ebox-build '(box :class "card" :outer inline "A")))))
+      (should (equal (ebox--computed-display node) '(inline flow))))))
 
 (ert-deftest ebox-style-unrelated-facts-preserve-typed-layout-config ()
   "Unrelated computed facts must not replace direct typed layout values."
@@ -174,6 +182,80 @@
    (equal (ebox-style-compile-declarations '(:bgcolor "red") t)
           (ebox-style-compile-declarations '(:background-color "red") t))))
 
+(ert-deftest ebox-canonical-property-vocabulary-is-the-only-author-path ()
+  "The frozen G4b vocabulary should have one canonical spelling and owner."
+  (dolist (entry '((:font-size . ebox/font-size)
+                   (:font-style . ebox/font-style)
+                   (:text-decoration-line . ebox/text-decoration-line)
+                   (:text-decoration-color . ebox/text-decoration-color)
+                   (:text-decoration-style . ebox/text-decoration-style)
+                   (:item-gap . ebox/item-gap)
+                   (:cross-align . ebox/cross-align)
+                   (:justify-self . ebox/justify-self)))
+    (should (eq (ebox-style-schema-id (car entry)) (cdr entry))))
+  (should (eq (ebox-style-schema-id :bgcolor)
+              (ebox-style-schema-id :background-color)))
+  (should (eq (ebox-style-schema-id :font-slant)
+              (ebox-style-schema-id :font-style)))
+  (dolist (entry '((:padding-top . ebox/padding-top)
+                   (:padding-right . ebox/padding-right)
+                   (:padding-bottom . ebox/padding-bottom)
+                   (:padding-left . ebox/padding-left)
+                   (:margin-top . ebox/margin-top)
+                   (:margin-right . ebox/margin-right)
+                   (:margin-bottom . ebox/margin-bottom)
+                   (:margin-left . ebox/margin-left)))
+    (should (eq (ebox-style-schema-id (car entry)) (cdr entry))))
+  (should-not (eq (ebox-style-schema-id :padding-top)
+                  (ebox-style-schema-id :padding-block-start)))
+  (should-not (eq (ebox-style-schema-id :margin-left)
+                  (ebox-style-schema-id :margin-inline-start)))
+  (dolist (name '(:font :font-height :border-bottom-p
+                  :grid-row-gap :grid-column-gap :vertical-align
+                  :display :layout :content :surface-properties :face
+                  :padding-top-height :padding-right-pixel
+                  :padding-bottom-height :padding-left-pixel
+                  :margin-top-height :margin-right-pixel
+                  :margin-bottom-height :margin-left-pixel
+                  :border-right-pixel :border-left-pixel))
+    (should-not (ebox-style-schema-id name)))
+  (dolist (name '(:border-top-p :grid-column-span :grid-row-span))
+    (should (plist-get (ebox-style-property name) :shorthand))))
+
+(ert-deftest ebox-normal-text-align-is-not-a-layout-wide-property ()
+  "Only the Normal Box form owns text alignment author input."
+  (should (ebox-build '(box :text-align center "A")))
+  (dolist (tag '(row column flex grid))
+    (should-error
+     (ebox-build (list tag :text-align 'center "A"))
+     :type 'error)))
+
+(ert-deftest ebox-edge-projection-uses-one-ecss-winner-order ()
+  "Logical and physical edges conflict locally and cascade across sources."
+  (should-error
+   (ebox-style-compile-declarations
+    '(:padding-left (4) :padding-inline-start (8)) t)
+   :type 'ecss-invalid-declaration)
+  (let* ((base (ebox-style-compile-declarations '(:padding (0 (8))) t))
+         (override
+          (ebox-style-compile-declarations '(:padding-left (24)) t))
+         (style
+          (ebox-style-compute-subject
+           (ecss-subject-create :type "box")
+           (ebox-style-merge-declarations base override))))
+    (should (equal (plist-get (ebox-style--box-values style) :padding-left)
+                   '(24))))
+  (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+    (ebox-style-add-rule ".card" '(:margin-inline-start (2)))
+    (ebox-style-add-rule "#target" '(:margin-left (6)))
+    (let ((style
+           (ebox-style-compute-subject
+            (ecss-subject-create
+             :type "box" :id "target" :classes '("card"))
+            nil)))
+      (should (equal (plist-get (ebox-style--box-values style) :margin-left)
+                     '(6))))))
+
 (ert-deftest ebox-style-rejects-canonical-and-alias-duplicates ()
   "One declaration source should not spell one property twice."
   (should-error
@@ -185,22 +267,24 @@
     '(:background-color "red" :bgcolor "blue") t)
    :type 'error))
 
-(ert-deftest ebox-style-preserves-ordered-shorthand-longhand-normalization ()
-  "Ebox author pairs remain ordered normalization groups before cutover."
-  (let ((border-then-top
-         (ebox-style-compile-declarations
-          '(:border "red" :border-top none) t))
-        (top-then-border
-         (ebox-style-compile-declarations
-          '(:border-top none :border "red") t)))
-    (should (eq 'none
-                (plist-get border-then-top 'ebox/border-top-style)))
-    (should (equal "red"
-                   (plist-get border-then-top 'ebox/border-right-color)))
-    (should (eq 'solid
-                (plist-get top-then-border 'ebox/border-top-style)))
-    (should (equal "red"
-                   (plist-get top-then-border 'ebox/border-top-color)))))
+(ert-deftest ebox-author-declaration-is-one-atomic-normalization-group ()
+  "One author group rejects overlaps while later cascade groups may override."
+  (dolist (declarations
+           '((:padding 1 :padding-left 2)
+             (:border "red" :border-top none)
+             (:gap 1 :row-gap 2)
+             (:flex-flow (row wrap) :flex-wrap nowrap)
+             (:flex (1 1 auto) :flex-grow 2)
+             (:border-top-p t :border-top-style none)))
+    (should-error
+     (ebox-style-compile-declarations declarations t)
+     :type 'ecss-invalid-declaration))
+  (should
+   (equal
+    (ebox-style-merge-declarations
+     (ebox-style-compile-declarations '(:gap 1) t)
+     (ebox-style-compile-declarations '(:row-gap 2) t))
+    '(ebox/row-gap 2 ebox/column-gap 1))))
 
 (ert-deftest ebox-style-property-registry-rejects-alias-collisions ()
   "An alias should never shadow another canonical property."
@@ -226,7 +310,7 @@
     (setcar (plist-get metadata :contexts) 'damaged)
     (should (eq :background-color
                 (plist-get (ebox-style-property :bgcolor) :name)))
-    (should (equal '(box)
+    (should (equal '(text box)
                    (plist-get (ebox-style-property :bgcolor) :contexts)))))
 
 (ert-deftest ebox-style-border-present-is-a-typed-shorthand-not-an-alias ()
@@ -239,8 +323,49 @@
           '(ebox/border-top-width 0 ebox/border-top-style none)))
   (should (eq (ebox-style-canonical-name :border-top-p) :border-top-p)))
 
-(ert-deftest ebox-style-exclusive-check-does-not-reexpand-ordinary-shorthands ()
-  "Conflict validation should leave the declaration cache effective."
+(ert-deftest ebox-border-width-unit-is-always-integer-pixels ()
+  "Border width should not reuse Box edge column/pixel wrapper grammar."
+  (should
+   (equal
+    (ebox-style-compile-declarations '(:border (1 solid "#687386")) t)
+    '(ebox/border-top-width 1 ebox/border-top-style solid
+      ebox/border-top-color "#687386"
+      ebox/border-right-width 1 ebox/border-right-style solid
+      ebox/border-right-color "#687386"
+      ebox/border-bottom-width 1 ebox/border-bottom-style solid
+      ebox/border-bottom-color "#687386"
+      ebox/border-left-width 1 ebox/border-left-style solid
+      ebox/border-left-color "#687386")))
+  (should-error
+   (ebox-style-compile-declarations
+    '(:border ((1) solid "#687386")) t)
+   :type 'error))
+
+(ert-deftest ebox-border-engine-projection-keeps-exact-pixels ()
+  "Border projection must not reinterpret pixels as character columns."
+  (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 7)))
+    (should
+     (equal
+      (ebox-style--expand-engine-plist
+       '(:border-left-width 1 :border-left-style solid
+         :border-right-width 2 :border-right-style solid
+         :padding-left 1 :margin-right (3)))
+      '(:border-left-pixel 1 :border-left-style solid
+        :border-right-pixel 2 :border-right-style solid
+        :padding-left-pixel 7 :margin-right-pixel 3))))
+  (should
+   (equal
+    (ebox-style--expand-engine-plist
+     '(:border-left-width 2 :border-left-style none))
+    '(:border-left-pixel 0 :border-left-style none)))
+  (should
+   (equal
+    (ebox-style--expand-engine-plist
+     '(:border-top-width 2 :border-top-style solid))
+    '(:border-top-pixel 2 :border-top-style solid))))
+
+(ert-deftest ebox-style-declaration-cache-expands-shorthand-once ()
+  "A cached declaration should not expand its shorthand again."
   (let ((calls 0)
         (original (symbol-function 'ebox-style--padding-shorthand)))
     (clrhash ebox-style--declaration-cache)
@@ -862,7 +987,7 @@
   "The typed Grid constructor should emit one canonical closed property set."
   (let* ((layout
           (ebox-grid-layout-create
-           :grid-template-columns '((20) 1fr)
+           :grid-template-columns '((20) (fr 1))
            :grid-template-rows '(1 auto)
            :grid-auto-columns '((30))
            :grid-auto-rows '(2)
@@ -897,15 +1022,28 @@
   (dolist (value ebox--grid-content-alignment-values)
     (should (ebox-grid-layout-create :justify-content value))
     (should (ebox-grid-layout-create :align-content value)))
+  (dolist (value '(min-content max-content))
+    (should (ebox-grid-layout-create :grid-template-columns (list value)))
+    (should (ebox-grid-layout-create :grid-template-rows (list value)))
+    (should (ebox-grid-layout-create :grid-auto-columns value))
+    (should (ebox-grid-layout-create :grid-auto-rows value)))
+  (should
+   (ebox-grid-layout-create
+    :grid-template-columns '((repeat 2 (auto (fr 1))))))
   (dolist (plist '((:grid-auto-flow diagonal)
                    (:grid-template-columns (bogus))
                    (:grid-template-rows (bogus))
                    (:grid-template-columns (0fr))
                    (:grid-template-columns (0.0fr))
+                   (:grid-template-columns (1fr))
+                   (:grid-template-columns (fr 1))
+                   (:grid-template-columns min-content)
                    (:grid-template-columns ((fr 0)))
                    (:grid-template-columns ((minmax (fr 1) auto)))
                    (:grid-template-columns
                     ((minmax (minmax (10) (20)) auto)))
+                   (:grid-template-columns ((repeat 0 auto)))
+                   (:grid-auto-columns ((repeat 2 auto)))
                    (:grid-auto-columns ((10) (20)))
                    (:row-gap -1)
                    (:column-gap (-1))
@@ -1161,7 +1299,41 @@
     (should-error (ebox-build form) :type 'error))
   (should-error
    (ebox-build (ebox-test-box (ebox-test-text "raw runtime node")))
+   :type 'error)
+  (should-error
+   (ebox-build
+    (list 'box :color (tp-computed (lambda () "#112233")) "dynamic"))
+   :type 'error)
+  (should-error
+   (ebox-build
+   (list 'box :color
+          (tp-paint-slot-create '(:foreground "#112233")) "slot"))
    :type 'error))
+
+(ert-deftest ebox-build-rejects-explicit-nil-outside-boolean-grammar ()
+  "Internal nil initial values must not widen the public author grammar."
+  (dolist (form
+           '((text :color nil "A")
+             (text :font-size nil "A")
+             (grid :grid-template-columns nil "A")
+             (grid :grid-template-rows nil "A")
+             (grid :grid-auto-columns nil "A")
+             (grid :grid-auto-rows nil "A")))
+    (should-error (ebox-build form) :type 'error))
+  (should (ebox-build '(box :border-top-p nil "A"))))
+
+(ert-deftest ebox-source-metadata-uses-the-frozen-public-grammar ()
+  "Key, class, and id should remain source facts with closed value domains."
+  (should
+   (ebox-build
+    '(box :key stable :id 42 :class (card selected) "Valid")))
+  (dolist (form '((box :key nil "bad")
+                  (box :key (not stable) "bad")
+                  (box :id nil "bad")
+                  (box :id 1.5 "bad")
+                  (box :class (card 2) "bad")
+                  (box :class (card . selected) "bad")))
+    (should-error (ebox-build form) :type 'error)))
 
 (provide 'ebox-dsl-tests)
 ;;; ebox-dsl-tests.el ends here

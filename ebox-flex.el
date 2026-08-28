@@ -102,18 +102,17 @@
   "Supported canonical FlexConfig wrapping values.")
 
 (defconst ebox--flex-justify-content-values
-  '(flex-start flex-end center space-between space-around space-evenly
-    start end left right normal)
+  '(normal start end flex-start flex-end center stretch
+    space-between space-around space-evenly)
   "Supported canonical FlexConfig main-axis alignment values.")
 
 (defconst ebox--flex-align-items-values
-  '(stretch flex-start flex-end center baseline normal
-    start end self-start self-end)
+  '(normal start end stretch flex-start flex-end center baseline)
   "Supported canonical FlexConfig item alignment values.")
 
 (defconst ebox--flex-align-content-values
-  '(stretch flex-start flex-end center space-between space-around space-evenly
-    baseline normal start end)
+  '(normal start end stretch flex-start flex-end center
+    space-between space-around space-evenly)
   "Supported canonical FlexConfig line alignment values.")
 
 (defconst ebox--flex-container-neutral-box-prop-keys
@@ -1843,7 +1842,7 @@ a prefix of the eventual full wrapper render."
     (unless complete
       (plist-put copy :padding-bottom-height 0)
       (plist-put copy :margin-bottom-height 0)
-      (plist-put copy :border-bottom-p nil))
+      (plist-put copy :border-bottom-pixel 0))
     copy))
 
 (defun ebox--flex-window-complete-prefix-supported-p (box)
@@ -1858,7 +1857,7 @@ a prefix of the eventual full wrapper render."
       line
     (let ((region-id (ebox--ensure-region-id box)))
       (puthash region-id box ebox--region-box-table)
-      (if (ebox-get box :border-bottom-p)
+      (if (> (ebox-get box :border-bottom-pixel) 0)
           (propertize
            (ebox--propertize-underline
             line (ebox-get box :border-bottom-color))
@@ -1918,7 +1917,7 @@ the chunk begins at the wrapper top and should include top chrome."
            (border-right-pixel (ebox-get box :border-right-pixel))
            (border-right-color (ebox-get box :border-right-color))
            (border-top-p (and include-top
-                              (ebox-get box :border-top-p)))
+                              (> (ebox-get box :border-top-pixel) 0)))
            (border-top-color (ebox-get box :border-top-color))
            (color (and (ebox-style--text-paint-owner-p box)
                        (ebox-get box :color)))
@@ -2242,7 +2241,7 @@ the chunk begins at the wrapper top and should include top chrome."
   "Return how many cached prefix tail lines completion rewrites for NODE."
   (let ((box (ebox--flex-window-box node)))
     (if (and box
-             (ebox-get box :border-bottom-p)
+             (> (ebox-get box :border-bottom-pixel) 0)
              (= (floor (ebox-get box :padding-bottom-height)) 0))
         1
       0)))

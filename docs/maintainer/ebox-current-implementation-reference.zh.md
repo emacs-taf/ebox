@@ -90,7 +90,7 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 
 ## Grid 合同
 
-当前 Grid 支持固定和像素轨道、`auto`、分数轨道、`minmax`、`repeat`、隐式行列、行列 gap、auto-flow、从 1 开始的 placement、正整数 span、item/content 对齐，以及普通 buffer 渲染和更新。Ebox 支持有限 typography 子集（`:font`、`:font-family`、`:font-height`/`:font-size`、`:font-weight` 和 `:font-slant`）；完整浏览器 typography 不在合同内。百分比、绝对定位、z-index、圆角、阴影和浏览器级 bidi 也不在合同内。
+当前 Grid 支持固定和像素轨道、`auto`、分数轨道、`minmax`、`repeat`、隐式行列、行列 gap、auto-flow、从 1 开始的 placement、正整数 span、item/content 对齐，以及普通 buffer 渲染和更新。Ebox 支持规范字体输入（`:font-family`、`:font-size`、`:font-weight`、`:font-style`）与 text-decoration paint；完整浏览器 typography 不在合同内。百分比、绝对定位、z-index、圆角、阴影和浏览器级 bidi 也不在合同内。
 
 ## Active 示例与测试
 

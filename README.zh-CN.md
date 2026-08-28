@@ -30,7 +30,7 @@ Ebox 需要 Emacs 29.1 或更高版本，并依赖 ECSS 与 TP。包管理器应
  "*Ebox Example*"
  (ebox-build
   '(column :padding (1 2)
-           :border ((1) solid "#8A93A6")
+           :border (1 solid "#8A93A6")
            (text :color "#263244" "Hello Ebox")
            (row :item-gap 1
                 (box "Left")

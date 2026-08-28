@@ -30,17 +30,44 @@
   "Fractional tracks should fill a definite grid width."
   (let* ((node (ebox-test-grid
                 :width '(120)
-                :grid-template-columns '(1fr 2fr)
+                :grid-template-columns '((fr 1) (fr 2))
                 (ebox-test-box (ebox-test-text "A"))
                 (ebox-test-box (ebox-test-text "B"))))
          (lines (ebox-string-lines (ebox-render node))))
     (should (= (length lines) 1))
     (should (= (ebox--string-pixel-width (car lines)) 120))))
 
+(ert-deftest ebox-grid-intrinsic-track-keywords-use-distinct-measures ()
+  "min-content and max-content should reuse Ebox intrinsic measurements."
+  (let* ((left (ebox-test-root (ebox-test-text "alpha beta")))
+         (right (ebox-test-root (ebox-test-text "gamma delta epsilon")))
+         (entries (list (list :node left :column 1 :column-span 1)
+                        (list :node right :column 2 :column-span 1)))
+         (rendered (make-hash-table :test #'eq))
+         (tracks (ebox-grid--normalize-tracks
+                  '(min-content max-content) 'columns)))
+    (puthash left "alpha beta" rendered)
+    (puthash right "gamma delta epsilon" rendered)
+    (let ((sizes (ebox-grid--resolve-sizes
+                  tracks 2 'columns entries rendered 0 nil)))
+      (should
+       (= (car sizes) (ebox--line-min-content-pixel "alpha beta")))
+      (should
+       (= (cadr sizes) (ebox--string-pixel-width "gamma delta epsilon")))
+      (should (< (car sizes) (ebox--string-pixel-width "alpha beta"))))))
+
+(ert-deftest ebox-grid-repeat-expands-a-complete-track-list ()
+  "repeat should duplicate its ordered track-list body."
+  (should
+   (equal
+    (ebox-grid--normalize-tracks '((repeat 2 (auto (fr 1)))) 'columns)
+    '((:kind auto :factor 0) (:kind fr :factor 1)
+      (:kind auto :factor 0) (:kind fr :factor 1)))))
+
 (ert-deftest ebox-grid-repeated-render-reuses-construction-time-config ()
   "Grid render and resize paths should not reparse canonical track config."
   (let* ((node (ebox-test-grid :width '(120)
-                          :grid-template-columns '(1fr 2fr)
+                          :grid-template-columns '((fr 1) (fr 2))
                           (ebox-test-box (ebox-test-text "A"))
                           (ebox-test-box (ebox-test-text "B"))))
          (calls 0)
@@ -102,8 +129,8 @@
                 :width '(120)
                 :grid-template-columns '((120))
                 (ebox-test-row
-                 (ebox-test-box (ebox-test-text "Left") :border t)
-                 (ebox-test-box (ebox-test-text "Right") :border t))))
+                 (ebox-test-box (ebox-test-text "Left") :border '(1 solid))
+                 (ebox-test-box (ebox-test-text "Right") :border '(1 solid)))))
          (widths (mapcar #'ebox--string-pixel-width
                          (ebox-string-lines (ebox-render node)))))
     (should (equal widths '(120)))))
@@ -148,7 +175,7 @@
   "Grid wrapper borders should stay on one right edge across child lines."
   (let* ((node (ebox-test-grid
                 :width '(120)
-                :grid-template-columns '((30) auto 1fr)
+                :grid-template-columns '((30) auto (fr 1))
                 :grid-template-rows '(2)
                 :gap '(1 (4))
                 :justify-content 'space-between
@@ -165,7 +192,7 @@
   (let* ((header (ebox-test-box (ebox-test-text "Header") :width '(720)))
          (grid (ebox-test-grid
                 :width '(718)
-                :grid-template-columns '((220) 1fr)
+                :grid-template-columns '((220) (fr 1))
                 :gap '(1 (12))
                 :border "#C97252"
                 (ebox-test-box (ebox-test-text "Fixed") :width '(196)

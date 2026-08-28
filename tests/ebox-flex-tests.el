@@ -260,8 +260,8 @@
     (should (= (apply #'+ widths) 150))
     (should (> (car widths) (cadr widths)))))
 
-(ert-deftest ebox-flex-basis-supports-content-and-intrinsic-keywords ()
-  "Flex basis content and intrinsic keywords should use content-derived sizes."
+(ert-deftest ebox-flex-basis-supports-intrinsic-keywords ()
+  "Flex basis intrinsic keywords should use content-derived sizes."
   (let* ((content "aa bbbb")
          (max-content (ebox--string-pixel-width content))
          (min-content (ebox--string-pixel-width "bbbb"))
@@ -269,7 +269,7 @@
           (ebox-test-flex :width '(300)
             (ebox-test-flex-item
              (ebox-test-box (ebox-test-text content) :width '(160) :wrap-mode 'word)
-             :flex-basis 'content)
+             :flex-basis 'max-content)
             (ebox-test-flex-item
              (ebox-test-box (ebox-test-text content) :width '(160) :wrap-mode 'word)
              :flex-basis 'min-content)))
@@ -733,8 +733,8 @@
   (let* ((layout
           (ebox-test-flex :width '(120)
             (ebox-test-row
-             (ebox-test-box (ebox-test-text "Left") :border t)
-             (ebox-test-box (ebox-test-text "Right") :border t))))
+             (ebox-test-box (ebox-test-text "Left") :border '(1 solid))
+             (ebox-test-box (ebox-test-text "Right") :border '(1 solid)))))
          (widths (mapcar #'ebox--string-pixel-width
                          (ebox-string-lines (ebox-render layout)))))
     (should (cl-every (lambda (width) (<= width 120)) widths))))
@@ -1032,13 +1032,13 @@
                            :height 3
                            :box-sizing 'border-box
                            :padding '(0 (8))
-                           :border t
+                           :border '(1 solid)
                            :wrap-mode 'none)
               (ebox-test-box (ebox-test-text "sample box three")
                            :height 3
                            :box-sizing 'border-box
                            :padding '(0 (8))
-                           :border t
+                           :border '(1 solid)
                            :wrap-mode 'none)))
            (plain (substring-no-properties (ebox-flex-test--render layout))))
       (should-not (string-match-p "REWRAPPED" plain))
@@ -1090,7 +1090,7 @@
                 (ebox-test-box (ebox-test-text "Bottom") :width '(80)))
                :width '(180)
                :box-sizing 'border-box
-               :border t)))
+               :border '(1 solid))))
            (plain (substring-no-properties (ebox-flex-test--render layout))))
       (should-not (string-match-p "REWRAPPED" plain))
       (should (string-match-p "Top" plain))
@@ -1126,7 +1126,7 @@
   "One child Box should own both frame and Flex participation facts."
   (let* ((left (ebox-test-box (ebox-test-text "A") :width '(60)
                             :flex-grow 1 :flex-basis '(60)
-                            :box-sizing 'border-box :border t))
+                            :box-sizing 'border-box :border '(1 solid)))
          (right (ebox-test-box (ebox-test-text "B") :width '(40)))
          (layout (ebox-test-flex :width '(160) left right))
          (left-id (car (ebox-region-ids (ebox-test-root left))))
@@ -1176,20 +1176,22 @@
                 (ebox-test-box (ebox-test-text "A") :width '(60) :height 1)
                 (ebox-test-box (ebox-test-text "B") :width '(60) :height 1)
                 (ebox-test-box (ebox-test-text "C") :width '(60) :height 1))))))
-  (dolist (justify '(flex-start flex-end center space-between space-around space-evenly start end left right normal))
+  (dolist (justify '(normal start end flex-start flex-end center stretch
+                    space-between space-around space-evenly))
     (should (stringp
              (ebox-render
               (ebox-test-flex :width '(220) :justify-content justify
                 (ebox-test-box (ebox-test-text "A") :width '(60))
                 (ebox-test-box (ebox-test-text "B") :width '(60)))))))
-  (dolist (align '(stretch flex-start flex-end center baseline normal start end self-start self-end))
+  (dolist (align '(normal start end stretch flex-start flex-end center baseline))
     (should (stringp
              (ebox-render
               (ebox-test-flex :width '(220) :height 4
                 :align-items align
                 (ebox-test-box (ebox-test-text "A") :width '(60) :height 1)
                 (ebox-test-box (ebox-test-text "B") :width '(60) :height 1))))))
-  (dolist (align '(stretch flex-start flex-end center space-between space-around space-evenly baseline normal start end))
+  (dolist (align '(normal start end stretch flex-start flex-end center
+                  space-between space-around space-evenly))
     (should (stringp
              (ebox-render
               (ebox-test-flex :width '(130) :height 5 :flex-wrap 'wrap

@@ -30,7 +30,7 @@ Use the functions and properties in `docs/user/ebox-api-reference.en.md`; the fa
 
 ## Layout scope
 
-Ebox supports character and pixel dimensions, padding, margins, borders, colors, Emacs face/font properties, overflow, wrapping, row/column/flex formatting, and Grid tracks including fixed, fractional, implicit, gap, placement, span, and alignment behavior. The supported typography subset is `:font`, `:font-family`, `:font-height`/`:font-size`, `:font-weight`, and `:font-slant`. CSS compatibility is intentionally partial: percentages, absolute positioning, z-index, shadows, border radius, full browser typography, and browser-level bidi are outside this package.
+Ebox supports column- and pixel-based horizontal dimensions, line-based vertical dimensions, padding, margins, pixel borders, colors, overflow, wrapping, row/column/flex formatting, and Grid tracks including fixed, fractional, implicit, gap, placement, span, and alignment behavior. The public typography subset is `:font-family`, CSS-reference-pixel `:font-size`, `:font-weight`, and `:font-style`; `:font-slant` is only an exact parse-time alias of `:font-style`. Emacs faces and text properties belong to the final adapter and are not Ebox author properties. CSS compatibility is intentionally partial: percentages, absolute positioning, z-index, shadows, border radius, full browser typography, and browser-level bidi are outside this package.
 
 ## Verification rule
 

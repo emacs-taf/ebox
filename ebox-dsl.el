@@ -73,31 +73,49 @@
   (when-let* ((entry (ebox-dsl--optional-field properties field context)))
     (cdr entry)))
 
+(defun ebox-dsl--validate-source-fields (properties context)
+  "Validate shared source metadata in PROPERTIES for CONTEXT."
+  (dolist (entry `((:key . ,#'ebox-source-stable-key-p)
+                   (:class . ,#'ebox-source-class-list-p)
+                   (:id . ,#'ebox-source-semantic-id-p)))
+    (when-let* ((field (car entry))
+                (present (ebox-dsl--optional-field properties field context)))
+      (unless (funcall (cdr entry) (cdr present))
+        (error "%s rejected %S value: %S" context field (cdr present)))))
+  properties)
+
 (defun ebox-dsl--compile-style (tag properties context)
   "Compile and validate TAG author PROPERTIES for CONTEXT."
   (condition-case err
-      (if properties
-          (ebox-style-compile-form tag properties)
-        nil)
+      (let ((declarations
+             (and properties (ebox-style-compile-form tag properties))))
+        (cl-loop
+         for (property value)
+         on (ebox-style-declaration-properties
+             declarations
+             (lambda (definition)
+               (eq (plist-get definition :normalizer) 'color)))
+         by #'cddr
+         unless (stringp value)
+         do (error "Standalone Ebox %S requires a CSS color string: %S"
+                   property value))
+        declarations)
     (error
      (error "%s rejected properties: %s"
             context (error-message-string err)))))
 
-(defun ebox-dsl--layout-config
-    (tag declarations extensions context)
-  "Construct TAG LayoutConfig from DECLARATIONS and EXTENSIONS for CONTEXT."
+(defun ebox-dsl--layout-config (tag declarations context)
+  "Construct TAG LayoutConfig from canonical DECLARATIONS for CONTEXT."
   (if (eq tag 'text)
       nil
     (condition-case err
-        (ebox-layout-config-for-form
-         tag
-         (if (memq tag '(row column))
-             extensions
-           (let ((names (ebox-layout-config-property-names tag)))
-             (ebox-style-declaration-properties
-              declarations
-              (lambda (property)
-                (memq (plist-get property :name) names))))))
+        (let ((names (ebox-layout-config-property-names tag)))
+          (ebox-layout-config-for-form
+           tag
+           (ebox-style-declaration-properties
+            declarations
+            (lambda (property)
+              (memq (plist-get property :name) names)))))
       (error
        (error "%s rejected layout config: %s"
               context (error-message-string err))))))
@@ -114,6 +132,7 @@ function."
   (let* ((context (format "Ebox %S" tag))
          (properties
           (ebox-dsl--validate-plist properties context)))
+    (ebox-dsl--validate-source-fields properties context)
     (dolist (field '(:content :layout :display :ebox-type :ebox-content-node))
       (when (plist-member properties field)
         (error "%s does not accept private author property %S"
@@ -124,17 +143,9 @@ function."
                   properties :outer context)))
            (outer (and (not (eq tag 'text))
                        (if outer-field (cdr outer-field) 'block)))
-           (extension-keys (and (memq tag '(row column))
-                                '(:item-gap :cross-align)))
-           (extensions
-            (ebox-dsl--keep-keys
-             properties extension-keys))
            (style-properties
             (ebox-dsl--without-keys
-             properties
-             (append (unless (eq tag 'text) '(:outer))
-                     extension-keys
-                     ebox-dsl--source-fields)))
+             properties ebox-dsl--source-fields))
            (declarations
             (ebox-dsl--compile-style
              tag style-properties context)))
@@ -152,7 +163,7 @@ function."
        :outer outer
        :layout
        (ebox-dsl--layout-config
-        tag declarations extensions context)
+        tag declarations context)
        :declarations declarations
        :owned-facts
        (ebox-canonical-facts-from-declarations tag declarations)))))

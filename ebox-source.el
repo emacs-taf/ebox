@@ -216,6 +216,23 @@ Functions and records are opaque values and retain identity."
       copy))
    (t value)))
 
+(defun ebox-source-stable-key-p (value)
+  "Return non-nil when VALUE is one public stable source key."
+  (and value (or (symbolp value) (stringp value) (integerp value))))
+
+(defun ebox-source-semantic-id-p (value)
+  "Return non-nil when VALUE is one public semantic id."
+  (and value (or (symbolp value) (stringp value) (integerp value))))
+
+(defun ebox-source-class-list-p (value)
+  "Return non-nil when VALUE is a public class token or proper token list."
+  (or (symbolp value)
+      (stringp value)
+      (and (proper-list-p value)
+           (cl-every (lambda (token)
+                       (or (symbolp token) (stringp token)))
+                     value))))
+
 (defun ebox-source--metadata-string (value)
   "Return VALUE normalized to a selector metadata string."
   (cond
@@ -299,6 +316,15 @@ Functions and records are opaque values and retain identity."
   "Bind normalized source facts in BUILDER and return an opaque handle.
 The returned handle contains identity only; all facts are owned by BUILDER
 until `ebox-source-builder-finish' seals them into a source index."
+  (when (and key (not (ebox-source-stable-key-p key)))
+    (error "Ebox source key must be a non-nil symbol, string, or integer: %S"
+           key))
+  (when (and id (not (ebox-source-semantic-id-p id)))
+    (error "Ebox source id must be a non-nil symbol, string, or integer: %S"
+           id))
+  (unless (ebox-source-class-list-p class)
+    (error "Ebox source class must be a token or proper token list: %S"
+           class))
   (let ((handle
          (ebox-source--make-handle
           :identity (ebox-source--copy-data

@@ -23,7 +23,8 @@
   "Directory containing the active Ebox Lisp sources.")
 
 (defconst ebox--compile-sources
-  '("ebox-cache.el" "ebox-source.el" "ebox-style.el" "ebox-layout-config.el"
+  '("ebox-cache.el" "ebox-source.el" "ebox-font.el" "ebox-style.el"
+    "ebox-layout-config.el"
     "ebox-node-factory.el"
     "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
@@ -42,6 +43,7 @@
 (require 'subr-x)
 (require 'ebox-cache)
 (require 'ebox-source)
+(require 'ebox-font)
 (require 'ebox-style)
 (require 'ebox-layout-config)
 (require 'ebox-node-factory)
@@ -742,78 +744,6 @@ indexes.  This prepares component identity without exposing a component API."
   (ebox-dsl-build-input dsl))
 
 ;;; ============================================================
-;;; Property Rules: 配置驱动的 Shorthand/Longhand 映射
-;;; ============================================================
-;;
-;; 规则格式自描述，无需 type 标记：
-;; - 值是 list → shorthand，展开到列表中的属性
-;; - 值是 (keyword . converter) → longhand，转换后写入目标
-;; - 值是 keyword → 直通，属性名不变
-
-(defconst ebox-property-rules ebox-style-ebox-property-rules
-  "Compatibility alias for Ebox public property expansion rules.")
-
-;;; --- 值转换器 ---
-
-(defun ebox--convert (value converter)
-  "Convert VALUE using CONVERTER."
-  (ebox-style--convert value converter))
-
-;;; --- 值拆分器 ---
-
-(defun ebox--split-trbl (value)
-  "Split VALUE using CSS TRBL rules → (top right bottom left)."
-  (ebox-style--split-trbl value))
-
-(defun ebox--split-pair (value)
-  "Split VALUE into pair → (start end)."
-  (ebox-style--split-pair value))
-
-(defconst ebox--border-styles
-  '(none hidden dotted dashed solid double groove ridge inset outset)
-  "Valid CSS border-style keywords.")
-
-(defun ebox--wsc-classify (item)
-  "Classify ITEM as width, style, or color. Returns (type . value)."
-  (ebox-style--wsc-classify item))
-
-(defun ebox--split-wsc (value)
-  "Split VALUE into (width style color) using CSS type-based parsing.
-Values can appear in any order; each is identified by type."
-  (ebox-style--split-wsc value))
-
-(defun ebox--split-value (value mode n)
-  "Split VALUE according to MODE for N targets."
-  (ebox-style--split-value value mode n))
-
-;;; --- 核心展开函数 ---
-
-(defun ebox--get-rule (property)
-  "Get rule for PROPERTY from `ebox-property-rules'."
-  (ebox-style--get-ebox-rule property))
-
-(defun ebox--expand-property (property value)
-  "Expand PROPERTY with VALUE according to rules. Returns a plist."
-  (ebox-style-expand-ebox-property property value))
-
-;;; --- 辅助函数 ---
-
-(defun ebox--atom-consp (list)
-  "Check if LIST is a strict dotted pair (atom . atom)."
-  (ebox-style--atom-consp list))
-
-(defun ebox--parse-color (color)
-  "Parse COLOR to a real color string.
-Supports: t (default fg), nil, string, (light . dark) cons."
-  (ebox-style--parse-color color))
-
-(defun ebox--expand-plist (plist)
-  "Expand PLIST using `ebox-property-rules'."
-  (ebox-style-expand-ebox-plist plist))
-
-;;; --- 核心 API ---
-
-;;; ============================================================
 ;;; Buffer Runtime State & Scroll State
 ;;; ============================================================
 
@@ -1308,8 +1238,8 @@ current visible slice.  Prefix misses continue through the normal renderer."
          (= (or (ebox-get box :margin-bottom-height) 0) 0)
          (= (or (ebox-get box :border-left-pixel) 0) 0)
          (= (or (ebox-get box :border-right-pixel) 0) 0)
-         (not (ebox-get box :border-top-p))
-         (not (ebox-get box :border-bottom-p))
+         (= (or (ebox-get box :border-top-pixel) 0) 0)
+         (= (or (ebox-get box :border-bottom-pixel) 0) 0)
          (eq (ebox-get box :vertical-align) 'top)
          (null (ebox-get box :surface-properties))
          visible)))
@@ -1360,8 +1290,8 @@ proof becomes usable for an input event."
          (= (or (ebox-get box :margin-bottom-height) 0) 0)
          (= (or (ebox-get box :border-left-pixel) 0) 0)
          (= (or (ebox-get box :border-right-pixel) 0) 0)
-         (not (ebox-get box :border-top-p))
-         (not (ebox-get box :border-bottom-p))
+         (= (or (ebox-get box :border-top-pixel) 0) 0)
+         (= (or (ebox-get box :border-bottom-pixel) 0) 0)
          (eq (ebox-get box :vertical-align) 'top)
          (null (ebox-get box :surface-properties)))))
 
@@ -3831,22 +3761,43 @@ Defaults to the current buffer."
     (nreverse result)))
 
 (defconst ebox--region-update-longhand-props
-  '(:box-sizing
+  (append
+   '(:box-sizing
     :width :min-width :max-width
     :height :min-height :max-height
     :padding-left-pixel :padding-right-pixel
     :padding-top-height :padding-bottom-height
     :margin-left-pixel :margin-right-pixel
     :margin-top-height :margin-bottom-height
-    :border-left-pixel :border-left-color
-    :border-right-pixel :border-right-color
-    :border-top-p :border-top-color
-    :border-bottom-p :border-bottom-color
+    :border-left-pixel :border-left-style :border-left-color
+    :border-right-pixel :border-right-style :border-right-color
+    :border-top-pixel :border-top-style :border-top-color
+    :border-bottom-pixel :border-bottom-style :border-bottom-color
     :color :bgcolor
     :text-align :vertical-align
     :overflow :wrap-mode
-    :scroll-offset :visibility)
+     :scroll-offset :visibility)
+   ebox-style--item-projection-properties)
   "Longhand box properties accepted by `ebox-region-update'.")
+
+(defconst ebox--region-update-control-properties
+  '(:content :scroll-offset)
+  "Surface controls accepted by `ebox-region-update' outside style schemas.")
+
+(defun ebox--region-update-style-properties (props)
+  "Return PROPS without region-owned content and scroll controls."
+  (cl-loop for (property value) on props by #'cddr
+           unless (memq property ebox--region-update-control-properties)
+           append (list property value)))
+
+(defun ebox--region-update-author-form (box)
+  "Return the public author form whose closed schema applies to BOX."
+  (if (eq (plist-get box :ebox-kind) 'text)
+      'text
+    (pcase (ebox-tree-layout-kind box)
+      ('normal 'box)
+      ((and kind (or 'row 'column 'flex 'grid)) kind)
+      (_ 'box))))
 
 (defun ebox--region-update-normalize-property (property)
   "Return the box longhand field for region-update PROPERTY."
@@ -3884,6 +3835,8 @@ Defaults to the current buffer."
               ((memq target-key ebox--region-update-longhand-props)
                (when (not (equal (ebox-get box target-key) value))
                  (setq style-changed-p t)))
+              ((ebox-style-schema-id key)
+               (setq style-changed-p t))
               (t
                (push key unknown-keys))))
     (when (and content-seen (not (stringp content-value)))
@@ -3928,8 +3881,35 @@ cannot be changed through the unpublished batch root."
               buffer region-id t))
         (ebox-tree-copy-node-structure (plist-get state :root-node)))))
 
+(defun ebox--region-update-layout-delta (box declarations)
+  "Apply LayoutConfig DECLARATIONS to BOX and return changed property names."
+  (when-let* ((config (and (ebox-box-node-p box)
+                            (ebox-box-node-layout box)))
+              (kind (ebox-layout-config-kind config))
+              (author-kind (if (eq kind 'normal) 'box kind))
+              (names (ebox-layout-config-property-names author-kind))
+              (delta
+               (ebox-style-declaration-properties
+                declarations
+                (lambda (property)
+                  (memq (plist-get property :name) names)))))
+    (let* ((normalized
+            (ebox-layout-config-props
+             (ebox-layout-config-for-form author-kind delta)))
+           (props (copy-tree (ebox-layout-config-props config)))
+           changed)
+      (cl-loop for (name _value) on delta by #'cddr
+               for value = (plist-get normalized name)
+               unless (equal (plist-get props name) value)
+               do (setq props (plist-put props name value))
+               and do (push name changed))
+      (when changed
+        (plist-put box :ebox-layout-config
+                   (ebox-layout-config-with-props config props)))
+      (nreverse changed))))
+
 (defun ebox--surface-region-apply-props
-    (root source-index region-id expanded declarations)
+    (root source-index region-id expanded declarations style-declarations)
   "Apply DECLARATIONS then EXPANDED fields to REGION-ID in ROOT."
   (let ((box (ebox--root-region-box root region-id))
         (candidate-source-index source-index)
@@ -3947,6 +3927,17 @@ cannot be changed through the unpublished batch root."
                  source-index old-handle :declarations declarations)))
           (setq candidate-source-index (car binding))
           (plist-put box :ebox-source-handle (cdr binding))))
+    (when (plist-member style-declarations 'ebox/outer)
+      (let* ((outer (plist-get style-declarations 'ebox/outer))
+             (display (plist-get box :display))
+             (next (list outer (or (cadr display) 'flow))))
+        (unless (equal display next)
+          (plist-put box :display next)
+          (push :outer changed-keys))))
+    (setq changed-keys
+          (nconc (ebox--region-update-layout-delta
+                  box style-declarations)
+                 changed-keys))
     (cl-loop for (key value) on expanded by #'cddr
              for target-key = (ebox--region-update-normalize-property key)
              when (or (eq target-key :content)
@@ -4195,12 +4186,23 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
          (candidate-box
           (or (ebox--root-region-box published-root region-id)
               (user-error "Ebox region handle no longer resolves to a box")))
-         (expanded (ebox--expand-plist props))
+         (style-declarations
+          (ebox-style-compile-form
+           (ebox--region-update-author-form candidate-box)
+           (ebox--region-update-style-properties props)))
          (declarations
           (ebox-style-merge-declarations
            (ebox-style-node-declarations
             source-index candidate-box)
-           (ebox-style-compile-declarations props)))
+           style-declarations))
+         (expanded
+          (append
+           (cl-loop for (property value) on props by #'cddr
+                    when (memq property ebox--region-update-control-properties)
+                    append (list property value))
+           (ebox-style--expand-engine-delta
+            style-declarations declarations
+            (plist-get candidate-box :ebox-computed-style))))
          (old-style-values
           (and (plist-member expanded :overflow)
                (list :overflow (ebox-get candidate-box :overflow))))
@@ -4235,7 +4237,7 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
                (applied
                 (ebox--surface-region-apply-props
                  candidate-root source-index
-                 region-id expanded declarations))
+                 region-id expanded declarations style-declarations))
                (changed-keys (plist-get applied :changed-keys))
                (candidate-source-index (plist-get applied :source-index))
                (dirty-kind

@@ -125,14 +125,14 @@ Backend marker and buffer span data are intentionally excluded."
     signature))
 
 (defconst ebox--paint-style-signature-keys
-  '(:color :bgcolor
-    :border-top-p :border-bottom-p
+  '(:color :bgcolor :visibility
+    :text-decoration-line :text-decoration-color :text-decoration-style
     :border-left-color :border-right-color
     :border-top-color :border-bottom-color)
   "Box properties that affect paint without changing layout geometry.")
 
 (defconst ebox--typography-style-signature-keys
-  '(:font :font-family :font-height :font-weight :font-slant)
+  '(:ebox-font-fact)
   "Typography properties whose resolved metrics may change geometry.")
 
 (defconst ebox--geometry-style-signature-keys
@@ -145,7 +145,10 @@ Backend marker and buffer span data are intentionally excluded."
      :padding-top-height :padding-bottom-height
      :margin-left-pixel :margin-right-pixel
      :margin-top-height :margin-bottom-height
-     :border-left-pixel :border-right-pixel
+     :border-left-pixel :border-left-style
+     :border-right-pixel :border-right-style
+     :border-top-pixel :border-top-style
+     :border-bottom-pixel :border-bottom-style
      :text-align :vertical-align
      :overflow :wrap-mode
      :flex-props :flex-participation))

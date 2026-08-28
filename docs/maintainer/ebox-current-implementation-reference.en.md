@@ -90,7 +90,7 @@ Caller-owned Source Tree
 
 ## Grid contract
 
-Grid currently covers fixed and pixel tracks, `auto`, fractional tracks, `minmax`, `repeat`, implicit rows and columns, row/column gap, auto-flow, one-based placement, positive spans, item/content alignment, and ordinary buffer rendering and updates. Ebox supports a finite typography subset (`:font`, `:font-family`, `:font-height`/`:font-size`, `:font-weight`, and `:font-slant`); full browser typography is outside the contract. Percentages, absolute positioning, z-index, border radius, shadows, and browser-level bidi are also outside the contract.
+Grid currently covers fixed and pixel tracks, `auto`, fractional tracks, `minmax`, `repeat`, implicit rows and columns, row/column gap, auto-flow, one-based placement, positive spans, item/content alignment, and ordinary buffer rendering and updates. Ebox supports canonical font inputs (`:font-family`, `:font-size`, `:font-weight`, and `:font-style`) plus text-decoration paint; full browser typography is outside the contract. Percentages, absolute positioning, z-index, border radius, shadows, and browser-level bidi are also outside the contract.
 
 ## Active examples and tests
 

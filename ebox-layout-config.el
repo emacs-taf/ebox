@@ -124,7 +124,8 @@ PROPS must already use the variant's normalized representation."
        :grid-auto-columns :grid-auto-rows :grid-auto-flow
        :row-gap :column-gap
        :justify-items :align-items :justify-content :align-content))
-    ((or 'box 'row 'column) nil)
+    ('box nil)
+    ((or 'row 'column) '(:item-gap :cross-align))
     (_ (error "Unknown Ebox Box author form: %S" tag))))
 
 (defun ebox-layout-config-for-form (tag properties)

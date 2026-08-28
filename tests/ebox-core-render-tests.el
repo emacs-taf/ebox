@@ -380,41 +380,37 @@
      full-updates))
 
 (defconst ebox-test--region-update-paint-cases
-  '((:color "#123456" "#123456")
-    (:bgcolor "#FDE68A" "#FDE68A")
-    (:border-left-color "#111111" "#111111")
-    (:border-right-color "#222222" "#222222")
-    (:border-top-color "#333333" "#333333")
-    (:border-bottom-color "#444444" "#444444")
-    (:border-top-p t t)
-    (:border-bottom-p t t))
-  "Paint-only box longhand update cases: (PROPERTY VALUE EXPECTED).")
+  '((:color "#123456" :color "#123456")
+    (:bgcolor "#FDE68A" :bgcolor "#FDE68A")
+    (:border-left-color "#111111" :border-left-color "#111111")
+    (:border-right-color "#222222" :border-right-color "#222222")
+    (:border-top-color "#333333" :border-top-color "#333333")
+    (:border-bottom-color "#444444" :border-bottom-color "#444444")
+    (:visibility hidden :visibility hidden))
+  "Paint updates as (AUTHOR VALUE ENGINE-FIELD EXPECTED).")
 
 (defconst ebox-test--region-update-geometry-cases
-  '((:box-sizing content-box content-box owner-rerender)
-    (:width (120) 120 owner-rerender)
-    (:min-width (100) 100 owner-rerender)
-    (:max-width (140) 140 owner-rerender)
-    (:height 3 3 owner-rerender)
-    (:min-height 3 3 owner-rerender)
-    (:max-height 1 1 owner-rerender)
-    (:padding-left-pixel 9 9 span-patch)
-    (:padding-right-pixel 10 10 span-patch)
-    (:padding-top-height 1 1 span-patch)
-    (:padding-bottom-height 1 1 span-patch)
-    (:margin-left-pixel 7 7 owner-rerender)
-    (:margin-right-pixel 8 8 owner-rerender)
-    (:margin-top-height 1 1 owner-rerender)
-    (:margin-bottom-height 1 1 owner-rerender)
-    (:border-left-pixel 5 5 span-patch)
-    (:border-right-pixel 6 6 span-patch)
-    (:text-align center center span-patch)
-    (:vertical-align middle center span-patch)
-    (:overflow hidden hidden owner-rerender)
-    (:wrap-mode char char span-patch)
-    (:scroll-offset 1 1 span-patch)
-    (:visibility hidden hidden span-patch))
-  "Geometry box longhand update cases: (PROPERTY VALUE EXPECTED STRATEGY).")
+  '((:box-sizing content-box :box-sizing content-box owner-rerender)
+    (:width (120) :width 120 owner-rerender)
+    (:min-width (100) :min-width 100 owner-rerender)
+    (:max-width (140) :max-width 140 owner-rerender)
+    (:height 3 :height 3 owner-rerender)
+    (:min-height 3 :min-height 3 owner-rerender)
+    (:max-height 1 :max-height 1 owner-rerender)
+    (:padding-left (9) :padding-left-pixel 9 span-patch)
+    (:padding-right (10) :padding-right-pixel 10 span-patch)
+    (:padding-top 1 :padding-top-height 1 span-patch)
+    (:padding-bottom 1 :padding-bottom-height 1 span-patch)
+    (:margin-left (7) :margin-left-pixel 7 owner-rerender)
+    (:margin-right (8) :margin-right-pixel 8 owner-rerender)
+    (:margin-top 1 :margin-top-height 1 owner-rerender)
+    (:margin-bottom 1 :margin-bottom-height 1 owner-rerender)
+    (:border-top-p t :border-top-pixel 1 span-patch)
+    (:text-align center :text-align center span-patch)
+    (:overflow hidden :overflow hidden owner-rerender)
+    (:wrap-mode char :wrap-mode char span-patch)
+    (:scroll-offset 1 :scroll-offset 1 span-patch))
+  "Geometry updates as (AUTHOR VALUE ENGINE-FIELD EXPECTED STRATEGY).")
 
 (defun ebox-test--region-update-case-properties (cases)
   "Return the update property names covered by CASES."
@@ -463,22 +459,15 @@
       (should (ebox-test--face-has-key-value-p
                face :background "#1E293B")))))
 
-(ert-deftest ebox-ecss-value-resolver-uses-tp-computed-contract ()
-  "ECSS should resolve tagged TP values while preserving literal functions."
-  (let ((calls 0)
-        (literal (lambda () 'literal)))
-    (should
-     (= (plist-get
-         (ebox-style-compute
-          (list :font-height
-                (tp-computed (lambda () (cl-incf calls) 1.25))))
-         :font-height)
-        1.25))
-    (should (= calls 1))
-    (should
-     (eq (plist-get (ebox-style-compute (list :font-height literal))
-                    :font-height)
-         literal))))
+(ert-deftest ebox-font-size-rejects-runtime-and-function-values ()
+  "Standalone Ebox font size accepts only positive CSS reference pixels."
+  (should-error
+   (ebox-style-compute
+    (list :font-size (tp-computed (lambda () 16))))
+   :type 'error)
+  (should-error
+   (ebox-style-compute (list :font-size (lambda () 16)))
+   :type 'error))
 
 (ert-deftest ebox-ecss-computed-fact-retains-owner-impact-and-provenance ()
   "The Ebox package schema should remain attached to one computed fact."
@@ -513,6 +502,11 @@
          (paint-value (ecss-computed-property-fact-value fact)))
     (should (equal '(geometry paint)
                    (ecss-computed-property-fact-impacts fact)))
+    (should (equal '(measurement paint)
+                   (ecss-computed-property-fact-projections fact)))
+    (should (eq (plist-get
+                 (ecss-computed-property-fact-metadata fact) :owner)
+                'font-metrics-projection))
     (should (eq geometry-value paint-value))
     (should (equal geometry-value
                    (ecss-computed-style-value style 'ebox/font-weight)))))
@@ -551,7 +545,9 @@
                (lambda (computed)
                  (cl-incf provenance-reads)
                  (funcall original-provenance computed))))
-      (should (ebox-style--context-values style 'box t)))
+      (should (ebox-style--context-values style 'box t))
+      (should (ebox-style--context-values style 'box t))
+      (should (ebox-style--context-values style 'box nil)))
     (should (= values-reads 1))
     (should (= active-reads 1))
     (should (= specified-reads 1))
@@ -589,31 +585,6 @@
     (should (= values-reads 1))
     (should (= active-reads 1))
     (should (= specified-reads 1))))
-
-(ert-deftest ebox-cascade-inherits-color-but-honors-explicit-nil ()
-  "A child nil color should block inheritance without inheriting background."
-  (ebox-test--reset-runtime-state)
-  (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
-         (root (ebox-test-box :class 'panel :wrap-mode 'none :width '(96)
-	       (ebox-test-box :id 'child :color nil :width '(96)
-			      (ebox-test-text "Child")))))
-    (ebox-style-add-rule
-     ".panel" '(:color "#E2E8F0" :bgcolor "#0F172A")
-     :layer 'components)
-    (ebox-test--with-rendered-buffer root
-      (let* ((runtime-root (ebox-test--runtime-root (current-buffer)))
-             (runtime-child (car (ebox-tree-layout-children runtime-root)))
-             (child-style (plist-get runtime-child :ebox-computed-style))
-             (values (ecss-computed-style-values child-style))
-             (active (ecss-computed-style-active-properties child-style)))
-        (should (memq 'ebox/color active))
-        (should (null (plist-get values 'ebox/color)))
-        (should (null (plist-get values 'ebox/background-color)))
-        (should-not (memq 'ebox/background-color active))
-        (goto-char (point-min))
-        (search-forward "Child")
-        (let ((face (get-text-property (match-beginning 0) 'face)))
-          (should (equal (car face) '(:inherit default))))))))
 
 (ert-deftest ebox-default-foreground-reset-preserves-explicit-background ()
   "Resolve GUI default foreground without inheriting its background."
@@ -700,8 +671,8 @@
   (ebox-test--reset-runtime-state)
   (let* ((root
           (ebox-test-box :wrap-mode 'none :font-family "Parent Family"
-	       :font-height 1.25 :font-weight 'bold
-	       (ebox-test-box :id 'child :font-family "Child Family"
+		       :font-size 16 :font-weight 'bold
+		       (ebox-test-box :id 'child :font-family "Child Family"
 			      (ebox-test-text "MMMM"))))
          measured-face)
     (cl-letf (((symbol-function 'ebox--string-pixel-width)
@@ -716,18 +687,18 @@
                (values (ecss-computed-style-values style))
                (face (ebox-test--first-content-face (buffer-string))))
           (should (equal (plist-get values 'ebox/font-family) "Child Family"))
-          (should (= (plist-get values 'ebox/font-height) 1.25))
+          (should (= (plist-get values 'ebox/font-size) 16))
           (should (eq (plist-get values 'ebox/font-weight) 'bold))
           (should
            (equal (ebox-test--effective-face-value face :family)
                   "Child Family"))
-          (should (= (ebox-test--effective-face-value face :height) 1.25))
+          (should (= (ebox-test--effective-face-value face :height) 120))
           (should (eq (ebox-test--effective-face-value face :weight) 'bold)))))
     (should measured-face)
     (should
      (equal (ebox-test--effective-face-value measured-face :family)
             "Child Family"))
-    (should (= (ebox-test--effective-face-value measured-face :height) 1.25))))
+    (should (= (ebox-test--effective-face-value measured-face :height) 120))))
 
 (ert-deftest ebox-column-background-owns-blank-lines-with-child-override ()
   "A column background should fill its blank lines without hiding child paint."
@@ -1781,6 +1752,31 @@
     (should props)
     (should (plist-member props 'face))))
 
+(ert-deftest ebox-text-decoration-projects-to-one-emacs-face ()
+  "Canonical decoration facts should remain paint-only and visibly compose."
+  (let* ((style
+          (ebox-style-compute
+           '(:text-decoration-line (underline overline line-through)
+             :text-decoration-color "#336699"
+             :text-decoration-style wavy)))
+         (face (plist-get
+                (ebox-buffer-paint-text-properties style 'content) 'face))
+         (rendered
+          (ebox-render
+           (ebox-test-text
+            "Decorated"
+            :text-decoration-line '(underline overline line-through)
+            :text-decoration-color "#336699"
+            :text-decoration-style 'wavy)))
+         (rendered-face (get-text-property 0 'face rendered)))
+    (dolist (candidate (list face rendered-face))
+      (should (ebox-test--face-has-key-value-p
+               candidate :underline '(:color "#336699" :style wave)))
+      (should (ebox-test--face-has-key-value-p
+               candidate :overline "#336699"))
+      (should (ebox-test--face-has-key-value-p
+               candidate :strike-through "#336699")))))
+
 (ert-deftest ebox-render-keeps-tp-paint-slot-address-stable ()
   "A TP paint slot should recolor retained output without property rewrites."
   (let* ((slot (tp-paint-slot-create '(:foreground "red")))
@@ -2120,7 +2116,7 @@
   "Detailed snapshots should expose explicit L2 footprint signatures."
   (ebox-test--reset-runtime-state)
   (let* ((box (ebox-test-box (ebox-test-text "Footprint") :width '(120)
-                           :height 1 :border t))
+                           :height 1 :border '(1 solid)))
          (node-id (ebox--ensure-node-id (ebox-test-root box))))
     (ebox-test--with-rendered-buffer box
       (let* ((snapshot (ebox--ensure-layout-snapshot-details
@@ -2531,7 +2527,7 @@
                            collect
                            (ebox-test-box
                             (ebox-test-text (format "Fluid %02d" index))
-                            :border t))))
+                            :border '(1 solid)))))
          buffer)
     (unwind-protect
         (progn
@@ -2571,7 +2567,7 @@
                            collect
                            (ebox-test-box
                             (ebox-test-text (format "Fluid section %02d" index))
-                            :border t))))
+                            :border '(1 solid)))))
          buffer)
     (unwind-protect
         (progn
@@ -2611,7 +2607,7 @@
                             (ebox-test-text content)
                             :width 'viewport
                             :wrap-mode 'word
-                            :border t))))
+                            :border '(1 solid)))))
          buffer)
     (unwind-protect
         (progn
@@ -2645,7 +2641,7 @@
                             (ebox-test-text content)
                             :width 'viewport
                             :wrap-mode 'word
-                            :border t))))
+                            :border '(1 solid)))))
          (slot-probe-count 0)
          (original (symbol-function 'ebox-buffer--rendered-in-existing-slots))
          buffer)
@@ -3712,8 +3708,7 @@
          (ordinary-height-nodes
           (cl-loop for (property value)
                    in '((:height (viewport-height))
-                        (:min-height (- (viewport-height) 1))
-                        (:max-height (+ (viewport-height) 1)))
+                        (:max-height (viewport-height)))
                    collect
                    (apply #'ebox-test-box
                           (ebox-test-text "Ordinary")
@@ -3721,8 +3716,7 @@
          (flex-height-nodes
           (cl-loop for (property value)
                    in '((:height (viewport-height))
-                        (:min-height (- (viewport-height) 1))
-                        (:max-height (+ (viewport-height) 1)))
+                        (:max-height (viewport-height)))
                    collect
                    (apply #'ebox-test-flex
                           (append
@@ -4148,7 +4142,7 @@
   "Render cache plist signatures should be built linearly."
   (ebox-test--reset-runtime-state)
   (let ((node (ebox-test-root
-               (ebox-test-box (ebox-test-text "Signature") :width 80 :border t)))
+               (ebox-test-box (ebox-test-text "Signature") :width 80 :border '(1 solid))))
         (original-append (symbol-function 'append))
         (append-calls 0))
     (cl-letf (((symbol-function 'append)
@@ -4234,9 +4228,9 @@
 (ert-deftest ebox-transparent-preformatted-box-fast-path-is-exact ()
   "Transparent exact-width wrappers should match the generic box pipeline."
   (ebox-test--reset-runtime-state)
-  (let* ((child-a (ebox-test-box (ebox-test-text "A") :width '(viewport) :border t
+  (let* ((child-a (ebox-test-box (ebox-test-text "A") :width '(viewport) :border '(1 solid)
                                :region-id 'child-a))
-         (child-b (ebox-test-box (ebox-test-text "B") :width '(viewport) :border t
+         (child-b (ebox-test-box (ebox-test-text "B") :width '(viewport) :border '(1 solid)
                                :region-id 'child-b))
          (parent (ebox-test-column
                   :width '(viewport) :region-id 'parent child-a child-b))
@@ -4343,11 +4337,12 @@
             (ebox-test-box
              (ebox-test-text (nth 0 case)) :width '(120) :height 5
              :box-sizing 'border-box :overflow (nth 1 case)
-             :vertical-align (nth 2 case) :wrap-mode 'none))
+             :wrap-mode 'none))
            (box (ebox-test-root box-input))
            (calls 0)
            (original
             (symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)))
+      (plist-put box :vertical-align (nth 2 case))
       (plist-put box :ebox-content-width-exact-p t)
       (cl-letf (((symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)
                  (lambda (&rest arguments)
@@ -4756,12 +4751,12 @@
       (should-not (text-property-search-forward 'ebox-bb left-id t))
       (let ((full-rerenders
              (ebox-test--count-full-surface-updates
-               (ebox-test--region-update left-id
-                                   :border-bottom-p t
-                                   :border-bottom-color "blue"))))
+               (ebox-test--region-update
+                left-id :border-bottom '(1 solid "blue")))))
         (should (= full-rerenders 0)))
       (let ((report (ebox-test--buffer-update-report)))
-        (should (eq (plist-get report :strategy) 'paint-patch))
+        (should (memq (plist-get report :strategy)
+                      '(span-patch owner-rerender)))
         (should-not (plist-get report :root-rerender)))
       (let (bottom-face)
         (save-excursion
@@ -4806,9 +4801,8 @@
         (save-restriction
           (goto-char (1+ (point-min)))
           (narrow-to-region (point) (point-max))
-          (ebox-test--region-update left-id
-                                    :border-bottom-p t
-                                    :border-bottom-color "blue"))
+          (ebox-test--region-update
+           left-id :border-bottom '(1 solid "blue")))
         (should (equal old-metadata
                        (plist-get old-state :surface-fragments)))
         (should (cl-every (lambda (fragment)
@@ -4818,9 +4812,9 @@
 (ert-deftest ebox-horizontal-border-removal-preserves-other-border-colors ()
   "Removing top/bottom border surfaces must not corrupt other border faces."
   (ebox-test--reset-runtime-state)
-  (dolist (case '((:border-top-p bt (bb bl br))
-                  (:border-bottom-p bb (bt bl br))))
-    (let* ((property (nth 0 case))
+  (dolist (case '(((:border-top-p nil) bt (bb bl br))
+                  ((:border-bottom-width 0) bb (bt bl br))))
+    (let* ((update (nth 0 case))
            (removed-role (nth 1 case))
            (kept-roles (nth 2 case))
            (layout (ebox-test-box (ebox-test-text "Border")
@@ -4841,34 +4835,46 @@
                              (setq face (get-text-property (point) 'face)))
                            (forward-char 1)))
                        face)))
-          (ebox-test--region-update region-id property nil)
+          (apply #'ebox-test--region-update region-id update)
           (should-not (face-at-role removed-role))
           (dolist (role kept-roles)
             (should
              (ebox-test--border-face-has-color-p
               (face-at-role role) role "#D97757"))))))))
 
-(ert-deftest ebox-side-border-color-patch-toggles-default-paint-exactly ()
-  "Side color patches should match default and explicit full-render paint."
+(ert-deftest ebox-horizontal-border-capability-error-preserves-mounted-state ()
+  "An unsupported horizontal width must fail before replacing publication."
+  (ebox-test--reset-runtime-state)
+  (let* ((input
+          (ebox-test-box :id "root" (ebox-test-text "Border")
+                         :border '(1 solid "#D97757")))
+         (buffer (ebox-render-to-buffer
+                  (generate-new-buffer-name " *ebox-border-capability*")
+                  input))
+         (state (ebox--buffer-render-state buffer))
+         (text (with-current-buffer buffer (buffer-string))))
+    (unwind-protect
+        (progn
+          (should-error
+           (ebox-selector-update-buffer
+            buffer "#root" :border-top '(2 solid "#D97757")))
+          (should (eq state (ebox--buffer-render-state buffer)))
+          (should (equal-including-properties
+                   text (with-current-buffer buffer (buffer-string)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-side-border-color-patch-replaces-paint-exactly ()
+  "Side color replacements should match the full-render paint result."
   (ebox-test--reset-runtime-state)
   (let* ((layout
-          (ebox-test-box
+           (ebox-test-box
            (ebox-test-text "Border") :width 80
-           :border-left-pixel 2 :border-left-color "#AA0000"
-           :border-right-pixel 2 :border-right-color "#AA0000"))
+           :border-left-width 2 :border-left-style 'solid
+           :border-left-color "#AA0000"
+           :border-right-width 2 :border-right-style 'solid
+           :border-right-color "#AA0000"))
          (region-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update region-id
-                          :border-left-color nil
-                          :border-right-color nil)
-      (dolist (role '(bl br))
-        (let ((face
-               (ebox-test--face-at-property
-                (buffer-string) (alist-get role ebox-region-types))))
-          (should
-           (ebox-test--face-has-key-value-p face :inverse-video t))
-          (should-not (ebox-test--face-has-key-p face :background))))
-      (should (ebox-test--buffer-visually-matches-runtime-render-p))
       (ebox-test--region-update region-id
                           :border-left-color "#00AA00"
                           :border-right-color "#00AA00")
@@ -4886,7 +4892,7 @@
   "Runtime rerender should resolve viewport-sized boxes with the new context."
   (ebox-test--reset-runtime-state)
   (let* ((node (let ((ebox-viewport-width 240))
-                 (ebox-test-box (ebox-test-text "Viewport") :width '(viewport) :border t)))
+                 (ebox-test-box (ebox-test-text "Viewport") :width '(viewport) :border '(1 solid))))
          buffer)
     (unwind-protect
         (progn
@@ -5509,8 +5515,9 @@
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-box :id "root" :height 4 :box-sizing 'border-box :overflow
-	       'scroll :padding-top 1 :padding-bottom 1 :border-top-p
-	       t :border-top-color "red" :border-bottom-p t
+		       'scroll :padding-top 1 :padding-bottom 1 :border-top-p
+		       t :border-top-color "red"
+		       :border-bottom-width 1 :border-bottom-style 'solid
 	       :border-bottom-color "blue"
 	       (ebox-test-column
 		(ebox-test-box :id "a" (ebox-test-text "A") :height 1)
@@ -6175,7 +6182,7 @@
                             :text-align 'left))
          (right (ebox-test-box (ebox-test-text "Right") :width '(80) :height 1))
          (layout (ebox-test-row left right))
-         (left-id (car (ebox-region-ids layout))))
+         (left-id (car (ebox-region-ids left))))
     (ebox-test--with-rendered-buffer layout
       (ebox-test--region-update left-id :text-align 'center)
       (let ((report (ebox-test--buffer-update-report)))
@@ -6189,6 +6196,51 @@
                (buffer-substring-no-properties (point-min) (point-max))))
       (should (ebox-test--buffer-propertized-matches-runtime-render-p)))))
 
+(ert-deftest ebox-region-update-completes-border-width-style-pairs ()
+  "A one-property border delta should retain its computed counterpart."
+  (ebox-test--reset-runtime-state)
+  (let* ((input
+          (ebox-test-box (ebox-test-text "Border") :width 80
+                         :border-left '(2 none "#AA0000")))
+         (region-id (car (ebox-region-ids input))))
+    (ebox-test--with-rendered-buffer input
+      (ebox-test--region-update region-id :border-left-style 'solid)
+      (let ((box (gethash region-id (ebox--buffer-region-box-table
+                                     (current-buffer)))))
+        (should (= (ebox-get box :border-left-pixel) 2)))
+      (ebox-test--region-update region-id :border-left-width 3)
+      (let ((box (gethash region-id (ebox--buffer-region-box-table
+                                     (current-buffer)))))
+        (should (= (ebox-get box :border-left-pixel) 3)))
+      (ebox-test--region-update region-id :border-left-style 'none)
+      (let ((box (gethash region-id (ebox--buffer-region-box-table
+                                     (current-buffer)))))
+        (should (= (ebox-get box :border-left-pixel) 0)))
+      (should (ebox-test--buffer-propertized-matches-runtime-render-p)))))
+
+(ert-deftest ebox-region-update-projects-outer-and-layout-config ()
+  "Region updates should project structural and LayoutConfig facts once."
+  (ebox-test--reset-runtime-state)
+  (let* ((input
+          (ebox-test-row :id "axis" :outer 'inline :item-gap 1
+                         (ebox-test-box (ebox-test-text "A"))
+                         (ebox-test-box (ebox-test-text "B"))))
+         (buffer (ebox-render-to-buffer
+                  (generate-new-buffer-name " *ebox-axis-update*") input)))
+    (unwind-protect
+        (progn
+          (ebox-selector-update-buffer
+           buffer "#axis" :outer 'block :item-gap 3)
+          (let* ((root (plist-get (ebox--buffer-render-state buffer)
+                                  :root-node))
+                 (props (ebox-layout-config-props
+                         (ebox-box-node-layout root))))
+            (should (equal (plist-get root :display) '(block row)))
+            (should (= (plist-get props :item-gap) 3))
+            (should (with-current-buffer buffer
+                      (ebox-test--buffer-propertized-matches-runtime-render-p)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (ert-deftest ebox-region-update-border-box-inline-change-uses-span-patch ()
   "Border-box left/right spacing can be internal when outer width is fixed."
   (ebox-test--reset-runtime-state)
@@ -6196,7 +6248,7 @@
                            :box-sizing 'border-box))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
-      (ebox-test--region-update region-id :padding-left-pixel 8)
+      (ebox-test--region-update region-id :padding-left '(8))
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :strategy) 'span-patch))
         (should (equal (plist-get report :patch-ops) '(span-patch)))
@@ -6209,7 +6261,7 @@
                            :box-sizing 'content-box))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
-      (ebox-test--region-update region-id :padding-left-pixel 8)
+      (ebox-test--region-update region-id :padding-left '(8))
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :strategy) 'owner-rerender))
         (should (equal (plist-get report :patch-ops) '(owner-rerender)))
@@ -6224,7 +6276,7 @@
                            :wrap-mode 'char))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
-      (ebox-test--region-update region-id :padding-left-pixel 100)
+      (ebox-test--region-update region-id :padding-left '(100))
       (let ((report (ebox-test--buffer-update-report)))
         (should (memq (plist-get report :strategy)
                       '(span-patch owner-rerender)))
@@ -6233,27 +6285,35 @@
         (should-not (plist-get report :tp-scope-fallback))
         (should (ebox-test--buffer-propertized-matches-runtime-render-p))))))
 
-(ert-deftest ebox-region-update-matrix-covers-all-box-longhands ()
-  "The update tests should classify every non-content box longhand."
-  (let ((covered (append (ebox-test--region-update-case-properties
-                          ebox-test--region-update-paint-cases)
-                         (ebox-test--region-update-case-properties
-                          ebox-test--region-update-geometry-cases))))
-    (should-not (cl-set-difference ebox--region-update-longhand-props
-                                   covered
-                                   :test #'eq))
-    (should-not (cl-set-difference covered
-                                   ebox--region-update-longhand-props
-                                   :test #'eq))
-    (should-not (cl-set-difference ebox--paint-style-signature-keys
-                                   (ebox-test--region-update-case-properties
-                                    ebox-test--region-update-paint-cases)
-                                   :test #'eq))))
+(ert-deftest ebox-region-update-matrix-uses-only-public-properties ()
+  "Region update coverage must not preserve private engine spellings."
+  (dolist (property
+           (append (ebox-test--region-update-case-properties
+                    ebox-test--region-update-paint-cases)
+                   (ebox-test--region-update-case-properties
+                    ebox-test--region-update-geometry-cases)))
+    (should (or (memq property ebox--region-update-control-properties)
+                (ebox-style-schema-id property))))
+  (dolist (property '(:padding-left-pixel :padding-right-pixel
+                      :padding-top-height :padding-bottom-height
+                      :margin-left-pixel :margin-right-pixel
+                      :margin-top-height :margin-bottom-height
+                      :border-left-pixel :border-right-pixel
+                      :border-top-pixel :border-bottom-pixel
+                      :border-left-style :border-right-style
+                      :border-top-style :border-bottom-style
+                      :vertical-align))
+    (should-not
+     (memq property
+           (append (ebox-test--region-update-case-properties
+                    ebox-test--region-update-paint-cases)
+                   (ebox-test--region-update-case-properties
+                    ebox-test--region-update-geometry-cases))))))
 
 (ert-deftest ebox-region-update-all-paint-longhands-use-paint-patch ()
   "Every paint longhand should patch text properties without replacing spans."
   (dolist (case ebox-test--region-update-paint-cases)
-    (pcase-let ((`(,property ,value ,expected) case))
+    (pcase-let ((`(,property ,value ,engine-property ,expected) case))
       (ert-info ((format "property %S" property))
         (ebox-test--reset-runtime-state)
         (let* ((box (ebox-test-box (ebox-test-text "Paint") :width '(120)
@@ -6270,7 +6330,8 @@
               (should (eq (gethash region-id ebox--region-box-table)
                           runtime-box))
               (should-not (eq runtime-box box))
-              (should (equal (ebox-get runtime-box property) expected)))
+              (should (equal (ebox-get runtime-box engine-property)
+                             expected)))
             (let ((report (ebox-test--buffer-update-report)))
               (should (eq (plist-get report :strategy) 'paint-patch))
               (should (equal (plist-get report :patch-ops)
@@ -6281,7 +6342,8 @@
 (ert-deftest ebox-region-update-all-geometry-longhands-use-minimal-strategy ()
   "Every geometry longhand should use a correct scoped non-root strategy."
   (dolist (case ebox-test--region-update-geometry-cases)
-    (pcase-let ((`(,property ,value ,expected ,_strategy) case))
+    (pcase-let
+        ((`(,property ,value ,engine-property ,expected ,_strategy) case))
       (ert-info ((format "property %S" property))
         (ebox-test--reset-runtime-state)
         (let* ((box (ebox-test-box (ebox-test-text "Alpha\nBeta\nGamma\nDelta")
@@ -6301,10 +6363,11 @@
               (should (eq (gethash region-id ebox--region-box-table)
                           runtime-box))
               (should-not (eq runtime-box box))
-              (should (equal (ebox-get runtime-box property) expected)))
+              (should (equal (ebox-get runtime-box engine-property)
+                             expected)))
             (let ((report (ebox-test--buffer-update-report)))
               (should (memq (plist-get report :strategy)
-                            '(span-patch owner-rerender)))
+                            '(paint-patch span-patch owner-rerender)))
               (should (equal (plist-get report :dirty-kinds) '(geometry)))
               (should (eq (plist-get report :owner-type) 'box))
               (should-not (plist-get report :tp-full-root))
@@ -6373,43 +6436,6 @@
           (should (equal (plist-get report :dirty-kinds) '(paint)))
           (should-not (plist-get report :full-rerender)))))))
 
-(ert-deftest ebox-vertical-align-middle-alias-matches-center ()
-  "Creation and updates should normalize middle to center before rendering."
-  (ebox-test--reset-runtime-state)
-  (let ((middle (ebox-test-box (ebox-test-text "X") :height 3
-                             :vertical-align 'middle)))
-    (should (equal (ebox--expand-property :vertical-align 'middle)
-                   '(:vertical-align center)))
-    (should (eq (ebox-get (ebox-test-root middle) :vertical-align)
-                'center))
-    (should (= (cl-position-if
-                (lambda (line)
-                  (string-match-p "X" (substring-no-properties line)))
-                (ebox-string-lines (ebox-render middle)))
-               1))
-    (let* ((updated (ebox-test-box (ebox-test-text "X") :height 3
-                                 :vertical-align 'top))
-           (region-id (car (ebox-region-ids updated))))
-      (ebox-test--with-rendered-buffer updated
-        (goto-char (point-min))
-        (search-forward "X")
-        (should (= (line-number-at-pos (match-beginning 0)) 1))
-        (ebox-test--region-update region-id :vertical-align 'middle)
-        (should (eq (ebox-style-node-specified-value
-                     updated :vertical-align)
-                    'top))
-        (should (eq (ebox-get (gethash region-id
-                                       (ebox--buffer-region-box-table
-                                        (current-buffer)))
-                              :vertical-align)
-                    'center))
-        (goto-char (point-min))
-        (search-forward "X")
-        (should (= (line-number-at-pos (match-beginning 0)) 2))
-        (should (eq (plist-get (ebox-test--buffer-update-report) :strategy)
-                    'span-patch))
-        (should (ebox-test--buffer-visually-matches-runtime-render-p))))))
-
 (ert-deftest ebox-update-reuses-shorthand-property-expansion ()
   (ebox-test--reset-runtime-state)
   (let* ((box (ebox-test-box (ebox-test-text "Box") :width 60))
@@ -6417,7 +6443,7 @@
     (ebox-test--with-rendered-buffer box
       (ebox-test--region-update region-id
                           :padding '(1 2)
-                          :border '(2 "#abcdef")
+                          :border '(1 "#abcdef")
                           :margin-inline 3)
       (let ((runtime-box
              (gethash region-id (ebox--buffer-region-box-table
@@ -6426,8 +6452,7 @@
         (should (= (ebox-get runtime-box :padding-top-height) 1))
         (should (= (ebox-get runtime-box :padding-right-pixel)
                    (* 2 (ebox--space-pixel-width))))
-        (should (= (ebox-get runtime-box :border-left-pixel)
-                   (* 2 (ebox--space-pixel-width))))
+        (should (= (ebox-get runtime-box :border-left-pixel) 1))
         (should (equal (ebox-get runtime-box :border-right-color) "#abcdef"))
         (should (= (ebox-get runtime-box :margin-left-pixel)
                    (* 3 (ebox--space-pixel-width))))))))
@@ -6461,8 +6486,7 @@
         (should (= (ebox-get runtime-box :padding-top-height) 1))
         (should (= (ebox-get runtime-box :padding-right-pixel)
                    (* 2 (ebox--space-pixel-width))))
-        (should (= (ebox-get runtime-box :border-left-pixel)
-                   (ebox--space-pixel-width)))
+        (should (= (ebox-get runtime-box :border-left-pixel) 1))
         (should (equal (ebox-get runtime-box :border-right-color) "#abcdef"))
         (should (= (ebox-get runtime-box :margin-left-pixel)
                    (* 3 (ebox--space-pixel-width)))))
@@ -6585,15 +6609,13 @@
       (ebox-test--region-update region-id :color "#fedcba")
       (ebox-test--assert-visible-overflow-paint
        (buffer-string) "#fedcba" "#123456" region-id)
-      (ebox-test--region-update region-id :color nil)
-      (cl-loop for line in (ebox-string-lines (buffer-string))
-               for glyph in '(?A ?B ?C)
-               for glyph-pos = (cl-position glyph line)
-               do (should (integerp glyph-pos))
-               do (should-not
-                   (ebox-test--face-has-key-p
-                    (get-text-property glyph-pos 'face line)
-                    :foreground))))))
+      (let ((published (buffer-string)))
+        (should-error
+         (ebox-test--region-update region-id :color nil)
+         :type 'error)
+        (should (equal-including-properties published (buffer-string)))
+        (ebox-test--assert-visible-overflow-paint
+         (buffer-string) "#fedcba" "#123456" region-id)))))
 
 (ert-deftest ebox-owner-rerender-keeps-visible-overflow-unowned ()
   "Owner rerenders should not restore box ownership to visible overflow."
@@ -6856,7 +6878,6 @@
                            :width 140
                            :height 5
                            :overflow 'scroll
-                           :vertical-align 'top
                            :color "#112233"
                            :bgcolor "#ddeeff"))
          (region-id (ebox--ensure-region-id (ebox-test-root box)))
@@ -6864,7 +6885,6 @@
                                  :width 140
                                  :height 5
                                  :overflow 'hidden
-                                 :vertical-align 'top
                                  :color "#112233"
                                  :bgcolor "#ddeeff"))
          (expected (progn
@@ -6937,7 +6957,7 @@
 		  (ebox-test-box (ebox-test-text "") :width '(viewport)
 				 :height 1)
 		  (ebox-test-box :id "root" :width '(viewport) :height
-				 '(- (viewport-height) 2) :overflow
+			 '(viewport-height) :overflow
 				 'scroll
 				 (apply #'ebox-test-column
        (append (list :width '(viewport) :padding '(1 (8)))
@@ -6979,7 +6999,7 @@
                                        :rendered-lines
                                        (length (plist-get state
                                                           :rendered-content-lines)))))
-                (should (= (plist-get state :content-height) 12)))
+                (should (= (plist-get state :content-height) 14)))
               (when-let* ((materialize
                           (plist-get state :materialize-content-lines)))
                 (plist-put
@@ -7008,7 +7028,7 @@
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-box :id "root" :width '(viewport) :height
-	       '(- (viewport-height) 2) :overflow 'scroll
+	       '(viewport-height) :overflow 'scroll
 	       (apply #'ebox-test-column
        (append (list :width '(viewport))
 	       (cl-loop for idx below 40 collect
@@ -7026,7 +7046,7 @@
             (ebox--intrinsic-layout-measurement t))
         (setq rendered (ebox-render layout)))
       (should (= calls 0))
-      (should (= (ebox-string-height rendered) 10))
+      (should (= (ebox-string-height rendered) 12))
       (let ((ebox-viewport-width 240)
             (ebox-viewport-height 12)
             (ebox--intrinsic-layout-measurement nil))
@@ -7038,7 +7058,7 @@
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-box :id "root" :width '(viewport) :height
-	       '(- (viewport-height) 10) :overflow 'scroll
+	       '(viewport-height) :overflow 'scroll
 	       (apply #'ebox-test-column
        (append (list :width '(viewport))
 	       (cl-loop for idx below 80 collect
@@ -7084,7 +7104,7 @@
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-box :id "root" :width '(viewport) :height
-	       '(- (viewport-height) 10) :overflow 'scroll
+	       '(viewport-height) :overflow 'scroll
 	       (apply #'ebox-test-column
        (append (list :width '(viewport))
 	       (cl-loop for idx below 80 collect
@@ -7148,7 +7168,7 @@
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-box :id "root" :width '(viewport) :height
-	       '(- (viewport-height) 10) :overflow 'scroll
+	       '(viewport-height) :overflow 'scroll
 	       (apply #'ebox-test-column
        (append (list :width '(viewport))
 	       (cl-loop for idx below 80 collect
@@ -7316,36 +7336,6 @@
 	(cl-loop for char across "ABCD" collect
 		 (ebox-test-box (ebox-test-text (char-to-string char)) :width
 				'(150) :height 1)))))
-         (full-lines (ebox-string-lines (ebox-render node)))
-         (expected-signatures
-          (mapcar #'ebox-test--visual-line-signature
-                  (seq-take full-lines 3)))
-         (ebox--render-cache-table (make-hash-table :test 'equal))
-         (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
-         (first (ebox-test--call-input-node
-                 #'ebox--render-stack-window-lines node 1))
-         (extended
-          (ebox-test--call-input-node
-           #'ebox--render-stack-window-lines node 3 (plist-get first :cache)))
-         (producer (ebox-test--call-input-node
-                    #'ebox--render-node-window-lines node 3))
-         (actual-signatures
-          (mapcar #'ebox-test--visual-line-signature
-                  (plist-get extended :lines))))
-    (should (equal expected-signatures actual-signatures))
-    (should-not producer)))
-
-(ert-deftest ebox-flex-window-aligned-wrapper-falls-back-to-full-prefix ()
-  "Non-left-aligned flex prefixes should use the full-render fallback."
-  (ebox-test--reset-runtime-state)
-  (let* ((node
-          (apply #'ebox-test-flex
-       (append
-	(list :width '(100) :text-align 'center :flex-flow '(row wrap)
-	      :row-gap 0 :column-gap 0)
-	(cl-loop for char across "ABCDEF" collect
-		 (ebox-test-box (ebox-test-text (char-to-string char)) :width
-				'(50) :height 1)))))
          (full-lines (ebox-string-lines (ebox-render node)))
          (expected-signatures
           (mapcar #'ebox-test--visual-line-signature
@@ -7809,27 +7799,29 @@
    (= 1
       (ebox--flex-window-completion-prefix-tail-rewrite-count
        (list :box (ebox-test-root
-                   (ebox-test-box :border-bottom-p t
+                   (ebox-test-box :border-bottom-width 1
+                                  :border-bottom-style 'solid
                                   :padding-bottom 0))))))
   (should
    (= 1
       (ebox--flex-window-completion-prefix-tail-rewrite-count
        (list :box (ebox-test-root
-                   (ebox-test-box :border-bottom-p t
+                   (ebox-test-box :border-bottom-width 1
+                                  :border-bottom-style 'solid
                                   :padding-bottom 0
                                   :margin-bottom 2))))))
   (should
    (= 0
       (ebox--flex-window-completion-prefix-tail-rewrite-count
        (list :box (ebox-test-root
-                   (ebox-test-box :border-bottom-p t
+                   (ebox-test-box :border-bottom-width 1
+                                  :border-bottom-style 'solid
                                   :padding-bottom 2))))))
   (should
    (= 0
       (ebox--flex-window-completion-prefix-tail-rewrite-count
        (list :box (ebox-test-root
-                   (ebox-test-box :border-bottom-p nil
-                                  :padding-bottom 0)))))))
+                   (ebox-test-box :padding-bottom 0)))))))
 
 (ert-deftest ebox-flex-window-cache-rejects-short-incomplete-exact-hit ()
   "An underfilled exact-limit cache must resume from its prefix seed."
@@ -11253,8 +11245,8 @@ explicit visible-window handoff may admit its full-content publication."
 		(ebox-test-box :id "width-only" :width '(viewport))
 		(ebox-test-box :id "height-only" :height
 			       '(viewport-height))
-		(ebox-test-flex :id "flex-height" :min-height
-				'(- (viewport-height) 1)
+		(ebox-test-flex :id "flex-height" :height
+				'(viewport-height)
 				(ebox-test-box (ebox-test-text "Flex")))))))
           (let* ((state (ebox--buffer-render-state buffer))
                  (root (plist-get state :root-node))
@@ -12475,18 +12467,18 @@ explicit visible-window handoff may admit its full-content publication."
   (let* ((box (ebox-test-box (ebox-test-text "Atomic")
                            :width '(120)
                            :bgcolor "#111111"
-                           :padding-left-pixel 2))
+                           :padding-left 2))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (should-error
        (ebox-test--region-update region-id
                            :bgcolor "#222222"
-                           :padding-left-pixel -1)
+                           :padding-left -1)
        :type 'error)
       (should (equal (ebox-style-node-specified-value box :bgcolor)
                      "#111111"))
       (should (= (ebox-style-node-specified-value
-                  box :padding-left-pixel)
+                  box :padding-left)
                  2)))))
 
 (ert-deftest ebox-region-update-no-op-skips-rollback-snapshot ()
@@ -12724,7 +12716,7 @@ explicit visible-window handoff may admit its full-content publication."
                           (ebox-test-box (ebox-test-text "Border")
                                        :width 60
                                        :padding '(1 1)
-                                       :border t)))
+                                       :border '(1 solid))))
                (left-face (ebox-test--face-at-property rendered 'ebox-bl))
                (right-face (ebox-test--face-at-property rendered 'ebox-br))
                (top-face (ebox-test--face-at-property rendered 'ebox-bt))
@@ -13034,7 +13026,7 @@ publication with properties intact."
                  (ebox-test-box (ebox-test-text "Header line") :id 'header
                               :width (list 300))
                  (ebox-test-box (ebox-test-text "Secret content") :id 'secret
-                              :width (list 300) :border t
+                              :width (list 300) :border '(1 solid)
                               :bgcolor "#224466" :color "#FFFFFF")
                  (ebox-test-box (ebox-test-text "Footer line") :id 'footer
                               :width (list 300))))))
@@ -13072,11 +13064,11 @@ face patch must match that exactly (issue014)."
           (lambda (parent-color)
             (ebox-test-box
              :id 'parent :width (list 400)
-             :border (list '(4) 'solid parent-color)
+             :border (list 1 'solid parent-color)
              :padding '(1 (12))
              (ebox-test-column
               (ebox-test-box :id 'child (ebox-test-text "CHILD") :width (list 200)
-                           :border '((4) solid "#00AA00"))))))
+                           :border '(1 solid "#00AA00"))))))
          (visual-runs
           (lambda (buffer role)
             (with-current-buffer buffer

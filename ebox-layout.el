@@ -58,8 +58,12 @@
                   "ebox-buffer-backend" (string property region-id))
 (declare-function ebox--propertize-typography
                   "ebox-buffer-backend" (string style))
+(declare-function ebox--propertize-text-decoration
+                  "ebox-buffer-backend" (string style))
 (declare-function ebox--propertize-underline
                   "ebox-buffer-backend" (string &optional color))
+(declare-function ebox-buffer-validate-border-capability
+                  "ebox-buffer-backend" (style))
 
 (defvar ebox--render-runtime-revision nil
   "Current buffer runtime revision for render-local cache validation.")
@@ -230,8 +234,8 @@ the generic box pipeline."
              (equal (ebox-get box :margin-bottom-height) 0)
              (equal (ebox-get box :border-left-pixel) 0)
              (equal (ebox-get box :border-right-pixel) 0)
-             (not (ebox-get box :border-top-p))
-             (not (ebox-get box :border-bottom-p))
+             (= (ebox-get box :border-top-pixel) 0)
+             (= (ebox-get box :border-bottom-pixel) 0)
              (null (and (ebox-style--text-paint-owner-p box)
                         (ebox-get box :color)))
              (null (ebox-get box :bgcolor)))
@@ -296,8 +300,8 @@ and its formatted content exactly fills the used height."
                  (= (floor (ebox-get box :padding-bottom-height)) 0)
                  (= (ebox-get box :border-left-pixel) 0)
                  (= (ebox-get box :border-right-pixel) 0)
-                 (not (ebox-get box :border-top-p))
-                 (not (ebox-get box :border-bottom-p)))))
+                 (= (ebox-get box :border-top-pixel) 0)
+                 (= (ebox-get box :border-bottom-pixel) 0))))
       (when (and lines-fit-p
                  (or (= text-height content-height)
                      underfilled-simple-scroll-p))
@@ -1203,7 +1207,8 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
     ;; typography contribution around already-rendered descendants.
     (if (eq (plist-get box :ebox-kind) 'box)
         content
-      (ebox--propertize-typography content box))))
+      (ebox--propertize-text-decoration
+       (ebox--propertize-typography content box) box))))
 
 (defun ebox--intrinsic-box-content (box)
   "Return BOX content materialized independently of its used width.
@@ -1556,9 +1561,9 @@ Internal implementation of `ebox-render' for box nodes."
          (border-left-color (ebox-get box :border-left-color))
          (border-right-pixel (ebox-get box :border-right-pixel))
          (border-right-color (ebox-get box :border-right-color))
-         (border-top-p (ebox-get box :border-top-p))
+         (border-top-p (> (ebox-get box :border-top-pixel) 0))
          (border-top-color (ebox-get box :border-top-color))
-         (border-bottom-p (ebox-get box :border-bottom-p))
+         (border-bottom-p (> (ebox-get box :border-bottom-pixel) 0))
          (border-bottom-color (ebox-get box :border-bottom-color))
 
          ;; Style and Layout
@@ -1887,7 +1892,9 @@ Internal implementation of `ebox-render' for box nodes."
   (let* ((region-id (or ebox--render-region-id
                         (ebox--ensure-region-id node)))
          (value (copy-sequence (plist-get node :ebox-text-value)))
-         (styled (ebox--propertize-typography value node))
+         (styled
+          (ebox--propertize-text-decoration
+           (ebox--propertize-typography value node) node))
          (painted
           (if (or (ebox-get node :color) (ebox-get node :bgcolor))
               (ebox--propertize-colors
@@ -1921,7 +1928,8 @@ This function owns spatial layout only; it never creates a live TP surface."
            (or ebox--box-content-render-cache
                (make-hash-table :test 'eq))))
       (when (listp node)
-        (ebox--ensure-node-id node))
+        (ebox--ensure-node-id node)
+        (ebox-buffer-validate-border-capability node))
       (let ((type (plist-get node :ebox-type)))
         (cond
          ((eq (plist-get node :ebox-kind) 'text)
@@ -2815,15 +2823,12 @@ last cached leaf instead of walking the stack from the beginning."
           :margin-left-pixel :margin-right-pixel
           :margin-top-height :margin-bottom-height
           :border-left-pixel :border-right-pixel))
-       (not (ebox-get node :border-top-p))
-       (not (ebox-get node :border-bottom-p))
+       (= (ebox-get node :border-top-pixel) 0)
+       (= (ebox-get node :border-bottom-pixel) 0)
        (null (ebox-get node :color))
        (null (ebox-get node :bgcolor))
-       (null (ebox-get node :font))
-       (null (ebox-get node :font-family))
-       (null (ebox-get node :font-height))
-       (null (ebox-get node :font-weight))
-       (null (ebox-get node :font-slant))
+       (or (null (plist-get node :ebox-font-fact))
+           (ebox-font-fact-neutral-p (plist-get node :ebox-font-fact)))
        (null (ebox-get node :surface-properties))
        (eq (ebox-get node :visibility) 'visible)
        (eq (ebox-get node :text-align) 'left)
@@ -2951,10 +2956,11 @@ no included vertical margin."
                            0))
          (border-left-pixel (ebox-get box :border-left-pixel))
          (border-right-pixel (ebox-get box :border-right-pixel))
-         (border-top-p (and include-top (ebox-get box :border-top-p)))
+         (border-top-p
+          (and include-top (> (ebox-get box :border-top-pixel) 0)))
          (border-top-color (ebox-get box :border-top-color))
          (border-bottom-p
-          (and include-bottom (ebox-get box :border-bottom-p)))
+          (and include-bottom (> (ebox-get box :border-bottom-pixel) 0)))
          (border-bottom-color (ebox-get box :border-bottom-color))
          (color (and (ebox-style--text-paint-owner-p box)
                      (ebox-get box :color)))
@@ -3128,7 +3134,7 @@ only used for incomplete lazy prefixes."
            (border-right-pixel (ebox-get box :border-right-pixel))
            (border-right-color (ebox-get box :border-right-color))
            (border-top-p (and include-top
-                              (ebox-get box :border-top-p)))
+                              (> (ebox-get box :border-top-pixel) 0)))
            (border-top-color (ebox-get box :border-top-color))
            (color (and (ebox-style--text-paint-owner-p box)
                        (ebox-get box :color)))

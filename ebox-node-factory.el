@@ -18,17 +18,31 @@
     :padding-top-height 0 :padding-bottom-height 0
     :margin-left-pixel 0 :margin-right-pixel 0
     :margin-top-height 0 :margin-bottom-height 0
-    :border-left-pixel 0 :border-left-color nil
-    :border-right-pixel 0 :border-right-color nil
-    :border-top-p nil :border-top-color nil
-    :border-bottom-p nil :border-bottom-color nil
+    :border-left-pixel 0 :border-left-style none :border-left-color nil
+    :border-right-pixel 0 :border-right-style none :border-right-color nil
+    :border-top-pixel 0 :border-top-style none :border-top-color nil
+    :border-bottom-pixel 0 :border-bottom-style none :border-bottom-color nil
     :color nil :bgcolor nil
-    :font nil :font-family nil :font-height nil
-    :font-weight nil :font-slant nil
+    :text-decoration-line none :text-decoration-color currentColor
+    :text-decoration-style solid
     :text-align left :vertical-align top
     :overflow scroll :visibility visible
     :wrap-mode word :scroll-offset 0)
   "Default longhand fields for the current runtime box encoding.")
+
+(defconst ebox-node-factory--style-projection-keys
+  (let ((fields ebox--longhand)
+        keys)
+    (while fields
+      (let ((key (pop fields)))
+        (pop fields)
+        (unless (memq key '(:content :scroll-offset))
+          (push key keys))))
+    (nreverse keys))
+  "Private runtime fields materialized from canonical style facts.
+These fields are projections, never declarative source authority.  Content and
+scroll offset remain outside this set because their lifecycle is not owned by
+style projection.")
 
 (defconst ebox-node-factory--text-longhand
   '(:content ""
@@ -44,7 +58,10 @@
     :padding-top-height 0 :padding-bottom-height 0
     :margin-left-pixel 0 :margin-right-pixel 0
     :margin-top-height 0 :margin-bottom-height 0
-    :border-left-pixel 0 :border-right-pixel 0
+    :border-left-pixel 0 :border-left-style none
+    :border-right-pixel 0 :border-right-style none
+    :border-top-pixel 0 :border-top-style none
+    :border-bottom-pixel 0 :border-bottom-style none
     :text-align left :vertical-align top
     :overflow scroll :visibility visible
     :wrap-mode word :scroll-offset 0)
@@ -87,7 +104,7 @@ leaving them absent would make the canonical node violate the Box contract.")
 (defun ebox-node-factory--create-from-properties (&rest plist)
   "Create one private runtime box from evaluated engine PLIST."
   (ebox-node-factory--create-expanded
-   (ebox-style-expand-ebox-plist plist)))
+   (ebox-style--expand-engine-plist plist)))
 
 (provide 'ebox-node-factory)
 

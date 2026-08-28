@@ -644,10 +644,12 @@
     (cl-labels
         ((rows (selected)
            (cl-loop for id from 1 to 12
+                    for content = (ebox-test-text (format "row-%02d" id))
                     collect
-                    (ebox-test-box
-                     :key id (ebox-test-text (format "row-%02d" id)) :width '(420)
-                     :color (and (= id selected) "#2F6B43"))))
+                    (if (= id selected)
+                        (ebox-test-box
+                         :key id :width '(420) :color "#2F6B43" content)
+                      (ebox-test-box :key id :width '(420) content))))
          (root ()
            (ebox-test-box
             :width '(900) :color "#172033" :wrap-mode 'none
@@ -976,7 +978,7 @@
   (let* ((buffer (generate-new-buffer " *ebox-range-no-flatten*"))
          (static
           (cl-loop for index below 100
-                   collect (ebox-test-box :key (list 'static index)
+                   collect (ebox-test-box :key (format "static-%d" index)
                                         (ebox-test-text (number-to-string index)))))
          (root (apply #'ebox-test-column
                       (append static
@@ -1042,7 +1044,7 @@
             (apply #'ebox-test-column
                    (append
                     (cl-loop for index below static-count
-                             collect (ebox-test-box :key (list 'static index)
+                             collect (ebox-test-box :key (format "static-%d" index)
                                                   (ebox-test-text "s")))
                     (list (ebox-test-child-range
                            'items (ebox-test-box :key 'old (ebox-test-text "o"))))))))
@@ -1238,7 +1240,7 @@
           (apply #'ebox-test-column
                  (append
                   (cl-loop for index below 500
-                           collect (ebox-test-box :key (list 'static index)
+                           collect (ebox-test-box :key (format "static-%d" index)
                                                 (ebox-test-text "s")))
                   (list (ebox-test-child-range 'items)))))
          report)
@@ -1250,7 +1252,7 @@
              candidate 'items
              (ebox-child-range-test--input
               (cl-loop for index below 64
-                       collect (ebox-test-box :key (list 'new index)
+                       collect (ebox-test-box :key (format "new-%d" index)
                                               (ebox-test-text "n")))))
             (cl-letf (((symbol-function
                         'ebox-incremental--candidate-full-index-preparation)

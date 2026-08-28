@@ -33,7 +33,7 @@ field-based child syntax.
  "*Ebox Example*"
  (ebox-build
   '(column :padding (1 2)
-           :border ((1) solid "#8A93A6")
+           :border (1 solid "#8A93A6")
            (text :color "#263244" "Hello Ebox")
            (row :item-gap 1
                 (box "Left")

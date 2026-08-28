@@ -13,6 +13,7 @@
 (require 'ecss-selector)
 (require 'ebox-source)
 (require 'ebox-style)
+(require 'ebox-node-factory)
 (require 'ebox-child-range)
 
 (defvar ebox-tree--incoming-source-indexes nil
@@ -657,7 +658,7 @@ handles, reused node objects, and cycles without consulting node metadata."
   "Properties accepted only on a direct Flex child Box.")
 
 (defconst ebox-tree--grid-participation-keys
-  '(:grid-column :grid-row :grid-column-span :grid-row-span :justify-self)
+  '(:grid-column :grid-row :justify-self)
   "Properties accepted only on a direct Grid child Box.")
 
 (defconst ebox-tree--participation-keys
@@ -797,10 +798,12 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
 (defconst ebox-tree--excluded-source-keys
   (append ebox-tree--runtime-source-keys
           ebox-tree--child-source-keys
+          ebox-node-factory--style-projection-keys
           '(:ebox-style-overrides
             :ebox-source-handle
             :ebox-grid-config
             :ebox-computed-style :ebox-style-wrapper
+            :ebox-font-fact
             :ebox-style-generated-wrapper
             :ebox-author-style-count :ebox-author-style-required-p
             :ebox-text-value :ebox-candidate-computed-style-p))
@@ -831,7 +834,7 @@ look like a geometry mutation."
            ;; retained node may arrive once from an already-expanded style
            ;; snapshot and later from fresh shorthand declarations; comparing
            ;; those source spellings directly creates fake geometry dirtiness.
-           (raw (ebox-style-expand-ebox-plist raw))
+           (raw (ebox-style--expand-engine-plist raw))
            (table (make-hash-table :test #'eq)))
       (cl-loop for (key value) on raw by #'cddr
                unless (memq key '(:color :background-color :bgcolor :host-ref
@@ -840,19 +843,9 @@ look like a geometry mutation."
       (when (plist-member raw :gap)
         (let* ((gap (plist-get raw :gap))
                (row (if (consp gap) (car gap) gap))
-               (column (if (and (consp gap) (cdr gap)) (cadr gap) row))
-               ;; Flex and Grid deliberately have separate canonical
-               ;; property vocabularies.  Using Grid aliases for a Flex node
-               ;; makes an unchanged `gap' look like geometry dirtiness on
-               ;; the next retained generation.
-               (row-key (if (eq (plist-get node :ebox-type) 'grid)
-                            :grid-row-gap
-                          :row-gap))
-               (column-key (if (eq (plist-get node :ebox-type) 'grid)
-                               :grid-column-gap
-                             :column-gap)))
-          (puthash row-key row table)
-          (puthash column-key column table)
+               (column (if (and (consp gap) (cdr gap)) (cadr gap) row)))
+          (puthash :row-gap row table)
+          (puthash :column-gap column table)
           (remhash :gap table)))
       (let (keys)
         (maphash (lambda (key _value) (push key keys)) table)

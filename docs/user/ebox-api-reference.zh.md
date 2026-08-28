@@ -67,8 +67,9 @@ participation property 就是普通子 Box property，不会创建另一种公�
 | 文本布局 | `:text-align`、`:wrap-mode`（`word`、`char`、`kp`、`none`） |
 | Overflow | `:overflow`（`visible`、`hidden`、`scroll`） |
 
-普通横向数字表示字符列，单元素横向 list 表示像素；纵向数字表示行数。
-`(viewport)` 与 `(viewport-height)` 使用当前 render context。property 验证属于
+普通横向数字表示字符列，单元素横向 list 表示像素；纵向数字表示行数。Border
+width 是例外，始终使用非负整数像素，因此写 `(1 solid "#687386")`，不写
+`((1) solid "#687386")`。`(viewport)` 与 `(viewport-height)` 使用当前 render context。property 验证属于
 Ebox；context/value 组合无效时会直接报错。
 
 ## 2. Evaluated typed construction

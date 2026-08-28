@@ -72,7 +72,9 @@ another public node or wrapper.
 | Overflow | `:overflow` (`visible`, `hidden`, `scroll`) |
 
 Ordinary horizontal numbers are character columns; a one-element horizontal
-list is pixels. Vertical numbers are lines. `(viewport)` and
+list is pixels. Vertical numbers are lines. Border widths are the exception:
+they are always nonnegative integer pixels, so use `(1 solid "#687386")`, not
+`((1) solid "#687386")`. `(viewport)` and
 `(viewport-height)` use the current render context. Property validation belongs
 to Ebox and invalid context/value combinations signal an error.
 

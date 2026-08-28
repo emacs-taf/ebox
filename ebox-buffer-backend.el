@@ -6,9 +6,24 @@
 
 ;;; Code:
 
+(define-error 'ebox-surface-capability-error
+  "Ebox surface capability violation")
+
+(defun ebox-buffer-validate-border-capability (style)
+  "Return STYLE when its border can be represented exactly by Emacs text."
+  (dolist (side '(top bottom) style)
+    (let ((width (or (plist-get
+                      style (intern (format ":border-%s-pixel" side)))
+                     0)))
+      (when (> width 1)
+        (signal 'ebox-surface-capability-error
+                (list :border side :declared-pixels width
+                      :supported-pixels '(0 1)))))))
+
 (require 'cl-lib)
 (require 'subr-x)
 (require 'ebox-measure)
+(require 'ebox-font)
 (require 'tp-style)
 
 (defvar ebox--propertize-private-content-line-p nil
@@ -320,29 +335,50 @@ Return FUNCTION's value."
 
 ;;; Paint Mapping
 
-(defun ebox-buffer--font-attributes (style)
-  "Return anonymous face attributes for STYLE typography longhands."
-  (let (face)
-    (dolist (entry '((:font-family . :family)
-                     (:font-height . :height)
-                     (:font-weight . :weight)
-                     (:font-slant . :slant)))
-      (when-let* ((value (plist-get style (car entry))))
-        (setq face (plist-put face (cdr entry) value))))
-    face))
+(defun ebox-buffer--font-fact (style)
+  "Return STYLE's shared surface-resolved font fact."
+  (and (listp style) (plist-get style :ebox-font-fact)))
 
 (defun ebox-buffer--font-face (style)
-  "Return STYLE's complete Emacs face value for typography."
-  (let* ((base (plist-get style :font))
-         (base (if (stringp base) (list :family base) base))
-         (attributes (ebox-buffer--font-attributes style)))
-    (cond
-     ((and attributes base)
-      (if (and (listp base) (not (keywordp (car-safe base))))
-          (cons attributes base)
-        (list attributes base)))
-     (attributes attributes)
-     (base base))))
+  "Return a detached Emacs face from STYLE's shared font fact."
+  (when-let* ((fact (ebox-buffer--font-fact style)))
+    (ebox-font-paint-face fact)))
+
+(defconst ebox-buffer--decoration-style-map
+  '((solid . line) (double . double-line) (dotted . dots)
+    (dashed . dashes) (wavy . wave))
+  "Canonical CSS decoration styles mapped to Emacs underline styles.")
+
+(defun ebox-buffer--text-decoration-face (style)
+  "Return STYLE's final Emacs text-decoration face, or nil."
+  (let* ((line (plist-get style :text-decoration-line))
+         (lines (if (listp line) line (list line)))
+         (color (plist-get style :text-decoration-color))
+         (decoration-style
+          (or (plist-get style :text-decoration-style) 'solid))
+         (resolved-color
+          (unless (or (memq color '(nil currentColor))
+                      (tp-paint-slot-p color))
+            color))
+         face)
+    (unless (or (null line) (equal lines '(none)))
+      (when (memq 'underline lines)
+        (setq face
+              (plist-put
+               face :underline
+               (append
+                (when resolved-color (list :color resolved-color))
+                (let ((emacs-style
+                       (alist-get decoration-style
+                                  ebox-buffer--decoration-style-map)))
+                  (unless (eq emacs-style 'line)
+                    (list :style emacs-style)))))))
+      (when (memq 'overline lines)
+        (setq face (plist-put face :overline (or resolved-color t))))
+      (when (memq 'line-through lines)
+        (setq face (plist-put face :strike-through
+                              (or resolved-color t)))))
+    face))
 
 (defun ebox-buffer--paint-color (style role)
   "Return the foreground paint color for STYLE and ROLE."
@@ -377,6 +413,8 @@ foreground color."
 This backend mapper intentionally accepts computed style facts and emits only
 buffer-facing paint properties.  Layout-only properties never pass through."
   (let ((face (ebox-buffer--font-face style)))
+    (when-let* ((decoration (ebox-buffer--text-decoration-face style)))
+      (setq face (append face decoration)))
     (when-let* ((foreground (ebox-buffer--paint-color style role)))
       (setq face
             (cond
@@ -397,7 +435,17 @@ buffer-facing paint properties.  Layout-only properties never pass through."
 
 (defun ebox--propertize-typography (string style)
   "Apply STYLE's typography to one copy of STRING."
-  (if-let* ((face (ebox-buffer--font-face style)))
+  (if-let* ((fact (ebox-buffer--font-fact style)))
+      (let ((copy (copy-sequence string))
+            (face (ebox-font-measurement-face fact)))
+        (when face
+          (ebox--add-render-face! copy 0 (length copy) face t))
+        (ebox--register-render-owned-face-values string copy))
+    string))
+
+(defun ebox--propertize-text-decoration (string style)
+  "Apply STYLE's text decoration to one copy of STRING."
+  (if-let* ((face (ebox-buffer--text-decoration-face style)))
       (let ((copy (copy-sequence string)))
         (ebox--add-render-face! copy 0 (length copy) face t)
         (ebox--register-render-owned-face-values string copy))

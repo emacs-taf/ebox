@@ -6598,12 +6598,10 @@ recognized from its first untouched sibling without walking the whole tree."
 
 (defun ebox-incremental--declaration-changed-keys (old new)
   "Return engine longhands changed between canonical OLD and NEW declarations."
-  (let ((all-properties (lambda (_property) t)))
-    (ebox-incremental--plist-changed-keys
-     (ebox-style-expand-ebox-plist
-      (ebox-style-declaration-properties old all-properties))
-     (ebox-style-expand-ebox-plist
-     (ebox-style-declaration-properties new all-properties)))))
+  (delete-dups
+   (cl-mapcan
+    #'ebox-style--engine-projection-targets
+    (ebox-incremental--plist-changed-keys old new))))
 
 (defun ebox-incremental--candidate-source-record (source-index node)
   "Return NODE's borrowed immutable record from candidate SOURCE-INDEX.
@@ -9507,8 +9505,8 @@ role, and outside-complement compatibility before publication."
                               (or (eq key :content)
                                   (eq key :surface-properties)
                                   (memq key ebox--paint-style-signature-keys)
-                                  (memq key '(:font :font-family :font-height
-                                              :font-weight :font-slant))))
+                                  (memq key '(:font-family :font-size
+                                              :font-weight :font-style))))
                             (plist-get entry :changed-keys))))
                     dirty-set)
                    allocation-stable-p

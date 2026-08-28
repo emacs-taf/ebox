@@ -53,6 +53,8 @@
 (declare-function ebox-layout-config-props "ebox-layout-config" (config))
 (declare-function ebox-tree-node-children "ebox-tree" (node))
 (declare-function ebox-buffer--font-face "ebox-buffer-backend" (style))
+(declare-function ebox--propertize-typography
+                  "ebox-buffer-backend" (string style))
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--buffer-render-state "ebox-incremental" (buffer))
 (declare-function ebox--ensure-region-id "ebox" (box))
@@ -77,7 +79,11 @@
 (declare-function ebox-pixel-space "ebox-measure" (pixel-width))
 (declare-function ebox-string-lines "ebox" (string))
 (declare-function ebox-string-pixel-width "ebox-measure" (string))
-(declare-function ebox-display-signature "ebox-measure" ())
+(declare-function ebox--current-display-signature "ebox-measure" ())
+(declare-function ebox--display-signature-for-window
+                  "ebox-measure" (window))
+(declare-function ebox-surface--buffer-display-window
+                  "ebox-surface" (buffer))
 (declare-function tp-property-value-copy "tp-core" (value))
 (declare-function tp-paint-slot-p "tp-style" (value))
 (declare-function tp-paint-slot-face "tp-style" (slot))
@@ -1640,8 +1646,8 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
           :margin-left-pixel :margin-right-pixel
           :margin-top-height :margin-bottom-height
           :border-left-pixel :border-right-pixel))
-       (not (ebox-get box :border-top-p))
-       (not (ebox-get box :border-bottom-p))
+       (= (ebox-get box :border-top-pixel) 0)
+       (= (ebox-get box :border-bottom-pixel) 0)
        (null (ebox-get box :color))
        (null (ebox-get box :bgcolor))))
 
@@ -1743,9 +1749,16 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
 (defun ebox-native-reflow--compile-text-node (node)
   "Compile canonical Text NODE to the lightweight native Text IR."
   (let* ((region-id (ebox--ensure-region-id node))
+         (content
+          (ebox--propertize-typography
+           (or (plist-get node :ebox-text-value)
+               (ebox-get node :content)
+               "")
+           node))
          (typography-style
           (ebox-native-reflow--compile-add-face-style
-           (ebox-buffer--font-face node)))
+           (append (ebox-buffer--font-face node)
+                   (ebox-buffer--text-decoration-face node))))
          (foreground-style
           (ebox-native-reflow--compile-add-face-style
            (ebox-native-reflow--compile-foreground-face
@@ -1757,10 +1770,7 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
     (list :type "text"
           :region-id region-id
           :content
-          (ebox-native-reflow--compile-text
-           (or (plist-get node :ebox-text-value)
-               (ebox-get node :content)
-               ""))
+          (ebox-native-reflow--compile-text content)
           :typography-style (or typography-style :null)
           :foreground-style (or foreground-style :null)
           :surface-template-id (or surface-template-id :null)
@@ -1800,6 +1810,14 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
          (margin-bottom (floor (or (ebox-get box :margin-bottom-height) 0)))
          (border-left (floor (or (ebox-get box :border-left-pixel) 0)))
          (border-right (floor (or (ebox-get box :border-right-pixel) 0)))
+         (border-top (floor (or (ebox-get box :border-top-pixel) 0)))
+         (border-bottom (floor (or (ebox-get box :border-bottom-pixel) 0)))
+         (_border-capability
+          (when (or (> border-top 1) (> border-bottom 1))
+            (signal 'ebox-surface-capability-error
+                    (list :border '(top bottom)
+                          :declared-pixels (max border-top border-bottom)
+                          :supported-pixels '(0 1)))))
          (foreground-style
           (ebox-native-reflow--compile-add-face-style
            (ebox-native-reflow--compile-foreground-face
@@ -1808,7 +1826,8 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
          (typography-style
           (and (ebox-style--text-paint-owner-p box)
                (ebox-native-reflow--compile-add-face-style
-                (ebox-buffer--font-face box))))
+                (append (ebox-buffer--font-face box)
+                        (ebox-buffer--text-decoration-face box)))))
          (background-style
           (ebox-native-reflow--compile-add-face-style
            (let ((background (ebox-get box :bgcolor)))
@@ -1823,14 +1842,14 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
           (ebox-native-reflow--compile-border-face-style
            border-right (ebox-get box :border-right-color)))
          (border-top-style
-          (and (ebox-get box :border-top-p)
+          (and (> border-top 0)
                (ebox-native-reflow--compile-add-face-style
                 (let ((color (ebox-get box :border-top-color)))
                   (if (tp-paint-slot-p color)
                       (tp-paint-slot-face color)
                     (list :overline (or color t)))))))
          (border-bottom-style
-          (and (ebox-get box :border-bottom-p)
+          (and (> border-bottom 0)
                (ebox-native-reflow--compile-add-face-style
                 (let ((color (ebox-get box :border-bottom-color)))
                   (if (tp-paint-slot-p color)
@@ -2220,6 +2239,12 @@ PROPERTY-TEMPLATES are Emacs-owned plists addressed by opaque native ids."
         :styles (vconcat styles)
         :property-templates (vconcat property-templates)))
 
+(defun ebox-native-reflow--buffer-display-signature (buffer)
+  "Return BUFFER's live canonical Surface display capability."
+  (with-current-buffer buffer
+    (ebox--display-signature-for-window
+     (ebox-surface--buffer-display-window buffer))))
+
 (defun ebox-native-reflow-capture-layout-scene (buffer)
   "Capture BUFFER's render-owned flat native scene without walking its tree."
   (unless (buffer-live-p buffer)
@@ -2238,7 +2263,7 @@ PROPERTY-TEMPLATES are Emacs-owned plists addressed by opaque native ids."
        :node-postorder postorder
        :flex-content-min-widths
        (plist-get state :flex-content-min-widths)
-       :display-signature (ebox-display-signature)
+       :display-signature (plist-get state :display-signature)
        :runtime-revision (or (plist-get state :runtime-revision) 0)))))
 
 (defun ebox-native-reflow-layout-scene-new-builder (scene)
@@ -2264,10 +2289,8 @@ PROPERTY-TEMPLATES are Emacs-owned plists addressed by opaque native ids."
     (and (buffer-live-p buffer)
          (eq (ebox--buffer-render-state buffer)
              (ebox-native-reflow-layout-scene-render-state scene))
-         (with-current-buffer buffer
-           (equal (ebox-display-signature)
-                  (ebox-native-reflow-layout-scene-display-signature
-                   scene))))))
+         (equal (ebox-native-reflow--buffer-display-signature buffer)
+                (ebox-native-reflow-layout-scene-display-signature scene)))))
 
 (defun ebox-native-reflow-layout-builder-step (builder budget-seconds)
   "Advance flat layout BUILDER for at most BUDGET-SECONDS.
@@ -2359,7 +2382,7 @@ per call, and no call recursively visits the captured Ebox tree."
            (ebox-native-reflow--compile-property-template-ids
             (make-hash-table :test 'equal))
           (ebox-native-reflow--compile-display-signature
-           (ebox-display-signature))
+           (ebox--current-display-signature))
           (ebox-native-reflow--compile-root-node node))
       (cl-loop
        for template in ebox-native-reflow--compile-property-templates
@@ -2457,7 +2480,7 @@ per call, and no call recursively visits the captured Ebox tree."
                (ebox-native-reflow--compile-property-template-ids
                 (make-hash-table :test 'equal))
                (ebox-native-reflow--compile-display-signature
-                (ebox-display-signature))
+                (ebox--current-display-signature))
                (ebox-native-reflow--compile-root-node node)
                (ebox--render-string-pixel-width-cache
                 (make-hash-table :test 'equal))
@@ -4353,8 +4376,7 @@ creating and releasing a session for this preparation."
           (or layout-package
               (ebox-native-reflow--compile-layout-package root)))
          (source-revision (or (plist-get state :runtime-revision) 0))
-         (display-signature
-          (with-current-buffer buffer (ebox-display-signature)))
+         (display-signature (plist-get state :display-signature))
          (context-hash
           (sxhash-equal
            (list display-signature kind region-id
@@ -4505,11 +4527,10 @@ When FULL-P is non-nil, query the complete restoration job."
                  (equal
                   (plist-get state :runtime-revision)
                   (ebox-native-reflow-preparation-expected-revision preparation))
-                 (with-current-buffer buffer
-                   (equal
-                    (ebox-display-signature)
-                    (ebox-native-reflow-preparation-display-signature
-                     preparation))))
+                 (equal
+                  (ebox-native-reflow--buffer-display-signature buffer)
+                  (ebox-native-reflow-preparation-display-signature
+                   preparation)))
       (error "Preview runtime changed during native reflow preparation"))
     state))
 

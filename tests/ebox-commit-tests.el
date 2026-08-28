@@ -595,8 +595,8 @@
   "Repeated equivalent style declarations compile through ECSS once."
   (clrhash ebox-style--declaration-cache)
   (let ((calls 0)
-        (original (symbol-function 'ecss-merge-declarations)))
-    (cl-letf (((symbol-function 'ecss-merge-declarations)
+        (original (symbol-function 'ecss-expand-declarations)))
+    (cl-letf (((symbol-function 'ecss-expand-declarations)
                (lambda (&rest arguments)
                  (cl-incf calls)
                  (apply original arguments))))
@@ -1038,57 +1038,6 @@
         (kill-buffer buffer)))))
 
 
-(ert-deftest ebox-commit-keeps-root-owner-for-dynamic-cascade-source ()
-  "A TP-dependent cascade binding must preserve root-owner fallback."
-  (let* ((ebox-style-stylesheet (ecss-stylesheet-create))
-         (color (tp-signal-create "#111111"))
-         (calls 0)
-         (buffer nil))
-    (ebox-style-add-rule
-     ".card" (list :color (tp-computed (lambda () (tp-signal-read color))))
-     :layer 'components)
-    (unwind-protect
-        (progn
-          (setq buffer
-                (ebox-render-to-buffer
-                 (generate-new-buffer-name " *ebox-dynamic-style-proof*")
-                 (ebox-test-column
-                  (ebox-test-box :key 'card :class "card" (ebox-test-text "Before")
-                               :width '(40))
-                  (ebox-test-box :key 'stable (ebox-test-text "Stable")
-                               :width '(40)))))
-          (let* ((state (ebox--buffer-render-state buffer))
-                 (style-states (plist-get state :style-binding-states))
-                 (binding-state
-                  (cl-loop for value being the hash-values of style-states
-                           when (and (plist-get value :binding)
-                                     (not (ebox-surface--static-style-state-p
-                                           value)))
-                           return value)))
-            (should binding-state)
-            (should (> (tp-binding-dependency-count
-                        (plist-get binding-state :binding))
-                       (if (plist-get binding-state :parent-binding) 1 0)))
-            (should-not (ebox-surface--static-style-state-p binding-state)))
-          (let ((original
-                 (symbol-function 'ebox-incremental--layout-owner-plan)))
-            (cl-letf (((symbol-function 'ebox-incremental--layout-owner-plan)
-                       (lambda (&rest arguments)
-                         (cl-incf calls)
-                         (apply original arguments))))
-              (ebox-commit
-               buffer
-               (ebox-test-column
-                (ebox-test-box :key 'card :class "card" (ebox-test-text "After")
-                             :width '(40))
-                (ebox-test-box :key 'stable (ebox-test-text "Stable")
-                             :width '(40))))
-              (should (= calls 0)))))
-      (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
-
-
-
 (ert-deftest ebox-commit-formatting-context-reflow-owns-variable-line-siblings ()
   "Two variable-line owners should publish through their nearest stack context.
 The context owns the complete local block; the root and untouched header/footer
@@ -1299,7 +1248,7 @@ remain retained identities."
           (ebox-test-box :key 'right :source-identity 'right (ebox-test-text "R")))
          (old-root
           (ebox-test-grid :key 'grid :width '(80) :grid-template-columns
-		'((36) (36)) :column-gap '(0 (8))
+		'((36) (36)) :column-gap '(8)
 		(ebox-test-box :key 'left :source-identity 'left (ebox-test-text "left-old"))
 		(ebox-test-box :key 'right :source-identity 'right (ebox-test-text "right-old"))))
          (buffer nil)
@@ -1320,7 +1269,10 @@ remain retained identities."
                         '(span-patch owner-scoped)))
           (should-not (plist-get report :tp-full-root))
           (should-not (plist-get report :tp-scope-fallback))
-          (should (= 1 (plist-get report :tp-text-operations)))
+          ;; The 8px Grid gap keeps the two changed slots disjoint.  TP still
+          ;; publishes one scoped transaction, with one exact text operation
+          ;; per changed slot instead of replacing the unchanged gap.
+          (should (= 2 (plist-get report :tp-text-operations)))
           (should (string-match-p "L"
                                   (ebox-commit-test--buffer-string buffer)))
           (setq fresh
@@ -1328,7 +1280,7 @@ remain retained identities."
                  (generate-new-buffer-name
                   " *ebox-multi-owner-variable-slots-fresh*")
                  (ebox-test-grid :key 'grid :width '(80) :grid-template-columns
-		'((36) (36)) :column-gap '(0 (8))
+		'((36) (36)) :column-gap '(8)
 		(ebox-test-box :key 'left :source-identity 'left (ebox-test-text "L"))
 		(ebox-test-box :key 'right :source-identity 'right (ebox-test-text "R")))))
           (should (equal
@@ -1347,7 +1299,7 @@ remain retained identities."
       ((root (left right)
          (ebox-test-grid :key 'grid :width '(80)
                     :grid-template-columns '((36) (36))
-                    :column-gap '(0 (8))
+                    :column-gap '(8)
                     (ebox-test-box :key 'left :source-identity 'left (ebox-test-text left))
                     (ebox-test-box :key 'right :source-identity 'right (ebox-test-text right))))
        (candidate (buffer)
@@ -1682,7 +1634,7 @@ remain retained identities."
     :key 'geometry-context :width '(80)
     (ebox-test-column
      (ebox-test-box :key 'left :source-identity 'left
-                  (ebox-test-text left) :font 'bold)
+                  (ebox-test-text left) :font-weight 'bold)
      (ebox-test-box :key 'right :source-identity 'right
                   (ebox-test-text right))))
    (ebox-test-box :key 'paint-a :source-identity 'paint-a
@@ -1867,7 +1819,7 @@ remain retained identities."
     (ebox-candidate-replace-host-ref
      candidate 'left
      (ebox-test-box :key 'left :source-identity 'left
-                  (ebox-test-text left) :font 'bold))
+                  (ebox-test-text left) :font-weight 'bold))
     (ebox-candidate-replace-host-ref
      candidate 'right
      (ebox-test-box :key 'right :source-identity 'right
@@ -1991,28 +1943,39 @@ remain retained identities."
 (defun ebox-commit-test--allocation-closure-root
     (toast paint-a paint-b &optional width footer-overflow root-overflow)
   "Return a generic whole-line Flex allocation-closure fixture."
-  (ebox-test-box
-   :key 'root :width (list (or width 800))
-   :height (and root-overflow 1) :overflow root-overflow
-   (ebox-test-column
-    (ebox-test-box :key 'status :source-identity 'status
-                 (ebox-test-text "Theme: Light") :width '(200))
-    (ebox-test-box :key 'paint-a :source-identity 'paint-a
-                 (ebox-test-text "paint-a") :color paint-a)
-    (ebox-test-box :key 'paint-b :source-identity 'paint-b
-                 (ebox-test-text "paint-b") :bgcolor paint-b)
-    (ebox-test-box
-     :key 'footer-owner :width (list (or width 800))
-     (ebox-test-column
-      (ebox-test-flex
-       :key 'footer :width (list (or width 800)) :flex-wrap 'wrap
-       :overflow footer-overflow :gap '(1 (4))
-       (ebox-test-box
-        :key 'toast-slot :width 'stretch :min-width 0
-        :flex-grow 1 :flex-shrink 1 :flex-basis '(0)
-        (ebox-test-column
-         (ebox-test-box :key 'toast :source-identity 'toast (ebox-test-text toast))))
-       (ebox-test-box :key 'peer (ebox-test-text "database.sqlite"))))))))
+  (let* ((footer
+          (apply
+           #'ebox-test-flex
+           (append
+            (list :key 'footer :width (list (or width 800))
+                  :flex-wrap 'wrap :gap '(1 (4)))
+            (when footer-overflow (list :overflow footer-overflow))
+            (list
+             (ebox-test-box
+              :key 'toast-slot :width 'stretch :min-width 0
+              :flex-grow 1 :flex-shrink 1 :flex-basis '(0)
+              (ebox-test-column
+               (ebox-test-box :key 'toast :source-identity 'toast
+                              (ebox-test-text toast))))
+             (ebox-test-box :key 'peer
+                            (ebox-test-text "database.sqlite"))))))
+         (content
+          (ebox-test-column
+           (ebox-test-box :key 'status :source-identity 'status
+                          (ebox-test-text "Theme: Light") :width '(200))
+           (ebox-test-box :key 'paint-a :source-identity 'paint-a
+                          (ebox-test-text "paint-a") :color paint-a)
+           (ebox-test-box :key 'paint-b :source-identity 'paint-b
+                          (ebox-test-text "paint-b") :bgcolor paint-b)
+           (ebox-test-box
+            :key 'footer-owner :width (list (or width 800))
+            (ebox-test-column footer)))))
+    (apply
+     #'ebox-test-box
+     (append
+      (list :key 'root :width (list (or width 800)))
+      (when root-overflow (list :height 1 :overflow root-overflow))
+      (list content)))))
 
 (defun ebox-commit-test--allocation-closure-candidate
     (buffer toast paint-a paint-b)
