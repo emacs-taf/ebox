@@ -34,6 +34,7 @@
     "tests/ebox-core-render-tests.el" "tests/ebox-state-contract-tests.el"
     "tests/ebox-layout-boundary-tests.el"
     "tests/ebox-patch-plan-tests.el"
+    "tests/ebox-style-schema-tests.el"
     "tests/ebox-child-range-tests.el" "tests/ebox-grid-tests.el"
     "tests/ebox-commit-tests.el" "tests/ebox-surface-tests.el"
     "tests/ebox-dsl-tests.el" "tests/ebox-flex-tests.el"
@@ -53,6 +54,7 @@
     "selector-tests" "dsl-tests" "flex-tests" "state-contract-tests"
     "layout-boundary-tests" "layout-boundary-performance"
     "patch-plan-tests" "patch-plan-performance"
+    "style-schema-tests" "style-schema-performance"
     "docs-contract-tests" "ci-contract-tests" "performance-evaluator"
     "visual-check"
     "native-rust-tests" "native-build" "package-lint" "diff-check")

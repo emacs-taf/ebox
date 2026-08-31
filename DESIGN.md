@@ -10,6 +10,7 @@ Ebox is the low-level spatial rendering engine. Its job is to turn a declarative
 - Layout changes are measured before publication; a failed candidate preserves the previous buffer state.
 - The native module is an optional accelerator with an exact Elisp fallback.
 - New abstractions must remove duplication or make an existing public workflow simpler.
+- Public property schema, ECSS metadata, and used engine projection are derived from one property definition record.
 
 ## Pipeline
 

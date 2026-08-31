@@ -23,6 +23,8 @@
                       "layout-boundary-performance:"
                       "patch-plan-tests:"
                       "patch-plan-performance:"
+                      "style-schema-tests:"
+                      "style-schema-performance:"
                       "docs-contract-tests:"
                       "ci-contract-tests:" "native-rust-tests:"
                       "native-build:" "performance-evaluator:" "diff-check:"))

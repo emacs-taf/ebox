@@ -45,10 +45,12 @@
 (defconst ebox-style--property-definitions
   '((:name :color :id ebox/color :initial nil :inherits t
      :contexts (text box) :group paint :dirty-kind paint :signature paint
-     :normalizer color :validator color)
+     :normalizer color :validator color
+     :engine-projection (:to :color :conv color))
     (:name :background-color :id ebox/background-color :aliases (:bgcolor)
      :initial nil :contexts (text box) :group paint :dirty-kind paint
-     :signature paint :normalizer color :validator color)
+     :signature paint :normalizer color :validator color
+     :engine-projection (:to :bgcolor :conv color))
     (:name :font-family :id ebox/font-family :initial nil :inherits t
      :contexts (text box) :group typography :dirty-kind geometry :signature layout
      :validator font-family)
@@ -67,7 +69,8 @@
      :validator text-decoration-line)
     (:name :text-decoration-color :id ebox/text-decoration-color
      :initial currentColor :contexts (text box) :group paint :dirty-kind paint
-     :signature paint :normalizer color :validator color)
+     :signature paint :normalizer color :validator color
+     :engine-projection (:to :text-decoration-color :conv color))
     (:name :text-decoration-style :id ebox/text-decoration-style :initial solid
      :contexts (text box) :group paint :dirty-kind paint :signature paint
      :validator text-decoration-style)
@@ -77,15 +80,18 @@
     (:name :width :id ebox/width :initial auto
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator horizontal-size)
+     :validator horizontal-size
+     :engine-projection (:to :width :conv preferred-size))
     (:name :min-width :id ebox/min-width :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator min-horizontal-size)
+     :validator min-horizontal-size
+     :engine-projection (:to :min-width :conv min-size))
     (:name :max-width :id ebox/max-width :initial none
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator max-horizontal-size)
+     :validator max-horizontal-size
+     :engine-projection (:to :max-width :conv max-size))
     (:name :height :id ebox/height :initial auto
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
@@ -101,83 +107,103 @@
     (:name :padding-top :id ebox/padding-top :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :padding-top-height :conv line))
     (:name :padding-right :id ebox/padding-right :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :padding-right-pixel :conv pixel))
     (:name :padding-bottom :id ebox/padding-bottom :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :padding-bottom-height :conv line))
     (:name :padding-left :id ebox/padding-left :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :padding-left-pixel :conv pixel))
     (:name :padding-block-start :id ebox/padding-block-start :initial 0
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :padding-top-height :conv line))
     (:name :padding-inline-end :id ebox/padding-inline-end :initial 0
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :padding-right-pixel :conv pixel))
     (:name :padding-block-end :id ebox/padding-block-end :initial 0
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :padding-bottom-height :conv line))
     (:name :padding-inline-start :id ebox/padding-inline-start :initial 0
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :padding-left-pixel :conv pixel))
     (:name :margin-top :id ebox/margin-top :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :margin-top-height :conv line))
     (:name :margin-right :id ebox/margin-right :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :margin-right-pixel :conv pixel))
     (:name :margin-bottom :id ebox/margin-bottom :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :margin-bottom-height :conv line))
     (:name :margin-left :id ebox/margin-left :initial 0
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :margin-left-pixel :conv pixel))
     (:name :margin-block-start :id ebox/margin-block-start :initial 0
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :margin-top-height :conv line))
     (:name :margin-inline-end :id ebox/margin-inline-end :initial 0
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :margin-right-pixel :conv pixel))
     (:name :margin-block-end :id ebox/margin-block-end :initial 0
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :margin-bottom-height :conv line))
     (:name :margin-inline-start :id ebox/margin-inline-start :initial 0
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :validator nonnegative-size
+     :engine-projection (:to :margin-left-pixel :conv pixel))
     (:name :border-top-width :id ebox/border-top-width
      :initial 0 :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator border-width)
+     :validator border-width
+     :engine-projection (:to :border-top-pixel :conv border-pixel))
     (:name :border-right-width :id ebox/border-right-width
      :initial 0 :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator border-width)
+     :validator border-width
+     :engine-projection (:to :border-right-pixel :conv border-pixel))
     (:name :border-bottom-width :id ebox/border-bottom-width
      :initial 0 :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator border-width)
+     :validator border-width
+     :engine-projection (:to :border-bottom-pixel :conv border-pixel))
     (:name :border-left-width :id ebox/border-left-width
      :initial 0 :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator border-width)
+     :validator border-width
+     :engine-projection (:to :border-left-pixel :conv border-pixel))
     (:name :border-top-style :id ebox/border-top-style :initial none
      :contexts (box row column flex grid) :group structure
      :dirty-kind structure :signature layout :validator border-style)
@@ -193,19 +219,23 @@
     (:name :border-top-color :id ebox/border-top-color :initial currentColor
      :contexts (box row column flex grid) :group paint
      :dirty-kind paint :signature paint
-     :normalizer color :validator color)
+     :normalizer color :validator color
+     :engine-projection (:to :border-top-color :conv color))
     (:name :border-right-color :id ebox/border-right-color :initial currentColor
      :contexts (box row column flex grid) :group paint
      :dirty-kind paint :signature paint
-     :normalizer color :validator color)
+     :normalizer color :validator color
+     :engine-projection (:to :border-right-color :conv color))
     (:name :border-bottom-color :id ebox/border-bottom-color
      :initial currentColor :contexts (box row column flex grid)
      :group paint :dirty-kind paint :signature paint
-     :normalizer color :validator color)
+     :normalizer color :validator color
+     :engine-projection (:to :border-bottom-color :conv color))
     (:name :border-left-color :id ebox/border-left-color :initial currentColor
      :contexts (box row column flex grid) :group paint
      :dirty-kind paint :signature paint
-     :normalizer color :validator color)
+     :normalizer color :validator color
+     :engine-projection (:to :border-left-color :conv color))
     (:name :text-align :id ebox/text-align :initial left :inherits t
      :contexts (box)
      :author-contexts (box)
@@ -225,7 +255,8 @@
      :contexts (box row column flex grid)
      :group structure :dirty-kind structure :signature structure
      :validator outer :impacts (structure geometry)
-     :projections (structure layout))
+     :projections (structure layout)
+     :engine-projection (:to nil))
     (:name :item-gap :id ebox/item-gap :initial 0 :contexts (row column)
      :group geometry :dirty-kind geometry :signature layout
      :validator nonnegative-integer)
@@ -302,37 +333,62 @@
      :contexts (item) :group geometry :dirty-kind geometry :signature layout)
     (:name :padding :id ebox/padding :shorthand padding
      :contexts (box row column flex grid)
-     :impacts (geometry paint) :projections (layout paint))
+     :impacts (geometry paint) :projections (layout paint)
+     :engine-projection
+     (:expand (:padding-top :padding-right :padding-bottom :padding-left)
+      :mode trbl))
     (:name :padding-inline :id ebox/padding-inline :shorthand padding-inline
      :contexts (box row column flex grid)
-     :impacts (geometry paint) :projections (layout paint))
+     :impacts (geometry paint) :projections (layout paint)
+     :engine-projection (:expand (:padding-left :padding-right) :mode pair))
     (:name :padding-block :id ebox/padding-block :shorthand padding-block
      :contexts (box row column flex grid)
-     :impacts (geometry paint) :projections (layout paint))
+     :impacts (geometry paint) :projections (layout paint)
+     :engine-projection (:expand (:padding-top :padding-bottom) :mode pair))
     (:name :margin :id ebox/margin :shorthand margin
      :contexts (box row column flex grid)
-     :impacts (geometry) :projections (layout))
+     :impacts (geometry) :projections (layout)
+     :engine-projection
+     (:expand (:margin-top :margin-right :margin-bottom :margin-left)
+      :mode trbl))
     (:name :margin-inline :id ebox/margin-inline :shorthand margin-inline
      :contexts (box row column flex grid)
-     :impacts (geometry) :projections (layout))
+     :impacts (geometry) :projections (layout)
+     :engine-projection (:expand (:margin-left :margin-right) :mode pair))
     (:name :margin-block :id ebox/margin-block :shorthand margin-block
      :contexts (box row column flex grid)
-     :impacts (geometry) :projections (layout))
+     :impacts (geometry) :projections (layout)
+     :engine-projection (:expand (:margin-top :margin-bottom) :mode pair))
     (:name :border :id ebox/border :shorthand border
      :contexts (box row column flex grid)
-     :impacts (geometry paint) :projections (layout paint))
+     :impacts (geometry paint) :projections (layout paint)
+     :engine-projection
+     (:expand (:border-top :border-right :border-bottom :border-left)
+      :mode same))
     (:name :border-top :id ebox/border-top :shorthand border-top
      :contexts (box row column flex grid)
-     :impacts (geometry paint) :projections (layout paint))
+     :impacts (geometry paint) :projections (layout paint)
+     :engine-projection
+     (:expand (:border-top-width :border-top-style :border-top-color)
+      :mode wsc))
     (:name :border-right :id ebox/border-right :shorthand border-right
      :contexts (box row column flex grid)
-     :impacts (geometry paint) :projections (layout paint))
+     :impacts (geometry paint) :projections (layout paint)
+     :engine-projection
+     (:expand (:border-right-width :border-right-style :border-right-color)
+      :mode wsc))
     (:name :border-bottom :id ebox/border-bottom :shorthand border-bottom
      :contexts (box row column flex grid)
-     :impacts (geometry paint) :projections (layout paint))
+     :impacts (geometry paint) :projections (layout paint)
+     :engine-projection
+     (:expand (:border-bottom-width :border-bottom-style :border-bottom-color)
+      :mode wsc))
     (:name :border-left :id ebox/border-left :shorthand border-left
      :contexts (box row column flex grid)
-     :impacts (geometry paint) :projections (layout paint))
+     :impacts (geometry paint) :projections (layout paint)
+     :engine-projection
+     (:expand (:border-left-width :border-left-style :border-left-color)
+      :mode wsc))
     (:name :border-top-p :id ebox/border-top-p
      :shorthand border-top-present :validator boolean
      :contexts (box row column flex grid)
@@ -340,13 +396,25 @@
      :group structure :dirty-kind structure :signature layout)
     (:name :border-width :id ebox/border-width :shorthand border-width
      :contexts (box row column flex grid)
-     :group geometry :dirty-kind geometry :signature layout)
+     :group geometry :dirty-kind geometry :signature layout
+     :engine-projection
+     (:expand (:border-top-width :border-right-width
+               :border-bottom-width :border-left-width)
+      :mode trbl))
     (:name :border-style :id ebox/border-style :shorthand border-style
      :contexts (box row column flex grid)
-     :group structure :dirty-kind structure :signature layout)
+     :group structure :dirty-kind structure :signature layout
+     :engine-projection
+     (:expand (:border-top-style :border-right-style
+               :border-bottom-style :border-left-style)
+      :mode trbl))
     (:name :border-color :id ebox/border-color :shorthand border-color
      :contexts (box row column flex grid)
-     :group paint :dirty-kind paint :signature paint)
+     :group paint :dirty-kind paint :signature paint
+     :engine-projection
+     (:expand (:border-top-color :border-right-color
+               :border-bottom-color :border-left-color)
+      :mode trbl))
     (:name :gap :id ebox/gap :shorthand gap
      :contexts (flex grid)
      :group geometry :dirty-kind geometry :signature layout)
@@ -357,6 +425,118 @@
      :contexts (item)
      :group geometry :dirty-kind geometry :signature layout))
   "Canonical Ebox property schemas and public aliases.")
+
+(defconst ebox-style--internal-engine-projection-rules
+  '((:display :to nil))
+  "Projection rules for engine-only fields outside the public schema.")
+
+(defconst ebox-style--engine-projection-modes '(trbl pair wsc same)
+  "Closed set of shorthand split modes used by engine projection.")
+
+(defconst ebox-style--engine-projection-converters
+  '(pixel size-pixel border-pixel preferred-size min-size max-size line color)
+  "Closed set of value converters used by engine projection.")
+
+(define-error 'ebox-style-schema-error "Invalid Ebox style schema")
+
+(defun ebox-style--definition-for-name (name &optional definitions)
+  "Return NAME's canonical entry from DEFINITIONS or the package definitions."
+  (cl-find-if
+   (lambda (property)
+     (or (eq name (plist-get property :name))
+         (eq name (plist-get property :id))
+         (memq name (plist-get property :aliases))))
+   (or definitions ebox-style--property-definitions)))
+
+(defun ebox-style--definition-engine-targets
+    (property &optional definitions stack)
+  "Return private engine targets derived from PROPERTY in DEFINITIONS."
+  (let* ((definitions (or definitions ebox-style--property-definitions))
+         (name (plist-get property :name))
+         (rule (plist-get property :engine-projection)))
+    (when (memq name stack)
+      (signal 'ebox-style-schema-error
+              (list :engine-projection-cycle (reverse (cons name stack)))))
+    (cond
+     ((null rule) (list name))
+     ((plist-get rule :expand)
+      (delete-dups
+       (cl-mapcan
+        (lambda (target)
+          (let ((definition
+                 (ebox-style--definition-for-name target definitions)))
+            (unless definition
+              (signal 'ebox-style-schema-error
+                      (list :unknown-engine-target target :property name)))
+            (ebox-style--definition-engine-targets
+             definition definitions (cons name stack))))
+        (plist-get rule :expand))))
+     ((plist-member rule :to)
+      (when-let* ((target (plist-get rule :to))) (list target)))
+     (t (list name)))))
+
+(defun ebox-style--validate-engine-projection-definitions (definitions)
+  "Validate engine projection metadata in DEFINITIONS and return t."
+  (let ((lookup-keys (make-hash-table :test #'eq)))
+    (dolist (property definitions)
+      (let ((name (plist-get property :name))
+            (id (plist-get property :id))
+            (rule (plist-get property :engine-projection)))
+        (unless (and (keywordp name) (symbolp id))
+          (signal 'ebox-style-schema-error
+                  (list :malformed-property-identity property)))
+        (dolist (entry
+                 (append (list (cons name :name) (cons id :id))
+                         (mapcar (lambda (alias) (cons alias :alias))
+                                 (plist-get property :aliases))))
+          (unless (symbolp (car entry))
+            (signal 'ebox-style-schema-error
+                    (list :malformed-lookup-key entry :property name)))
+          (when-let* ((existing (gethash (car entry) lookup-keys)))
+            (signal 'ebox-style-schema-error
+                    (list :lookup-key-collision (car entry)
+                          :existing existing
+                          :incoming (list :property name :role (cdr entry)))))
+          (puthash (car entry)
+                   (list :property name :role (cdr entry))
+                   lookup-keys))
+        (when rule
+          (unless (proper-list-p rule)
+            (signal 'ebox-style-schema-error
+                    (list :malformed-engine-rule name rule)))
+          (let ((expand (plist-get rule :expand))
+                (to-present (plist-member rule :to))
+                (converter (plist-get rule :conv)))
+            (when (eq (not (null expand)) (not (null to-present)))
+              (signal 'ebox-style-schema-error
+                      (list :ambiguous-engine-rule name rule)))
+            (when expand
+              (unless (and (proper-list-p expand) expand
+                           (memq (plist-get rule :mode)
+                                 ebox-style--engine-projection-modes))
+                (signal 'ebox-style-schema-error
+                        (list :malformed-engine-expansion name rule))))
+            (when (and to-present
+                       (plist-get rule :to)
+                       (not (keywordp (plist-get rule :to))))
+              (signal 'ebox-style-schema-error
+                      (list :malformed-engine-target name rule)))
+            (when (and converter
+                       (not (memq converter
+                                  ebox-style--engine-projection-converters)))
+              (signal 'ebox-style-schema-error
+                      (list :unknown-engine-converter name converter))))))
+      (ebox-style--definition-engine-targets property definitions))
+    (dolist (entry ebox-style--internal-engine-projection-rules)
+      (when (ebox-style--definition-for-name (car entry) definitions)
+        (signal 'ebox-style-schema-error
+                (list :public-rule-in-internal-table (car entry)))))
+    t))
+
+(defconst ebox-style--engine-projection-schema-valid-p
+  (ebox-style--validate-engine-projection-definitions
+   ebox-style--property-definitions)
+  "Non-nil after the package engine projection schema validates.")
 
 (defvar ebox-style-schemas)
 (defvar ebox-style--property-index)
@@ -1035,6 +1215,9 @@ generated wrappers that already contain exact line breaks."
     (setq metadata
           (plist-put metadata :impacts
                      (ebox-style--schema-impacts property)))
+    (setq metadata
+          (plist-put metadata :engine-targets
+                     (ebox-style--definition-engine-targets property)))
     (plist-put metadata :projections
                (ebox-style--schema-projections property))))
 
@@ -2143,98 +2326,6 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
                      (list (car entry) (cdr entry)))
                    entries))))
 
-(defconst ebox-style--engine-projection-rules
-  '((:padding :expand (:padding-top :padding-right
-                                    :padding-bottom :padding-left)
-              :mode trbl)
-    (:padding-inline :expand (:padding-left :padding-right) :mode pair)
-    (:padding-block :expand (:padding-top :padding-bottom) :mode pair)
-    (:padding-top :to :padding-top-height :conv line)
-    (:padding-block-start :to :padding-top-height :conv line)
-    (:padding-right :to :padding-right-pixel :conv pixel)
-    (:padding-inline-end :to :padding-right-pixel :conv pixel)
-    (:padding-bottom :to :padding-bottom-height :conv line)
-    (:padding-block-end :to :padding-bottom-height :conv line)
-    (:padding-left :to :padding-left-pixel :conv pixel)
-    (:padding-inline-start :to :padding-left-pixel :conv pixel)
-    (:margin :expand (:margin-top :margin-right
-                                  :margin-bottom :margin-left)
-             :mode trbl)
-    (:margin-inline :expand (:margin-left :margin-right) :mode pair)
-    (:margin-block :expand (:margin-top :margin-bottom) :mode pair)
-    (:margin-top :to :margin-top-height :conv line)
-    (:margin-block-start :to :margin-top-height :conv line)
-    (:margin-right :to :margin-right-pixel :conv pixel)
-    (:margin-inline-end :to :margin-right-pixel :conv pixel)
-    (:margin-bottom :to :margin-bottom-height :conv line)
-    (:margin-block-end :to :margin-bottom-height :conv line)
-    (:margin-left :to :margin-left-pixel :conv pixel)
-    (:margin-inline-start :to :margin-left-pixel :conv pixel)
-    (:border :expand (:border-top :border-right
-                                  :border-bottom :border-left)
-             :mode same)
-    (:border-top :expand (:border-top-width
-                          :border-top-style
-                          :border-top-color)
-                 :mode wsc)
-    (:border-right :expand (:border-right-width
-                            :border-right-style
-                            :border-right-color)
-                   :mode wsc)
-    (:border-bottom :expand (:border-bottom-width
-                             :border-bottom-style
-                             :border-bottom-color)
-                    :mode wsc)
-    (:border-left :expand (:border-left-width
-                           :border-left-style
-                           :border-left-color)
-                  :mode wsc)
-    (:border-width :expand (:border-top-width :border-right-width
-                                              :border-bottom-width
-                                              :border-left-width)
-                   :mode trbl)
-    (:border-style :expand (:border-top-style :border-right-style
-                                              :border-bottom-style
-                                              :border-left-style)
-                   :mode trbl)
-    (:border-color :expand (:border-top-color :border-right-color
-                                              :border-bottom-color
-                                              :border-left-color)
-                   :mode trbl)
-    (:border-top-width :to :border-top-pixel :conv border-pixel)
-    (:border-top-style :to :border-top-style)
-    (:border-top-color :to :border-top-color :conv color)
-    (:border-bottom-width :to :border-bottom-pixel :conv border-pixel)
-    (:border-bottom-style :to :border-bottom-style)
-    (:border-bottom-color :to :border-bottom-color :conv color)
-    (:border-left-width :to :border-left-pixel :conv border-pixel)
-    (:border-left-style :to :border-left-style)
-    (:border-left-color :to :border-left-color :conv color)
-    (:border-right-width :to :border-right-pixel :conv border-pixel)
-    (:border-right-style :to :border-right-style)
-    (:border-right-color :to :border-right-color :conv color)
-    (:width :to :width :conv preferred-size)
-    (:min-width :to :min-width :conv min-size)
-    (:max-width :to :max-width :conv max-size)
-    (:height :to :height)
-    (:min-height :to :min-height)
-    (:max-height :to :max-height)
-    (:outer :to nil)
-    (:content :to :content)
-    (:box-sizing :to :box-sizing)
-    (:color :to :color :conv color)
-    (:background-color :to :bgcolor :conv color)
-    (:bgcolor :to :bgcolor :conv color)
-    (:text-decoration-line :to :text-decoration-line)
-    (:text-decoration-color :to :text-decoration-color :conv color)
-    (:text-decoration-style :to :text-decoration-style)
-    (:text-align :to :text-align)
-    (:overflow :to :overflow)
-    (:wrap-mode :to :wrap-mode)
-    (:display :to nil)
-    (:visibility :to :visibility))
-  "Canonical property projections into private runtime storage keys.")
-
 (defun ebox-style--convert (value converter)
   "Convert VALUE using Ebox engine CONVERTER."
   (pcase converter
@@ -2307,7 +2398,9 @@ used geometry and become zero when the corresponding style is not `solid'."
 
 (defun ebox-style--get-ebox-rule (property)
   "Return Ebox private engine projection rule for PROPERTY."
-  (cdr (assq property ebox-style--engine-projection-rules)))
+  (or (when-let* ((definition (ebox-style--property property)))
+        (plist-get definition :engine-projection))
+      (cdr (assq property ebox-style--internal-engine-projection-rules))))
 
 (defun ebox-style--expand-engine-property (property value)
   "Expand public Ebox PROPERTY with VALUE to engine longhands."
@@ -2329,18 +2422,13 @@ used geometry and become zero when the corresponding style is not `solid'."
 
 (defun ebox-style--engine-projection-targets (property)
   "Return private engine keys potentially projected from PROPERTY."
-  (let* ((name (or (ebox-style-canonical-name property) property))
-         (rule (ebox-style--get-ebox-rule name)))
-    (cond
-     ((null rule) (list name))
-     ((plist-get rule :expand)
-      (delete-dups
-       (cl-mapcan #'ebox-style--engine-projection-targets
-                  (plist-get rule :expand))))
-     ((plist-member rule :to)
-      (when-let* ((target (plist-get rule :to)))
-        (list target)))
-     (t (list name)))))
+  (if-let* ((definition (ebox-style--property property)))
+      (copy-sequence (plist-get definition :engine-targets))
+    (let ((rule
+           (cdr (assq property ebox-style--internal-engine-projection-rules))))
+      (if (and rule (plist-member rule :to))
+          (when-let* ((target (plist-get rule :to))) (list target))
+        (list property)))))
 
 (defun ebox-style--expand-engine-plist (plist)
   "Project canonical PLIST into private Ebox runtime fields."

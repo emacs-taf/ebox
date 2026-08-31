@@ -39,7 +39,7 @@
 
 本包有意不包含应用 Component、UI control、响应式 data 或 playground 实现；它们属于同级包。历史应用性能记录器和 native reflow 评估器也不属于独立 Ebox 的发布边界；Ebox 只保留 native 模块本身、Rust 构建输入和可重复的构建检查。
 
-active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-state-contract-tests.el`、`tests/ebox-layout-boundary-tests.el`、`tests/ebox-patch-plan-tests.el`、`tests/ebox-child-range-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-surface-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el`、`scripts/ebox-visual-check.el` 和 `scripts/ebox-performance-evaluator.el`。
+active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-state-contract-tests.el`、`tests/ebox-layout-boundary-tests.el`、`tests/ebox-patch-plan-tests.el`、`tests/ebox-style-schema-tests.el`、`tests/ebox-child-range-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-surface-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el`、`scripts/ebox-visual-check.el` 和 `scripts/ebox-performance-evaluator.el`。
 
 ## 运行时模型
 
@@ -88,6 +88,7 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 - E1 固化封闭的 M2a 目标分类：不可变 generation fact、绑定 generation 的 scroll/native authority、opaque TP client-state custody、单向 compatibility mirror，以及 disposable cache。每一行分别记录当前 v1 存储形态，以及目标 owner、mutation API、generation binding、rollback、rebuild proof 与 cleanup。在后续 checkpoint 改变存储形态前，当前 v1 TP client state 仍保存完整 Ebox state plist。E1 mirror 探针只重建并比较投影，不修改 live state。
 - `ebox-layout.el` 不再 load 或调用 `ebox-surface.el`/TP。candidate isolation、继承 cascade 判定和一次性 materialization 只能通过 `ebox-render-context.el` 拥有的已校验 port 进入 layout；`ebox.el` 在两侧加载后接线 surface 实现。
 - `ebox-patch-plan.el` 只消费 tentative operation plist 与不可变 generation parent table，并返回 deterministic plan artifact；所有 live fact 准备仍由 incremental adapter 拥有。E3 默认使用 pure route，同时保留显式 `legacy` 与执行等价检查的 `shadow` route；三条 route 都不能发布。
+- `ebox-style--property-definitions` 同时也是 used-value projection 的唯一真相源。非默认 engine lowering 写在每个 property 的 `:engine-projection` 中；ECSS metadata 暴露派生的 `:engine-targets`，只有非公共 engine 字段可以进入小型 internal exception table。
 - `owner-rerender` 范围大于 `span-patch`，`span-patch` 大于 `paint-patch`。
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。
@@ -122,6 +123,8 @@ make layout-boundary-tests
 make layout-boundary-performance
 make patch-plan-tests
 make patch-plan-performance
+make style-schema-tests
+make style-schema-performance
 make docs-contract-tests
 make ci-contract-tests
 make performance-evaluator
