@@ -7,7 +7,7 @@ This document defines the low-level publication contract. It is independent of E
 1. The caller owns the fresh source tree.
 2. `ebox-tree.el` owns identity, keys, traversal, and snapshots.
 3. `ebox-style.el`, `ebox-measure.el`, and the layout modules own normalization, measurement, and geometry.
-4. `ebox-incremental.el` owns dirty classification, patch planning, pure declarative commit preparation, and Ebox report semantics.
+4. `ebox-incremental.el` owns dirty classification, live-fact adaptation, pure declarative commit preparation, and Ebox report semantics; `ebox-patch-plan.el` reduces tentative operations using only immutable parent facts.
 5. `ebox-surface.el` projects retained candidates and joins Ebox runtime-state publication to the TP transaction.
 6. TP owns generic retained-surface reconciliation, mount/index state, all live buffer diff execution, revision changes, and rollback for initial mount, declarative commit, handle update, viewport/theme update, and scroll update.
 7. `ebox-buffer-backend.el` only builds and reshapes propertized render strings. It does not own live markers or a buffer mutation executor.
@@ -33,7 +33,7 @@ The candidate is either fully published or discarded. A failed render, TP write,
 
 ## Patch order
 
-The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.
+The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.
 
 ## Strict retained viewport reflow
 

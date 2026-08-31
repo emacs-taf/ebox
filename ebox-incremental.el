@@ -13,6 +13,7 @@
 (require 'ebox-tree)
 (require 'ebox-buffer-backend)
 (require 'ebox-render-context)
+(require 'ebox-patch-plan)
 
 (defvar ebox-region-types)
 (declare-function ebox--scroll-state-region-ids-containing-node-ids
@@ -8168,9 +8169,12 @@ rendered into its retained slot and must pass the complete footprint proof."
            buffer (plist-get entry :node-id) entry)))
    render-dirty-set))
 
-(defun ebox-incremental--declarative-tentative-patch-set
+(defvar ebox-incremental--patch-planner-route 'pure
+  "Internal M2a patch planner route: `legacy', `pure', or `shadow'.")
+
+(defun ebox-incremental--legacy-tentative-patch-set
     (buffer render-dirty-set)
-  "Return merged smallest-owner candidates for RENDER-DIRTY-SET."
+  "Return legacy merged owner candidates for RENDER-DIRTY-SET in BUFFER."
   (let ((ebox--patchable-owner-cache (make-hash-table :test 'equal))
         (ebox--runtime-ancestor-cache (make-hash-table :test 'equal))
         (ebox--flex-slot-safety-cache
@@ -8198,6 +8202,69 @@ rendered into its retained slot and must pass the complete footprint proof."
               (ebox-incremental--coalesce-sibling-line-span-ops
                buffer (ebox--patch-op-merge-index-result index)))))
     (ebox--dedupe-patch-owners buffer ops)))
+
+(defun ebox-incremental--pure-tentative-patch-set
+    (buffer render-dirty-set)
+  "Return pure-port merged owner candidates for RENDER-DIRTY-SET in BUFFER."
+  (let ((ebox--patchable-owner-cache (make-hash-table :test 'equal))
+        (ebox--runtime-ancestor-cache (make-hash-table :test 'equal))
+        (ebox--flex-slot-safety-cache
+         (or ebox--flex-slot-safety-cache
+             (make-hash-table :test 'equal)))
+        (parent-table
+         (plist-get (ebox--buffer-render-state buffer) :parent-table))
+        ops)
+    (unless (hash-table-p parent-table)
+      (signal 'ebox-patch-plan-error
+              (list :missing-parent-table buffer)))
+    (ebox--with-layout-snapshot-detail-context buffer
+      (if-let* ((coalesced-op
+                (and (not
+                      (ebox-incremental--dirty-set-has-child-splice-p
+                       buffer render-dirty-set))
+                     (or (ebox-incremental--broad-dirty-op
+                          buffer render-dirty-set)
+                         (ebox-incremental--fixed-basis-flex-local-op
+                          buffer render-dirty-set)
+                         (ebox-incremental--local-reflow-op
+                          buffer render-dirty-set)))))
+          (setq ops (list coalesced-op))
+        (setq ops
+              (mapcar
+               (lambda (entry)
+                 (ebox-incremental--declarative-tentative-op buffer entry))
+               render-dirty-set))
+        (setq ops (ebox-patch-plan-merge-ops parent-table ops))
+        (setq ops
+              (ebox-incremental--coalesce-sibling-line-span-ops
+               buffer ops))))
+    (ebox-patch-plan-merge-ops parent-table ops)))
+
+(defun ebox-incremental--declarative-tentative-patch-set
+    (buffer render-dirty-set)
+  "Return route-selected smallest-owner candidates for RENDER-DIRTY-SET."
+  (pcase ebox-incremental--patch-planner-route
+    ('legacy
+     (ebox-incremental--legacy-tentative-patch-set
+      buffer render-dirty-set))
+    ('pure
+     (ebox-incremental--pure-tentative-patch-set
+      buffer render-dirty-set))
+    ('shadow
+     (let ((legacy
+            (ebox-incremental--legacy-tentative-patch-set
+             buffer render-dirty-set))
+           (pure
+            (ebox-incremental--pure-tentative-patch-set
+             buffer render-dirty-set)))
+       (unless (equal legacy pure)
+         (signal 'ebox-patch-plan-error
+                 (list :shadow-artifact-mismatch
+                       :legacy legacy :pure pure)))
+       pure))
+    (_
+     (signal 'ebox-patch-plan-error
+             (list :unknown-route ebox-incremental--patch-planner-route)))))
 
 (defun ebox-incremental--declarative-next-owner-id
     (buffer owner-id dirty)

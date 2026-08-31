@@ -56,7 +56,8 @@
                                 ebox-node-factory
                                 ebox-fragment ebox-layout ebox-flex ebox-grid
                                 ebox-canonical
-                                ebox-buffer-backend ebox-incremental
+                                ebox-buffer-backend ebox-patch-plan
+                                ebox-incremental
                                 ebox-surface ebox-viewport ebox-dsl
                                 ebox-selector))
     (should (featurep feature))))
@@ -138,7 +139,8 @@
             "ebox-tree.el" "ebox-measure.el"
             "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
             "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
-            "ebox-buffer-backend.el" "ebox-incremental.el"
+            "ebox-buffer-backend.el" "ebox-patch-plan.el"
+            "ebox-incremental.el"
             "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
             "ebox-dsl.el" "ebox-selector.el" "ebox.el"
             "ebox-native-reflow.el"))))

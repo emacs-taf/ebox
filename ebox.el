@@ -30,7 +30,7 @@
     "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-layout.el"
     "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
-    "ebox-buffer-backend.el" "ebox-incremental.el"
+    "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
     "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
     "ebox-dsl.el" "ebox-selector.el" "ebox.el"
     "ebox-native-reflow.el")
@@ -59,6 +59,7 @@
 (require 'ebox-grid)
 (require 'ebox-canonical)
 (require 'ebox-buffer-backend)
+(require 'ebox-patch-plan)
 (require 'ebox-incremental)
 (require 'ebox-surface)
 (require 'ebox-viewport)
