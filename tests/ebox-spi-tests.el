@@ -47,7 +47,8 @@
             '(initial-paired-stage-rollback
               update-paired-stage-rollback
               combined-participant-ordering
-              same-object-legacy-report)))
+              same-object-legacy-report
+              initial-observation-replay)))
     (should
      (equal (ebox-framework-spi-provider-stage-order first)
             '(ebox-mirror/native framework-stage)))
@@ -179,6 +180,58 @@
                      (with-current-buffer buffer
                        (buffer-substring-no-properties
                         (point-min) (point-max)))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-spi-initial-replays-observational-provider-reports ()
+  "Completed initial reports replay TP then Ebox without mutable authority."
+  (ebox-spi-test--reset-runtime-state)
+  (let ((buffer (generate-new-buffer " *ebox-m2a-e5-observation*")))
+    (unwind-protect
+        (let* ((report
+                (ebox-framework-spi-initial
+                 buffer
+                 (ebox-test-box :key 'root (ebox-test-text "observed"))
+                 #'ignore #'ignore))
+               (reports
+                (ebox-framework-spi-initial-observation-reports report)))
+          (should (equal (mapcar (lambda (item) (plist-get item :provider))
+                                 reports)
+                         '(tp ebox)))
+          (should (equal (mapcar (lambda (item) (plist-get item :stage))
+                                 reports)
+                         '(publication mount)))
+          (should
+           (apply #'=
+                  (mapcar (lambda (item)
+                            (plist-get item :correlation-id))
+                          reports)))
+          (dolist (item reports)
+            (should (numberp (plist-get item :duration-ms))))
+          (plist-put (car reports) :provider 'mutated)
+          (should-not (plist-member report :provider)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-spi-public-unmount-allows-a-fresh-initial-generation ()
+  "Public Ebox teardown removes retained authority before a later initial."
+  (ebox-spi-test--reset-runtime-state)
+  (let ((buffer (generate-new-buffer " *ebox-m2a-e5-remount*")))
+    (unwind-protect
+        (progn
+          (ebox-framework-spi-initial
+           buffer (ebox-test-box :key 'root (ebox-test-text "first"))
+           #'ignore #'ignore)
+          (should (ebox-surface-buffer-mounted-p buffer))
+          (should (eq (ebox-unmount-buffer buffer) buffer))
+          (should-not (ebox-surface-buffer-mounted-p buffer))
+          (ebox-framework-spi-initial
+           buffer (ebox-test-box :key 'root (ebox-test-text "second"))
+           #'ignore #'ignore)
+          (should (ebox-surface-buffer-mounted-p buffer))
+          (should (string-match-p
+                   "second"
+                   (with-current-buffer buffer
+                     (buffer-substring-no-properties
+                      (point-min) (point-max))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-spi-initial-rolls-the-same-report-back ()

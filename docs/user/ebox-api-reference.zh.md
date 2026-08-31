@@ -163,6 +163,7 @@ typed 模块还公开 `ebox-node-kind`、`ebox-text-node-p`、`ebox-box-node-p`�
 | --- | --- |
 | `ebox-render` | 接收 single-root `CanonicalEboxInput`，返回带属性字符串，不发布 live buffer。 |
 | `ebox-render-to-buffer` | 接收 single-root `CanonicalEboxInput`，挂载 retained TP surface，启用 `ebox-buffer-mode` 并返回 buffer；可选 plist 只接受 `:observer FUNCTION`。 |
+| `ebox-unmount-buffer` | 从 live buffer 释放 mounted Ebox/TP surface、observer、retained indexes 与 runtime authority。 |
 | `ebox-display-buffer` | 接收 single-root `CanonicalEboxInput`，走 retained 路径渲染，删除其他 window 后切换到结果。 |
 | `ebox-commit` | 原子发布 single-root `CanonicalEboxInput` 或 `ebox-candidate-begin` 返回的 one-shot logical candidate。 |
 | `ebox-buffer-set-observer` | 给已经 mounted 的 buffer 设置或移除一个 function observer。 |
@@ -264,8 +265,8 @@ native 模块只是加速器，不是正确性依赖。加载包不会构建它�
 - 构造：`ebox-build`、`ebox-text-create`、`ebox-normal-layout-create`、
   `ebox-row-layout-create`、`ebox-column-layout-create`、
   `ebox-flex-layout-create`、`ebox-grid-layout-create`、`ebox-box-create`；
-- 渲染/发布：`ebox-render`、`ebox-render-to-buffer`、`ebox-display-buffer`、
-  `ebox-commit`、`ebox-buffer-set-observer`、`ebox-buffer-update-report`、
+- 渲染/发布：`ebox-render`、`ebox-render-to-buffer`、`ebox-unmount-buffer`、
+  `ebox-display-buffer`、`ebox-commit`、`ebox-buffer-set-observer`、`ebox-buffer-update-report`、
   `ebox-rerender-buffer-with-context`、`ebox-viewport-window-width`、
   `ebox-call-with-render-burst`、`ebox-render-burst-begin`、
   `ebox-render-burst-end`；

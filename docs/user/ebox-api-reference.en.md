@@ -175,6 +175,7 @@ though the facade inventory below focuses on application entry points.
 | --- | --- |
 | `ebox-render` | Accept a single-root `CanonicalEboxInput` and return a propertized string without publishing a live buffer. |
 | `ebox-render-to-buffer` | Accept a single-root `CanonicalEboxInput`, mount a retained TP surface, enable `ebox-buffer-mode`, and return the buffer. Its optional plist accepts only `:observer FUNCTION`. |
+| `ebox-unmount-buffer` | Release a mounted Ebox/TP surface, observers, retained indexes, and runtime authority from a live buffer. |
 | `ebox-display-buffer` | Accept a single-root `CanonicalEboxInput`, render through the retained path, delete other windows, and switch to the result. |
 | `ebox-commit` | Atomically publish a single-root `CanonicalEboxInput` or a one-shot logical candidate returned by `ebox-candidate-begin`. |
 | `ebox-buffer-set-observer` | Set or remove one function-valued observer on an already mounted buffer. |
@@ -288,7 +289,8 @@ names every entry:
   `ebox-column-layout-create`, `ebox-flex-layout-create`,
   `ebox-grid-layout-create`, `ebox-box-create`.
 - Render/publication: `ebox-render`, `ebox-render-to-buffer`,
-  `ebox-display-buffer`, `ebox-commit`, `ebox-buffer-set-observer`,
+  `ebox-unmount-buffer`, `ebox-display-buffer`, `ebox-commit`,
+  `ebox-buffer-set-observer`,
   `ebox-buffer-update-report`,
   `ebox-rerender-buffer-with-context`, `ebox-viewport-window-width`,
   `ebox-call-with-render-burst`, `ebox-render-burst-begin`,

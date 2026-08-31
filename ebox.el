@@ -4445,6 +4445,27 @@ TP/Ebox reports after accepted initial publication and later commits."
   (declare (indent 1))
   (ebox--render-to-buffer-internal buffer-or-name input options))
 
+;;;###autoload
+(defun ebox-unmount-buffer (buffer-or-name)
+  "Unmount Ebox's retained surface from BUFFER-OR-NAME and return the buffer.
+The operation releases TP surface authority, observers, retained indexes,
+scroll/native runtime state, and the buffer-local Ebox surface handle."
+  (let ((buffer (get-buffer buffer-or-name)))
+    (unless (buffer-live-p buffer)
+      (user-error "Ebox unmount target is not a live buffer: %S"
+                  buffer-or-name))
+    (let ((surface (ebox-surface--live-buffer-surface buffer)))
+      (unless surface
+        (user-error "Ebox buffer has no mounted TP surface: %S" buffer-or-name))
+      (tp-surface-unmount surface)
+      (ebox-surface-cleanup-buffer-observer buffer)
+      (ebox--clear-buffer-runtime-state buffer)
+      (with-current-buffer buffer
+        (setq-local ebox-surface--buffer-surface nil)
+        (remove-hook 'kill-buffer-hook #'ebox--cleanup-current-buffer t)
+        (ebox-buffer-mode -1))
+      buffer)))
+
 (defun ebox--host-ref-buffer (buffer-or-name)
   "Return the live buffer named by BUFFER-OR-NAME, or nil."
   (let ((buffer (and buffer-or-name (get-buffer buffer-or-name))))
@@ -4829,6 +4850,7 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-selector-update-buffer
     ebox-string-pixel-width
     ebox-update-selector
+    ebox-unmount-buffer
     ebox-viewport-window-width
     ebox-wheel-scroll-down
     ebox-wheel-scroll-up)

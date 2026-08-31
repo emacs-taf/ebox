@@ -90,7 +90,7 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 - `ebox-layout.el` 不再 load 或调用 `ebox-surface.el`/TP。candidate isolation、继承 cascade 判定和一次性 materialization 只能通过 `ebox-render-context.el` 拥有的已校验 port 进入 layout；`ebox.el` 在两侧加载后接线 surface 实现。
 - `ebox-patch-plan.el` 只消费 tentative operation plist 与不可变 generation parent table，并返回 deterministic plan artifact；所有 live fact 准备仍由 incremental adapter 拥有。E3 默认使用 pure route，同时保留显式 `legacy` 与执行等价检查的 `shadow` route；三条 route 都不能发布。
 - `ebox-style--property-definitions` 同时也是 used-value projection 的唯一真相源。非默认 engine lowering 写在每个 property 的 `:engine-projection` 中；ECSS metadata 暴露派生的 `:engine-targets`，只有非公共 engine 字段可以进入小型 internal exception table。
-- `ebox-framework-spi-capabilities` 返回 fresh immutable v2 provider record，声明 paired initial/update stage+rollback、combined participant order、same-object legacy report 以及 `tp-transaction-protocol-v1+v2`。Ebox 不创建 selected port 或 consumer bootstrap；现有 v1 callback API 保留。
+- `ebox-framework-spi-capabilities` 返回 fresh immutable v2 provider record，声明 paired initial/update stage+rollback、combined participant order、same-object legacy report、initial observation replay 以及 `tp-transaction-protocol-v1+v2`。replay 只从 completed initial report 构造 defensive TP/Ebox provider reports，不带 mutate authority。Ebox 不创建 selected port 或 consumer bootstrap；现有 v1 callback API 保留。
 - `owner-rerender` 范围大于 `span-patch`，`span-patch` 大于 `paint-patch`。
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。

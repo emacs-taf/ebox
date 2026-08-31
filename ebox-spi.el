@@ -37,7 +37,8 @@
   '(initial-paired-stage-rollback
     update-paired-stage-rollback
     combined-participant-ordering
-    same-object-legacy-report)
+    same-object-legacy-report
+    initial-observation-replay)
   "Capabilities guaranteed by every Ebox framework SPI v2 provider record.")
 
 (defconst ebox-framework-spi--stage-order
@@ -170,6 +171,37 @@ Return the same completed legacy report object observed by FRAMEWORK-STAGE."
   (ebox-framework-spi--validate-callback-pair
    framework-stage framework-rollback)
   (ebox-commit buffer-or-name input framework-stage framework-rollback))
+
+(defun ebox-framework-spi-initial-observation-reports (report)
+  "Return TP/Ebox provider reports reconstructed from completed initial REPORT.
+The reports are defensive observational snapshots; they expose no publication
+or promotion capability."
+  (unless (and (proper-list-p report)
+               (eq (plist-get report :framework-participant-state) 'completed)
+               (integerp (plist-get report :tp-transaction-id)))
+    (signal 'ebox-framework-spi-provider-error
+            (list :invalid-initial-report report)))
+  (let* ((transaction-id (plist-get report :tp-transaction-id))
+         (tp-report
+          (list :provider 'tp
+                :stage 'publication
+                :status 'success
+                :duration-ms 0.0
+                :correlation-id transaction-id
+                :transaction-id transaction-id
+                :surface-revision (plist-get report :surface-revision)
+                :text-operations (plist-get report :tp-text-operations)
+                :property-operations
+                (plist-get report :tp-property-operations)
+                :operation-count (plist-get report :tp-operation-count)))
+         (ebox-report (copy-tree report)))
+    (dolist (entry `((:provider . ebox)
+                     (:stage . mount)
+                     (:status . success)
+                     (:duration-ms . 0.0)
+                     (:correlation-id . ,transaction-id)))
+      (setq ebox-report (plist-put ebox-report (car entry) (cdr entry))))
+    (list tp-report ebox-report)))
 
 (defun ebox-framework-spi--operation
     (kind function argument-schema)
