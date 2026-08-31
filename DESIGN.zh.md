@@ -11,6 +11,7 @@ Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过
 - native 模块只是可选加速器，必须有完全等价的 Elisp fallback。
 - 新抽象必须消除重复，或让已有的公共工作流更简单。
 - 公共 property schema、ECSS metadata 与 used engine projection 都从同一 property definition record 派生。
+- 跨包 framework integration 只发布 additive versioned provider；consumer selection 与 fallback policy 不属于 Ebox。
 
 ## 流水线
 

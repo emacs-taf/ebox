@@ -32,7 +32,7 @@
     "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
     "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
     "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
-    "ebox-dsl.el" "ebox-selector.el" "ebox.el"
+    "ebox-dsl.el" "ebox-selector.el" "ebox-spi.el" "ebox.el"
     "ebox-native-reflow.el")
   "Active Ebox Lisp sources compiled by `ebox-byte-compile'.")
 
@@ -4384,13 +4384,9 @@ Examples:
       (signal 'wrong-type-argument (list 'functionp observer)))
     (cons present observer)))
 
-;;;###autoload
-(defun ebox-render-to-buffer (buffer-or-name input &optional options)
-  "Render canonical INPUT into BUFFER-OR-NAME and return the buffer.
-INPUT atomically carries one typed Text/Box root and its source generation.
-OPTIONS accepts only `:observer'.  Its function receives the buffer and flat
-TP/Ebox reports after accepted initial publication and later commits."
-  (declare (indent 1))
+(defun ebox--render-to-buffer-internal
+    (buffer-or-name input options &optional framework-participant)
+  "Render INPUT into BUFFER-OR-NAME with OPTIONS and FRAMEWORK-PARTICIPANT."
   (unless (ebox-canonical-input-p input)
     (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
   (let* ((node (ebox-canonical-input--single-root
@@ -4398,6 +4394,13 @@ TP/Ebox reports after accepted initial publication and later commits."
          (source-base-index (ebox-canonical-input--source-index input))
          (observer-option (ebox--render-observer-option options))
          (buffer (get-buffer-create buffer-or-name))
+         (report-base
+          (and framework-participant
+               '(:strategy initial-mount
+                 :constraint-source declarative
+                 :publication-scope full-root
+                 :dirty-count 1 :patch-count 1
+                 :patch-ops (initial-mount))))
          (old-observer (ebox-surface-buffer-observer buffer))
          (old-bridge (with-current-buffer buffer ebox-surface--tp-observer))
          success result)
@@ -4411,9 +4414,10 @@ TP/Ebox reports after accepted initial publication and later commits."
                  (lambda ()
                    (ebox--with-render-gc
                      (ebox-surface-mount-buffer
-                      buffer node nil nil nil
+                      buffer node report-base nil nil
                       (and source-base-index
-                           (list :source-base-index source-base-index)))
+                           (list :source-base-index source-base-index))
+                      framework-participant)
                      (with-current-buffer buffer
                        (goto-char (point-min))
                        (add-hook 'kill-buffer-hook
@@ -4423,11 +4427,23 @@ TP/Ebox reports after accepted initial publication and later commits."
                        (ebox--schedule-buffer-runtime-prewarm buffer nil nil)
                        buffer))))
                 success t)
-          result)
+          (if framework-participant
+              (ebox-surface--framework-participant-report
+               framework-participant)
+            result))
       (when (and (not success) (car observer-option))
         (ebox-surface-set-buffer-observer buffer old-observer)
         (unless old-bridge
           (ebox-surface-cleanup-buffer-observer buffer))))))
+
+;;;###autoload
+(defun ebox-render-to-buffer (buffer-or-name input &optional options)
+  "Render canonical INPUT into BUFFER-OR-NAME and return the buffer.
+INPUT atomically carries one typed Text/Box root and its source generation.
+OPTIONS accepts only `:observer'.  Its function receives the buffer and flat
+TP/Ebox reports after accepted initial publication and later commits."
+  (declare (indent 1))
+  (ebox--render-to-buffer-internal buffer-or-name input options))
 
 (defun ebox--host-ref-buffer (buffer-or-name)
   "Return the live buffer named by BUFFER-OR-NAME, or nil."
@@ -4844,6 +4860,8 @@ and are documented separately in the public API reference.")
     surface-properties
     viewport-reflow)
   "Stable high-level Ebox capability families used by conformance tooling.")
+
+(require 'ebox-spi)
 
 (provide 'ebox)
 ;;; ============================================================

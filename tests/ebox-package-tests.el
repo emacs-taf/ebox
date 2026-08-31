@@ -59,7 +59,8 @@
                                 ebox-buffer-backend ebox-patch-plan
                                 ebox-incremental
                                 ebox-surface ebox-viewport ebox-dsl
-                                ebox-selector))
+                                ebox-selector ebox-spi
+                                ebox-framework-spi-v2))
     (should (featurep feature))))
 
 (ert-deftest ebox-canonical-module-loads-typed-port-without-facade ()
@@ -142,7 +143,7 @@
             "ebox-buffer-backend.el" "ebox-patch-plan.el"
             "ebox-incremental.el"
             "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
-            "ebox-dsl.el" "ebox-selector.el" "ebox.el"
+            "ebox-dsl.el" "ebox-selector.el" "ebox-spi.el" "ebox.el"
             "ebox-native-reflow.el"))))
 
 (ert-deftest ebox-surface-depends-only-on-public-tp-api ()

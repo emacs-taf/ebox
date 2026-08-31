@@ -35,11 +35,12 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | `ebox-incremental.el` | Runtime state, snapshots, dirty planning, owner escalation, pure commit preparation, and reports. |
 | `ebox-dsl.el` | Data-oriented `.ebox` forms and lowering to public nodes. |
 | `ebox-selector.el` | CSS-like string parsing to ECSS structured selector ASTs, indexed candidate lookup, and tree/runtime query handles. |
+| `ebox-spi.el` | Additive immutable framework SPI v2 provider and initial/update operation descriptors. |
 | `ebox-native-reflow.el` | Optional native module loading/build commands, ABI checks, bounded sessions, and Elisp fallback. |
 
 The package intentionally does not include application Components, UI controls, reactive data, or a playground implementation. Those are sibling-package responsibilities.
 
-The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-state-contract-tests.el`, `tests/ebox-layout-boundary-tests.el`, `tests/ebox-patch-plan-tests.el`, `tests/ebox-style-schema-tests.el`, `tests/ebox-child-range-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
+The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-state-contract-tests.el`, `tests/ebox-layout-boundary-tests.el`, `tests/ebox-patch-plan-tests.el`, `tests/ebox-style-schema-tests.el`, `tests/ebox-spi-tests.el`, `tests/ebox-child-range-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
 
 ## Runtime model
 
@@ -89,6 +90,7 @@ Caller-owned Source Tree
 - `ebox-layout.el` has no load or call edge to `ebox-surface.el` or TP. Candidate isolation, inherited-cascade detection, and one-shot materialization enter layout only through the validated port owned by `ebox-render-context.el`; `ebox.el` wires the surface implementation after both sides load.
 - `ebox-patch-plan.el` consumes only tentative operation plists plus the immutable generation parent table and returns a deterministic plan artifact. The incremental adapter owns all live-fact preparation. E3 defaults to the pure route while retaining explicit `legacy` and equality-checking `shadow` routes; none of the three routes publishes.
 - `ebox-style--property-definitions` is also the single used-value projection truth. Non-default engine lowering lives in each property's `:engine-projection`; ECSS metadata exposes the derived `:engine-targets`, and only non-public engine fields may use the small internal exception table.
+- `ebox-framework-spi-capabilities` returns a fresh immutable v2 provider record declaring paired initial/update stage+rollback, combined participant ordering, same-object legacy reports, and `tp-transaction-protocol-v1+v2`. Ebox provides no selected port or consumer bootstrap; the existing v1 callback APIs remain available.
 - `owner-rerender` is broader than `span-patch`, which is broader than `paint-patch`.
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.
@@ -127,6 +129,8 @@ make patch-plan-tests
 make patch-plan-performance
 make style-schema-tests
 make style-schema-performance
+make spi-tests
+make spi-performance
 make docs-contract-tests
 make ci-contract-tests
 make performance-evaluator

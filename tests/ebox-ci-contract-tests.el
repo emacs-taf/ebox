@@ -25,6 +25,8 @@
                       "patch-plan-performance:"
                       "style-schema-tests:"
                       "style-schema-performance:"
+                      "spi-tests:"
+                      "spi-performance:"
                       "docs-contract-tests:"
                       "ci-contract-tests:" "native-rust-tests:"
                       "native-build:" "performance-evaluator:" "diff-check:"))
@@ -40,6 +42,7 @@
     (should (string-match-p "ebox-byte-compile" source))
     (should (string-match-p "ebox-native-reflow.el" ebox))
     (should (string-match-p "ebox-patch-plan.el" ebox))
+    (should (string-match-p "ebox-spi.el" ebox))
     (should (string-match-p "ebox-child-range.el" ebox))
     (should-not (string-match-p "ebox-playground.el" ebox))))
 
