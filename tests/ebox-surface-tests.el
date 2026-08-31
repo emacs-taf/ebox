@@ -325,17 +325,46 @@
   "Return a stable content fingerprint for hash TABLE.
 The fingerprint checks entries rather than only table identity, so a failed
 candidate cannot hide mutations by restoring the old hash-table pointer."
-  (let (entries)
+  (let ((test (and (hash-table-p table) (hash-table-test table))) entries)
     (when (hash-table-p table)
       (maphash
        (lambda (key value)
-         (push (list (prin1-to-string key)
+         (push (list (if (eq test 'eq)
+                         (sxhash-eq key)
+                       (sxhash-equal key))
                      (sxhash-equal value))
                entries))
        table))
     (list (length entries)
           (sort entries (lambda (left right)
-                          (string< (car left) (car right)))))))
+                          (if (= (car left) (car right))
+                            (< (cadr left) (cadr right))
+                          (< (car left) (car right))))))))
+
+(ert-deftest ebox-surface-hash-fingerprint-follows-table-key-test ()
+  "Fingerprint keys by each table's identity or structural contract."
+  (let* ((weak (make-hash-table :test #'eq :weakness 'key))
+         (key (list :node 1 :weak weak))
+         (eq-table (make-hash-table :test #'eq))
+         (equal-table (make-hash-table :test #'equal)))
+    (puthash key 'value eq-table)
+    (let ((fingerprint (ebox-surface-test--hash-fingerprint eq-table)))
+      (puthash (list 'space :width 160) t weak)
+      (should (equal fingerprint
+                     (ebox-surface-test--hash-fingerprint eq-table))))
+    (clrhash eq-table)
+    (puthash (make-symbol "replacement") 'value eq-table)
+    (let ((fingerprint (ebox-surface-test--hash-fingerprint eq-table)))
+      (clrhash eq-table)
+      (puthash (make-symbol "replacement") 'value eq-table)
+      (should-not
+       (equal fingerprint (ebox-surface-test--hash-fingerprint eq-table))))
+    (puthash (list :node 1) 'value equal-table)
+    (let ((fingerprint (ebox-surface-test--hash-fingerprint equal-table)))
+      (clrhash equal-table)
+      (puthash (list :node 1) 'value equal-table)
+      (should (equal fingerprint
+                     (ebox-surface-test--hash-fingerprint equal-table))))))
 
 (defun ebox-surface-test--fixtures ()
   "Return named fresh layout builders covering active Ebox layout kinds."
