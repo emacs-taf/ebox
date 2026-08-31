@@ -372,10 +372,6 @@ and its formatted content exactly fills the used height."
 (defvar ebox--render-cache-scroll-state-retained-cost-cache)
 
 (declare-function ebox-style-cascade-active-p "ebox-style" ())
-(declare-function ebox-surface--candidate-root "ebox-surface"
-                  (source preserve-identities-p))
-(declare-function ebox-surface--inline-inheritance-required-p "ebox-surface"
-                  (root source-index))
 (declare-function ebox--add-render-face!
                   "ebox-render-context" (string start end face &optional append))
 
@@ -1941,18 +1937,11 @@ This function owns spatial layout only; it never creates a live TP surface."
          ((eq type 'grid)   (ebox--render-grid node))
          (t (error "ebox-render: unknown node type %S" type)))))))
 
-(declare-function ebox-surface-producer
-                  "ebox-surface"
-                  (source &optional previous-state preserve-identities-p
-                          state-overrides signals projection-kind
-                          source-isolated-p source-path-copied-p))
-(declare-function tp-surface-materialize-string "tp-surface" (plan-or-producer))
-
 (defun ebox--render-ephemeral-static (node)
   "Render static NODE without constructing a TP object tree.
 The source remains caller-owned; the candidate copy carries all ephemeral
 region/node identities and render side tables for this one materialization."
-  (let ((candidate (ebox-surface--candidate-root node t)))
+  (let ((candidate (ebox-render-context-candidate-root node t)))
     (let ((ebox--surface-materialization-active t)
           (ebox--region-box-table (make-hash-table :test 'equal))
           (ebox--scroll-global-state (make-hash-table :test 'equal))
@@ -2012,23 +2001,17 @@ also pass a pre-rendered string while an active surface owns runtime facts."
          (if (or ebox--surface-materialization-active
                  ebox--render-runtime-revision)
              (ebox--render-layout node)
-           (require 'ebox-surface)
            (if (and (not (stringp node))
                     (not (ebox-style-cascade-active-p))
                     (zerop (ebox-tree-author-style-count node))
-                    (not (ebox-surface--inline-inheritance-required-p
-                          node source-index)))
+                    (not
+                     (ebox-render-context-inline-inheritance-required-p
+                      node source-index)))
                (let ((ebox--region-id-counter ebox--region-id-counter)
                      (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
                  (ebox--render-ephemeral-static node))
-             (let ((ebox--surface-materialization-active t)
-                   (ebox--region-id-counter ebox--region-id-counter)
-                   (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
-               (tp-surface-materialize-string
-                (ebox-surface-producer
-                 node nil t
-                 (and base-source-index
-                      (list :source-base-index base-source-index)))))))))
+             (ebox-render-context-materialize-string
+              node base-source-index)))))
     (unless ebox--paint-origin-capture-p
       (ebox--strip-paint-origins! rendered))
     rendered))

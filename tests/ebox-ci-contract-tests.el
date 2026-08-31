@@ -19,6 +19,8 @@
                       "core-tests:" "child-range-tests:" "grid-tests:" "ebox-commit-tests:"
                       "surface-tests:"
                       "state-contract-tests:"
+                      "layout-boundary-tests:"
+                      "layout-boundary-performance:"
                       "docs-contract-tests:"
                       "ci-contract-tests:" "native-rust-tests:"
                       "native-build:" "performance-evaluator:" "diff-check:"))

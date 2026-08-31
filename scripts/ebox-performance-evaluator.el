@@ -298,7 +298,7 @@
           (push
            (append
             (list 'box
-                  :key (list 'cell row column)
+                  :key (format "cell-%d-%d" row column)
                   :width '(52)
                   :padding '(0 1)
                   :color "#0F172A"
@@ -319,7 +319,7 @@
     (dotimes (index 12)
       (push
        (list 'box
-             :key (list 'resize-item index)
+             :key (format "resize-item-%d" index)
              :width '(70)
              :padding '(0 1)
              :color "#172554"
@@ -567,6 +567,30 @@
      (cl-every (lambda (check) (plist-get check :ok))
                (plist-get report :checks)))
    reports))
+
+;;;###autoload
+(defun ebox-performance-evaluator-layout-boundary-report ()
+  "Run the pure layout/materialization scenarios used by the M2a E2 gate."
+  (let ((reports (list (ebox-performance-evaluator--pure-static)
+                       (ebox-performance-evaluator--stylesheet-pure))))
+    (dolist (report reports)
+      (ebox-performance-evaluator--print-report report))
+    (ebox-performance-evaluator--assert
+     (ebox-performance-evaluator--all-passed-p reports)
+     "layout boundary scenarios failed")
+    (princ "LAYOUT-BOUNDARY-PERFORMANCE PASS\n")
+    reports))
+
+;;;###autoload
+(defun ebox-performance-evaluator-layout-boundary-batch ()
+  "Run the M2a E2 performance gate as a batch command."
+  (condition-case error-data
+      (progn
+        (ebox-performance-evaluator-layout-boundary-report)
+        (kill-emacs 0))
+    (error
+     (princ (format "LAYOUT-BOUNDARY-PERFORMANCE FAIL: %S\n" error-data))
+     (kill-emacs 1))))
 
 ;;;###autoload
 (defun ebox-performance-evaluator-report ()

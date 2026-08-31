@@ -7,6 +7,64 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+
+(define-error 'ebox-layout-context-error
+  "Ebox layout context is unavailable")
+
+(cl-defstruct
+    (ebox-layout-context-port
+     (:constructor ebox-render-context--make-layout-port))
+  "Injected operations used when layout needs candidate materialization."
+  candidate-root inline-inheritance-required-p materialize-string)
+
+(defvar ebox--layout-context-port nil
+  "Current surface-independent input port for candidate materialization.")
+
+(cl-defun ebox-render-context-create-layout-port
+    (&key candidate-root inline-inheritance-required-p materialize-string)
+  "Create a validated layout context port from three operation functions."
+  (dolist (entry
+           `((candidate-root . ,candidate-root)
+             (inline-inheritance-required-p
+              . ,inline-inheritance-required-p)
+             (materialize-string . ,materialize-string)))
+    (unless (functionp (cdr entry))
+      (signal 'ebox-layout-context-error
+              (list :invalid-operation (car entry) (cdr entry)))))
+  (ebox-render-context--make-layout-port
+   :candidate-root candidate-root
+   :inline-inheritance-required-p inline-inheritance-required-p
+   :materialize-string materialize-string))
+
+(defun ebox-render-context--require-layout-port ()
+  "Return the current validated layout context port."
+  (unless (ebox-layout-context-port-p ebox--layout-context-port)
+    (signal 'ebox-layout-context-error (list :missing-layout-port)))
+  ebox--layout-context-port)
+
+(defun ebox-render-context-candidate-root (source preserve-identities-p)
+  "Return an isolated candidate for SOURCE through the current layout port."
+  (funcall
+   (ebox-layout-context-port-candidate-root
+    (ebox-render-context--require-layout-port))
+   source preserve-identities-p))
+
+(defun ebox-render-context-inline-inheritance-required-p
+    (root source-index)
+  "Ask the current layout port whether ROOT requires inherited cascade."
+  (funcall
+   (ebox-layout-context-port-inline-inheritance-required-p
+    (ebox-render-context--require-layout-port))
+   root source-index))
+
+(defun ebox-render-context-materialize-string (source source-index)
+  "Materialize SOURCE with SOURCE-INDEX through the current layout port."
+  (funcall
+   (ebox-layout-context-port-materialize-string
+    (ebox-render-context--require-layout-port))
+   source source-index))
+
 (defvar ebox-viewport-width nil)
 (defvar ebox-viewport-height nil)
 (defvar ebox--render-runtime-revision nil)

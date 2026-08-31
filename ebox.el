@@ -65,6 +65,16 @@
 (require 'ebox-dsl)
 (require 'ebox-selector)
 
+(defconst ebox--default-layout-context-port
+  (ebox-render-context-create-layout-port
+   :candidate-root #'ebox-surface--candidate-root
+   :inline-inheritance-required-p
+   #'ebox-surface--inline-inheritance-required-p
+   :materialize-string #'ebox-surface-materialize-ephemeral-string)
+  "Default Ebox layout input port backed by surface-owned materialization.")
+
+(setq ebox--layout-context-port ebox--default-layout-context-port)
+
 (declare-function ebox--buffer-update-report "ebox-incremental" (buffer))
 (declare-function ebox--set-buffer-update-report
                   "ebox-incremental" (buffer report))

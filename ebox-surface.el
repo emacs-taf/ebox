@@ -5324,6 +5324,16 @@ also bypass candidate copying and reconciliation without clearing those nodes."
          context source previous-state preserve-identities-p state-overrides
          signals projection-kind source-isolated-p source-path-copied-p)))))
 
+(defun ebox-surface-materialize-ephemeral-string (source source-index)
+  "Materialize SOURCE with optional SOURCE-INDEX through one ephemeral TP plan."
+  (let ((ebox--surface-materialization-active t)
+        (ebox--region-id-counter ebox--region-id-counter)
+        (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
+    (tp-surface-materialize-string
+     (ebox-surface-producer
+      source nil t
+      (and source-index (list :source-base-index source-index))))))
+
 (provide 'ebox-surface)
 
 ;;; ebox-surface.el ends here
