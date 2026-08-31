@@ -50,7 +50,8 @@
 (ert-deftest ebox-facade-loads-internal-model-modules ()
   "The public ebox facade should load all internal foundation modules."
   (require 'ebox)
-  (dolist (feature '(ebox-cache ebox-source ebox-style ebox-tree ebox-measure
+  (dolist (feature '(ebox-cache ebox-source ebox-state-contract
+                                ebox-style ebox-tree ebox-measure
                                 ebox-layout-config
                                 ebox-node-factory
                                 ebox-fragment ebox-layout ebox-flex ebox-grid
@@ -129,7 +130,8 @@
   (should (commandp 'ebox-byte-compile))
   (should
    (equal ebox--compile-sources
-          '("ebox-cache.el" "ebox-source.el" "ebox-font.el" "ebox-style.el"
+          '("ebox-cache.el" "ebox-source.el" "ebox-state-contract.el"
+            "ebox-font.el" "ebox-style.el"
             "ebox-layout-config.el"
             "ebox-node-factory.el"
             "ebox-child-range.el"

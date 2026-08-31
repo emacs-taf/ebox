@@ -18,6 +18,7 @@
     (dolist (target '("check:" "ci:" "load:" "compile:" "test:"
                       "core-tests:" "child-range-tests:" "grid-tests:" "ebox-commit-tests:"
                       "surface-tests:"
+                      "state-contract-tests:"
                       "docs-contract-tests:"
                       "ci-contract-tests:" "native-rust-tests:"
                       "native-build:" "performance-evaluator:" "diff-check:"))

@@ -19,6 +19,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | `ebox.el` | Public facade, construction helpers, rendering, TP-backed buffer entry points, scrolling, commit, and byte compilation. |
 | `ebox-cache.el` | Measurement/render cache records, invalidation, and cache reports. |
 | `ebox-source.el` | Opaque source handles, immutable author source records, and candidate source indexes. |
+| `ebox-state-contract.el` | Closed retained-state ownership inventory and read-only compatibility-mirror rebuild probes. |
 | `ebox-style.el` | ECSS property schemas, declarations and cascade, shorthand expansion, computed style, colors, borders, and dirty effects. |
 | `ebox-tree.el` | Node traversal, logical child access, ECSS subject adaptation, identity, parent paths, keys, and tree snapshots. |
 | `ebox-child-range.el` | Immutable weighted segment trie, sparse persistent key trie, Range replacement, and Gate A metrics. |
@@ -37,7 +38,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 
 The package intentionally does not include application Components, UI controls, reactive data, or a playground implementation. Those are sibling-package responsibilities.
 
-The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-child-range-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
+The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-state-contract-tests.el`, `tests/ebox-child-range-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
 
 ## Runtime model
 
@@ -61,6 +62,7 @@ Caller-owned Source Tree
 | Model | Owner | Must not own |
 | --- | --- | --- |
 | Source/Element Tree | `ebox-child-range.el`, `ebox-tree.el`, `ebox-dsl.el` | Published buffer mutation. |
+| State Ownership Contract | `ebox-state-contract.el` | Live publication or mutable authority. |
 | Computed Style | `ebox-style.el` | Layout identity or patch execution. |
 | Measurement | `ebox-measure.el` | Application state or dirty policy. |
 | Formatting Context | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Buffer edits. |
@@ -81,6 +83,7 @@ Caller-owned Source Tree
 - Keys are local to siblings; visible strings are never used as identity.
 - Ebox owns logical node-to-subject adaptation and id/class/type candidate indexes; ECSS's public structured matcher is the only selector truth source. Subjects expose built-in id/key plus explicit `:selector-attributes`, never visible content, layout state, or runtime containers.
 - `ebox-style--property-definitions` is the single Ebox author-property source. Load time derives Ebox's read-only lookup index and one immutable ECSS package schema from it; the surface schema is composed once, and node construction or updates never re-register or copy the whole schema domain.
+- E1 freezes the closed M2a target classification for retained state: immutable generation facts; generation-bound scroll/native authority; opaque TP client-state custody; one-way compatibility mirrors; and disposable caches. Every inventory row separately records the current v1 storage shape plus its target owner, mutation API, generation binding, rollback, rebuild proof, and cleanup. Current v1 TP client state still holds the whole Ebox state plist until a later checkpoint changes that storage shape. The E1 mirror probes only rebuild and compare projections; they never mutate live state.
 - `owner-rerender` is broader than `span-patch`, which is broader than `paint-patch`.
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.
@@ -112,6 +115,7 @@ make package-tests
 make selector-tests
 make dsl-tests
 make flex-tests
+make state-contract-tests
 make docs-contract-tests
 make ci-contract-tests
 make performance-evaluator
