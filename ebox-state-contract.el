@@ -34,7 +34,11 @@
                ebox-source-index/host-ref-table
                :root-node :node-table :parent-table
                :runtime-type-count-table :range-ref-table
-               :selector-id-table :selector-class-table :selector-type-table)
+               :selector-id-table :selector-class-table :selector-type-table
+               ebox--region-line-index ebox--render-source-index
+               ebox-incremental--candidate-full-source-base-index
+               ebox-incremental--previous-source-base-index
+               ebox-incremental--source-base-index)
      :current-contract mixed-candidate-and-committed-state
      :target-contract immutable-generation-value
      :category generation-fact
@@ -46,7 +50,8 @@
      :cleanup generation-replacement)
     (:id region-generation-indexes
      :storage (:region-id-set :region-node-table :region-box-count-table
-               :region-box-table :layout-snapshots)
+               :region-box-table :layout-snapshots
+               :render-owned-text-values ebox--render-owned-text-values)
      :current-contract candidate-state-plus-global-projection
      :target-contract immutable-generation-value
      :category generation-fact
@@ -71,7 +76,8 @@
      :storage (:scroll-state-table :scroll-offset :scroll-window
                ebox--scroll-global-state
                ebox--smooth-scroll-state-table
-               ebox--scroll-idle-prefetch-timers)
+               ebox--scroll-idle-prefetch-timers
+               ebox--scroll-idle-prefetch-inhibited-buffers)
      :current-contract global-and-state-table-mutable-handles
      :target-contract stable-id-plus-generation-token-authority
      :category generation-bound-mutable-authority
@@ -83,7 +89,8 @@
      :cleanup cancel-timers-and-retire-generation)
     (:id native-runtime-authority
      :storage (:native-sync-session :native-sync-pending :native-session
-               ebox-native-reflow-preparation ebox-native-reflow-session)
+               ebox-native-reflow-preparation ebox-native-reflow-session
+               ebox-native-reflow-preparation/ready-timer)
      :current-contract candidate-preparation-and-confirmed-session-handles
      :target-contract generation-token-authority
      :category generation-bound-mutable-authority
@@ -93,6 +100,71 @@
      :rollback abort-candidate-and-keep-confirmed-session
      :rebuild-proof not-rebuildable-from-cache
      :cleanup release-losing-session)
+    (:id runtime-prewarm-authority
+     :storage (ebox--deferred-render-gc-state
+               ebox--deferred-render-gc-timer
+               ebox--deferred-render-gc-depth
+               ebox--deferred-render-gc-generation
+               ebox--reflow-cache-prewarm-timers
+               ebox--runtime-prewarm-jobs ebox--runtime-prewarm-timers
+               ebox--render-burst-records ebox--render-burst-stack)
+     :current-contract buffer-keyed-jobs-and-cleanup-sensitive-timers
+     :target-contract generation-revision-guarded-scheduler-authority
+     :category generation-bound-mutable-authority
+     :owner ebox-runtime-scheduler
+     :mutation-api schedule-cancel-and-revision-validate
+     :generation-binding buffer-and-runtime-revision
+     :rollback cancel-candidate-work
+     :rebuild-proof reschedule-from-committed-generation
+     :cleanup cancel-timers-jobs-and-gc-lease)
+    (:id incremental-batch-authority
+     :storage (ebox-incremental--batch-table)
+     :current-contract process-buffer-keyed-open-batch-state
+     :target-contract generation-token-bound-batch-authority
+     :category generation-bound-mutable-authority
+     :owner ebox-incremental
+     :mutation-api batch-begin-record-flush-or-abort
+     :generation-binding captured-base-generation
+     :rollback discard-pending-batch
+     :rebuild-proof batch-begin-from-committed-generation
+     :cleanup batch-end-or-buffer-kill)
+    (:id layout-context-port-authority
+     :storage (ebox--layout-context-port)
+     :current-contract process-global-port-with-dynamic-test-rebinding
+     :target-contract immutable-package-bootstrap-port
+     :category generation-bound-mutable-authority
+     :owner ebox-render-context
+     :mutation-api facade-install-and-dynamic-bind
+     :generation-binding one-port-captured-per-render-call
+     :rollback dynamic-binding-unwind
+     :rebuild-proof reinstall-default-surface-port
+     :cleanup package-reload-or-binding-unwind)
+    (:id identity-allocation-authority
+     :storage (ebox--region-id-counter ebox--runtime-node-id-counter)
+     :current-contract process-monotonic-identity-counters
+     :target-contract allocator-output-copied-into-generation
+     :category generation-bound-mutable-authority
+     :owner ebox-identity
+     :mutation-api next-region-or-runtime-node-id
+     :generation-binding allocated-identity-enters-one-candidate
+     :rollback allocator-gaps-are-non-authoritative
+     :rebuild-proof monotonic-next-allocation
+     :cleanup process-lifetime-test-reset-only)
+    (:id buffer-surface-runtime-authority
+     :storage (ebox-surface--buffer-surface
+               ebox-surface--buffer-observer
+               ebox-surface--tp-observer
+               ebox-surface--observation-contexts
+               ebox-surface--context-signals)
+     :current-contract buffer-local-mounted-surface-and-observation-handles
+     :target-contract generation-revision-bound-surface-authority
+     :category generation-bound-mutable-authority
+     :owner ebox-surface
+     :mutation-api mount-observe-publish-and-unmount
+     :generation-binding buffer-surface-and-publication-revision
+     :rollback restore-prior-surface-signals-and-observer-bridge
+     :rebuild-proof not-rebuildable-from-cache
+     :cleanup remove-observers-cancel-contexts-and-unmount)
     (:id tp-client-state-custody
      :storage (tp-surface-client-state)
      :current-contract entire-ebox-state-plist
@@ -126,10 +198,60 @@
      :rollback participant-restores-prior-projection
      :rebuild-proof project-region-mirror-from-generation-indexes
      :cleanup remove-retired-generation-entries)
+    (:id font-cache
+     :storage (ebox-font--cache)
+     :current-contract process-display-capability-cache
+     :target-contract discardable-derived-values
+     :category disposable-cache
+     :owner ebox-font
+     :mutation-api cache-fill-and-evict
+     :generation-binding display-capability-signature
+     :rollback discard
+     :rebuild-proof resolve-font-fact-again
+     :cleanup ebox-font-clear-cache)
     (:id derived-caches
-     :storage (ebox--char-width-cache ebox--face-height-width-cache
-               ebox--display-signature-cache
-               ebox--render-cache-signature-cache)
+     :storage (ebox--box-content-render-cache ebox--char-width-cache
+               ebox--display-signature-cache ebox--face-height-width-cache
+               ebox--physical-memory-bytes
+               ebox--flex-content-min-width-table
+               ebox--flex-sized-render-observation-table
+               ebox--flex-slot-safety-cache ebox--layout-fragments-table
+               ebox--node-region-ids-cache ebox--patchable-owner-cache
+               ebox--render-cache-entry-side-effects-table
+               ebox--render-cache-ring-table
+               ebox--render-cache-scroll-state-region-ids
+               ebox--render-cache-scroll-state-retained-cost-cache
+               ebox--render-cache-signature-cache ebox--render-cache-table
+               ebox--render-output-provenance-table
+               ebox--render-recached-source-node-cache
+               ebox--render-root-cache-table-table
+               ebox--render-string-max-pixel-width-cache
+               ebox--render-string-pixel-width-cache
+               ebox--rendered-uniform-width-table ebox--runtime-ancestor-cache
+               ebox--scroll-window-cached-state ebox--space-pixel-cache
+               ebox--string-pixel-width-cache
+               ebox--string-pixel-width-cache-ring
+               ebox--viewport-dependent-node-ids-cache
+               ebox--viewport-dependent-subtree-cache
+               ebox--viewport-height-dependent-subtree-cache
+               ebox--window-line-prewarmer-table
+               ebox--window-line-renderer-table
+               ebox-cache--buffer-report-table ebox-cache--registry
+               ebox-canonical--declaration-fact-cache
+               ebox-incremental--allocated-slot-proof-cache
+               ebox-incremental--candidate-path-copy-origin-table
+               ebox-incremental--candidate-proof-node-table
+               ebox-native-reflow--source-cluster-cache
+               ebox-style--box-engine-longhand-cache
+               ebox-style--closed-computed-cache
+               ebox-style--closed-inheritance-cache
+               ebox-style--computed-snapshot-cache
+               ebox-style--declaration-cache ebox-style--property-index
+               ebox-style--text-engine-longhand-cache
+               ebox-surface--inline-style-value-cache
+               ebox-surface--paint-node-chain-cache
+               ebox-surface--paint-node-depth-cache
+               ebox-surface--scroll-line-fragment-cache)
      :current-contract process-or-render-local-derived-values
      :target-contract discardable-derived-values
      :category disposable-cache
@@ -146,6 +268,114 @@ do not claim that later M2a target storage is already active.  The inventory is
 fail-closed: adding a retained-state family requires adding a complete record
 rather than relying on an implicit default.")
 
+(defconst ebox-state-contract-source-scan-exclusions
+  '((:symbol ebox--defer-scroll-content-index
+     :reason dynamic-boolean-or-index-mode
+     :evidence value-is-never-a-container)
+    (:symbol ebox--string-pixel-width-cache-ring-index
+     :reason numeric-eviction-cursor
+     :evidence value-is-an-integer-ring-position)
+    (:symbol ebox-native-reflow--compile-property-template-ids
+     :reason dynamically-bound-compile-local-scratch
+     :evidence let-bound-per-compile-and-never-committed)
+    (:symbol ebox--render-source-generations
+     :reason dynamically-bound-render-proof-input
+     :evidence let-bound-to-candidate-and-prior-generations-for-one-plan)
+    (:symbol ebox--render-source-states
+     :reason dynamically-bound-render-proof-input
+     :evidence let-bound-to-candidate-and-prior-states-for-one-plan)
+    (:symbol ebox-tree--incoming-source-indexes
+     :reason dynamically-bound-tree-build-input
+     :evidence let-bound-for-one-persistent-tree-construction)
+    (:symbol ebox--rebuilt-scroll-state-region-ids
+     :reason dynamically-bound-render-observation
+     :evidence collects-rebuilt-scroll-ids-for-one-transaction)
+    (:symbol ebox-incremental--buffer-render-state-override
+     :reason dynamically-bound-candidate-view
+     :evidence let-bound-to-one-buffer-and-candidate-state)
+    (:symbol ebox-incremental--candidate-base-state
+     :reason dynamically-bound-candidate-view
+     :evidence let-bound-to-one-buffer-and-published-base-state)
+    (:symbol ebox-incremental--candidate-incoming-source-indexes
+     :reason dynamically-bound-candidate-input
+     :evidence let-bound-for-one-logical-candidate-preparation)
+    (:symbol ebox--prepared-root-render
+     :reason transaction-local-render-scratch
+     :evidence dynamically-bound-around-one-prepared-render)
+    (:symbol ebox--scroll-window-prewarm-state
+     :reason render-local-prewarm-scratch
+     :evidence dynamically-bound-for-one-yielding-prefix-pass)
+    (:symbol ebox--scroll-window-render-result
+     :reason render-local-result-scratch
+     :evidence dynamically-bound-for-one-window-render)
+    (:symbol ebox-incremental--candidate-path-copy-trace
+     :reason candidate-local-proof-scratch
+     :evidence dynamically-bound-during-one-candidate-build)
+    (:symbol ebox-incremental--candidate-range-index-deltas
+     :reason candidate-local-index-scratch
+     :evidence dynamically-bound-during-one-candidate-build)
+    (:symbol ebox-native-reflow--compile-property-templates
+     :reason dynamically-bound-compile-local-scratch
+     :evidence let-bound-per-native-compile)
+    (:symbol ebox-native-reflow--compile-styles
+     :reason dynamically-bound-compile-local-scratch
+     :evidence let-bound-per-native-compile)
+    (:symbol ebox--flex-native-size-lines-backend
+     :reason optional-backend-capability-not-retained-generation-state
+     :evidence function-capability-selected-outside-publication)
+    (:symbol ebox-native-reflow--available-p
+     :reason process-native-loader-capability
+     :evidence adapter-availability-not-render-generation-state)
+    (:symbol ebox-native-reflow--load-attempted-p
+     :reason process-native-loader-control
+     :evidence one-time-loader-guard-not-domain-state)
+    (:symbol ebox-native-reflow--load-error
+     :reason process-native-loader-diagnostic
+     :evidence diagnostic-only-not-publication-authority)
+    (:symbol ebox-native-reflow--loaded-module-hash
+     :reason process-native-loader-diagnostic
+     :evidence loaded-binary-identity-outside-render-generation)
+    (:symbol ebox-native-reflow--loaded-module-path
+     :reason process-native-loader-diagnostic
+     :evidence loaded-binary-location-outside-render-generation)
+    (:symbol ebox-native-reflow--build-process
+     :reason developer-native-build-handle
+     :evidence optional-build-command-outside-render-runtime)
+    (:symbol ebox-native-reflow--last-build-report
+     :reason developer-native-build-diagnostic
+     :evidence optional-build-report-outside-render-runtime)
+    (:symbol ebox-native-status--diagnosis
+     :reason buffer-local-native-status-diagnostic
+     :evidence status-buffer-presentation-only)
+    (:symbol ebox-surface--observation-context
+     :reason dynamically-bound-publication-observation
+     :evidence let-bound-for-one-public-ebox-call)
+    (:symbol ebox-fragment-flex-retention-hit-count
+     :reason diagnostic-counter
+     :evidence test-and-observation-metric-only)
+    (:symbol ebox-fragment-flex-retention-rerender-count
+     :reason diagnostic-counter
+     :evidence test-and-observation-metric-only)
+    (:symbol ebox-fragment-flex-retention-store-count
+     :reason diagnostic-counter
+     :evidence test-and-observation-metric-only)
+    (:symbol ebox-native-reflow--flex-geometry-call-count
+     :reason diagnostic-counter
+     :evidence performance-observation-only)
+    (:symbol ebox-scroll-map
+     :reason static-ui-keymap
+     :evidence command-binding-table-not-render-state))
+  "Source-state symbols proven not to hold retained runtime authority.")
+
+(defun ebox-state-contract-storage-symbols ()
+  "Return all symbol-valued storage identities in the retained inventory."
+  (delete-dups
+   (cl-mapcan
+    (lambda (record)
+      (cl-remove-if-not #'symbolp
+                        (copy-sequence (plist-get record :storage))))
+    ebox-state-contract--inventory)))
+
 (defun ebox-state-contract-inventory ()
   "Return a detached copy of the retained-state inventory."
   (copy-tree ebox-state-contract--inventory))
@@ -161,7 +391,8 @@ rather than relying on an implicit default.")
   "Validate and return a detached retained-state inventory.
 Signal `ebox-state-contract-error' when a record is incomplete, duplicated, or
 uses a category outside `ebox-state-contract-categories'."
-  (let ((seen (make-hash-table :test #'eq)))
+  (let ((seen-ids (make-hash-table :test #'eq))
+        (seen-storage (make-hash-table :test #'eq)))
     (dolist (record ebox-state-contract--inventory)
       (dolist (field ebox-state-contract-required-fields)
         (unless (plist-get record field)
@@ -169,13 +400,21 @@ uses a category outside `ebox-state-contract-categories'."
                   (list :missing-field field :record record))))
       (let ((id (plist-get record :id))
             (category (plist-get record :category)))
-        (when (gethash id seen)
+        (when (gethash id seen-ids)
           (signal 'ebox-state-contract-error
                   (list :duplicate-id id)))
-        (puthash id t seen)
+        (puthash id t seen-ids)
         (unless (memq category ebox-state-contract-categories)
           (signal 'ebox-state-contract-error
-                  (list :unknown-category category :id id)))))
+                  (list :unknown-category category :id id)))
+        (dolist (storage (plist-get record :storage))
+          (when (and (symbolp storage) (not (keywordp storage)))
+            (when-let* ((prior-id (gethash storage seen-storage)))
+              (signal 'ebox-state-contract-error
+                      (list :duplicate-storage storage
+                            :first-record prior-id
+                            :second-record id)))
+            (puthash storage id seen-storage)))))
     (ebox-state-contract-inventory)))
 
 (defun ebox-state-contract--project-buffer-mirror (entries)

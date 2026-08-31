@@ -14,7 +14,7 @@
       ebox-source-index/handle-records ebox-source-index/host-ref-table
       :root-node :node-table :parent-table :runtime-type-count-table
       :range-ref-table :selector-id-table :selector-class-table
-      :selector-type-table)
+      :selector-type-table ebox--region-line-index ebox--render-source-index)
      generation-fact ebox candidate-construction-only
      immutable-generation-token
      discard-candidate source-and-runtime-index-rebuild
@@ -34,18 +34,57 @@
     (scroll-runtime-authority
      (:scroll-state-table :scroll-offset :scroll-window
       ebox--scroll-global-state ebox--smooth-scroll-state-table
-      ebox--scroll-idle-prefetch-timers)
+      ebox--scroll-idle-prefetch-timers
+      ebox--scroll-idle-prefetch-inhibited-buffers)
      generation-bound-mutable-authority ebox-scroll
      stable-scroll-id-and-generation-token required
      participant-journal-restores-prior-authority
      not-rebuildable-from-cache cancel-timers-and-retire-generation)
     (native-runtime-authority
      (:native-sync-session :native-sync-pending :native-session
-      ebox-native-reflow-preparation ebox-native-reflow-session)
+      ebox-native-reflow-preparation ebox-native-reflow-session
+      ebox-native-reflow-preparation/ready-timer)
      generation-bound-mutable-authority ebox-native
      native-candidate-confirm-or-abort required
      abort-candidate-and-keep-confirmed-session
      not-rebuildable-from-cache release-losing-session)
+    (runtime-prewarm-authority
+     (ebox--deferred-render-gc-state ebox--deferred-render-gc-timer
+      ebox--deferred-render-gc-depth ebox--deferred-render-gc-generation
+      ebox--render-burst-records ebox--render-burst-stack
+      ebox--reflow-cache-prewarm-timers
+      ebox--runtime-prewarm-jobs ebox--runtime-prewarm-timers)
+     generation-bound-mutable-authority ebox-runtime-scheduler
+     schedule-cancel-and-revision-validate buffer-and-runtime-revision
+     cancel-candidate-work reschedule-from-committed-generation
+     cancel-timers-jobs-and-gc-lease)
+    (incremental-batch-authority (ebox-incremental--batch-table)
+     generation-bound-mutable-authority ebox-incremental
+     batch-begin-record-flush-or-abort captured-base-generation
+     discard-pending-batch batch-begin-from-committed-generation
+     batch-end-or-buffer-kill)
+    (layout-context-port-authority (ebox--layout-context-port)
+     generation-bound-mutable-authority ebox-render-context
+     facade-install-and-dynamic-bind one-port-captured-per-render-call
+     dynamic-binding-unwind reinstall-default-surface-port
+     package-reload-or-binding-unwind)
+    (identity-allocation-authority
+     (ebox--region-id-counter ebox--runtime-node-id-counter)
+     generation-bound-mutable-authority ebox-identity
+     next-region-or-runtime-node-id
+     allocated-identity-enters-one-candidate
+     allocator-gaps-are-non-authoritative monotonic-next-allocation
+     process-lifetime-test-reset-only)
+    (buffer-surface-runtime-authority
+     (ebox-surface--buffer-surface ebox-surface--buffer-observer
+      ebox-surface--tp-observer ebox-surface--observation-contexts
+      ebox-surface--context-signals)
+     generation-bound-mutable-authority ebox-surface
+     mount-observe-publish-and-unmount
+     buffer-surface-and-publication-revision
+     restore-prior-surface-signals-and-observer-bridge
+     not-rebuildable-from-cache
+     remove-observers-cancel-contexts-and-unmount)
     (tp-client-state-custody (tp-surface-client-state)
      tp-storage-custody tp opaque-ebox-generation-correlation-only
      opaque-correlation tp-restores-client-state
@@ -61,39 +100,255 @@
      participant-restores-prior-projection
      project-region-mirror-from-generation-indexes
      remove-retired-generation-entries)
+    (font-cache (ebox-font--cache)
+     disposable-cache ebox-font cache-fill-and-evict
+     display-capability-signature discard resolve-font-fact-again
+     ebox-font-clear-cache)
     (derived-caches
      (ebox--char-width-cache ebox--face-height-width-cache
-      ebox--display-signature-cache ebox--render-cache-signature-cache)
+      ebox--display-signature-cache ebox--render-cache-signature-cache
+      ebox-style--property-index)
      disposable-cache ebox-cache cache-fill-and-evict
      cache-key-or-display-signature
      discard recompute-with-identical-semantic-result
      bounded-eviction-or-clear))
-  "Exact M2a section 7.2 lifecycle expectations used by the E1 gate.")
+  "M2a section 7.2 minimum lifecycle expectations used by the E1 gate.")
+
+(defun ebox-state-contract-test--store-name-p (symbol)
+  "Return non-nil when SYMBOL has a retained-container source name."
+  (and (symbolp symbol)
+       (string-match-p
+        (concat
+         "\\(?:-table\\|-cache\\|-index\\|-indexes\\|-registry\\|-history"
+         "\\|-session\\|-jobs\\|-timer\\|-timers\\|-generations\\|-states"
+         "\\|-contexts\\|-signals\\|-records\\|-stack\\|-surface\\|-observers?"
+         "\\|-buffers\\)\\'")
+        (symbol-name symbol))))
+
+(defun ebox-state-contract-test--container-constructor-p (form)
+  "Return non-nil when FORM directly constructs a mutable container."
+  (memq (car-safe form)
+        '(make-hash-table make-vector vector list cons copy-sequence
+          make-ring make-sparse-keymap make-keymap)))
+
+(defun ebox-state-contract-test--read-forms (file)
+  "Read every top-level form from FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (let (forms form)
+      (condition-case nil
+          (while t
+            (setq form (read (current-buffer)))
+            (push form forms))
+        (end-of-file nil))
+      (nreverse forms))))
+
+(defun ebox-state-contract-test--walk-form (form function)
+  "Call FUNCTION for FORM and every nested cons or vector element."
+  (funcall function form)
+  (cond
+   ((consp form)
+    (ebox-state-contract-test--walk-form (car form) function)
+    (ebox-state-contract-test--walk-form (cdr form) function))
+   ((vectorp form)
+    (mapc (lambda (item)
+            (ebox-state-contract-test--walk-form item function))
+          form))))
+
+(defun ebox-state-contract-test--declared-globals (forms)
+  "Return globals declared by top-level FORMS."
+  (let (globals)
+    (dolist (form forms)
+      (when (and (memq (car-safe form) '(defvar defconst defvar-local))
+                 (symbolp (cadr form)))
+        (push (cadr form) globals)))
+    (delete-dups globals)))
+
+(defun ebox-state-contract-test--form-evidence (form declared-globals)
+  "Return typed global-state evidence found inside FORM.
+Each result is a (SYMBOL . TYPE) pair.  Scalar evidence remains visible for
+exclusion freshness, but only retained/container evidence is coverage-gated."
+  (let (evidence)
+    (ebox-state-contract-test--walk-form
+     form
+     (lambda (nested)
+       (pcase (car-safe nested)
+         ((or 'let 'let*)
+          (dolist (binding (cadr nested))
+            (when (and (consp binding)
+                       (memq (car binding) declared-globals))
+              (push (cons (car binding)
+                          (if (ebox-state-contract-test--container-constructor-p
+                               (cadr binding))
+                              'dynamic-container-binding
+                            'dynamic-scalar-binding))
+                    evidence))))
+         ((or 'setq 'setq-default 'setq-local)
+          (let ((pairs (cdr nested)))
+            (while pairs
+              (when (memq (car pairs) declared-globals)
+                (push (cons (car pairs)
+                            (if (ebox-state-contract-test--container-constructor-p
+                                 (cadr pairs))
+                                'container-assignment
+                              'scalar-assignment))
+                      evidence))
+              (setq pairs (cddr pairs)))))
+         ((or 'cl-incf 'cl-decf)
+          (when (memq (cadr nested) declared-globals)
+            (push (cons (cadr nested) 'scalar-mutation) evidence)))
+         ('pop
+          (when (memq (cadr nested) declared-globals)
+            (push (cons (cadr nested) 'container-mutation) evidence)))
+         ('push
+          (when (memq (caddr nested) declared-globals)
+            (push (cons (caddr nested) 'container-mutation) evidence)))
+         ('cl-pushnew
+          (when (memq (caddr nested) declared-globals)
+            (push (cons (caddr nested) 'container-mutation) evidence)))
+         ('add-to-list
+          (let ((symbol (cadr nested)))
+            (when (and (eq (car-safe symbol) 'quote)
+                       (memq (cadr symbol) declared-globals))
+              (push (cons (cadr symbol) 'container-mutation) evidence))))
+         ('puthash
+          (when (memq (nth 3 nested) declared-globals)
+            (push (cons (nth 3 nested) 'container-mutation) evidence)))
+         ('remhash
+          (when (memq (nth 2 nested) declared-globals)
+            (push (cons (nth 2 nested) 'container-mutation) evidence)))
+         ('clrhash
+          (when (memq (cadr nested) declared-globals)
+            (push (cons (cadr nested) 'container-mutation) evidence)))
+         ('aset
+          (when (memq (cadr nested) declared-globals)
+            (push (cons (cadr nested) 'container-mutation) evidence)))
+         ('setf
+          (let ((pairs (cdr nested)))
+            (while pairs
+              (when (memq (car pairs) declared-globals)
+                (push (cons (car pairs)
+                            (if (ebox-state-contract-test--container-constructor-p
+                                 (cadr pairs))
+                                'container-assignment
+                              'scalar-assignment))
+                      evidence))
+              (setq pairs (cddr pairs))))))))
+    (delete-dups evidence)))
+
+(defconst ebox-state-contract-test--retained-evidence-types
+  '(buffer-local-declaration container-initializer store-name
+    dynamic-container-binding container-assignment container-mutation)
+  "Evidence types that require retained-state classification or exclusion.")
+
+(defun ebox-state-contract-test--source-state-evidence ()
+  "Return typed source-backed global-state evidence, grouped by symbol."
+  (let* ((sources (delete-dups (copy-sequence ebox--compile-sources)))
+         (entries
+          (mapcar (lambda (source)
+                    (cons source
+                          (ebox-state-contract-test--read-forms source)))
+                  sources))
+         (declared
+          (delete-dups
+           (cl-mapcan (lambda (entry)
+                        (ebox-state-contract-test--declared-globals
+                         (cdr entry)))
+                      entries)))
+         (by-symbol (make-hash-table :test #'eq)))
+    (cl-labels
+        ((record (symbol source type)
+           (when (memq symbol declared)
+             (let ((entry (or (gethash symbol by-symbol)
+                              (list :symbol symbol :files nil
+                                    :evidence-types nil))))
+               (cl-pushnew source (plist-get entry :files) :test #'equal)
+               (cl-pushnew type (plist-get entry :evidence-types))
+               (puthash symbol entry by-symbol)))))
+      (dolist (entry entries)
+        (let ((source (car entry)))
+          (dolist (form (cdr entry))
+            (when (and (memq (car-safe form)
+                              '(defvar defconst defvar-local))
+                       (symbolp (cadr form)))
+              (let ((symbol (cadr form)))
+                (when (eq (car form) 'defvar-local)
+                  (record symbol source 'buffer-local-declaration))
+                (when (ebox-state-contract-test--store-name-p symbol)
+                  (record symbol source 'store-name))
+                (when (ebox-state-contract-test--container-constructor-p
+                       (caddr form))
+                  (record symbol source 'container-initializer))))
+            (dolist (item
+                     (ebox-state-contract-test--form-evidence form declared))
+              (record (car item) source (cdr item)))))))
+    (let (result)
+      (maphash
+       (lambda (_symbol entry)
+         (setf (plist-get entry :files)
+               (sort (plist-get entry :files) #'string<))
+         (setf (plist-get entry :evidence-types)
+               (sort (plist-get entry :evidence-types)
+                     (lambda (left right)
+                       (string< (symbol-name left) (symbol-name right)))))
+         (push entry result))
+       by-symbol)
+      (sort result
+            (lambda (left right)
+              (string< (symbol-name (plist-get left :symbol))
+                       (symbol-name (plist-get right :symbol))))))))
+
+(defun ebox-state-contract-test--source-store-candidates ()
+  "Return retained/container candidates with typed source evidence."
+  (cl-remove-if-not
+   (lambda (entry)
+     (cl-intersection (plist-get entry :evidence-types)
+                      ebox-state-contract-test--retained-evidence-types))
+   (ebox-state-contract-test--source-state-evidence)))
 
 (ert-deftest ebox-state-contract-inventory-is-complete-and-closed ()
   "Every retained-state family has one complete closed classification."
   (let* ((inventory (ebox-state-contract-validate))
-         (ids (mapcar (lambda (record) (plist-get record :id)) inventory)))
-    (should (= (length inventory) 9))
+         (ids (mapcar (lambda (record) (plist-get record :id)) inventory))
+         (storage
+          (cl-mapcan
+           (lambda (record)
+             (cl-remove-if-not
+              (lambda (symbol)
+                (and (symbolp symbol) (not (keywordp symbol))))
+              (copy-sequence (plist-get record :storage))))
+           inventory)))
     (should (= (length ids) (length (delete-dups (copy-sequence ids)))))
+    (should (= (length storage)
+               (length (delete-dups (copy-sequence storage)))))
     (dolist (record inventory)
       (dolist (field ebox-state-contract-required-fields)
         (should (plist-get record field)))
       (should (memq (plist-get record :category)
                     ebox-state-contract-categories)))
-    (should
-     (equal
-      ids
-      '(runtime-generation-indexes region-generation-indexes
-        scroll-membership scroll-runtime-authority native-runtime-authority
-        tp-client-state-custody buffer-render-state-mirror
-        region-box-lookup-mirror derived-caches)))))
+    (dolist (expected ebox-state-contract-test--plan-expectations)
+      (should (memq (car expected) ids)))))
 
-(ert-deftest ebox-state-contract-inventory-matches-plan-table-exactly ()
-  "Every plan-named storage family keeps its exact lifecycle classification."
+(ert-deftest ebox-state-contract-validator-rejects-duplicate-storage ()
+  "One source storage identity cannot belong to two inventory records."
+  (let* ((inventory (ebox-state-contract-inventory))
+         (duplicate 'ebox--render-source-index)
+         (second (cadr inventory))
+         (ebox-state-contract--inventory
+          (cons (car inventory)
+                (cons (plist-put second :storage
+                                 (cons duplicate
+                                       (plist-get second :storage)))
+                      (cddr inventory)))))
+    (should-error (ebox-state-contract-validate)
+                  :type 'ebox-state-contract-error)))
+
+(ert-deftest ebox-state-contract-inventory-covers-plan-table-minimums ()
+  "Every plan-named storage family keeps its required lifecycle classification."
   (dolist (expected ebox-state-contract-test--plan-expectations)
     (let ((record (ebox-state-contract-record (nth 0 expected))))
-      (should (equal (plist-get record :storage) (nth 1 expected)))
+      (should (cl-subsetp (nth 1 expected) (plist-get record :storage)
+                          :test #'equal))
       (should (eq (plist-get record :category) (nth 2 expected)))
       (should (eq (plist-get record :owner) (nth 3 expected)))
       (should (eq (plist-get record :mutation-api) (nth 4 expected)))
@@ -101,6 +356,44 @@
       (should (eq (plist-get record :rollback) (nth 6 expected)))
       (should (eq (plist-get record :rebuild-proof) (nth 7 expected)))
       (should (eq (plist-get record :cleanup) (nth 8 expected))))))
+
+(ert-deftest ebox-state-contract-source-scan-is-fail-closed ()
+  "Every source-declared retained global is classified or proven scalar."
+  (let* ((classified (ebox-state-contract-storage-symbols))
+        (excluded
+         (mapcar (lambda (entry) (plist-get entry :symbol))
+                 ebox-state-contract-source-scan-exclusions))
+        (evidence (ebox-state-contract-test--source-state-evidence))
+        (evidence-symbols
+         (mapcar (lambda (entry) (plist-get entry :symbol)) evidence))
+        (candidates (ebox-state-contract-test--source-store-candidates)))
+    (should (> (length candidates) 50))
+    (should-not (cl-intersection classified excluded))
+    (should (= (length excluded)
+               (length (delete-dups (copy-sequence excluded)))))
+    (dolist (entry ebox-state-contract-source-scan-exclusions)
+      (should (plist-get entry :symbol))
+      (should (plist-get entry :reason))
+      (should (plist-get entry :evidence))
+      (should (memq (plist-get entry :symbol) evidence-symbols)))
+    (dolist (candidate candidates)
+      (should (plist-get candidate :files))
+      (should (plist-get candidate :evidence-types))
+      (should
+       (or (memq (plist-get candidate :symbol) classified)
+           (memq (plist-get candidate :symbol) excluded))))))
+
+(ert-deftest ebox-state-contract-source-scan-sees-boundary-sentinels ()
+  "The scanner sees buffer-local authority and transient render containers."
+  (let ((symbols
+         (mapcar (lambda (entry) (plist-get entry :symbol))
+                 (ebox-state-contract-test--source-store-candidates))))
+    (dolist (symbol '(ebox-surface--buffer-surface
+                      ebox-surface--observation-contexts
+                      ebox-surface--context-signals
+                      ebox--render-source-generations
+                      ebox--render-source-states))
+      (should (memq symbol symbols)))))
 
 (ert-deftest ebox-state-contract-inventory-is-detached ()
   "Callers cannot mutate the retained package inventory."
@@ -112,14 +405,79 @@
                 'generation-fact))))
 
 (ert-deftest ebox-state-contract-never-classifies-live-authority-as-cache ()
-  "Scroll and native handles retain generation-bound mutable authority."
-  (dolist (id '(scroll-runtime-authority native-runtime-authority))
+  "Cleanup-sensitive handles retain generation-bound mutable authority."
+  (dolist (id '(scroll-runtime-authority native-runtime-authority
+                runtime-prewarm-authority incremental-batch-authority
+                layout-context-port-authority identity-allocation-authority
+                buffer-surface-runtime-authority))
     (let ((record (ebox-state-contract-record id)))
       (should (eq (plist-get record :category)
                   'generation-bound-mutable-authority))
-      (should (eq (plist-get record :generation-binding) 'required))
-      (should (eq (plist-get record :rebuild-proof)
-                  'not-rebuildable-from-cache)))))
+      (should (plist-get record :generation-binding))
+      (should (plist-get record :cleanup))))
+  (dolist (id '(scroll-runtime-authority native-runtime-authority))
+    (should (eq (plist-get (ebox-state-contract-record id) :rebuild-proof)
+                'not-rebuildable-from-cache))))
+
+(ert-deftest ebox-state-contract-classifies-buffer-local-surface-authority ()
+  "Mounted surfaces, signals, and observer state remain explicit authority."
+  (let ((record
+         (ebox-state-contract-record 'buffer-surface-runtime-authority)))
+    (dolist (symbol '(ebox-surface--buffer-surface
+                      ebox-surface--buffer-observer
+                      ebox-surface--tp-observer
+                      ebox-surface--observation-contexts
+                      ebox-surface--context-signals))
+      (should (memq symbol (plist-get record :storage))))
+    (should (eq (plist-get record :category)
+                'generation-bound-mutable-authority))
+    (should (eq (plist-get record :rebuild-proof)
+                'not-rebuildable-from-cache))))
+
+(ert-deftest ebox-state-contract-excludes-dynamic-render-source-containers ()
+  "Transient old/candidate render inputs are not mislabeled as retained facts."
+  (dolist (symbol '(ebox--render-source-generations
+                    ebox--render-source-states))
+    (should-not (memq symbol (ebox-state-contract-storage-symbols)))
+    (let ((entry
+           (cl-find symbol ebox-state-contract-source-scan-exclusions
+                    :key (lambda (item) (plist-get item :symbol)))))
+      (should entry)
+      (should (eq (plist-get entry :reason)
+                  'dynamically-bound-render-proof-input)))))
+
+(ert-deftest ebox-state-contract-classifies-font-and-prewarm-stores-explicitly ()
+  "Font cache and cleanup-sensitive prewarm stores cannot hide in broad prose."
+  (let ((font (ebox-state-contract-record 'font-cache))
+        (prewarm (ebox-state-contract-record 'runtime-prewarm-authority)))
+    (should (equal (plist-get font :storage) '(ebox-font--cache)))
+    (should (eq (plist-get font :category) 'disposable-cache))
+    (dolist (symbol '(ebox--runtime-prewarm-jobs
+                      ebox--runtime-prewarm-timers
+                      ebox--reflow-cache-prewarm-timers
+                      ebox--deferred-render-gc-state
+                      ebox--deferred-render-gc-timer
+                      ebox--deferred-render-gc-depth
+                      ebox--deferred-render-gc-generation
+                      ebox--render-burst-records
+                      ebox--render-burst-stack))
+      (should (memq symbol (plist-get prewarm :storage))))
+    (should (eq (plist-get prewarm :category)
+                'generation-bound-mutable-authority))))
+
+(ert-deftest ebox-state-contract-excludes-native-compile-scratch-from-authority ()
+  "Compile-local template ids are not mislabeled as native session authority."
+  (should-not
+   (memq 'ebox-native-reflow--compile-property-template-ids
+         (plist-get (ebox-state-contract-record 'native-runtime-authority)
+                    :storage)))
+  (let ((exclusion
+         (cl-find 'ebox-native-reflow--compile-property-template-ids
+                  ebox-state-contract-source-scan-exclusions
+                  :key (lambda (entry) (plist-get entry :symbol)))))
+    (should exclusion)
+    (should (eq (plist-get exclusion :reason)
+                'dynamically-bound-compile-local-scratch))))
 
 (ert-deftest ebox-state-contract-tp-custody-is-opaque ()
   "The inventory separates current whole-state custody from its M2a target."
