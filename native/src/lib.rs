@@ -324,6 +324,10 @@ struct ControlBatch {
     version: u32,
     #[serde(default)]
     document: Option<LayoutDocument>,
+    #[serde(default, rename = "document-base-revision")]
+    document_base_revision: Option<u64>,
+    #[serde(default, rename = "document-target-revision")]
+    document_target_revision: Option<u64>,
     frames: Vec<ControlFrame>,
 }
 
@@ -382,6 +386,8 @@ enum JobPayload {
         context_hash: i64,
         complete: bool,
         root_metadata: bool,
+        document_base_revision: u64,
+        document_target_revision: u64,
     },
 }
 
@@ -398,6 +404,8 @@ struct BaselineIdentity {
 #[derive(Clone, Debug)]
 struct ConfirmedBaseline {
     identity: BaselineIdentity,
+    document: Arc<LayoutDocument>,
+    document_revision: u64,
     tape: LayoutTape,
     styles: Vec<layout::StyleTemplate>,
 }
@@ -405,6 +413,8 @@ struct ConfirmedBaseline {
 #[derive(Debug)]
 struct PendingBaseline {
     confirmed_identity: BaselineIdentity,
+    document: Arc<LayoutDocument>,
+    document_revision: u64,
     tape: LayoutTape,
     styles: Vec<layout::StyleTemplate>,
 }
@@ -450,6 +460,9 @@ struct RuntimeState {
     baseline_misses: u64,
     base_renders: u64,
     target_renders: u64,
+    document_parses: u64,
+    document_validations: u64,
+    document_reuses: u64,
     confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
 }
 
@@ -500,6 +513,9 @@ struct SessionStats {
     baseline_misses: u64,
     base_renders: u64,
     target_renders: u64,
+    document_parses: u64,
+    document_validations: u64,
+    document_reuses: u64,
     pending_baselines: usize,
     confirmed_baseline: bool,
     confirmed_baseline_bytes: usize,
@@ -562,6 +578,9 @@ impl Session {
                 baseline_misses: 0,
                 base_renders: 0,
                 target_renders: 0,
+                document_parses: 0,
+                document_validations: 0,
+                document_reuses: 0,
                 confirmed_baseline,
             }),
             readiness_channel: Mutex::new(None),
@@ -586,10 +605,17 @@ impl Session {
                 }
             }
         }
+        let layout_document = shared
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .confirmed_baseline
+            .as_ref()
+            .map(|baseline| Arc::clone(&baseline.document));
         Ok(Box::new(Self {
             shared,
             workers: Mutex::new(Some(handles)),
-            layout_document: Mutex::new(None),
+            layout_document: Mutex::new(layout_document),
             worker_count,
         }))
     }
@@ -623,16 +649,41 @@ impl Session {
         let layout_requested =
             batch.document.is_some() || batch.frames.iter().any(|frame| frame.payload.is_none());
         let register_document = batch.document.is_some();
+        let confirmed_baseline = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .confirmed_baseline
+            .clone();
+        let confirmed_document_revision = confirmed_baseline
+            .as_ref()
+            .map_or(0, |baseline| baseline.document_revision);
+        let document_base_revision = batch
+            .document_base_revision
+            .unwrap_or(confirmed_document_revision);
+        let document_target_revision = match batch.document_target_revision {
+            Some(revision) => revision,
+            None if register_document => document_base_revision
+                .checked_add(1)
+                .ok_or_else(|| "Native layout document revision overflow".to_owned())?,
+            None => document_base_revision,
+        };
         let document = match batch.document {
             Some(document) => {
                 document.validate()?;
                 Some(Arc::new(document))
             }
             None if layout_requested => Some(
-                self.layout_document
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner())
-                    .clone()
+                confirmed_baseline
+                    .as_ref()
+                    .map(|baseline| Arc::clone(&baseline.document))
+                    .or_else(|| {
+                        self.layout_document
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner())
+                            .clone()
+                    })
                     .ok_or_else(|| {
                         "Native layout frames require a registered document".to_owned()
                     })?,
@@ -648,7 +699,12 @@ impl Session {
         let mut prepared = Vec::with_capacity(batch.frames.len());
         for frame in batch.frames {
             let job = if let Some(document) = &document {
-                prepare_layout_job(document, frame)?
+                prepare_layout_job(
+                    document,
+                    frame,
+                    document_base_revision,
+                    document_target_revision,
+                )?
             } else {
                 let payload = frame
                     .payload
@@ -780,13 +836,75 @@ impl Session {
             return Err("Native reflow session is closed".to_owned());
         }
         let batch = parse_control_batch(payload)?;
-        let document = batch
-            .document
-            .ok_or_else(|| "Native retained render requires an inline document".to_owned())?;
-        document.validate()?;
         if batch.frames.len() != 1 {
             return Err("Native retained render requires exactly one frame".to_owned());
         }
+        let document_base_revision = batch
+            .document_base_revision
+            .ok_or_else(|| "Native retained render requires exact document revisions".to_owned())?;
+        let document_target_revision = batch
+            .document_target_revision
+            .ok_or_else(|| "Native retained render requires exact document revisions".to_owned())?;
+        let confirmed = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .confirmed_baseline
+            .clone();
+        let (document, document_parses, document_validations, document_reuses) = match batch
+            .document
+        {
+            Some(document) => {
+                if document_base_revision.checked_add(1) != Some(document_target_revision) {
+                    return Err(
+                        "Native retained document replacement must advance one revision".to_owned(),
+                    );
+                }
+                match &confirmed {
+                    Some(baseline) if baseline.document_revision != document_base_revision => {
+                        return Err(
+                            "Native retained document base revision does not match confirmed state"
+                                .to_owned(),
+                        );
+                    }
+                    None if document_base_revision != 0 => {
+                        return Err(
+                            "Native retained document bootstrap must start at revision zero"
+                                .to_owned(),
+                        );
+                    }
+                    _ => {}
+                }
+                document.validate()?;
+                (Arc::new(document), 1, 1, 0)
+            }
+            None => {
+                if document_base_revision != document_target_revision {
+                    return Err(
+                        "Native retained document reuse requires equal base and target revisions"
+                            .to_owned(),
+                    );
+                }
+                let baseline = confirmed.as_ref().ok_or_else(|| {
+                    "Native retained document reuse requires a confirmed baseline".to_owned()
+                })?;
+                if baseline.document_revision != document_target_revision {
+                    return Err(
+                        "Native retained document revision does not match confirmed state"
+                            .to_owned(),
+                    );
+                }
+                let frame = batch.frames.first().expect("checked retained frame");
+                if frame.runtime_revision != baseline.identity.runtime_revision {
+                    return Err(
+                        "Native retained runtime revision does not match confirmed state"
+                            .to_owned(),
+                    );
+                }
+                (Arc::clone(&baseline.document), 0, 0, 1)
+            }
+        };
         let frame = batch
             .frames
             .into_iter()
@@ -795,15 +913,12 @@ impl Session {
         if !frame.complete || frame.delay_ms != 0 {
             return Err("Native retained render requires one immediate complete frame".to_owned());
         }
-        let document = Arc::new(document);
-        let prepared = prepare_layout_job(&document, frame)?;
-        let confirmed = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .confirmed_baseline
-            .clone();
+        let prepared = prepare_layout_job(
+            &document,
+            frame,
+            document_base_revision,
+            document_target_revision,
+        )?;
         let output = render_layout_payload(
             prepared.payload,
             self.shared.id,
@@ -828,6 +943,9 @@ impl Session {
         }
         state.base_renders += output.base_renders;
         state.target_renders += output.target_renders;
+        state.document_parses += document_parses;
+        state.document_validations += document_validations;
+        state.document_reuses += document_reuses;
         state.pending_baselines.clear();
         if let Some(pending) = output.pending {
             state
@@ -857,6 +975,8 @@ impl Session {
         identity.runtime_revision = confirmed_revision;
         state.confirmed_baseline = Some(Arc::new(ConfirmedBaseline {
             identity,
+            document: pending.document,
+            document_revision: pending.document_revision,
             tape: pending.tape,
             styles: pending.styles,
         }));
@@ -955,6 +1075,9 @@ impl Session {
             baseline_misses: state.baseline_misses,
             base_renders: state.base_renders,
             target_renders: state.target_renders,
+            document_parses: state.document_parses,
+            document_validations: state.document_validations,
+            document_reuses: state.document_reuses,
             pending_baselines,
             confirmed_baseline: state.confirmed_baseline.is_some(),
             confirmed_baseline_bytes,
@@ -1043,24 +1166,23 @@ fn checked_root_width(frame_key: i64, root_width: i64, label: &str) -> Result<i6
 
 fn confirmed_baseline_matches(
     baseline: &ConfirmedBaseline,
-    context: LayoutContext,
-    root_width: i64,
-    root_width_override: bool,
-    runtime_revision: u64,
-    context_hash: i64,
-    complete: bool,
+    document_base_revision: u64,
+    identity: &BaselineIdentity,
 ) -> bool {
-    baseline.identity.context == context
-        && baseline.identity.root_width == root_width
-        && baseline.identity.root_width_override == root_width_override
-        && baseline.identity.runtime_revision == runtime_revision
-        && baseline.identity.context_hash == context_hash
-        && baseline.identity.complete == complete
+    baseline.document_revision == document_base_revision
+        && baseline.identity.context == identity.context
+        && baseline.identity.root_width == identity.root_width
+        && baseline.identity.root_width_override == identity.root_width_override
+        && baseline.identity.runtime_revision == identity.runtime_revision
+        && baseline.identity.context_hash == identity.context_hash
+        && baseline.identity.complete == identity.complete
 }
 
 fn prepare_layout_job(
     document: &Arc<LayoutDocument>,
     frame: ControlFrame,
+    document_base_revision: u64,
+    document_target_revision: u64,
 ) -> Result<PreparedJob, String> {
     if frame.payload.is_some() {
         return Err(format!(
@@ -1143,6 +1265,8 @@ fn prepare_layout_job(
             context_hash: frame.context_hash,
             complete: frame.complete,
             root_metadata: frame.root_metadata,
+            document_base_revision,
+            document_target_revision,
         },
     })
 }
@@ -1176,6 +1300,8 @@ fn render_layout_payload(
             context_hash,
             complete,
             root_metadata,
+            document_base_revision,
+            document_target_revision,
         } => {
             let identity = TapeIdentity {
                 session_id,
@@ -1208,17 +1334,21 @@ fn render_layout_payload(
             type LayoutRenderOutcome = Result<(Vec<u8>, LayoutTape, bool, u64, u64), String>;
             let result = catch_unwind(AssertUnwindSafe(|| -> LayoutRenderOutcome {
                 if let Some(base_context) = base_context {
+                    let base_identity = BaselineIdentity {
+                        context: base_context,
+                        root_width: base_root_width,
+                        root_width_override: base_root_width_override,
+                        runtime_revision,
+                        context_hash,
+                        complete,
+                    };
                     let base_hit = confirmed_baseline
                         .as_ref()
                         .filter(|baseline| {
                             confirmed_baseline_matches(
                                 baseline,
-                                base_context,
-                                base_root_width,
-                                base_root_width_override,
-                                runtime_revision,
-                                context_hash,
-                                complete,
+                                document_base_revision,
+                                &base_identity,
                             ) && baseline.styles == document.styles
                         })
                         .cloned();
@@ -1275,6 +1405,8 @@ fn render_layout_payload(
                     bytes,
                     pending: Some(PendingBaseline {
                         confirmed_identity: pending_identity,
+                        document: Arc::clone(&document),
+                        document_revision: document_target_revision,
                         tape,
                         styles: document.styles.clone(),
                     }),
@@ -1329,7 +1461,7 @@ fn render_proof(payload: &[u8]) -> Result<Vec<u8>, String> {
     if frame.delay_ms != 0 {
         return Err("Native proof render cannot contain delay-ms".to_owned());
     }
-    let prepared = prepare_layout_job(&Arc::new(document), frame)?;
+    let prepared = prepare_layout_job(&Arc::new(document), frame, 0, 1)?;
     let output = render_layout_payload(
         prepared.payload,
         SYNC_RENDER_SESSION_ID,
@@ -1847,14 +1979,41 @@ mod tests {
 
     fn proof_layout_payload(frames: &str) -> Vec<u8> {
         format!(
-            r#"{{"version":1,"document":{{"version":2,"space-width":8,"style-count":0,"styles":[],"root":{{"type":"box","region-id":1,"content":{{"lines":[{{"clusters":[{{"text":"x","width":8,"cjk":false,"space":false}}]}}]}},"child":null,"content-width-exact":false,"width":{{"kind":"viewport"}},"min-width":{{"kind":"pixels","value":0}},"max-width":{{"kind":"none"}},"height":{{"kind":"auto"}},"min-height":{{"kind":"lines","value":0}},"max-height":{{"kind":"none"}},"box-sizing":"border-box","padding-left":0,"padding-right":0,"padding-top":0,"padding-bottom":0,"margin-left":0,"margin-right":0,"margin-top":0,"margin-bottom":0,"border-left":0,"border-right":0,"foreground-style":null,"background-style":null,"border-left-style":null,"border-right-style":null,"border-top-style":null,"border-bottom-style":null,"text-align":"left","vertical-align":"top","overflow":"scroll","wrap-mode":"word","scroll-offset":0}}}},"frames":{frames}}}"#
+            r#"{{"version":1,"document-base-revision":0,"document-target-revision":1,"document":{{"version":2,"space-width":8,"style-count":0,"styles":[],"root":{{"type":"box","region-id":1,"content":{{"lines":[{{"clusters":[{{"text":"x","width":8,"cjk":false,"space":false}}]}}]}},"child":null,"content-width-exact":false,"width":{{"kind":"viewport"}},"min-width":{{"kind":"pixels","value":0}},"max-width":{{"kind":"none"}},"height":{{"kind":"auto"}},"min-height":{{"kind":"lines","value":0}},"max-height":{{"kind":"none"}},"box-sizing":"border-box","padding-left":0,"padding-right":0,"padding-top":0,"padding-bottom":0,"margin-left":0,"margin-right":0,"margin-top":0,"margin-bottom":0,"border-left":0,"border-right":0,"foreground-style":null,"background-style":null,"border-left-style":null,"border-right-style":null,"border-top-style":null,"border-bottom-style":null,"text-align":"left","vertical-align":"top","overflow":"scroll","wrap-mode":"word","scroll-offset":0}}}},"frames":{frames}}}"#
         )
         .into_bytes()
     }
 
+    fn retained_layout_payload(document_revision: u64, frames: &str) -> Vec<u8> {
+        format!(
+            r#"{{"version":1,"document-base-revision":{document_revision},"document-target-revision":{document_revision},"frames":{frames}}}"#
+        )
+        .into_bytes()
+    }
+
+    fn replacement_layout_payload(
+        document_base_revision: u64,
+        document_target_revision: u64,
+        frames: &str,
+    ) -> Vec<u8> {
+        let payload = String::from_utf8(proof_layout_payload(frames)).unwrap();
+        payload
+            .replacen(
+                r#""document-base-revision":0"#,
+                &format!(r#""document-base-revision":{document_base_revision}"#),
+                1,
+            )
+            .replacen(
+                r#""document-target-revision":1"#,
+                &format!(r#""document-target-revision":{document_target_revision}"#),
+                1,
+            )
+            .into_bytes()
+    }
+
     fn column_proof_layout_payload(frames: &str) -> Vec<u8> {
         format!(
-            r#"{{"version":1,"document":{{"version":2,"space-width":8,"style-count":0,"styles":[],"root":{{"type":"column","children":[{{"type":"box","region-id":1,"content":{{"lines":[{{"clusters":[{{"text":"x","width":8,"cjk":false,"space":false}}]}}]}},"child":null,"content-width-exact":false,"width":{{"kind":"content"}},"min-width":{{"kind":"pixels","value":0}},"max-width":{{"kind":"none"}},"height":{{"kind":"auto"}},"min-height":{{"kind":"lines","value":0}},"max-height":{{"kind":"none"}},"box-sizing":"border-box","padding-left":0,"padding-right":0,"padding-top":0,"padding-bottom":0,"margin-left":0,"margin-right":0,"margin-top":0,"margin-bottom":0,"border-left":0,"border-right":0,"foreground-style":null,"background-style":null,"border-left-style":null,"border-right-style":null,"border-top-style":null,"border-bottom-style":null,"text-align":"left","vertical-align":"top","overflow":"scroll","wrap-mode":"word","scroll-offset":0}},{{"type":"box","region-id":2,"content":{{"lines":[{{"clusters":[{{"text":"yy","width":16,"cjk":false,"space":false}}]}}]}},"child":null,"content-width-exact":false,"width":{{"kind":"content"}},"min-width":{{"kind":"pixels","value":0}},"max-width":{{"kind":"none"}},"height":{{"kind":"auto"}},"min-height":{{"kind":"lines","value":0}},"max-height":{{"kind":"none"}},"box-sizing":"border-box","padding-left":0,"padding-right":0,"padding-top":0,"padding-bottom":0,"margin-left":0,"margin-right":0,"margin-top":0,"margin-bottom":0,"border-left":0,"border-right":0,"foreground-style":null,"background-style":null,"border-left-style":null,"border-right-style":null,"border-top-style":null,"border-bottom-style":null,"text-align":"left","vertical-align":"top","overflow":"scroll","wrap-mode":"word","scroll-offset":0}}]}}}},"frames":{frames}}}"#
+            r#"{{"version":1,"document-base-revision":0,"document-target-revision":1,"document":{{"version":2,"space-width":8,"style-count":0,"styles":[],"root":{{"type":"column","children":[{{"type":"box","region-id":1,"content":{{"lines":[{{"clusters":[{{"text":"x","width":8,"cjk":false,"space":false}}]}}]}},"child":null,"content-width-exact":false,"width":{{"kind":"content"}},"min-width":{{"kind":"pixels","value":0}},"max-width":{{"kind":"none"}},"height":{{"kind":"auto"}},"min-height":{{"kind":"lines","value":0}},"max-height":{{"kind":"none"}},"box-sizing":"border-box","padding-left":0,"padding-right":0,"padding-top":0,"padding-bottom":0,"margin-left":0,"margin-right":0,"margin-top":0,"margin-bottom":0,"border-left":0,"border-right":0,"foreground-style":null,"background-style":null,"border-left-style":null,"border-right-style":null,"border-top-style":null,"border-bottom-style":null,"text-align":"left","vertical-align":"top","overflow":"scroll","wrap-mode":"word","scroll-offset":0}},{{"type":"box","region-id":2,"content":{{"lines":[{{"clusters":[{{"text":"yy","width":16,"cjk":false,"space":false}}]}}]}},"child":null,"content-width-exact":false,"width":{{"kind":"content"}},"min-width":{{"kind":"pixels","value":0}},"max-width":{{"kind":"none"}},"height":{{"kind":"auto"}},"min-height":{{"kind":"lines","value":0}},"max-height":{{"kind":"none"}},"box-sizing":"border-box","padding-left":0,"padding-right":0,"padding-top":0,"padding-bottom":0,"margin-left":0,"margin-right":0,"margin-top":0,"margin-bottom":0,"border-left":0,"border-right":0,"foreground-style":null,"background-style":null,"border-left-style":null,"border-right-style":null,"border-top-style":null,"border-bottom-style":null,"text-align":"left","vertical-align":"top","overflow":"scroll","wrap-mode":"word","scroll-offset":0}}]}}}},"frames":{frames}}}"#
         )
         .into_bytes()
     }
@@ -2083,10 +2242,11 @@ mod tests {
         assert_eq!(child_initial.ready_results, 0);
         assert_eq!(child_initial.pending_baselines, 0);
         assert!(child_initial.confirmed_baseline);
-        assert!(!child_initial.layout_registered);
+        assert!(child_initial.layout_registered);
 
         parent.stop(true);
-        let second = proof_layout_payload(
+        let second = retained_layout_payload(
+            1,
             r#"[{"key":2,"viewport-width":80,"viewport-height":10,"root-width":80,"patch":true,"base-viewport-width":120,"base-viewport-height":10,"base-root-width":120,"runtime-revision":1,"context-hash":77}]"#,
         );
         let second_tape = child.render_sync(1, &second).unwrap();
@@ -2111,6 +2271,152 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_fork_reuses_retained_document_without_reparse_or_revalidation() {
+        let parent = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = proof_layout_payload(
+            r#"[{"key":1,"viewport-width":120,"viewport-height":10,"root-width":120,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        assert!(!parent.render_sync(1, &first).unwrap().is_empty());
+        assert!(parent.confirm(1, 1, 1).unwrap());
+
+        let child = parent.fork_confirmed().unwrap();
+        let retained = retained_layout_payload(
+            1,
+            r#"[{"key":2,"viewport-width":80,"viewport-height":10,"root-width":80,"patch":true,"base-viewport-width":120,"base-viewport-height":10,"base-root-width":120,"runtime-revision":1,"context-hash":77}]"#,
+        );
+        let tape = child.render_sync(1, &retained).unwrap();
+        assert!(tape_patch_p(&tape));
+        let stats = child.stats();
+        assert_eq!(stats.document_parses, 0);
+        assert_eq!(stats.document_validations, 0);
+        assert_eq!(stats.document_reuses, 1);
+        assert!(child.confirm(1, 2, 2).unwrap());
+
+        let grandchild = child.fork_confirmed().unwrap();
+        let next = retained_layout_payload(
+            1,
+            r#"[{"key":3,"viewport-width":100,"viewport-height":10,"root-width":100,"patch":true,"base-viewport-width":80,"base-viewport-height":10,"base-root-width":80,"runtime-revision":2,"context-hash":77}]"#,
+        );
+        assert!(tape_patch_p(&grandchild.render_sync(1, &next).unwrap()));
+        assert_eq!(grandchild.stats().document_reuses, 1);
+        parent.stop(true);
+        child.stop(true);
+        grandchild.stop(true);
+    }
+
+    #[test]
+    fn retained_document_reuse_rejects_wrong_or_ambiguous_revision() {
+        let parent = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = proof_layout_payload(
+            r#"[{"key":1,"viewport-width":120,"viewport-height":10,"runtime-revision":0}]"#,
+        );
+        parent.render_sync(1, &first).unwrap();
+        assert!(parent.confirm(1, 1, 1).unwrap());
+        let child = parent.fork_confirmed().unwrap();
+
+        let wrong_document = retained_layout_payload(
+            2,
+            r#"[{"key":2,"viewport-width":80,"viewport-height":10,"runtime-revision":1}]"#,
+        );
+        assert!(child
+            .render_sync(1, &wrong_document)
+            .unwrap_err()
+            .contains("document revision"));
+        let wrong_runtime = retained_layout_payload(
+            1,
+            r#"[{"key":2,"viewport-width":80,"viewport-height":10,"runtime-revision":0}]"#,
+        );
+        assert!(child
+            .render_sync(1, &wrong_runtime)
+            .unwrap_err()
+            .contains("runtime revision"));
+        let ambiguous = br#"{"version":1,"frames":[{"key":2,"viewport-width":80,"viewport-height":10,"runtime-revision":1}]}"#;
+        assert!(child
+            .render_sync(1, ambiguous)
+            .unwrap_err()
+            .contains("document revisions"));
+        assert_eq!(child.stats().document_reuses, 0);
+        assert!(parent.stats().confirmed_baseline);
+        parent.stop(true);
+        child.stop(true);
+    }
+
+    #[test]
+    fn cancelled_replacement_does_not_promote_or_contaminate_its_parent() {
+        let parent = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = proof_layout_payload(
+            r#"[{"key":1,"viewport-width":120,"viewport-height":10,"runtime-revision":0}]"#,
+        );
+        parent.render_sync(1, &first).unwrap();
+        assert!(parent.confirm(1, 1, 1).unwrap());
+        let child = parent.fork_confirmed().unwrap();
+        let replacement = replacement_layout_payload(
+            1,
+            2,
+            r#"[{"key":2,"viewport-width":100,"viewport-height":10,"runtime-revision":1}]"#,
+        );
+        assert!(!child.render_sync(1, &replacement).unwrap().is_empty());
+        assert_eq!(child.stats().pending_baselines, 1);
+        child.cancel(1);
+        assert_eq!(child.stats().pending_baselines, 0);
+
+        let retry = child.fork_confirmed().unwrap();
+        let retained = retained_layout_payload(
+            1,
+            r#"[{"key":3,"viewport-width":80,"viewport-height":10,"runtime-revision":1}]"#,
+        );
+        assert!(!retry.render_sync(1, &retained).unwrap().is_empty());
+        assert_eq!(retry.stats().document_reuses, 1);
+        assert_eq!(parent.stats().document_parses, 1);
+        assert_eq!(parent.stats().document_reuses, 0);
+        parent.stop(true);
+        child.stop(true);
+        retry.stop(true);
+    }
+
+    #[test]
+    fn async_omit_uses_the_latest_synchronously_confirmed_document() {
+        let parent = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = proof_layout_payload(
+            r#"[{"key":1,"viewport-width":120,"viewport-height":10,"runtime-revision":0}]"#,
+        );
+        let first_count = full_tape_character_count(&parent.render_sync(1, &first).unwrap());
+        assert!(parent.confirm(1, 1, 1).unwrap());
+        let parent_omit =
+            batch(r#"[{"key":2,"viewport-width":120,"viewport-height":10,"runtime-revision":1}]"#);
+        assert_eq!(parent.submit(2, &parent_omit).unwrap(), 1);
+        wait_until(|| parent.ready(2, 2));
+        assert_eq!(
+            full_tape_character_count(&parent.take(2, 2).unwrap()),
+            first_count
+        );
+
+        let child = parent.fork_confirmed().unwrap();
+        let replacement = String::from_utf8(replacement_layout_payload(
+            1,
+            2,
+            r#"[{"key":3,"viewport-width":120,"viewport-height":10,"runtime-revision":1}]"#,
+        ))
+        .unwrap()
+        .replacen(r#""text":"x","width":8"#, r#""text":"yy","width":16"#, 1)
+        .into_bytes();
+        let replacement_count =
+            full_tape_character_count(&child.render_sync(1, &replacement).unwrap());
+        assert_ne!(replacement_count, first_count);
+        assert!(child.confirm(1, 3, 2).unwrap());
+        let child_omit =
+            batch(r#"[{"key":4,"viewport-width":120,"viewport-height":10,"runtime-revision":2}]"#);
+        assert_eq!(child.submit(2, &child_omit).unwrap(), 1);
+        wait_until(|| child.ready(2, 4));
+        assert_eq!(
+            full_tape_character_count(&child.take(2, 4).unwrap()),
+            replacement_count
+        );
+        parent.stop(true);
+        child.stop(true);
+    }
+
+    #[test]
     fn confirmed_fork_falls_back_to_full_frame_on_identity_mismatch() {
         let parent = Session::new(1, 4, 4, 64 * 1024).unwrap();
         let first = proof_layout_payload(
@@ -2120,7 +2426,9 @@ mod tests {
         assert!(parent.confirm(1, 1, 1).unwrap());
 
         let child = parent.fork_confirmed().unwrap();
-        let mismatched = proof_layout_payload(
+        let mismatched = replacement_layout_payload(
+            1,
+            2,
             r#"[{"key":2,"viewport-width":80,"viewport-height":10,"root-width":80,"patch":true,"base-viewport-width":120,"base-viewport-height":10,"base-root-width":120,"runtime-revision":2,"context-hash":77}]"#,
         );
         let tape = child.render_sync(1, &mismatched).unwrap();

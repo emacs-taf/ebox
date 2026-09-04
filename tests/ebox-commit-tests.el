@@ -2399,6 +2399,174 @@ remain retained identities."
        (equal '(:foreground "#222222")
               (plist-get (aref styles style-id) :face))))))
 
+(ert-deftest ebox-native-retained-package-reuse-requires-exact-ir-identity ()
+  "Only an identity-preserving compile may reuse the confirmed package."
+  (let* ((root (list :type "row" :children []))
+         (style (list :mode 'face :face '(:foreground "red")))
+         (template (list :mouse-face 'highlight))
+         (old
+          (list :document
+                (list :version 2 :space-width 8 :style-count 1
+                      :property-template-count 1
+                      :styles (vector style) :root root)
+                :document-revision 7
+                :styles (vector style)
+                :property-templates (vector template)))
+         (same
+          (list :document
+                (list :version 2 :space-width 8 :style-count 1
+                      :property-template-count 1
+                      :styles (vector style) :root root)
+                :styles (vector style)
+                :property-templates (vector template))))
+    (should (eq old
+                (ebox-native-reflow--reuse-exact-layout-package old same)))
+    (dolist (candidate
+             (list
+              (copy-tree same)
+              (let ((copy (copy-tree same)))
+                (plist-put (plist-get copy :document) :space-width 9)
+                copy)
+              (let ((copy (copy-tree same)))
+                (plist-put (plist-get copy :document) :root (copy-tree root))
+                copy)
+              (let ((copy (copy-tree same)))
+                (plist-put copy :styles
+                           (vector (copy-tree style)))
+                copy)
+              (let ((copy (copy-tree same)))
+                (plist-put copy :property-templates
+                           (vector (copy-tree template)))
+                copy)))
+      ;; COPY-TREE deliberately destroys the required root/style/template
+      ;; object identity even when values remain equal.
+      (should-not
+       (eq old (ebox-native-reflow--reuse-exact-layout-package old candidate))))))
+
+(ert-deftest ebox-native-retained-sync-omits-an-exactly-reused-document ()
+  "A retained frame sends only revisions and context for unchanged IR."
+  (let* ((document (list :version 2 :space-width 8 :style-count 0
+                         :property-template-count 0 :styles []
+                         :root (list :type "row" :children [])))
+         (package (list :document document :document-revision 4
+                        :styles [] :property-templates []))
+         (session
+          (ebox-native-reflow--make-session
+           :handle 'test :generation 3 :styles [] :layout-package package
+           :layout-fragment-cache (make-hash-table :test 'equal)
+           :layout-fragment-revision 0))
+         control)
+    (cl-letf (((symbol-function
+                'ebox-native-reflow--compile-retained-layout-package)
+               (lambda (&rest _) package))
+              ((symbol-function 'ebox-native--module-render-session-frame)
+               (lambda (_handle _generation payload)
+                 (setq control
+                       (json-parse-string payload :object-type 'plist
+                                          :array-type 'array))
+                 'native-frame))
+              ((symbol-function 'ebox-native-reflow--materialize-module-frame)
+               (lambda (&rest _) '(:rendered "ok"))))
+      (should
+       (equal
+        '(:rendered "ok")
+        (ebox-native-reflow-execute-session-sync
+         session 'node
+         '(:key 1 :viewport-width 80 :viewport-height 10
+           :runtime-revision 9)
+         nil 'state)))
+      (should-not (plist-member control :document))
+      (should (= (plist-get control :document-base-revision) 4))
+      (should (= (plist-get control :document-target-revision) 4)))))
+
+(ert-deftest ebox-native-session-input-normalizes-every-replacement-revision ()
+  "Compiled and explicit replacement packages both advance at the boundary."
+  (let* ((styles [])
+         (templates [])
+         (old
+          (list :document
+                (list :version 2 :space-width 8 :style-count 0
+                      :property-template-count 0 :styles []
+                      :root (list :type "row" :children []))
+                :document-revision 4
+                :styles styles :property-templates templates))
+         (compiled
+          (list :document
+                (list :version 2 :space-width 8 :style-count 0
+                      :property-template-count 0 :styles []
+                      :root (list :type "column" :children []))
+                :document-revision 1
+                :styles styles :property-templates templates))
+         (explicit
+          (list :document
+                (list :version 2 :space-width 8 :style-count 0
+                      :property-template-count 0 :styles []
+                      :root (list :type "box"))
+                :document-revision 1
+                :styles styles :property-templates templates))
+         (session
+          (ebox-native-reflow--make-session
+           :handle 'test :generation 0 :styles styles :layout-package old
+           :layout-fragment-cache (make-hash-table :test 'equal)
+           :layout-fragment-revision 0))
+         (other-old (copy-tree old))
+         (other-session
+          (progn
+            (plist-put other-old :document-revision 10)
+            (ebox-native-reflow--make-session
+             :handle 'other :generation 0 :styles styles
+             :layout-package other-old
+             :layout-fragment-cache (make-hash-table :test 'equal)
+             :layout-fragment-revision 0)))
+         controls)
+    (cl-letf (((symbol-function 'ebox-native-reflow--compile-layout-package)
+               (lambda (&rest _) compiled))
+              ((symbol-function 'ebox-native--module-render-session-frame)
+               (lambda (_handle _generation payload)
+                 (push (json-parse-string payload :object-type 'plist
+                                          :array-type 'array)
+                       controls)
+                 'native-frame))
+              ((symbol-function 'ebox-native-reflow--materialize-module-frame)
+               (lambda (&rest _) '(:rendered "ok"))))
+      (ebox-native-reflow-execute-session-sync
+       session 'node
+       '(:key 1 :viewport-width 80 :viewport-height 10
+         :runtime-revision 9))
+      (should (= (plist-get (ebox-native-reflow-session-layout-package session)
+                            :document-revision)
+                 5))
+      (ebox-native-reflow-execute-session-sync
+       session 'node
+       '(:key 1 :viewport-width 90 :viewport-height 10
+         :runtime-revision 10)
+       explicit)
+      (setq controls (nreverse controls))
+      (should (plist-member (car controls) :document))
+      (should (= (plist-get (car controls) :document-base-revision) 4))
+      (should (= (plist-get (car controls) :document-target-revision) 5))
+      (should (plist-member (cadr controls) :document))
+      (should (= (plist-get (cadr controls) :document-base-revision) 5))
+      (should (= (plist-get (cadr controls) :document-target-revision) 6))
+      (should (= (plist-get (ebox-native-reflow-session-layout-package session)
+                            :document-revision)
+                 6))
+      (ebox-native-reflow-execute-session-sync
+       other-session 'node
+       '(:key 1 :viewport-width 100 :viewport-height 10
+         :runtime-revision 20)
+       explicit)
+      (should (= (plist-get explicit :document-revision) 1))
+      (should (= (plist-get (ebox-native-reflow-session-layout-package session)
+                            :document-revision)
+                 6))
+      (should (= (plist-get
+                  (ebox-native-reflow-session-layout-package other-session)
+                  :document-revision)
+                 11))
+      (should (= (plist-get (car controls) :document-base-revision) 10))
+      (should (= (plist-get (car controls) :document-target-revision) 11)))))
+
 (provide 'ebox-commit-tests)
 
 ;;; ebox-commit-tests.el ends here

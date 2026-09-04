@@ -95,7 +95,7 @@
 
 (defvar ebox--flex-content-min-width-table)
 
-(defconst ebox-native-reflow-abi-version "10:7:12"
+(defconst ebox-native-reflow-abi-version "11:7:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -2222,9 +2222,10 @@ backend has a matching two-dimensional layout contract."
               (and (listp node) (plist-get node :ebox-type))))))
 
 (defun ebox-native-reflow--layout-package-from-root
-    (root styles &optional property-templates)
+    (root styles &optional property-templates document-revision)
   "Return one immutable native package from compiled ROOT and STYLES.
-PROPERTY-TEMPLATES are Emacs-owned plists addressed by opaque native ids."
+PROPERTY-TEMPLATES are Emacs-owned plists addressed by opaque native ids.
+DOCUMENT-REVISION is the exact retained-input revision, defaulting to one."
   (list :document
         (list :version 2
               :space-width (ebox--space-pixel-width)
@@ -2246,8 +2247,44 @@ PROPERTY-TEMPLATES are Emacs-owned plists addressed by opaque native ids."
                                (plist-get descriptor :face)))))
                 styles))
               :root root)
+        :document-revision (or document-revision 1)
         :styles (vconcat styles)
         :property-templates (vconcat property-templates)))
+
+(defun ebox-native-reflow--vector-elements-eq-p (left right)
+  "Return non-nil when LEFT and RIGHT contain the same objects in order."
+  (and (vectorp left)
+       (vectorp right)
+       (= (length left) (length right))
+       (cl-loop for index below (length left)
+                always (eq (aref left index) (aref right index)))))
+
+(defun ebox-native-reflow--reuse-exact-layout-package (old candidate)
+  "Return OLD when CANDIDATE has exactly the same immutable layout input.
+Otherwise return CANDIDATE with the next document revision."
+  (let ((old-document (plist-get old :document))
+        (candidate-document (plist-get candidate :document)))
+    (if (and old old-document candidate-document
+             (eq (plist-get old-document :root)
+                 (plist-get candidate-document :root))
+             (equal (plist-get old-document :version)
+                    (plist-get candidate-document :version))
+             (equal (plist-get old-document :space-width)
+                    (plist-get candidate-document :space-width))
+             (equal (plist-get old-document :style-count)
+                    (plist-get candidate-document :style-count))
+             (equal (plist-get old-document :property-template-count)
+                    (plist-get candidate-document
+                               :property-template-count))
+             (ebox-native-reflow--vector-elements-eq-p
+              (plist-get old :styles) (plist-get candidate :styles))
+             (ebox-native-reflow--vector-elements-eq-p
+              (plist-get old :property-templates)
+              (plist-get candidate :property-templates)))
+        old
+      (let ((replacement (copy-sequence candidate)))
+        (plist-put replacement :document-revision
+                   (1+ (or (plist-get old :document-revision) 0)))))))
 
 (defun ebox-native-reflow--buffer-display-signature (buffer)
   "Return BUFFER's live canonical Surface display capability."
@@ -2610,11 +2647,15 @@ per call, and no call recursively visits the captured Ebox tree."
                   (compile-current current))))
             (when retained-fast-p
               (seed-fragment node)))
-          (let ((package
-                 (ebox-native-reflow--layout-package-from-root
-                 (ebox-native-reflow--compiled-scene-child fragments node)
-                  ebox-native-reflow--compile-styles
-                  ebox-native-reflow--compile-property-templates)))
+          (let* ((candidate
+                  (ebox-native-reflow--layout-package-from-root
+                   (ebox-native-reflow--compiled-scene-child fragments node)
+                   ebox-native-reflow--compile-styles
+                   ebox-native-reflow--compile-property-templates))
+                 (package
+                  (ebox-native-reflow--reuse-exact-layout-package
+                   (ebox-native-reflow-session-layout-package session)
+                   candidate)))
             (setf (ebox-native-reflow-session-layout-fragment-cache session)
                   new-cache
                   (ebox-native-reflow-session-layout-fragment-revision session)
@@ -2639,8 +2680,11 @@ per call, and no call recursively visits the captured Ebox tree."
        (encode-coding-string
         (json-encode control) 'utf-8-unix)))))
 
-(defun ebox-native-reflow--layout-control-json (document frames)
-  "Return strict control JSON for optional layout DOCUMENT and frame contexts."
+(defun ebox-native-reflow--layout-control-json
+    (document frames &optional document-base-revision
+              document-target-revision)
+  "Return strict control JSON for optional layout DOCUMENT and FRAMES.
+DOCUMENT-BASE-REVISION and DOCUMENT-TARGET-REVISION bind retained input."
   (unless (and (listp frames) frames)
     (error "Native reflow requires at least one layout frame"))
   (let ((control
@@ -2738,6 +2782,14 @@ per call, and no call recursively visits the captured Ebox tree."
                     :base-root-width-override
                     (if base-root-width-override-p t :false))))))
             frames)))))
+    (when document-base-revision
+      (setq control
+            (plist-put control :document-base-revision
+                       document-base-revision)))
+    (when document-target-revision
+      (setq control
+            (plist-put control :document-target-revision
+                       document-target-revision)))
     (when document
       (setq control (plist-put control :document document)))
     (ebox-native-reflow--serialize-layout-control control)))
@@ -2748,22 +2800,29 @@ per call, and no call recursively visits the captured Ebox tree."
 LAYOUT-PACKAGE may reuse a caller-validated document for the same NODE."
   (unless (and (integerp generation) (>= generation 0))
     (error "Native reflow generation must be a nonnegative integer"))
-  (let* ((package (or layout-package
-                      (ebox-native-reflow--compile-layout-package
-                       node
-                       (ebox-native-reflow-session-styles session)
-                       (plist-get
-                        (ebox-native-reflow-session-layout-package session)
-                        :property-templates))))
+  (let* ((old-package (ebox-native-reflow-session-layout-package session))
+         (candidate-package
+          (or layout-package
+              (ebox-native-reflow--compile-layout-package
+               node
+               (ebox-native-reflow-session-styles session)
+               (plist-get old-package :property-templates))))
+         (package
+          (ebox-native-reflow--reuse-exact-layout-package
+           old-package candidate-package))
          (register-layout-p
           (not (eq package
-                   (ebox-native-reflow-session-layout-package session))))
+                   old-package)))
+         (base-revision (or (plist-get old-package :document-revision) 0))
+         (target-revision (or (plist-get package :document-revision)
+                              (1+ base-revision)))
          (accepted
           (ebox-native--module-submit
            (ebox-native-reflow--live-handle session)
            generation
            (ebox-native-reflow--layout-control-json
-            (and register-layout-p (plist-get package :document)) frames))))
+            (and register-layout-p (plist-get package :document)) frames
+            base-revision target-revision))))
     (setf (ebox-native-reflow-session-generation session) generation)
     (setf (ebox-native-reflow-session-styles session)
           (plist-get package :styles))
@@ -3896,7 +3955,9 @@ root effect metadata required by a thin host commit."
   (unless (and (ebox-native-reflow-session-p session)
                (fboundp 'ebox-native--module-render-session-frame))
     (error "Native retained frame execution is unavailable"))
-  (let* ((package
+  (let* ((old-package
+          (ebox-native-reflow-session-layout-package session))
+         (candidate-package
           (or layout-package
               (if state
                   (ebox-native-reflow--compile-retained-layout-package
@@ -3907,9 +3968,16 @@ root effect metadata required by a thin host commit."
                  (plist-get
                   (ebox-native-reflow-session-layout-package session)
                   :property-templates)))))
+         (package
+          (ebox-native-reflow--reuse-exact-layout-package
+           old-package candidate-package))
          (generation (1+ (ebox-native-reflow-session-generation session)))
          (control-frame (copy-sequence frame))
-         (native-key (or (plist-get control-frame :key) 1)))
+         (native-key (or (plist-get control-frame :key) 1))
+         (reuse-document-p (eq package old-package))
+         (base-revision (or (plist-get old-package :document-revision) 0))
+         (target-revision (or (plist-get package :document-revision)
+                              (1+ base-revision))))
     (setq control-frame (plist-put control-frame :key native-key))
     (let ((result
            (ebox-native-reflow--materialize-module-frame
@@ -3917,7 +3985,8 @@ root effect metadata required by a thin host commit."
              (ebox-native-reflow--live-handle session)
              generation
              (ebox-native-reflow--layout-control-json
-              (plist-get package :document) (list control-frame)))
+              (unless reuse-document-p (plist-get package :document))
+              (list control-frame) base-revision target-revision))
             package control-frame generation)))
       (setf (ebox-native-reflow-session-generation session) generation
             (ebox-native-reflow-session-layout-package session) package

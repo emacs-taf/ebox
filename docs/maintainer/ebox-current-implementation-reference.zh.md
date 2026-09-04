@@ -103,6 +103,11 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 - `owner-rerender` 范围大于 `span-patch`，`span-patch` 大于 `paint-patch`。
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。
+- 已确认的 retained-native frame 持有不可变布局文档及其精确文档 revision；候选
+  session 的 fork 共享该文档。同步 frame 只有在文档 base/target revision 相等且
+  命中 confirmed 文档、同时 TP runtime revision 命中 confirmed frame 时，才可
+  省略文档。IR 变化必须携带下一 document revision 的完整 replacement document；
+  confirm 原子晋升候选文档，失败或取消不修改 parent session。
 - 只有继续已提交 native frame 的 full declarative update，才会在 stable native
   eligibility 前为全部 candidate node 计算 selector-local style；生成的
   `:styles-prepared-p` certificate 防止 replacement runtime 丢失 computed style，

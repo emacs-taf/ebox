@@ -104,6 +104,14 @@ Caller-owned Source Tree
 - `owner-rerender` is broader than `span-patch`, which is broader than `paint-patch`.
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.
+- A confirmed retained-native frame owns an immutable layout document together
+  with its exact document revision. Candidate-session forks share that document.
+  A synchronous frame may omit the document only when its base and target
+  document revisions are equal and match the confirmed document, and its TP
+  runtime revision matches the confirmed frame. A changed IR sends a complete
+  replacement document with the next document revision; confirmation promotes
+  the candidate document atomically, while failure or cancellation leaves the
+  parent session unchanged.
 - A full declarative update continuing a committed native frame computes
   selector-local styles for every candidate node before stable native
   eligibility. The `:styles-prepared-p` certificate prevents replacement
