@@ -67,6 +67,12 @@ do not require a wrapper node.
 Ebox copies canonical input before assigning runtime identity, so one built
 value may be mounted in multiple buffers without sharing live ownership.
 
+Ebox registers its rollback-capable TP state through the public structured v2
+participant API by default.  Set `ebox-transaction-participant-route` to `v1`
+before the next operation for an immediate old-route rollback.  If the loaded TP
+manifest predates the structured API, the default v2 policy selects the same
+complete v1 adapter automatically; the two registrations are never run together.
+
 ## Optional native module
 
 The Rust module accelerates eligible reflow work. It is optional and has an

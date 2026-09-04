@@ -450,7 +450,7 @@ struct RuntimeState {
     baseline_misses: u64,
     base_renders: u64,
     target_renders: u64,
-    confirmed_baseline: Option<ConfirmedBaseline>,
+    confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -529,6 +529,16 @@ impl Session {
         max_results: usize,
         max_result_bytes: usize,
     ) -> Result<Box<Self>, String> {
+        Self::new_with_confirmed_baseline(workers, max_jobs, max_results, max_result_bytes, None)
+    }
+
+    fn new_with_confirmed_baseline(
+        workers: usize,
+        max_jobs: usize,
+        max_results: usize,
+        max_result_bytes: usize,
+        confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
+    ) -> Result<Box<Self>, String> {
         if workers == 0 || max_jobs == 0 || max_results == 0 || max_result_bytes == 0 {
             return Err("Native reflow capacities must be positive".to_owned());
         }
@@ -552,7 +562,7 @@ impl Session {
                 baseline_misses: 0,
                 base_renders: 0,
                 target_renders: 0,
-                confirmed_baseline: None,
+                confirmed_baseline,
             }),
             readiness_channel: Mutex::new(None),
             job_available: Condvar::new(),
@@ -582,6 +592,27 @@ impl Session {
             layout_document: Mutex::new(None),
             worker_count,
         }))
+    }
+
+    fn fork_confirmed(&self) -> Result<Box<Self>, String> {
+        if !self.shared.alive.load(Ordering::Acquire) {
+            return Err("Native reflow source session is closed".to_owned());
+        }
+        let confirmed_baseline = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .confirmed_baseline
+            .clone()
+            .ok_or_else(|| "Native reflow source has no confirmed baseline".to_owned())?;
+        Self::new_with_confirmed_baseline(
+            self.worker_count,
+            self.shared.max_jobs,
+            self.shared.max_results,
+            self.shared.max_result_bytes,
+            Some(confirmed_baseline),
+        )
     }
 
     fn submit(&self, generation: u64, payload: &[u8]) -> Result<usize, String> {
@@ -819,16 +850,16 @@ impl Session {
                 .as_ref()
                 .is_some_and(|baseline| baseline.identity.runtime_revision == confirmed_revision));
         };
-        if confirmed_revision <= pending.confirmed_identity.runtime_revision {
+        if pending.confirmed_identity.runtime_revision.checked_add(1) != Some(confirmed_revision) {
             return Err("Native confirmed frame revision mismatch".to_owned());
         }
         let mut identity = pending.confirmed_identity;
         identity.runtime_revision = confirmed_revision;
-        state.confirmed_baseline = Some(ConfirmedBaseline {
+        state.confirmed_baseline = Some(Arc::new(ConfirmedBaseline {
             identity,
             tape: pending.tape,
             styles: pending.styles,
-        });
+        }));
         Ok(true)
     }
 
@@ -1122,7 +1153,7 @@ fn render_layout_payload(
     generation: u64,
     key: i64,
     max_result_bytes: usize,
-    confirmed_baseline: Option<ConfirmedBaseline>,
+    confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
     require_confirmed_patch_base: bool,
 ) -> RenderedJob {
     match payload {
@@ -1204,7 +1235,7 @@ fn render_layout_payload(
                         return Ok((bytes, target, false, 0, 1));
                     }
                     let (old, baseline_hit, base_renders) = if let Some(baseline) = base_hit {
-                        (baseline.tape, true, 0)
+                        (baseline.tape.clone(), true, 0)
                     } else {
                         (
                             document.layout_tape(
@@ -1494,6 +1525,28 @@ pub extern "C" fn ebox_native_session_create(
         }
         Err(_) => {
             set_error(error, "Native reflow session creation panicked");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ebox_native_session_fork_confirmed(
+    source: *mut c_void,
+    error: *mut NativeBytes,
+) -> *mut c_void {
+    match catch_unwind(AssertUnwindSafe(|| {
+        let source =
+            session_ref(source).ok_or_else(|| "Native reflow source session is null".to_owned())?;
+        source.fork_confirmed()
+    })) {
+        Ok(Ok(session)) => Box::into_raw(session) as *mut c_void,
+        Ok(Err(message)) => {
+            set_error(error, message);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error, "Native reflow confirmed fork panicked");
             ptr::null_mut()
         }
     }
@@ -1810,6 +1863,10 @@ mod tests {
         u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
     }
 
+    fn tape_patch_p(bytes: &[u8]) -> bool {
+        u16::from_le_bytes(bytes[6..8].try_into().unwrap()) & (1 << 2) != 0
+    }
+
     fn full_tape_character_count(bytes: &[u8]) -> u64 {
         read_le_u64(bytes, 92)
     }
@@ -2003,6 +2060,76 @@ mod tests {
         assert_eq!(final_stats.base_renders, 2);
         assert_eq!(final_stats.target_renders, 3);
         session.stop(true);
+    }
+
+    #[test]
+    fn confirmed_fork_shares_only_immutable_baseline() {
+        let parent = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        assert!(parent.fork_confirmed().is_err());
+
+        let first = proof_layout_payload(
+            r#"[{"key":1,"viewport-width":120,"viewport-height":10,"root-width":120,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        let first_tape = parent.render_sync(1, &first).unwrap();
+        assert!(!tape_patch_p(&first_tape));
+        assert!(parent.confirm(1, 1, 1).unwrap());
+        let parent_before = parent.stats();
+
+        let child = parent.fork_confirmed().unwrap();
+        let child_initial = child.stats();
+        assert_ne!(child_initial.session_id, parent_before.session_id);
+        assert_eq!(child_initial.generation, 0);
+        assert_eq!(child_initial.queued_jobs, 0);
+        assert_eq!(child_initial.ready_results, 0);
+        assert_eq!(child_initial.pending_baselines, 0);
+        assert!(child_initial.confirmed_baseline);
+        assert!(!child_initial.layout_registered);
+
+        parent.stop(true);
+        let second = proof_layout_payload(
+            r#"[{"key":2,"viewport-width":80,"viewport-height":10,"root-width":80,"patch":true,"base-viewport-width":120,"base-viewport-height":10,"base-root-width":120,"runtime-revision":1,"context-hash":77}]"#,
+        );
+        let second_tape = child.render_sync(1, &second).unwrap();
+        assert!(tape_patch_p(&second_tape));
+        let child_rendered = child.stats();
+        assert_eq!(child_rendered.baseline_hits, 1);
+        assert_eq!(child_rendered.base_renders, 0);
+        assert_eq!(child_rendered.target_renders, 1);
+        assert_eq!(child_rendered.pending_baselines, 1);
+        assert!(child.confirm(1, 2, 2).unwrap());
+        assert!(child.stats().confirmed_baseline);
+
+        let parent_after = parent.stats();
+        assert_eq!(parent_after.baseline_hits, parent_before.baseline_hits);
+        assert_eq!(parent_after.base_renders, parent_before.base_renders);
+        assert_eq!(parent_after.target_renders, parent_before.target_renders);
+        assert_eq!(
+            parent_after.pending_baselines,
+            parent_before.pending_baselines
+        );
+        child.stop(true);
+    }
+
+    #[test]
+    fn confirmed_fork_falls_back_to_full_frame_on_identity_mismatch() {
+        let parent = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = proof_layout_payload(
+            r#"[{"key":1,"viewport-width":120,"viewport-height":10,"root-width":120,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        assert!(!parent.render_sync(1, &first).unwrap().is_empty());
+        assert!(parent.confirm(1, 1, 1).unwrap());
+
+        let child = parent.fork_confirmed().unwrap();
+        let mismatched = proof_layout_payload(
+            r#"[{"key":2,"viewport-width":80,"viewport-height":10,"root-width":80,"patch":true,"base-viewport-width":120,"base-viewport-height":10,"base-root-width":120,"runtime-revision":2,"context-hash":77}]"#,
+        );
+        let tape = child.render_sync(1, &mismatched).unwrap();
+        assert!(!tape_patch_p(&tape));
+        assert_eq!(child.stats().baseline_hits, 0);
+        assert_eq!(child.stats().base_renders, 0);
+        assert_eq!(child.stats().target_renders, 1);
+        parent.stop(true);
+        child.stop(true);
     }
 
     #[test]

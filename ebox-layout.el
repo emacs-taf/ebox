@@ -100,6 +100,9 @@ containing block merely because the row itself is being rendered in it.")
 (defvar ebox--box-content-cache-purpose nil
   "Dynamic discriminator for distinct box content materializations.")
 
+(defvar ebox--containing-wrap-mode nil
+  "Box-owned soft-wrap policy inherited by canonical Text descendants.")
+
 (defvar ebox--rendered-uniform-width-table
   (make-hash-table :test 'eq :weakness 'key)
   "Weak map from rendered strings to their proven uniform pixel width.")
@@ -926,6 +929,7 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
         ebox-viewport-height
         ebox--intrinsic-layout-measurement
         ebox--inline-auto-width-intrinsic-p
+        ebox--containing-wrap-mode
         ebox--box-content-cache-purpose
         ebox--render-region-id))
 
@@ -1354,7 +1358,8 @@ property parsers."
 
 (defun ebox--call-with-box-content-context (props function)
   "Call FUNCTION in the content viewport established by box PROPS."
-  (let ((content-viewport (ebox--wrapper-content-viewport-pixel props)))
+  (let ((content-viewport (ebox--wrapper-content-viewport-pixel props))
+        (ebox--containing-wrap-mode (ebox-get props :wrap-mode)))
     (cond
      ((eq (ebox-get props :width) 'max-content)
       (let ((ebox-viewport-width nil)
@@ -3470,9 +3475,23 @@ ambient horizontal viewport."
                              ('center 'center)
                              ('end 'right)
                              (_ 'left)))
+         (content-width
+          (and (not ebox--intrinsic-layout-measurement)
+               (not ebox--inline-auto-width-intrinsic-p)
+               (ebox--viewport-pixel-width nil)))
          (rendered-items
           (mapcar (lambda (leaf)
-                    (let ((rendered (ebox--render-with-cache leaf)))
+                    (let* ((rendered (ebox--render-with-cache leaf))
+                           (wrap-mode
+                            (and (eq (plist-get leaf :ebox-kind) 'text)
+                                 (or ebox--containing-wrap-mode
+                                     (ebox-get leaf :wrap-mode))))
+                           (rendered
+                            (if (and content-width (> content-width 0)
+                                     (ebox-style-soft-wrap-p wrap-mode))
+                                (ebox--wrap-text
+                                 rendered content-width wrap-mode)
+                              rendered)))
                       (cons rendered
                             (ebox--string-max-pixel-width rendered))))
                   children))
@@ -3482,7 +3501,7 @@ ambient horizontal viewport."
          (target-w (if (or ebox--intrinsic-layout-measurement
                          ebox--inline-auto-width-intrinsic-p)
                        max-w
-                     (or (ebox--viewport-pixel-width nil) max-w))))
+                     (or content-width max-w))))
     (let (pieces)
       (cl-loop for item in rendered-items
                for tail on rendered-items

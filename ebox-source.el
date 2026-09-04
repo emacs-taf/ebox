@@ -45,7 +45,7 @@
   "Bounded persistent document-order handle delta."
   base replacements removed appended local-handles handles depth)
 
-(defconst ebox-source--persistent-max-depth 32
+(defconst ebox-source--persistent-max-depth 4
   "Maximum SourceIndex overlay depth before exact compaction.")
 
 (defconst ebox-source--memo-missing (make-symbol "ebox-source-memo-missing")
@@ -53,6 +53,18 @@
 
 (defconst ebox-source--memo-unset (make-symbol "ebox-source-memo-unset")
   "Private marker for a persistent-table key not present in its memo.")
+
+(defconst ebox-source--lookup-missing
+  (make-symbol "ebox-source-lookup-missing")
+  "Private marker for an absent persistent-table lookup.")
+
+(defconst ebox-source--local-missing
+  (make-symbol "ebox-source-local-missing")
+  "Private marker for an absent binding in one table overlay.")
+
+(defconst ebox-source--order-missing
+  (make-symbol "ebox-source-order-missing")
+  "Private marker for a handle without an order replacement.")
 
 (defun ebox-source--flat-table (hash test)
   "Seal HASH as a flat immutable source table using TEST."
@@ -72,9 +84,9 @@
   "Return KEY's value from persistent or flat TABLE, or nil."
   (cond
    ((ebox-source-table-p table)
-    (let ((missing (make-symbol "ebox-source-table-missing")))
-      (let ((value (ebox-source--table-get table key missing)))
-        (unless (eq value missing) value))))
+    (let ((value
+           (ebox-source--table-get table key ebox-source--lookup-missing)))
+      (unless (eq value ebox-source--lookup-missing) value)))
    ((hash-table-p table) (gethash key table))
    ((null table) nil)
    (t (signal 'wrong-type-argument (list 'hash-table-p table)))))
@@ -94,12 +106,12 @@
           (and memo (gethash key memo ebox-source--memo-unset))))
     (if (and memo (not (eq memoized ebox-source--memo-unset)))
         (if (eq memoized ebox-source--memo-missing) missing memoized)
-      (let* ((local-missing (make-symbol "ebox-source-local-missing"))
-             (local
-              (gethash key (ebox-source-table-added table) local-missing))
+      (let* ((local
+              (gethash key (ebox-source-table-added table)
+                       ebox-source--local-missing))
              (resolved
               (cond
-               ((not (eq local local-missing)) local)
+               ((not (eq local ebox-source--local-missing)) local)
                ((gethash key (ebox-source-table-removed table))
                 ebox-source--memo-missing)
                ((ebox-source-table-base table)
@@ -126,8 +138,8 @@
 
 (defun ebox-source--table-member-p (table key)
   "Return non-nil when persistent TABLE contains KEY."
-  (let ((missing (make-symbol "ebox-source-missing")))
-    (not (eq (ebox-source--table-get table key missing) missing))))
+  (not (eq (ebox-source--table-get table key ebox-source--lookup-missing)
+           ebox-source--lookup-missing)))
 
 (defun ebox-source--table-overlay (base added removed count)
   "Return bounded persistent BASE overlaid by ADDED and REMOVED with COUNT."
@@ -146,11 +158,13 @@
 
 (defun ebox-source--order-apply (handles replacements removed appended)
   "Apply order delta to HANDLES and return a fresh exact order."
-  (let ((missing (make-symbol "ebox-source-order-missing")) result)
+  (let (result)
     (dolist (handle handles)
-      (let ((replacement (gethash handle replacements missing)))
+      (let ((replacement
+             (gethash handle replacements ebox-source--order-missing)))
         (cond
-         ((not (eq replacement missing)) (push replacement result))
+         ((not (eq replacement ebox-source--order-missing))
+          (push replacement result))
          ((gethash handle removed) nil)
          (t (push handle result)))))
     (append (nreverse result) (copy-sequence appended))))

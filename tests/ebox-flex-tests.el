@@ -682,6 +682,26 @@
                 (nth 1 lines) region-id)
                120))))
 
+(ert-deftest ebox-flex-stretch-padding-retains-child-allocation-owner ()
+  "Cross-axis blank lines remain part of the stretched child fragment."
+  (let* ((child (ebox-test-box (ebox-test-text "A") :width '(80)))
+         (region-id (car (ebox-region-ids (ebox-test-root child))))
+         (layout
+          (ebox-test-flex :width '(120) :height 3 :align-items 'stretch
+            child))
+         (lines (ebox-string-lines (ebox-render layout))))
+    (should (= (length lines) 3))
+    (dolist (line lines)
+      (should
+       (text-property-not-all
+        0 (length line) 'ebox-content-owners nil line))
+      (should
+       (cl-some
+        (lambda (position)
+          (memq region-id
+                (get-text-property position 'ebox-content-owners line)))
+        (number-sequence 0 (1- (length line))))))))
+
 (ert-deftest ebox-flex-natural-reuse-preserves-stretched-scroll-state ()
   "Stretch sizing should publish the final box geometry to scroll state."
   (let* ((ebox-viewport-width 120)

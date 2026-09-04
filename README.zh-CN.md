@@ -62,6 +62,11 @@ Flex/Grid participation property 直接属于子 `box`，不需要额外 wrapper
 Ebox 会在分配 runtime identity 前复制 canonical input，因此同一个 built value 可以
 挂载到多个 buffer，而不会共享 live ownership。
 
+Ebox 默认通过 TP 的公开 structured v2 participant API 注册可回滚状态。下一次
+operation 前把 `ebox-transaction-participant-route` 设为 `v1`，即可立即回到旧
+route。若加载的 TP manifest 尚未提供 structured API，默认 v2 policy 会自动选择
+同一条完整 v1 adapter；两种 registration 绝不会同时运行。
+
 ## 可选 native 模块
 
 Rust 模块只加速符合条件的 reflow；它不是正确性的依赖，并有完全等价的 Elisp

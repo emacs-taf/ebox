@@ -20,6 +20,8 @@
 (declare-function ebox-native--module-layout-ready-p "ebox_native_reflow" ())
 (declare-function ebox-native--module-create-session "ebox_native_reflow"
                   (workers max-jobs max-results max-result-bytes))
+(declare-function ebox-native--module-fork-confirmed "ebox_native_reflow"
+                  (session))
 (declare-function ebox-native--module-submit "ebox_native_reflow"
                   (session generation payload))
 (declare-function ebox-native--module-ready-p "ebox_native_reflow"
@@ -93,7 +95,7 @@
 
 (defvar ebox--flex-content-min-width-table)
 
-(defconst ebox-native-reflow-abi-version "9:7:12"
+(defconst ebox-native-reflow-abi-version "10:7:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -1321,28 +1323,33 @@ Ebox nodes, identities, text, properties, or publication state."
      :layout-fragment-cache (make-hash-table :test 'equal)
      :layout-fragment-revision 0)))
 
-(cl-defun ebox-native-reflow-fork-session
-    (session &key (workers 1) (max-jobs 4) (max-results 4)
-             (max-result-bytes ebox-native-reflow-max-result-bytes))
+(defun ebox-native-reflow-fork-session (session)
   "Return an unpublished native child of committed SESSION.
-The child owns a fresh Rust handle, while immutable compiled layout facts and
-a private copy of the fragment index seed its first frame.  Pending/confirmed
-frame state deliberately stays with SESSION because it names that handle."
-  (ebox-native-reflow--live-handle session)
-  (let ((fork
-         (ebox-native-reflow-create-session
-          :workers workers :max-jobs max-jobs :max-results max-results
-          :max-result-bytes max-result-bytes)))
-    (setf (ebox-native-reflow-session-styles fork)
-          (copy-sequence (ebox-native-reflow-session-styles session))
-          (ebox-native-reflow-session-layout-package fork)
-          (ebox-native-reflow-session-layout-package session)
-          (ebox-native-reflow-session-layout-fragment-cache fork)
-          (copy-hash-table
-           (ebox-native-reflow-session-layout-fragment-cache session))
-          (ebox-native-reflow-session-layout-fragment-revision fork)
-          (ebox-native-reflow-session-layout-fragment-revision session))
-    fork))
+The Rust child owns fresh queues, workers, generation and pending state, and
+shares only SESSION's immutable confirmed baseline.  Elisp compiler facts are
+copied separately; no pending frame or registered Rust document is inherited."
+  (let* ((source-handle (ebox-native-reflow--live-handle session))
+         (fork
+          (ebox-native-reflow--make-session
+           :handle (ebox-native--module-fork-confirmed source-handle)
+           :generation 0
+           :layout-fragment-cache (make-hash-table :test 'equal)
+           :layout-fragment-revision 0)))
+    (condition-case err
+        (progn
+          (setf (ebox-native-reflow-session-styles fork)
+                (copy-sequence (ebox-native-reflow-session-styles session))
+                (ebox-native-reflow-session-layout-package fork)
+                (ebox-native-reflow-session-layout-package session)
+                (ebox-native-reflow-session-layout-fragment-cache fork)
+                (copy-hash-table
+                 (ebox-native-reflow-session-layout-fragment-cache session))
+                (ebox-native-reflow-session-layout-fragment-revision fork)
+                (ebox-native-reflow-session-layout-fragment-revision session))
+          fork)
+      (error
+       (ebox-native-reflow-release-session fork)
+       (signal (car err) (cdr err))))))
 
 (defun ebox-native-reflow--live-handle (session)
   "Return SESSION's live module handle or signal an error."
@@ -2469,9 +2476,15 @@ per call, and no call recursively visits the captured Ebox tree."
                (inherited-dirty-ids
                 (plist-get state :native-inherited-dirty-node-ids))
                (touched-set
-                (and (plist-get state :native-topology-stable-p)
-                     (plist-member state :native-touched-node-ids)
+                (and (plist-member state :native-touched-node-ids)
                      (proper-list-p touched-ids)
+                     ;; A structural native object delta still identifies the
+                     ;; exact changed node partition.  Retain the compiled
+                     ;; fragments for its untouched complement; only stable
+                     ;; topology is required to reuse TP objects, not to reuse
+                     ;; pure layout fragments.
+                     (or (plist-get state :native-topology-stable-p)
+                         (consp touched-ids))
                      (make-hash-table :test 'equal)))
                (inherited-touched-set
                 (and touched-set inherited-dirty-ids
@@ -2484,6 +2497,12 @@ per call, and no call recursively visits the captured Ebox tree."
                 (if retained-fast-p
                     (copy-hash-table old-cache)
                   (make-hash-table :test 'equal)))
+               (postorder-id-set
+                (let ((set (make-hash-table :test 'equal)))
+                  (dotimes (index (length postorder))
+                    (puthash (plist-get (aref postorder index) :node-id)
+                             t set))
+                  set))
                (ebox-native-reflow--compile-styles
                 (append (ebox-native-reflow-session-styles session) nil))
                (ebox-native-reflow--compile-property-templates
@@ -2501,6 +2520,16 @@ per call, and no call recursively visits the captured Ebox tree."
                 (make-hash-table :test 'equal))
                (ebox--render-string-max-pixel-width-cache
                 (make-hash-table :test 'eq)))
+          ;; Structural Range updates replace a bounded item partition.  The
+          ;; untouched shell remains cache-valid, while departed item ids must
+          ;; not accumulate and make the next update miss the retained-cache
+          ;; cardinality proof.
+          (when retained-fast-p
+            (maphash
+             (lambda (node-id _entry)
+               (unless (gethash node-id postorder-id-set)
+                 (remhash node-id new-cache)))
+             new-cache))
           (dolist (node-id touched-ids)
             (when touched-set (puthash node-id t touched-set)))
           (when (and touched-set inherited-dirty-ids)
@@ -2583,7 +2612,7 @@ per call, and no call recursively visits the captured Ebox tree."
               (seed-fragment node)))
           (let ((package
                  (ebox-native-reflow--layout-package-from-root
-                  (ebox-native-reflow--compiled-scene-child fragments node)
+                 (ebox-native-reflow--compiled-scene-child fragments node)
                   ebox-native-reflow--compile-styles
                   ebox-native-reflow--compile-property-templates)))
             (setf (ebox-native-reflow-session-layout-fragment-cache session)

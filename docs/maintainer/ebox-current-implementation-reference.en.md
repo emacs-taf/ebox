@@ -88,12 +88,25 @@ Caller-owned Source Tree
 - `ebox-style--property-definitions` is the single Ebox author-property source. Load time derives Ebox's read-only lookup index and one immutable ECSS package schema from it; the surface schema is composed once, and node construction or updates never re-register or copy the whole schema domain.
 - E1 freezes the closed M2a target classification for retained state: immutable generation facts; generation-bound scroll/native authority; opaque TP client-state custody; one-way compatibility mirrors; and disposable caches. Every inventory row separately records the current v1 storage shape plus its target owner, mutation API, generation binding, rollback, rebuild proof, and cleanup. Current v1 TP client state still holds the whole Ebox state plist until a later checkpoint changes that storage shape. The E1 mirror probes only rebuild and compare projections; they never mutate live state.
 - `ebox-layout.el` has no load or call edge to `ebox-surface.el` or TP. Candidate isolation, inherited-cascade detection, and one-shot materialization enter layout only through the validated port owned by `ebox-render-context.el`; `ebox.el` wires the surface implementation after both sides load.
+- `ebox-incremental.el` likewise contains no `ebox-surface` symbol or publication call. `ebox-surface.el` installs one immutable read-only context port for live client state, region mounts, cascade proof, and inline-style preparation; batch observation remains in the higher `ebox.el` orchestrator.
 - `ebox-patch-plan.el` consumes only tentative operation plists plus the immutable generation parent table and returns a deterministic plan artifact. The incremental adapter owns all live-fact preparation. E3 defaults to the pure route while retaining explicit `legacy` and equality-checking `shadow` routes; none of the three routes publishes.
 - `ebox-style--property-definitions` is also the single used-value projection truth. Non-default engine lowering lives in each property's `:engine-projection`; ECSS metadata exposes the derived `:engine-targets`, and only non-public engine fields may use the small internal exception table.
-- `ebox-framework-spi-capabilities` returns a fresh immutable v2 provider record declaring paired initial/update stage+rollback, combined participant ordering, same-object legacy reports, initial observation replay, and `tp-transaction-protocol-v1+v2`. Replay derives defensive TP/Ebox provider reports from a completed initial report and carries no mutation authority. Ebox provides no selected port or consumer bootstrap; the existing v1 callback APIs remain available.
+- `ebox-framework-spi-capabilities` returns a fresh immutable v2 provider record declaring paired initial/update stage+rollback, combined participant ordering, same-object legacy reports, initial observation replay, and `tp-transaction-protocol-v1+v2`. Initial TP/Ebox timing is measured during publication, stored as defensive snapshots in the completed report, and replayed without mutation authority; no synthetic zero-duration timing is emitted. Ebox provides no selected port or consumer bootstrap; the existing v1 callback APIs remain available.
+- Ebox's TP adapter defaults to the manifest-advertised public
+  `tp-transaction-participate-v2` API. `ebox-transaction-participant-route=v1`
+  is the immediate kill switch, and a TP manifest without the structured API
+  selects the same v1 adapter as a compatibility fallback. One helper owns this
+  selection and registers exactly one participant per transaction.
+- Framework report finalization is postaccept and no-throw. Initial, full-update, and scoped-update completion faults are retained in the same legacy report as `framework-report-finalization` diagnostics; they cannot invoke framework rollback or escape into an ETAF semantic rollback window.
 - `owner-rerender` is broader than `span-patch`, which is broader than `paint-patch`.
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.
+- A full declarative update continuing a committed native frame computes
+  selector-local styles for every candidate node before stable native
+  eligibility. The `:styles-prepared-p` certificate prevents replacement
+  runtime nodes from losing computed styles while ordinary full/local updates
+  retain O(changed) style work. Topology-changing full-frame bootstrap remains
+  eligible.
 - Loading Ebox never builds or installs the optional Rust module.
 - Phase 9 is complete: first mount, declarative commit, handle/selector update, viewport/theme update, batch flush, and scroll update all publish through TP surfaces. Phase 10 has unified selector parsing, matching, and cascade under ECSS; Ebox computes dirty/layout ownership and joins its opaque runtime state to the TP rollback-capable transaction, with no second live buffer executor.
 - Successful reports preserve the Ebox semantic strategy and planned publication scope, then add `:publication-scope tp-surface`, TP physical operation counts, surface revision, scoped/full-root facts, and retained-object reconciliation counts.

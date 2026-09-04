@@ -38,6 +38,8 @@ extern void *ebox_native_session_create(uint32_t workers,
                                         uint32_t max_results,
                                         uint64_t max_result_bytes,
                                         ebox_native_bytes *error);
+extern void *ebox_native_session_fork_confirmed(void *source,
+                                                ebox_native_bytes *error);
 extern int64_t ebox_native_session_submit(void *session,
                                           uint64_t generation,
                                           const unsigned char *payload,
@@ -162,7 +164,7 @@ ebox_module_version(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   (void) nargs;
   (void) args;
   (void) data;
-  static const char version[] = "9:7:12";
+  static const char version[] = "10:7:12";
   return env->make_string(env, version, (ptrdiff_t) (sizeof version - 1));
 }
 
@@ -238,6 +240,24 @@ ebox_module_create_session(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   if (session == NULL)
     return ebox_signal_native_error(env, error,
                                     "Native reflow session creation failed");
+  return env->make_user_ptr(env, ebox_session_finalizer, session);
+}
+
+static emacs_value
+ebox_module_fork_confirmed(emacs_env *env, ptrdiff_t nargs,
+                           emacs_value *args, void *data)
+{
+  (void) nargs;
+  (void) data;
+  void *source = ebox_session_pointer(env, args[0]);
+  if (source == NULL ||
+      env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  ebox_native_bytes error = {0};
+  void *session = ebox_native_session_fork_confirmed(source, &error);
+  if (session == NULL)
+    return ebox_signal_native_error(env, error,
+                                    "Native confirmed session fork failed");
   return env->make_user_ptr(env, ebox_session_finalizer, session);
 }
 
@@ -922,6 +942,9 @@ ebox_module_init_impl(struct emacs_runtime *runtime)
       ebox_bind_function(env, "ebox-native--module-create-session", 4, 4,
                          ebox_module_create_session,
                          "Create one bounded private native session.") ||
+      ebox_bind_function(env, "ebox-native--module-fork-confirmed", 1, 1,
+                         ebox_module_fork_confirmed,
+                         "Fork one confirmed private native session.") ||
       ebox_bind_function(env, "ebox-native--module-submit", 3, 3,
                          ebox_module_submit,
                          "Submit one private native control batch.") ||

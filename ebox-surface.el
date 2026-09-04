@@ -20,6 +20,7 @@
 (require 'ebox-incremental)
 (require 'tp-reactive)
 (require 'tp-surface)
+(require 'tp)
 
 (defvar ebox-region-types)
 (defvar ebox--region-box-table)
@@ -46,6 +47,50 @@
 (defvar ebox--render-display-signature)
 (defvar ebox-incremental--allocated-slot-proof-cache)
 (defvar ebox-incremental--buffer-render-state-override)
+(defvar ebox-transaction-participant-route 'v2
+  "Early default for the Ebox-owned TP participant route.")
+(declare-function tp-runtime-manifest "tp" ())
+(declare-function tp-transaction-participate-v2 "tp-reactive" (&rest args))
+
+(define-error 'ebox-surface-participant-route-error
+  "Invalid Ebox TP participant route")
+
+(defun ebox-surface--tp-participant-v2-capability-p (manifest)
+  "Return non-nil when MANIFEST provides the valid public TP v2 API.
+An absent capability denotes an older compatible TP and returns nil.  A
+present but malformed capability fails closed instead of masking corruption."
+  (let ((api (plist-get manifest :structured-participant-api)))
+    (cond
+     ((null api) nil)
+     ((and (eq (plist-get manifest :transaction-protocol)
+               'tp-transaction-protocol-v1+v2)
+           (eq api 'tp-transaction-participate-v2)
+           (fboundp api))
+      t)
+     (t
+      (signal 'ebox-surface-participant-route-error
+              (list :malformed-tp-structured-participant manifest))))))
+
+(defconst ebox-surface--tp-participant-v2-available-p
+  (ebox-surface--tp-participant-v2-capability-p (tp-runtime-manifest))
+  "Non-nil when the loaded TP manifest advertises its public v2 API.")
+
+(defun ebox-surface--effective-participant-route ()
+  "Return the selected TP participant route for the next registration."
+  (pcase ebox-transaction-participant-route
+    ('v2 (if ebox-surface--tp-participant-v2-available-p 'v2 'v1))
+    ('v1 'v1)
+    (_ (signal 'ebox-surface-participant-route-error
+               (list :participant-route ebox-transaction-participant-route)))))
+
+(defun ebox-surface--transaction-participate (key stage rollback)
+  "Register KEY with paired STAGE and ROLLBACK through one selected TP route."
+  (pcase (ebox-surface--effective-participant-route)
+    ('v2
+     (tp-transaction-participate-v2
+      :key key :stage stage :rollback rollback))
+    ('v1
+     (tp-transaction-participate key stage rollback))))
 
 (defvar ebox-surface--inline-style-value-cache nil
   "Per-projection cache for selector-free computed inline styles.")
@@ -67,6 +112,10 @@
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox-native-commit-render
                   "ebox-native-commit" (state node))
+(declare-function ebox-native-commit-confirm-published-frame
+                  "ebox-native-commit" (state published-revision))
+(declare-function ebox-native-commit-attach-confirmed-base
+                  "ebox-native-commit" (previous-state state))
 (declare-function ebox-native-reflow-frame-fragments
                   "ebox-native-reflow" (frame))
 (declare-function ebox-native-reflow-layout-ready-p
@@ -94,15 +143,29 @@ the winning client state; otherwise only the candidate is disposable."
         (committed-session
          (and committed-p surface
               (plist-get (tp-surface-client-state surface)
-                         :native-sync-session))))
-    (if committed-p
-        (dolist (session
-                 (delete-dups (delq nil (list old-session candidate-session))))
-          (unless (eq session committed-session)
-            (ebox-surface--release-native-session session)))
-      (when (and candidate-session
-                 (not (eq candidate-session old-session)))
-        (ebox-surface--release-native-session candidate-session)))))
+                         :native-sync-session)))
+        diagnostics)
+    (cl-labels
+        ((release-loser
+          (session)
+          (let ((inhibit-quit t) (quit-flag nil))
+            (condition-case condition
+                (ebox-surface--release-native-session session)
+              ((error quit)
+               (push (list :phase 'native-session-retirement
+                           :session-id (sxhash-eq session)
+                           :condition (copy-tree condition))
+                     diagnostics))))))
+      (if committed-p
+          (dolist (session
+                   (delete-dups
+                    (delq nil (list old-session candidate-session))))
+            (unless (eq session committed-session)
+              (release-loser session)))
+        (when (and candidate-session
+                   (not (eq candidate-session old-session)))
+          (release-loser candidate-session))))
+    (nreverse diagnostics)))
 (declare-function tp-object-reuse "tp-surface" (context object))
 (declare-function tp-object-ensure-at
                   "tp-surface" (context parent key kind position))
@@ -206,6 +269,22 @@ the winning client state; otherwise only the candidate is disposable."
   "One Ebox-owned framework publication participant."
   publish rollback state report diagnostics runtime-state scroll-keys
   scroll-diagnostics)
+
+(defun ebox-surface--record-native-retirement-diagnostics
+    (surface participant diagnostics)
+  "Record native retirement DIAGNOSTICS for SURFACE and PARTICIPANT."
+  (let ((state (tp-surface-client-state surface)))
+    (if diagnostics
+        (progn
+          (plist-put state :native-retirement-diagnostics
+                     (copy-tree diagnostics))
+          (when participant
+            (setf (ebox-surface--framework-participant-diagnostics participant)
+                  (append
+                   (ebox-surface--framework-participant-diagnostics participant)
+                   (copy-tree diagnostics)))))
+      (cl-remf state :native-retirement-diagnostics)))
+  diagnostics)
 
 (defvar-local ebox-surface--context-signals nil
   "Buffer-scoped TP signals consumed by the mounted Ebox producer.")
@@ -519,8 +598,7 @@ Scoped rules remain tree-dependent because scope distance reads ancestors."
 
 (defun ebox-surface--style-consuming-node-p (node)
   "Return non-nil when NODE owns a paintable style surface."
-  (and (eq (plist-get node :ebox-type) 'box)
-       (not (eq (plist-get node :ebox-kind) 'text))))
+  (eq (plist-get node :ebox-type) 'box))
 
 (defun ebox-surface--inherited-style-consumer-p (node)
   "Return non-nil when NODE materializes inherited text style.
@@ -712,9 +790,20 @@ Headless/test windows retain the body width fallback."
            (with-current-buffer buffer ebox-surface--buffer-surface)))
       (and (tp-surface-live-p surface) surface))))
 
+(defun ebox-surface--buffer-client-state (buffer)
+  "Return BUFFER's live TP client state for incremental context reads."
+  (when-let* ((surface (ebox-surface--live-buffer-surface buffer)))
+    (tp-surface-client-state surface)))
+
 (defun ebox-surface-buffer-mounted-p (buffer)
   "Return non-nil when BUFFER has a live Ebox TP surface."
   (not (null (ebox-surface--live-buffer-surface buffer))))
+
+(defun ebox-surface-buffer-revision (buffer)
+  "Return BUFFER's committed TP surface revision or fail when unmounted."
+  (if-let* ((surface (ebox-surface--live-buffer-surface buffer)))
+      (tp-surface-revision surface)
+    (error "Ebox buffer has no committed surface revision: %S" buffer)))
 
 (defun ebox-surface-region-mounts (buffer region-id &optional roles)
   "Return REGION-ID's TP-owned output mounts in BUFFER.
@@ -763,12 +852,16 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
           (or (plist-get tp-report :property-operations) 0))
          (patch-count (+ text-operations property-operations))
          (report (copy-sequence report-base))
+         (native-fallback-reason
+          (or (plist-get state :native-render-fallback)
+              (plist-get state :native-session-setup-failure)))
          (scoped-p (and (not (plist-get tp-report :full-root))
                         (> (or (plist-get tp-report :scope-count) 0) 0)))
          (planned-publication-scope (plist-get report :publication-scope)))
     (dolist (entry
              `((:runtime-published . t)
                (:runtime-revision . ,(plist-get state :runtime-revision))
+               (:projection-kind . ,(plist-get state :projection-kind))
                (:native-frame-kind . ,(plist-get state :native-frame-kind))
                (:surface-revision . ,(tp-surface-revision surface))
                (:publication-scope . tp-surface)
@@ -790,6 +883,27 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
                (:removed-objects . ,(plist-get tp-report :removed-objects))
                (:moved-objects . ,(plist-get tp-report :moved-objects))))
       (setq report (plist-put report (car entry) (cdr entry))))
+    (when native-fallback-reason
+      ;; Planner fields describe the rejected native attempt.  Replace them
+      ;; with the ordinary full-surface publication that actually committed;
+      ;; preserve the attempt only as report diagnostics.
+      (dolist (key '(:owner-ids :owner-type
+                     :constraint-owner-id :constraint-owner-type))
+        (cl-remf report key))
+      (setq report (plist-put report :strategy 'ordinary-fallback))
+      (setq report
+            (plist-put report :patch-ops
+                       (and (> patch-count 0) '(tp-surface))))
+      (setq report (plist-put report :patch-count patch-count))
+      (setq report (plist-put report :render-scope 'surface))
+      (setq report (plist-put report :publication-scope 'root))
+      (setq report (plist-put report :root-rerender t))
+      (setq report (plist-put report :native-attempt 'failed))
+      (setq report
+            (plist-put report :native-fallback-reason
+                       native-fallback-reason))
+      (cl-remf state :native-render-fallback)
+      (cl-remf state :native-session-setup-failure))
     (unless (plist-member report :strategy)
       (setq report
             (plist-put report :strategy
@@ -871,11 +985,86 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
           diagnostics)
     (let* ((state
             (ebox-surface--framework-participant-runtime-state participant))
-           (report (ebox-surface--framework-participant-report participant)))
+           (report (ebox-surface--framework-participant-report participant))
+           (started
+            (plist-get report :framework-initial-observation-started)))
+      (when started
+        (let* ((surface (plist-get state :surface))
+               (tp-report (tp-surface-report surface))
+               (transaction-id (plist-get tp-report :transaction-id))
+               (ebox-report (copy-tree report)))
+          (cl-remf report :framework-initial-observation-started)
+          (cl-remf ebox-report :framework-initial-observation-started)
+          (dolist (entry `((:provider . tp)
+                           (:stage . publication)
+                           (:status . success)
+                           (:correlation-id . ,transaction-id)))
+            (setq tp-report (plist-put tp-report (car entry) (cdr entry))))
+          (dolist (entry `((:provider . ebox)
+                           (:stage . mount)
+                           (:status . success)
+                           (:duration-ms
+                            . ,(* 1000.0 (- (float-time) started)))
+                           (:correlation-id . ,transaction-id)
+                           (:framework-participant-state . completed)))
+            (setq ebox-report (plist-put ebox-report (car entry) (cdr entry))))
+          (setq report
+                (plist-put
+                 report :framework-initial-observation-reports
+                 (list tp-report ebox-report)))))
       (plist-put state :last-update-report
                  (ebox-surface--participant-report
                   participant report 'completed)))
     (setf (ebox-surface--framework-participant-state participant) 'completed)))
+
+(defun ebox-surface--participant-complete-postaccept (participant diagnostics)
+  "Complete PARTICIPANT with DIAGNOSTICS after accept without throwing."
+  (when participant
+    (let ((inhibit-quit t) (quit-flag nil) completion-condition)
+      (condition-case condition
+          (ebox-surface--participant-complete participant diagnostics)
+        ((error quit) (setq completion-condition condition)))
+      (when completion-condition
+        (let* ((diagnostic
+                (list :phase 'framework-report-finalization
+                      :condition (copy-tree completion-condition)))
+               (state
+                (ebox-surface--framework-participant-runtime-state participant))
+               (report
+                (ebox-surface--framework-participant-report participant)))
+          (push diagnostic
+                (ebox-surface--framework-participant-diagnostics participant))
+          (setf (ebox-surface--framework-participant-scroll-diagnostics
+                 participant)
+                diagnostics)
+          (unwind-protect
+              (condition-case secondary
+                  (progn
+                    (cl-remf report :framework-initial-observation-started)
+                    (setq report
+                          (plist-put report :framework-participant-state
+                                     'completed)
+                          report
+                          (plist-put
+                           report :framework-participant-diagnostics
+                           (copy-tree
+                            (ebox-surface--framework-participant-diagnostics
+                             participant)))
+                          report
+                          (plist-put report :scroll-finalization-diagnostics
+                                     (copy-tree diagnostics)))
+                    (setf (ebox-surface--framework-participant-report participant)
+                          report)
+                    (when state
+                      (plist-put state :last-update-report report)))
+                ((error quit)
+                 (push (list :phase 'framework-report-finalization-diagnostic
+                             :condition (copy-tree secondary))
+                       (ebox-surface--framework-participant-diagnostics
+                        participant))))
+            (setf (ebox-surface--framework-participant-state participant)
+                  'completed)))))
+  participant))
 
 (defun ebox-surface--publish-runtime-state
     (buffer surface old-state report-base after-publication
@@ -886,7 +1075,7 @@ runs after TP and Ebox point at the same candidate generation.
 FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
   (let (new-state region-snapshot scroll-snapshot
         old-surface old-mirror region-keys scroll-keys)
-    (tp-transaction-participate
+    (ebox-surface--transaction-participate
      (list 'ebox/runtime buffer)
      (lambda ()
        (setq new-state (tp-surface-client-state surface)
@@ -928,6 +1117,13 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
          (plist-put new-state :surface surface)
          (plist-put new-state :runtime-revision
                     (1- (tp-surface-revision surface)))
+         ;; TP now exposes this exact candidate revision, but the surrounding
+         ;; transaction can still restore both TP and Ebox state.  Confirm the
+         ;; private Rust frame here so a failure aborts publication and the
+         ;; old confirmed session remains untouched.
+         (when (plist-get new-state :native-sync-pending)
+           (ebox-native-commit-confirm-published-frame
+            new-state (tp-surface-revision surface)))
          ;; A fixed-basis role-owned patch rendered against the previous
          ;; allocation.  Its installed details describe that proof render,
          ;; not the now-committed TP mounts.  Drop only those owners' derived
@@ -1027,7 +1223,7 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
          (producer
           (ebox-surface-producer
            source old-state preserve-identities-p state-overrides signals))
-         success)
+         success native-settled-p)
     (unwind-protect
         (progn
           (let ((ebox-surface--font-window
@@ -1050,23 +1246,34 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
                buffer surface old-state report-base after-publication
                framework-participant observation-context)))
           (setq success t)
-          (let ((scroll-keys
-                 (if framework-participant
-                     (ebox-surface--framework-participant-scroll-keys
-                      framework-participant)
-                   (let ((new-state (tp-surface-client-state surface)))
-                     (delete-dups
-                      (append
-                       (copy-sequence (plist-get old-state :scroll-region-ids))
-                       (copy-sequence
-                        (plist-get new-state :scroll-region-ids))))))))
-            (ebox-surface--participant-complete
-             framework-participant
-             (ebox-incremental--finalize-declarative-scroll-publication
-              scroll-keys)))
+          (let* ((scroll-keys
+                  (if framework-participant
+                      (ebox-surface--framework-participant-scroll-keys
+                       framework-participant)
+                    (let ((new-state (tp-surface-client-state surface)))
+                      (delete-dups
+                       (append
+                        (copy-sequence
+                         (plist-get old-state :scroll-region-ids))
+                        (copy-sequence
+                         (plist-get new-state :scroll-region-ids)))))))
+                 (scroll-diagnostics
+                  (ebox-incremental--finalize-declarative-scroll-publication
+                   scroll-keys))
+                 (native-diagnostics
+                  (ebox-surface--settle-native-session
+                   old-state state-overrides surface t)))
+            (setq native-settled-p t)
+            (ebox-surface--record-native-retirement-diagnostics
+             surface framework-participant native-diagnostics)
+            (ebox-surface--participant-complete-postaccept
+             framework-participant scroll-diagnostics))
           surface)
-      (ebox-surface--settle-native-session
-       old-state state-overrides surface success)
+      (unless native-settled-p
+        ;; Candidate cleanup is post-transaction and must not hide the primary
+        ;; publication condition.  The helper contains every release fault.
+        (ebox-surface--settle-native-session
+         old-state state-overrides surface success))
       (when (and signals-created-p (not success))
         (ebox-surface--dispose-signals signals)))))
 
@@ -1103,7 +1310,7 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
       (error "Ebox mounted surface has no live context signals"))
     (tp-with-transaction
       (ebox-surface--stage-signal-values signals values)
-      (tp-transaction-participate
+      (ebox-surface--transaction-participate
        (list 'ebox/context-no-op buffer)
        (lambda ()
          (unless (eq state (tp-surface-client-state surface))
@@ -1478,7 +1685,10 @@ the projection roots a second time."
                              (plist-get state :scroll-fast-window-p)))
          (native-retained-p
           (and (eq projection-kind 'native-frame)
-               (plist-get state :native-topology-stable-p)))
+               (plist-get state :native-topology-stable-p)
+               (plist-get state :native-render-frame)
+               (plist-get (plist-get state :native-render-frame)
+                          :native-patch)))
          (full-surface-p
           (or (and scroll-fast-p
                    (plist-get state :retained-scroll-content-p)
@@ -1841,72 +2051,92 @@ may be adopted without another structural copy or identity reconciliation.
 When SOURCE-PATH-COPIED-P is non-nil, SOURCE shares untouched published nodes;
 the surface must preserve those shared nodes while consuming the candidate.
 FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
-  (let* ((observation-context ebox-surface--observation-context)
-         (surface (ebox-surface--live-buffer-surface buffer))
-         (old-state (and surface (tp-surface-client-state surface))))
-    (unless surface
-      (error "Ebox scoped update requires a mounted TP surface"))
-    (let ((objects
-           (condition-case nil
-               (ebox-surface--objects-for-node-ids old-state scope-node-ids)
-             (error nil))))
-      (if (null objects)
-          (ebox-surface-mount-buffer
-           buffer source
-           (append report-base
-                   '(:tp-scope-fallback t :empty-range-owner-fallback t))
-           after-publication t state-overrides
-           framework-participant)
-        (let* ((context-values
-              (ebox-surface--context-values buffer old-state state-overrides))
-             (signals-result
-              (ebox-surface--ensure-signals buffer context-values))
-             (signals (car signals-result))
-             (signals-created-p (cdr signals-result))
-             (producer
-             (ebox-surface-producer
-               source old-state t state-overrides signals projection-kind
-               source-isolated-p
-               (plist-get state-overrides :source-path-copied-p)))
-             success)
-        (when (and (null on-mismatch)
-                   (or (plist-get state-overrides :owner-scoped-proofs)
-                       (plist-get state-overrides :scroll-state-transaction)
-                       (> (length scope-node-ids) 1)))
-          (setq on-mismatch 'root))
-        (unwind-protect
-            (progn
-              (let ((ebox-surface--font-window
-                     (plist-get context-values :display-window)))
-                (tp-with-transaction
-                  (ebox-surface--stage-signal-values signals context-values)
-                  (tp-surface-update-scoped
-                   surface objects producer
-                   (list :on-mismatch on-mismatch :return-report nil))
-                  (ebox-surface--publish-runtime-state
-                   buffer surface old-state report-base after-publication
-                   framework-participant observation-context)))
-              (setq success t)
-              (let ((scroll-keys
-                     (if framework-participant
-                         (ebox-surface--framework-participant-scroll-keys
-                          framework-participant)
-                       (let ((new-state (tp-surface-client-state surface)))
-                         (delete-dups
-                          (append
-                           (copy-sequence
-                            (plist-get old-state :scroll-region-ids))
-                           (copy-sequence
-                            (plist-get new-state :scroll-region-ids))))))))
-                (ebox-surface--participant-complete
-                 framework-participant
-                 (ebox-incremental--finalize-declarative-scroll-publication
-                  scroll-keys scroll-prefetch-delay)))
-              surface)
-          (ebox-surface--settle-native-session
-           old-state state-overrides surface success)
-          (when (and signals-created-p (not success))
-            (ebox-surface--dispose-signals signals))))))))
+  ;; Ebox owns the complete mounted TP surface.  Caller narrowing is an editor
+  ;; view and must neither constrain candidate coordinates nor become an
+  ;; accidental publication scope.  Isolate it while every full-buffer fact
+  ;; and TP operation runs against the complete target.
+  (with-current-buffer buffer
+    (save-restriction
+      (widen)
+      (let* ((observation-context ebox-surface--observation-context)
+             (surface (ebox-surface--live-buffer-surface buffer))
+             (old-state (and surface (tp-surface-client-state surface))))
+        (unless surface
+          (error "Ebox scoped update requires a mounted TP surface"))
+        (let ((objects
+               (condition-case nil
+                   (ebox-surface--objects-for-node-ids old-state scope-node-ids)
+                 (error nil))))
+          (if (null objects)
+              (ebox-surface-mount-buffer
+               buffer source
+               (append report-base
+                       '(:tp-scope-fallback t :empty-range-owner-fallback t))
+               after-publication t state-overrides
+               framework-participant)
+            (let* ((context-values
+                    (ebox-surface--context-values
+                     buffer old-state state-overrides))
+                   (signals-result
+                    (ebox-surface--ensure-signals buffer context-values))
+                   (signals (car signals-result))
+                   (signals-created-p (cdr signals-result))
+                   (producer
+                    (ebox-surface-producer
+                     source old-state t state-overrides signals projection-kind
+                     source-isolated-p
+                     (plist-get state-overrides :source-path-copied-p)))
+                   success native-settled-p)
+              (when (and (null on-mismatch)
+                         (or (plist-get state-overrides :owner-scoped-proofs)
+                             (plist-get state-overrides
+                                        :scroll-state-transaction)
+                             (> (length scope-node-ids) 1)))
+                (setq on-mismatch 'root))
+              (unwind-protect
+                  (progn
+                    (let ((ebox-surface--font-window
+                           (plist-get context-values :display-window)))
+                      (tp-with-transaction
+                        (ebox-surface--stage-signal-values
+                         signals context-values)
+                        (tp-surface-update-scoped
+                         surface objects producer
+                         (list :on-mismatch on-mismatch :return-report nil))
+                        (ebox-surface--publish-runtime-state
+                         buffer surface old-state report-base after-publication
+                         framework-participant observation-context)))
+                    (setq success t)
+                    (let* ((scroll-keys
+                            (if framework-participant
+                                (ebox-surface--framework-participant-scroll-keys
+                                 framework-participant)
+                              (let ((new-state
+                                     (tp-surface-client-state surface)))
+                                (delete-dups
+                                 (append
+                                  (copy-sequence
+                                   (plist-get old-state :scroll-region-ids))
+                                  (copy-sequence
+                                   (plist-get new-state
+                                              :scroll-region-ids)))))))
+                           (scroll-diagnostics
+                            (ebox-incremental--finalize-declarative-scroll-publication
+                             scroll-keys scroll-prefetch-delay))
+                           (native-diagnostics
+                            (ebox-surface--settle-native-session
+                             old-state state-overrides surface t)))
+                      (setq native-settled-p t)
+                      (ebox-surface--record-native-retirement-diagnostics
+                       surface framework-participant native-diagnostics)
+                      (ebox-surface--participant-complete-postaccept
+                       framework-participant scroll-diagnostics))
+                    surface)
+                (unless native-settled-p
+                  (ebox-surface--settle-native-session
+                   old-state state-overrides surface success))
+                (when (and signals-created-p (not success))
+                  (ebox-surface--dispose-signals signals))))))))))
 
 (defun ebox-surface--clear-runtime-attachments (root)
   "Clear TP handles and render-cache attachments below ROOT."
@@ -2479,8 +2709,33 @@ dependencies, or any malformed index conservatively preserves root planning."
                            (ecss-computed-style-p
                             (plist-get candidate-node :ebox-computed-style))
                            (ebox-style--closed-declarations-p
-                            candidate-declarations))))
+                            candidate-declarations)))
+                     (selector-stable-p
+                      (and candidate-node subject
+                       (equal (ebox-tree-node-id
+                               candidate-source-index candidate-node)
+                              (ecss-subject-id subject))
+                       (equal (ebox-tree-node-classes
+                               candidate-source-index candidate-node)
+                              (ecss-subject-classes subject))
+                       (equal (ebox-tree-metadata-string
+                               (ebox-tree-node-selector-type candidate-node))
+                              (ecss-subject-type subject))
+                       (equal
+                        (mapcar
+                         (lambda (attribute)
+                           (cons (substring (symbol-name (car attribute)) 1)
+                                 (cdr attribute)))
+                         (ebox-tree-node-attributes
+                          candidate-source-index candidate-node))
+                        (ecss-subject-attributes subject))
+                       (equal (ebox-tree-node-state
+                               candidate-source-index candidate-node)
+                              (ecss-subject-states subject)))))
                 (and style-state candidate-node subject
+                     (or selector-stable-p
+                         (and locally-computed-p
+                              (null (car stylesheet-signature))))
                      (or locally-computed-p
                          (and
                           (or (ebox-style-declarations-equal-p
@@ -2489,27 +2744,7 @@ dependencies, or any malformed index conservatively preserves root planning."
                               (ebox-style--paint-declarations-equivalent-p
                                (plist-get style-state :declarations)
                                candidate-declarations))
-                          (equal (ebox-tree-node-id
-                                  candidate-source-index candidate-node)
-                                 (ecss-subject-id subject))
-                          (equal (ebox-tree-node-classes
-                                  candidate-source-index candidate-node)
-                                 (ecss-subject-classes subject))
-                          (equal (ebox-tree-metadata-string
-                                  (ebox-tree-node-selector-type candidate-node))
-                                 (ecss-subject-type subject))
-                          (equal
-                           (mapcar
-                            (lambda (attribute)
-                              (cons
-                               (substring (symbol-name (car attribute)) 1)
-                               (cdr attribute)))
-                            (ebox-tree-node-attributes
-                             candidate-source-index candidate-node))
-                           (ecss-subject-attributes subject))
-                          (equal (ebox-tree-node-state
-                                  candidate-source-index candidate-node)
-                                 (ecss-subject-states subject))))
+                          selector-stable-p))
                      (equal stylesheet-signature
                             (plist-get style-state :stylesheet-signature))
                      (ebox-surface--static-style-state-p style-state)))))
@@ -3624,7 +3859,7 @@ causes the caller to use the ordinary full projection."
                 (if (not affected-p)
                     (progn
                       (cl-remf copy :text)
-                      (plist-put copy :text-source-p t)
+                      (setq copy (plist-put copy :text-source-p t))
                       (push copy pieces))
                   (when (plist-get old-fragment :face-baseline-known-p)
                     (plist-put copy :face-baseline
@@ -4931,6 +5166,8 @@ but cannot introduce or remove a viewport expression or node identity."
             (ebox--new-buffer-render-state root))
           (copy-sequence state-overrides))))
     (plist-put state :root-node root)
+    (when (plist-get state :native-sync-confirmed-p)
+      (ebox-native-commit-attach-confirmed-base previous-state state))
     (plist-put state :projection-kind projection-kind)
     (plist-put state :cascade-active-p stylesheet-active-p)
     (plist-put state :cascade-required-p cascade-required-p)
@@ -5235,7 +5472,7 @@ published runtime and must be consumed without clearing those shared nodes."
                         (ebox-surface--signals-buffer signals)
                         previous-state state)
                        (ebox-surface--render-candidate state)))
-                  ((memq projection-kind '(span-patch owner-scoped))
+                 ((memq projection-kind '(span-patch owner-scoped))
                    (if-let* ((span-output
                              (ebox-surface--span-patch-output
                               (ebox-surface--signals-buffer signals)
@@ -5269,6 +5506,13 @@ published runtime and must be consumed without clearing those shared nodes."
                        (ebox-surface--render-candidate state)))
                   (t
                    (ebox-surface--render-candidate state)))))
+            (when (and (eq projection-kind 'native-frame)
+                       (not (eq (plist-get state :projection-kind)
+                                'native-frame)))
+              ;; Native delta projection already owns a complete object map.
+              ;; The existing Elisp renderer produced RENDERED exactly once;
+              ;; only its final publication semantics need to become ordinary.
+              (setq projection-kind nil))
             (when (and initial-native-p
                        (not (plist-get state :native-render-p)))
               (plist-put state :projection-kind nil))
@@ -5333,6 +5577,15 @@ also bypass candidate copying and reconciliation without clearing those nodes."
      (ebox-surface-producer
       source nil t
       (and source-index (list :source-base-index source-index))))))
+
+;; Install the only upward-facing read port after every callback is defined.
+;; Incremental planning owns no Surface symbol or publication capability.
+(ebox-incremental-install-context-port
+ (ebox-incremental-context-port-create
+  :buffer-state #'ebox-surface--buffer-client-state
+  :region-mounts #'ebox-surface-region-mounts
+  :cascade-owner-proof-p #'ebox-surface--cascade-local-owner-proof-p
+  :prepare-inline-styles #'ebox-surface-prepare-inline-candidate-styles))
 
 (provide 'ebox-surface)
 

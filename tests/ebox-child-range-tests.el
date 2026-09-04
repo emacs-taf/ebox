@@ -638,6 +638,120 @@
                                       :range-ref-table))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
+(ert-deftest ebox-child-range-candidate-retains-proven-owned-items ()
+  "A fresh candidate-owned Range item is not copied twice before commit."
+  (let* ((buffer (generate-new-buffer " *ebox-range-retained-items*"))
+         (input
+          (ebox-child-range-test--input
+           (list (ebox-test-box :key 'new (ebox-test-text "new")))))
+         (item (ebox-test-root input)))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-test-column
+            (ebox-test-box :key 'static (ebox-test-text "static"))
+            (ebox-test-child-range
+             'items (ebox-test-box :key 'old (ebox-test-text "old")))))
+          (let* ((candidate (ebox-candidate-begin buffer))
+                 entry)
+            (ebox-candidate-replace-range-ref
+             candidate 'items input nil t)
+            (setq entry (car (ebox-candidate--range-replacements candidate)))
+            (should
+             (ebox-incremental--candidate-range-replacement-retain-item-identities-p
+              entry))
+            (should (eq item
+                        (car
+                         (ebox-incremental--candidate-range-replacement-items
+                          entry))))
+            (ebox-commit buffer candidate))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (record (gethash 'items (plist-get state :range-ref-table)))
+                 (parent (gethash (plist-get record :parent-node-id)
+                                  (plist-get state :node-table)))
+                 (segment
+                  (ebox-child-range--lookup-ref
+                   (plist-get parent :ebox-child-sequence) 'items))
+                 (published (aref (ebox-child-range--segment-payload segment) 0)))
+            (should (eq published item))
+            (should (plist-get published :node-id))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-child-range-candidate-retention-falls-back-on-runtime-identity ()
+  "A retention proof miss uses the ordinary identity-clearing copy path."
+  (let* ((buffer (generate-new-buffer " *ebox-range-retention-fallback*"))
+         (input
+          (ebox-child-range-test--input
+           (list (ebox-test-box :key 'new (ebox-test-text "new")))))
+         (item (ebox-test-root input)))
+    (plist-put item :node-id 999)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-test-column
+            (ebox-test-child-range
+             'items (ebox-test-box :key 'old (ebox-test-text "old")))))
+          (let* ((candidate (ebox-candidate-begin buffer))
+                 entry retained)
+            (ebox-candidate-replace-range-ref
+             candidate 'items input nil t)
+            (setq entry (car (ebox-candidate--range-replacements candidate))
+                  retained
+                  (ebox-incremental--candidate-range-replacement-items entry))
+            (should-not
+             (ebox-incremental--candidate-range-replacement-retain-item-identities-p
+              entry))
+            (should-not (eq item (car retained)))
+            (should-not (plist-get (car retained) :node-id))
+            (ebox-commit buffer candidate))
+          (should (string-match-p "new" (with-current-buffer buffer
+                                           (buffer-string)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-child-range-candidate-retains-fresh-slots-around-reuse ()
+  "Mixed Range updates retain fresh slots while preserving reused slots."
+  (let* ((buffer (generate-new-buffer " *ebox-range-mixed-retention*"))
+         (input
+          (ebox-child-range-test--input
+           (list (ebox-test-box :key 'old-one (ebox-test-text "old-one"))
+                 (ebox-test-box :key 'new-two (ebox-test-text "new-two")))))
+         (fresh (nth 1 (ebox-test-forest input))))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-test-column
+            (ebox-test-child-range
+             'items
+             (ebox-test-box :key 'old-one (ebox-test-text "old-one"))
+             (ebox-test-box :key 'old-two (ebox-test-text "old-two")))))
+          (let* ((candidate (ebox-candidate-begin buffer))
+                 entry)
+            (ebox-candidate-replace-range-ref
+             candidate 'items input '((0 . 0)) t)
+            (setq entry (car (ebox-candidate--range-replacements candidate)))
+            (should
+             (ebox-incremental--candidate-range-replacement-retain-item-identities-p
+              entry))
+            (should (eq fresh
+                        (nth 1
+                             (ebox-incremental--candidate-range-replacement-items
+                              entry))))
+            (ebox-commit buffer candidate))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (record (gethash 'items (plist-get state :range-ref-table)))
+                 (parent (gethash (plist-get record :parent-node-id)
+                                  (plist-get state :node-table)))
+                 (segment
+                  (ebox-child-range--lookup-ref
+                   (plist-get parent :ebox-child-sequence) 'items))
+                 (payload (ebox-child-range--segment-payload segment)))
+            (should (eq fresh (aref payload 1)))
+            (should (plist-get (aref payload 1) :node-id))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (ert-deftest ebox-child-range-stable-keyed-refresh-is-not-structural ()
   "Stable keyed Range refreshes must not become root structure updates."
   (let ((buffer (generate-new-buffer " *ebox-stable-range-dirty*")))
@@ -1404,7 +1518,8 @@
              candidate 'items
              (ebox-child-range-test--input
               (list (ebox-test-box :key 'new :source-identity 'new
-                                   (ebox-test-text "new")))))
+                                   (ebox-test-text "new"))))
+             nil t)
             (cl-letf (((symbol-function 'accept-change-group)
                        (lambda (_group) (error "reject final accept"))))
               (should-error

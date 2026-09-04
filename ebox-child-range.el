@@ -280,11 +280,14 @@ each segment so structural copies never recover keys from source metadata."
    sequence (list (cons ref items)) key-function))
 
 (defun ebox-child-range--replace-many
-    (sequence replacements key-function &optional reuse-maps)
+    (sequence replacements key-function &optional reuse-maps
+              retain-item-identities-p)
   "Replace RANGE REPLACEMENTS in SEQUENCE with one two-phase transaction.
 REUSE-MAPS is an alist from Range ref to proven `(NEW . OLD)' item indexes;
 those NEW items already name canonical published objects and are not copied.
-KEY-FUNCTION returns the source-owned key for every replacement item."
+KEY-FUNCTION returns the source-owned key for every replacement item.
+When RETAIN-ITEM-IDENTITIES-P is non-nil, non-reused items are already owned by
+the candidate transaction and are retained without another node copy."
   (let ((metrics (ebox-child-range--make-metrics))
         (missing (make-symbol "missing-range-ref"))
         (seen (make-hash-table :test #'equal)) records)
@@ -310,7 +313,8 @@ KEY-FUNCTION returns the source-owned key for every replacement item."
                            collect
                            (if (assq offset reuse-map)
                                item
-                             (ebox-child-range--item-copy item metrics))))
+                             (ebox-child-range--item-copy
+                              item metrics retain-item-identities-p))))
                  (vconcat
                   (mapcar (lambda (item)
                             (and key-function (funcall key-function item)))

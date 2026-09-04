@@ -74,6 +74,40 @@
           :scroll-region-ids (copy-sequence
                               (plist-get state :scroll-region-ids)))))
 
+(defvar ebox-surface--tp-participant-v2-available-p)
+
+(defun ebox-commit-test--participant-route-counts
+    (ebox-route tp-route v2-available-p)
+  "Return v2/v1 registration counts for EBOX-ROUTE and TP-ROUTE.
+V2-AVAILABLE-P controls the frozen TP manifest capability used by the fixture."
+  (let ((buffer (generate-new-buffer " *ebox-participant-route*"))
+        (ebox-transaction-participant-route ebox-route)
+        (tp-transaction-execution-route tp-route)
+        (ebox-surface--tp-participant-v2-available-p v2-available-p)
+        (v2-register (symbol-function 'tp-transaction-participate-v2))
+        (v1-register (symbol-function 'tp-transaction-participate))
+        (v2-count 0)
+        (v1-count 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'tp-transaction-participate-v2)
+                   (lambda (&rest arguments)
+                     (cl-incf v2-count)
+                     (apply v2-register arguments)))
+                  ((symbol-function 'tp-transaction-participate)
+                   (lambda (&rest arguments)
+                     (cl-incf v1-count)
+                     (apply v1-register arguments))))
+          (ebox-render-to-buffer
+           buffer (ebox-test-box :key 'root (ebox-test-text "old")
+                                 :width '(80)))
+          (ebox-commit
+           buffer (ebox-test-box :key 'root (ebox-test-text "new")
+                                 :width '(80)))
+          (with-current-buffer buffer
+            (should (string-match-p "new" (buffer-string))))
+          (list :v2 v2-count :v1 v1-count))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (ert-deftest ebox-source-index-promotes-and-rolls-back-atomically ()
   "Candidate source indexes promote once and never corrupt retained state."
   (let ((buffer (generate-new-buffer " *ebox-source-index-lifecycle*")))
@@ -481,6 +515,133 @@
     (should (equal (aref (aref target 1) 7) '(3 5)))
     (should (equal (aref second 7) '(2)))))
 
+(ert-deftest ebox-native-session-isolation-bootstraps-or-forks-privately ()
+  "Session isolation creates the first candidate and forks later candidates."
+  (let ((created (list 'created-session))
+        (forked (list 'forked-session))
+        create-arguments fork-argument)
+    (cl-letf (((symbol-function 'ebox-native-reflow-create-session)
+               (lambda (&rest arguments)
+                 (setq create-arguments arguments)
+                 created))
+              ((symbol-function 'ebox-native-reflow-fork-session)
+               (lambda (session &rest _options)
+                 (setq fork-argument session)
+                 forked)))
+      (let ((candidate (list :native-sync-pending 'stale
+                             :native-sync-confirmed-p t)))
+        (should (ebox-native-commit--isolate-session nil candidate))
+        (should (eq (plist-get candidate :native-sync-session) created))
+        (should (equal create-arguments
+                       '(:workers 1 :max-jobs 4 :max-results 4)))
+        (should-not fork-argument)
+        (should-not (plist-get candidate :native-sync-pending))
+        (should-not (plist-get candidate :native-sync-confirmed-p)))
+      (let* ((committed (list 'committed-session))
+             (candidate (list :native-sync-pending 'stale
+                              :native-sync-confirmed-p t)))
+        (setq create-arguments nil)
+        (should
+         (ebox-native-commit--isolate-session
+          (list :native-sync-session committed) candidate))
+        (should (eq fork-argument committed))
+        (should (eq (plist-get candidate :native-sync-session) forked))
+        (should-not create-arguments)
+        (should-not (plist-get candidate :native-sync-pending))
+        (should (plist-get candidate :native-sync-confirmed-p))))))
+
+(ert-deftest ebox-native-published-frame-confirms-exact-runtime-revision ()
+  "A pending frame is confirmed only at the installed runtime revision."
+  (let ((session (list 'candidate-session))
+        confirmed)
+    (cl-letf (((symbol-function 'ebox-native-reflow-confirm-native-frame)
+               (lambda (&rest arguments)
+                 (setq confirmed arguments)
+                 t)))
+      (let ((state (list :native-sync-session session
+                         :native-sync-pending
+                         '(:generation 3 :key 7 :confirmed-revision 11)
+                         :native-sync-confirmed-p nil
+                         :runtime-revision 11)))
+        (should (eq (ebox-native-commit-confirm-published-frame state 11)
+                    state))
+        (should (equal confirmed (list session 3 7 11)))
+        (should (plist-get state :native-sync-confirmed-p))
+        (should-not (plist-member state :native-sync-pending)))
+      (let ((state (list :native-sync-session session
+                         :native-sync-pending
+                         '(:generation 3 :key 7 :confirmed-revision 11)
+                         :runtime-revision 10)))
+        (should-error (ebox-native-commit-confirm-published-frame state 10))
+        (should (plist-member state :native-sync-pending))))))
+
+(ert-deftest ebox-native-session-isolation-rejects-create-and-fork-errors ()
+  "A failed private-session operation preserves state and its diagnosis."
+  (dolist (previous
+           (list nil (list :native-sync-session (list 'committed-session))))
+    (let ((candidate (list :native-sync-pending 'unchanged
+                           :native-sync-confirmed-p t)))
+      (cl-letf (((symbol-function 'ebox-native-reflow-create-session)
+                 (lambda (&rest _) (error "create failed")))
+                ((symbol-function 'ebox-native-reflow-fork-session)
+                 (lambda (&rest _) (error "fork failed"))))
+        (should-not
+         (ebox-native-commit--isolate-session
+          previous candidate))
+        (should-not (plist-member candidate :native-sync-session))
+        (should (eq (plist-get candidate :native-sync-pending) 'unchanged))
+        (should (plist-get candidate :native-sync-confirmed-p))
+        (let ((failure (plist-get candidate :native-session-setup-failure)))
+          (should (eq (plist-get failure :phase)
+                      (if previous 'fork 'create)))
+          (should (eq (car (plist-get failure :condition)) 'error)))))))
+
+(ert-deftest ebox-native-session-setup-failure-enters-public-report ()
+  "Ordinary fallback reports and consumes a native setup failure."
+  (let* ((failure '(:phase create :condition (error "setup failed")))
+         (state (list :runtime-revision 2
+                      :native-session-setup-failure failure))
+         report)
+    (cl-letf (((symbol-function 'tp-surface-report-summary)
+               (lambda (_surface)
+                 '(:transaction-id 7 :text-operations 1
+                   :property-operations 0 :full-root t :scope-count 0)))
+              ((symbol-function 'tp-surface-revision)
+               (lambda (_surface) 3)))
+      (setq report
+            (ebox-surface--commit-report
+             'surface state
+             '(:strategy native-frame :publication-scope layout-owners))))
+    (should (eq (plist-get report :strategy) 'ordinary-fallback))
+    (should (equal (plist-get report :native-fallback-reason) failure))
+    (should-not (plist-member state :native-session-setup-failure))))
+
+(ert-deftest ebox-native-session-retirement-contains-release-failures ()
+  "Losing native sessions all retire and return diagnostics after commit."
+  (let ((old (list 'old-session))
+        (candidate (list 'candidate-session))
+        (committed (list 'committed-session))
+        released)
+    (cl-letf (((symbol-function 'tp-surface-client-state)
+               (lambda (_surface)
+                 (list :native-sync-session committed)))
+              ((symbol-function 'ebox-surface--release-native-session)
+               (lambda (session)
+                 (push session released)
+                 (when (eq session old)
+                   (error "release failed")))))
+      (let ((diagnostics
+             (ebox-surface--settle-native-session
+              (list :native-sync-session old)
+              (list :native-sync-session candidate)
+              'surface t)))
+        (should (equal (nreverse released) (list old candidate)))
+        (should (= 1 (length diagnostics)))
+        (should (eq (plist-get (car diagnostics) :phase)
+                    'native-session-retirement))
+        (should (eq (car (plist-get (car diagnostics) :condition))
+                    'error))))))
+
 (ert-deftest ebox-native-object-delta-orders-moved-and-new-nodes ()
   "A topology delta names parents before moved and introduced children."
   (let* ((old-input
@@ -573,6 +734,27 @@
                :removed-node-ids
                (ebox--runtime-node-ids removed-node))))))))
 
+(ert-deftest ebox-native-frame-spec-patches-only-stable-topology ()
+  "Only a topology-stable candidate may request a confirmed native patch."
+  (let* ((node
+          (ebox-test-box :key 'root (ebox-test-text "Frame") :width '(100)))
+         (state
+          (list :viewport-width 120 :viewport-height 10
+                :runtime-revision 3 :display-signature '(display)
+                :native-sync-confirmed-p t
+                :native-base-viewport-width 80
+                :native-base-viewport-height 10
+                :native-base-root-width 80
+                :native-topology-stable-p nil))
+         (full (ebox-native-commit--frame-spec state node)))
+    (should full)
+    (should-not (plist-member full :base-viewport-width))
+    (plist-put state :native-topology-stable-p t)
+    (let ((patch (ebox-native-commit--frame-spec state node)))
+      (should (= (plist-get patch :base-viewport-width) 80))
+      (should (= (plist-get patch :base-viewport-height) 10))
+      (should (= (plist-get patch :base-root-width) 80)))))
+
 (ert-deftest ebox-style-schema-composition-is-not-per-node-work ()
   "Repeated node construction must not rebuild the immutable schema domain."
   (let ((package-calls 0)
@@ -623,6 +805,34 @@
                      (ebox-commit-test--buffer-string buffer)))))
           (should (plist-get report :runtime-published))
           (should (> (plist-get report :patch-count) 0)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-commit-ignores-caller-narrowing ()
+  "A full Ebox surface commit must not inherit caller narrowing."
+  (let ((buffer
+         (ebox-render-to-buffer
+          (generate-new-buffer-name " *ebox-commit-narrowing*")
+          (ebox-test-box :key 'root (ebox-test-text "Before")
+                         :width '(80))))
+        report)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (goto-char (1+ (point-min)))
+            (narrow-to-region (point) (point-max))
+            (setq report
+                  (ebox-commit
+                   buffer
+                   (ebox-test-box :key 'root (ebox-test-text "After!")
+                                  :width '(80)))))
+          (should (plist-get report :runtime-published))
+          (should
+           (string-prefix-p
+            "After!"
+            (string-trim-right
+             (substring-no-properties
+              (ebox-commit-test--buffer-string buffer))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -742,6 +952,60 @@
                         (plist-get
                          captured :framework-participant-diagnostics))
                        1))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-transaction-participant-route-defaults-v2-across-tp-routes ()
+  "Ebox uses only public v2 registration under either TP live writer."
+  (should
+   (eq (eval (car (get 'ebox-transaction-participant-route 'standard-value)) t)
+       'v2))
+  (let ((ebox-transaction-participant-route 'v2))
+    (should (eq (ebox-surface--effective-participant-route) 'v2)))
+  (dolist (tp-route '(structured v1))
+    (let ((counts
+           (ebox-commit-test--participant-route-counts 'v2 tp-route t)))
+      (should (= (plist-get counts :v2) 2))
+      (should (= (plist-get counts :v1) 0)))))
+
+(ert-deftest ebox-transaction-participant-capability-is-absent-or-valid ()
+  "Old TP manifests fall back, while advertised corruption fails closed."
+  (should-not
+   (ebox-surface--tp-participant-v2-capability-p
+    '(:transaction-protocol tp-transaction-protocol-v1+v2)))
+  (should
+   (ebox-surface--tp-participant-v2-capability-p (tp-runtime-manifest)))
+  (should-error
+   (ebox-surface--tp-participant-v2-capability-p
+    '(:transaction-protocol tp-transaction-protocol-v1+v2
+      :structured-participant-api ignore))
+   :type 'ebox-surface-participant-route-error)
+  (should-error
+   (ebox-surface--tp-participant-v2-capability-p
+    '(:transaction-protocol incompatible
+      :structured-participant-api tp-transaction-participate-v2))
+   :type 'ebox-surface-participant-route-error))
+
+(ert-deftest ebox-transaction-participant-route-retains-v1-fallback ()
+  "Missing TP v2 capability and the kill switch each select only v1."
+  (dolist (case '((v2 structured nil) (v1 structured t) (v1 v1 t)))
+    (let ((counts
+           (ebox-commit-test--participant-route-counts
+            (nth 0 case) (nth 1 case) (nth 2 case))))
+      (should (= (plist-get counts :v2) 0))
+      (should (= (plist-get counts :v1) 2)))))
+
+(ert-deftest ebox-transaction-participant-route-rejects-invalid-before-live-write ()
+  "An invalid Ebox route fails inside TP and leaves buffer/runtime unpublished."
+  (let ((buffer (generate-new-buffer " *ebox-invalid-participant-route*"))
+        (ebox-transaction-participant-route 'invalid))
+    (unwind-protect
+        (progn
+          (should-error
+           (ebox-render-to-buffer
+            buffer (ebox-test-box :key 'root (ebox-test-text "rejected")))
+           :type 'ebox-surface-participant-route-error)
+          (should-not (ebox--buffer-render-state buffer))
+          (with-current-buffer buffer (should (equal (buffer-string) ""))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-commit-framework-publish-failure-rolls-back-full-and-scoped ()
@@ -1750,9 +2014,12 @@ remain retained identities."
 
 (ert-deftest ebox-commit-fixed-basis-selection-round-trip-stays-local ()
   "Continuous row-1 -> row-2 -> row-1 publication keeps local TP scope."
-  (let ((slot-proof-count 0)
-        (original-slot-proof
+  (let ((planner-render-count 0)
+        (surface-render-count 0)
+        (original-planner-render
          (symbol-function 'ebox--flex-item-slot-footprint-safe-p))
+        (original-surface-render
+         (symbol-function 'ebox-surface--render-candidate-node))
         (buffer
          (ebox-render-to-buffer
           (generate-new-buffer-name " *ebox-fixed-basis-round-trip* ")
@@ -1766,27 +2033,32 @@ remain retained identities."
           (setq panel-id
                 (ebox-incremental--nearest-fixed-basis-flex-item-owner-id
                  buffer panel-id))
-          (cl-letf (((symbol-function 'ebox--flex-item-slot-footprint-safe-p)
-                     (lambda (&rest arguments)
-                       (cl-incf slot-proof-count)
-                       (apply original-slot-proof arguments))))
+          (cl-letf
+              (((symbol-function 'ebox--flex-item-slot-footprint-safe-p)
+                (lambda (&rest arguments)
+                  (cl-incf planner-render-count)
+                  (apply original-planner-render arguments)))
+               ((symbol-function 'ebox-surface--render-candidate-node)
+                (lambda (&rest arguments)
+                  (cl-incf surface-render-count)
+                  (apply original-surface-render arguments))))
             (dolist (contents '(("[ ] row 1" "[x] row 2")
                                 ("[x] row 1" "[ ] row 2")))
               (let* ((report
-                      (ebox-commit
-                       buffer
-                       (ebox-commit-test--fixed-basis-selection-candidate
-                        buffer (car contents) (cadr contents))))
-                   (surface (with-current-buffer
-                                buffer ebox-surface--buffer-surface))
+                    (ebox-commit
+                     buffer
+                     (ebox-commit-test--fixed-basis-selection-candidate
+                      buffer (car contents) (cadr contents))))
+                   (surface
+                    (with-current-buffer buffer ebox-surface--buffer-surface))
                    (tp-report (tp-surface-report surface))
                    (object-count
                     (plist-get (tp-surface-inspect surface) :object-count))
                    (snapshots
                     (plist-get (ebox--buffer-render-state buffer)
                                :layout-snapshots))
-                   (panel-snapshot (and snapshots
-                                        (gethash panel-id snapshots))))
+                   (panel-snapshot
+                    (and snapshots (gethash panel-id snapshots))))
               (push report reports)
               (should (memq (plist-get report :projection-kind)
                             '(span-patch owner-scoped)))
@@ -1800,17 +2072,18 @@ remain retained identities."
               ;; to recapture geometry from the committed TP mounts.
               (should panel-snapshot)
               (should-not (plist-member panel-snapshot :buffer-spans))
-                (with-current-buffer buffer
-              (should
-               (equal
-                (buffer-substring-no-properties (point-min) (point-max))
-                (substring-no-properties
-                 (let ((state (ebox--buffer-render-state buffer)))
-                   (ebox--render-node
-                    (plist-get state :root-node)
-                    (plist-get state :source-index))))))))))
+              (with-current-buffer buffer
+                (should
+                 (equal
+                  (buffer-substring-no-properties (point-min) (point-max))
+                  (substring-no-properties
+                   (let ((state (ebox--buffer-render-state buffer)))
+                     (ebox--render-node
+                      (plist-get state :root-node)
+                      (plist-get state :source-index))))))))))
           (should (= (length reports) 2))
-          (should (= slot-proof-count 2)))
+          (should (zerop planner-render-count))
+          (should (= surface-render-count 2)))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (defun ebox-commit-test--mixed-owner-candidate
@@ -2032,6 +2305,9 @@ remain retained identities."
 (ert-deftest ebox-commit-allocation-closure-proof-misses-fallback ()
   "Topology, selector, cascade, and role misses reject allocation closure."
   (dolist (kind '(topology selector cascade))
+    (ebox-style-reset-rules)
+    (when (eq kind 'selector)
+      (ebox-style-add-rule "box:has(.changed)" '(:color "#EF4444")))
     (let ((buffer
            (ebox-render-to-buffer
             (generate-new-buffer-name " *ebox-allocation-proof-miss* ")
@@ -2064,9 +2340,11 @@ remain retained identities."
                              (lambda (&rest _) nil)))
                          (ebox-commit buffer candidate))
                      (ebox-commit buffer candidate))))
-              (should-not (eq (plist-get report :projection-kind)
-                              'mixed-owner-reflow))))
-        (when (buffer-live-p buffer) (kill-buffer buffer)))))
+              (ert-info ((format "proof miss kind: %S" kind))
+                (should-not (eq (plist-get report :projection-kind)
+                                'mixed-owner-reflow)))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))
+        (ebox-style-reset-rules))))
   (let* ((buffer
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-allocation-role-miss* ")

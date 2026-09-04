@@ -81,6 +81,7 @@
 
 (ert-deftest ebox-source-rebind-keeps-order-and-bounded-persistence ()
   "Long-lived local updates must preserve order without growing recursion."
+  (should (= ebox-source--persistent-max-depth 4))
   (let* ((builder (ebox-source-builder-create))
          (first (ebox-source-builder-bind builder :identity 'a))
          (middle (ebox-source-builder-bind builder :identity 'b))
@@ -124,7 +125,7 @@
   (let* ((base-values (make-hash-table :test #'equal))
          (_ (puthash 'retained 'value base-values))
          (table (ebox-source--flat-table base-values #'equal)))
-    (dotimes (revision 12)
+    (dotimes (revision (1- ebox-source--persistent-max-depth))
       (let ((added (make-hash-table :test #'equal))
             (removed (make-hash-table :test #'equal)))
         (puthash (list 'revision revision) revision added)
@@ -139,6 +140,34 @@
                 (ebox-source--table-get table 'absent 'missing)))
     (should (eq ebox-source--memo-missing
                 (gethash 'absent (ebox-source-table-memo table))))))
+
+(ert-deftest ebox-source-hot-lookups-reuse-private-absence-markers ()
+  "Persistent lookup and order reads must not allocate absence symbols."
+  (let* ((opaque-value (make-symbol "opaque-source-value"))
+         (base-values (make-hash-table :test #'eq))
+         (_ (puthash 'present opaque-value base-values))
+         (base (ebox-source--flat-table base-values #'eq))
+         (added (make-hash-table :test #'eq))
+         (removed (make-hash-table :test #'eq))
+         (table (ebox-source--table-overlay base added removed 1))
+         (replacements (make-hash-table :test #'eq))
+         (order-removed (make-hash-table :test #'eq))
+         (original-make-symbol (symbol-function 'make-symbol))
+         (symbol-creations 0))
+    (puthash 'old 'new replacements)
+    (cl-letf (((symbol-function 'make-symbol)
+               (lambda (name)
+                 (cl-incf symbol-creations)
+                 (funcall original-make-symbol name))))
+      (should (eq opaque-value
+                  (ebox-source--table-value table 'present)))
+      (should (ebox-source--table-member-p table 'present))
+      (should-not (ebox-source--table-member-p table 'absent))
+      (should-not (ebox-source--table-value table 'absent))
+      (should (equal '(new kept tail)
+                     (ebox-source--order-apply
+                      '(old kept) replacements order-removed '(tail)))))
+    (should (zerop symbol-creations))))
 
 (ert-deftest ebox-source-delta-resolves-each-node-record-once ()
   "Node-local source diff should materialize one record view per generation."

@@ -711,8 +711,9 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
   (let* ((ebox-viewport-width 80)
          (ebox-viewport-height 20)
          (content (propertize "native" 'face 'italic 'help-echo "source"))
-         (node (ebox-test-box (ebox-test-text content) :width 20
-                            :color "#f0f0f0" :bgcolor "#101010"))
+         (node (ebox-test-root
+                (ebox-test-box (ebox-test-text content) :width 20
+                               :color "#f0f0f0" :bgcolor "#101010")))
          (package (ebox-native-reflow--compile-layout-package node))
          (normal
           (let ((ebox--surface-materialization-active t)
@@ -1350,8 +1351,6 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
           (let* ((state (ebox--buffer-render-state buffer))
                  (session (list 'native-session))
                  (candidate-session (list 'candidate-native-session))
-                 (pending (list :generation 1 :key 1
-                                :confirmed-revision 1))
                  (rendered
                   (with-current-buffer buffer
                     (buffer-substring (point-min) (point-max))))
@@ -1360,8 +1359,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                  (postorder (vector (plist-get state :root-node))))
             (plist-put state :projection-kind 'native-frame)
             (plist-put state :native-sync-session session)
-            (plist-put state :native-sync-pending pending)
-            (plist-put state :native-sync-confirmed-p nil)
+            (plist-put state :native-sync-pending nil)
+            (plist-put state :native-sync-confirmed-p t)
             (plist-put state :native-committed-rendered rendered)
             (plist-put state :native-committed-fragment-template
                        fragment-template)
@@ -1389,8 +1388,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                 (should-not (eq (plist-get overrides :native-sync-session)
                                 session))
                 (should-not (plist-get overrides :native-sync-pending))
-                (should-not
-                 (plist-get overrides :native-sync-confirmed-p))
+                (should (plist-get overrides :native-sync-confirmed-p))
                 (should (eq (plist-get overrides
                                        :native-committed-rendered)
                             rendered))
@@ -1413,7 +1411,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
   (skip-unless (ebox-native-reflow-layout-ready-p))
   (ebox-surface-test--reset-render-state)
   (let ((buffer (generate-new-buffer " *ebox-native-viewport-rollback*"))
-        candidate-session committed-session)
+        candidate-session confirmation-rejected-session committed-session)
     (unwind-protect
         (let ((ebox-viewport-width 180)
               (ebox-viewport-height 6)
@@ -1465,17 +1463,39 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (should (equal-including-properties
                        (buffer-substring (point-min) (point-max))
                        contents)))
+            (cl-letf
+                (((symbol-function 'ebox-native-reflow-fork-session)
+                  (lambda (&rest arguments)
+                    (setq confirmation-rejected-session
+                          (apply original-fork arguments))))
+                 ((symbol-function
+                   'ebox-native-reflow-confirm-native-frame)
+                  (lambda (&rest _)
+                    (error "Reject native confirmation"))))
+              (should-error
+               (ebox-rerender-buffer-with-context buffer 320 6)))
+            (should confirmation-rejected-session)
+            (should (ebox-native-reflow-session-released-p
+                     confirmation-rejected-session))
+            (should-not (ebox-native-reflow-session-released-p session))
+            (should (= (tp-surface-revision surface) revision))
+            (should (eq (tp-surface-client-state surface) state))
             (let ((report
                    (ebox-rerender-buffer-with-context buffer 320 6)))
               (setq committed-session
                     (plist-get (ebox--buffer-render-state buffer)
                                :native-sync-session))
               (should (eq (plist-get report :projection-kind) 'native-frame))
+              (should (eq (plist-get report :native-frame-kind) 'patch))
               (should committed-session)
               (should-not (eq committed-session session))
               (should (ebox-native-reflow-session-released-p session))
               (should-not (ebox-native-reflow-session-released-p
                            committed-session))
+              (should (plist-get (ebox--buffer-render-state buffer)
+                                 :native-sync-confirmed-p))
+              (should-not (plist-get (ebox--buffer-render-state buffer)
+                                     :native-sync-pending))
               (should (eq (plist-get
                            (plist-get (ebox--buffer-render-state buffer)
                                       :root-node)
@@ -1486,6 +1506,151 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (when committed-session
         (should (ebox-native-reflow-session-released-p
                  committed-session))))))
+
+(ert-deftest ebox-native-full-frame-bootstraps-from-ordinary-surface ()
+  "Native bootstrap falls back truthfully and remains retryable."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-native-bootstrap*"))
+        rejected-session winning-session next-session)
+    (unwind-protect
+        (let* ((ebox-viewport-width 240)
+               (ebox-viewport-height 8)
+               (ebox-runtime-idle-prewarm nil)
+               (ebox-runtime-idle-reflow-cache-prewarm nil)
+               (initial
+                (ebox-test-column
+                 (ebox-test-box :key 'a (ebox-test-text "A"))
+                 (ebox-test-box :key 'b (ebox-test-text "B"))))
+               (expanded
+                (ebox-test-column
+                 (ebox-test-box :key 'a (ebox-test-text "A"))
+                 (ebox-test-box :key 'b (ebox-test-text "B"))
+                 (ebox-test-box :key 'c (ebox-test-text "C"))))
+               (native-source
+                (ebox-test-column
+                 (ebox-test-box :key 'a (ebox-test-text "A"))
+                 (ebox-test-box :key 'b (ebox-test-text "B"))
+                 (ebox-test-box :key 'c (ebox-test-text "C"))
+                 (ebox-test-box :key 'd (ebox-test-text "D"))))
+               (updated
+                (ebox-test-column
+                 (ebox-test-box :key 'a (ebox-test-text "A"))
+                 (ebox-test-box :key 'b (ebox-test-text "B"))
+                 (ebox-test-box :key 'c (ebox-test-text "C"))
+                 (ebox-test-box :key 'd (ebox-test-text "D"))
+                 :bgcolor "#222222")))
+          ;; Exercise the normal non-native mount contract; only the later
+          ;; structural commit is allowed to bootstrap a private session.
+          (cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
+                     (lambda () nil)))
+            (ebox-render-to-buffer buffer initial))
+          (let* ((surface
+                  (with-current-buffer buffer ebox-surface--buffer-surface))
+                 (ordinary-state (tp-surface-client-state surface))
+                 (ordinary-root-id
+                  (plist-get (plist-get ordinary-state :root-node) :node-id))
+                 (ordinary-root-object
+                  (gethash ordinary-root-id
+                           (plist-get ordinary-state
+                                      :surface-node-object-table)))
+                 (original-create
+                  (symbol-function 'ebox-native-reflow-create-session))
+                 (original-render
+                  (symbol-function 'ebox-surface--render-candidate-node))
+                 (original-project
+                  (symbol-function 'ebox-surface--projection-start))
+                 (render-count 0)
+                 (projection-count 0))
+            (should-not (plist-get ordinary-state :native-sync-session))
+            (should-not (eq (plist-get ordinary-state :projection-kind)
+                            'native-frame))
+            (cl-letf
+                (((symbol-function 'ebox-native-reflow-create-session)
+                  (lambda (&rest arguments)
+                    (setq rejected-session
+                          (apply original-create arguments))))
+                 ((symbol-function 'ebox-native-reflow-execute-session-sync)
+                  (lambda (&rest _) (error "Reject native execution")))
+                 ((symbol-function 'ebox-surface--render-candidate-node)
+                  (lambda (&rest arguments)
+                    (cl-incf render-count)
+                    (apply original-render arguments)))
+                 ((symbol-function 'ebox-surface--projection-start)
+                  (lambda (&rest arguments)
+                    (cl-incf projection-count)
+                    (apply original-project arguments))))
+              (let* ((report (ebox-commit buffer expanded))
+                     (state (tp-surface-client-state surface))
+                     (expected
+                      (let ((ebox-viewport-width 240)
+                            (ebox-viewport-height 8))
+                        (ebox-surface-test--render-runtime state))))
+                (should-not (plist-get report :projection-kind))
+                (should-not (plist-get report :native-frame-kind))
+                (should (eq (plist-get report :strategy)
+                            'ordinary-fallback))
+                (should (equal (plist-get report :patch-ops)
+                               '(tp-surface)))
+                (should (eq (plist-get report :render-scope) 'surface))
+                (should-not (plist-member report :owner-ids))
+                (should-not (plist-member report :owner-type))
+                (should (eq (plist-get report :native-attempt) 'failed))
+                (should (equal (plist-get report :native-fallback-reason)
+                               "Reject native execution"))
+                (should (= render-count 1))
+                (should (= projection-count 1))
+                (should-not (plist-get state :projection-kind))
+                (dolist (key ebox-native-commit--failed-render-state-keys)
+                  (should-not (plist-member state key)))
+                (should-not (plist-member state :native-render-fallback))
+                (should (= (plist-get (plist-get state :root-node) :node-id)
+                           ordinary-root-id))
+                (should (eq (gethash ordinary-root-id
+                                     (plist-get state
+                                                :surface-node-object-table))
+                            ordinary-root-object))
+                (with-current-buffer buffer
+                  (should (equal-including-properties
+                           (buffer-substring (point-min) (point-max))
+                           expected)))))
+            (should rejected-session)
+            (should (ebox-native-reflow-session-released-p rejected-session))
+            (let ((report (ebox-commit buffer native-source)))
+              (setq winning-session
+                    (plist-get (tp-surface-client-state surface)
+                               :native-sync-session))
+              (should (eq (plist-get report :projection-kind) 'native-frame))
+              ;; A bootstrap begins with a full frame; session/compiler
+              ;; continuity does not claim a cross-handle Rust patch.
+              (should (eq (plist-get report :native-frame-kind) 'full))
+              (should winning-session)
+              (should-not (plist-get (tp-surface-client-state surface)
+                                     :native-sync-pending))
+              (should (plist-get (tp-surface-client-state surface)
+                                 :native-sync-confirmed-p))
+              (should (stringp
+                       (plist-get (tp-surface-client-state surface)
+                                  :native-committed-rendered)))
+              (should-not (ebox-native-reflow-session-released-p
+                           winning-session)))
+            (let ((report (ebox-commit buffer updated)))
+              (setq next-session
+                    (plist-get (tp-surface-client-state surface)
+                               :native-sync-session))
+              (should (eq (plist-get report :projection-kind) 'native-frame))
+              ;; A style-table change cannot consume the prior confirmed
+              ;; document and therefore remains a truthful full frame.
+              (should (eq (plist-get report :native-frame-kind) 'full))
+              (should next-session)
+              (should-not (eq next-session winning-session))
+              (should (ebox-native-reflow-session-released-p winning-session))
+              (should-not (ebox-native-reflow-session-released-p
+                           next-session)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when next-session
+        (should (ebox-native-reflow-session-released-p next-session))))))
 
 (ert-deftest ebox-viewport-reflow-retains-final-sized-flex-child-fragments ()
   "Viewport reflow should reuse final-sized Flex child fragments exactly."
@@ -1728,6 +1893,63 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
             (should (plist-get report :viewport-style-context-stable-p))
             (should (plist-get state :cascade-required-p))
             (should (equal-including-properties actual expected))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-text-style-owns-local-cascade-state ()
+  "Persist an independent style owner state for canonical Text."
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-shared-text-style-state*")))
+    (unwind-protect
+        (let ((ebox-viewport-width 240)
+              (ebox-viewport-height 6))
+          (ebox-render-to-buffer
+           buffer
+           (ebox-test-box
+            :color "#334155" :width '(viewport)
+            (ebox-test-box (ebox-test-text "Inherited"))))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (nodes (plist-get state :node-table))
+                 (objects (plist-get state :surface-node-object-table))
+                 (style-states (plist-get state :style-binding-states))
+                 (source-index (plist-get state :source-index))
+                 text-id text-node)
+            (maphash
+             (lambda (node-id node)
+               (when (and (eq (plist-get node :ebox-kind) 'text)
+                          (equal (plist-get node :content) "Inherited"))
+                 (setq text-id node-id text-node node)))
+             nodes)
+            (should text-id)
+            (let* ((parent-id
+                    (gethash text-id (plist-get state :parent-table)))
+                   (object (gethash text-id objects))
+                   (parent-object (gethash parent-id objects))
+                   (style-state (gethash object style-states))
+                   (parent-state (gethash parent-object style-states))
+                   (candidate-node (copy-sequence text-node))
+                   (candidate-nodes (copy-hash-table nodes))
+                   (candidate-state (copy-sequence state)))
+              (should style-state)
+              (should parent-state)
+              (should-not (eq (plist-get style-state :binding)
+                              (plist-get parent-state :binding)))
+              (should (eq (plist-get style-state :parent-style-state)
+                          parent-state))
+              (should
+               (equal (ebox-tree-node-id source-index text-node)
+                      (ecss-subject-id (plist-get style-state :subject))))
+              (should (ebox-surface--static-style-state-p style-state))
+              (plist-put candidate-node :ebox-candidate-computed-style-p t)
+              (puthash text-id candidate-node candidate-nodes)
+              (plist-put candidate-state :node-table candidate-nodes)
+              (let ((ebox-incremental--allocated-slot-proof-cache
+                     (make-hash-table :test 'equal)))
+                (should
+                 (ebox-surface--cascade-local-owner-proof-p
+                  state candidate-state
+                  (list (list :node-id text-id :dirty-kind 'geometry
+                              :changed-keys '(:content)))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -3023,6 +3245,83 @@ participant and rollback contract without creating a real frame."
               (should-not (plist-get state :last-update-report))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))))
+
+(ert-deftest ebox-surface-native-patch-fast-path-requires-stable-topology ()
+  "Only a topology-stable native patch may bypass ordinary TP planning."
+  (let ((projection (list :surface-root 'surface
+                          :objects-by-node (make-hash-table :test 'eq)))
+        (calls nil))
+    (cl-letf (((symbol-function 'ebox-surface--node-object-table)
+               (lambda (_) (make-hash-table :test 'equal)))
+              ((symbol-function 'ebox-surface--region-object-table)
+               (lambda (&rest _) (make-hash-table :test 'equal)))
+              ((symbol-function 'ebox-surface--object-region-table)
+               (lambda (_) (make-hash-table :test 'eq)))
+              ((symbol-function 'ebox-surface--logical-id-region-table)
+               (lambda (&rest _) (make-hash-table :test 'equal)))
+              ((symbol-function 'tp-object-ensure)
+               (lambda (_context _parent key _kind)
+                 (push 'native-object calls)
+                 key))
+              ((symbol-function 'ebox-surface--native-owned-ranges)
+               (lambda (&rest _)
+                 (push 'native-ownership calls)
+                 '((:start 0 :end 3))))
+              ((symbol-function 'tp-commit-batch-create)
+               (lambda (&rest _)
+                 (push 'native-batch calls)
+                 'native-batch))
+              ((symbol-function 'tp-commit-batch-result-create)
+               (lambda (&rest _)
+                 (push 'native-result calls)
+                 'native-fast-path))
+              ((symbol-function 'ebox-surface--surface-plan)
+               (lambda (&rest _)
+                 (push 'ordinary-plan calls)
+                 '(ordinary-plan "new" ((:start 0 :end 3)) nil)))
+              ((symbol-function 'tp-surface-result-create-owned)
+               (lambda (&rest _)
+                 (push 'ordinary-result calls)
+                 'ordinary-owned-path))
+              ((symbol-function 'tp-surface-retained-content-result-create)
+               (lambda (&rest _)
+                 (push 'retained-result calls)
+                 'retained-path)))
+      (let ((unstable
+             '(:root-node nil
+               :runtime-revision 4
+               :native-topology-stable-p nil
+               :native-render-fragment-template [[0 3 0 nil nil nil nil nil]]
+               :native-render-frame
+               (:native-frame t :native-patch t
+                :base-character-count 3 :target-character-count 3
+                :patches nil :coordinate-patches nil))))
+        (should
+         (eq (ebox-surface--projection-result
+              'context projection unstable "new" 'native-frame)
+             'ordinary-owned-path))
+        (should (equal calls '(ordinary-result ordinary-plan)))
+        (should-not (plist-member unstable :native-committed-rendered)))
+      (setq calls nil)
+      (let ((stable
+             '(:root-node nil
+               :runtime-revision 4
+               :native-topology-stable-p t
+               :native-render-fragment-template [[0 3 0 nil nil nil nil nil]]
+               :native-render-frame
+               (:native-frame t :native-patch t
+                :base-character-count 3 :target-character-count 3
+                :patches nil :coordinate-patches nil))))
+        (should
+         (eq (ebox-surface--projection-result
+              'context projection stable "new" 'native-frame)
+             'native-fast-path))
+        (should (equal calls
+                       '(native-result native-batch native-ownership
+                         native-object native-object)))
+        (should (equal (plist-get stable :native-committed-rendered) "new"))
+        (should-not (memq 'ordinary-plan calls))
+        (should-not (memq 'retained-result calls))))))
 
 (ert-deftest ebox-surface-native-full-frame-owns-full-publication-scope ()
   "A complete native frame is authoritative for the whole TP surface."

@@ -44,16 +44,8 @@
                   "ebox-tree" (old new))
 (declare-function ebox-tree-runtime-identity-snapshot
                   "ebox-tree" (root))
-(declare-function ebox-surface-region-mounts
-                  "ebox-surface" (buffer region-id &optional roles))
-(declare-function ebox-surface-region-bounds
-                  "ebox-surface" (buffer region-id &optional roles))
 (declare-function tp-object-mounts
                   "tp-surface" (object))
-(declare-function ebox-surface--cascade-local-owner-proof-p
-                  "ebox-surface" (state candidate-state dirty-set))
-(declare-function ebox-surface-prepare-inline-candidate-styles
-                  "ebox-surface" (old-state candidate-index node-ids))
 (declare-function ebox-string-lines "ebox" (string))
 (declare-function ebox-get "ebox" (box key))
 (declare-function ebox--ensure-node-id "ebox" (node))
@@ -90,8 +82,6 @@
                   "ebox-cache" (buffer))
 (declare-function ebox-cache-restore-report
                   "ebox-cache" (buffer snapshot))
-(declare-function ebox-surface-call-with-observation
-                  "ebox-surface" (buffer stage function))
 (declare-function ebox-style-cascade-active-p
                   "ebox-style" ())
 (declare-function ebox-native-commit-plan-eligible-p
@@ -104,6 +94,67 @@
                   "ebox-native-commit" (old-state candidate-state prepared))
 (declare-function ebox-native-reflow-release-session
                   "ebox-native-reflow" (session))
+
+(cl-defstruct
+    (ebox-incremental-context-port
+     (:constructor ebox-incremental-context-port-create))
+  "Read-only host queries supplied by the Ebox orchestrator."
+  (buffer-state nil :read-only t)
+  (region-mounts nil :read-only t)
+  (cascade-owner-proof-p nil :read-only t)
+  (prepare-inline-styles nil :read-only t))
+
+(defvar ebox-incremental--context-port nil
+  "Immutable host-query port installed by the Ebox orchestrator.")
+
+(defun ebox-incremental-install-context-port (port)
+  "Install validated immutable incremental context PORT."
+  (unless (and (ebox-incremental-context-port-p port)
+               (cl-every
+                #'functionp
+                (list
+                 (ebox-incremental-context-port-buffer-state port)
+                 (ebox-incremental-context-port-region-mounts port)
+                 (ebox-incremental-context-port-cascade-owner-proof-p port)
+                 (ebox-incremental-context-port-prepare-inline-styles port))))
+    (signal 'wrong-type-argument
+            (list 'ebox-incremental-context-port-p port)))
+  (setq ebox-incremental--context-port port))
+
+(defun ebox-incremental--require-context-port ()
+  "Return the installed incremental context port or fail closed."
+  (or ebox-incremental--context-port
+      (error "Ebox incremental context port is not installed")))
+
+(defun ebox-incremental--buffer-state (buffer)
+  "Return BUFFER's live client state through the context port."
+  (funcall
+   (ebox-incremental-context-port-buffer-state
+    (ebox-incremental--require-context-port))
+   buffer))
+
+(defun ebox-incremental--region-mounts (buffer region-id &optional roles)
+  "Return BUFFER mounts for REGION-ID and optional ROLES through the port."
+  (funcall
+   (ebox-incremental-context-port-region-mounts
+    (ebox-incremental--require-context-port))
+   buffer region-id roles))
+
+(defun ebox-incremental--cascade-local-owner-proof-p
+    (state candidate-state dirty-set)
+  "Return the port proof for STATE, CANDIDATE-STATE, and DIRTY-SET."
+  (funcall
+   (ebox-incremental-context-port-cascade-owner-proof-p
+    (ebox-incremental--require-context-port))
+   state candidate-state dirty-set))
+
+(defun ebox-incremental--prepare-inline-candidate-styles
+    (old-state candidate-index node-ids)
+  "Prepare NODE-IDS in CANDIDATE-INDEX using OLD-STATE through the port."
+  (funcall
+   (ebox-incremental-context-port-prepare-inline-styles
+    (ebox-incremental--require-context-port))
+   old-state candidate-index node-ids))
 
 (defvar ebox-viewport-width)
 (defvar ebox-viewport-height)
@@ -168,6 +219,46 @@ arguments.")
 (defvar ebox-incremental--candidate-full-source-base-index nil
   "Transaction-local fact index for one broad candidate rebuild.")
 
+(defun ebox-incremental--candidate-range-items-retainable-p
+    (candidate items source-index reuse-map)
+  "Return non-nil when ITEMS satisfy the candidate-owned retention proof.
+
+The proof is deliberately narrow: every non-reused node must belong to the
+incoming canonical source generation and carry no Ebox runtime identity.
+Published reuse slots are skipped because they are replaced by their exact old
+objects during canonical reuse.  Canonical input construction has already
+checked node/handle uniqueness; this check adds the ownership boundary against
+the published candidate base without scanning that base's full tree."
+  (let* ((base-state (ebox-candidate--base-state candidate))
+         (base-source-index (plist-get base-state :source-index))
+         (seen (make-hash-table :test #'eq)))
+    (and (ebox-source-index-p source-index)
+         (not (eq source-index base-source-index))
+         (cl-labels
+             ((visit
+               (node)
+               (and (listp node)
+                    (not (stringp node))
+                    (not (ebox-child-range--descriptor-p node))
+                    (not (gethash node seen))
+                    (let ((handle (ebox-tree-node-source-handle node)))
+                      (and (ebox-source-index-handle-member-p
+                            source-index handle)
+                           (not (and base-source-index
+                                     (ebox-source-index-handle-member-p
+                                      base-source-index handle)))
+                           (null (plist-get node :node-id))
+                           (null (plist-get node :region-id))
+                           (null (plist-get node :surface-object))
+                           (null (plist-get node :ebox-sequence-location))
+                           (progn
+                             (puthash node t seen)
+                             (cl-every #'visit
+                                       (ebox-tree--children-raw node))))))))
+           (cl-loop for item in items for index from 0
+                    unless (assq index reuse-map)
+                    always (visit item))))))
+
 (cl-defstruct
     (ebox-candidate
      (:constructor ebox-incremental--make-candidate)
@@ -200,7 +291,7 @@ arguments.")
      (:constructor ebox-incremental--make-candidate-range-replacement)
      (:conc-name ebox-incremental--candidate-range-replacement-))
   "One base-addressed child Range payload replacement."
-  ref items reuse-map source-indexes)
+  ref items reuse-map source-indexes retain-item-identities-p)
 
 (cl-defstruct
     (ebox-incremental--candidate-paint-patch
@@ -269,7 +360,6 @@ user code or signal after mutation.")
      'ebox-incremental-before-runtime-mutation-hook buffer kind)))
 
 (defvar ebox--buffer-render-state-table)
-(defvar ebox-surface--buffer-surface)
 
 (declare-function tp-surface-client-state "tp-surface" (surface))
 (declare-function tp-surface-live-p "tp-surface" (surface))
@@ -998,14 +1088,9 @@ Keys are region-id, values are plists with :scroll-offset, :content-lines, etc."
            (eq buffer
                (car ebox-incremental--buffer-render-state-override)))
       (cdr ebox-incremental--buffer-render-state-override)
-    (let ((surface
-           (and (buffer-live-p buffer)
-                (boundp 'ebox-surface--buffer-surface)
-                (with-current-buffer buffer
-                  ebox-surface--buffer-surface))))
-      (if (and surface (tp-surface-live-p surface))
-          (tp-surface-client-state surface)
-        (gethash buffer ebox--buffer-render-state-table)))))
+    (or (and (buffer-live-p buffer)
+             (ebox-incremental--buffer-state buffer))
+        (gethash buffer ebox--buffer-render-state-table))))
 
 (defun ebox--buffer-update-report (buffer)
   "Return the update report stored in BUFFER's render state."
@@ -1835,7 +1920,7 @@ therefore unsafe."
         spans)
     (dolist (region-id region-ids)
       (dolist (mount
-               (ebox-surface-region-mounts
+               (ebox-incremental--region-mounts
                 (current-buffer) region-id (mapcar #'car ebox-region-types)))
         (ebox--add-role-span-line-ranges
          line-ranges
@@ -1981,7 +2066,7 @@ If a line span would cross a foreign ebox region, return nil."
           (buffer (current-buffer)))
       (dolist (region-id region-ids)
         (dolist (mount
-                 (ebox-surface-region-mounts buffer region-id roles))
+                 (ebox-incremental--region-mounts buffer region-id roles))
           (dolist (role (plist-get (plist-get mount :tags) :ebox/roles))
             (puthash role t role-set)))))
     (maphash (lambda (role _) (push role roles)) role-set)
@@ -2032,7 +2117,7 @@ the original plist."
       (let* ((region-ids (or (plist-get snapshot :region-ids)
                              (ebox--node-all-region-ids node)))
              (spans (if (equal (plist-get snapshot :node-id)
-                                (ebox--buffer-root-node-id buffer))
+                               (ebox--buffer-root-node-id buffer))
                         (ebox--buffer-line-spans buffer)
                       (and region-ids
                            (buffer-live-p buffer)
@@ -4057,12 +4142,6 @@ during `ebox-incremental-flush'."
            buffer pending report))
         (ebox--buffer-update-report buffer)))))
 
-(defun ebox-incremental-flush (buffer)
-  "Flush BUFFER's explicit incremental update batch as one operation."
-  (ebox-surface-call-with-observation
-   buffer 'batch
-   (lambda () (ebox-incremental--flush buffer))))
-
 ;;; Declarative Root Commit
 
 (defun ebox-incremental-candidate-begin (buffer)
@@ -4086,7 +4165,7 @@ during `ebox-incremental-flush'."
      :sealed-p nil)))
 
 (defun ebox-incremental-candidate-replace-range-ref
-    (candidate ref next-items &optional reuse-map)
+    (candidate ref next-items &optional reuse-map retain-item-identities-p)
   "Record a Range REF replacement using proven slot REUSE-MAP."
   (unless (ebox-candidate-p candidate)
     (error "Ebox Range replacement requires an Ebox candidate"))
@@ -4100,7 +4179,12 @@ during `ebox-incremental-flush'."
          (record (gethash ref (plist-get base-state :range-ref-table))))
     (unless record
       (error "Ebox candidate Range ref does not exist in its base: %S" ref))
-    (let* ((parent (gethash (plist-get record :parent-node-id)
+    (let* ((retain-item-identities-p
+            (and retain-item-identities-p
+                 (ebox-incremental--candidate-range-items-retainable-p
+                  candidate next-items ebox-incremental--source-base-index
+                  reuse-map)))
+           (parent (gethash (plist-get record :parent-node-id)
                             (plist-get base-state :node-table)))
            (sequence (and parent (plist-get parent :ebox-child-sequence)))
            (segment (and sequence (ebox-child-range--lookup-ref sequence ref)))
@@ -4146,10 +4230,13 @@ during `ebox-incremental-flush'."
                       (reject-range child)))))
               (reject-range item))
             (let ((copy
-                   (ebox-tree-clear-runtime-identities
-                    (ebox-tree-copy-node-structure item))))
-              (ebox-tree-source-index
-               copy nil nil ebox-incremental--source-base-index t)
+                   (if retain-item-identities-p
+                       item
+                     (ebox-tree-clear-runtime-identities
+                      (ebox-tree-copy-node-structure item)))))
+              (unless retain-item-identities-p
+                (ebox-tree-source-index
+                 copy nil nil ebox-incremental--source-base-index t))
               copy)))
         (cl-loop
          for item in next-items
@@ -4189,9 +4276,9 @@ during `ebox-incremental-flush'."
                (list
                 (ebox-incremental--make-candidate-range-replacement
                  :ref ref :items owned :reuse-map (copy-tree reuse-map)
-                 :source-indexes source-indexes))))))
-  )
-  candidate)
+                 :source-indexes source-indexes
+                 :retain-item-identities-p retain-item-identities-p))))))
+    candidate))
 
 (defun ebox-incremental--candidate-ancestor-p
     (candidate ancestor-id descendant-id)
@@ -5325,6 +5412,9 @@ but must re-enter the candidate indexes as a new object."
                             entry))
                           (reuse-map
                            (ebox-incremental--candidate-range-replacement-reuse-map
+                            entry))
+                          (retain-item-identities-p
+                           (ebox-incremental--candidate-range-replacement-retain-item-identities-p
                             entry)))
                       (let ((segment-index
                              (plist-get (gethash ref base-ranges)
@@ -5352,7 +5442,8 @@ but must re-enter the candidate indexes as a new object."
                                        location)
                                do (plist-put item :ebox-sequence-location
                                              location))
-                      (push (list ref items reuse-map source-indexes)
+                      (push (list ref items reuse-map source-indexes
+                                  retain-item-identities-p)
                             replacements)))))
               (when replacements
                 (let* ((ordered-replacements (nreverse replacements))
@@ -5392,6 +5483,10 @@ but must re-enter the candidate indexes as a new object."
                                  (lambda (replacement)
                                    (cons (nth 0 replacement)
                                          (nth 2 replacement)))
+                                 ordered-replacements)
+                                (cl-every
+                                 (lambda (replacement)
+                                   (nth 4 replacement))
                                  ordered-replacements)))
                        (new-payloads
                         (mapcar
@@ -6976,8 +7071,11 @@ derive render changes from the computed fragment style signatures."
 
 (defun ebox-incremental--prepare-declarative-runtime
     (buffer old-state candidate-root &optional logical-candidate-p
-            local-preparation scroll-patch-p source-index)
-  "Prepare CANDIDATE-ROOT for BUFFER without mutating its published runtime."
+            local-preparation scroll-patch-p source-index prepare-all-styles-p)
+  "Prepare CANDIDATE-ROOT for BUFFER without mutating its published runtime.
+When PREPARE-ALL-STYLES-P is non-nil, compute selector-local styles for every
+candidate node so a topology-stable native publication has a complete style
+certificate."
   (let* ((old-root (plist-get old-state :root-node))
          (render-cache
           (or (plist-get old-state :render-cache)
@@ -7007,11 +7105,15 @@ derive render changes from the computed fragment style signatures."
                           candidate-source-index 'type))))
            (candidate-region-box-table
             (plist-get candidate-index :region-box-table))
+           (style-node-ids
+            (or (plist-get local-preparation :touched-node-ids)
+                (and prepare-all-styles-p
+                     (ebox-incremental--hash-keys
+                      (plist-get candidate-index :node-table)))))
            (candidate-subject-table
-            (and local-preparation
-                 (ebox-surface-prepare-inline-candidate-styles
-                  old-state candidate-index
-                  (plist-get local-preparation :touched-node-ids))))
+            (and style-node-ids
+                 (ebox-incremental--prepare-inline-candidate-styles
+                  old-state candidate-index style-node-ids)))
            (styles-prepared-p (hash-table-p candidate-subject-table))
            (source-dirty-set
             (if local-preparation
@@ -7020,7 +7122,7 @@ derive render changes from the computed fragment style signatures."
                old-state candidate-root candidate-index)))
            (dirty-set source-dirty-set)
            (current-display-signature (ebox--current-display-signature)))
-      (when local-preparation
+      (when (or local-preparation prepare-all-styles-p)
         ;; Participation depends on the final parent relation and, when the
         ;; local Style Adapter succeeded, on computed values.  Validate that
         ;; final contract once here; Surface consumes the resulting
@@ -7028,7 +7130,8 @@ derive render changes from the computed fragment style signatures."
         (ebox-tree-validate-indexed-participation
          (plist-get candidate-index :node-table)
          (plist-get candidate-index :parent-table)
-         (plist-get local-preparation :participation-node-ids)
+         (or (plist-get local-preparation :participation-node-ids)
+             style-node-ids)
          (if styles-prepared-p 'computed 'author)
          candidate-source-index))
       (when styles-prepared-p
@@ -7094,7 +7197,8 @@ derive render changes from the computed fragment style signatures."
                 :runtime-index-complete-p
                 (plist-get local-preparation :runtime-index-complete-p)
                 :computed-participation-validated-p
-                (and local-preparation styles-prepared-p)
+                (and (or local-preparation prepare-all-styles-p)
+                     styles-prepared-p)
                 :styles-prepared-p styles-prepared-p
                 :index candidate-index
                 :dirty-set dirty-set
@@ -7135,7 +7239,8 @@ derive render changes from the computed fragment style signatures."
      old-root (plist-get old-state :source-index)
      candidate-root candidate-source-index)
     (ebox-incremental--prepare-declarative-runtime
-     buffer old-state candidate-root nil nil nil candidate-source-index)))
+     buffer old-state candidate-root nil nil nil candidate-source-index
+     (eq (plist-get old-state :projection-kind) 'native-frame))))
 
 (defun ebox-incremental--candidate-source-input-map (candidate)
   "Return exact source-handle inputs carried by CANDIDATE operations."
@@ -7400,7 +7505,7 @@ line count; its outside siblings are shifted by the one scoped replacement."
                (null (plist-get old-state :scroll-region-ids))
                (not (plist-get old-state :cascade-active-p))
                (or (not (plist-get old-state :cascade-required-p))
-                   (ebox-surface--cascade-local-owner-proof-p
+                   (ebox-incremental--cascade-local-owner-proof-p
                     old-state candidate-state dirty-set))
                (cl-every
                 (lambda (entry)
@@ -7786,7 +7891,7 @@ suppresses the ordinary fallback when any fact is missing."
           (or (and (not (plist-get old-state :cascade-active-p))
                    (not (plist-get old-state :cascade-required-p))
                    (not (ebox-style-cascade-active-p)))
-              (ebox-surface--cascade-local-owner-proof-p
+              (ebox-incremental--cascade-local-owner-proof-p
                old-state candidate-state dirty-set))))
     (when (and geometry-span-proof
                (not (plist-get geometry-span-proof :owner-proofs)))
@@ -7907,7 +8012,7 @@ because it could address a run whose topology the closure just replaced."
                (or (and (not (plist-get old-state :cascade-active-p))
                         (not (plist-get old-state :cascade-required-p))
                         (not (ebox-style-cascade-active-p)))
-                   (ebox-surface--cascade-local-owner-proof-p
+                   (ebox-incremental--cascade-local-owner-proof-p
                     old-state candidate-state dirty-set)))
       (while (and candidate-id path-valid-p (not proof)
                   (not (equal candidate-id root-id)))
@@ -8099,42 +8204,19 @@ because it could address a run whose topology the closure just replaced."
     owner))
 
 (defun ebox-incremental--fixed-basis-flex-local-op
-    (buffer render-dirty-set)
-  "Return one local Flex-item op for related geometry RENDER-DIRTY-SET.
+  (buffer render-dirty-set)
+  "Return one tentative Flex-item op for related geometry RENDER-DIRTY-SET.
 
 Multiple descendant content changes can share a fixed-basis, zero-minimum Flex
-item without reflowing the outer Flex line.  The candidate item is still
-rendered into its retained slot and must pass the complete footprint proof."
+item without changing its main-axis allocation.  This planner only selects the
+shared owner; grouped proof verifies topology and the retained ancestor slot,
+then Surface performs the one actual candidate render and complete footprint,
+role, overflow, and outside-complement validation."
   (when (and (> (length render-dirty-set) 1)
              (cl-every
               (lambda (entry)
                 (and (eq (plist-get entry :dirty-kind) 'geometry)
-                     (not (plist-get entry :children))
-                     ;; Typography can change intrinsic allocation inside the
-                     ;; candidate Flex item.  Those owners already have exact
-                     ;; local span proofs; speculatively rendering their whole
-                     ;; common item here duplicates that work and commonly
-                     ;; rejects after the expensive render.
-                     (null (cl-intersection
-                            (plist-get entry :changed-keys)
-                            ebox--typography-style-signature-keys))
-                     ;; A whole-owner footprint proof cannot retain the same
-                     ;; intrinsic content runs when a changed text run already
-                     ;; has a different measured width.  Reject that group
-                     ;; before rendering it; the per-owner slot proofs can
-                     ;; still publish each changed run precisely.
-                     (let ((old-content
-                            (plist-get (plist-get entry :old-signature)
-                                       :content))
-                           (new-content
-                            (plist-get (plist-get entry :new-signature)
-                                       :content)))
-                       (or (not (memq :content
-                                      (plist-get entry :changed-keys)))
-                           (not (and (stringp old-content)
-                                     (stringp new-content)))
-                           (= (ebox--string-pixel-width old-content)
-                              (ebox--string-pixel-width new-content))))))
+                     (not (plist-get entry :children))))
               render-dirty-set))
     (let* ((owner-ids
             (delete-dups
@@ -8143,17 +8225,9 @@ rendered into its retained slot and must pass the complete footprint proof."
                 (ebox-incremental--nearest-fixed-basis-flex-item-owner-id
                  buffer (plist-get entry :node-id)))
               render-dirty-set)))
-           (owner-id (and (= (length owner-ids) 1) (car owner-ids)))
-           (changed-keys
-            (delete-dups
-             (cl-mapcan
-              (lambda (entry)
-                (copy-sequence (plist-get entry :changed-keys)))
-              render-dirty-set))))
+           (owner-id (and (= (length owner-ids) 1) (car owner-ids))))
       (when (and owner-id
-                 (not (equal owner-id (ebox--buffer-root-node-id buffer)))
-                 (ebox--cached-flex-item-slot-footprint-safe-p
-                  buffer owner-id changed-keys))
+                 (not (equal owner-id (ebox--buffer-root-node-id buffer))))
         (ebox--patch-op
          'owner-rerender owner-id
          :dirty (ebox--merge-dirty-provenance-list render-dirty-set))))))
@@ -8355,7 +8429,7 @@ closure may still plan one for a later owner-scoped surface projection."
               dirty-set)
       (or missing-structure-style-p
           (not
-           (ebox-surface--cascade-local-owner-proof-p
+           (ebox-incremental--cascade-local-owner-proof-p
             old-state candidate-state dirty-set)))))))
 
 (defun ebox-incremental--root-owner-plan (buffer dirty-set)
@@ -9335,7 +9409,7 @@ metadata; this predicate only authorizes the local attempt."
                           (not (ebox-style-cascade-active-p)))
                      (and (or (memq :content changed-keys)
                               local-typography-p)
-                          (ebox-surface--cascade-local-owner-proof-p
+                          (ebox-incremental--cascade-local-owner-proof-p
                            old-state candidate-state (list dirty))))
                  (null (plist-get old-state :scroll-region-ids))
                  (or (null (plist-get candidate-state :scroll-region-ids))
@@ -9413,7 +9487,7 @@ metadata; this predicate only authorizes the local attempt."
               (and (or (memq :content changed-keys) local-typography-p)
                    (or (plist-get old-state :cascade-active-p)
                        (plist-get old-state :cascade-required-p))
-                   (ebox-surface--cascade-local-owner-proof-p
+                   (ebox-incremental--cascade-local-owner-proof-p
                     old-state candidate-state (list dirty))))))))
 
 (defun ebox-incremental--owner-proofs-disjoint-p (buffer proofs)
@@ -9478,26 +9552,29 @@ role, and outside-complement compatibility before publication."
            (old-node (gethash owner-id (plist-get old-state :node-table)))
            (new-node (gethash owner-id
                               (plist-get candidate-state :node-table)))
+           (fixed-flex-slot-p
+            (ebox--flex-item-fixed-basis-content-allocation-stable-p
+             buffer owner-id))
            (snapshot
             (and old-node
-                 (ebox-incremental--cached-layout-snapshot-details
-                  buffer owner-id)))
+                 (if fixed-flex-slot-p
+                     (ebox-incremental--cached-allocation-snapshot
+                      buffer owner-id)
+                   (ebox-incremental--cached-layout-snapshot-details
+                    buffer owner-id))))
            (changed-keys
             (delete-dups
              (cl-mapcan
               (lambda (entry)
                 (copy-sequence (plist-get entry :changed-keys)))
               dirty-set)))
-           (fixed-flex-slot-p
-            (ebox--flex-item-fixed-basis-content-allocation-stable-p
-             buffer owner-id))
-           (owner-slot-proof
-            (ebox-incremental--owner-slot-stable-p
-             buffer old-state candidate-state owner-id))
            (fixed-flex-ancestor-proof
             (and fixed-flex-slot-p
-                 (not owner-slot-proof)
                  (ebox-incremental--ancestor-slot-signature
+                  buffer old-state candidate-state owner-id)))
+           (owner-slot-proof
+            (and (not fixed-flex-ancestor-proof)
+                 (ebox-incremental--owner-slot-stable-p
                   buffer old-state candidate-state owner-id)))
            ;; A grouped patch publishes the owner as one unit.  Its retained
            ;; external allocation is therefore the canonical certificate;
@@ -9551,7 +9628,7 @@ role, and outside-complement compatibility before publication."
             (or (and (not (plist-get old-state :cascade-active-p))
                      (not (plist-get old-state :cascade-required-p))
                      (not (ebox-style-cascade-active-p)))
-                (ebox-surface--cascade-local-owner-proof-p
+                (ebox-incremental--cascade-local-owner-proof-p
                  old-state candidate-state dirty-set))))
       (let ((ebox-incremental--buffer-render-state-override
              (cons buffer candidate-state))
@@ -9572,6 +9649,8 @@ role, and outside-complement compatibility before publication."
                               (or (eq key :content)
                                   (eq key :surface-properties)
                                   (memq key ebox--paint-style-signature-keys)
+                                  (memq key
+                                        ebox--typography-style-signature-keys)
                                   (memq key '(:font-family :font-size
                                               :font-weight :font-style))))
                             (plist-get entry :changed-keys))))
@@ -9660,7 +9739,7 @@ role, and outside-complement compatibility before publication."
             (or (and (not (plist-get old-state :cascade-active-p))
                      (not (plist-get old-state :cascade-required-p))
                      (not (ebox-style-cascade-active-p)))
-                (ebox-surface--cascade-local-owner-proof-p
+                (ebox-incremental--cascade-local-owner-proof-p
                  old-state candidate-state (list dirty)))))
       (when (and delta old-node new-node snapshot spans ancestor-slot-signature
                  (eq (plist-get operation :op) 'span-patch)
@@ -10510,6 +10589,10 @@ When RETAIN-NATIVE-P is non-nil, preserve its committed native frame bases."
   (append
    (list :viewport-width (plist-get state :viewport-width)
         :viewport-height (plist-get state :viewport-height)
+        ;; Candidate runtime revisions are the TP base revision for the
+        ;; upcoming viewport transaction; the published TP revision is
+        ;; advanced by the transaction and recorded after publication.
+        :runtime-revision (plist-get state :runtime-revision)
         :display-signature (plist-get state :display-signature)
         :render-cache (plist-get state :render-cache)
         :layout-fragments (plist-get state :layout-fragments)

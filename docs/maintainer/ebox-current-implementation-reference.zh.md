@@ -88,12 +88,23 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 - `ebox-style--property-definitions` 是 Ebox 作者属性的唯一来源：加载时一次生成 Ebox 自己的只读查询索引与一个不可变 ECSS package schema；surface schema 只组合一次，node 构造和更新不重复注册或复制整份 schema。
 - E1 固化封闭的 M2a 目标分类：不可变 generation fact、绑定 generation 的 scroll/native authority、opaque TP client-state custody、单向 compatibility mirror，以及 disposable cache。每一行分别记录当前 v1 存储形态，以及目标 owner、mutation API、generation binding、rollback、rebuild proof 与 cleanup。在后续 checkpoint 改变存储形态前，当前 v1 TP client state 仍保存完整 Ebox state plist。E1 mirror 探针只重建并比较投影，不修改 live state。
 - `ebox-layout.el` 不再 load 或调用 `ebox-surface.el`/TP。candidate isolation、继承 cascade 判定和一次性 materialization 只能通过 `ebox-render-context.el` 拥有的已校验 port 进入 layout；`ebox.el` 在两侧加载后接线 surface 实现。
+- `ebox-incremental.el` 同样不再包含任何 `ebox-surface` symbol 或 publication call。`ebox-surface.el` 只安装一个不可变只读 context port，提供 live client state、region mount、cascade proof 与 inline-style preparation；batch observation 留在更高层的 `ebox.el` orchestrator。
 - `ebox-patch-plan.el` 只消费 tentative operation plist 与不可变 generation parent table，并返回 deterministic plan artifact；所有 live fact 准备仍由 incremental adapter 拥有。E3 默认使用 pure route，同时保留显式 `legacy` 与执行等价检查的 `shadow` route；三条 route 都不能发布。
 - `ebox-style--property-definitions` 同时也是 used-value projection 的唯一真相源。非默认 engine lowering 写在每个 property 的 `:engine-projection` 中；ECSS metadata 暴露派生的 `:engine-targets`，只有非公共 engine 字段可以进入小型 internal exception table。
-- `ebox-framework-spi-capabilities` 返回 fresh immutable v2 provider record，声明 paired initial/update stage+rollback、combined participant order、same-object legacy report、initial observation replay 以及 `tp-transaction-protocol-v1+v2`。replay 只从 completed initial report 构造 defensive TP/Ebox provider reports，不带 mutate authority。Ebox 不创建 selected port 或 consumer bootstrap；现有 v1 callback API 保留。
+- `ebox-framework-spi-capabilities` 返回 fresh immutable v2 provider record，声明 paired initial/update stage+rollback、combined participant order、same-object legacy report、initial observation replay 以及 `tp-transaction-protocol-v1+v2`。initial TP/Ebox timing 在 publication 期间真实测量，以 defensive snapshot 写入 completed report 后再 replay；不生成虚假的零耗时数据，也不携带 mutate authority。Ebox 不创建 selected port 或 consumer bootstrap；现有 v1 callback API 保留。
+- Ebox 的 TP adapter 默认使用 manifest 声明的公开
+  `tp-transaction-participate-v2` API；`ebox-transaction-participant-route=v1`
+  是立即 kill switch。TP manifest 未提供 structured API 时，同一个 selection
+  owner 会选择完整 v1 adapter；每个 transaction 只注册一个 participant。
+- Framework report finalization 属于 postaccept 且保证不向外抛出。initial、full update 与 scoped update 的 completion fault 都以 `framework-report-finalization` diagnostics 留在同一个 legacy report 中，不能触发 framework rollback，也不能逃逸进 ETAF semantic rollback window。
 - `owner-rerender` 范围大于 `span-patch`，`span-patch` 大于 `paint-patch`。
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。
+- 只有继续已提交 native frame 的 full declarative update，才会在 stable native
+  eligibility 前为全部 candidate node 计算 selector-local style；生成的
+  `:styles-prepared-p` certificate 防止 replacement runtime 丢失 computed style，
+  普通 full/local update 仍保持 O(changed)。topology-changing full-frame bootstrap
+  继续可用。
 - 加载 Ebox 不会构建或安装可选 Rust 模块。
 - Phase 9 已完成：首次 mount、声明式 commit、handle/selector 更新、viewport/theme 更新、batch flush 与 scroll 更新全部通过 TP surface 发布。Phase 10 已把 selector 解析、匹配与 cascade 统一到 ECSS；Ebox 只计算 dirty/layout owner，并让不透明 runtime state 参与 TP 的可 rollback transaction，不存在第二个 live buffer executor。
 - 成功报告会保留 Ebox 语义 strategy 与 planned publication scope，再加入 `:publication-scope tp-surface`、TP 物理 operation 数、surface revision、scoped/full-root 事实和 retained-object reconciliation 统计。

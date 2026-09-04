@@ -265,8 +265,7 @@ the native continuation contract: a live session, a confirmable prior frame,
 the committed text/fragment bases, compiler postorder, and projection support."
   (and (eq (plist-get previous-state :projection-kind) 'native-frame)
        (plist-get previous-state :native-sync-session)
-       (or (plist-get previous-state :native-sync-pending)
-           (plist-get previous-state :native-sync-confirmed-p))
+       (plist-get previous-state :native-sync-confirmed-p)
        (stringp (plist-get previous-state :native-committed-rendered))
        (vectorp
         (plist-get previous-state :native-committed-fragment-template))
@@ -282,20 +281,51 @@ the committed text/fragment bases, compiler postorder, and projection support."
          (ebox-native-commit-projection-eligible-p
           previous-state state nil))))
 
+(defun ebox-native-commit--create-private-session (&optional session)
+  "Create a private native session, forking SESSION when it is present."
+  (if session
+      (ebox-native-reflow-fork-session session)
+    (ebox-native-reflow-create-session
+     :workers 1 :max-jobs 4 :max-results 4)))
+
 (defun ebox-native-commit--isolate-session
     (previous-state candidate-state)
-  "Give CANDIDATE-STATE a private child of PREVIOUS-STATE's native session."
-  (when-let* ((session (plist-get previous-state :native-sync-session))
-              (fork
-               (condition-case nil
-                   (ebox-native-reflow-fork-session session)
-                 (error nil))))
-    (plist-put candidate-state :native-sync-session fork)
-    ;; A pending/confirmed frame is local to the previous Rust handle.  The
-    ;; fork retains compiler facts but begins its own publication sequence.
-    (plist-put candidate-state :native-sync-pending nil)
-    (plist-put candidate-state :native-sync-confirmed-p nil)
-    t))
+  "Give CANDIDATE-STATE a private native session.
+Fork PREVIOUS-STATE's committed session when present; otherwise bootstrap a
+new session with the same bounded configuration used by retained frames."
+  (let ((source (plist-get previous-state :native-sync-session)))
+    (cl-remf candidate-state :native-session-setup-failure)
+    (condition-case condition
+        (when-let* ((private
+                     (ebox-native-commit--create-private-session source)))
+          (plist-put candidate-state :native-sync-session private)
+          (plist-put candidate-state :native-sync-pending nil)
+          ;; A strict native fork shares the source's immutable confirmed
+          ;; baseline.  Bootstrap sessions deliberately begin unconfirmed.
+          (plist-put candidate-state :native-sync-confirmed-p
+                     (not (null source)))
+          t)
+      (error
+       ;; The ordinary renderer remains the semantic fallback, but the failed
+       ;; native attempt must stay observable in the committed report.
+       (plist-put candidate-state :native-session-setup-failure
+                  (list :phase (if source 'fork 'create)
+                        :condition (copy-tree condition)))
+       nil))))
+
+(defun ebox-native-commit-attach-confirmed-base (previous-state state)
+  "Attach PREVIOUS-STATE's confirmed geometry identity to candidate STATE."
+  (when (and previous-state (plist-get state :native-sync-confirmed-p))
+    (let* ((root (plist-get previous-state :root-node))
+           (box (ebox-native-commit--root-box root)))
+      (plist-put state :native-base-viewport-width
+                 (plist-get previous-state :viewport-width))
+      (plist-put state :native-base-viewport-height
+                 (plist-get previous-state :viewport-height))
+      (plist-put state :native-base-root-width
+                 (or (and box (ebox--literal-root-pixel-width box))
+                     (plist-get previous-state :viewport-width)))))
+  state)
 
 (defun ebox-native-commit-prepare-viewport-continuity
     (previous-state candidate-state)
@@ -330,6 +360,12 @@ the committed text/fragment bases, compiler postorder, and projection support."
     (plist-put state :native-touched-node-ids layout-touched)
     (plist-put state :native-topology-stable-p stable)
     (when (and (or stable layout-touched)
+               ;; A stable native patch reuses prior TP objects and skips a
+               ;; full Surface style projection.  Its replacement nodes must
+               ;; therefore already carry the computed-style certificate.
+               ;; A topology-changing full bootstrap projects every node and
+               ;; does not need this local-style shortcut certificate.
+               (or (not stable) (plist-get prepared :styles-prepared-p))
                (not (ebox-style-cascade-active-p))
                (ebox-native-commit-projection-eligible-p
                 old-state state nil)
@@ -429,17 +465,26 @@ the committed text/fragment bases, compiler postorder, and projection support."
              :viewport-height viewport-height
              :root-width root-width
              :runtime-revision
+             ;; Ebox's internal runtime revision names the TP base revision
+             ;; for this candidate.  The published TP revision is confirmed
+             ;; separately after the transaction commits.
              (or (plist-get state :runtime-revision) 0)
              :context-hash
-             (sxhash-equal
-              (list viewport-width viewport-height root-width
-                    (plist-get state :display-signature)))
+             ;; Viewport and root geometry are matched by their typed fields
+             ;; below.  Keep this hash for the measurement/display context so
+             ;; content changes can still use the confirmed frame as a patch
+             ;; base while font/display changes invalidate it.
+             (sxhash-equal (plist-get state :display-signature))
              :complete t
              :root-metadata nil)
-       (when (plist-get state :native-sync-confirmed-p)
-         (list :base-viewport-width viewport-width
-               :base-viewport-height viewport-height
-               :base-root-width root-width))))))
+       (when (and (plist-get state :native-sync-confirmed-p)
+                  (plist-get state :native-topology-stable-p))
+         (list :base-viewport-width
+               (plist-get state :native-base-viewport-width)
+               :base-viewport-height
+               (plist-get state :native-base-viewport-height)
+               :base-root-width
+               (plist-get state :native-base-root-width)))))))
 
 (defun ebox-native-commit--apply-patches (source patches)
   "Return SOURCE with ordered native PATCHES applied."
@@ -472,25 +517,32 @@ the committed text/fragment bases, compiler postorder, and projection support."
           (aset target index record))))
     target))
 
-(defun ebox-native-commit--promote-pending-frame (state session)
-  "Promote STATE's previously published pending frame in SESSION."
+(defun ebox-native-commit-confirm-published-frame (state published-revision)
+  "Confirm STATE's pending native frame at its exact published revision.
+This function must run after TP installed STATE as client state and while the
+publication transaction can still roll back."
   (when-let* ((pending (plist-get state :native-sync-pending)))
-    (ebox-native-reflow-confirm-native-frame
-     session (plist-get pending :generation) (plist-get pending :key)
-     (plist-get pending :confirmed-revision))
-    (plist-put state :native-sync-confirmed-p t)
-    (cl-remf state :native-sync-pending)))
+    (let ((revision published-revision))
+      (unless (and (integerp revision) (>= revision 0)
+                   (= revision (plist-get pending :confirmed-revision)))
+        (error "Native published revision %S does not match pending revision %S"
+               revision (plist-get pending :confirmed-revision)))
+      (ebox-native-reflow-confirm-native-frame
+       (plist-get state :native-sync-session)
+       (plist-get pending :generation)
+       (plist-get pending :key)
+       revision)
+      (plist-put state :native-sync-confirmed-p t)
+      (cl-remf state :native-sync-pending)))
+  state)
 
 (defun ebox-native-commit--retained-frame (state node frame-spec)
   "Return NODE's full or patch-derived retained native frame for STATE."
   (let ((session
          (or (plist-get state :native-sync-session)
-             (let ((created
-                    (ebox-native-reflow-create-session
-                     :workers 1 :max-jobs 4 :max-results 4)))
+             (let ((created (ebox-native-commit--create-private-session)))
                (plist-put state :native-sync-session created)
                created))))
-    (ebox-native-commit--promote-pending-frame state session)
     (let* ((result
             (ebox-native-reflow-execute-session-sync
              session node frame-spec nil state))
@@ -560,9 +612,44 @@ the committed text/fragment bases, compiler postorder, and projection support."
                  (if (plist-get frame :native-patch) 'patch 'full))
       frame)))
 
+(defconst ebox-native-commit--failed-render-state-keys
+  '(:native-sync-session
+    :native-sync-pending
+    :native-sync-confirmed-p
+    :native-render-p
+    :native-render-output
+    :native-render-fragments
+    :native-render-frame
+    :native-render-fragment-template
+    :native-render-fallback
+    :native-frame-kind
+    :native-committed-rendered
+    :native-committed-fragment-template
+    :native-committed-owned-ranges
+    :native-coordinate-patches
+    :native-reuse-mount-projection-p
+    :native-reuse-ownership-p
+    :native-inherited-dirty-node-ids
+    :native-topology-stable-p
+    :native-touched-node-ids
+    :native-removed-node-ids)
+  "Candidate fields that are invalid after native rendering fails.")
+
+(defun ebox-native-commit--downgrade-candidate (state reason)
+  "Downgrade STATE after native rendering fails for diagnostic REASON."
+  (dolist (key ebox-native-commit--failed-render-state-keys)
+    (cl-remf state key))
+  (plist-put state :projection-kind nil)
+  ;; Surface consumes this once into the transaction report, then removes it
+  ;; from runtime state.  It never participates in projection eligibility.
+  (plist-put state :native-render-fallback reason)
+  nil)
+
 (defun ebox-native-commit-render (state node)
   "Return NODE's native rendered string after committing effects into STATE.
-Return nil without mutating STATE when the native capability proof is absent."
+Return nil without mutating STATE when the native capability proof is absent.
+Once native execution begins, failure downgrades STATE to an ordinary
+projection so the caller may publish its existing Elisp fallback truthfully."
   (when (and (require 'ebox-native-reflow nil t)
              (ebox-native-reflow-layout-ready-p)
              (eq (plist-get state :projection-kind) 'native-frame)
@@ -577,20 +664,22 @@ Return nil without mutating STATE when the native capability proof is absent."
                  (fragment-template
                   (and (not (plist-get effects :scroll-window-p))
                        (plist-get effects :fragment-span-template))))
-            (when (and (stringp rendered) (vectorp fragment-template))
-              (ebox-native-commit--install-region-boxes state)
-              (plist-put state :render-owned-text-values
-                         (make-hash-table :test #'eq))
-              (plist-put state :native-render-output rendered)
-              (plist-put state :native-render-frame frame)
-              (plist-put state :native-render-fragment-template
-                         fragment-template)
-              (plist-put state :native-render-p t)
-              rendered))
+            (if (and (stringp rendered) (vectorp fragment-template))
+                (progn
+                  (ebox-native-commit--install-region-boxes state)
+                  (plist-put state :render-owned-text-values
+                             (make-hash-table :test #'eq))
+                  (plist-put state :native-render-output rendered)
+                  (plist-put state :native-render-frame frame)
+                  (plist-put state :native-render-fragment-template
+                             fragment-template)
+                  (plist-put state :native-render-p t)
+                  rendered)
+              (ebox-native-commit--downgrade-candidate
+               state "Native rendering returned an incomplete frame")))
         (error
-         (plist-put state :native-render-fallback
-                    (error-message-string err))
-         nil)))))
+         (ebox-native-commit--downgrade-candidate
+          state (error-message-string err)))))))
 
 (provide 'ebox-native-commit)
 ;;; ebox-native-commit.el ends here

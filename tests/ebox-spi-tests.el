@@ -115,10 +115,55 @@
     (dolist (pattern '("featurep" "fboundp" "selected-port"
                        "etaf-renderer-port" "etaf-spi-bootstrap"))
       (should-not (string-match-p (regexp-quote pattern) source)))
-    (should (string-match-p "(tp \"1.0.0\")" facade))
+    (should (string-match-p "Version: 2.0.1" facade))
+    (should (string-match-p "(tp \"1.0.1\")" facade))
     (should (functionp #'ebox-render-to-buffer))
     (should (functionp #'ebox-commit))
     (should (functionp #'ebox-framework-spi-capabilities))))
+
+(ert-deftest ebox-spi-absent-tp-v2-keeps-the-v1-facade-loadable ()
+  "An absent TP transaction feature leaves the optional v2 provider absent."
+  (let* ((emacs (expand-file-name invocation-name invocation-directory))
+         (parent (file-name-directory
+                  (directory-file-name ebox-spi-test--root)))
+         (ecss (expand-file-name "ecss" parent))
+         (tp (expand-file-name "tp" parent))
+         (provider-source
+          (expand-file-name "ebox-spi.el" ebox-spi-test--root))
+         (probe
+          (prin1-to-string
+           `(progn
+              (require 'cl-lib)
+              (require 'ebox-canonical)
+              (require 'ebox-surface)
+              (let ((original-require (symbol-function 'require)))
+                (cl-letf (((symbol-function 'require)
+                           (lambda (feature &optional filename noerror)
+                             (if (eq feature 'tp-transaction)
+                                 nil
+                               (funcall original-require feature filename
+                                        noerror)))))
+                  (load ,provider-source nil t)))
+              (require 'ebox)
+              (unless (featurep 'ebox-spi)
+                (error "SPI loader feature is absent"))
+              (when (featurep 'ebox-framework-spi-v2)
+                (error "v2 provider feature leaked without TP v2"))
+              (when (fboundp 'ebox-framework-spi-capabilities)
+                (error "v2 provider predicate leaked without TP v2"))
+              (unless (and (fboundp 'ebox-render-to-buffer)
+                           (fboundp 'ebox-commit))
+                (error "v1 Ebox facade failed to load"))))))
+    (with-temp-buffer
+      (let ((status
+             (process-file
+              emacs nil (current-buffer) nil
+              "-Q" "--batch"
+              "-L" ebox-spi-test--root "-L" ecss "-L" tp
+              "--eval" "(setq load-prefer-newer t)"
+              "--eval" probe)))
+        (unless (zerop status)
+          (ert-fail (buffer-string)))))))
 
 (ert-deftest ebox-spi-initial-and-update-share-their-legacy-report ()
   "Both operation descriptors preserve paired callbacks and report identity."
@@ -206,9 +251,106 @@
                             (plist-get item :correlation-id))
                           reports)))
           (dolist (item reports)
-            (should (numberp (plist-get item :duration-ms))))
+            (should (numberp (plist-get item :duration-ms)))
+            (should (> (plist-get item :duration-ms) 0.0)))
+          (should
+           (equal reports
+                  (plist-get report
+                             :framework-initial-observation-reports)))
           (plist-put (car reports) :provider 'mutated)
           (should-not (plist-member report :provider)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-spi-native-retirement-failure-is-postaccept-diagnostic ()
+  "A contained native retirement failure cannot escape after final accept."
+  (ebox-spi-test--reset-runtime-state)
+  (let ((buffer (generate-new-buffer " *ebox-m2a-e5-native-retirement*"))
+        (diagnostic
+         '(:phase native-session-retirement :session-id 7
+           :condition (error "release failed"))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ebox-surface--settle-native-session)
+                   (lambda (&rest _arguments) (list diagnostic))))
+          (let ((report
+                 (ebox-framework-spi-initial
+                  buffer
+                  (ebox-test-box :key 'root (ebox-test-text "committed"))
+                  #'ignore #'ignore)))
+            (should (eq (plist-get report :framework-participant-state)
+                        'completed))
+            (should
+             (equal (plist-get report :framework-participant-diagnostics)
+                    (list diagnostic)))
+            (should (ebox-surface-buffer-mounted-p buffer))
+            (should (equal "committed"
+                           (with-current-buffer buffer
+                             (buffer-substring-no-properties
+                              (point-min) (point-max)))))
+            (let ((update-report
+                   (ebox-framework-spi-update
+                    buffer
+                    (ebox-test-box :key 'root (ebox-test-text "updated"))
+                    #'ignore #'ignore)))
+              (should (eq (plist-get update-report
+                                     :framework-participant-state)
+                          'completed))
+              (should
+               (equal
+                (plist-get update-report :framework-participant-diagnostics)
+                (list diagnostic)))
+              (should (equal "updated"
+                             (with-current-buffer buffer
+                               (buffer-substring-no-properties
+                                (point-min) (point-max))))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-spi-postaccept-report-failure-never-enters-rollback ()
+  "Initial, scoped, and full report-finalization faults stay postaccept."
+  (ebox-spi-test--reset-runtime-state)
+  (let ((buffer (generate-new-buffer " *ebox-m2a-e5-report-finalization*"))
+        (rollback-count 0))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ebox-surface--participant-complete)
+                   (lambda (&rest _arguments)
+                     (error "injected report finalization failure"))))
+          (cl-labels
+              ((assert-completed
+                (report)
+                (should (eq (plist-get report :framework-participant-state)
+                            'completed))
+                (should
+                 (eq (plist-get
+                      (car (plist-get report
+                                     :framework-participant-diagnostics))
+                      :phase)
+                     'framework-report-finalization))))
+            (let ((initial-report
+                   (ebox-framework-spi-initial
+                    buffer
+                    (ebox-test-box :key 'root (ebox-test-text "initial"))
+                    #'ignore (lambda (_report) (cl-incf rollback-count)))))
+              (assert-completed initial-report)
+              (should-not
+               (ebox-framework-spi-initial-observation-reports
+                initial-report)))
+            (assert-completed
+             (ebox-framework-spi-update
+              buffer (ebox-test-box :key 'root (ebox-test-text "scoped"))
+              #'ignore (lambda (_report) (cl-incf rollback-count))))
+            (let ((candidate (ebox-candidate-begin buffer)))
+              (ebox-candidate-replace-root
+               candidate
+               (ebox-test-box :key 'root (ebox-test-text "full")))
+              (assert-completed
+               (ebox-framework-spi-update
+                buffer candidate #'ignore
+                (lambda (_report) (cl-incf rollback-count)))))
+            (should (zerop rollback-count))
+            (should (string-match-p
+                     "full"
+                     (with-current-buffer buffer
+                       (buffer-substring-no-properties
+                        (point-min) (point-max)))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-spi-public-unmount-allows-a-fresh-initial-generation ()

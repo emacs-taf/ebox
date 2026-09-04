@@ -69,6 +69,8 @@
                   "ebox-buffer-backend" (string property region-id))
 (declare-function ebox--propertize-content-line
                   "ebox-buffer-backend" (line region-id idx fallback))
+(declare-function ebox--add-content-owner
+                  "ebox-buffer-backend" (string region-id))
 
 (defvar ebox--propertize-private-content-line-p)
 (defvar ebox--flex-content-min-width-table)
@@ -892,7 +894,7 @@ metrics, and render intrinsically only when layout semantics require it."
         (ebox--flex-unrendered-measurement source props axis)
         (ebox--flex-measure-source source props axis viewport probe))))
 
-(defun ebox--flex-pad-width (string width &optional align)
+(defun ebox--flex-pad-width (string width &optional align owner-id)
   "Pad every line of STRING to WIDTH pixels."
   (let ((align (or align 'flex-start)))
     (ebox--maplines
@@ -903,19 +905,27 @@ metrics, and render intrinsically only when layout semantics require it."
                       ((or 'flex-end 'end 'right 'self-end) extra)
                       ('center (/ extra 2))
                       (_ 0))))
-         (concat (ebox-pixel-space left)
-                 line
-                 (ebox-pixel-space (- extra left)))))
+         (let ((left-space (ebox-pixel-space left))
+               (right-space (ebox-pixel-space (- extra left))))
+           (when owner-id
+             (setq left-space
+                   (ebox--add-content-owner left-space owner-id))
+             (setq right-space
+                   (ebox--add-content-owner right-space owner-id)))
+           (concat left-space line right-space))))
      string)))
 
-(defun ebox--flex-pad-height (string height offset width)
+(defun ebox--flex-pad-height (string height offset width &optional owner-id)
   "Pad STRING vertically to HEIGHT using blank lines of WIDTH pixels."
   (let* ((lines (ebox-string-lines string))
          (current (length lines))
          (extra (max 0 (- height current)))
          (top (max 0 (min extra offset)))
          (bottom (- extra top))
-         (blank (ebox-pixel-space width)))
+         (blank (ebox-pixel-space width))
+         (blank (if owner-id
+                    (ebox--add-content-owner blank owner-id)
+                  blank)))
     (ebox-lines-join
      (append (make-list top blank)
              lines
@@ -1009,6 +1019,8 @@ Each item in PARTS is a cons cell (RENDERED . WIDTH)."
 Return a sized render entry containing the rendered string and dimensions."
   (let* ((source (plist-get item :source))
          (source-box-p (ebox--flex-box-source-p source))
+         (allocation-owner
+          (and source-box-p (ebox--ensure-region-id source)))
          (align (ebox--flex-resolved-align item container-align))
          (stretch (memq align '(stretch normal)))
          (render-main (plist-get item :render-main))
@@ -1143,7 +1155,9 @@ Return a sized render entry containing the rendered string and dimensions."
                    main
                    (not (and can-use-measured (= main render-main))))
           (if (eq axis 'row)
-              (setq rendered (ebox--flex-pad-width rendered main))
+              (setq rendered
+                    (ebox--flex-pad-width
+                     rendered main nil allocation-owner))
             (setq rendered
                   (ebox--flex-pad-height
                    rendered main 0 (ebox--flex-string-width rendered)))))
@@ -1158,8 +1172,12 @@ Return a sized render entry containing the rendered string and dimensions."
                       (width (max (or main rendered-width) rendered-width))
                       (extra (max 0 (- cross (ebox-string-height rendered))))
                       (offset (ebox--flex-cross-offset align extra)))
-                (setq rendered (ebox--flex-pad-height rendered cross offset width)))
-            (setq rendered (ebox--flex-pad-width rendered cross align))))
+                (setq rendered
+                      (ebox--flex-pad-height
+                       rendered cross offset width allocation-owner)))
+            (setq rendered
+                  (ebox--flex-pad-width
+                   rendered cross align allocation-owner))))
         (let ((entry
                (ebox--flex-sized-entry
                 rendered

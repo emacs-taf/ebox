@@ -12188,6 +12188,23 @@ explicit visible-window handoff may admit its full-content publication."
       (should (string-match-p word plain)))
     (should (> (ebox-string-height rendered) 1))))
 
+(ert-deftest ebox-column-wraps-direct-text-in-containing-block ()
+  "A direct Text child inherits the containing Box wrap policy."
+  (ebox-test--reset-runtime-state)
+  (let* ((ebox-viewport-width 1000)
+         (node
+          (ebox-test-column
+           :width '(20) :wrap-mode 'word
+           (ebox-test-text
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa")))
+         (rendered (ebox-render node))
+         (widths
+          (mapcar #'ebox--string-pixel-width (ebox-string-lines rendered))))
+    (should (> (length widths) 1))
+    (should (cl-every (lambda (width) (<= width 20)) widths))
+    (should (string-match-p "alpha" (substring-no-properties rendered)))
+    (should (string-match-p "kappa" (substring-no-properties rendered)))))
+
 (ert-deftest ebox-wrapper-child-layout-keeps-pixel-width-with-wide-font ()
   "Engine pixel widths must not be reparsed as public character widths."
   (ebox-test--reset-runtime-state)
@@ -13131,6 +13148,71 @@ face patch must match that exactly (issue014)."
                 (should
                  (ebox-test--buffer-propertized-matches-runtime-render-p)))))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest ebox-native-stable-full-commit-prepares-style-certificate ()
+  "A stable full-source commit certifies styles before native eligibility."
+  (ebox-test--reset-runtime-state)
+  (let* ((buffer (generate-new-buffer " *ebox-native-style-certificate*"))
+         (before
+          (ebox-build
+           '(column :key root
+             (box :key target :id target :width (52) :padding (0 1)
+                  :color "#0F172A" :bgcolor "#F8FAFC" "Before")
+             (box :key peer :id peer :width (52) :padding (0 1)
+                  :color "#0F172A" :bgcolor "#F8FAFC" "Peer"))))
+         (after
+          (ebox-build
+           '(column :key root
+             (box :key target :id target :width (52) :padding (0 1)
+                  :color "#0F172A" :bgcolor "#F8FAFC" "UPDATED\ndetail")
+             (box :key peer :id peer :width (52) :padding (0 1)
+                  :color "#0F172A" :bgcolor "#F8FAFC" "Peer")))))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer before)
+          ;; The core suite disables the optional module.  Mark the otherwise
+          ;; ordinary committed fixture as a prior confirmed native frame so
+          ;; this test deterministically exercises the update eligibility
+          ;; boundary without depending on a local dylib.
+          (plist-put (ebox--buffer-render-state buffer)
+                     :projection-kind 'native-frame)
+          (let* ((peer-before
+                  (car (ebox-selector-query-buffer buffer "#peer")))
+                 (peer-node-id (plist-get peer-before :node-id))
+                 (peer-region-id (plist-get peer-before :region-id))
+                 (style-before
+                  (plist-get (ebox--buffer-runtime-node buffer peer-node-id)
+                             :ebox-computed-style))
+                 (plan (symbol-function 'ebox-native-commit-plan-eligible-p))
+                 prepared-seen report
+                 (_commit
+                  (cl-letf
+                      (((symbol-function 'ebox-native-commit-plan-eligible-p)
+                        (lambda (old-state candidate-state prepared)
+                          (setq prepared-seen prepared)
+                          (funcall plan old-state candidate-state prepared))))
+                    (setq report (ebox-commit buffer after))))
+                 (peer-after (car (ebox-selector-query-buffer buffer "#peer")))
+                 (style-after
+                  (plist-get (ebox--buffer-runtime-node buffer peer-node-id)
+                             :ebox-computed-style))
+                 (values (and style-after
+                              (ecss-computed-style-values style-after))))
+            (should style-before)
+            (should (plist-get prepared-seen :styles-prepared-p))
+            (should (plist-get prepared-seen
+                               :computed-participation-validated-p))
+            (should (eq (plist-get report :strategy) 'span-patch))
+            (should (= (plist-get peer-after :node-id) peer-node-id))
+            (should (= (plist-get peer-after :region-id) peer-region-id))
+            (should style-after)
+            (should (equal (plist-get values 'ebox/color) "#0F172A"))
+            (should (equal (plist-get values 'ebox/background-color)
+                           "#F8FAFC"))
+            (with-current-buffer buffer
+              (should
+               (ebox-test--buffer-propertized-matches-runtime-render-p)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-typed-commit-preserves-unaffected-source-range ()
   "A keyed peer keeps identity and bounds across a sibling-only commit."

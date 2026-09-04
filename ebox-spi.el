@@ -14,7 +14,11 @@
 (require 'cl-lib)
 (require 'ebox-canonical)
 (require 'ebox-surface)
-(require 'tp-transaction)
+(defvar tp-transaction-protocol)
+
+(defconst ebox-framework-spi--tp-v2-available-p
+  (require 'tp-transaction nil t)
+  "Non-nil when TP exposes the additive transaction protocol module.")
 
 (declare-function ebox--render-to-buffer-internal
                   "ebox" (buffer-or-name input options &optional participant))
@@ -156,13 +160,28 @@ transaction failure.  Return that same report object after completion."
   (let ((buffer (get-buffer-create buffer-or-name)))
     (when (ebox-surface-buffer-mounted-p buffer)
       (error "Ebox SPI initial operation requires an unmounted buffer"))
-    (let ((participant
-           (ebox-surface--make-framework-participant
-            :publish framework-stage
-            :rollback framework-rollback
-            :state 'unpublished
-            :diagnostics nil)))
-      (ebox--render-to-buffer-internal buffer input nil participant))))
+    (let* ((existing-bridge
+            (with-current-buffer buffer ebox-surface--tp-observer))
+           (_bridge (or existing-bridge
+                        (ebox-surface--ensure-tp-observer buffer)))
+           (started (float-time))
+           (participant
+            (ebox-surface--make-framework-participant
+             :publish
+             (lambda (report)
+               (plist-put report :framework-initial-observation-started
+                          started)
+               (funcall framework-stage report))
+             :rollback
+             (lambda (report)
+               (cl-remf report :framework-initial-observation-started)
+               (funcall framework-rollback report))
+             :state 'unpublished
+             :diagnostics nil)))
+      (unwind-protect
+          (ebox--render-to-buffer-internal buffer input nil participant)
+        (unless existing-bridge
+          (ebox-surface-cleanup-buffer-observer buffer))))))
 
 (defun ebox-framework-spi-update
     (buffer-or-name input framework-stage framework-rollback)
@@ -173,7 +192,7 @@ Return the same completed legacy report object observed by FRAMEWORK-STAGE."
   (ebox-commit buffer-or-name input framework-stage framework-rollback))
 
 (defun ebox-framework-spi-initial-observation-reports (report)
-  "Return TP/Ebox provider reports reconstructed from completed initial REPORT.
+  "Return TP/Ebox provider snapshots captured by completed initial REPORT.
 The reports are defensive observational snapshots; they expose no publication
 or promotion capability."
   (unless (and (proper-list-p report)
@@ -181,27 +200,31 @@ or promotion capability."
                (integerp (plist-get report :tp-transaction-id)))
     (signal 'ebox-framework-spi-provider-error
             (list :invalid-initial-report report)))
-  (let* ((transaction-id (plist-get report :tp-transaction-id))
-         (tp-report
-          (list :provider 'tp
-                :stage 'publication
-                :status 'success
-                :duration-ms 0.0
-                :correlation-id transaction-id
-                :transaction-id transaction-id
-                :surface-revision (plist-get report :surface-revision)
-                :text-operations (plist-get report :tp-text-operations)
-                :property-operations
-                (plist-get report :tp-property-operations)
-                :operation-count (plist-get report :tp-operation-count)))
-         (ebox-report (copy-tree report)))
-    (dolist (entry `((:provider . ebox)
-                     (:stage . mount)
-                     (:status . success)
-                     (:duration-ms . 0.0)
-                     (:correlation-id . ,transaction-id)))
-      (setq ebox-report (plist-put ebox-report (car entry) (cdr entry))))
-    (list tp-report ebox-report)))
+  (let ((reports
+         (plist-get report :framework-initial-observation-reports)))
+    (cond
+     ((and (proper-list-p reports)
+           (= (length reports) 2)
+           (equal (mapcar (lambda (item)
+                            (plist-get item :provider))
+                          reports)
+                  '(tp ebox))
+           (cl-every
+            (lambda (item)
+              (and (numberp (plist-get item :duration-ms))
+                   (>= (plist-get item :duration-ms) 0.0)))
+            reports))
+      (copy-tree reports))
+     ((cl-find 'framework-report-finalization
+               (plist-get report :framework-participant-diagnostics)
+               :key (lambda (entry) (plist-get entry :phase)))
+      ;; The accepted publication remains authoritative.  Its completed
+      ;; report carries the failure; observer replay is skipped, never
+      ;; reclassified as a rollback-capable provider error.
+      nil)
+     (t
+      (signal 'ebox-framework-spi-provider-error
+              (list :missing-initial-observation-reports report))))))
 
 (defun ebox-framework-spi--operation
     (kind function argument-schema)
@@ -285,7 +308,31 @@ or promotion capability."
     (ebox-framework-spi-validate-provider provider)
     provider))
 
-(provide 'ebox-framework-spi-v2)
+(if ebox-framework-spi--tp-v2-available-p
+    (provide 'ebox-framework-spi-v2)
+  (dolist (function
+           '(ebox-framework-spi-operation-kind
+             ebox-framework-spi-operation-function
+             ebox-framework-spi-operation-argument-schema
+             ebox-framework-spi-operation-result-schema
+             ebox-framework-spi-operation-paired-stage-rollback-p
+             ebox-framework-spi-provider-spi-version
+             ebox-framework-spi-provider-schema-version
+             ebox-framework-spi-provider-capabilities
+             ebox-framework-spi-provider-tp-protocol
+             ebox-framework-spi-provider-stage-order
+             ebox-framework-spi-provider-rollback-order
+             ebox-framework-spi-provider-report-semantics
+             ebox-framework-spi-provider-initial-operation
+             ebox-framework-spi-provider-update-operation
+             ebox-framework-spi-initial
+             ebox-framework-spi-update
+             ebox-framework-spi-initial-observation-reports
+             ebox-framework-spi-validate-provider
+             ebox-framework-spi-capabilities))
+    (when (symbol-function function)
+      (fmakunbound function)))
+  (setq features (delq 'ebox-framework-spi-v2 features)))
 (provide 'ebox-spi)
 
 ;;; ebox-spi.el ends here

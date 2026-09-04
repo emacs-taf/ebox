@@ -97,6 +97,17 @@
     (should (string-match-p
              "ebox-render-context-materialize-string" source))))
 
+(ert-deftest ebox-incremental-boundary-uses-injected-context-port ()
+  "Incremental planning has no upward Surface symbol or publication edge."
+  (let ((source (ebox-layout-boundary-test--source "ebox-incremental.el")))
+    (should-not (string-match-p "ebox-surface" source))
+    (should (ebox-incremental-context-port-p
+             ebox-incremental--context-port))
+    (should
+     (string-match-p
+      "(ebox-incremental-install-context-port"
+      (ebox-layout-boundary-test--source "ebox-surface.el")))))
+
 (ert-deftest ebox-layout-boundary-preserves-pre-e2-layout-artifacts ()
   "The injected route preserves every old character and property interval."
   (dolist (input (ebox-layout-boundary-test--fixtures))
