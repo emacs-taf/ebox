@@ -1349,7 +1349,10 @@ fn render_layout_payload(
                                 baseline,
                                 document_base_revision,
                                 &base_identity,
-                            ) && baseline.styles == document.styles
+                            ) && layout::style_registry_extends_exact_prefix(
+                                &baseline.styles,
+                                &document.styles,
+                            )
                         })
                         .cloned();
                     if require_confirmed_patch_base && base_hit.is_none() {
@@ -2011,6 +2014,35 @@ mod tests {
             .into_bytes()
     }
 
+    fn styled_layout_payload(
+        document_base_revision: u64,
+        document_target_revision: u64,
+        style_count: u32,
+        styles: &str,
+        foreground_style: u32,
+        frames: &str,
+    ) -> Vec<u8> {
+        let payload = String::from_utf8(replacement_layout_payload(
+            document_base_revision,
+            document_target_revision,
+            frames,
+        ))
+        .unwrap();
+        payload
+            .replacen(
+                r#""style-count":0"#,
+                &format!(r#""style-count":{style_count}"#),
+                1,
+            )
+            .replacen(r#""styles":[]"#, &format!(r#""styles":{styles}"#), 1)
+            .replacen(
+                r#""foreground-style":null"#,
+                &format!(r#""foreground-style":{foreground_style}"#),
+                1,
+            )
+            .into_bytes()
+    }
+
     fn column_proof_layout_payload(frames: &str) -> Vec<u8> {
         format!(
             r#"{{"version":1,"document-base-revision":0,"document-target-revision":1,"document":{{"version":2,"space-width":8,"style-count":0,"styles":[],"root":{{"type":"column","children":[{{"type":"box","region-id":1,"content":{{"lines":[{{"clusters":[{{"text":"x","width":8,"cjk":false,"space":false}}]}}]}},"child":null,"content-width-exact":false,"width":{{"kind":"content"}},"min-width":{{"kind":"pixels","value":0}},"max-width":{{"kind":"none"}},"height":{{"kind":"auto"}},"min-height":{{"kind":"lines","value":0}},"max-height":{{"kind":"none"}},"box-sizing":"border-box","padding-left":0,"padding-right":0,"padding-top":0,"padding-bottom":0,"margin-left":0,"margin-right":0,"margin-top":0,"margin-bottom":0,"border-left":0,"border-right":0,"foreground-style":null,"background-style":null,"border-left-style":null,"border-right-style":null,"border-top-style":null,"border-bottom-style":null,"text-align":"left","vertical-align":"top","overflow":"scroll","wrap-mode":"word","scroll-offset":0}},{{"type":"box","region-id":2,"content":{{"lines":[{{"clusters":[{{"text":"yy","width":16,"cjk":false,"space":false}}]}}]}},"child":null,"content-width-exact":false,"width":{{"kind":"content"}},"min-width":{{"kind":"pixels","value":0}},"max-width":{{"kind":"none"}},"height":{{"kind":"auto"}},"min-height":{{"kind":"lines","value":0}},"max-height":{{"kind":"none"}},"box-sizing":"border-box","padding-left":0,"padding-right":0,"padding-top":0,"padding-bottom":0,"margin-left":0,"margin-right":0,"margin-top":0,"margin-bottom":0,"border-left":0,"border-right":0,"foreground-style":null,"background-style":null,"border-left-style":null,"border-right-style":null,"border-top-style":null,"border-bottom-style":null,"text-align":"left","vertical-align":"top","overflow":"scroll","wrap-mode":"word","scroll-offset":0}}]}}}},"frames":{frames}}}"#
@@ -2438,6 +2470,55 @@ mod tests {
         assert_eq!(child.stats().target_renders, 1);
         parent.stop(true);
         child.stop(true);
+    }
+
+    #[test]
+    fn confirmed_patch_base_accepts_only_append_stable_style_registries() {
+        let parent = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = styled_layout_payload(
+            0,
+            1,
+            1,
+            r##"[{"mode":"set","face":{"foreground":"#111111"}}]"##,
+            0,
+            r#"[{"key":1,"viewport-width":120,"viewport-height":10,"root-width":120,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        assert!(!tape_patch_p(&parent.render_sync(1, &first).unwrap()));
+        assert!(parent.confirm(1, 1, 1).unwrap());
+
+        let appended_child = parent.fork_confirmed().unwrap();
+        let appended = styled_layout_payload(
+            1,
+            2,
+            2,
+            r##"[{"mode":"set","face":{"foreground":"#111111"}},{"mode":"set","face":{"background":"#222222"}}]"##,
+            1,
+            r#"[{"key":2,"viewport-width":120,"viewport-height":10,"root-width":120,"patch":true,"base-viewport-width":120,"base-viewport-height":10,"base-root-width":120,"runtime-revision":1,"context-hash":77}]"#,
+        );
+        assert!(tape_patch_p(
+            &appended_child.render_sync(1, &appended).unwrap()
+        ));
+        assert_eq!(appended_child.stats().baseline_hits, 1);
+        assert_eq!(appended_child.stats().base_renders, 0);
+
+        let changed_child = parent.fork_confirmed().unwrap();
+        let changed = styled_layout_payload(
+            1,
+            2,
+            2,
+            r##"[{"mode":"set","face":{"foreground":"#999999"}},{"mode":"set","face":{"background":"#222222"}}]"##,
+            1,
+            r#"[{"key":3,"viewport-width":120,"viewport-height":10,"root-width":120,"patch":true,"base-viewport-width":120,"base-viewport-height":10,"base-root-width":120,"runtime-revision":1,"context-hash":77}]"#,
+        );
+        assert!(!tape_patch_p(
+            &changed_child.render_sync(1, &changed).unwrap()
+        ));
+        assert_eq!(changed_child.stats().baseline_hits, 0);
+        assert_eq!(changed_child.stats().base_renders, 0);
+
+        parent.stop(true);
+        appended_child.stop(true);
+        changed_child.stop(true);
     }
 
     #[test]
