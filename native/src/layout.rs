@@ -1248,6 +1248,13 @@ impl StyleTemplate {
     }
 }
 
+pub(crate) fn style_registry_extends_exact_prefix(
+    old: &[StyleTemplate],
+    target: &[StyleTemplate],
+) -> bool {
+    target.starts_with(old)
+}
+
 fn composed_face(
     properties: &AtomProperties,
     styles: &[CompiledStyle],
@@ -2269,6 +2276,17 @@ fn root_metadata_payload(
     }))
 }
 
+fn validate_tape_style_ids(properties: &AtomProperties, style_count: u32) -> Result<(), String> {
+    if properties
+        .style_ids
+        .iter()
+        .any(|style_id| *style_id >= style_count)
+    {
+        return Err("Native layout tape has invalid style id".to_owned());
+    }
+    Ok(())
+}
+
 fn flatten_layout_tape(tape: LayoutTape, complete: bool) -> Result<FlatLayoutTape, String> {
     if tape.lines.is_empty() {
         return Err("Native layout tape has no lines".to_owned());
@@ -2289,6 +2307,7 @@ fn flatten_layout_tape(tape: LayoutTape, complete: bool) -> Result<FlatLayoutTap
                     width,
                     properties,
                 } => {
+                    validate_tape_style_ids(&properties, tape.style_count)?;
                     let width = tape_width(width, "text width")?;
                     if text.is_empty() || text.contains('\n') {
                         return Err("Native layout tape has invalid text atom".to_owned());
@@ -2304,6 +2323,7 @@ fn flatten_layout_tape(tape: LayoutTape, complete: bool) -> Result<FlatLayoutTap
                         .ok_or_else(|| "Native layout tape width overflow".to_owned())?;
                 }
                 TapeAtom::Space { width, properties } => {
+                    validate_tape_style_ids(&properties, tape.style_count)?;
                     let width = tape_width(width, "space width")?;
                     if width == 0 {
                         return Err("Native layout tape has empty pixel space".to_owned());
@@ -2323,6 +2343,7 @@ fn flatten_layout_tape(tape: LayoutTape, complete: bool) -> Result<FlatLayoutTap
             return Err("Native layout tape line width invariant failed".to_owned());
         }
         if let Some(properties) = line.break_after {
+            validate_tape_style_ids(&properties, tape.style_count)?;
             characters.push(TapeCharacter {
                 value: '\n',
                 pixel_width: None,
@@ -2616,7 +2637,7 @@ pub(crate) fn encode_layout_patch_tape(
 ) -> Result<Vec<u8>, String> {
     let old = flatten_layout_tape(old_tape, identity.complete)?;
     let target = flatten_layout_tape(target_tape, identity.complete)?;
-    if old.style_count != target.style_count || target.style_count as usize != styles.len() {
+    if old.style_count > target.style_count || target.style_count as usize != styles.len() {
         return Err("Native layout patch style table mismatch".to_owned());
     }
     let compiled_styles = styles
@@ -5922,6 +5943,10 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
+    fn styles(json: &str) -> Vec<StyleTemplate> {
+        serde_json::from_str(json).unwrap()
+    }
+
     fn cluster(text: &str, width: i64, source_template_id: Option<u32>) -> MeasuredCluster {
         MeasuredCluster {
             text: text.to_owned(),
@@ -6113,6 +6138,77 @@ mod tests {
             root_width: 80,
             complete: true,
         }
+    }
+
+    #[test]
+    fn style_registry_reuse_requires_an_exact_stable_prefix() {
+        let old = styles(
+            r##"[{"mode":"set","face":{"foreground":"#111111"}},{"mode":"add","face":{"background":"#222222"}}]"##,
+        );
+        let appended = styles(
+            r##"[{"mode":"set","face":{"foreground":"#111111"}},{"mode":"add","face":{"background":"#222222"}},{"mode":"set","face":{"foreground":"#333333"}}]"##,
+        );
+        let changed = styles(
+            r##"[{"mode":"set","face":{"foreground":"#999999"}},{"mode":"add","face":{"background":"#222222"}},{"mode":"set","face":{"foreground":"#333333"}}]"##,
+        );
+        let removed = styles(r##"[{"mode":"set","face":{"foreground":"#111111"}}]"##);
+        let renumbered = styles(
+            r##"[{"mode":"add","face":{"background":"#222222"}},{"mode":"set","face":{"foreground":"#111111"}},{"mode":"set","face":{"foreground":"#333333"}}]"##,
+        );
+
+        assert!(style_registry_extends_exact_prefix(&old, &appended));
+        assert!(!style_registry_extends_exact_prefix(&old, &changed));
+        assert!(!style_registry_extends_exact_prefix(&old, &removed));
+        assert!(!style_registry_extends_exact_prefix(&old, &renumbered));
+    }
+
+    #[test]
+    fn layout_patch_accepts_appended_styles_but_validates_each_tape_count() {
+        fn tape(style_count: u32, style_id: u32) -> LayoutTape {
+            LayoutTape {
+                style_count,
+                lines: vec![TapeLine {
+                    width: 1,
+                    atoms: vec![TapeAtom::Text {
+                        text: "x".to_owned(),
+                        width: 1,
+                        properties: AtomProperties {
+                            style_ids: vec![style_id],
+                            ..AtomProperties::default()
+                        },
+                    }],
+                    break_after: None,
+                }],
+            }
+        }
+
+        let registry = styles(
+            r##"[{"mode":"set","face":{"foreground":"#111111"}},{"mode":"set","face":{"background":"#222222"}}]"##,
+        );
+        let encoded = encode_layout_patch_tape(
+            tape(1, 0),
+            tape(2, 1),
+            &registry,
+            complete_identity(),
+            false,
+            4096,
+        )
+        .unwrap();
+        assert_ne!(
+            u16::from_le_bytes(encoded[6..8].try_into().unwrap()) & (1 << 2),
+            0
+        );
+
+        let error = encode_layout_patch_tape(
+            tape(1, 1),
+            tape(2, 1),
+            &registry,
+            complete_identity(),
+            false,
+            4096,
+        )
+        .unwrap_err();
+        assert_eq!(error, "Native layout tape has invalid style id");
     }
 
     #[test]

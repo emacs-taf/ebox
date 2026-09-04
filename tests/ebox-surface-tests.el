@@ -1673,6 +1673,58 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (when next-session
         (should (ebox-native-reflow-session-released-p next-session))))))
 
+(ert-deftest ebox-native-appended-style-keeps-a-local-property-patch ()
+  "An appended style preserves native and TP locality with exact output."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-native-appended-style*")))
+    (unwind-protect
+        (cl-labels
+            ((source
+              (background)
+              (apply
+               #'ebox-test-column
+               (cl-loop
+                for index below 32
+                collect
+                (apply
+                 #'ebox-test-box
+                 (append
+                  (list :key index :source-identity index
+                        (ebox-test-text (char-to-string (+ ?A index))))
+                  (and (= index 16) background
+                       (list :bgcolor background)))))))
+             (node-ids
+              (state)
+              (let (ids)
+                (ebox-surface-test--walk-runtime
+                 (plist-get state :root-node)
+                 (lambda (node) (push (plist-get node :node-id) ids)))
+                (nreverse ids))))
+          (let ((ebox-viewport-width 240)
+                (ebox-viewport-height 40)
+                (ebox-runtime-idle-prewarm nil)
+                (ebox-runtime-idle-reflow-cache-prewarm nil))
+            (ebox-render-to-buffer buffer (source nil))
+            (let* ((surface
+                    (with-current-buffer buffer ebox-surface--buffer-surface))
+                   (old-state (tp-surface-client-state surface))
+                   (old-node-ids (node-ids old-state))
+                   (report (ebox-commit buffer (source "#224466")))
+                   (state (tp-surface-client-state surface))
+                   (tp-report (tp-surface-report surface))
+                   (expected (ebox-surface-test--render-runtime state))
+                   (actual
+                    (with-current-buffer buffer
+                      (buffer-substring (point-min) (point-max)))))
+              (should (eq (plist-get report :projection-kind) 'native-frame))
+              (should (eq (plist-get report :native-frame-kind) 'patch))
+              (should (= (plist-get tp-report :touched-characters) 2))
+              (should (equal (node-ids state) old-node-ids))
+              (should (equal-including-properties actual expected)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest ebox-viewport-reflow-retains-final-sized-flex-child-fragments ()
   "Viewport reflow should reuse final-sized Flex child fragments exactly."
   (ebox-surface-test--reset-render-state)
