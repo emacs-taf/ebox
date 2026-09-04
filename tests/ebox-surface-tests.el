@@ -1500,6 +1500,11 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (should (ebox-native-reflow-session-released-p session))
               (should-not (ebox-native-reflow-session-released-p
                            committed-session))
+              (let ((stats
+                     (ebox-native-reflow-stats committed-session)))
+                (should (= (plist-get stats :document-parses) 0))
+                (should (= (plist-get stats :document-validations) 0))
+                (should (= (plist-get stats :document-reuses) 1)))
               (should (plist-get (ebox--buffer-render-state buffer)
                                  :native-sync-confirmed-p))
               (should-not (plist-get (ebox--buffer-render-state buffer)
@@ -1640,6 +1645,10 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (should (stringp
                        (plist-get (tp-surface-client-state surface)
                                   :native-committed-rendered)))
+              (let ((stats (ebox-native-reflow-stats winning-session)))
+                (should (= (plist-get stats :document-parses) 1))
+                (should (= (plist-get stats :document-validations) 1))
+                (should (= (plist-get stats :document-reuses) 0)))
               (should-not (ebox-native-reflow-session-released-p
                            winning-session)))
             (let ((report (ebox-commit buffer updated)))
@@ -1654,7 +1663,11 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (should-not (eq next-session winning-session))
               (should (ebox-native-reflow-session-released-p winning-session))
               (should-not (ebox-native-reflow-session-released-p
-                           next-session)))))
+                           next-session))
+              (let ((stats (ebox-native-reflow-stats next-session)))
+                (should (= (plist-get stats :document-parses) 1))
+                (should (= (plist-get stats :document-validations) 1))
+                (should (= (plist-get stats :document-reuses) 0))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
       (when next-session

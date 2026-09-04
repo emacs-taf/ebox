@@ -22,6 +22,8 @@
                   "ebox-native-reflow" (&rest arguments))
 (declare-function ebox-native-reflow-fork-session
                   "ebox-native-reflow" (session &rest options))
+(declare-function ebox-native-reflow-release-session
+                  "ebox-native-reflow" (session))
 (declare-function ebox-native-reflow-confirm-native-frame
                   "ebox-native-reflow"
                   (session generation key confirmed-revision))
@@ -637,8 +639,17 @@ publication transaction can still roll back."
 
 (defun ebox-native-commit--downgrade-candidate (state reason)
   "Downgrade STATE after native rendering fails for diagnostic REASON."
-  (dolist (key ebox-native-commit--failed-render-state-keys)
-    (cl-remf state key))
+  (let ((session (plist-get state :native-sync-session)))
+    (dolist (key ebox-native-commit--failed-render-state-keys)
+      (cl-remf state key))
+    ;; Once native execution begins STATE owns an isolated candidate session.
+    ;; Release it before removing the only reference, while containing cleanup
+    ;; faults so the ordinary semantic fallback remains the primary result.
+    (when session
+      (let ((inhibit-quit t) (quit-flag nil))
+        (condition-case nil
+            (ebox-native-reflow-release-session session)
+          ((error quit) nil)))))
   (plist-put state :projection-kind nil)
   ;; Surface consumes this once into the transaction report, then removes it
   ;; from runtime state.  It never participates in projection eligibility.
