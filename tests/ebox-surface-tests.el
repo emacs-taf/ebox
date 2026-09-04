@@ -16,6 +16,13 @@
 (require 'tp-surface)
 (require 'ebox-native-reflow)
 
+(defmacro ebox-surface-test--with-elisp-backend (&rest body)
+  "Run BODY with the explicit Elisp rendering backend."
+  (declare (indent 0) (debug t))
+  `(cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
+              (lambda () nil)))
+     ,@body))
+
 (defun ebox-surface-test--reset-render-state ()
   "Reset render identities and side tables used by projection tests."
   (setq ebox--region-id-counter 0
@@ -1265,7 +1272,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 (ert-deftest ebox-viewport-reflow-reuses-retained-node-subtree ()
   "A safe viewport reflow should reuse the retained TP node topology."
   (ebox-surface-test--reset-render-state)
-  (let ((buffer (generate-new-buffer " *ebox-surface-viewport-reflow*"))
+  (ebox-surface-test--with-elisp-backend
+    (let ((buffer (generate-new-buffer " *ebox-surface-viewport-reflow*"))
         (ensured-node-count 0)
         (runtime-index-count 0)
         (original-ensure (symbol-function 'ebox-surface--ensure-node-tree))
@@ -1332,7 +1340,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                                      :surface-object)))
               (should (equal-including-properties actual expected)))))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))))))
 
 (ert-deftest ebox-viewport-resize-retains-native-frame-continuity ()
   "A topology-stable resize should keep the committed native frame session."
@@ -1814,7 +1822,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 (ert-deftest ebox-viewport-reflow-reuses-stable-active-stylesheet ()
   "A viewport change should retain styles only while their signature is stable."
   (ebox-surface-test--reset-render-state)
-  (let ((ebox-style-stylesheet (ecss-stylesheet-create))
+  (ebox-surface-test--with-elisp-backend
+    (let ((ebox-style-stylesheet (ecss-stylesheet-create))
         (buffer (generate-new-buffer " *ebox-viewport-cascade*"))
         (ensured-node-count 0)
         (original-ensure (symbol-function 'ebox-surface--ensure-node-tree)))
@@ -1855,12 +1864,13 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
             (should-not (plist-get report :projection-kind))
             (should (plist-get report :runtime-published))))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))))))
 
 (ert-deftest ebox-viewport-reflow-retains-stable-inline-inheritance ()
   "Stable inherited Text style should retain its viewport projection exactly."
   (ebox-surface-test--reset-render-state)
-  (let ((buffer (generate-new-buffer " *ebox-viewport-inheritance*"))
+  (ebox-surface-test--with-elisp-backend
+    (let ((buffer (generate-new-buffer " *ebox-viewport-inheritance*"))
         (ensured-node-count 0)
         (original-ensure (symbol-function 'ebox-surface--ensure-node-tree)))
     (unwind-protect
@@ -1894,7 +1904,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
             (should (plist-get state :cascade-required-p))
             (should (equal-including-properties actual expected))))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        (kill-buffer buffer))))))
 
 (ert-deftest ebox-text-style-owns-local-cascade-state ()
   "Persist an independent style owner state for canonical Text."
@@ -1955,7 +1965,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 
 (ert-deftest ebox-viewport-reflow-falls-back-for-scroll-and-visible-overflow ()
   "Nested scroll state and visible overflow must not enter retained reflow."
-  (dolist (fixture
+  (ebox-surface-test--with-elisp-backend
+    (dolist (fixture
            (list
             (cons 'nested-scroll
                   (lambda ()
@@ -1992,7 +2003,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (should-not (plist-get report :projection-kind))
               (should (plist-get report :runtime-published))))
         (when (buffer-live-p buffer)
-          (kill-buffer buffer))))))
+          (kill-buffer buffer)))))))
 
 (ert-deftest ebox-viewport-reflow-retains-viewport-dependent-root-scroll ()
   "A sole root scroll owner may reflow its own viewport-dependent content."
@@ -2037,7 +2048,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 
 (ert-deftest ebox-viewport-reflow-supports-height-and-both-axis-resize ()
   "Retained viewport reflow should cover height-only and two-axis changes."
-  (dolist (case
+  (ebox-surface-test--with-elisp-backend
+    (dolist (case
            '((height 120 3 120 5 height)
              (both 160 3 240 5 both)))
     (pcase-let ((`(,name ,old-width ,old-height ,new-width ,new-height ,axes)
@@ -2077,7 +2089,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                                                 (line-end-position)))
                              new-width)))))
           (when (buffer-live-p buffer)
-            (kill-buffer buffer)))))))
+            (kill-buffer buffer))))))))
 
 (ert-deftest ebox-viewport-reflow-rolls-back-after-publication-failure ()
   "A failed retained viewport publication must restore its old generation."

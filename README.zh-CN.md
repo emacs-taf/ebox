@@ -6,8 +6,9 @@ Component、响应式状态、behavior 或生命周期时，使用同级 ETAF �
 
 ## 安装
 
-Ebox 需要 Emacs 29.1 或更高版本，并依赖 ECSS 与 TP。包管理器应自动安装声明的
-依赖。使用同级源码 checkout 时，把三个目录加入 `load-path` 后加载 Ebox：
+Ebox 需要 Emacs 29.1 或更高版本、ECSS 0.1.0 或更高版本，以及 TP 1.0.1 或
+更高版本。包管理器应自动安装声明的依赖。使用同级源码 checkout 时，把三个目录
+加入 `load-path` 后加载 Ebox：
 
 ```elisp
 (add-to-list 'load-path "/path/to/ecss")
@@ -62,10 +63,9 @@ Flex/Grid participation property 直接属于子 `box`，不需要额外 wrapper
 Ebox 会在分配 runtime identity 前复制 canonical input，因此同一个 built value 可以
 挂载到多个 buffer，而不会共享 live ownership。
 
-Ebox 默认通过 TP 的公开 structured v2 participant API 注册可回滚状态。下一次
-operation 前把 `ebox-transaction-participant-route` 设为 `v1`，即可立即回到旧
-route。若加载的 TP manifest 尚未提供 structured API，默认 v2 policy 会自动选择
-同一条完整 v1 adapter；两种 registration 绝不会同时运行。
+Ebox 只通过 TP 的公开 structured participant API 注册可回滚状态。TP 1.0.1
+支持 consumer-first 迁移协议；TP 2.0.0 发布最终的 v2-only 协议。structured
+participant capability 缺失或格式错误时，Ebox 会停止加载，不会选择兼容 writer。
 
 ## 可选 native 模块
 
@@ -83,6 +83,7 @@ fallback。Ebox 加载时不会自动构建它。
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make c1b-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make native-rust-tests
 ```

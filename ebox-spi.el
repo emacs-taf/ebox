@@ -4,21 +4,24 @@
 
 ;;; Commentary:
 
-;; Additive provider-side Ebox framework SPI v2.  This module publishes an
+;; Provider-side Ebox framework SPI v2.  This module publishes an
 ;; immutable capability snapshot and delegates initial/update execution to the
 ;; existing combined Ebox participant.  It does not select a consumer port,
-;; probe a framework package, or remove the v1 callback surface.
+;; or probe a framework package.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'ebox-canonical)
 (require 'ebox-surface)
-(defvar tp-transaction-protocol)
+(require 'tp-transaction)
 
-(defconst ebox-framework-spi--tp-v2-available-p
-  (require 'tp-transaction nil t)
-  "Non-nil when TP exposes the additive transaction protocol module.")
+(defconst ebox-framework-spi-required-tp-version "1.0.1"
+  "Minimum TP package version required by Ebox framework SPI v2.")
+
+(defconst ebox-framework-spi-supported-tp-protocols
+  '(tp-transaction-protocol-v1+v2 tp-transaction-protocol-v2)
+  "TP protocols that provide the structured participant API Ebox requires.")
 
 (declare-function ebox--render-to-buffer-internal
                   "ebox" (buffer-or-name input options &optional participant))
@@ -144,6 +147,58 @@
     (signal 'wrong-type-argument (list 'functionp framework-rollback)))
   t)
 
+(defun ebox-framework-spi--buffer-overlays (buffer)
+  "Return every overlay currently attached to BUFFER."
+  (with-current-buffer buffer
+    (let ((lists (overlay-lists)))
+      (delete-dups (append (car lists) (cdr lists))))))
+
+(defun ebox-framework-spi--snapshot-editor-custody (buffer)
+  "Capture BUFFER state that an unsuccessful initial mount must preserve."
+  (with-current-buffer buffer
+    (let ((restriction-start (point-min))
+          (restriction-end (point-max)))
+      (save-restriction
+        (widen)
+        (list
+         :point (point)
+         :mark-marker (mark-marker)
+         :mark-position (mark t)
+         :mark-insertion-type (marker-insertion-type (mark-marker))
+         :mark-active mark-active
+         :restriction-start restriction-start
+         :restriction-end restriction-end
+         :overlays
+         (mapcar (lambda (overlay)
+                   (list overlay (overlay-start overlay) (overlay-end overlay)))
+                 (ebox-framework-spi--buffer-overlays buffer))
+         :undo-list (copy-tree buffer-undo-list)
+         :modified-p (buffer-modified-p))))))
+
+(defun ebox-framework-spi--restore-editor-custody (buffer snapshot)
+  "Restore BUFFER editor state from SNAPSHOT after mount rollback."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (widen)
+      (let* ((overlay-snapshots (plist-get snapshot :overlays))
+             (original-overlays (mapcar #'car overlay-snapshots)))
+        (dolist (overlay (ebox-framework-spi--buffer-overlays buffer))
+          (unless (memq overlay original-overlays)
+            (delete-overlay overlay)))
+        (dolist (entry overlay-snapshots)
+          (when (overlayp (car entry))
+            (move-overlay (car entry) (nth 1 entry) (nth 2 entry) buffer))))
+      (let ((mark-marker (plist-get snapshot :mark-marker)))
+        (set-marker mark-marker (plist-get snapshot :mark-position) buffer)
+        (set-marker-insertion-type
+         mark-marker (plist-get snapshot :mark-insertion-type)))
+      (goto-char (plist-get snapshot :point))
+      (setq mark-active (plist-get snapshot :mark-active)
+            buffer-undo-list (copy-tree (plist-get snapshot :undo-list)))
+      (narrow-to-region (plist-get snapshot :restriction-start)
+                        (plist-get snapshot :restriction-end))
+      (set-buffer-modified-p (plist-get snapshot :modified-p)))))
+
 (defun ebox-framework-spi-initial
     (buffer-or-name input framework-stage framework-rollback)
   "Initially mount INPUT and run the paired framework callbacks.
@@ -160,10 +215,10 @@ transaction failure.  Return that same report object after completion."
   (let ((buffer (get-buffer-create buffer-or-name)))
     (when (ebox-surface-buffer-mounted-p buffer)
       (error "Ebox SPI initial operation requires an unmounted buffer"))
-    (let* ((existing-bridge
+    (let* ((custody (ebox-framework-spi--snapshot-editor-custody buffer))
+           (change-group (with-current-buffer buffer (prepare-change-group)))
+           (existing-bridge
             (with-current-buffer buffer ebox-surface--tp-observer))
-           (_bridge (or existing-bridge
-                        (ebox-surface--ensure-tp-observer buffer)))
            (started (float-time))
            (participant
             (ebox-surface--make-framework-participant
@@ -177,11 +232,29 @@ transaction failure.  Return that same report object after completion."
                (cl-remf report :framework-initial-observation-started)
                (funcall framework-rollback report))
              :state 'unpublished
-             :diagnostics nil)))
+             :diagnostics nil))
+           activated success)
       (unwind-protect
-          (ebox--render-to-buffer-internal buffer input nil participant)
-        (unless existing-bridge
-          (ebox-surface-cleanup-buffer-observer buffer))))))
+          (progn
+            (unless existing-bridge
+              (ebox-surface--ensure-tp-observer buffer))
+            (with-current-buffer buffer (activate-change-group change-group))
+            (setq activated t)
+            (prog1 (with-current-buffer buffer
+                     (save-restriction
+                       (widen)
+                       (ebox--render-to-buffer-internal
+                        buffer input nil participant)))
+              (with-current-buffer buffer (accept-change-group change-group))
+              (setq success t)))
+        (unwind-protect
+            (unless success
+              (when (and activated (buffer-live-p buffer))
+                (with-current-buffer buffer
+                  (cancel-change-group change-group))
+                (ebox-framework-spi--restore-editor-custody buffer custody)))
+          (unless existing-bridge
+            (ebox-surface-cleanup-buffer-observer buffer)))))))
 
 (defun ebox-framework-spi-update
     (buffer-or-name input framework-stage framework-rollback)
@@ -264,8 +337,8 @@ or promotion capability."
                    ebox-framework-spi-schema-version)
                (equal (ebox-framework-spi--provider-capabilities provider)
                       ebox-framework-spi--required-capabilities)
-               (eq (ebox-framework-spi--provider-tp-protocol provider)
-                   tp-transaction-protocol)
+               (memq (ebox-framework-spi--provider-tp-protocol provider)
+                     ebox-framework-spi-supported-tp-protocols)
                (equal (ebox-framework-spi--provider-stage-order provider)
                       ebox-framework-spi--stage-order)
                (equal (ebox-framework-spi--provider-rollback-order provider)
@@ -308,31 +381,7 @@ or promotion capability."
     (ebox-framework-spi-validate-provider provider)
     provider))
 
-(if ebox-framework-spi--tp-v2-available-p
-    (provide 'ebox-framework-spi-v2)
-  (dolist (function
-           '(ebox-framework-spi-operation-kind
-             ebox-framework-spi-operation-function
-             ebox-framework-spi-operation-argument-schema
-             ebox-framework-spi-operation-result-schema
-             ebox-framework-spi-operation-paired-stage-rollback-p
-             ebox-framework-spi-provider-spi-version
-             ebox-framework-spi-provider-schema-version
-             ebox-framework-spi-provider-capabilities
-             ebox-framework-spi-provider-tp-protocol
-             ebox-framework-spi-provider-stage-order
-             ebox-framework-spi-provider-rollback-order
-             ebox-framework-spi-provider-report-semantics
-             ebox-framework-spi-provider-initial-operation
-             ebox-framework-spi-provider-update-operation
-             ebox-framework-spi-initial
-             ebox-framework-spi-update
-             ebox-framework-spi-initial-observation-reports
-             ebox-framework-spi-validate-provider
-             ebox-framework-spi-capabilities))
-    (when (symbol-function function)
-      (fmakunbound function)))
-  (setq features (delq 'ebox-framework-spi-v2 features)))
+(provide 'ebox-framework-spi-v2)
 (provide 'ebox-spi)
 
 ;;; ebox-spi.el ends here

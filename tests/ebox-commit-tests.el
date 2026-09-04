@@ -74,29 +74,16 @@
           :scroll-region-ids (copy-sequence
                               (plist-get state :scroll-region-ids)))))
 
-(defvar ebox-surface--tp-participant-v2-available-p)
-
-(defun ebox-commit-test--participant-route-counts
-    (ebox-route tp-route v2-available-p)
-  "Return v2/v1 registration counts for EBOX-ROUTE and TP-ROUTE.
-V2-AVAILABLE-P controls the frozen TP manifest capability used by the fixture."
-  (let ((buffer (generate-new-buffer " *ebox-participant-route*"))
-        (ebox-transaction-participant-route ebox-route)
-        (tp-transaction-execution-route tp-route)
-        (ebox-surface--tp-participant-v2-available-p v2-available-p)
+(defun ebox-commit-test--participant-v2-count ()
+  "Return the structured participant registration count for mount and commit."
+  (let ((buffer (generate-new-buffer " *ebox-participant-v2*"))
         (v2-register (symbol-function 'tp-transaction-participate-v2))
-        (v1-register (symbol-function 'tp-transaction-participate))
-        (v2-count 0)
-        (v1-count 0))
+        (v2-count 0))
     (unwind-protect
         (cl-letf (((symbol-function 'tp-transaction-participate-v2)
                    (lambda (&rest arguments)
                      (cl-incf v2-count)
-                     (apply v2-register arguments)))
-                  ((symbol-function 'tp-transaction-participate)
-                   (lambda (&rest arguments)
-                     (cl-incf v1-count)
-                     (apply v1-register arguments))))
+                     (apply v2-register arguments))))
           (ebox-render-to-buffer
            buffer (ebox-test-box :key 'root (ebox-test-text "old")
                                  :width '(80)))
@@ -105,7 +92,7 @@ V2-AVAILABLE-P controls the frozen TP manifest capability used by the fixture."
                                  :width '(80)))
           (with-current-buffer buffer
             (should (string-match-p "new" (buffer-string))))
-          (list :v2 v2-count :v1 v1-count))
+          v2-count)
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-source-index-promotes-and-rolls-back-atomically ()
@@ -954,59 +941,36 @@ V2-AVAILABLE-P controls the frozen TP manifest capability used by the fixture."
                        1))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(ert-deftest ebox-transaction-participant-route-defaults-v2-across-tp-routes ()
-  "Ebox uses only public v2 registration under either TP live writer."
-  (should
-   (eq (eval (car (get 'ebox-transaction-participant-route 'standard-value)) t)
-       'v2))
-  (let ((ebox-transaction-participant-route 'v2))
-    (should (eq (ebox-surface--effective-participant-route) 'v2)))
-  (dolist (tp-route '(structured v1))
-    (let ((counts
-           (ebox-commit-test--participant-route-counts 'v2 tp-route t)))
-      (should (= (plist-get counts :v2) 2))
-      (should (= (plist-get counts :v1) 0)))))
+(ert-deftest ebox-transaction-participant-is-v2-only ()
+  "Mount and commit register only through TP's structured participant API."
+  (should (= (ebox-commit-test--participant-v2-count) 2)))
 
-(ert-deftest ebox-transaction-participant-capability-is-absent-or-valid ()
-  "Old TP manifests fall back, while advertised corruption fails closed."
-  (should-not
-   (ebox-surface--tp-participant-v2-capability-p
-    '(:transaction-protocol tp-transaction-protocol-v1+v2)))
-  (should
-   (ebox-surface--tp-participant-v2-capability-p (tp-runtime-manifest)))
+(ert-deftest ebox-transaction-participant-accepts-structured-protocols ()
+  "Both consumer-first and final TP manifests satisfy Ebox's v2 contract."
+  (dolist (protocol '(tp-transaction-protocol-v1+v2
+                      tp-transaction-protocol-v2))
+    (should
+     (ebox-surface--validate-tp-v2-capability
+      (list :transaction-protocol protocol
+            :structured-participant-api
+            'tp-transaction-participate-v2)))))
+
+(ert-deftest ebox-transaction-participant-rejects-missing-or-malformed-v2 ()
+  "Missing or incompatible structured capabilities fail closed."
   (should-error
-   (ebox-surface--tp-participant-v2-capability-p
+   (ebox-surface--validate-tp-v2-capability
+    '(:transaction-protocol tp-transaction-protocol-v1+v2))
+   :type 'ebox-surface-tp-protocol-error)
+  (should-error
+   (ebox-surface--validate-tp-v2-capability
     '(:transaction-protocol tp-transaction-protocol-v1+v2
       :structured-participant-api ignore))
-   :type 'ebox-surface-participant-route-error)
+   :type 'ebox-surface-tp-protocol-error)
   (should-error
-   (ebox-surface--tp-participant-v2-capability-p
+   (ebox-surface--validate-tp-v2-capability
     '(:transaction-protocol incompatible
       :structured-participant-api tp-transaction-participate-v2))
-   :type 'ebox-surface-participant-route-error))
-
-(ert-deftest ebox-transaction-participant-route-retains-v1-fallback ()
-  "Missing TP v2 capability and the kill switch each select only v1."
-  (dolist (case '((v2 structured nil) (v1 structured t) (v1 v1 t)))
-    (let ((counts
-           (ebox-commit-test--participant-route-counts
-            (nth 0 case) (nth 1 case) (nth 2 case))))
-      (should (= (plist-get counts :v2) 0))
-      (should (= (plist-get counts :v1) 2)))))
-
-(ert-deftest ebox-transaction-participant-route-rejects-invalid-before-live-write ()
-  "An invalid Ebox route fails inside TP and leaves buffer/runtime unpublished."
-  (let ((buffer (generate-new-buffer " *ebox-invalid-participant-route*"))
-        (ebox-transaction-participant-route 'invalid))
-    (unwind-protect
-        (progn
-          (should-error
-           (ebox-render-to-buffer
-            buffer (ebox-test-box :key 'root (ebox-test-text "rejected")))
-           :type 'ebox-surface-participant-route-error)
-          (should-not (ebox--buffer-render-state buffer))
-          (with-current-buffer buffer (should (equal (buffer-string) ""))))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+   :type 'ebox-surface-tp-protocol-error))
 
 (ert-deftest ebox-commit-framework-publish-failure-rolls-back-full-and-scoped ()
   "A framework publish failure invokes its pair once on both commit paths."

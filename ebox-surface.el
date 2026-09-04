@@ -47,50 +47,36 @@
 (defvar ebox--render-display-signature)
 (defvar ebox-incremental--allocated-slot-proof-cache)
 (defvar ebox-incremental--buffer-render-state-override)
-(defvar ebox-transaction-participant-route 'v2
-  "Early default for the Ebox-owned TP participant route.")
 (declare-function tp-runtime-manifest "tp" ())
 (declare-function tp-transaction-participate-v2 "tp-reactive" (&rest args))
 
-(define-error 'ebox-surface-participant-route-error
-  "Invalid Ebox TP participant route")
+(define-error 'ebox-surface-tp-protocol-error
+  "Incompatible TP transaction protocol")
 
-(defun ebox-surface--tp-participant-v2-capability-p (manifest)
-  "Return non-nil when MANIFEST provides the valid public TP v2 API.
-An absent capability denotes an older compatible TP and returns nil.  A
-present but malformed capability fails closed instead of masking corruption."
-  (let ((api (plist-get manifest :structured-participant-api)))
-    (cond
-     ((null api) nil)
-     ((and (eq (plist-get manifest :transaction-protocol)
-               'tp-transaction-protocol-v1+v2)
-           (eq api 'tp-transaction-participate-v2)
-           (fboundp api))
-      t)
-     (t
-      (signal 'ebox-surface-participant-route-error
-              (list :malformed-tp-structured-participant manifest))))))
+(defun ebox-surface--validate-tp-v2-capability (manifest)
+  "Validate MANIFEST as the required public TP v2 participant capability."
+  (let ((api (plist-get manifest :structured-participant-api))
+        (protocol (plist-get manifest :transaction-protocol)))
+    (unless (and (memq protocol
+                       '(tp-transaction-protocol-v1+v2
+                         tp-transaction-protocol-v2))
+                 (eq api 'tp-transaction-participate-v2)
+                 (fboundp api))
+      (signal 'ebox-surface-tp-protocol-error
+              (list :accepted-protocols
+                    '(tp-transaction-protocol-v1+v2
+                      tp-transaction-protocol-v2)
+                    :manifest manifest)))
+    t))
 
-(defconst ebox-surface--tp-participant-v2-available-p
-  (ebox-surface--tp-participant-v2-capability-p (tp-runtime-manifest))
-  "Non-nil when the loaded TP manifest advertises its public v2 API.")
-
-(defun ebox-surface--effective-participant-route ()
-  "Return the selected TP participant route for the next registration."
-  (pcase ebox-transaction-participant-route
-    ('v2 (if ebox-surface--tp-participant-v2-available-p 'v2 'v1))
-    ('v1 'v1)
-    (_ (signal 'ebox-surface-participant-route-error
-               (list :participant-route ebox-transaction-participant-route)))))
+(defconst ebox-surface--tp-v2-capability-valid-p
+  (ebox-surface--validate-tp-v2-capability (tp-runtime-manifest))
+  "Non-nil after the loaded TP manifest passes the required v2 contract.")
 
 (defun ebox-surface--transaction-participate (key stage rollback)
-  "Register KEY with paired STAGE and ROLLBACK through one selected TP route."
-  (pcase (ebox-surface--effective-participant-route)
-    ('v2
-     (tp-transaction-participate-v2
-      :key key :stage stage :rollback rollback))
-    ('v1
-     (tp-transaction-participate key stage rollback))))
+  "Register KEY with paired STAGE and ROLLBACK through TP v2."
+  (tp-transaction-participate-v2
+   :key key :stage stage :rollback rollback))
 
 (defvar ebox-surface--inline-style-value-cache nil
   "Per-projection cache for selector-free computed inline styles.")

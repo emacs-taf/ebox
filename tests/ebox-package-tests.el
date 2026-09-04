@@ -30,6 +30,30 @@
       (insert "\n"))
     (buffer-string)))
 
+(defun ebox-test--production-lisp-text ()
+  "Return all package-root Ebox Lisp production source as text."
+  (with-temp-buffer
+    (dolist (file (directory-files ebox-test--root t "\\`ebox.*\\.el\\'"))
+      (insert-file-contents file)
+      (insert "\n"))
+    (buffer-string)))
+
+(ert-deftest ebox-package-c1b-is-v2-only ()
+  "Ebox 3 requires structured TP and contains no executable v1 bridge."
+  (let ((facade
+         (with-temp-buffer
+           (insert-file-contents (expand-file-name "ebox.el" ebox-test--root))
+           (buffer-string)))
+        (source (ebox-test--production-lisp-text)))
+    (should (string-match-p "Version: 3.0.0" facade))
+    (should (string-match-p (regexp-quote "(tp \"1.0.1\")") facade))
+    (should-not (string-match-p "ebox-transaction-participant-route" source))
+    (should-not (string-match-p "(tp-transaction-participate\\_>" source))
+    (should (string-match-p "(tp-transaction-participate-v2\\_>" source))
+    (should (equal ebox-framework-spi-required-tp-version "1.0.1"))
+    (should (memq tp-transaction-protocol
+                  ebox-framework-spi-supported-tp-protocols))))
+
 (ert-deftest ebox-package-defines-custom-group-and-scroll-option ()
   "The package exposes a real customization group and default scroll option."
   (should (get 'ebox 'custom-group))

@@ -7,7 +7,8 @@ application also needs Components, reactive state, behaviors, or lifecycle.
 
 ## Install
 
-Ebox requires Emacs 29.1 or newer, ECSS, and TP. A package manager should
+Ebox requires Emacs 29.1 or newer, ECSS 0.1.0 or newer, and TP 1.0.1 or newer.
+A package manager should
 install the declared dependencies. For sibling source checkouts, add the three
 directories to `load-path`, then load Ebox:
 
@@ -67,11 +68,11 @@ do not require a wrapper node.
 Ebox copies canonical input before assigning runtime identity, so one built
 value may be mounted in multiple buffers without sharing live ownership.
 
-Ebox registers its rollback-capable TP state through the public structured v2
-participant API by default.  Set `ebox-transaction-participant-route` to `v1`
-before the next operation for an immediate old-route rollback.  If the loaded TP
-manifest predates the structured API, the default v2 policy selects the same
-complete v1 adapter automatically; the two registrations are never run together.
+Ebox registers rollback-capable state only through TP's public structured
+participant API. TP 1.0.1 supports the consumer-first migration protocol;
+TP 2.0.0 publishes the final v2-only protocol. Missing or malformed structured
+participant capability stops Ebox loading instead of selecting a compatibility
+writer.
 
 ## Optional native module
 
@@ -89,6 +90,7 @@ exact Elisp fallback. Ebox never builds it while loading.
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make c1b-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make native-rust-tests
 ```

@@ -38,10 +38,14 @@
     (should (ebox-framework-spi-validate-provider first))
     (should-not (eq first second))
     (should (= (ebox-framework-spi-provider-spi-version first) 2))
+    (should (equal ebox-framework-spi-required-tp-version "1.0.1"))
+    (should (equal ebox-framework-spi-supported-tp-protocols
+                   '(tp-transaction-protocol-v1+v2
+                     tp-transaction-protocol-v2)))
     (should (eq (ebox-framework-spi-provider-schema-version first)
                 'ebox-framework-spi-schema/v2))
     (should (eq (ebox-framework-spi-provider-tp-protocol first)
-                'tp-transaction-protocol-v1+v2))
+                tp-transaction-protocol))
     (should
      (equal (ebox-framework-spi-provider-capabilities first)
             '(initial-paired-stage-rollback
@@ -108,62 +112,18 @@
                         (ebox-framework-spi-provider-initial-operation fresh)))
                   'buffer)))))
 
-(ert-deftest ebox-spi-provider-is-additive-and-does-not-bootstrap-consumers ()
-  "E5 publishes no selected port, consumer probe, or v1 removal."
+(ert-deftest ebox-spi-provider-does-not-bootstrap-consumers ()
+  "The provider publishes no selected port or consumer probe."
   (let ((source (ebox-spi-test--source "ebox-spi.el"))
         (facade (ebox-spi-test--source "ebox.el")))
     (dolist (pattern '("featurep" "fboundp" "selected-port"
                        "etaf-renderer-port" "etaf-spi-bootstrap"))
       (should-not (string-match-p (regexp-quote pattern) source)))
-    (should (string-match-p "Version: 2.0.1" facade))
+    (should (string-match-p "Version: 3.0.0" facade))
     (should (string-match-p "(tp \"1.0.1\")" facade))
     (should (functionp #'ebox-render-to-buffer))
     (should (functionp #'ebox-commit))
     (should (functionp #'ebox-framework-spi-capabilities))))
-
-(ert-deftest ebox-spi-absent-tp-v2-keeps-the-v1-facade-loadable ()
-  "An absent TP transaction feature leaves the optional v2 provider absent."
-  (let* ((emacs (expand-file-name invocation-name invocation-directory))
-         (parent (file-name-directory
-                  (directory-file-name ebox-spi-test--root)))
-         (ecss (expand-file-name "ecss" parent))
-         (tp (expand-file-name "tp" parent))
-         (provider-source
-          (expand-file-name "ebox-spi.el" ebox-spi-test--root))
-         (probe
-          (prin1-to-string
-           `(progn
-              (require 'cl-lib)
-              (require 'ebox-canonical)
-              (require 'ebox-surface)
-              (let ((original-require (symbol-function 'require)))
-                (cl-letf (((symbol-function 'require)
-                           (lambda (feature &optional filename noerror)
-                             (if (eq feature 'tp-transaction)
-                                 nil
-                               (funcall original-require feature filename
-                                        noerror)))))
-                  (load ,provider-source nil t)))
-              (require 'ebox)
-              (unless (featurep 'ebox-spi)
-                (error "SPI loader feature is absent"))
-              (when (featurep 'ebox-framework-spi-v2)
-                (error "v2 provider feature leaked without TP v2"))
-              (when (fboundp 'ebox-framework-spi-capabilities)
-                (error "v2 provider predicate leaked without TP v2"))
-              (unless (and (fboundp 'ebox-render-to-buffer)
-                           (fboundp 'ebox-commit))
-                (error "v1 Ebox facade failed to load"))))))
-    (with-temp-buffer
-      (let ((status
-             (process-file
-              emacs nil (current-buffer) nil
-              "-Q" "--batch"
-              "-L" ebox-spi-test--root "-L" ecss "-L" tp
-              "--eval" "(setq load-prefer-newer t)"
-              "--eval" probe)))
-        (unless (zerop status)
-          (ert-fail (buffer-string)))))))
 
 (ert-deftest ebox-spi-initial-and-update-share-their-legacy-report ()
   "Both operation descriptors preserve paired callbacks and report identity."
@@ -445,6 +405,161 @@
           (should-not (ebox-surface-buffer-mounted-p buffer))
           (should-not (gethash buffer ebox--buffer-render-state-table))
           (should (equal (with-current-buffer buffer (buffer-string)) "")))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-spi-initial-activation-failure-cleans-only-owned-observer ()
+  "Activation errors and throws preserve text and pre-existing observers."
+  (dolist (failure '(error throw))
+    (dolist (existing '(nil t))
+      (ert-info ((format "failure=%s existing-observer=%s" failure existing))
+        (let ((buffer (generate-new-buffer " *ebox-spi-activation-fault*"))
+              (input (ebox-test-box :key 'root (ebox-test-text "new")))
+              prior-observer cancelled result)
+          (unwind-protect
+              (progn
+                (with-current-buffer buffer
+                  (insert (propertize "sentinel" 'face 'bold)))
+                (when existing
+                  (setq prior-observer
+                        (ebox-surface--ensure-tp-observer buffer)))
+                (cl-letf (((symbol-function 'activate-change-group)
+                           (lambda (_group)
+                             (if (eq failure 'throw)
+                                 (throw 'ebox-spi-activation 'activation-throw)
+                               (error "activation-error"))))
+                          ((symbol-function 'cancel-change-group)
+                           (lambda (_group) (setq cancelled t))))
+                  (setq result
+                        (catch 'ebox-spi-activation
+                          (condition-case condition
+                              (ebox-framework-spi-initial
+                               buffer input #'ignore #'ignore)
+                            (error condition)))))
+                (should (equal result
+                               (if (eq failure 'throw) 'activation-throw
+                                 '(error "activation-error"))))
+                (should-not cancelled)
+                (should-not (ebox-surface-buffer-mounted-p buffer))
+                (should-not (gethash buffer ebox--buffer-render-state-table))
+                (with-current-buffer buffer
+                  (should (eq ebox-surface--tp-observer prior-observer))
+                  (should (equal-including-properties
+                           (buffer-string)
+                           (propertize "sentinel" 'face 'bold)))))
+            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest ebox-spi-initial-failure-restores-exact-editor-custody ()
+  "A failed initial mount preserves editor identities, bounds, and history."
+  (ebox-spi-test--reset-runtime-state)
+  (let ((buffer (generate-new-buffer " *ebox-spi-editor-custody*"))
+        (input (ebox-test-box :key 'root (ebox-test-text "committed")))
+        overlay left-marker right-marker snapshot captured)
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (buffer-enable-undo)
+            (insert (propertize "sentinel" 'face 'bold))
+            (undo-boundary)
+            (goto-char 4)
+            (set-mark 2)
+            (setq mark-active t
+                  overlay (make-overlay 2 6 buffer t t)
+                  left-marker (copy-marker 3 nil)
+                  right-marker (copy-marker 5 t))
+            (overlay-put overlay 'ebox-test-property '(owned value))
+            (narrow-to-region 2 7)
+            (set-buffer-modified-p nil)
+            (setq snapshot
+                  (list
+                   :contents
+                   (save-restriction
+                     (widen)
+                     (buffer-substring (point-min) (point-max)))
+                   :point (point)
+                   :mark-marker (mark-marker)
+                   :mark-position (mark t)
+                   :mark-insertion-type
+                   (marker-insertion-type (mark-marker))
+                   :mark-active mark-active
+                   :narrow-start (point-min)
+                   :narrow-end (point-max)
+                   :overlay-start (overlay-start overlay)
+                   :overlay-end (overlay-end overlay)
+                   :overlay-properties (overlay-properties overlay)
+                   :left-position (marker-position left-marker)
+                   :left-insertion-type (marker-insertion-type left-marker)
+                   :right-position (marker-position right-marker)
+                   :right-insertion-type (marker-insertion-type right-marker)
+                   :undo-list (copy-tree buffer-undo-list)
+                   :modified-p (buffer-modified-p))))
+          (condition-case condition
+              (ebox-framework-spi-initial
+               buffer input
+               (lambda (_report) (error "editor custody primary"))
+               #'ignore)
+            (error (setq captured condition)))
+          (should (equal captured '(error "editor custody primary")))
+          (should-not (ebox-surface-buffer-mounted-p buffer))
+          (should-not (ebox-surface-buffer-observer buffer))
+          (with-current-buffer buffer
+            (should
+             (equal (save-restriction
+                      (widen)
+                      (buffer-substring (point-min) (point-max)))
+                    (plist-get snapshot :contents)))
+            (should (= (point) (plist-get snapshot :point)))
+            (should (eq (mark-marker) (plist-get snapshot :mark-marker)))
+            (should (= (mark t) (plist-get snapshot :mark-position)))
+            (should (eq (marker-insertion-type (mark-marker))
+                        (plist-get snapshot :mark-insertion-type)))
+            (should (eq mark-active (plist-get snapshot :mark-active)))
+            (should (= (point-min) (plist-get snapshot :narrow-start)))
+            (should (= (point-max) (plist-get snapshot :narrow-end)))
+            (should (eq (overlay-buffer overlay) buffer))
+            (should (= (overlay-start overlay)
+                       (plist-get snapshot :overlay-start)))
+            (should (= (overlay-end overlay)
+                       (plist-get snapshot :overlay-end)))
+            (should (equal (overlay-properties overlay)
+                           (plist-get snapshot :overlay-properties)))
+            (should (= (marker-position left-marker)
+                       (plist-get snapshot :left-position)))
+            (should (eq (marker-insertion-type left-marker)
+                        (plist-get snapshot :left-insertion-type)))
+            (should (= (marker-position right-marker)
+                       (plist-get snapshot :right-position)))
+            (should (eq (marker-insertion-type right-marker)
+                        (plist-get snapshot :right-insertion-type)))
+            (should (equal buffer-undo-list (plist-get snapshot :undo-list)))
+            (should (eq (buffer-modified-p)
+                        (plist-get snapshot :modified-p)))))
+      (when (overlayp overlay) (delete-overlay overlay))
+      (when (markerp left-marker) (set-marker left-marker nil))
+      (when (markerp right-marker) (set-marker right-marker nil))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-spi-rollback-throw-cannot-stop-initial-cleanup ()
+  "A framework rollback throw escapes only after editor cleanup completes."
+  (ebox-spi-test--reset-runtime-state)
+  (let ((buffer (generate-new-buffer " *ebox-spi-rollback-throw*"))
+        (input (ebox-test-box :key 'root (ebox-test-text "committed"))))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer (insert "before"))
+          (should
+           (eq
+            (catch 'ebox-spi-rollback-escape
+              (ebox-framework-spi-initial
+               buffer input
+               (lambda (_report) (error "primary before rollback throw"))
+               (lambda (_report)
+                 (throw 'ebox-spi-rollback-escape 'rollback-escaped)))
+              'not-escaped)
+            'rollback-escaped))
+          (should-not (ebox-surface-buffer-mounted-p buffer))
+          (should-not (ebox-surface-buffer-observer buffer))
+          (should (equal "before"
+                         (with-current-buffer buffer (buffer-string)))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-spi-update-rolls-the-same-report-back ()

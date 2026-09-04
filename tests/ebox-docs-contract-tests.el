@@ -56,7 +56,7 @@
     "layout-boundary-tests" "layout-boundary-performance"
     "patch-plan-tests" "patch-plan-performance"
     "style-schema-tests" "style-schema-performance"
-    "spi-tests" "spi-performance"
+    "spi-tests" "spi-performance" "c1b-contract-tests"
     "docs-contract-tests" "ci-contract-tests" "performance-evaluator"
     "visual-check"
     "native-rust-tests" "native-build" "package-lint" "diff-check")

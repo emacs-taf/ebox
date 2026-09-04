@@ -86,17 +86,20 @@ Caller-owned Source Tree
 - Keys are local to siblings; visible strings are never used as identity.
 - Ebox owns logical node-to-subject adaptation and id/class/type candidate indexes; ECSS's public structured matcher is the only selector truth source. Subjects expose built-in id/key plus explicit `:selector-attributes`, never visible content, layout state, or runtime containers.
 - `ebox-style--property-definitions` is the single Ebox author-property source. Load time derives Ebox's read-only lookup index and one immutable ECSS package schema from it; the surface schema is composed once, and node construction or updates never re-register or copy the whole schema domain.
-- E1 freezes the closed M2a target classification for retained state: immutable generation facts; generation-bound scroll/native authority; opaque TP client-state custody; one-way compatibility mirrors; and disposable caches. Every inventory row separately records the current v1 storage shape plus its target owner, mutation API, generation binding, rollback, rebuild proof, and cleanup. Current v1 TP client state still holds the whole Ebox state plist until a later checkpoint changes that storage shape. The E1 mirror probes only rebuild and compare projections; they never mutate live state.
+- E1 freezes the closed M2a target classification for retained state: immutable generation facts; generation-bound scroll/native authority; opaque TP client-state custody; one-way compatibility mirrors; and disposable caches. Every inventory row separately records the M2a-era storage shape plus its target owner, mutation API, generation binding, rollback, rebuild proof, and cleanup. TP client state holds the whole Ebox state plist. The E1 mirror probes only rebuild and compare projections; they never mutate live state.
 - `ebox-layout.el` has no load or call edge to `ebox-surface.el` or TP. Candidate isolation, inherited-cascade detection, and one-shot materialization enter layout only through the validated port owned by `ebox-render-context.el`; `ebox.el` wires the surface implementation after both sides load.
 - `ebox-incremental.el` likewise contains no `ebox-surface` symbol or publication call. `ebox-surface.el` installs one immutable read-only context port for live client state, region mounts, cascade proof, and inline-style preparation; batch observation remains in the higher `ebox.el` orchestrator.
 - `ebox-patch-plan.el` consumes only tentative operation plists plus the immutable generation parent table and returns a deterministic plan artifact. The incremental adapter owns all live-fact preparation. E3 defaults to the pure route while retaining explicit `legacy` and equality-checking `shadow` routes; none of the three routes publishes.
 - `ebox-style--property-definitions` is also the single used-value projection truth. Non-default engine lowering lives in each property's `:engine-projection`; ECSS metadata exposes the derived `:engine-targets`, and only non-public engine fields may use the small internal exception table.
-- `ebox-framework-spi-capabilities` returns a fresh immutable v2 provider record declaring paired initial/update stage+rollback, combined participant ordering, same-object legacy reports, initial observation replay, and `tp-transaction-protocol-v1+v2`. Initial TP/Ebox timing is measured during publication, stored as defensive snapshots in the completed report, and replayed without mutation authority; no synthetic zero-duration timing is emitted. Ebox provides no selected port or consumer bootstrap; the existing v1 callback APIs remain available.
-- Ebox's TP adapter defaults to the manifest-advertised public
-  `tp-transaction-participate-v2` API. `ebox-transaction-participant-route=v1`
-  is the immediate kill switch, and a TP manifest without the structured API
-  selects the same v1 adapter as a compatibility fallback. One helper owns this
-  selection and registers exactly one participant per transaction.
+- `ebox-framework-spi-capabilities` returns a fresh immutable SPI v2 provider record declaring paired initial/update stage+rollback, combined participant ordering, same-object reports, initial observation replay, and the actual accepted TP protocol. `ebox-framework-spi-required-tp-version` exposes the minimum TP 1.0.1 dependency, while `ebox-framework-spi-supported-tp-protocols` lists the consumer-first and final v2 protocol identities. Initial TP/Ebox timing is measured during publication, stored as defensive snapshots in the completed report, and replayed without mutation authority; no synthetic zero-duration timing is emitted. Ebox provides no selected port or consumer bootstrap.
+- Ebox registers every rollback-capable runtime mirror through TP's public
+  `tp-transaction-participate-v2` API. The loaded manifest must advertise that
+  callable API with an accepted structured protocol; missing or malformed
+  capability fails closed during load.
+- SPI initial publication widens under provider ownership and wraps the TP
+  transaction in an editor change group. On any unsuccessful or nonlocal exit,
+  it restores original overlay identities and bounds together with buffer text,
+  marker identities, point, mark, narrowing, undo history, and modified state.
 - Framework report finalization is postaccept and no-throw. Initial, full-update, and scoped-update completion faults are retained in the same legacy report as `framework-report-finalization` diagnostics; they cannot invoke framework rollback or escape into an ETAF semantic rollback window.
 - `owner-rerender` is broader than `span-patch`, which is broader than `paint-patch`.
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
@@ -144,6 +147,7 @@ make style-schema-tests
 make style-schema-performance
 make spi-tests
 make spi-performance
+make c1b-contract-tests
 make docs-contract-tests
 make ci-contract-tests
 make performance-evaluator

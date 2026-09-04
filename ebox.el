@@ -1,7 +1,7 @@
 ;;; ebox.el --- Pixel-perfect box model renderer -*- lexical-binding: t -*-
 
 ;; Author: ebox contributors
-;; Version: 2.0.1
+;; Version: 3.0.0
 ;; Package-Requires: ((emacs "29.1") (ecss "0.1.0") (tp "1.0.1"))
 ;; Keywords: ui, graphics, convenience
 ;; URL: https://github.com/ginqi7/ebox
@@ -99,15 +99,6 @@
   "Pixel-perfect box model renderer for Emacs buffers."
   :group 'applications
   :prefix "ebox-")
-
-(defcustom ebox-transaction-participant-route 'v2
-  "TP participant registration route used by new Ebox transactions.
-`v2' uses TP's public structured participant capability when advertised and
-falls back to the complete v1 adapter when that capability is absent.  `v1'
-is the immediate rollback switch and always uses the retained adapter."
-  :type '(choice (const :tag "Structured v2 participant" v2)
-                 (const :tag "Legacy v1 adapter" v1))
-  :group 'ebox)
 
 ;;;###autoload
 (defun ebox-native-build (&optional clean)
