@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum LocalStep {
     BoxChild,
     RowChild(usize),
@@ -12,7 +12,7 @@ pub(super) enum LocalStep {
 }
 
 /// A local structural address stops before crossing an identified node reference.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct SourceAddress {
     pub(super) owner_id: u64,
     pub(super) path: Arc<[LocalStep]>,

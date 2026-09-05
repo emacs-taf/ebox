@@ -36,6 +36,18 @@ pub(crate) fn line_plan_work() -> LinePlanWork {
     line_plan::work()
 }
 
+#[path = "evaluation.rs"]
+mod evaluation;
+pub(crate) use evaluation::{EvalWork, RetainedFrame};
+use evaluation::{Phase, RenderScope};
+
+pub(crate) fn reset_eval_work() {
+    evaluation::reset_work();
+}
+pub(crate) fn eval_work() -> EvalWork {
+    evaluation::work()
+}
+
 fn deserialize_arc_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -5500,6 +5512,7 @@ enum FlexMode {
 #[derive(Debug, Clone)]
 struct FlexRuntimeItem<'a> {
     source: &'a LayoutNode,
+    scope: RenderScope<'a>,
     grow: f64,
     shrink: f64,
     align_self: FlexAlign,
@@ -5610,7 +5623,7 @@ fn box_vertical_side(node: &LayoutNode) -> Option<i64> {
 
 fn box_content_intrinsics(
     node: &LayoutNode,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<Option<(i64, i64)>, String> {
     let LayoutNode::Box {
@@ -5633,7 +5646,10 @@ fn box_content_intrinsics(
         // current inline viewport.  Treating that width as unknown makes
         // responsive descendants collapse to their narrow intrinsic form and
         // produces a different automatic minimum from the visible renderer.
-        let rendered = render_node(child, resolver, context, true)?;
+        let rendered = scope
+            .child(LocalStep::BoxChild, child)
+            .phase(Phase::ContentIntrinsic)
+            .render(context, true, None)?;
         Ok(Some((
             content_min_width.unwrap_or_else(|| rendered.min_content_width(*wrap_mode)),
             rendered.max_width(),
@@ -5647,7 +5663,7 @@ fn flex_box_resolve_width(
     node: &LayoutNode,
     size: &Size,
     fallback: Option<i64>,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<Option<i64>, String> {
     let LayoutNode::Box {
@@ -5662,7 +5678,7 @@ fn flex_box_resolve_width(
         return Ok(fallback);
     };
     let (min_content, max_content) =
-        box_content_intrinsics(node, resolver, context)?.unwrap_or((0, 0));
+        box_content_intrinsics(node, scope, context)?.unwrap_or((0, 0));
     let side = box_horizontal_side(node).unwrap_or(0);
     let stretch = context
         .viewport_width_known
@@ -5711,7 +5727,7 @@ fn flex_min_main(
     source: &LayoutNode,
     rendered: &Rendered,
     axis: FlexAxis,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<i64, String> {
     let LayoutNode::Box {
@@ -5730,17 +5746,27 @@ fn flex_min_main(
     Ok(match axis {
         FlexAxis::Row => {
             let side = box_horizontal_side(source).unwrap_or(0);
-            let declared =
-                flex_box_resolve_width(source, min_width, Some(0), resolver, context)?.unwrap_or(0);
+            let declared = flex_box_resolve_width(
+                source,
+                min_width,
+                Some(0),
+                &scope.phase(Phase::FlexMinWidth),
+                context,
+            )?
+            .unwrap_or(0);
             if *wrap_mode == WrapMode::None {
                 rendered.max_width().max(side + declared)
             } else {
                 let content_min = match content_min_width {
                     Some(content_min_width) => *content_min_width,
                     None => {
-                        box_content_intrinsics(source, resolver, context)?
-                            .unwrap_or((0, 0))
-                            .0
+                        box_content_intrinsics(
+                            source,
+                            &scope.phase(Phase::FlexAutoMinContent),
+                            context,
+                        )?
+                        .unwrap_or((0, 0))
+                        .0
                     }
                 };
                 side + declared.max(content_min)
@@ -5758,7 +5784,7 @@ fn flex_min_main(
 fn flex_max_main(
     source: &LayoutNode,
     axis: FlexAxis,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<Option<i64>, String> {
     let LayoutNode::Box {
@@ -5770,8 +5796,14 @@ fn flex_max_main(
         return Ok(None);
     };
     Ok(match axis {
-        FlexAxis::Row => flex_box_resolve_width(source, max_width, None, resolver, context)?
-            .map(|value| value + box_horizontal_side(source).unwrap_or(0)),
+        FlexAxis::Row => flex_box_resolve_width(
+            source,
+            max_width,
+            None,
+            &scope.phase(Phase::FlexMaxWidth),
+            context,
+        )?
+        .map(|value| value + box_horizontal_side(source).unwrap_or(0)),
         FlexAxis::Column => flex_box_resolve_height(source, max_height, None, context)
             .map(|value| value + box_vertical_side(source).unwrap_or(0)),
     })
@@ -5798,7 +5830,7 @@ fn flex_basis_main(
     rendered: &Rendered,
     axis: FlexAxis,
     basis: &Size,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<i64, String> {
     let rendered_main = match axis {
@@ -5811,15 +5843,24 @@ fn flex_basis_main(
     if matches!(basis, Size::Content) {
         if axis == FlexAxis::Row && matches!(source, LayoutNode::Box { .. }) {
             let (_, content_max) =
-                box_content_intrinsics(source, resolver, context)?.unwrap_or((0, 0));
+                box_content_intrinsics(source, &scope.phase(Phase::FlexBasisContent), context)?
+                    .unwrap_or((0, 0));
             return Ok(box_horizontal_side(source).unwrap_or(0) + content_max);
         }
         return Ok(rendered_main);
     }
     if axis == FlexAxis::Row && matches!(source, LayoutNode::Box { .. }) {
-        let (_, content_max) = box_content_intrinsics(source, resolver, context)?.unwrap_or((0, 0));
-        let content = flex_box_resolve_width(source, basis, Some(content_max), resolver, context)?
-            .unwrap_or(content_max);
+        let (_, content_max) =
+            box_content_intrinsics(source, &scope.phase(Phase::FlexBasisContent), context)?
+                .unwrap_or((0, 0));
+        let content = flex_box_resolve_width(
+            source,
+            basis,
+            Some(content_max),
+            &scope.phase(Phase::FlexBasisWidth),
+            context,
+        )?
+        .unwrap_or(content_max);
         return Ok(box_horizontal_side(source).unwrap_or(0) + content);
     }
     Ok(match axis {
@@ -5852,13 +5893,11 @@ fn measure_flex_item<'a>(
     item: &'a FlexItem,
     axis: FlexAxis,
     inline_viewport: Option<i64>,
-    resolver: Option<&'a RetainedDocument>,
+    scope: RenderScope<'a>,
     context: LayoutContext,
 ) -> Result<FlexRuntimeItem<'a>, String> {
-    let source = match resolver {
-        Some(resolver) => resolver.resolve(&item.node)?,
-        None => &item.node,
-    };
+    let scope = scope.resolve()?;
+    let source = scope.view.node;
     let uses_inline_viewport = flex_item_uses_inline_viewport(source);
     let measurement_context = LayoutContext {
         viewport_width: if uses_inline_viewport {
@@ -5870,13 +5909,17 @@ fn measure_flex_item<'a>(
         viewport_height: context.viewport_height,
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
-    let rendered = render_node(source, resolver, measurement_context, uses_inline_viewport)?;
-    let min_main = flex_min_main(source, &rendered, axis, resolver, context)?;
-    let max_main = flex_max_main(source, axis, resolver, context)?;
-    let base = flex_basis_main(source, &rendered, axis, &item.basis, resolver, context)?.max(0);
+    let rendered =
+        scope
+            .phase(Phase::FlexMeasure)
+            .render(measurement_context, uses_inline_viewport, None)?;
+    let min_main = flex_min_main(source, &rendered, axis, &scope, context)?;
+    let max_main = flex_max_main(source, axis, &scope, context)?;
+    let base = flex_basis_main(source, &rendered, axis, &item.basis, &scope, context)?.max(0);
     let hypothetical = flex_clamp_main(base, min_main, max_main);
     Ok(FlexRuntimeItem {
         source,
+        scope,
         grow: item.grow,
         shrink: item.shrink,
         align_self: item.align_self,
@@ -6221,7 +6264,7 @@ fn render_flex_sized_entry(
     main: i64,
     cross: Option<i64>,
     container_align: FlexAlign,
-    resolver: Option<&RetainedDocument>,
+    phase: Phase,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<FlexSizedEntry, String> {
@@ -6244,13 +6287,10 @@ fn render_flex_sized_entry(
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let override_size = box_override_for_flex(item.source, axis, main, cross, stretch);
-    let mut rendered = render_node_with_override(
-        item.source,
-        resolver,
-        render_context,
-        intrinsic,
-        override_size,
-    )?;
+    let mut rendered = item
+        .scope
+        .phase(phase)
+        .render(render_context, intrinsic, override_size)?;
     match axis {
         FlexAxis::Row => {
             rendered = pad_rendered_width(rendered, main, FlexAlign::FlexStart);
@@ -6341,6 +6381,7 @@ fn exact_rendered_height(
     resolver: Option<&RetainedDocument>,
     context: LayoutContext,
 ) -> Option<i64> {
+    evaluation::record_height_query();
     let node = resolver
         .and_then(|value| value.resolve(node).ok())
         .unwrap_or(node);
@@ -6391,19 +6432,25 @@ fn exact_rendered_height(
 }
 
 fn render_node_window(
-    node: &LayoutNode,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
     intrinsic: bool,
     start: i64,
     height: i64,
 ) -> Option<Result<Rendered, String>> {
-    let node = resolver
-        .and_then(|value| value.resolve(node).ok())
-        .unwrap_or(node);
+    let scope = match scope.resolve() {
+        Ok(scope) => scope,
+        Err(error) => return Some(Err(error)),
+    };
+    let node = scope.view.node;
+    let resolver = scope.resolver;
     let total_height = exact_rendered_height(node, resolver, context)?;
     if start <= 0 && height >= total_height {
-        return Some(render_node(node, resolver, context, intrinsic));
+        return Some(
+            scope
+                .phase(Phase::WindowFull)
+                .render(context, intrinsic, None),
+        );
     }
     match node {
         LayoutNode::Column { children, .. }
@@ -6412,19 +6459,21 @@ fn render_node_window(
                 && context.viewport_width_known =>
         {
             Some(render_column_window(
-                children, resolver, context, start, height,
+                children, &scope, context, start, height,
             ))
         }
         _ => Some(
-            render_node(node, resolver, context, intrinsic)
+            scope
+                .phase(Phase::WindowFallback)
+                .render(context, intrinsic, None)
                 .map(|rendered| slice_rendered(rendered, start, height)),
         ),
     }
 }
 
-fn render_column_window(
-    children: &[LayoutNode],
-    resolver: Option<&RetainedDocument>,
+fn render_column_window<'a>(
+    children: &'a [LayoutNode],
+    scope: &RenderScope<'a>,
     context: LayoutContext,
     start: i64,
     height: i64,
@@ -6434,8 +6483,8 @@ fn render_column_window(
     let mut offset = 0_i64;
     let mut parts = Vec::new();
 
-    for child in column_leaves(children) {
-        let child_height = exact_rendered_height(child, resolver, context)
+    for child in column_leaves(scope, children) {
+        let child_height = exact_rendered_height(child.view.node, child.resolver, context)
             .ok_or_else(|| "Native layout column window has an unbounded child".to_owned())?;
         let child_end = offset.saturating_add(child_height);
         if child_end <= start {
@@ -6449,18 +6498,21 @@ fn render_column_window(
         let child_start = start.saturating_sub(offset);
         let child_window_height = (child_end.min(end) - (offset + child_start)).max(0);
         let mut rendered = if child_start == 0 && child_window_height >= child_height {
-            render_node(child, resolver, context, false)?
+            child
+                .phase(Phase::WindowChildFull)
+                .render(context, false, None)?
         } else {
             render_node_window(
-                child,
-                resolver,
+                &child.phase(Phase::WindowChildPartial),
                 context,
                 false,
                 child_start,
                 child_window_height,
             )
             .unwrap_or_else(|| {
-                render_node(child, resolver, context, false)
+                child
+                    .phase(Phase::WindowFallback)
+                    .render(context, false, None)
                     .map(|rendered| slice_rendered(rendered, child_start, child_window_height))
             })?
         };
@@ -6488,7 +6540,6 @@ fn flex_line_cross(
     line: &[FlexRuntimeItem<'_>],
     axis: FlexAxis,
     container_align: FlexAlign,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<i64, String> {
@@ -6501,7 +6552,7 @@ fn flex_line_cross(
                 item.target,
                 None,
                 container_align,
-                resolver,
+                Phase::FlexCrossProbe,
                 context,
                 intrinsic,
             )?
@@ -6558,7 +6609,6 @@ fn render_flex_row_line(
     main_gap: i64,
     justify: FlexAlign,
     align: FlexAlign,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6573,7 +6623,7 @@ fn render_flex_row_line(
             item.target,
             Some(line_cross),
             align,
-            resolver,
+            Phase::FlexFinal,
             context,
             intrinsic,
         )?;
@@ -6596,7 +6646,6 @@ fn render_flex_column_line(
     main_gap: i64,
     justify: FlexAlign,
     align: FlexAlign,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6618,7 +6667,7 @@ fn render_flex_column_line(
                 item.target,
                 Some(line_cross),
                 align,
-                resolver,
+                Phase::FlexFinal,
                 context,
                 intrinsic,
             )?
@@ -6645,7 +6694,6 @@ fn render_flex_row(
     align: FlexAlign,
     align_content: FlexAlign,
     single_line: bool,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6664,7 +6712,7 @@ fn render_flex_row(
     } else {
         lines
             .iter()
-            .map(|line| flex_line_cross(line, FlexAxis::Row, align, resolver, context, intrinsic))
+            .map(|line| flex_line_cross(line, FlexAxis::Row, align, context, intrinsic))
             .collect::<Result<Vec<_>, _>>()?
     };
     let cross_layout =
@@ -6690,7 +6738,6 @@ fn render_flex_row(
             main_gap,
             justify,
             align,
-            resolver,
             context,
             intrinsic,
         )?);
@@ -6721,7 +6768,6 @@ fn render_flex_column(
     align: FlexAlign,
     align_content: FlexAlign,
     single_line: bool,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6733,9 +6779,7 @@ fn render_flex_column(
     } else {
         lines
             .iter()
-            .map(|line| {
-                flex_line_cross(line, FlexAxis::Column, align, resolver, context, intrinsic)
-            })
+            .map(|line| flex_line_cross(line, FlexAxis::Column, align, context, intrinsic))
             .collect::<Result<Vec<_>, _>>()?
     };
     let cross_layout =
@@ -6751,7 +6795,7 @@ fn render_flex_column(
         .enumerate()
     {
         let rendered = render_flex_column_line(
-            line, line_cross, main_size, main_gap, justify, align, resolver, context, intrinsic,
+            line, line_cross, main_size, main_gap, justify, align, context, intrinsic,
         )?;
         parts.push((rendered, line_cross));
         if index + 1 < line_count {
@@ -6769,7 +6813,7 @@ fn render_flex_column(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_flex(
+fn render_flex<'a>(
     direction: FlexDirection,
     wrap: FlexWrap,
     justify: FlexAlign,
@@ -6779,8 +6823,8 @@ fn render_flex(
     height: &Size,
     row_gap: i64,
     column_gap: i64,
-    source_items: &[FlexItem],
-    resolver: Option<&RetainedDocument>,
+    source_items: &'a [FlexItem],
+    scope: &RenderScope<'a>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6801,7 +6845,7 @@ fn render_flex(
                 &source_items[index],
                 axis,
                 inline_viewport,
-                resolver,
+                scope.child(LocalStep::FlexItem(index), &source_items[index].node),
                 context,
             )
         })
@@ -6829,7 +6873,6 @@ fn render_flex(
             align_items,
             align_content,
             single_line,
-            resolver,
             context,
             intrinsic,
         ),
@@ -6843,20 +6886,20 @@ fn render_flex(
             align_items,
             align_content,
             single_line,
-            resolver,
             context,
             intrinsic,
         ),
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct BoxOverride {
     content_width: Option<i64>,
     content_height: Option<i64>,
     declared_width: Option<i64>,
 }
 
+#[cfg(test)]
 fn render_node(
     node: &LayoutNode,
     resolver: Option<&RetainedDocument>,
@@ -6873,10 +6916,17 @@ fn render_node_with_override(
     intrinsic: bool,
     size_override: Option<BoxOverride>,
 ) -> Result<Rendered, String> {
-    let node = match resolver {
-        Some(resolver) => resolver.resolve(node)?,
-        None => node,
-    };
+    RenderScope::uncached(node, resolver).render(context, intrinsic, size_override)
+}
+
+fn render_node_body(
+    scope: &RenderScope<'_>,
+    context: LayoutContext,
+    intrinsic: bool,
+    size_override: Option<BoxOverride>,
+) -> Result<Rendered, String> {
+    let node = scope.view.node;
+    let resolver = scope.resolver;
     #[cfg(test)]
     TEST_RENDER_NODE_COUNT.with(|count| {
         if let Some(value) = count.get() {
@@ -7026,6 +7076,7 @@ fn render_node_with_override(
             let mut windowed_child_start = None;
             let mut windowed_child_height = None;
             let mut child_rendered = if let Some(child) = child {
+                let child_scope = scope.child(LocalStep::BoxChild, child);
                 let child_context = LayoutContext {
                     viewport_width: if intrinsic_child {
                         0
@@ -7049,8 +7100,7 @@ fn render_node_with_override(
                         windowed_child_height = Some(total_height);
                         Some(
                             render_node_window(
-                                child,
-                                resolver,
+                                &child_scope,
                                 child_context,
                                 intrinsic || intrinsic_child,
                                 start,
@@ -7059,20 +7109,14 @@ fn render_node_with_override(
                             .expect("exact height checked above")?,
                         )
                     } else {
-                        Some(render_node(
-                            child,
-                            resolver,
+                        Some(child_scope.render(
                             child_context,
                             intrinsic || intrinsic_child,
+                            None,
                         )?)
                     }
                 } else {
-                    Some(render_node(
-                        child,
-                        resolver,
-                        child_context,
-                        intrinsic || intrinsic_child,
-                    )?)
+                    Some(child_scope.render(child_context, intrinsic || intrinsic_child, None)?)
                 }
             } else {
                 None
@@ -7425,7 +7469,14 @@ fn render_node_with_override(
             };
             let rendered = children
                 .iter()
-                .map(|child| render_node(child, resolver, child_context, intrinsic))
+                .enumerate()
+                .map(|(index, child)| {
+                    scope.child(LocalStep::RowChild(index), child).render(
+                        child_context,
+                        intrinsic,
+                        None,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let parts = rendered
                 .into_iter()
@@ -7437,8 +7488,8 @@ fn render_node_with_override(
             Ok(concat_horizontal_sized(parts, 0))
         }
         LayoutNode::Column { children, .. } => {
-            let rendered = column_leaves(children)
-                .map(|child| render_node(child, resolver, context, intrinsic))
+            let rendered = column_leaves(scope, children)
+                .map(|child| child.render(context, intrinsic, None))
                 .collect::<Result<Vec<_>, _>>()?;
             let maximum = rendered
                 .iter()
@@ -7492,7 +7543,7 @@ fn render_node_with_override(
             *row_gap,
             *column_gap,
             items,
-            resolver,
+            scope,
             context,
             intrinsic,
         ),
@@ -7501,12 +7552,19 @@ fn render_node_with_override(
 
 // Flatten only literal Columns. In particular, a retained NodeRef remains a
 // child evaluation boundary even when it resolves to an identified Column.
-fn column_leaves(children: &[LayoutNode]) -> impl Iterator<Item = &LayoutNode> {
-    let mut stack = vec![children.iter()];
+fn column_leaves<'a>(
+    scope: &RenderScope<'a>,
+    children: &'a [LayoutNode],
+) -> impl Iterator<Item = RenderScope<'a>> {
+    let mut stack = vec![(scope.clone(), children.iter().enumerate())];
     std::iter::from_fn(move || loop {
-        match stack.last_mut()?.next() {
-            Some(LayoutNode::Column { children, .. }) => stack.push(children.iter()),
-            Some(child) => return Some(child),
+        let (scope, children) = stack.last_mut()?;
+        match children.next() {
+            Some((index, child @ LayoutNode::Column { children, .. })) => {
+                let child_scope = scope.child(LocalStep::ColumnChild(index), child);
+                stack.push((child_scope, children.iter().enumerate()));
+            }
+            Some((index, child)) => return Some(scope.child(LocalStep::ColumnChild(index), child)),
             None => {
                 stack.pop();
             }
@@ -7633,7 +7691,11 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    fn cluster(text: &str, width: i64, source_template_id: Option<u32>) -> MeasuredCluster {
+    pub(super) fn cluster(
+        text: &str,
+        width: i64,
+        source_template_id: Option<u32>,
+    ) -> MeasuredCluster {
         MeasuredCluster {
             text: text.to_owned(),
             width,
@@ -7644,7 +7706,7 @@ mod tests {
         }
     }
 
-    fn measured_text(lines: Vec<Vec<MeasuredCluster>>) -> MeasuredText {
+    pub(super) fn measured_text(lines: Vec<Vec<MeasuredCluster>>) -> MeasuredText {
         MeasuredText {
             lines: lines
                 .into_iter()
@@ -7716,7 +7778,7 @@ mod tests {
         node
     }
 
-    fn child_box(
+    pub(super) fn child_box(
         region_id: i64,
         child: LayoutNode,
         surface_template_id: Option<u32>,
@@ -7766,7 +7828,7 @@ mod tests {
         }
     }
 
-    fn identified(mut node: LayoutNode, node_id: u64, revision: u64) -> LayoutNode {
+    pub(super) fn identified(mut node: LayoutNode, node_id: u64, revision: u64) -> LayoutNode {
         match &mut node {
             LayoutNode::Box {
                 node_id: id,
@@ -7801,7 +7863,7 @@ mod tests {
         node
     }
 
-    fn retained_document(root: LayoutNode) -> LayoutDocument {
+    pub(super) fn retained_document(root: LayoutNode) -> LayoutDocument {
         LayoutDocument {
             version: LAYOUT_VERSION,
             space_width: 1,
@@ -7863,7 +7925,7 @@ mod tests {
         }
     }
 
-    fn test_context() -> LayoutContext {
+    pub(super) fn test_context() -> LayoutContext {
         LayoutContext {
             viewport_width: 80,
             viewport_width_known: true,
@@ -8607,7 +8669,7 @@ mod tests {
         assert_eq!(joined.lines[1].break_after, Some(AtomProperties::default()));
     }
 
-    fn nonuniform_text(region_id: i64, widths: &[i64]) -> LayoutNode {
+    pub(super) fn nonuniform_text(region_id: i64, widths: &[i64]) -> LayoutNode {
         LayoutNode::Text {
             node_id: None,
             node_revision: None,
@@ -9624,7 +9686,7 @@ mod tests {
         }
     }
 
-    fn context_test_delta(entries: Vec<JsonValue>) -> DocumentDelta {
+    pub(super) fn context_test_delta(entries: Vec<JsonValue>) -> DocumentDelta {
         serde_json::from_value(serde_json::json!({
             "style-base-count": 0,
             "styles-append": [],
