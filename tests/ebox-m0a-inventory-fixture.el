@@ -436,6 +436,12 @@
      :authority ebox :lifetime private-native-session
      :rollback private-session-discard :rebuild full-bootstrap
      :cleanup native-session-release)
+    (:id native-session/layout-edge-index
+     :storage (:struct-slot ebox-native-reflow-session layout-edge-index)
+     :proposed-category generation-bound-mutable :owner ebox-native-reflow
+     :authority ebox :lifetime private-native-session
+     :rollback private-session-discard :rebuild full-bootstrap-edge-facts
+     :cleanup native-session-release)
     (:id native-compile/style-index
      :storage (:global ebox-native-reflow--compile-style-index)
      :proposed-category generation-fact :owner ebox-native-reflow

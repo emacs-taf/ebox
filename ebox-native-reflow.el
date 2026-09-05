@@ -226,6 +226,7 @@ module while loading the package."
   layout-fragment-revision
   layout-style-index
   layout-property-template-index
+  layout-edge-index
   readiness-process
   readiness-preparation
   released-p)
@@ -1419,7 +1420,9 @@ copied separately; no pending frame or registered Rust document is inherited."
                 (ebox-native-reflow-session-layout-style-index session)
                 (ebox-native-reflow-session-layout-property-template-index fork)
                 (ebox-native-reflow-session-layout-property-template-index
-                 session))
+                 session)
+                (ebox-native-reflow-session-layout-edge-index fork)
+                (ebox-native-reflow-session-layout-edge-index session))
           fork)
       (error
        (ebox-native-reflow-release-session fork)
@@ -2599,6 +2602,86 @@ per call, and no call recursively visits the captured Ebox tree."
                   (gethash child flex-content-min-widths)))
            (ebox-native-reflow--retained-layout-children node))))))
 
+(defun ebox-native-reflow--retained-edge-rule (node)
+  "Return NODE's exact child-edge lowering rule, or nil for plain edges."
+  (let ((node-id (plist-get node :node-id)))
+    (cond
+     ((and (eq (plist-get node :ebox-type) 'box)
+           (eq (plist-get node :ebox-kind) 'box))
+      (let* ((config (plist-get node :ebox-layout-config))
+             (kind (and config (ebox-layout-config-kind config)))
+             (props (and config (ebox-layout-config-props config))))
+        (pcase kind
+          ('flex
+           (list :parent-id node-id :slot 1 :kind 'flex-item
+                 :axis (ebox--flex-axis props)))
+          ((or 'row 'column)
+           (if (and (equal (plist-get props :item-gap) 0)
+                    (eq (plist-get props :cross-align) 'stretch))
+               (list :parent-id node-id :slot 1 :kind 'direct-axis
+                     :axis kind)
+             (list :parent-id node-id :slot 1 :kind 'typed-axis-item
+                   :axis kind :cross-align
+                   (plist-get props :cross-align)))))))
+     ((eq (plist-get node :ebox-type) 'flex)
+      (let* ((wrapper (plist-get node :box))
+             (props (ebox--flex-container-content-props
+                     (plist-get node :props) (plist-get node :raw-props)
+                     wrapper)))
+        (list :parent-id node-id :slot (if wrapper 1 0) :kind 'flex-item
+              :axis (ebox--flex-axis props)))))))
+
+(defun ebox-native-reflow--retained-edge-item-local (item)
+  "Return exact derived edge fields from compiled ITEM."
+  (let* ((node (plist-get item :node))
+         (local
+          (cl-loop for (key value) on item by #'cddr
+                   unless (eq key :node) append (list key value))))
+    ;; Flex compilation may augment the edge's child view with this measured
+    ;; scalar without changing the independently retained child fragment.
+    (if (plist-member node :content-min-width)
+        (append local
+                (list :content-min-width
+                      (plist-get node :content-min-width)))
+      local)))
+
+(defun ebox-native-reflow--retained-edge-index (postorder cache)
+  "Build exact child-edge facts from full POSTORDER fragments in CACHE."
+  (let (index)
+    (cl-loop for parent across postorder
+             for parent-id = (plist-get parent :node-id)
+             for rule = (ebox-native-reflow--retained-edge-rule parent)
+             when rule do
+             (setq index
+                   (ebox-native-reflow--persistent-index-put
+                    index (cons 'rule parent-id) rule))
+             when (memq (plist-get rule :kind)
+                        '(flex-item typed-axis-item)) do
+             (let* ((entry (gethash parent-id cache))
+                    (fragment (plist-get entry :fragment))
+                    (inner (if (= (plist-get rule :slot) 1)
+                               (plist-get fragment :child)
+                             fragment))
+                    (items (plist-get inner :items))
+                    (children
+                     (ebox-native-reflow--retained-layout-children parent)))
+               (unless (= (length children) (length items))
+                 (error "Native retained edge facts do not match children"))
+               (cl-loop for child in children
+                        for item across items
+                        for position from 0 do
+                        (setq index
+                              (ebox-native-reflow--persistent-index-put
+                               index
+                               (cons 'child (plist-get child :node-id))
+                               (append
+                                (list :parent-id parent-id
+                                      :slot (plist-get rule :slot)
+                                      :item-position position)
+                                (ebox-native-reflow--retained-edge-item-local
+                                 item)))))))
+    index))
+
 (defun ebox-native-reflow--compile-retained-layout-package-full
     (session state node)
   "Compile a complete retained package for NODE in SESSION from STATE."
@@ -2785,61 +2868,98 @@ per call, and no call recursively visits the captured Ebox tree."
                   (ebox-native-reflow-session-layout-property-template-index
                    session)
                   (ebox-native-reflow--persistent-index-from-sequence
-                   (plist-get package :property-templates)))
+                   (plist-get package :property-templates))
+                  (ebox-native-reflow-session-layout-edge-index session)
+                  (ebox-native-reflow--retained-edge-index
+                   postorder new-cache))
             package)))))
 
 (defconst ebox-native-reflow--delta-edge-fields
   '(:type :child :children :items :node-id :node-revision)
   "Fragment fields that a stable local node delta cannot replace.")
 
-(defconst ebox-native-reflow--delta-flex-edge-properties
-  '(:order :flex-grow :flex-shrink :flex-basis :align-self
-    :flex-direction :cross-align)
-  "Changed properties that alter retained Flex item metadata in N1.")
+(defun ebox-native-reflow--current-edge-item-fact
+    (state owner parent rule retained)
+  "Return OWNER's current edge fact from STATE under PARENT.
+RULE identifies the compiler lowering, and RETAINED supplies its stable slot."
+  (let ((local
+         (pcase (plist-get rule :kind)
+           ('flex-item
+            (let* ((widths (plist-get state :flex-content-min-widths))
+                   (missing (make-symbol "missing-native-edge-width"))
+                   (width (if (hash-table-p widths)
+                              (gethash owner widths missing)
+                            missing)))
+              (ebox-native-reflow--retained-edge-item-local
+               (ebox-native-reflow--compile-flex-item
+                owner (plist-get rule :axis) nil t width
+                (not (eq width missing))))))
+           ('typed-axis-item
+            (list :order 0 :grow 0 :shrink 0
+                  :basis (list :kind "auto")
+                  :align-self
+                  (ebox-native-reflow--simple-axis-item-align
+                   (plist-get rule :axis) owner
+                   (plist-get rule :cross-align)))))))
+    (and local
+         (append
+          (list :parent-id (plist-get parent :node-id)
+                :slot (plist-get retained :slot)
+                :item-position (plist-get retained :item-position))
+          local))))
 
-(defun ebox-native-reflow--delta-flex-edge-change-p (state)
-  "Return non-nil when STATE changes unsupported Flex edge metadata."
+(defun ebox-native-reflow--delta-edge-change-p (session state index)
+  "Return non-nil when STATE changes a retained derived edge in SESSION."
+  (let ((edge-index (ebox-native-reflow-session-layout-edge-index session))
+        (missing (make-symbol "missing-native-edge-fact"))
+        (ids
+         (append
+          (mapcar (lambda (dirty) (plist-get dirty :node-id))
+                  (plist-get state :native-local-dirty-entries))
+          (plist-get state :native-touched-node-ids))))
   (cl-some
-   (lambda (dirty)
-     (let* ((keys (plist-get dirty :changed-keys))
-            (parents (plist-get state :parent-table))
+   (lambda (dirty-id)
+     (let* ((parents (plist-get state :parent-table))
             (nodes (plist-get state :node-table))
-            (dirty-id (plist-get dirty :node-id))
-            (dirty-node (and nodes (gethash dirty-id nodes)))
-            (raw-parent-id (and parents (gethash dirty-id parents)))
-            (raw-parent (and nodes (gethash raw-parent-id nodes)))
             (owner-id
-             (if (and (eq (plist-get dirty-node :ebox-kind) 'text)
-                      (eq (plist-get raw-parent :ebox-kind) 'box)
-                      (when-let* ((layout
-                                   (plist-get raw-parent
-                                              :ebox-layout-config)))
-                        (eq (ebox-layout-config-kind layout) 'normal)))
-                 raw-parent-id
-               dirty-id))
-            (edge-parent-id (and parents (gethash owner-id parents)))
-            (edge-parent (and nodes (gethash edge-parent-id nodes)))
-            (config
-             (and edge-parent
-                  (plist-get edge-parent :ebox-layout-config))))
-       (or
-        (cl-some (lambda (key)
-                   (memq key ebox-native-reflow--delta-flex-edge-properties))
-                 keys)
-        ;; A child-local edit can change content-min-width in a Flex item or
-        ;; derived align-self in typed axis lowering.  N1 has no edge patch,
-        ;; so retain correctness through full input until exact edge facts are
-        ;; independently addressable.
-        (or (eq (plist-get edge-parent :ebox-type) 'flex)
-            (and config
-                 (let ((kind (ebox-layout-config-kind config))
-                       (props (ebox-layout-config-props config)))
-                   (or (eq kind 'flex)
-                       (and (memq kind '(row column))
-                            (not (and (equal (plist-get props :item-gap) 0)
-                                      (eq (plist-get props :cross-align)
-                                          'stretch)))))))))))
-   (plist-get state :native-local-dirty-entries)))
+             (and nodes parents
+                  (ebox-native-reflow--delta-owner-id state dirty-id index)))
+            (owner (and owner-id (gethash owner-id nodes)))
+            (parent-id (and owner-id (gethash owner-id parents)))
+            (parent (and parent-id (gethash parent-id nodes)))
+            (current-parent-rule
+             (and parent (ebox-native-reflow--retained-edge-rule parent)))
+            (retained-parent-rule
+             (and parent-id
+                  (ebox-native-reflow--persistent-index-get
+                   edge-index (cons 'rule parent-id) missing)))
+            (retained-item
+             (and owner-id
+                  (ebox-native-reflow--persistent-index-get
+                   edge-index (cons 'child owner-id) missing)))
+            (current-owner-rule
+             (and owner (ebox-native-reflow--retained-edge-rule owner)))
+            (retained-owner-rule
+             (and owner-id
+                  (ebox-native-reflow--persistent-index-get
+                   edge-index (cons 'rule owner-id) missing))))
+       (or (null owner)
+           (not (equal current-owner-rule
+                       (unless (eq retained-owner-rule missing)
+                         retained-owner-rule)))
+           (not (equal current-parent-rule
+                       (unless (eq retained-parent-rule missing)
+                         retained-parent-rule)))
+           (if (memq (plist-get current-parent-rule :kind)
+                     '(flex-item typed-axis-item))
+               (or (eq retained-item missing)
+                   (not
+                    (equal
+                     retained-item
+                     (ebox-native-reflow--current-edge-item-fact
+                      state owner parent current-parent-rule retained-item))))
+             (not (eq retained-item missing))))))
+   (delete-dups (copy-sequence ids)))))
 
 (defun ebox-native-reflow--fragment-local (fragment)
   "Return FRAGMENT's scalar and local-content fields."
@@ -2956,7 +3076,8 @@ per call, and no call recursively visits the captured Ebox tree."
     (when (and old-package old-index (hash-table-p node-table)
                (plist-get state :native-topology-stable-p)
                (plist-member state :native-local-dirty-entries)
-               (not (ebox-native-reflow--delta-flex-edge-change-p state))
+               (not (ebox-native-reflow--delta-edge-change-p
+                     session state old-index))
                ;; Descendant inherited-style expansion needs its own bounded
                ;; affected-node index.  Until then it is an explicit full
                ;; input fallback rather than a partial semantic update.
