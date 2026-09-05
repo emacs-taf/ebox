@@ -466,18 +466,20 @@ exclusion freshness, but only retained/container evidence is coverage-gated."
                 'generation-bound-mutable-authority))))
 
 (ert-deftest ebox-state-contract-excludes-native-compile-scratch-from-authority ()
-  "Compile-local template ids are not mislabeled as native session authority."
-  (should-not
-   (memq 'ebox-native-reflow--compile-property-template-ids
+  "Compile-local indexes are not mislabeled as native session authority."
+  (let ((authority-storage
          (plist-get (ebox-state-contract-record 'native-runtime-authority)
                     :storage)))
-  (let ((exclusion
-         (cl-find 'ebox-native-reflow--compile-property-template-ids
-                  ebox-state-contract-source-scan-exclusions
-                  :key (lambda (entry) (plist-get entry :symbol)))))
-    (should exclusion)
-    (should (eq (plist-get exclusion :reason)
-                'dynamically-bound-compile-local-scratch))))
+    (dolist (symbol '(ebox-native-reflow--compile-property-template-ids
+                      ebox-native-reflow--compile-property-template-index
+                      ebox-native-reflow--compile-style-index))
+      (should-not (memq symbol authority-storage))
+      (let ((exclusion
+             (cl-find symbol ebox-state-contract-source-scan-exclusions
+                      :key (lambda (entry) (plist-get entry :symbol)))))
+        (should exclusion)
+        (should (eq (plist-get exclusion :reason)
+                    'dynamically-bound-compile-local-scratch))))))
 
 (ert-deftest ebox-state-contract-tp-custody-is-opaque ()
   "The inventory separates current whole-state custody from its M2a target."

@@ -1656,17 +1656,25 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                     (plist-get (tp-surface-client-state surface)
                                :native-sync-session))
               (should (eq (plist-get report :projection-kind) 'native-frame))
-              ;; A style-table change cannot consume the prior confirmed
-              ;; document and therefore remains a truthful full frame.
-              (should (eq (plist-get report :native-frame-kind) 'full))
+              ;; A root paint delta and appended styles preserve the old
+              ;; registry prefix and publish against the confirmed tape.
+              (should (eq (plist-get report :native-frame-kind) 'patch))
               (should next-session)
               (should-not (eq next-session winning-session))
               (should (ebox-native-reflow-session-released-p winning-session))
               (should-not (ebox-native-reflow-session-released-p
                            next-session))
+              (should
+               (equal-including-properties
+                (with-current-buffer buffer
+                  (buffer-substring (point-min) (point-max)))
+                (ebox-surface-test--render-runtime
+                 (tp-surface-client-state surface))))
               (let ((stats (ebox-native-reflow-stats next-session)))
-                (should (= (plist-get stats :document-parses) 1))
-                (should (= (plist-get stats :document-validations) 1))
+                (should (= (plist-get stats :document-parses) 0))
+                (should (= (plist-get stats :document-validations) 0))
+                (should (= (plist-get stats :document-delta-entries-parsed) 1))
+                (should (= (plist-get stats :document-delta-entries-validated) 1))
                 (should (= (plist-get stats :document-reuses) 0))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer))
@@ -1722,6 +1730,108 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
               (should (= (plist-get tp-report :touched-characters) 2))
               (should (equal (node-ids state) old-node-ids))
               (should (equal-including-properties actual expected)))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-native-node-delta-survives-viewport-and-repeated-commits ()
+  "Real local commits preserve earlier edits across viewport document reuse."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-native-delta-history*"))
+        (ebox-viewport-width 320)
+        (ebox-viewport-height 40)
+        (ebox-runtime-idle-prewarm nil)
+        (ebox-runtime-idle-reflow-cache-prewarm nil))
+    (unwind-protect
+        (cl-labels
+            ((item
+              (index text)
+              (ebox-test-box
+               :key index :source-identity index :width '(8) :height 1
+               (ebox-test-text text :key (+ 100 index)
+                               :source-identity (+ 100 index))))
+             (source
+              (count)
+              (apply #'ebox-test-column
+                     (append (list :key 'delta-history
+                                   :source-identity 'delta-history
+                                   :width '(viewport))
+                             (cl-loop for index below count
+                                      collect (item index "A")))))
+             (ids
+              (state)
+              (let (result)
+                (ebox-surface-test--walk-runtime
+                 (plist-get state :root-node)
+                 (lambda (node) (push (plist-get node :node-id) result)))
+                (nreverse result))))
+          (cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
+                     (lambda () nil)))
+            (ebox-render-to-buffer buffer (source 15)))
+          (ebox-commit buffer (source 16))
+          (let* ((surface
+                  (with-current-buffer buffer ebox-surface--buffer-surface))
+                 (baseline-ids (ids (tp-surface-client-state surface)))
+                 (original-send
+                  (symbol-function 'ebox-native--module-render-session-frame))
+                 (expected-texts (make-vector 16 "A"))
+                 previous-document-revision events)
+            (should (plist-get (tp-surface-client-state surface)
+                               :native-sync-confirmed-p))
+            (cl-letf
+                (((symbol-function 'ebox-native--module-render-session-frame)
+                  (lambda (handle generation control)
+                    (push (json-parse-string control :object-type 'plist
+                                             :array-type 'array)
+                          events)
+                    (funcall original-send handle generation control))))
+              (dolist (step '((4 "B") viewport (12 "C") (4 "D")))
+                (setq events nil)
+                (if (eq step 'viewport)
+                    (progn
+                      (setq ebox-viewport-width 360)
+                      (ebox-rerender-buffer-with-context buffer 360 40))
+                  (let ((candidate (ebox-candidate-begin buffer)))
+                    (ebox-candidate-replace-host-ref
+                     candidate (car step) (item (car step) (cadr step)))
+                    (ebox-commit buffer candidate)
+                    (aset expected-texts (car step) (cadr step))))
+                (ert-info ((format "Native delta history step %S" step))
+                  (should (= 1 (length events))))
+                (let* ((control (car events))
+                       (base (plist-get control :document-base-revision))
+                       (target (plist-get control :document-target-revision))
+                       (state (tp-surface-client-state surface))
+                       (session (plist-get state :native-sync-session)))
+                  (should-not (plist-get control :document))
+                  (when previous-document-revision
+                    (should (= base previous-document-revision)))
+                  (if (eq step 'viewport)
+                      (progn
+                        (should-not (plist-get control :document-delta))
+                        (should (= base target)))
+                    (should (plist-get control :document-delta))
+                    (should (= (1+ base) target)))
+                  (setq previous-document-revision target)
+                  (should (equal baseline-ids (ids state)))
+                  (should
+                   (equal (mapconcat #'identity expected-texts "")
+                          (with-current-buffer buffer
+                            (replace-regexp-in-string
+                             "[[:space:]]" ""
+                             (buffer-substring-no-properties
+                              (point-min) (point-max))))))
+                  (should (plist-get state :native-sync-confirmed-p))
+                  (should-not (plist-get state :native-sync-pending))
+                  (should-not
+                   (plist-get
+                    (ebox-native-reflow-session-layout-package session)
+                    :document-delta))
+                  (should
+                   (equal-including-properties
+                    (with-current-buffer buffer
+                      (buffer-substring (point-min) (point-max)))
+                    (ebox-surface-test--render-runtime state))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

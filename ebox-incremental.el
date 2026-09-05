@@ -9975,6 +9975,10 @@ role, and outside-complement compatibility before publication."
                      (plist-get candidate-state
                                 :native-inherited-dirty-node-ids)))
     (setq overrides
+          (plist-put overrides :native-local-dirty-entries
+                     (plist-get candidate-state
+                                :native-local-dirty-entries)))
+    (setq overrides
           (plist-put
            overrides :native-topology-stable-p
            (plist-get candidate-state :native-topology-stable-p)))
@@ -10963,9 +10967,10 @@ fresh by the mixed projection."
                ((eq projection-kind 'native-frame)
                 (append
                  (ebox-incremental--viewport-state-overrides
-                  candidate-state t)
+                 candidate-state t)
                  (list :native-topology-stable-p t
                        :native-touched-node-ids nil
+                       :native-local-dirty-entries nil
                        :native-removed-node-ids nil)))
                ((memq projection-kind
                       '(viewport-reflow viewport-reflow-mixed-scroll))

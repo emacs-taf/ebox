@@ -2372,6 +2372,14 @@ remain retained identities."
            session initial-state root))
          (next (copy-tree root))
          (next-child (car (ebox-tree-node-children next))))
+    (let ((bootstrap-root
+           (plist-get (plist-get initial-package :document) :root)))
+      (should (= (plist-get root :node-id)
+                 (plist-get bootstrap-root :node-id)))
+      (should (integerp (plist-get bootstrap-root :node-revision)))
+      ;; The Text is fused into its owner and therefore has no addressable
+      ;; child entry in the full wire document.
+      (should (eq :null (plist-get bootstrap-root :child))))
     (setf (ebox-native-reflow-session-styles session)
           (plist-get initial-package :styles)
           (ebox-native-reflow-session-layout-package session)
@@ -2566,6 +2574,434 @@ remain retained identities."
                  11))
       (should (= (plist-get (car controls) :document-base-revision) 10))
       (should (= (plist-get (car controls) :document-target-revision) 11)))))
+
+(ert-deftest ebox-native-persistent-index-path-copies-without-changing-base ()
+  "A retained index update shares the base and leaves its values immutable."
+  (require 'ebox-native-reflow)
+  (let* ((base (ebox-native-reflow--persistent-index-put nil 1 'one))
+         (next (ebox-native-reflow--persistent-index-put base 17 'seventeen)))
+    (should (eq 'one (ebox-native-reflow--persistent-index-get base 1)))
+    (should-not (ebox-native-reflow--persistent-index-get base 17))
+    (should (eq 'one (ebox-native-reflow--persistent-index-get next 1)))
+    (should (eq 'seventeen
+                (ebox-native-reflow--persistent-index-get next 17)))
+    (should-not (eq base next))))
+
+(ert-deftest ebox-native-session-fork-shares-immutable-compiler-roots ()
+  "Forking does not clone the retained fragment map or persistent indexes."
+  (require 'ebox-native-reflow)
+  (let* ((cache (make-hash-table :test 'equal))
+         (index (ebox-native-reflow--persistent-index-put nil 1 'entry))
+         (styles (vector 'style))
+         (session
+          (ebox-native-reflow--make-session
+           :handle 'parent :generation 4 :styles styles
+           :layout-package 'package :layout-fragment-cache cache
+           :layout-fragment-index index :layout-fragment-revision 8
+           :layout-style-index index :layout-property-template-index index)))
+    (cl-letf (((symbol-function 'ebox-native--module-fork-confirmed)
+               (lambda (_handle) 'child)))
+      (let ((fork (ebox-native-reflow-fork-session session)))
+        (should (eq cache
+                    (ebox-native-reflow-session-layout-fragment-cache fork)))
+        (should (eq index
+                    (ebox-native-reflow-session-layout-fragment-index fork)))
+        (should (eq styles (ebox-native-reflow-session-styles fork)))
+        (should (= 8
+                   (ebox-native-reflow-session-layout-fragment-revision
+                    fork)))))))
+
+(ert-deftest ebox-native-failed-delta-keeps-fork-and-parent-indexes-unchanged ()
+  "A rejected candidate cannot publish its path-copied compiler index."
+  (require 'ebox-native-reflow)
+  (let* ((cache (make-hash-table :test 'equal))
+         (base-index (ebox-native-reflow--persistent-index-put nil 1 'old))
+         (next-index
+          (ebox-native-reflow--persistent-index-put base-index 1 'new))
+         (old (list :document '(:version 2) :document-revision 4
+                    :styles [] :property-templates []))
+         (next (copy-sequence old))
+         (parent
+          (ebox-native-reflow--make-session
+           :handle 'parent :layout-package old :styles []
+           :layout-fragment-cache cache :layout-fragment-index base-index)))
+    (plist-put next :document-revision 5)
+    (plist-put next :document-delta
+               '(:style-base-count 0 :styles-append []
+                 :property-template-base-count 0
+                 :property-template-target-count 0 :entries []))
+    (plist-put next :native-fragment-index next-index)
+    (cl-letf (((symbol-function 'ebox-native--module-fork-confirmed)
+               (lambda (_handle) 'child)))
+      (let ((fork (ebox-native-reflow-fork-session parent)))
+        (cl-letf (((symbol-function
+                    'ebox-native-reflow--compile-retained-layout-package)
+                   (lambda (&rest _) next))
+                  ((symbol-function 'ebox-native--module-render-session-frame)
+                   (lambda (&rest _) (error "reject delta"))))
+          (should-error
+           (ebox-native-reflow-execute-session-sync
+            fork 'node '(:key 1 :viewport-width 80 :viewport-height 10)
+            nil 'state))
+          (should (eq base-index
+                      (ebox-native-reflow-session-layout-fragment-index fork)))
+          (should (eq base-index
+                      (ebox-native-reflow-session-layout-fragment-index parent)))
+          (should (eq cache
+                      (ebox-native-reflow-session-layout-fragment-cache fork))))))))
+
+(ert-deftest ebox-native-accepted-delta-invalidates-stale-full-cache ()
+  "A later full fallback cannot resurrect pre-delta legacy fragments."
+  (require 'ebox-native-reflow)
+  (let* ((cache (make-hash-table :test 'equal))
+         (base-index (ebox-native-reflow--persistent-index-put nil 1 'old))
+         (next-index
+          (ebox-native-reflow--persistent-index-put base-index 1 'new))
+         (old (list :document '(:version 2) :document-revision 4
+                    :styles [] :property-templates []))
+         (next (copy-sequence old))
+         (session
+          (ebox-native-reflow--make-session
+           :handle 'test :generation 0 :layout-package old :styles []
+           :layout-fragment-cache cache :layout-fragment-index base-index)))
+    (puthash 1 'stale-fragment cache)
+    (plist-put next :document-revision 5)
+    (plist-put next :document-delta
+               '(:style-base-count 0 :styles-append []
+                 :property-template-base-count 0
+                 :property-template-target-count 0 :entries []))
+    (plist-put next :native-fragment-index next-index)
+    (plist-put next :native-fragment-revision 9)
+    (cl-letf (((symbol-function
+                'ebox-native-reflow--compile-retained-layout-package)
+               (lambda (&rest _) next))
+              ((symbol-function 'ebox-native--module-render-session-frame)
+               (lambda (&rest _) 'native-frame))
+              ((symbol-function 'ebox-native-reflow--materialize-module-frame)
+               (lambda (&rest _) '(:rendered "ok"))))
+      (ebox-native-reflow-execute-session-sync
+       session 'node '(:key 1 :viewport-width 80 :viewport-height 10)
+       nil 'state)
+      (should-not
+       (ebox-native-reflow-session-layout-fragment-cache session))
+      (should (eq next-index
+                  (ebox-native-reflow-session-layout-fragment-index session)))
+      (should (= 9
+                 (ebox-native-reflow-session-layout-fragment-revision
+                  session)))
+      ;; Model the next unsupported B update.  The current source contains A's
+      ;; accepted value while the persistent index is deliberately stale; the
+      ;; invalidated legacy cache forces a complete compile from current state.
+      (let* ((input
+              (ebox-test-box (ebox-test-text "A") :bgcolor "#00ff00"))
+             (root (ebox-test-root input))
+             (_ids (ebox--runtime-node-ids root))
+             (full
+              (ebox-native-reflow--compile-retained-layout-package-full
+               session
+               (list :native-node-postorder
+                     (ebox-native-reflow--retained-layout-postorder root)
+                     :native-topology-stable-p nil
+                     :source-index (ebox-test-source-index input))
+               root))
+             (document-root (plist-get (plist-get full :document) :root))
+             (style-id (plist-get document-root :background-style)))
+        (should
+         (equal '(:background "#00ff00")
+                (plist-get (aref (plist-get full :styles) style-id)
+                           :face)))))))
+
+(ert-deftest ebox-native-node-delta-is-local-and-bumps-ancestors ()
+  "A local change patches one owner and only revises its retained ancestor."
+  (require 'ebox-native-reflow)
+  (let* ((leaf-fragment
+          '(:type "box" :background-style :null :child :null
+            :node-id 2 :node-revision 3))
+         (root-fragment
+          (list :type "box" :background-style :null :child leaf-fragment
+                :node-id 1 :node-revision 4))
+         (leaf-entry (list :fragment leaf-fragment :revision 3))
+         (root-entry (list :fragment root-fragment :revision 4))
+         (index (ebox-native-reflow--persistent-index-put nil 1 root-entry))
+         (_index (setq index
+                       (ebox-native-reflow--persistent-index-put
+                        index 2 leaf-entry)))
+         (style-index
+          (ebox-native-reflow--persistent-index-put
+           nil '(:mode add :face (:background "red")) 0))
+         (package
+          (list :document '(:version 2) :document-revision 7
+                :styles [] :property-templates []))
+         (session
+          (ebox-native-reflow--make-session
+           :handle 'test :generation 0 :styles [] :layout-package package
+           :layout-fragment-index index :layout-fragment-revision 4
+           :layout-style-index style-index))
+         (nodes (make-hash-table :test 'equal))
+         (parents (make-hash-table :test 'equal))
+         (state
+          (list :node-table nodes :parent-table parents
+                :native-topology-stable-p t
+                :native-touched-node-ids '(2 1)
+                :native-local-dirty-entries
+                '((:node-id 2 :dirty-kind paint
+                            :changed-keys (:background-color))))))
+    (puthash 1 '(:node-id 1) nodes)
+    (puthash 2 '(:node-id 2) nodes)
+    (puthash 2 1 parents)
+    (cl-letf (((symbol-function 'ebox--current-display-signature)
+               (lambda () 'display))
+              ((symbol-function 'ebox-native-reflow--compile-delta-slots)
+               (lambda (_node _old)
+                 (vector
+                  '(:type "box" :background-style 0 :child :null)))))
+      (let* ((next
+              (ebox-native-reflow--compile-retained-layout-delta
+               session state 'root))
+             (delta (plist-get next :document-delta))
+             (entries (plist-get delta :entries))
+             (leaf (aref entries 0))
+             (root (aref entries 1)))
+        (should (= 8 (plist-get next :document-revision)))
+        (should (= 0 (plist-get delta :style-base-count)))
+        (should (= 2 (length entries)))
+        (should (equal [(:slot 0 :local (:background-style 0))]
+                       (plist-get leaf :slot-patches)))
+        (should-not (plist-member root :slot-patches))
+        (should (= 5 (plist-get leaf :target-revision)))
+        (should (= 6 (plist-get root :target-revision)))))))
+
+(ert-deftest ebox-native-node-delta-deduplicates-multiple-leaf-closures ()
+  "Multiple changed leaves produce one entry each and one shared ancestor."
+  (require 'ebox-native-reflow)
+  (let ((index nil)
+        (nodes (make-hash-table :test 'equal))
+        (parents (make-hash-table :test 'equal)))
+    (dolist (pair '((1 . 3) (2 . 1) (3 . 2)))
+      (setq index
+            (ebox-native-reflow--persistent-index-put
+             index (car pair)
+             (list :fragment
+                   '(:type "box" :background-style :null :child :null)
+                   :revision (cdr pair))))
+      (puthash (car pair) (list :node-id (car pair)) nodes))
+    (puthash 2 1 parents)
+    (puthash 3 1 parents)
+    (let* ((package (list :document '(:version 2) :document-revision 2
+                          :styles [] :property-templates []))
+           (session
+            (ebox-native-reflow--make-session
+             :handle 'test :layout-package package
+             :layout-fragment-index index :layout-fragment-revision 3))
+           (state
+            (list :node-table nodes :parent-table parents
+                  :native-topology-stable-p t
+                  :native-touched-node-ids '(2 1 3 1)
+                  :native-local-dirty-entries
+                  '((:node-id 2 :changed-keys (:background-color))
+                    (:node-id 3 :changed-keys (:background-color))))))
+      (cl-letf (((symbol-function 'ebox--current-display-signature)
+                 (lambda () 'display))
+                ((symbol-function 'ebox-native-reflow--compile-delta-slots)
+                 (lambda (node _old)
+                   (vector
+                    (list :type "box" :background-style
+                          (plist-get node :node-id) :child :null)))))
+        (let* ((next
+                (ebox-native-reflow--compile-retained-layout-delta
+                 session state 'root))
+               (entries
+                (plist-get (plist-get next :document-delta) :entries)))
+          (should (= 3 (length entries)))
+          (should (equal '(2 1 3)
+                         (mapcar (lambda (entry)
+                                   (plist-get entry :node-id))
+                                 (append entries nil))))
+          (should (plist-member (aref entries 0) :slot-patches))
+          (should-not (plist-member (aref entries 1) :slot-patches))
+          (should (plist-member (aref entries 2) :slot-patches)))))))
+
+(ert-deftest ebox-native-fused-text-delta-resolves-to-box-owner ()
+  "A fused text id addresses its containing Box rather than a hidden node."
+  (require 'ebox-native-reflow)
+  (let ((nodes (make-hash-table :test 'equal))
+        (parents (make-hash-table :test 'equal))
+        (index (ebox-native-reflow--persistent-index-put nil 10 'owner)))
+    (puthash 10
+             (list :node-id 10 :ebox-kind 'box
+                   :ebox-layout-config
+                   (ebox-normal-layout-create))
+             nodes)
+    (puthash 11 '(:node-id 11 :ebox-kind text) nodes)
+    (puthash 11 10 parents)
+    (should (= 10
+               (ebox-native-reflow--delta-owner-id
+                (list :node-table nodes :parent-table parents) 11 index)))))
+
+(ert-deftest ebox-native-flex-item-metadata-change-uses-full-input ()
+  "N1 does not misrepresent Flex item metadata as a local scalar patch."
+  (require 'ebox-native-reflow)
+  (let ((session
+         (ebox-native-reflow--make-session
+          :handle 'test :layout-package 'old
+          :layout-fragment-index
+          (ebox-native-reflow--persistent-index-put
+           nil 1 '(:fragment (:type "box" :child :null) :revision 1))))
+        (state
+         '(:native-topology-stable-p t :native-touched-node-ids (1)
+           :native-local-dirty-entries
+           ((:node-id 1 :dirty-kind geometry
+                      :changed-keys (:flex-grow)))))
+        full-called)
+    (cl-letf (((symbol-function
+                'ebox-native-reflow--compile-retained-layout-package-full)
+               (lambda (&rest _)
+                 (setq full-called t)
+                 'full))
+              ((symbol-function 'ebox-native-reflow--compile-delta-slots)
+               (lambda (&rest _)
+                 (ert-fail "Flex item metadata reached local delta"))))
+      (should (eq 'full
+                  (ebox-native-reflow--compile-retained-layout-package
+                   session state 'node)))
+      (should full-called))))
+
+(ert-deftest ebox-native-flex-child-content-change-uses-full-input ()
+  "Child content may alter retained Flex edge measurement in N1."
+  (require 'ebox-native-reflow)
+  (let ((nodes (make-hash-table :test 'equal))
+        (parents (make-hash-table :test 'equal))
+        (index
+         (ebox-native-reflow--persistent-index-put
+          nil 2 '(:fragment (:type "box" :content [] :child :null)
+                  :revision 3)))
+        full-called)
+    (puthash 1 '(:node-id 1 :ebox-type flex) nodes)
+    (puthash 2
+             (list :node-id 2 :ebox-type 'box :ebox-kind 'box
+                   :ebox-layout-config (ebox-normal-layout-create))
+             nodes)
+    (puthash 3 '(:node-id 3 :ebox-type box :ebox-kind text) nodes)
+    (puthash 2 1 parents)
+    (puthash 3 2 parents)
+    (let ((session
+           (ebox-native-reflow--make-session
+            :handle 'test :layout-package 'old
+            :layout-fragment-index index))
+          (state
+           (list :node-table nodes :parent-table parents
+                 :native-topology-stable-p t
+                 :native-touched-node-ids '(3 2 1)
+                 :native-local-dirty-entries
+                 '((:node-id 3 :dirty-kind content
+                             :changed-keys (:content))))))
+      (cl-letf (((symbol-function
+                  'ebox-native-reflow--compile-retained-layout-package-full)
+                 (lambda (&rest _)
+                   (setq full-called t)
+                   'full))
+                ((symbol-function 'ebox-native-reflow--compile-delta-slots)
+                 (lambda (&rest _)
+                   (ert-fail "Flex child content reached local delta"))))
+        (should (eq 'full
+                    (ebox-native-reflow--compile-retained-layout-package
+                     session state 'node)))
+        (should full-called)))))
+
+(ert-deftest ebox-native-default-axis-child-change-keeps-local-input ()
+  "Default Row/Column edges carry no derived Flex item metadata."
+  (require 'ebox-native-reflow)
+  (let ((nodes (make-hash-table :test 'equal))
+        (parents (make-hash-table :test 'equal)))
+    (puthash 1
+             (list :node-id 1 :ebox-type 'box :ebox-kind 'box
+                   :ebox-layout-config (ebox-column-layout-create))
+             nodes)
+    (puthash 2
+             (list :node-id 2 :ebox-type 'box :ebox-kind 'box
+                   :ebox-layout-config (ebox-normal-layout-create))
+             nodes)
+    (puthash 3 '(:node-id 3 :ebox-type box :ebox-kind text) nodes)
+    (puthash 2 1 parents)
+    (puthash 3 2 parents)
+    (should-not
+     (ebox-native-reflow--delta-flex-edge-change-p
+      (list :node-table nodes :parent-table parents
+            :native-local-dirty-entries
+            '((:node-id 3 :dirty-kind geometry
+                        :changed-keys (:content))))))))
+
+(ert-deftest ebox-native-surface-overrides-carry-local-dirty-entries ()
+  "The incremental producer preserves exact local dirtiness to native input."
+  (let* ((dirty '((:node-id 7 :dirty-kind paint
+                            :changed-keys (:background-color))))
+         (candidate (list :runtime-revision 3
+                          :native-topology-stable-p t
+                          :native-touched-node-ids '(7 1)
+                          :native-local-dirty-entries dirty))
+         (overrides
+          (ebox-incremental--surface-state-overrides
+           nil '(:display-signature display) candidate 'native-frame)))
+    (should (equal dirty
+                   (plist-get overrides :native-local-dirty-entries)))))
+
+(ert-deftest ebox-native-wide-owner-local-compile-does-not-enumerate-children ()
+  "A scalar slot update never walks a stable owner's unchanged children."
+  (require 'ebox-native-reflow)
+  (let ((node (list :ebox-type 'box :ebox-kind 'box
+                    :ebox-layout-config (ebox-flex-layout-create)))
+        (old '(:type "box" :child (:type "flex" :items [a b c]))))
+    (cl-letf (((symbol-function 'ebox-tree-node-children)
+               (lambda (&rest _)
+                 (ert-fail "stable delta enumerated unchanged children")))
+              ((symbol-function 'ebox-native-reflow--compile-flex-inner)
+               (lambda (_props items &rest _)
+                 (should-not items)
+                 '(:type "flex" :items [])))
+              ((symbol-function 'ebox-native-reflow--compile-box)
+               (lambda (_box child &rest _)
+                 (list :type "box" :child child))))
+      (let ((slots (ebox-native-reflow--compile-delta-slots node old)))
+        (should (= 2 (length slots)))
+        (should (equal [] (plist-get (aref slots 1) :items)))))))
+
+(ert-deftest ebox-native-retained-sync-sends-document-delta-without-document ()
+  "A supported retained compile sends only its node delta and revisions."
+  (require 'ebox-native-reflow)
+  (let* ((old (list :document '(:version 2) :document-revision 4
+                    :styles [] :property-templates []))
+         (delta '(:style-base-count 0 :styles-append []
+                  :property-template-base-count 0
+                  :property-template-target-count 0 :entries []))
+         (next (copy-sequence old))
+         (session
+          (ebox-native-reflow--make-session
+           :handle 'test :generation 0 :styles [] :layout-package old))
+         control)
+    (plist-put next :document-revision 5)
+    (plist-put next :document-delta delta)
+    (cl-letf (((symbol-function
+                'ebox-native-reflow--compile-retained-layout-package)
+               (lambda (&rest _) next))
+              ((symbol-function 'ebox-native--module-render-session-frame)
+               (lambda (_handle _generation payload)
+                 (setq control
+                       (json-parse-string payload :object-type 'plist
+                                          :array-type 'array))
+                 'native-frame))
+              ((symbol-function 'ebox-native-reflow--materialize-module-frame)
+               (lambda (&rest _) '(:rendered "ok"))))
+      (ebox-native-reflow-execute-session-sync
+       session 'node
+       '(:key 1 :viewport-width 80 :viewport-height 10) nil 'state)
+      (should-not (plist-member control :document))
+      (should (equal delta (plist-get control :document-delta)))
+      (should (= 4 (plist-get control :document-base-revision)))
+      (should (= 5 (plist-get control :document-target-revision)))
+      (should-not
+       (plist-member
+        (ebox-native-reflow-session-layout-package session)
+        :document-delta)))))
 
 (provide 'ebox-commit-tests)
 

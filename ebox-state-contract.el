@@ -278,6 +278,12 @@ rather than relying on an implicit default.")
     (:symbol ebox-native-reflow--compile-property-template-ids
      :reason dynamically-bound-compile-local-scratch
      :evidence let-bound-per-compile-and-never-committed)
+    (:symbol ebox-native-reflow--compile-property-template-index
+     :reason dynamically-bound-compile-local-scratch
+     :evidence let-bound-per-compile-and-published-only-through-session-root)
+    (:symbol ebox-native-reflow--compile-style-index
+     :reason dynamically-bound-compile-local-scratch
+     :evidence let-bound-per-compile-and-published-only-through-session-root)
     (:symbol ebox--render-source-generations
      :reason dynamically-bound-render-proof-input
      :evidence let-bound-to-candidate-and-prior-generations-for-one-plan)
