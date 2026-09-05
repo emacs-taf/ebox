@@ -294,8 +294,8 @@ fn nonzero_mixed_leaf_delta_reuses_unchanged_subtree_bodies() {
         "only root Box/Column, changed Row/Box/Text bodies run"
     );
     assert_eq!(
-        measured.hits, 8,
-        "seven unchanged rows plus the changed row's unchanged Flex"
+        measured.hits, 1,
+        "the changed row's unchanged Flex is looked up; other rows stay in shared slots"
     );
     assert_eq!(measured.records_created, 5);
 }
@@ -333,14 +333,9 @@ fn fixed_changed_subtree_reuses_bodies_across_sibling_sizes() {
                 measured.body_runs <= 20,
                 "N={size}, offset={offset}: {measured:?}"
             );
-            assert!(measured.hits >= size as u64 - 1);
             assert!(
-                measured.caller_edges_written >= size as u64,
-                "parent sibling edge writes remain N"
-            );
-            assert!(
-                line_work.lines_mapped >= size as u64,
-                "parent line maps remain explicit N work"
+                measured.caller_edges_written <= 64,
+                "only changed-row calls write caller edges: {measured:?}"
             );
             assert_eq!(measured.dirty_seeds, 1);
             assert!(measured.dirty_addresses_inserted <= 9);
@@ -355,6 +350,496 @@ fn fixed_changed_subtree_reuses_bodies_across_sibling_sizes() {
             );
         }
     }
+}
+
+#[test]
+fn sparse_column_update_does_not_visit_resolve_or_rewrite_unchanged_siblings() {
+    for size in [32, 128, 512] {
+        let document = mixed(size);
+        let baseline = document
+            .render_frame(None, None, test_context(), None)
+            .unwrap();
+        let update = document
+            .apply_delta(context_test_delta(vec![text_update(
+                row_id(size / 2) + 1,
+                1,
+                1,
+                "changed",
+                1,
+            )]))
+            .unwrap();
+        reset_work();
+        super::super::reset_resolver_lookups();
+        let target = update
+            .document
+            .render_frame(Some(&baseline), Some(&update.changes), test_context(), None)
+            .unwrap();
+        let measured = work();
+        let resolvers = super::super::resolver_lookups();
+        eprintln!("sparse Column N={size}, eval={measured:?}, resolvers={resolvers}");
+        assert_oracle(&target, test_context(), None);
+        assert_eq!(measured.body_runs, 5);
+        assert!(measured.child_slots_visited <= 12, "N={size}: {measured:?}");
+        assert!(
+            measured.caller_edges_written <= 12,
+            "N={size}: {measured:?}"
+        );
+        assert!(resolvers <= 12, "N={size}: resolvers={resolvers}");
+        assert!(Arc::ptr_eq(
+            owner_record(&baseline.root, row_id(size - 1)),
+            owner_record(&target.root, row_id(size - 1))
+        ));
+    }
+}
+
+fn root_column_record(frame: &RetainedFrame) -> &Arc<EvalRecord> {
+    frame
+        .root
+        .children
+        .values()
+        .find(|child| child.column.is_some())
+        .expect("fixture root has a complete retained Column")
+}
+
+fn root_column(frame: &RetainedFrame) -> &Arc<ColumnState> {
+    root_column_record(frame).column.as_ref().unwrap()
+}
+
+#[test]
+fn front_line_growth_and_shrink_share_column_suffix_slots_and_release_old_state() {
+    for size in [32, 128, 512] {
+        let mut document = mixed(size);
+        let mut frame = document
+            .render_frame(None, None, test_context(), None)
+            .unwrap();
+        let original_height = owner_record(&frame.root, row_id(0)).rendered.height();
+        for (revision, line_count) in [(1, original_height + 3), (2, 1)] {
+            let lines = (0..line_count)
+                .map(|_| {
+                    serde_json::json!({"clusters":[{
+                        "text":"x", "width":1, "cjk":false, "space":false
+                    }]})
+                })
+                .collect::<Vec<_>>();
+            let update = document.apply_delta(context_test_delta(vec![serde_json::json!({
+                "node-id":row_id(0)+1, "expected-revision":revision, "target-revision":revision+1,
+                "slot-patches":[{"slot":1,"local":{"content":{"lines":lines}}}]
+            })])).unwrap();
+            let old_document = Arc::downgrade(&document);
+            let old_column = Arc::downgrade(root_column(&frame));
+            reset_work();
+            super::super::reset_resolver_lookups();
+            super::super::reset_line_plan_work();
+            let target = update
+                .document
+                .render_frame(Some(&frame), Some(&update.changes), test_context(), None)
+                .unwrap();
+            let measured = work();
+            let resolvers = super::super::resolver_lookups();
+            let line_work = super::super::line_plan_work();
+            assert!(measured.child_slots_visited <= 12, "N={size}: {measured:?}");
+            assert!(
+                measured.caller_edges_written <= 12,
+                "N={size}: {measured:?}"
+            );
+            assert!(resolvers <= 12, "N={size}: {resolvers}");
+            assert_eq!(measured.column_slots_updated, 1);
+            assert_eq!(measured.column_slots_built, 0);
+            assert_eq!(measured.column_full_rebuilds, 0);
+            assert!(
+                measured.child_use_nodes_created <= 32,
+                "N={size}: {measured:?}"
+            );
+            assert!(
+                measured.column_tree_nodes_created <= 12,
+                "N={size}: {measured:?}"
+            );
+            assert!(root_column(&frame).shares_shape(root_column(&target)));
+            assert!(root_column(&frame).shares_slot(root_column(&target), size - 1));
+            assert!(!root_column(&frame).shares_slot(root_column(&target), 0));
+            assert!(
+                Arc::ptr_eq(
+                    root_column_record(&frame)
+                        .children
+                        .0
+                        .as_ref()
+                        .unwrap()
+                        .right
+                        .0
+                        .as_ref()
+                        .unwrap(),
+                    root_column_record(&target)
+                        .children
+                        .0
+                        .as_ref()
+                        .unwrap()
+                        .right
+                        .0
+                        .as_ref()
+                        .unwrap(),
+                ),
+                "the unchanged right half of the caller-use map must be shared"
+            );
+            assert_oracle(&target, test_context(), None);
+            assert_ne!(frame.materialize_tape(), target.materialize_tape());
+            eprintln!("front Column N={size}, lines={line_count}, eval={measured:?}, line_work={line_work:?}");
+            document = Arc::clone(&update.document);
+            drop(update);
+            frame = target;
+            assert!(
+                old_document.upgrade().is_none(),
+                "current slots must not retain the previous source document"
+            );
+            assert!(
+                old_column.upgrade().is_none(),
+                "current slots/projections must not retain old parent state"
+            );
+        }
+    }
+}
+
+#[test]
+fn padded_box_same_parameter_updates_bound_metric_work_and_release_previous_frames() {
+    use super::super::VerticalAlign;
+
+    let mut excessive_work = Vec::new();
+    for size in [32, 128, 512] {
+        for align in [
+            VerticalAlign::Top,
+            VerticalAlign::Center,
+            VerticalAlign::Bottom,
+        ] {
+            let children = (0..size)
+                .map(|index| {
+                    let id = index as u64 + 2;
+                    identified(nonuniform_text(id as i64, &[1]), id, 1)
+                })
+                .collect();
+            let mut root = child_box(
+                1,
+                LayoutNode::Column {
+                    node_id: None,
+                    node_revision: None,
+                    children: Arc::new(children),
+                },
+                None,
+            );
+            let LayoutNode::Box {
+                width,
+                height,
+                padding_top,
+                padding_bottom,
+                padding_left,
+                padding_right,
+                margin_top,
+                margin_bottom,
+                margin_left,
+                margin_right,
+                foreground_style,
+                vertical_align,
+                ..
+            } = &mut root
+            else {
+                unreachable!()
+            };
+            *width = Size::Pixels { value: 80 };
+            *height = if align == VerticalAlign::Top {
+                Size::Auto
+            } else {
+                Size::Lines {
+                    value: size as i64 + 12,
+                }
+            };
+            *padding_top = 2;
+            *padding_bottom = 3;
+            *padding_left = 1;
+            *padding_right = 2;
+            *margin_top = 1;
+            *margin_bottom = 2;
+            *margin_left = 1;
+            *margin_right = 1;
+            *foreground_style = Some(0);
+            *vertical_align = align;
+            let mut input = retained_document(identified(root, 1, 1));
+            input.style_count = 1;
+            input.styles.push(
+                serde_json::from_value(serde_json::json!({
+                    "mode":"set", "face":{"foreground":"red"}
+                }))
+                .unwrap(),
+            );
+            let mut document = RetainedDocument::bootstrap(input).unwrap().0;
+            let mut frame = document
+                .render_frame(None, None, test_context(), None)
+                .unwrap();
+            assert_oracle(&frame, test_context(), None);
+            for (revision, line_count, text) in
+                [(1, 1, "same-height"), (2, 4, "grow"), (3, 1, "shrink")]
+            {
+                let lines = (0..line_count)
+                    .map(|_| {
+                        serde_json::json!({"clusters":[{
+                            "text":text, "width":1, "cjk":false, "space":false
+                        }]})
+                    })
+                    .collect::<Vec<_>>();
+                let mut delta = context_test_delta(vec![serde_json::json!({
+                    "node-id":2,"expected-revision":revision,"target-revision":revision+1,
+                    "slot-patches":[{"slot":0,"local":{"content":{"lines":lines}}}]
+                })]);
+                delta.style_base_count = 1;
+                let update = document.apply_delta(delta).unwrap();
+                let old_document = Arc::downgrade(&document);
+                let old_frame = Arc::downgrade(&frame);
+                let old_column = Arc::downgrade(root_column(&frame));
+                let old_projections = frame
+                    .root
+                    .projections
+                    .values()
+                    .map(Arc::downgrade)
+                    .collect::<Vec<_>>();
+                super::super::reset_line_plan_work();
+                reset_work();
+                let target = update
+                    .document
+                    .render_frame(Some(&frame), Some(&update.changes), test_context(), None)
+                    .unwrap();
+                let line_work = super::super::line_plan_work();
+                let evaluated = work();
+                assert_eq!(evaluated.column_slots_updated, 1);
+                assert_eq!(evaluated.column_full_rebuilds, 0);
+                assert!(root_column(&frame).shares_slot(root_column(&target), size - 1));
+                assert_oracle(&target, test_context(), None);
+                assert_ne!(frame.materialize_tape(), target.materialize_tape());
+                eprintln!("padded Box N={size}, align={align:?}, update={text}, eval={evaluated:?}, line_work={line_work:?}");
+                if line_work.projection_lines_measured > 48
+                    || line_work.projection_fallback_lines_measured > 16
+                {
+                    excessive_work.push(format!("N={size}, align={align:?}, update={text}: projection_lines_measured={}, fallback_lines_measured={}",
+                        line_work.projection_lines_measured, line_work.projection_fallback_lines_measured));
+                }
+                document = Arc::clone(&update.document);
+                drop(update);
+                frame = target;
+                assert!(
+                    old_document.upgrade().is_none(),
+                    "framing must not retain the old document"
+                );
+                assert!(
+                    old_frame.upgrade().is_none(),
+                    "framing must not retain the old frame"
+                );
+                assert!(
+                    old_column.upgrade().is_none(),
+                    "framing must not retain the old Column state"
+                );
+                assert!(
+                    old_projections
+                        .iter()
+                        .all(|state| state.upgrade().is_none()),
+                    "framing must not retain old projection states"
+                );
+            }
+        }
+    }
+    assert!(
+        excessive_work.is_empty(),
+        "same-parameter padded Box work must remain bounded:\n{}",
+        excessive_work.join("\n")
+    );
+}
+
+#[test]
+fn cold_column_and_child_uses_freeze_linear_nodes_and_request_changes_rebuild() {
+    for size in [32, 128, 512] {
+        let document = mixed(size);
+        reset_work();
+        let baseline = document
+            .render_frame(None, None, test_context(), None)
+            .unwrap();
+        let cold = work();
+        assert_eq!(
+            cold.child_use_nodes_created + 1,
+            cold.records_created,
+            "fresh maps freeze once per current caller edge: {cold:?}"
+        );
+        assert_eq!(cold.column_slots_built, size as u64);
+        assert_eq!(cold.column_tree_nodes_created, 2 * size as u64 - 1);
+        let changed_context = LayoutContext {
+            viewport_width: 79,
+            ..test_context()
+        };
+        reset_work();
+        let target = document
+            .render_frame(Some(&baseline), None, changed_context, None)
+            .unwrap();
+        let changed = work();
+        assert_eq!(changed.column_slots_built, size as u64);
+        assert_eq!(changed.column_slots_updated, 0);
+        assert!(!root_column(&baseline).shares_shape(root_column(&target)));
+        assert_oracle(&target, changed_context, None);
+    }
+}
+
+#[test]
+fn intrinsic_column_target_changes_retarget_constant_child_extra_and_count_full_work() {
+    let document = RetainedDocument::bootstrap(retained_document(identified(
+        LayoutNode::Column {
+            node_id: None,
+            node_revision: None,
+            children: Arc::new(vec![
+                identified(nonuniform_text(2, &[1, 9]), 2, 1),
+                identified(nonuniform_text(3, &[5, 1]), 3, 1),
+            ]),
+        },
+        1,
+        1,
+    )))
+    .unwrap()
+    .0;
+    let context = LayoutContext {
+        viewport_width_known: false,
+        ..test_context()
+    };
+    let baseline = document.render_frame(None, None, context, None).unwrap();
+    assert_eq!(
+        baseline
+            .materialize_tape()
+            .lines
+            .iter()
+            .map(|line| line.width)
+            .collect::<Vec<_>>(),
+        [5, 13, 5, 1]
+    );
+    let lines = [7, 9]
+        .into_iter()
+        .map(|width| {
+            serde_json::json!({"clusters":[{
+                "text":"x", "width":width, "cjk":false, "space":false
+            }]})
+        })
+        .collect::<Vec<_>>();
+    let update = document
+        .apply_delta(context_test_delta(vec![serde_json::json!({
+            "node-id":2,"expected-revision":1,"target-revision":2,
+            "slot-patches":[{"slot":0,"local":{"content":{"lines":lines}}}]
+        })]))
+        .unwrap();
+    reset_work();
+    let target = update
+        .document
+        .render_frame(Some(&baseline), Some(&update.changes), context, None)
+        .unwrap();
+    let measured = work();
+    assert_eq!(
+        target
+            .materialize_tape()
+            .lines
+            .iter()
+            .map(|line| line.width)
+            .collect::<Vec<_>>(),
+        [7, 9, 7, 3]
+    );
+    assert_eq!(measured.column_full_rebuilds, 1);
+    assert_eq!(
+        measured.column_slots_updated, 3,
+        "one raw replacement and both normalized slots"
+    );
+    assert_eq!(measured.column_slots_built, 0);
+    assert!(Arc::ptr_eq(
+        owner_record(&baseline.root, 3),
+        owner_record(&target.root, 3)
+    ));
+    assert_oracle(&target, context, None);
+}
+
+#[test]
+fn sparse_routes_keep_nested_literal_paths_zero_width_lines_and_node_ref_boundaries() {
+    let column = |children| LayoutNode::Column {
+        node_id: None,
+        node_revision: None,
+        children: Arc::new(children),
+    };
+    let document = RetainedDocument::bootstrap(retained_document(identified(
+        child_box(
+            1,
+            column(vec![
+                column(vec![
+                    identified(child_box(2, nonuniform_text(12, &[1]), None), 2, 1),
+                    column(vec![nonuniform_text(99, &[0])]),
+                    identified(nonuniform_text(3, &[1]), 3, 1),
+                ]),
+                identified(
+                    column(vec![identified(
+                        child_box(5, nonuniform_text(15, &[1]), None),
+                        5,
+                        1,
+                    )]),
+                    4,
+                    1,
+                ),
+            ]),
+            None,
+        ),
+        1,
+        1,
+    )))
+    .unwrap()
+    .0;
+    let baseline = document
+        .render_frame(None, None, test_context(), None)
+        .unwrap();
+    assert_oracle(&baseline, test_context(), None);
+    let update = document
+        .apply_delta(context_test_delta(vec![
+            text_update(2, 1, 1, "left", 2),
+            text_update(5, 1, 1, "right", 3),
+        ]))
+        .unwrap();
+    reset_work();
+    let target = update
+        .document
+        .render_frame(Some(&baseline), Some(&update.changes), test_context(), None)
+        .unwrap();
+    let measured = work();
+    assert_eq!(
+        measured.column_slots_updated, 3,
+        "two outer slots and one NodeRef Column slot"
+    );
+    assert_eq!(measured.column_slots_built, 0);
+    assert_eq!(measured.column_full_rebuilds, 0);
+    assert!(root_column(&baseline).shares_shape(root_column(&target)));
+    assert!(root_column(&baseline).shares_slot(root_column(&target), 1));
+    assert!(root_column(&baseline).shares_slot(root_column(&target), 2));
+    let paths = root_column_record(&target)
+        .children
+        .keys()
+        .map(|slot| slot.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec![
+            vec![
+                UseStep::Child(LocalStep::ColumnChild(0)),
+                UseStep::Child(LocalStep::ColumnChild(0))
+            ],
+            vec![
+                UseStep::Child(LocalStep::ColumnChild(0)),
+                UseStep::Child(LocalStep::ColumnChild(1)),
+                UseStep::Child(LocalStep::ColumnChild(0))
+            ],
+            vec![
+                UseStep::Child(LocalStep::ColumnChild(0)),
+                UseStep::Child(LocalStep::ColumnChild(2))
+            ],
+            vec![UseStep::Child(LocalStep::ColumnChild(1))],
+        ]
+    );
+    assert!(
+        owner_record(&target.root, 4).column.is_some(),
+        "NodeRef Column remains its own caller"
+    );
+    assert_oracle(&target, test_context(), None);
 }
 
 #[test]
@@ -478,7 +963,8 @@ fn render_request(
 ) -> Arc<RetainedFrame> {
     let transaction = RefCell::new(RenderTxn {
         previous: previous.map(|frame| Arc::clone(&frame.root)),
-        dirty: BTreeSet::new(),
+        dirty: BTreeMap::new(),
+        same_shape: true,
         stack: Vec::new(),
         root: None,
     });
@@ -805,7 +1291,14 @@ fn repeated_calls(
     };
     let transaction = RefCell::new(RenderTxn {
         previous: previous.map(|frame| Arc::clone(&frame.root)),
-        dirty: BTreeSet::from([source.clone()]),
+        dirty: BTreeMap::from([(
+            source.clone(),
+            DirtyRoute {
+                local: true,
+                next: BTreeSet::new(),
+            },
+        )]),
+        same_shape: true,
         stack: Vec::new(),
         root: None,
     });
@@ -854,7 +1347,8 @@ fn repeated_calls(
         .collect();
     transaction
         .borrow_mut()
-        .finish(&Ok(super::super::stack_vertical(parts)));
+        .finish(Ok(super::super::stack_vertical(parts)))
+        .unwrap();
     Arc::new(RetainedFrame {
         document: Arc::clone(document),
         root: transaction.into_inner().root.unwrap(),
@@ -874,7 +1368,7 @@ fn repeated_callsite_uses_have_local_occurrences_and_prune_unused_contexts() {
     let keys = baseline.root.children.keys().collect::<Vec<_>>();
     assert_eq!(keys[0].path, keys[1].path);
     assert_eq!((keys[0].occurrence, keys[1].occurrence), (0, 1));
-    let removed = Arc::downgrade(&baseline.root.children[keys[1]]);
+    let removed = Arc::downgrade(baseline.root.children.get(keys[1]).unwrap());
     reset_work();
     let one = repeated_calls(&document, Some(&baseline), &[10]);
     assert_eq!(work().hits, 1);
@@ -971,7 +1465,14 @@ fn unwinding_discards_current_builder_records_without_mutating_previous_frame() 
         let source = baseline.root.source.clone();
         let transaction = RefCell::new(RenderTxn {
             previous: Some(Arc::clone(&baseline.root)),
-            dirty: BTreeSet::from([source.clone()]),
+            dirty: BTreeMap::from([(
+                source.clone(),
+                DirtyRoute {
+                    local: true,
+                    next: BTreeSet::new(),
+                },
+            )]),
+            same_shape: true,
             stack: Vec::new(),
             root: None,
         });

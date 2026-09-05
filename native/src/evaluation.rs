@@ -4,6 +4,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use super::composition::ColumnState;
+use super::line_plan::{BoxProjectionSlot, PlanChange, ProjectionState};
 use super::source_topology::SourceAddress;
 use super::{
     BoxOverride, LayoutContext, LayoutNode, LayoutTape, LocalStep, Rendered, RetainedDocument,
@@ -28,6 +30,16 @@ pub(crate) struct EvalWork {
     pub(crate) topology_lookups: u64,
     pub(crate) incoming_uses_visited: u64,
     pub(crate) height_queries: u64,
+    pub(crate) child_use_nodes_created: u64,
+    pub(crate) child_use_nodes_visited: u64,
+    pub(crate) dirty_routes_written: u64,
+    pub(crate) dirty_routes_visited: u64,
+    pub(crate) column_shape_steps_visited: u64,
+    pub(crate) column_slots_built: u64,
+    pub(crate) column_slots_updated: u64,
+    pub(crate) column_tree_nodes_created: u64,
+    pub(crate) column_tree_nodes_visited: u64,
+    pub(crate) column_full_rebuilds: u64,
 }
 
 thread_local! {
@@ -55,7 +67,17 @@ impl EvalWork {
             dirty_addresses_inserted,
             topology_lookups,
             incoming_uses_visited,
-            height_queries
+            height_queries,
+            child_use_nodes_created,
+            child_use_nodes_visited,
+            dirty_routes_written,
+            dirty_routes_visited,
+            column_shape_steps_visited,
+            column_slots_built,
+            column_slots_updated,
+            column_tree_nodes_created,
+            column_tree_nodes_visited,
+            column_full_rebuilds
         );
     }
 }
@@ -67,7 +89,7 @@ pub(crate) fn work() -> EvalWork {
     WORK.get()
 }
 
-fn record(delta: EvalWork) {
+pub(super) fn record(delta: EvalWork) {
     let mut work = WORK.get();
     work.accumulate(delta);
     WORK.set(work);
@@ -123,11 +145,247 @@ struct EvalRequest {
 }
 
 #[derive(Debug)]
-struct EvalRecord {
+pub(super) struct EvalRecord {
     source: SourceAddress,
     request: EvalRequest,
     rendered: Rendered,
-    children: BTreeMap<UseSlot, Arc<EvalRecord>>,
+    children: ChildUses,
+    column: Option<Arc<ColumnState>>,
+    projections: BTreeMap<BoxProjectionSlot, Arc<ProjectionState>>,
+}
+
+/// Persistent caller-local map. Path copying writes only the search path; keys
+/// and current child records remain shared. There is no historical use table.
+#[derive(Clone, Debug, Default)]
+struct ChildUses(Option<Arc<UseNode>>);
+
+#[derive(Debug)]
+struct UseNode {
+    slot: Arc<UseSlot>,
+    value: Arc<EvalRecord>,
+    left: ChildUses,
+    right: ChildUses,
+    height: u32,
+    len: usize,
+}
+
+impl ChildUses {
+    fn from_fresh(entries: BTreeMap<UseSlot, Arc<EvalRecord>>) -> Self {
+        fn build(
+            entries: &mut impl Iterator<Item = (UseSlot, Arc<EvalRecord>)>,
+            count: usize,
+        ) -> ChildUses {
+            if count == 0 {
+                return ChildUses::default();
+            }
+            let middle = count / 2;
+            let left = build(entries, middle);
+            let (slot, value) = entries.next().expect("fresh caller-use count");
+            let right = build(entries, count - middle - 1);
+            ChildUses::node(Arc::new(slot), value, left, right)
+        }
+        let count = entries.len();
+        build(&mut entries.into_iter(), count)
+    }
+
+    fn height(&self) -> u32 {
+        self.0.as_ref().map_or(0, |node| node.height)
+    }
+
+    fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |node| node.len)
+    }
+
+    fn node(slot: Arc<UseSlot>, value: Arc<EvalRecord>, left: Self, right: Self) -> Self {
+        record(EvalWork {
+            child_use_nodes_created: 1,
+            ..EvalWork::default()
+        });
+        Self(Some(Arc::new(UseNode {
+            slot,
+            value,
+            height: 1 + left.height().max(right.height()),
+            len: 1 + left.len() + right.len(),
+            left,
+            right,
+        })))
+    }
+
+    fn balanced(slot: Arc<UseSlot>, value: Arc<EvalRecord>, left: Self, right: Self) -> Self {
+        if left.height() > right.height() + 1 {
+            let root = left.0.as_ref().expect("left-heavy caller tree");
+            if root.left.height() >= root.right.height() {
+                return Self::node(
+                    Arc::clone(&root.slot),
+                    Arc::clone(&root.value),
+                    root.left.clone(),
+                    Self::node(slot, value, root.right.clone(), right),
+                );
+            }
+            let middle = root.right.0.as_ref().expect("left-right caller tree");
+            return Self::node(
+                Arc::clone(&middle.slot),
+                Arc::clone(&middle.value),
+                Self::node(
+                    Arc::clone(&root.slot),
+                    Arc::clone(&root.value),
+                    root.left.clone(),
+                    middle.left.clone(),
+                ),
+                Self::node(slot, value, middle.right.clone(), right),
+            );
+        }
+        if right.height() > left.height() + 1 {
+            let root = right.0.as_ref().expect("right-heavy caller tree");
+            if root.right.height() >= root.left.height() {
+                return Self::node(
+                    Arc::clone(&root.slot),
+                    Arc::clone(&root.value),
+                    Self::node(slot, value, left, root.left.clone()),
+                    root.right.clone(),
+                );
+            }
+            let middle = root.left.0.as_ref().expect("right-left caller tree");
+            return Self::node(
+                Arc::clone(&middle.slot),
+                Arc::clone(&middle.value),
+                Self::node(slot, value, left, middle.left.clone()),
+                Self::node(
+                    Arc::clone(&root.slot),
+                    Arc::clone(&root.value),
+                    middle.right.clone(),
+                    root.right.clone(),
+                ),
+            );
+        }
+        Self::node(slot, value, left, right)
+    }
+
+    fn get(&self, slot: &UseSlot) -> Option<&Arc<EvalRecord>> {
+        let mut current = self.0.as_deref();
+        while let Some(node) = current {
+            record(EvalWork {
+                child_use_nodes_visited: 1,
+                ..EvalWork::default()
+            });
+            match slot.cmp(&node.slot) {
+                std::cmp::Ordering::Less => current = node.left.0.as_deref(),
+                std::cmp::Ordering::Greater => current = node.right.0.as_deref(),
+                std::cmp::Ordering::Equal => return Some(&node.value),
+            }
+        }
+        None
+    }
+
+    fn inserted(&self, slot: Arc<UseSlot>, value: Arc<EvalRecord>) -> Self {
+        let Some(node) = &self.0 else {
+            return Self::node(slot, value, Self::default(), Self::default());
+        };
+        record(EvalWork {
+            child_use_nodes_visited: 1,
+            ..EvalWork::default()
+        });
+        match slot.cmp(&node.slot) {
+            std::cmp::Ordering::Less => Self::balanced(
+                Arc::clone(&node.slot),
+                Arc::clone(&node.value),
+                node.left.inserted(slot, value),
+                node.right.clone(),
+            ),
+            std::cmp::Ordering::Greater => Self::balanced(
+                Arc::clone(&node.slot),
+                Arc::clone(&node.value),
+                node.left.clone(),
+                node.right.inserted(slot, value),
+            ),
+            std::cmp::Ordering::Equal => Self::node(
+                Arc::clone(&node.slot),
+                value,
+                node.left.clone(),
+                node.right.clone(),
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = (&UseSlot, &Arc<EvalRecord>)> {
+        let mut stack = Vec::new();
+        let mut next = self.0.as_deref();
+        std::iter::from_fn(move || {
+            while let Some(node) = next {
+                stack.push(node);
+                next = node.left.0.as_deref();
+            }
+            let node = stack.pop()?;
+            next = node.right.0.as_deref();
+            Some((node.slot.as_ref(), &node.value))
+        })
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> impl Iterator<Item = &Arc<EvalRecord>> {
+        self.iter().map(|(_, value)| value)
+    }
+
+    #[cfg(test)]
+    fn keys(&self) -> impl Iterator<Item = &UseSlot> {
+        self.iter().map(|(slot, _)| slot)
+    }
+}
+
+/// Full evaluation uses a mutable fresh collector, then freezes exactly N nodes.
+/// A proven sparse Column starts from an immutable current root and path-copies.
+#[derive(Debug)]
+enum BuildingUses {
+    Fresh(BTreeMap<UseSlot, Arc<EvalRecord>>),
+    Sparse(ChildUses),
+}
+
+impl Default for BuildingUses {
+    fn default() -> Self {
+        Self::Fresh(BTreeMap::new())
+    }
+}
+
+impl BuildingUses {
+    fn len(&self) -> usize {
+        match self {
+            Self::Fresh(entries) => entries.len(),
+            Self::Sparse(entries) => entries.len(),
+        }
+    }
+
+    fn insert(&mut self, slot: UseSlot, value: Arc<EvalRecord>) {
+        match self {
+            Self::Fresh(entries) => assert!(
+                entries.insert(slot, value).is_none(),
+                "unique caller use slot"
+            ),
+            Self::Sparse(entries) => *entries = entries.inserted(Arc::new(slot), value),
+        }
+    }
+
+    fn finish(self) -> ChildUses {
+        match self {
+            Self::Fresh(entries) => ChildUses::from_fresh(entries),
+            Self::Sparse(entries) => entries,
+        }
+    }
+
+    #[cfg(test)]
+    fn values(&self) -> Box<dyn Iterator<Item = &Arc<EvalRecord>> + '_> {
+        match self {
+            Self::Fresh(entries) => Box::new(entries.values()),
+            Self::Sparse(entries) => Box::new(entries.values()),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct RenderedChange {
+    pub(super) rendered: Rendered,
+    pub(super) change: Option<PlanChange>,
+    pub(super) record: Option<Arc<EvalRecord>>,
 }
 
 /// Owns the current document and current evaluation tree, never a previous frame.
@@ -152,14 +410,18 @@ struct BuildingRecord {
     source: SourceAddress,
     request: EvalRequest,
     previous: Option<Arc<EvalRecord>>,
-    children: BTreeMap<UseSlot, Arc<EvalRecord>>,
+    children: BuildingUses,
     occurrences: BTreeMap<Vec<UseStep>, usize>,
+    column: Option<Arc<ColumnState>>,
+    projections: BTreeMap<BoxProjectionSlot, Arc<ProjectionState>>,
+    pending_change: Option<PlanChange>,
 }
 
 #[derive(Debug)]
 struct RenderTxn {
     previous: Option<Arc<EvalRecord>>,
-    dirty: BTreeSet<SourceAddress>,
+    dirty: DirtySources,
+    same_shape: bool,
     stack: Vec<BuildingRecord>,
     root: Option<Arc<EvalRecord>>,
 }
@@ -170,7 +432,7 @@ impl RenderTxn {
         source: &SourceAddress,
         path: &[UseStep],
         request: EvalRequest,
-    ) -> Option<Rendered> {
+    ) -> Option<RenderedChange> {
         record(EvalWork {
             lookups: 1,
             ..EvalWork::default()
@@ -203,15 +465,19 @@ impl RenderTxn {
             )
         };
         if let Some(old) = previous.as_ref().filter(|old| {
-            old.source == *source && old.request == request && !self.dirty.contains(source)
+            old.source == *source && old.request == request && !self.dirty.contains_key(source)
         }) {
             record(EvalWork {
                 hits: 1,
                 ..EvalWork::default()
             });
-            let rendered = old.rendered.clone();
+            let result = RenderedChange {
+                rendered: old.rendered.clone(),
+                change: Some(PlanChange::same(&old.rendered.lines)),
+                record: Some(Arc::clone(old)),
+            };
             self.attach(slot, Arc::clone(old));
-            return Some(rendered);
+            return Some(result);
         }
         record(EvalWork {
             body_runs: 1,
@@ -222,38 +488,50 @@ impl RenderTxn {
             source: source.clone(),
             request,
             previous,
-            children: BTreeMap::new(),
+            children: BuildingUses::default(),
             occurrences: BTreeMap::new(),
+            column: None,
+            projections: BTreeMap::new(),
+            pending_change: None,
         });
         None
     }
 
-    fn finish(&mut self, rendered: &Result<Rendered, String>) {
+    fn finish(&mut self, rendered: Result<Rendered, String>) -> Result<RenderedChange, String> {
         let current = self.stack.pop().expect("native evaluation builder stack");
-        if let Ok(rendered) = rendered {
-            record(EvalWork {
-                records_created: 1,
-                ..EvalWork::default()
-            });
-            self.attach(
-                current.slot,
-                Arc::new(EvalRecord {
-                    source: current.source,
-                    request: current.request,
-                    rendered: rendered.clone(),
-                    children: current.children,
-                }),
-            );
-        }
+        let rendered = rendered?;
+        let change = current.previous.as_ref().map(|previous| {
+            current
+                .pending_change
+                .filter(|change| change.applies_to(&previous.rendered.lines, &rendered.lines))
+                .unwrap_or_else(|| {
+                    PlanChange::replace_all(&previous.rendered.lines, &rendered.lines)
+                })
+        });
+        record(EvalWork {
+            records_created: 1,
+            ..EvalWork::default()
+        });
+        let retained = Arc::new(EvalRecord {
+            source: current.source,
+            request: current.request,
+            rendered: rendered.clone(),
+            children: current.children.finish(),
+            column: current.column,
+            projections: current.projections,
+        });
+        self.attach(current.slot, Arc::clone(&retained));
+        Ok(RenderedChange {
+            rendered,
+            change,
+            record: Some(retained),
+        })
     }
 
     fn attach(&mut self, slot: UseSlot, record: Arc<EvalRecord>) {
         if let Some(parent) = self.stack.last_mut() {
             record_work_edge();
-            assert!(
-                parent.children.insert(slot, record).is_none(),
-                "unique caller use slot"
-            );
+            parent.children.insert(slot, record);
         } else {
             self.root = Some(record);
         }
@@ -377,6 +655,16 @@ impl<'a> RenderScope<'a> {
         intrinsic: bool,
         size_override: Option<BoxOverride>,
     ) -> Result<Rendered, String> {
+        self.render_with_change(context, intrinsic, size_override)
+            .map(|result| result.rendered)
+    }
+
+    pub(super) fn render_with_change(
+        &self,
+        context: LayoutContext,
+        intrinsic: bool,
+        size_override: Option<BoxOverride>,
+    ) -> Result<RenderedChange, String> {
         let source = self.resolve()?;
         if let Some(transaction) = source.transaction {
             let request = EvalRequest {
@@ -399,14 +687,131 @@ impl<'a> RenderScope<'a> {
         };
         let rendered = super::render_node_body(&body_scope, context, intrinsic, size_override);
         if let Some(transaction) = body_scope.transaction {
-            transaction.borrow_mut().finish(&rendered);
+            return transaction.borrow_mut().finish(rendered);
         }
-        rendered
+        rendered.map(|rendered| RenderedChange {
+            rendered,
+            change: None,
+            record: None,
+        })
+    }
+
+    pub(super) fn is_retained(&self) -> bool {
+        self.transaction.is_some()
+    }
+
+    pub(super) fn publish_change(&self, change: PlanChange) {
+        if let Some(transaction) = self.transaction {
+            transaction
+                .borrow_mut()
+                .stack
+                .last_mut()
+                .expect("current evaluation")
+                .pending_change = Some(change);
+        }
+    }
+
+    pub(super) fn previous_projection(
+        &self,
+        slot: BoxProjectionSlot,
+    ) -> Option<Arc<ProjectionState>> {
+        let transaction = self.transaction?.borrow();
+        let current = transaction.stack.last()?;
+        let previous = current
+            .previous
+            .as_ref()
+            .filter(|old| old.source == current.source)?;
+        previous.projections.get(&slot).cloned()
+    }
+
+    pub(super) fn store_projection(&self, slot: BoxProjectionSlot, state: Arc<ProjectionState>) {
+        if let Some(transaction) = self.transaction {
+            transaction
+                .borrow_mut()
+                .stack
+                .last_mut()
+                .expect("current evaluation")
+                .projections
+                .insert(slot, state);
+        }
+    }
+
+    pub(super) fn previous_column(&self) -> Option<Arc<ColumnState>> {
+        let transaction = self.transaction?.borrow();
+        let current = transaction.stack.last()?;
+        let previous = current.previous.as_ref().filter(|old| {
+            transaction.same_shape
+                && old.source == current.source
+                && old.request == current.request
+                && !transaction
+                    .dirty
+                    .get(&current.source)
+                    .is_some_and(|route| route.local)
+        })?;
+        previous.column.clone()
+    }
+
+    pub(super) fn inherit_column_uses(&self) {
+        let mut transaction = self.transaction.expect("retained Column").borrow_mut();
+        let current = transaction.stack.last_mut().expect("current evaluation");
+        assert_eq!(
+            current.children.len(),
+            0,
+            "inherit before evaluating dirty Column slots"
+        );
+        current.children = BuildingUses::Sparse(
+            current
+                .previous
+                .as_ref()
+                .expect("previous Column")
+                .children
+                .clone(),
+        );
+    }
+
+    pub(super) fn store_column(&self, state: Arc<ColumnState>) {
+        self.transaction
+            .expect("retained Column")
+            .borrow_mut()
+            .stack
+            .last_mut()
+            .expect("current evaluation")
+            .column = Some(state);
+    }
+
+    pub(super) fn dirty_route(&self, relative: &[LocalStep]) -> DirtyRoute {
+        let Some(transaction) = self.transaction else {
+            return DirtyRoute::default();
+        };
+        let mut path = self.view.address.path.to_vec();
+        path.extend_from_slice(relative);
+        record(EvalWork {
+            source_path_steps_copied: path.len() as u64,
+            dirty_routes_visited: 1,
+            ..EvalWork::default()
+        });
+        transaction
+            .borrow()
+            .dirty
+            .get(&SourceAddress {
+                owner_id: self.view.address.owner_id,
+                path: path.into(),
+            })
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
-fn dirty_sources(document: &RetainedDocument, changes: &SourceChanges) -> BTreeSet<SourceAddress> {
-    fn mark(address: SourceAddress, dirty: &mut BTreeSet<SourceAddress>, owners: &mut Vec<u64>) {
+#[derive(Clone, Debug, Default)]
+pub(super) struct DirtyRoute {
+    pub(super) local: bool,
+    pub(super) next: BTreeSet<LocalStep>,
+}
+
+type DirtySources = BTreeMap<SourceAddress, DirtyRoute>;
+
+fn dirty_sources(document: &RetainedDocument, changes: &SourceChanges) -> DirtySources {
+    fn mark(address: SourceAddress, dirty: &mut DirtySources, owners: &mut Vec<u64>) {
         for length in (0..=address.path.len()).rev() {
             record(EvalWork {
                 dirty_prefixes_visited: 1,
@@ -417,7 +822,17 @@ fn dirty_sources(document: &RetainedDocument, changes: &SourceChanges) -> BTreeS
                 owner_id: address.owner_id,
                 path: Arc::from(&address.path[..length]),
             };
-            if dirty.insert(prefix) {
+            let is_new = !dirty.contains_key(&prefix);
+            let route = dirty.entry(prefix).or_default();
+            if length == address.path.len() {
+                route.local = true;
+            } else if route.next.insert(address.path[length]) {
+                record(EvalWork {
+                    dirty_routes_written: 1,
+                    ..EvalWork::default()
+                });
+            }
+            if is_new {
                 record(EvalWork {
                     dirty_addresses_inserted: 1,
                     ..EvalWork::default()
@@ -428,7 +843,7 @@ fn dirty_sources(document: &RetainedDocument, changes: &SourceChanges) -> BTreeS
             }
         }
     }
-    let mut dirty = BTreeSet::new();
+    let mut dirty = BTreeMap::new();
     let mut owners = Vec::new();
     changes.visit_changed_slots(|owner_id, _, _, slot, _| {
         record(EvalWork {
@@ -500,11 +915,13 @@ impl RetainedDocument {
         };
         let dirty = match (reusable, changes) {
             (Some(_), Some(changes)) => dirty_sources(self, changes),
-            _ => BTreeSet::new(),
+            _ => BTreeMap::new(),
         };
         let transaction = RefCell::new(RenderTxn {
             previous: reusable.map(|previous| Arc::clone(&previous.root)),
             dirty,
+            same_shape: reusable
+                .is_some_and(|previous| Arc::ptr_eq(&previous.document.topology, &self.topology)),
             stack: Vec::new(),
             root: None,
         });

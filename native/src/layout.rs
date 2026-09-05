@@ -25,8 +25,8 @@ pub(crate) fn atom_plan_work() -> AtomPlanWork {
 
 #[path = "line_plan.rs"]
 mod line_plan;
-use line_plan::LinePlan;
 pub(crate) use line_plan::LinePlanWork;
+use line_plan::{BoxProjectionSlot, FrameSpec, LineOp, LinePlan, PlanChange, ProjectionState};
 
 pub(crate) fn reset_line_plan_work() {
     line_plan::reset_work();
@@ -36,6 +36,8 @@ pub(crate) fn line_plan_work() -> LinePlanWork {
     line_plan::work()
 }
 
+#[path = "composition.rs"]
+mod composition;
 #[path = "evaluation.rs"]
 mod evaluation;
 pub(crate) use evaluation::{EvalWork, RetainedFrame};
@@ -2203,7 +2205,7 @@ impl Rendered {
     }
 
     fn first_width(&self) -> i64 {
-        self.lines.first().map_or(0, |line| line.width)
+        self.lines.first_width()
     }
 
     fn max_width(&self) -> i64 {
@@ -2214,27 +2216,21 @@ impl Rendered {
         if wrap_mode == WrapMode::None {
             return self.max_width();
         }
-        self.lines
-            .iter()
-            .map(|line| line.atoms.min_content_width())
-            .max()
-            .unwrap_or(0)
+        self.lines.min_content_width()
     }
 
     fn height(&self) -> i64 {
         self.lines.height()
     }
 
+    #[cfg(test)]
     fn apply_scroll_window(&mut self, region_id: i64) {
-        self.lines = self
-            .lines
-            .map_lines(|_, mut line| {
-                line.atoms = line.atoms.apply_scroll_window(region_id);
-                line
-            })
-            .map_breaks(|properties| {
-                properties.scroll_window = Some(region_id);
-            });
+        self.lines = ProjectionState::new(
+            self.lines.clone(),
+            Arc::from([LineOp::ScrollWindow(region_id)]),
+        )
+        .plan()
+        .clone();
     }
 
     fn into_tape(self, style_count: u32) -> LayoutTape {
@@ -2244,29 +2240,32 @@ impl Rendered {
             lines: self
                 .lines
                 .iter_with_breaks()
-                .map(|(line, break_after)| TapeLine {
-                    width: line.width,
-                    atoms: line
-                        .atoms
-                        .to_vec()
-                        .into_iter()
-                        .map(|atom| match atom {
-                            Atom::Text {
-                                text,
-                                width,
-                                properties,
-                                ..
-                            } => TapeAtom::Text {
-                                text,
-                                width,
-                                properties,
-                            },
-                            Atom::Space { width, properties } => {
-                                TapeAtom::Space { width, properties }
-                            }
-                        })
-                        .collect(),
-                    break_after: break_after.cloned(),
+                .map(|(view, break_after)| {
+                    let line = view.materialize();
+                    TapeLine {
+                        width: view.width(),
+                        atoms: line
+                            .atoms
+                            .to_vec()
+                            .into_iter()
+                            .map(|atom| match atom {
+                                Atom::Text {
+                                    text,
+                                    width,
+                                    properties,
+                                    ..
+                                } => TapeAtom::Text {
+                                    text,
+                                    width,
+                                    properties,
+                                },
+                                Atom::Space { width, properties } => {
+                                    TapeAtom::Space { width, properties }
+                                }
+                            })
+                            .collect(),
+                        break_after: break_after.map(|view| view.materialize().into_owned()),
+                    }
                 })
                 .collect(),
         }
@@ -5472,13 +5471,16 @@ fn wrap_rendered(rendered: Rendered, max_width: i64, mode: WrapMode) -> Rendered
     let mut lines = LinePlan::default();
     let mut joining_break = AtomProperties::default();
     for (line, break_after) in rendered.lines.iter_with_breaks() {
-        let pieces = LinePlan::from_lines(wrap_rendered_line(line, max_width, mode));
+        let pieces = LinePlan::from_lines(wrap_rendered_line(&line.materialize(), max_width, mode));
         lines = lines.concat_with_break(&pieces, joining_break);
-        joining_break = break_after.cloned().unwrap_or_default();
+        joining_break = break_after
+            .map(|view| view.materialize().into_owned())
+            .unwrap_or_default();
     }
     Rendered { lines }
 }
 
+#[cfg(test)]
 fn vertical_align(lines: LinePlan, height: usize, align: VerticalAlign, width: i64) -> LinePlan {
     let lines = lines.slice(0..lines.len().min(height));
     if lines.len() >= height {
@@ -6338,7 +6340,7 @@ fn concat_horizontal_sized(parts: Vec<(Rendered, i64)>, target_height: i64) -> R
         let mut line = Line::default();
         for (lines, width) in &mut parts {
             if let Some(part) = lines.next() {
-                line.append(part);
+                line.append(&part.materialize());
             } else {
                 line.push_space(*width);
             }
@@ -6919,6 +6921,47 @@ fn render_node_with_override(
     RenderScope::uncached(node, resolver).render(context, intrinsic, size_override)
 }
 
+fn project_box_lines(
+    scope: &RenderScope<'_>,
+    slot: BoxProjectionSlot,
+    input: LinePlan,
+    change: &mut Option<PlanChange>,
+    ops: Vec<LineOp>,
+) -> LinePlan {
+    let ops: Arc<[LineOp]> = ops.into();
+    let state = if let Some(previous) = scope.previous_projection(slot) {
+        let update = previous.update(input, change.as_ref(), ops);
+        *change = Some(update.change);
+        update.state
+    } else {
+        *change = None;
+        ProjectionState::new(input, ops)
+    };
+    let lines = state.plan().clone();
+    scope.store_projection(slot, state);
+    lines
+}
+
+fn frame_box_lines(
+    scope: &RenderScope<'_>,
+    slot: BoxProjectionSlot,
+    input: LinePlan,
+    change: &mut Option<PlanChange>,
+    frame: FrameSpec,
+) -> LinePlan {
+    let state = if let Some(previous) = scope.previous_projection(slot) {
+        let update = previous.update_frame(input, change.as_ref(), frame);
+        *change = Some(update.change);
+        update.state
+    } else {
+        *change = None;
+        ProjectionState::new_frame(input, frame)
+    };
+    let lines = state.plan().clone();
+    scope.store_projection(slot, state);
+    lines
+}
+
 fn render_node_body(
     scope: &RenderScope<'_>,
     context: LayoutContext,
@@ -7075,6 +7118,7 @@ fn render_node_body(
                 && *vertical == VerticalAlign::Top;
             let mut windowed_child_start = None;
             let mut windowed_child_height = None;
+            let mut child_change = None;
             let mut child_rendered = if let Some(child) = child {
                 let child_scope = scope.child(LocalStep::BoxChild, child);
                 let child_context = LayoutContext {
@@ -7109,14 +7153,22 @@ fn render_node_body(
                             .expect("exact height checked above")?,
                         )
                     } else {
-                        Some(child_scope.render(
+                        let evaluated = child_scope.render_with_change(
                             child_context,
                             intrinsic || intrinsic_child,
                             None,
-                        )?)
+                        )?;
+                        child_change = evaluated.change;
+                        Some(evaluated.rendered)
                     }
                 } else {
-                    Some(child_scope.render(child_context, intrinsic || intrinsic_child, None)?)
+                    let evaluated = child_scope.render_with_change(
+                        child_context,
+                        intrinsic || intrinsic_child,
+                        None,
+                    )?;
+                    child_change = evaluated.change;
+                    Some(evaluated.rendered)
                 }
             } else {
                 None
@@ -7209,18 +7261,25 @@ fn render_node_body(
                 && border_top_style.is_none()
                 && border_bottom_style.is_none()
                 && child_rendered.as_ref().is_some_and(|rendered| {
-                    rendered
-                        .lines
-                        .iter()
-                        .all(|line| !line.atoms.is_empty() && line.width == content_width)
+                    rendered.lines.all_nonempty() && rendered.lines.uniform_width(content_width)
                 });
             if transparent_preformatted {
                 let mut rendered = child_rendered.take().expect("validated child");
-                rendered.lines = rendered.lines.map_lines(|index, mut line| {
-                    line.own_content(*region_id, index as i64);
-                    line.apply_property_template(*surface_template_id);
-                    line
-                });
+                let mut ops = vec![LineOp::OwnContent {
+                    region: *region_id,
+                    start: 0,
+                }];
+                ops.extend(surface_template_id.map(LineOp::Template));
+                rendered.lines = project_box_lines(
+                    scope,
+                    BoxProjectionSlot::TransparentContent,
+                    rendered.lines,
+                    &mut child_change,
+                    ops,
+                );
+                if let Some(change) = child_change {
+                    scope.publish_change(change);
+                }
                 return Ok(rendered);
             }
 
@@ -7235,30 +7294,35 @@ fn render_node_body(
                     }
                 }
                 LinePlan::from_lines(content_lines)
-                    .map_lines(|_, line| line.padded(content_width, *text_align))
             } else {
                 let rendered = child_rendered.expect("validated child");
-                let uniform_width = rendered
-                    .lines
-                    .iter()
-                    .all(|line| line.width == content_width);
-                let preserve_exact_width = *content_width_exact && *wrap_mode == WrapMode::None;
+                let uniform_width = rendered.lines.uniform_width(content_width);
                 let rendered = if *wrap_mode != WrapMode::None && !uniform_width {
+                    child_change = None;
                     wrap_rendered(rendered, content_width, *wrap_mode)
                 } else {
                     rendered
                 };
-                if preserve_exact_width {
-                    rendered.lines
-                } else {
-                    rendered
-                        .lines
-                        .map_lines(|_, line| line.padded(content_width, *text_align))
-                }
+                rendered.lines
             };
             // Ordinary Box formatting historically rebuilds default breaks;
             // the transparent preformatted branch above preserves child breaks.
-            formatted = formatted.clear_breaks();
+            let mut change = child_change;
+            let mut pad_ops = Vec::new();
+            if content.is_some() || !(*content_width_exact && *wrap_mode == WrapMode::None) {
+                pad_ops.push(LineOp::PadTo {
+                    width: content_width,
+                    align: *text_align,
+                });
+            }
+            pad_ops.push(LineOp::ClearBreaks);
+            formatted = project_box_lines(
+                scope,
+                BoxProjectionSlot::ContentPad,
+                formatted,
+                &mut change,
+                pad_ops,
+            );
             let text_height = windowed_child_height.unwrap_or(formatted.len() as i64);
             let minimum_height = resolve_height(
                 min_height,
@@ -7315,6 +7379,9 @@ fn render_node_body(
             if let Some(start) = windowed_child_start {
                 content_index_start = start;
             } else if formatted.len() > content_height as usize {
+                // Clipping changes operation origins. Until the exact old/new window
+                // anchors are available, the next stage takes its counted fallback.
+                change = None;
                 match overflow {
                     Overflow::Scroll => {
                         let max_offset = formatted.len() - content_height as usize;
@@ -7333,113 +7400,206 @@ fn render_node_body(
                     }
                 }
             }
-            formatted = formatted.map_lines(|index, mut line| {
-                line.own_content(*region_id, content_index_start + index as i64);
-                line
-            });
-            let lines =
-                vertical_align(formatted, content_height as usize, *vertical, content_width)
-                    .map_lines(|_, line| {
-                        if simple_scroll_rendered {
-                            line
-                        } else {
-                            line.collapse_whitespace_content(content_width, *region_id)
-                        }
-                    });
+            formatted = project_box_lines(
+                scope,
+                BoxProjectionSlot::ContentOwn,
+                formatted,
+                &mut change,
+                vec![LineOp::OwnContent {
+                    region: *region_id,
+                    start: content_index_start,
+                }],
+            );
+            if formatted.len() > content_height as usize {
+                change = None;
+                formatted = formatted.slice(0..content_height as usize);
+            }
+            let remaining = content_height as usize - formatted.len();
+            let top = match vertical {
+                VerticalAlign::Top => 0,
+                VerticalAlign::Bottom => remaining,
+                VerticalAlign::Center => remaining / 2,
+            };
+            let lines = frame_box_lines(
+                scope,
+                BoxProjectionSlot::VerticalFrame,
+                formatted,
+                &mut change,
+                FrameSpec {
+                    prefix: top,
+                    suffix: remaining - top,
+                    width: content_width,
+                    prefix_properties: Arc::new(AtomProperties::default()),
+                    suffix_properties: Arc::new(AtomProperties::default()),
+                },
+            );
+            let collapse_ops = if simple_scroll_rendered {
+                Vec::new()
+            } else {
+                vec![LineOp::CollapseWhitespace {
+                    width: content_width,
+                    region: *region_id,
+                }]
+            };
+            let lines = project_box_lines(
+                scope,
+                BoxProjectionSlot::ContentCollapse,
+                lines,
+                &mut change,
+                collapse_ops,
+            );
 
-            let mut padded = LinePlan::from_lines((0..*padding_top).map(|_| {
-                Line::blank_with_properties(
-                    content_width,
-                    region_properties(RegionRole::PaddingTop, *region_id, None),
+            let mut padded = frame_box_lines(
+                scope,
+                BoxProjectionSlot::PaddingFrame,
+                lines,
+                &mut change,
+                FrameSpec {
+                    prefix: *padding_top as usize,
+                    suffix: *padding_bottom as usize,
+                    width: content_width,
+                    prefix_properties: region_properties(RegionRole::PaddingTop, *region_id, None)
+                        .into(),
+                    suffix_properties: region_properties(
+                        RegionRole::PaddingBottom,
+                        *region_id,
+                        None,
+                    )
+                    .into(),
+                },
+            );
+            let mut edge_ops = vec![LineOp::EdgeSpaces {
+                left: *padding_left,
+                left_properties: region_properties(RegionRole::PaddingLeft, *region_id, None)
+                    .into(),
+                right: *padding_right,
+                right_properties: region_properties(RegionRole::PaddingRight, *region_id, None)
+                    .into(),
+            }];
+            edge_ops.extend(
+                [*typography_style, *foreground_style, *background_style]
+                    .into_iter()
+                    .flatten()
+                    .map(LineOp::Style),
+            );
+            edge_ops.push(LineOp::EdgeSpaces {
+                left: *border_left,
+                left_properties: region_properties(
+                    RegionRole::BorderLeft,
+                    *region_id,
+                    *border_left_style,
                 )
+                .into(),
+                right: *border_right,
+                right_properties: region_properties(
+                    RegionRole::BorderRight,
+                    *region_id,
+                    *border_right_style,
+                )
+                .into(),
+            });
+            padded = project_box_lines(
+                scope,
+                BoxProjectionSlot::PaddingEdges,
+                padded,
+                &mut change,
+                edge_ops,
+            );
+            let mut boundary_ops = Vec::new();
+            boundary_ops.extend(border_top_style.map(|style| LineOp::FirstStyleRole {
+                style,
+                region: *region_id,
             }));
-            padded = padded.concat(&lines);
-            padded = padded.concat(&LinePlan::from_lines((0..*padding_bottom).map(|_| {
-                Line::blank_with_properties(
-                    content_width,
-                    region_properties(RegionRole::PaddingBottom, *region_id, None),
-                )
-            })));
-
-            padded = padded.map_lines(|_, mut line| {
-                line.prepend_space_with_properties(
-                    *padding_left,
-                    region_properties(RegionRole::PaddingLeft, *region_id, None),
-                );
-                line.push_space_with_properties(
-                    *padding_right,
-                    region_properties(RegionRole::PaddingRight, *region_id, None),
-                );
-                line.apply_style(*typography_style);
-                line.apply_style(*foreground_style);
-                line.apply_style(*background_style);
-                line.prepend_space_with_properties(
-                    *border_left,
-                    region_properties(RegionRole::BorderLeft, *region_id, *border_left_style),
-                );
-                line.push_space_with_properties(
-                    *border_right,
-                    region_properties(RegionRole::BorderRight, *region_id, *border_right_style),
-                );
-                line
-            });
-            if border_top_style.is_some() && !padded.is_empty() {
-                padded = padded.update_line(0, |mut line| {
-                    line.apply_style(*border_top_style);
-                    line.apply_role(RegionRole::BorderTop, *region_id);
-                    line
-                });
-            }
-            if border_bottom_style.is_some() && !padded.is_empty() {
-                padded = padded.update_line(padded.len() - 1, |mut line| {
-                    line.apply_style(*border_bottom_style);
-                    line.apply_role(RegionRole::BorderBottom, *region_id);
-                    line
-                });
-            }
-            padded = padded.map_lines(|_, mut line| {
-                line.apply_property_template(*surface_template_id);
-                line
-            });
-            padded = padded.map_lines(|_, mut line| {
-                line.prepend_space_with_properties(
-                    *margin_left,
-                    region_properties(RegionRole::MarginLeft, *region_id, None),
-                );
-                line.push_space_with_properties(
-                    *margin_right,
-                    region_properties(RegionRole::MarginRight, *region_id, None),
-                );
-                line
-            });
+            boundary_ops.extend(border_bottom_style.map(|style| LineOp::LastStyleRole {
+                style,
+                region: *region_id,
+            }));
+            padded = project_box_lines(
+                scope,
+                BoxProjectionSlot::BoundaryBorders,
+                padded,
+                &mut change,
+                boundary_ops,
+            );
+            padded = project_box_lines(
+                scope,
+                BoxProjectionSlot::SurfaceTemplate,
+                padded,
+                &mut change,
+                surface_template_id
+                    .map(LineOp::Template)
+                    .into_iter()
+                    .collect(),
+            );
+            padded = project_box_lines(
+                scope,
+                BoxProjectionSlot::MarginEdges,
+                padded,
+                &mut change,
+                vec![LineOp::EdgeSpaces {
+                    left: *margin_left,
+                    left_properties: region_properties(RegionRole::MarginLeft, *region_id, None)
+                        .into(),
+                    right: *margin_right,
+                    right_properties: region_properties(RegionRole::MarginRight, *region_id, None)
+                        .into(),
+                }],
+            );
             let total_width = content_width + side_width;
-            let mut output = LinePlan::from_lines((0..*margin_top).map(|_| {
-                Line::blank_with_properties(
-                    total_width,
-                    region_properties(RegionRole::MarginTop, *region_id, None),
-                )
-            }));
-            output = output.concat(&padded);
-            output = output.concat(&LinePlan::from_lines((0..*margin_bottom).map(|_| {
-                Line::blank_with_properties(
-                    total_width,
-                    region_properties(RegionRole::MarginBottom, *region_id, None),
-                )
-            })));
+            let output = frame_box_lines(
+                scope,
+                BoxProjectionSlot::MarginFrame,
+                padded,
+                &mut change,
+                FrameSpec {
+                    prefix: *margin_top as usize,
+                    suffix: *margin_bottom as usize,
+                    width: total_width,
+                    prefix_properties: region_properties(RegionRole::MarginTop, *region_id, None)
+                        .into(),
+                    suffix_properties: region_properties(
+                        RegionRole::MarginBottom,
+                        *region_id,
+                        None,
+                    )
+                    .into(),
+                },
+            );
             let mut rendered = Rendered::from_line_plan(output);
             if !overflow_lines.is_empty() {
                 let left_space = margin_left + border_left + padding_left;
                 let right_space = padding_right + border_right + margin_right;
-                overflow_lines = overflow_lines.map_lines(|_, mut line| {
-                    line.apply_style(*foreground_style);
-                    line.prepend_space(left_space);
-                    line.push_space(right_space);
-                    line
+                let mut ops = foreground_style
+                    .map(LineOp::Style)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                ops.push(LineOp::EdgeSpaces {
+                    left: left_space,
+                    left_properties: Arc::new(AtomProperties::default()),
+                    right: right_space,
+                    right_properties: Arc::new(AtomProperties::default()),
                 });
+                overflow_lines = project_box_lines(
+                    scope,
+                    BoxProjectionSlot::OverflowEdges,
+                    overflow_lines,
+                    &mut None,
+                    ops,
+                );
                 rendered = stack_vertical(vec![rendered, Rendered::from_line_plan(overflow_lines)]);
+                change = None;
             }
             if *overflow == Overflow::Scroll && text_height > content_height {
-                rendered.apply_scroll_window(*region_id);
+                rendered.lines = project_box_lines(
+                    scope,
+                    BoxProjectionSlot::ScrollWindow,
+                    rendered.lines,
+                    &mut change,
+                    vec![LineOp::ScrollWindow(*region_id)],
+                );
+            }
+            if let Some(change) = change {
+                scope.publish_change(change);
             }
             Ok(rendered)
         }
@@ -7488,6 +7648,9 @@ fn render_node_body(
             Ok(concat_horizontal_sized(parts, 0))
         }
         LayoutNode::Column { children, .. } => {
+            if scope.is_retained() {
+                return composition::render_column(scope, children, context, intrinsic);
+            }
             let rendered = column_leaves(scope, children)
                 .map(|child| child.render(context, intrinsic, None))
                 .collect::<Result<Vec<_>, _>>()?;
@@ -7575,6 +7738,8 @@ fn column_leaves<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("composition_tests.rs");
 
     include!("source_topology_tests.rs");
 
@@ -8085,14 +8250,14 @@ mod tests {
             }),
         )
         .expect("typed column render");
-        assert_eq!(rendered.lines.get(0).unwrap().width, 100);
+        assert_eq!(rendered.lines.get(0).unwrap().width(), 100);
         assert!(
             matches!(
-                rendered.lines.get(0).unwrap().atoms.first(),
+                rendered.lines.get(0).unwrap().materialize().atoms.first(),
                 Some(Atom::Space { width: 45, .. })
             ),
             "{:?}",
-            rendered.lines.get(0).unwrap().atoms
+            rendered.lines.get(0).unwrap().materialize().atoms
         );
     }
 
@@ -8595,10 +8760,16 @@ mod tests {
         let mut stacked = stack_vertical(vec![first, second]);
 
         assert_eq!(stacked.lines.len() - 1, 2);
-        assert_eq!(stacked.lines.break_after(0).unwrap().owner, Some(11));
         assert_eq!(
-            stacked.lines.break_after(1),
-            Some(&AtomProperties::default())
+            stacked.lines.break_after(0).unwrap().materialize().owner,
+            Some(11)
+        );
+        assert_eq!(
+            stacked
+                .lines
+                .break_after(1)
+                .map(|view| view.materialize().into_owned()),
+            Some(AtomProperties::default())
         );
 
         stacked.apply_scroll_window(9);
@@ -8606,9 +8777,10 @@ mod tests {
             .lines
             .iter_with_breaks()
             .filter_map(|(_, properties)| properties)
-            .all(|properties| { properties.scroll_window == Some(9) }));
+            .all(|properties| { properties.materialize().scroll_window == Some(9) }));
         assert!(stacked.lines.iter().all(|line| {
-            line.atoms
+            line.materialize()
+                .atoms
                 .to_vec()
                 .iter()
                 .all(|atom| atom.properties().scroll_window == Some(9))
