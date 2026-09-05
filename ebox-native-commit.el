@@ -11,6 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ebox-runtime-index)
 
 (declare-function ebox-native-reflow-layout-ready-p "ebox-native-reflow" ())
 (declare-function ebox-native-reflow-execute-sync
@@ -45,7 +46,7 @@
                   "ebox-incremental" (node))
 
 (defun ebox-native-commit-topology-stable-p
-    (old-state candidate-state prepared)
+  (old-state candidate-state prepared)
   "Return non-nil when PREPARED preserves OLD-STATE's object topology."
   (let ((old-nodes (plist-get old-state :node-table))
         (new-nodes (plist-get candidate-state :node-table))
@@ -62,22 +63,22 @@
                      (lambda (entry)
                        (eq (plist-get entry :dirty-kind) 'structure))
                      (plist-get prepared :dirty-set)))
-               (hash-table-p old-nodes) (hash-table-p new-nodes)
-               (hash-table-p old-parents) (hash-table-p new-parents)
-               (hash-table-p old-regions) (hash-table-p new-regions)
+               (ebox-runtime-index-like-p old-nodes) (ebox-runtime-index-like-p new-nodes)
+               (ebox-runtime-index-like-p old-parents) (ebox-runtime-index-like-p new-parents)
+               (ebox-runtime-index-like-p old-regions) (ebox-runtime-index-like-p new-regions)
                (hash-table-p old-objects)
-               (= (hash-table-count old-nodes)
-                  (hash-table-count new-nodes))
-               (= (hash-table-count old-regions)
-                  (hash-table-count new-regions))))
+               (= (ebox-runtime-index-size old-nodes)
+                  (ebox-runtime-index-size new-nodes))
+               (= (ebox-runtime-index-size old-regions)
+                  (ebox-runtime-index-size new-regions))))
     (when stable
-      (maphash
+      (ebox-runtime-index-map
        (lambda (node-id node)
-         (let ((old-node (gethash node-id old-nodes missing)))
+         (let ((old-node (ebox-runtime-index-get node-id old-nodes missing)))
            (unless (and (not (eq old-node missing))
                         (gethash node-id old-objects)
-                        (equal (gethash node-id old-parents missing)
-                               (gethash node-id new-parents missing))
+                        (equal (ebox-runtime-index-get node-id old-parents missing)
+                               (ebox-runtime-index-get node-id new-parents missing))
                         (eq (plist-get old-node :ebox-type)
                             (plist-get node :ebox-type))
                         (equal
@@ -88,9 +89,9 @@
              (setq stable nil))))
        new-nodes))
     (when stable
-      (maphash
+      (ebox-runtime-index-map
        (lambda (region-id node-id)
-         (unless (equal (gethash region-id old-regions missing) node-id)
+         (unless (equal (ebox-runtime-index-get region-id old-regions missing) node-id)
            (setq stable nil)))
        new-regions))
     stable))
@@ -105,7 +106,7 @@
         (while (and node-id (not (gethash node-id seen)))
           (puthash node-id t seen)
           (push node-id result)
-          (setq node-id (and parents (gethash node-id parents))))))
+          (setq node-id (and parents (ebox-runtime-index-get node-id parents))))))
     (nreverse result)))
 
 (defun ebox-native-commit-inherited-dirty-node-ids (prepared)
@@ -123,8 +124,8 @@
   "Return NODE-ID to `(PARENT-ID . POSITION)' table for STATE."
   (let ((nodes (plist-get state :node-table))
         (table (make-hash-table :test 'equal)))
-    (when (hash-table-p nodes)
-      (maphash
+    (when (ebox-runtime-index-like-p nodes)
+      (ebox-runtime-index-map
        (lambda (parent-id node)
          (cl-loop for child in (ebox-tree--children-raw node)
                   for position from 0
@@ -166,22 +167,22 @@ type, key, parent, and sibling position are identical."
                  (plist-get old-state :source-index) old-root)
                 (ebox-tree-node-key
                  (plist-get candidate-state :source-index) new-root))
-               (hash-table-p old-nodes) (hash-table-p new-nodes)
+               (ebox-runtime-index-like-p old-nodes) (ebox-runtime-index-like-p new-nodes)
                (hash-table-p old-objects)))
          result)
     (dolist (node-id (plist-get prepared :touched-node-ids))
-      (if (gethash node-id new-nodes)
+      (if (ebox-runtime-index-get node-id new-nodes)
           (puthash node-id t requested)
         (setq valid nil)))
     (dolist (node-id (plist-get prepared :removed-node-ids))
-      (if (and (gethash node-id old-nodes)
-               (not (gethash node-id new-nodes)))
+      (if (and (ebox-runtime-index-get node-id old-nodes)
+               (not (ebox-runtime-index-get node-id new-nodes)))
           (puthash node-id t removed)
         (setq valid nil)))
     (when valid
-      (maphash
+      (ebox-runtime-index-map
        (lambda (node-id _node)
-         (when (and (not (gethash node-id new-nodes))
+         (when (and (not (ebox-runtime-index-get node-id new-nodes))
                     (not (gethash node-id removed)))
            (setq valid nil)))
        old-nodes))
@@ -189,7 +190,7 @@ type, key, parent, and sibling position are identical."
       (cl-labels
           ((visit (node)
              (let* ((node-id (plist-get node :node-id))
-                    (old-node (gethash node-id old-nodes missing))
+                    (old-node (ebox-runtime-index-get node-id old-nodes missing))
                     (old-object (gethash node-id old-objects))
                     (position (gethash node-id new-positions))
                     (parent-id (car-safe position))
@@ -229,12 +230,12 @@ type, key, parent, and sibling position are identical."
     (setq stable
           (and (plist-get old-state :viewport-dependent-node-ids-ready)
                (plist-member old-state :viewport-dependent-node-id-axes)
-               (hash-table-p old-nodes)
-               (hash-table-p new-nodes)))
+               (ebox-runtime-index-like-p old-nodes)
+               (ebox-runtime-index-like-p new-nodes)))
     (dolist (entry (plist-get prepared :dirty-set) stable)
       (let* ((node-id (plist-get entry :node-id))
-             (old (and stable (gethash node-id old-nodes)))
-             (new (and stable (gethash node-id new-nodes))))
+             (old (and stable (ebox-runtime-index-get node-id old-nodes)))
+             (new (and stable (ebox-runtime-index-get node-id new-nodes))))
         (unless (and old new
                      (eq (ebox--node-direct-viewport-width-dependent-p old)
                          (ebox--node-direct-viewport-width-dependent-p new))
@@ -398,9 +399,9 @@ new session with the same bounded configuration used by retained frames."
 
 (defun ebox-native-commit--region-box (state region-id)
   "Resolve REGION-ID's candidate box directly from STATE indexes."
-  (when-let* ((node-id (gethash region-id
+  (when-let* ((node-id (ebox-runtime-index-get region-id
                                 (plist-get state :region-node-table)))
-              (node (gethash node-id (plist-get state :node-table))))
+              (node (ebox-runtime-index-get node-id (plist-get state :node-table))))
     (pcase (plist-get node :ebox-type)
       ('box node)
       ('flex (plist-get node :box)))))
@@ -429,8 +430,8 @@ new session with the same bounded configuration used by retained frames."
   "Return non-nil when STATE contains only executable native node types."
   (let ((nodes (plist-get state :node-table))
         (supported t))
-    (when (hash-table-p nodes)
-      (maphash
+    (when (ebox-runtime-index-like-p nodes)
+      (ebox-runtime-index-map
        (lambda (_node-id node)
          (unless (memq (plist-get node :ebox-type)
                        '(box concat stack flex))

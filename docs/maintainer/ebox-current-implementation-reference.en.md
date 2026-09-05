@@ -19,6 +19,7 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | `ebox.el` | Public facade, construction helpers, rendering, TP-backed buffer entry points, scrolling, commit, and byte compilation. |
 | `ebox-cache.el` | Measurement/render cache records, invalidation, and cache reports. |
 | `ebox-source.el` | Opaque source handles, immutable author source records, and candidate source indexes. |
+| `ebox-runtime-index.el` | Compressed persistent radix maps and legacy hash-table adapters. |
 | `ebox-state-contract.el` | Closed retained-state ownership inventory and read-only compatibility-mirror rebuild probes. |
 | `ebox-style.el` | ECSS property schemas, declarations and cascade, shorthand expansion, computed style, colors, borders, and dirty effects. |
 | `ebox-tree.el` | Node traversal, logical child access, ECSS subject adaptation, identity, parent paths, keys, and tree snapshots. |
@@ -41,6 +42,8 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 The package intentionally does not include application Components, UI controls, reactive data, or a playground implementation. Those are sibling-package responsibilities.
 
 The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-state-contract-tests.el`, `tests/ebox-layout-boundary-tests.el`, `tests/ebox-patch-plan-tests.el`, `tests/ebox-style-schema-tests.el`, `tests/ebox-spi-tests.el`, `tests/ebox-child-range-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
+
+Runtime index behavior is covered by `tests/ebox-runtime-index-tests.el`.
 
 ## Runtime model
 
@@ -137,6 +140,7 @@ make load
 make compile
 make check
 make core-tests
+make runtime-index-tests
 make child-range-tests
 make grid-tests
 make ebox-commit-tests

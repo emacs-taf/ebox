@@ -12,6 +12,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'ebox-runtime-index)
 
 (define-error 'ebox-patch-plan-error "Invalid Ebox patch plan input")
 
@@ -115,14 +116,14 @@
   "Return OWNER-ID's strict ancestors from immutable PARENT-TABLE."
   (let ((ancestors (make-hash-table :test #'equal))
         (seen (make-hash-table :test #'equal))
-        (walk (gethash owner-id parent-table)))
+        (walk (ebox-runtime-index-get owner-id parent-table)))
     (while walk
       (when (gethash walk seen)
         (signal 'ebox-patch-plan-error
                 (list :cyclic-parent-table :node-id walk)))
       (puthash walk t seen)
       (puthash walk t ancestors)
-      (setq walk (gethash walk parent-table)))
+      (setq walk (ebox-runtime-index-get walk parent-table)))
     ancestors))
 
 (defun ebox-patch-plan--make-index ()
@@ -216,7 +217,7 @@
 PARENT-TABLE maps a node id to its parent id and is treated as immutable.
 OPERATIONS are patch artifact plists.  This function mutates neither input and
 has no publication capability."
-  (unless (hash-table-p parent-table)
+  (unless (ebox-runtime-index-like-p parent-table)
     (signal 'ebox-patch-plan-error
             (list :malformed-parent-table parent-table)))
   (unless (proper-list-p operations)

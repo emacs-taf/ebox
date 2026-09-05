@@ -396,7 +396,7 @@
                              (ebox-source-record-classes
                               (ebox-source-index-record
                                old-index old-handle))))
-              (maphash
+              (ebox-runtime-index-map
                (lambda (_node-id node)
                  (when (ebox-node-kind node)
                    (should (ebox-source-index-record

@@ -875,6 +875,31 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-runtime-bootstrap-uses-persistent-core-indexes-and-id-postorder ()
+  "Runtime bootstrap stores persistent core indexes and stable node ids."
+  (ebox-test--reset-runtime-state)
+  (let* ((input
+          (ebox-test-column
+           (ebox-test-box :key 'left (ebox-test-text "Left"))
+           (ebox-test-box :key 'right (ebox-test-text "Right"))))
+         (root (ebox-test-root input))
+         (index (ebox--runtime-index root t (ebox-test-source-index input)))
+         (nodes (plist-get index :node-table))
+         (postorder (plist-get index :native-node-postorder)))
+    (should (ebox-runtime-index-p nodes))
+    (should (ebox-runtime-index-p (plist-get index :parent-table)))
+    (should (ebox-runtime-index-p (plist-get index :region-node-table)))
+    (should (vectorp postorder))
+    (should (> (length postorder) 0))
+    (should
+     (cl-every
+      (lambda (node-id)
+        (and (not (listp node-id))
+             (ebox-runtime-index-get node-id nodes)))
+      postorder))
+    (should (equal (aref postorder (1- (length postorder)))
+                   (plist-get root :node-id)))))
+
 (ert-deftest ebox-region-render-owner-index-keeps-earlier-duplicate-box ()
   "A later flex wrapper should not replace an earlier duplicate region owner."
   (ebox-test--reset-runtime-state)
@@ -894,7 +919,7 @@
            (expected (car (ebox--node-path-to-region
                            layout-node region-id))))
       (should (eq expected plain-node))
-      (should (equal (gethash region-id table)
+      (should (equal (ebox-runtime-index-get region-id table)
                      (ebox--ensure-node-id expected))))))
 
 (ert-deftest ebox-region-render-owner-index-falls-back-for-legacy-state ()
@@ -2440,7 +2465,7 @@
         (should (eq (plist-get report :constraint-owner-type) 'box))
         (should
          (equal (plist-get report :constraint-owner-id)
-                (gethash left-id
+                (ebox-runtime-index-get left-id
                          (ebox--buffer-region-node-table
                           (current-buffer)))))
         (should (equal (plist-get report :dirty-kinds)

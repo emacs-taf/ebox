@@ -15,6 +15,7 @@
 (require 'ebox-fragment)
 (require 'ebox-render-context)
 (require 'ebox-buffer-backend)
+(require 'ebox-runtime-index)
 
 (declare-function ebox--render-grid "ebox-grid" (node))
 (declare-function ebox--render-grid-box-children
@@ -1982,8 +1983,9 @@ also pass a pre-rendered string while an active surface owns runtime facts."
                    (cl-loop
                     for state in ebox--render-source-states
                     for table = (plist-get state :node-table)
-                    when (and (hash-table-p table)
-                              (eq node (gethash node-id table)))
+                    when (and (ebox-runtime-index-like-p table)
+                              (eq node
+                                  (ebox-runtime-index-get node-id table)))
                     return (plist-get state :source-index)))
               (and handle
                    (cl-find-if
