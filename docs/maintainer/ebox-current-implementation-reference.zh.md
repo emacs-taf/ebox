@@ -19,6 +19,7 @@
 | `ebox.el` | 公共门面、构造辅助函数、渲染、基于 TP 的 buffer 入口、滚动、commit 与 byte compile。 |
 | `ebox-cache.el` | 测量/渲染缓存记录、失效和缓存报告。 |
 | `ebox-source.el` | opaque source handle、不可变 author source record 与 candidate source index。 |
+| `ebox-runtime-index.el` | 压缩持久 radix map 与旧 hash-table adapter。 |
 | `ebox-state-contract.el` | 封闭的 retained-state 所有权清单与只读 compatibility-mirror 重建探针。 |
 | `ebox-style.el` | ECSS property schema、declaration 与 cascade、shorthand 展开、computed style、颜色、border 和 dirty effect。 |
 | `ebox-tree.el` | 节点遍历、逻辑子节点访问、ECSS subject 适配、identity、父路径、key 和树 snapshot。 |
@@ -41,6 +42,8 @@
 本包有意不包含应用 Component、UI control、响应式 data 或 playground 实现；它们属于同级包。历史应用性能记录器和 native reflow 评估器也不属于独立 Ebox 的发布边界；Ebox 只保留 native 模块本身、Rust 构建输入和可重复的构建检查。
 
 active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-state-contract-tests.el`、`tests/ebox-layout-boundary-tests.el`、`tests/ebox-patch-plan-tests.el`、`tests/ebox-style-schema-tests.el`、`tests/ebox-spi-tests.el`、`tests/ebox-child-range-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-surface-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el`、`scripts/ebox-visual-check.el` 和 `scripts/ebox-performance-evaluator.el`。
+
+Runtime index 行为由 `tests/ebox-runtime-index-tests.el` 覆盖。
 
 ## 运行时模型
 
@@ -130,6 +133,7 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 ```sh
 make check
 make core-tests
+make runtime-index-tests
 make child-range-tests
 make grid-tests
 make ebox-commit-tests

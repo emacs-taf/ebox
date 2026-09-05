@@ -23,7 +23,8 @@
   "Directory containing the active Ebox Lisp sources.")
 
 (defconst ebox--compile-sources
-  '("ebox-cache.el" "ebox-source.el" "ebox-state-contract.el"
+  '("ebox-cache.el" "ebox-source.el" "ebox-runtime-index.el"
+    "ebox-state-contract.el"
     "ebox-font.el" "ebox-style.el"
     "ebox-layout-config.el"
     "ebox-node-factory.el"
@@ -44,6 +45,7 @@
 (require 'subr-x)
 (require 'ebox-cache)
 (require 'ebox-source)
+(require 'ebox-runtime-index)
 (require 'ebox-state-contract)
 (require 'ebox-font)
 (require 'ebox-style)
@@ -1141,7 +1143,7 @@ remain transaction-local."
   (let* ((template-box (plist-get template :box))
          (node-id (and template-box (ebox--ensure-node-id template-box)))
          (node-table (ebox--buffer-node-table (current-buffer))))
-    (or (and node-table node-id (gethash node-id node-table))
+    (or (and node-table node-id (ebox-runtime-index-get node-id node-table))
         (plist-get (ebox--scroll-get-state region-id) :box)
         (gethash region-id ebox--region-box-table))))
 
@@ -1164,7 +1166,7 @@ remain transaction-local."
                         (or (ebox-get effective-box :scroll-offset) 0))
                  (or portable
                      (null node-table)
-                     (eq box (gethash node-id node-table)))
+                     (eq box (ebox-runtime-index-get node-id node-table)))
                  (or (null live-state)
                      (eq effective-box (plist-get live-state :box)))
                  (not (plist-get live-state :lazy-scroll-prefix-dirty))
@@ -2931,7 +2933,9 @@ Scroll routing uses semantic ancestry rather than mount span length because
 nested owners may render equal-sized clipped spans."
   (let* ((state (ebox--buffer-render-state (current-buffer)))
          (region-nodes (plist-get state :region-node-table))
-         (node-id (and region-nodes (gethash region-id region-nodes))))
+         (node-id
+          (and region-nodes
+               (ebox-runtime-index-get region-id region-nodes))))
     (if node-id (ebox-surface--node-depth state node-id) -1)))
 
 (defun ebox--scroll-region-ids-in-buffer-outer-first ()
@@ -4110,7 +4114,7 @@ cannot be changed through the unpublished batch root."
                  entries)
     (let ((parents (ebox--buffer-parent-table buffer)) ancestors)
       (dolist (node-id node-ids)
-        (while (setq node-id (gethash node-id parents))
+        (while (setq node-id (ebox-runtime-index-get node-id parents))
           (push node-id ancestors)))
       (delete-dups ancestors))))
 
@@ -4122,7 +4126,7 @@ cannot be changed through the unpublished batch root."
     (let ((parents (ebox--buffer-parent-table buffer)))
       (delete-dups
        (delq nil
-             (mapcar (lambda (node-id) (gethash node-id parents))
+             (mapcar (lambda (node-id) (ebox-runtime-index-get node-id parents))
                      node-ids))))))
 
 (defun ebox--publish-scoped-region-candidate

@@ -501,7 +501,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 (defun ebox-surface-test--object-by-key (state key)
   "Return the candidate surface object for Ebox node KEY in STATE."
   (let (object)
-    (maphash
+    (ebox-runtime-index-map
      (lambda (_node-id node)
        (when (equal (plist-get node :key) key)
         (setq object (plist-get node :surface-object))))
@@ -511,7 +511,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 (defun ebox-surface-test--node-by-key (state key)
   "Return the runtime Ebox node for KEY in STATE."
   (let (match)
-    (maphash
+    (ebox-runtime-index-map
      (lambda (_node-id node)
        (when (equal (plist-get node :key) key)
          (setq match node)))
@@ -2099,7 +2099,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                  (style-states (plist-get state :style-binding-states))
                  (source-index (plist-get state :source-index))
                  text-id text-node)
-            (maphash
+            (ebox-runtime-index-map
              (lambda (node-id node)
                (when (and (eq (plist-get node :ebox-kind) 'text)
                           (equal (plist-get node :content) "Inherited"))
@@ -2107,13 +2107,14 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
              nodes)
             (should text-id)
             (let* ((parent-id
-                    (gethash text-id (plist-get state :parent-table)))
+                    (ebox-runtime-index-get
+                     text-id (plist-get state :parent-table)))
                    (object (gethash text-id objects))
                    (parent-object (gethash parent-id objects))
                    (style-state (gethash object style-states))
                    (parent-state (gethash parent-object style-states))
                    (candidate-node (copy-sequence text-node))
-                   (candidate-nodes (copy-hash-table nodes))
+                   (candidate-nodes nodes)
                    (candidate-state (copy-sequence state)))
               (should style-state)
               (should parent-state)
@@ -2126,7 +2127,9 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                       (ecss-subject-id (plist-get style-state :subject))))
               (should (ebox-surface--static-style-state-p style-state))
               (plist-put candidate-node :ebox-candidate-computed-style-p t)
-              (puthash text-id candidate-node candidate-nodes)
+              (setq candidate-nodes
+                    (ebox-runtime-index-put
+                     text-id candidate-node candidate-nodes))
               (plist-put candidate-state :node-table candidate-nodes)
               (let ((ebox-incremental--allocated-slot-proof-cache
                      (make-hash-table :test 'equal)))
@@ -3207,7 +3210,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
               (maphash
                (lambda (id node)
                  (should (eq node
-                             (gethash (gethash id
+                             (ebox-runtime-index-get (ebox-runtime-index-get id
                                                (plist-get state
                                                           :region-node-table))
                                       (plist-get state :node-table)))))

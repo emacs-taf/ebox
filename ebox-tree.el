@@ -15,6 +15,7 @@
 (require 'ebox-style)
 (require 'ebox-node-factory)
 (require 'ebox-child-range)
+(require 'ebox-runtime-index)
 
 (defvar ebox-tree--incoming-source-indexes nil
   "Transaction-local handle to incoming source-index map for one delta.")
@@ -739,8 +740,8 @@ handles, reused node objects, and cycles without consulting node metadata."
 (defun ebox-tree--indexed-parent-context
     (node-id node-table parent-table)
   "Return the direct parent layout kind for NODE-ID in indexed tree."
-  (let* ((parent-id (gethash node-id parent-table))
-         (parent (and parent-id (gethash parent-id node-table))))
+  (let* ((parent-id (ebox-runtime-index-get node-id parent-table))
+         (parent (and parent-id (ebox-runtime-index-get parent-id node-table))))
     (and parent (ebox-tree--child-layout-kind parent nil))))
 
 (defun ebox-tree-validate-indexed-participation
@@ -748,7 +749,7 @@ handles, reused node objects, and cycles without consulting node metadata."
   "Validate NODE-IDS in indexed final tree using AUTHOR or COMPUTED SOURCE."
   (setq source (or source 'author))
   (dolist (node-id (delete-dups (copy-sequence node-ids)))
-    (when-let* ((node (gethash node-id node-table)))
+    (when-let* ((node (ebox-runtime-index-get node-id node-table)))
       (ebox-tree--validate-node-parent-participation
        node
        (ebox-tree--indexed-parent-context node-id node-table parent-table)
@@ -1379,12 +1380,12 @@ stale until a query or full projection materializes them."
                        (parent-id (nth 2 entry))
                        parent-subject)
                   (while (and parent-id (null parent-subject))
-                    (when-let* ((parent (gethash parent-id node-table)))
+                    (when-let* ((parent (ebox-runtime-index-get parent-id node-table)))
                       (when-let* ((parent-handle
                                   (ebox-tree-node-source-handle parent)))
                         (setq parent-subject (node-subject parent-handle))))
                     (unless parent-subject
-                      (setq parent-id (gethash parent-id parent-table))))
+                      (setq parent-id (ebox-runtime-index-get parent-id parent-table))))
                   (setf (ecss-subject-parent subject) parent-subject)
                   (puthash (ebox-source--handle-id-view handle)
                            subject added-subjects)

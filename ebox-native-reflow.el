@@ -15,6 +15,7 @@
 (require 'subr-x)
 (require 'ebox-measure)
 (require 'ebox-render-context)
+(require 'ebox-runtime-index)
 
 (declare-function ebox-native--module-version "ebox_native_reflow" ())
 (declare-function ebox-native--module-layout-ready-p "ebox_native_reflow" ())
@@ -2411,7 +2412,13 @@ Otherwise return CANDIDATE with the next document revision."
          (root (and state (plist-get state :root-node)))
          (postorder (and state (plist-get state :native-node-postorder))))
     (unless (and root (vectorp postorder) (> (length postorder) 0)
-                 (eq root (aref postorder (1- (length postorder)))))
+                 (equal (plist-get root :node-id)
+                        (let ((entry (aref postorder
+                                           (1- (length postorder)))))
+                          (if (and (listp entry)
+                                   (plist-member entry :node-id))
+                              (plist-get entry :node-id)
+                            entry))))
       (error "Native layout scene is absent from the render transaction"))
     (with-current-buffer buffer
       (ebox-native-reflow--make-layout-scene
@@ -2496,7 +2503,12 @@ per call, and no call recursively visits the captured Ebox tree."
                            (< (- (float-time) started) budget-seconds)))
                 (let* ((index
                         (ebox-native-reflow-layout-builder-index builder))
-                       (node (aref nodes index))
+                       (node
+                        (ebox-native-reflow--postorder-node
+                         (aref nodes index)
+                         (plist-get
+                          (ebox-native-reflow-layout-scene-render-state scene)
+                          :node-table)))
                        (fragment
                         (ebox-native-reflow--compile-scene-node
                          node fragments
@@ -2645,10 +2657,21 @@ per call, and no call recursively visits the captured Ebox tree."
                       (plist-get node :content-min-width)))
       local)))
 
-(defun ebox-native-reflow--retained-edge-index (postorder cache)
-  "Build exact child-edge facts from full POSTORDER fragments in CACHE."
+(defun ebox-native-reflow--postorder-node (entry node-table)
+  "Resolve POSTORDER ENTRY through NODE-TABLE when it is a node id."
+  (if (and (listp entry) (plist-member entry :ebox-type))
+      entry
+    (or (ebox-runtime-index-get entry node-table)
+        (error "Native postorder references an absent node: %S" entry))))
+
+(defun ebox-native-reflow--retained-edge-index
+    (postorder cache &optional node-table)
+  "Build exact child-edge facts from full POSTORDER fragments in CACHE.
+Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
   (let (index)
-    (cl-loop for parent across postorder
+    (cl-loop for entry across postorder
+             for parent = (ebox-native-reflow--postorder-node
+                           entry node-table)
              for parent-id = (plist-get parent :node-id)
              for rule = (ebox-native-reflow--retained-edge-rule parent)
              when rule do
@@ -2685,7 +2708,8 @@ per call, and no call recursively visits the captured Ebox tree."
 (defun ebox-native-reflow--compile-retained-layout-package-full
     (session state node)
   "Compile a complete retained package for NODE in SESSION from STATE."
-  (let ((postorder (plist-get state :native-node-postorder)))
+  (let ((postorder (plist-get state :native-node-postorder))
+        (node-table (plist-get state :node-table)))
     (unless (and (vectorp postorder) (> (length postorder) 0))
       (setq postorder
             (ebox-native-reflow--retained-layout-postorder node)))
@@ -2728,7 +2752,11 @@ per call, and no call recursively visits the captured Ebox tree."
                (postorder-id-set
                 (let ((set (make-hash-table :test 'equal)))
                   (dotimes (index (length postorder))
-                    (puthash (plist-get (aref postorder index) :node-id)
+                    (puthash
+                     (plist-get
+                      (ebox-native-reflow--postorder-node
+                       (aref postorder index) node-table)
+                      :node-id)
                              t set))
                   set))
                (ebox-native-reflow--compile-styles
@@ -2832,7 +2860,9 @@ per call, and no call recursively visits the captured Ebox tree."
                   (puthash current fragment fragments)
                   (puthash node-id entry new-cache))))
             (dotimes (index (length postorder))
-              (let* ((current (aref postorder index))
+              (let* ((current
+                      (ebox-native-reflow--postorder-node
+                       (aref postorder index) node-table))
                      (node-id (plist-get current :node-id)))
                 (if (and retained-fast-p
                          (not (gethash node-id touched-set)))
@@ -2871,7 +2901,7 @@ per call, and no call recursively visits the captured Ebox tree."
                    (plist-get package :property-templates))
                   (ebox-native-reflow-session-layout-edge-index session)
                   (ebox-native-reflow--retained-edge-index
-                   postorder new-cache))
+                   postorder new-cache node-table))
             package)))))
 
 (defconst ebox-native-reflow--delta-edge-fields
@@ -2924,9 +2954,9 @@ RULE identifies the compiler lowering, and RETAINED supplies its stable slot."
             (owner-id
              (and nodes parents
                   (ebox-native-reflow--delta-owner-id state dirty-id index)))
-            (owner (and owner-id (gethash owner-id nodes)))
-            (parent-id (and owner-id (gethash owner-id parents)))
-            (parent (and parent-id (gethash parent-id nodes)))
+            (owner (and owner-id (ebox-runtime-index-get owner-id nodes)))
+            (parent-id (and owner-id (ebox-runtime-index-get owner-id parents)))
+            (parent (and parent-id (ebox-runtime-index-get parent-id nodes)))
             (current-parent-rule
              (and parent (ebox-native-reflow--retained-edge-rule parent)))
             (retained-parent-rule
@@ -2994,9 +3024,9 @@ RULE identifies the compiler lowering, and RETAINED supplies its stable slot."
   (let ((parents (plist-get state :parent-table))
         (nodes (plist-get state :node-table))
         (current node-id))
-    (when-let* ((source (and nodes (gethash current nodes)))
-                (parent-id (and parents (gethash current parents)))
-                (parent (and nodes (gethash parent-id nodes))))
+    (when-let* ((source (and nodes (ebox-runtime-index-get current nodes)))
+                (parent-id (and parents (ebox-runtime-index-get current parents)))
+                (parent (and nodes (ebox-runtime-index-get parent-id nodes))))
       (when (and (eq (plist-get source :ebox-kind) 'text)
                  (eq (plist-get parent :ebox-kind) 'box)
                  (eq (ebox-layout-config-kind
@@ -3006,7 +3036,7 @@ RULE identifies the compiler lowering, and RETAINED supplies its stable slot."
     (while (and current
                 (null (ebox-native-reflow--persistent-index-get
                        index current)))
-      (setq current (and parents (gethash current parents))))
+      (setq current (and parents (ebox-runtime-index-get current parents))))
     current))
 
 (defun ebox-native-reflow--compile-delta-slots (node old-fragment)
@@ -3073,7 +3103,7 @@ RULE identifies the compiler lowering, and RETAINED supplies its stable slot."
          (old-index (ebox-native-reflow-session-layout-fragment-index session))
          (node-table (plist-get state :node-table))
          (touched (plist-get state :native-touched-node-ids)))
-    (when (and old-package old-index (hash-table-p node-table)
+    (when (and old-package old-index (ebox-runtime-index-like-p node-table)
                (plist-get state :native-topology-stable-p)
                (plist-member state :native-local-dirty-entries)
                (not (ebox-native-reflow--delta-edge-change-p
@@ -3126,7 +3156,7 @@ RULE identifies the compiler lowering, and RETAINED supplies its stable slot."
             (let* ((cached (ebox-native-reflow--persistent-index-get
                             old-index owner-id))
                    (old-fragment (plist-get cached :fragment))
-                   (source (gethash owner-id node-table))
+                   (source (ebox-runtime-index-get owner-id node-table))
                    (expected (plist-get cached :revision))
                    patches new-fragment)
               (unless (and cached source (integerp expected))

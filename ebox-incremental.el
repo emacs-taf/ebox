@@ -14,6 +14,7 @@
 (require 'ebox-buffer-backend)
 (require 'ebox-render-context)
 (require 'ebox-patch-plan)
+(require 'ebox-runtime-index)
 
 (defvar ebox-region-types)
 (declare-function ebox--scroll-state-region-ids-containing-node-ids
@@ -440,8 +441,8 @@ unless root reflow and idle prefetch also avoid crossing several such rows.")
     (or (plist-get state :selector-index-stale-p)
         (and (hash-table-p type-counts)
              (> (or (gethash 'flex type-counts) 0) 0))
-        (and (hash-table-p node-table)
-             (>= (hash-table-count node-table)
+        (and (ebox-runtime-index-like-p node-table)
+             (>= (ebox-runtime-index-size node-table)
                  ebox--latency-sensitive-scroll-node-limit)))))
 
 (defun ebox--root-reflow-scroll-lookahead-lines-for-buffer (buffer)
@@ -1148,10 +1149,10 @@ Keys are region-id, values are plists with :scroll-offset, :content-lines, etc."
 When COLLECT-REGION-BOXES is non-nil, collect `:region-box-table' during the
 same traversal in complete-render overwrite order.  SOURCE-INDEX, when
 supplied, is the candidate-owned source snapshot for ROOT-NODE."
-  (let ((node-table (make-hash-table :test 'equal))
-        (parent-table (make-hash-table :test 'equal))
+  (let ((node-table (ebox-runtime-index-empty))
+        (parent-table (ebox-runtime-index-empty))
         (region-id-set (make-hash-table :test 'equal))
-        (region-node-table (make-hash-table :test 'equal))
+        (region-node-table (ebox-runtime-index-empty))
         (region-box-table
          (and collect-region-boxes (make-hash-table :test 'equal)))
         (region-box-count-table (make-hash-table :test 'equal))
@@ -1181,17 +1182,21 @@ supplied, is the candidate-owned source snapshot for ROOT-NODE."
                        ;; A flex wrapper is visited after its flex owner.  Keep
                        ;; that earlier render-owner mapping instead of
                        ;; replacing it with the non-renderable source box.
-                       (unless (gethash region-id region-node-table)
-                         (puthash region-id node-id region-node-table))))
+                       (unless (ebox-runtime-index-get region-id region-node-table)
+                         (setq region-node-table
+                               (ebox-runtime-index-put
+                                region-id node-id region-node-table)))))
                     ('flex
                      (when-let* ((box (plist-get node :box)))
                        (let ((region-id (ebox--ensure-region-id box)))
                          (puthash region-id t region-id-set)
                          ;; Preserve the recursive lookup's first-match
                          ;; semantics when malformed trees reuse a region id.
-                         (unless (gethash region-id region-node-table)
-                           (puthash region-id node-id
-                                    region-node-table)))))))
+                         (unless (ebox-runtime-index-get region-id region-node-table)
+                           (setq region-node-table
+                                 (ebox-runtime-index-put
+                                  region-id node-id
+                                  region-node-table))))))))
                 (index-region-box (node)
                   ;; Box rendering records region ownership after rendering
                   ;; child content.  Preserve that postorder overwrite order
@@ -1211,11 +1216,14 @@ supplied, is the candidate-owned source snapshot for ROOT-NODE."
                              (not (stringp node)))
                     (let ((node-id (ebox--ensure-node-id node))
                           (type (plist-get node :ebox-type)))
-                      (puthash node-id node node-table)
+                      (setq node-table
+                            (ebox-runtime-index-put node-id node node-table))
                       (ebox-incremental--adjust-runtime-type-count
                        runtime-type-count-table node 1)
                       (when parent-id
-                        (puthash node-id parent-id parent-table))
+                        (setq parent-table
+                              (ebox-runtime-index-put
+                               node-id parent-id parent-table)))
                       (index-region-id node node-id)
                       (index-host-ref node node-id)
                       (when-let* ((sequence (plist-get node :ebox-child-sequence)))
@@ -1257,12 +1265,12 @@ supplied, is the candidate-owned source snapshot for ROOT-NODE."
                       ;; source boxes are indexed for ownership without adding
                       ;; duplicate compiler work.
                       (when native-layout-p
-                        (push node native-node-postorder))))))
+                        (push node-id native-node-postorder))))))
       (visit root-node nil t))
     (setq source-index (or source-index (ebox-tree-source-index root-node)))
     (setq source-index
           (ebox-source--with-runtime-hosts source-index host-ref-table))
-    (let ()
+    (let ((postorder (vconcat (nreverse native-node-postorder))))
       (list :node-table node-table
             :parent-table parent-table
             :region-id-set region-id-set
@@ -1278,8 +1286,8 @@ supplied, is the candidate-owned source snapshot for ROOT-NODE."
             :selector-type-table
             (ebox-source--index-selector-table source-index 'type)
             :runtime-type-count-table runtime-type-count-table
-            :native-node-postorder
-            (vconcat (nreverse native-node-postorder))))))
+            :native-node-postorder postorder
+            :native-node-postorder-ids postorder))))
 
 (defun ebox-incremental--ensure-buffer-selector-indexes (buffer)
   "Return BUFFER's state after materializing deferred selector indexes."
@@ -1337,7 +1345,7 @@ supplied, is the candidate-owned source snapshot for ROOT-NODE."
                  :range-ref-table :source-index
                  :selector-id-table :selector-class-table
                  :selector-type-table :runtime-type-count-table
-                 :native-node-postorder))
+                 :native-node-postorder :native-node-postorder-ids))
     (setq state (plist-put state key (plist-get index key))))
   state)
 
@@ -1386,7 +1394,7 @@ supplied, is the candidate-owned source snapshot for ROOT-NODE."
 (defun ebox-incremental--range-ref-resolve (state ref)
   "Resolve REF in STATE to its parent, sequence, segment index, and rank."
   (when-let* ((record (gethash ref (plist-get state :range-ref-table)))
-              (parent (gethash (plist-get record :parent-node-id)
+              (parent (ebox-runtime-index-get (plist-get record :parent-node-id)
                                (plist-get state :node-table)))
               (sequence (plist-get parent :ebox-child-sequence)))
     (list :parent parent :sequence sequence
@@ -1399,7 +1407,7 @@ supplied, is the candidate-owned source snapshot for ROOT-NODE."
 Use the persistent runtime index when available.  Legacy runtime states that
 lack the index, or an indexed entry, fall back to a recursive tree lookup."
   (or (when-let* ((table (ebox--buffer-region-node-table buffer)))
-        (gethash region-id table))
+        (ebox-runtime-index-get region-id table))
       (when-let* ((root (ebox--buffer-root-node buffer))
                   (path (ebox--node-path-to-region root region-id)))
         (ebox--ensure-node-id (car path)))))
@@ -2187,7 +2195,7 @@ the planning pass has one for this buffer."
   (or (when-let* ((base ebox-incremental--candidate-base-state)
                   ((eq buffer (car base)))
                   (node-table (plist-get (cdr base) :node-table)))
-        (gethash node-id node-table))
+        (ebox-runtime-index-get node-id node-table))
       (ebox--buffer-runtime-node buffer node-id)))
 
 (defun ebox--ensure-layout-snapshot-spans (buffer node-id)
@@ -2328,17 +2336,17 @@ When DETAILS is non-nil, include expensive per-line detail fields."
   (or (and ebox-incremental--candidate-proof-node-table
            (eq buffer
                (car ebox-incremental--candidate-proof-node-table))
-           (gethash node-id
+           (ebox-runtime-index-get node-id
                     (cdr ebox-incremental--candidate-proof-node-table)))
       (when-let* ((node-table (ebox--buffer-node-table buffer)))
-        (gethash node-id node-table))
+        (ebox-runtime-index-get node-id node-table))
       (when-let* ((root (ebox--buffer-root-node buffer)))
         (ebox--runtime-node-by-id root node-id))))
 
 (defun ebox--runtime-parent-id (buffer node-id)
   "Return NODE-ID's parent id in BUFFER runtime state."
   (when-let* ((parent-table (ebox--buffer-parent-table buffer)))
-    (gethash node-id parent-table)))
+    (ebox-runtime-index-get node-id parent-table)))
 
 (defun ebox--invalidate-runtime-render-signature-path
     (node-id node-table parent-table signature-cache height-cache)
@@ -2348,10 +2356,10 @@ When DETAILS is non-nil, include expensive per-line detail fields."
         (when signature-cache (clrhash signature-cache))
         (when height-cache (clrhash height-cache)))
     (while node-id
-      (when-let* ((node (gethash node-id node-table)))
+      (when-let* ((node (ebox-runtime-index-get node-id node-table)))
         (when signature-cache (remhash node signature-cache))
         (when height-cache (remhash node height-cache)))
-      (setq node-id (gethash node-id parent-table)))))
+      (setq node-id (ebox-runtime-index-get node-id parent-table)))))
 
 (defun ebox--runtime-ancestor-id-p (buffer ancestor-id node-id)
   "Return non-nil when ANCESTOR-ID is NODE-ID's ancestor in BUFFER."
@@ -4184,7 +4192,7 @@ during `ebox-incremental-flush'."
                  (ebox-incremental--candidate-range-items-retainable-p
                   candidate next-items ebox-incremental--source-base-index
                   reuse-map)))
-           (parent (gethash (plist-get record :parent-node-id)
+           (parent (ebox-runtime-index-get (plist-get record :parent-node-id)
                             (plist-get base-state :node-table)))
            (sequence (and parent (plist-get parent :ebox-child-sequence)))
            (segment (and sequence (ebox-child-range--lookup-ref sequence ref)))
@@ -4285,12 +4293,12 @@ during `ebox-incremental-flush'."
   "Return non-nil when ANCESTOR-ID contains DESCENDANT-ID in CANDIDATE's base."
   (let* ((state (ebox-candidate--base-state candidate))
          (parent-table (plist-get state :parent-table))
-         (current (gethash descendant-id parent-table))
+         (current (ebox-runtime-index-get descendant-id parent-table))
          found)
     (while (and current (not found))
       (if (equal current ancestor-id)
           (setq found t)
-        (setq current (gethash current parent-table))))
+        (setq current (ebox-runtime-index-get current parent-table))))
     found))
 
 (defun ebox-incremental-candidate-replace
@@ -4311,7 +4319,7 @@ detached semantic variants of this stable anchor for bounded identity reuse."
   (let* ((state (ebox-candidate--base-state candidate))
          (node-table (plist-get state :node-table))
          retained)
-    (unless (gethash node-id node-table)
+    (unless (ebox-runtime-index-get node-id node-table)
       (error "Ebox candidate anchor does not exist: %S" node-id))
     (unless (and (listp next-subtree) (not (stringp next-subtree)))
       (error "Ebox candidate replacement must be an Ebox node"))
@@ -4428,7 +4436,7 @@ the patched Host's ancestor chain."
     (when (eq node-id missing)
       (error "Ebox candidate host ref does not exist: %S" host-ref))
     (catch 'unsupported
-      (let* ((base-node (gethash node-id (plist-get state :node-table)))
+      (let* ((base-node (ebox-runtime-index-get node-id (plist-get state :node-table)))
              (previous-node
               (ebox-incremental--find-host-ref-node
                previous-subtree host-ref))
@@ -4565,9 +4573,9 @@ logical tree crosses that boundary."
   "Return ROOT path-copied with NODE-ID replaced by REPLACEMENT."
   (let* ((node-table (plist-get index :node-table))
          (parent-table (plist-get index :parent-table))
-         (old-child (gethash node-id node-table))
+         (old-child (ebox-runtime-index-get node-id node-table))
          (new-child replacement)
-         (parent-id (gethash node-id parent-table)))
+         (parent-id (ebox-runtime-index-get node-id parent-table)))
     (unless old-child
       (error "Ebox candidate anchor is absent after an ancestor replacement: %S"
              node-id))
@@ -4577,12 +4585,12 @@ logical tree crosses that boundary."
                  (plist-get replacement :node-id))))
     (while parent-id
       (let* ((current-parent-id parent-id)
-             (old-parent (gethash current-parent-id node-table))
+             (old-parent (ebox-runtime-index-get current-parent-id node-table))
              (new-parent
               (ebox-tree-copy-with-direct-child-replacements
                old-parent (list (cons old-child new-child))))
              (grandparent-id
-              (gethash current-parent-id parent-table)))
+              (ebox-runtime-index-get current-parent-id parent-table)))
         (ebox-incremental--candidate-record-path-copy
          current-parent-id new-parent grandparent-id nil
          (not (equal (plist-get old-child :node-id)
@@ -4607,16 +4615,16 @@ copies the owner's descendants before mutation while retaining their ids."
          (node-table (plist-get state :node-table))
          (parent-table (plist-get state :parent-table))
          (region-node-table (plist-get state :region-node-table))
-         (owner-id (and (hash-table-p region-node-table)
-                        (gethash region-id region-node-table)))
-         (owner (and (hash-table-p node-table)
-                     (gethash owner-id node-table)))
+         (owner-id (and (ebox-runtime-index-like-p region-node-table)
+                        (ebox-runtime-index-get region-id region-node-table)))
+         (owner (and (ebox-runtime-index-like-p node-table)
+                     (ebox-runtime-index-get owner-id node-table)))
          (box
           (pcase (and owner (plist-get owner :ebox-type))
             ('box owner)
             ('flex (plist-get owner :box)))))
     (when (and root owner box
-               (hash-table-p parent-table)
+               (ebox-runtime-index-like-p parent-table)
                (equal (plist-get box :region-id) region-id))
       (let* ((candidate-box
               (if isolate-owner-subtree-p
@@ -4647,14 +4655,14 @@ shared with the published generation."
          affected-ids)
     (maphash
      (lambda (node-id _replacement)
-       (unless (gethash node-id node-table)
+       (unless (ebox-runtime-index-get node-id node-table)
          (error "Ebox candidate path-copy node is absent: %S" node-id))
        (let ((current node-id))
          (while current
            (unless (gethash current affected)
              (puthash current t affected)
              (push current affected-ids))
-           (setq current (gethash current parent-table)))))
+           (setq current (ebox-runtime-index-get current parent-table)))))
      replacements)
     (let ((depths (make-hash-table :test 'equal)))
       (cl-labels
@@ -4664,7 +4672,7 @@ shared with the published generation."
                 (let ((current node-id) path (result -1))
                   (while (and current (not (gethash current depths)))
                     (push current path)
-                    (setq current (gethash current parent-table)))
+                    (setq current (ebox-runtime-index-get current parent-table)))
                   (when current
                     (setq result (gethash current depths)))
                   (dolist (path-id path)
@@ -4676,7 +4684,7 @@ shared with the published generation."
                       (> (depth left) (depth right)))))))
     (let (result)
       (dolist (node-id affected-ids)
-        (let* ((old-node (gethash node-id node-table))
+        (let* ((old-node (ebox-runtime-index-get node-id node-table))
                (local (or (gethash node-id replacements) old-node))
                (child-replacements (gethash node-id children))
                (effective-child-replacements
@@ -4704,7 +4712,7 @@ shared with the published generation."
                     (ebox-tree-copy-with-direct-child-replacements
                      local effective-child-replacements)
                   local))
-               (parent-id (gethash node-id parent-table)))
+               (parent-id (ebox-runtime-index-get node-id parent-table)))
           (ebox-incremental--candidate-record-path-copy
            node-id candidate parent-id (gethash node-id replacements) nil)
           (if parent-id
@@ -4729,15 +4737,15 @@ be resolved through the retained runtime indexes."
          (region-node-table (plist-get state :region-node-table))
          (replacements (make-hash-table :test 'equal))
          valid)
-    (setq valid (and root (hash-table-p node-table)
-                     (hash-table-p parent-table)
-                     (hash-table-p region-node-table)))
+    (setq valid (and root (ebox-runtime-index-like-p node-table)
+                     (ebox-runtime-index-like-p parent-table)
+                     (ebox-runtime-index-like-p region-node-table)))
     (dolist (entry region-offsets)
       (when valid
         (let* ((region-id (car entry))
                (offset (cdr entry))
-               (owner-id (gethash region-id region-node-table))
-               (owner (and owner-id (gethash owner-id node-table)))
+               (owner-id (ebox-runtime-index-get region-id region-node-table))
+               (owner (and owner-id (ebox-runtime-index-get owner-id node-table)))
                (box
                 (pcase (and owner (plist-get owner :ebox-type))
                   ('box owner)
@@ -4772,8 +4780,8 @@ be resolved through the retained runtime indexes."
          affected-ids)
     (maphash
      (lambda (node-id replacement)
-       (let ((old-node (gethash node-id node-table))
-             (parent-id (gethash node-id parent-table)))
+       (let ((old-node (ebox-runtime-index-get node-id node-table))
+             (parent-id (ebox-runtime-index-get node-id parent-table)))
          (unless old-node
            (error "Ebox candidate path-copy node is absent: %S" node-id))
          (ebox-incremental--candidate-record-path-copy
@@ -4790,7 +4798,7 @@ be resolved through the retained runtime indexes."
            (unless (gethash parent-id affected-table)
              (puthash parent-id t affected-table)
              (push parent-id affected-ids))
-           (setq parent-id (gethash parent-id parent-table)))))
+           (setq parent-id (ebox-runtime-index-get parent-id parent-table)))))
      replacements)
     (let ((depth-table (make-hash-table :test 'equal)))
       (cl-labels
@@ -4803,7 +4811,7 @@ be resolved through the retained runtime indexes."
                   (while (and current
                               (not (gethash current depth-table)))
                     (push current path)
-                    (setq current (gethash current parent-table)))
+                    (setq current (ebox-runtime-index-get current parent-table)))
                   (when current
                     (setq result (gethash current depth-table)))
                   (dolist (path-id path)
@@ -4816,11 +4824,11 @@ be resolved through the retained runtime indexes."
     (let ((result (gethash (plist-get root :node-id) replacements)))
       (dolist (parent-id affected-ids)
         (let* ((child-replacements (gethash parent-id direct))
-               (old-parent (gethash parent-id node-table))
+               (old-parent (ebox-runtime-index-get parent-id node-table))
                (copy
                 (ebox-tree-copy-with-direct-child-replacements
                  old-parent child-replacements))
-               (grandparent-id (gethash parent-id parent-table)))
+               (grandparent-id (ebox-runtime-index-get parent-id parent-table)))
           (ebox-incremental--candidate-record-path-copy
            parent-id copy grandparent-id nil
            (cl-some
@@ -4846,12 +4854,12 @@ building an index for an intermediate path-copied root."
   (cl-labels
       ((ancestor-p
         (ancestor-id descendant-id)
-        (let ((current (gethash descendant-id parent-table))
+        (let ((current (ebox-runtime-index-get descendant-id parent-table))
               found)
           (while (and current (not found))
             (if (equal current ancestor-id)
                 (setq found t)
-              (setq current (gethash current parent-table))))
+              (setq current (ebox-runtime-index-get current parent-table))))
           found)))
     (cl-loop
      for tail on replacements
@@ -4900,12 +4908,12 @@ Cost is proportional to the replacements, never to the page."
            (let ((walk descendant) found)
              (while (and walk (not found))
                (setq found (equal walk ancestor)
-                     walk (and (not found) (gethash walk parent-table))))
+                     walk (and (not found) (ebox-runtime-index-get walk parent-table))))
              found))
          (inside-replaced-anchor-p (node-id)
            (let ((walk node-id))
              (while (and walk (not (member walk anchor-ids)))
-               (setq walk (gethash walk parent-table)))
+               (setq walk (ebox-runtime-index-get walk parent-table)))
              walk))
          (collect-host-refs (node acc)
            (if (or (not (listp node)) (stringp node))
@@ -4929,8 +4937,8 @@ Cost is proportional to the replacements, never to the page."
                (replacement-key
                 (ebox-tree-node-author-key
                  replacement-source-index replacement))
-               (parent-id (gethash node-id parent-table))
-               (parent (and parent-id (gethash parent-id node-table))))
+               (parent-id (ebox-runtime-index-get node-id parent-table))
+               (parent (and parent-id (ebox-runtime-index-get parent-id node-table))))
           ;; Sibling keys stay unique under the anchor's parent.
           (when (and replacement-key parent)
             (dolist (sibling (ebox-tree--children-raw parent))
@@ -5033,7 +5041,7 @@ CURRENT-SNAPSHOT identifies the subtree identities being replaced."
         conflict)
     (maphash
      (lambda (node-id _present)
-       (when (and (gethash node-id node-table)
+       (when (and (ebox-runtime-index-get node-id node-table)
                   (not (gethash node-id current-node-ids)))
          (setq conflict t)))
      (plist-get historical-snapshot :node-id-set))
@@ -5118,7 +5126,7 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
               (let* ((node-id
                       (ebox-incremental--candidate-replacement-anchor-id entry))
                      (old-anchor
-                      (gethash node-id (plist-get base-index :node-table))))
+                      (ebox-runtime-index-get node-id (plist-get base-index :node-table))))
                 (unless old-anchor
                   (error "Ebox candidate anchor is absent: %S" node-id))
                 ;; Replacements were validated when they were recorded
@@ -5147,7 +5155,7 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
             (let* ((node-id
                     (ebox-incremental--candidate-replacement-anchor-id entry))
                    (old-anchor
-                    (gethash node-id (plist-get base-index :node-table))))
+                    (ebox-runtime-index-get node-id (plist-get base-index :node-table))))
               (unless old-anchor
                 (error
                  "Ebox candidate anchor is absent: %S"
@@ -5251,7 +5259,7 @@ but must re-enter the candidate indexes as a new object."
   "Return current candidate NODE-ID from path trace or base STATE."
   (or (plist-get (gethash node-id ebox-incremental--candidate-path-copy-trace)
                  :node)
-      (gethash node-id (plist-get state :node-table))))
+      (ebox-runtime-index-get node-id (plist-get state :node-table))))
 
 (defun ebox-incremental--candidate-range-ref-overlay (old-state path-trace)
   "Return Range ref table updated only for node anchors in PATH-TRACE."
@@ -5268,10 +5276,10 @@ but must re-enter the candidate indexes as a new object."
         (setq anchors
               (cl-delete-if
                (lambda (anchor)
-                 (let ((walk (gethash (car anchor) parent-table)) found)
+                 (let ((walk (ebox-runtime-index-get (car anchor) parent-table)) found)
                    (while (and walk (not found))
                      (setq found (gethash walk anchor-set)
-                           walk (and (not found) (gethash walk parent-table))))
+                           walk (and (not found) (ebox-runtime-index-get walk parent-table))))
                    found))
                anchors)))
       (if (null anchors)
@@ -5285,7 +5293,7 @@ but must re-enter the candidate indexes as a new object."
                  (dolist (child (ebox-tree--children-raw node))
                    (walk child function))))
             (dolist (anchor anchors)
-              (when-let* ((old (gethash (car anchor)
+              (when-let* ((old (ebox-runtime-index-get (car anchor)
                                        (plist-get old-state :node-table))))
                 (walk old
                       (lambda (_parent record)
@@ -5309,7 +5317,7 @@ but must re-enter the candidate indexes as a new object."
   (let* ((parent-table (plist-get state :parent-table))
          (old-child (ebox-incremental--candidate-current-node state node-id))
          (new-child replacement)
-         (parent-id (gethash node-id parent-table)))
+         (parent-id (ebox-runtime-index-get node-id parent-table)))
     (ebox-incremental--candidate-record-path-copy
      node-id replacement parent-id t structure-p)
     (while parent-id
@@ -5348,7 +5356,7 @@ but must re-enter the candidate indexes as a new object."
                     copy)
                 (ebox-tree-copy-with-direct-child-replacements
                  old-parent (list (cons old-child new-child)))))
-             (grandparent-id (gethash current-parent-id parent-table)))
+             (grandparent-id (ebox-runtime-index-get current-parent-id parent-table)))
         (ebox-incremental--candidate-record-path-copy
          current-parent-id new-parent grandparent-id nil
          (not (equal (plist-get old-child :node-id)
@@ -5391,7 +5399,7 @@ but must re-enter the candidate indexes as a new object."
         (dolist (parent-id (nreverse order))
           (let* ((parent (ebox-incremental--candidate-current-node
                           state parent-id))
-                 (base-parent (gethash parent-id (plist-get state :node-table)))
+                 (base-parent (ebox-runtime-index-get parent-id (plist-get state :node-table)))
                  (base-sequence
                   (and base-parent
                        (plist-get base-parent :ebox-child-sequence)))
@@ -5561,10 +5569,10 @@ but must re-enter the candidate indexes as a new object."
   "Return PATCH-IDS without a patched ancestor in STATE."
   (let ((parents (plist-get state :parent-table)) result)
     (dolist (node-id patch-ids (nreverse result))
-      (let ((parent-id (gethash node-id parents)) found)
+      (let ((parent-id (ebox-runtime-index-get node-id parents)) found)
         (while (and parent-id (not found))
           (setq found (gethash parent-id patch-table)
-                parent-id (and (not found) (gethash parent-id parents))))
+                parent-id (and (not found) (ebox-runtime-index-get parent-id parents))))
         (unless found (push node-id result))))))
 
 (defun ebox-incremental--candidate-apply-paint-patches (candidate root)
@@ -5587,7 +5595,7 @@ style consumers; the Style Adapter computes their values exactly once later."
       (let ((current node-id))
         (while current
           (puthash current t patch-paths)
-          (setq current (gethash current parents)))))
+          (setq current (ebox-runtime-index-get current parents)))))
     (cl-labels
         ((rewrite
           (node inherited-input-changed-p)
@@ -5691,7 +5699,7 @@ style consumers; the Style Adapter computes their values exactly once later."
               (gethash (ebox-incremental--candidate-range-replacement-ref range)
                        (plist-get (ebox-candidate--base-state candidate)
                                   :range-ref-table)))
-             (parent (gethash (plist-get record :parent-node-id)
+             (parent (ebox-runtime-index-get (plist-get record :parent-node-id)
                               (plist-get (ebox-candidate--base-state candidate)
                                          :node-table)))
              (segment (and parent
@@ -5762,10 +5770,11 @@ Return the same pure surface-input shape as
       buffer old-state next-root))))
 
 (defun ebox-incremental--hash-keys (table)
-  "Return the keys currently present in hash TABLE."
+  "Return the keys currently present in supported TABLE."
   (let (keys)
-    (when (hash-table-p table)
-      (maphash (lambda (key _value) (push key keys)) table))
+    (when (ebox-runtime-index-like-p table)
+      (ebox-runtime-index-map
+       (lambda (key _value) (push key keys)) table))
     (nreverse keys)))
 
 (defun ebox-incremental--hash-snapshot (table keys)
@@ -5812,7 +5821,7 @@ Return the same pure surface-input shape as
          (candidate-node-table (plist-get candidate-index :node-table))
          (snapshots (make-hash-table :test 'equal)))
     (when (hash-table-p old-snapshots)
-      (maphash
+      (ebox-runtime-index-map
        (lambda (node-id _node)
          (when-let* ((snapshot (gethash node-id old-snapshots)))
            (puthash node-id (copy-sequence snapshot) snapshots)))
@@ -6009,14 +6018,17 @@ Return the same pure surface-input shape as
         (plist-get state :runtime-type-count-table)
         :selector-index-stale-p
         (plist-get state :selector-index-stale-p)
-        :native-node-postorder (plist-get state :native-node-postorder)))
+        :native-node-postorder (plist-get state :native-node-postorder)
+        :native-node-postorder-ids
+        (plist-get state :native-node-postorder-ids)))
 
 (defun ebox-incremental--candidate-copy-index-table (state key test)
-  "Return a materialized copy of STATE's hash table under KEY."
+  "Return STATE's persistent index under KEY or a fresh legacy table."
   (let ((table (plist-get state key)))
-    (if (hash-table-p table)
-        (copy-hash-table table)
-      (make-hash-table :test test))))
+    (cond
+     ((ebox-runtime-index-p table) table)
+     ((hash-table-p table) (copy-hash-table table))
+     (t (make-hash-table :test test)))))
 
 (defun ebox-incremental--candidate-node-region-record (node)
   "Return NODE's `(REGION-ID OWNER-ID BOX)' record, or nil."
@@ -6064,7 +6076,8 @@ complete preorder first-owner and postorder last-box semantics."
   (maphash
    (lambda (region-id _present)
      (remhash region-id region-id-set)
-     (remhash region-id region-node-table)
+     (setq region-node-table
+           (ebox-runtime-index-delete region-id region-node-table))
      (remhash region-id region-box-table))
    region-ids)
   (cl-labels
@@ -6075,8 +6088,10 @@ complete preorder first-owner and postorder last-box semantics."
              (pcase-let ((`(,region-id ,owner-id ,_box) record))
                (when (gethash region-id region-ids)
                  (puthash region-id t region-id-set)
-                 (unless (gethash region-id region-node-table)
-                   (puthash region-id owner-id region-node-table)))))
+                 (unless (ebox-runtime-index-get region-id region-node-table)
+                   (setq region-node-table
+                         (ebox-runtime-index-put
+                          region-id owner-id region-node-table))))))
            (dolist (child (ebox--node-children node))
              (visit child))
            (when-let* ((record
@@ -6084,7 +6099,8 @@ complete preorder first-owner and postorder last-box semantics."
              (pcase-let ((`(,region-id ,_owner-id ,box) record))
                (when (gethash region-id region-ids)
                  (puthash region-id box region-box-table)))))))
-    (visit root)))
+    (visit root))
+  (list region-id-set region-node-table region-box-table))
 
 (defun ebox-incremental--candidate-native-postorder (root)
   "Return ROOT's native compiler postorder without building other indexes."
@@ -6092,7 +6108,8 @@ complete preorder first-owner and postorder last-box semantics."
     (cl-labels
         ((visit (node native-layout-p)
            (when (and (listp node) (not (stringp node)))
-             (let ((type (plist-get node :ebox-type)))
+             (let ((type (plist-get node :ebox-type))
+                   (node-id (plist-get node :node-id)))
                (ebox-tree-for-each-direct-child
                 node
                 (lambda (child)
@@ -6102,23 +6119,33 @@ complete preorder first-owner and postorder last-box semantics."
                                         (eq child
                                             (plist-get node :box))))))))
                (when native-layout-p
-                 (push node postorder))))))
+                 (push node-id postorder))))))
       (visit root t))
     (vconcat (nreverse postorder))))
 
-(defun ebox-incremental--candidate-map-native-postorder
+(defun ebox-incremental--candidate-retain-native-postorder
     (old-state candidate-node-table)
-  "Re-key OLD-STATE's structurally stable native postorder to candidate nodes."
+  "Return OLD-STATE's stable node-id postorder for CANDIDATE-NODE-TABLE.
+The `:native-node-postorder-ids' slot binds the exact read-only vector built
+from indexed node IDs.  Reuse that vector without enumeration.  Unmarked
+vectors may contain legacy node plists or IDs; resolve every entry against
+the candidate index before converting them.  This format marker supplies no
+topology proof, and neither producers nor consumers may mutate its vector."
   (let ((old-postorder (plist-get old-state :native-node-postorder)))
-    (if (vectorp old-postorder)
+    (when (vectorp old-postorder)
+      (if (eq old-postorder (plist-get old-state :native-node-postorder-ids))
+          old-postorder
         (vconcat
          (mapcar
-          (lambda (old-node)
-            (or (gethash (plist-get old-node :node-id)
-                         candidate-node-table)
-                (error "Ebox candidate lost a structurally retained native node")))
-          (append old-postorder nil)))
-      nil)))
+          (lambda (entry)
+            (let ((node-id (if (and (listp entry)
+                                    (plist-member entry :node-id))
+                               (plist-get entry :node-id)
+                             entry)))
+              (unless (ebox-runtime-index-get node-id candidate-node-table)
+                (error "Ebox candidate lost a structurally retained native node"))
+              node-id))
+          old-postorder))))))
 
 (defun ebox-incremental--candidate-range-created-node-ids (range-delta-table)
   "Return new node ids covered by structural RANGE-DELTA-TABLE entries."
@@ -6236,7 +6263,7 @@ complete preorder first-owner and postorder last-box semantics."
 (defun ebox-incremental--candidate-full-index-p (old-state touched)
   "Return non-nil when TOUCHED justifies rebuilding OLD-STATE's index."
   (let ((touched-count (length touched))
-        (old-count (hash-table-count (plist-get old-state :node-table))))
+        (old-count (ebox-runtime-index-size (plist-get old-state :node-table))))
     (and (>= touched-count
              ebox-incremental--candidate-full-index-min-touched)
          (>= (* 2 touched-count) old-count))))
@@ -6286,9 +6313,9 @@ complete preorder first-owner and postorder last-box semantics."
 
 Traversal stops at every node that is `eq' to OLD-STATE's indexed node.  The
 work is therefore bounded by copied ancestor paths plus added, removed, and
-replacement subtrees.  Core tables are materialized in this stage so existing
-scalar `gethash' consumers remain unchanged; publication journaling can later
-replace those O(n) table copies without changing this delta contract."
+replacement subtrees.  Node, parent, and region-owner changes path-copy their
+immutable radix indexes; unrelated runtime side tables retain their existing
+candidate isolation contracts."
   (let ((old-root (plist-get old-state :root-node)))
     (if (eq candidate-root old-root)
         (list :index (ebox-incremental--candidate-base-index old-state)
@@ -6317,7 +6344,7 @@ replace those O(n) table copies without changing this delta contract."
                       touched)))
              (visit-new (node parent-id)
                (let* ((node-id (ebox--ensure-node-id node))
-                      (old-node (gethash node-id old-node-table missing)))
+                      (old-node (ebox-runtime-index-get node-id old-node-table missing)))
                  (unless (or (gethash node-id visited-new)
                              (eq node old-node))
                    (puthash node-id t visited-new)
@@ -6347,7 +6374,7 @@ replace those O(n) table copies without changing this delta contract."
                    (parent-id (plist-get delta :parent-id)))
               (puthash parent-id t visited-new)
               (record-touched old-parent new-parent
-                              (gethash parent-id
+                              (ebox-runtime-index-get parent-id
                                        (plist-get old-state :parent-table))
                               (plist-get delta :children-changed))
               (dolist (payload (plist-get delta :old-payloads))
@@ -6362,7 +6389,7 @@ replace those O(n) table copies without changing this delta contract."
                 (maphash
                  (lambda (base-node-id trace)
                    (when (plist-get trace :anchor-p)
-                     (let* ((old-node (gethash base-node-id old-node-table))
+                     (let* ((old-node (ebox-runtime-index-get base-node-id old-node-table))
                             (new-node (plist-get trace :node))
                             (parent-id (plist-get trace :parent-id)))
                        (when (and old-node
@@ -6381,7 +6408,7 @@ replace those O(n) table copies without changing this delta contract."
                        (unless (gethash node-id visited-new)
                          (puthash node-id t visited-new)
                          (record-touched
-                          (gethash base-node-id old-node-table)
+                          (ebox-runtime-index-get base-node-id old-node-table)
                           new-node
                           (plist-get trace :parent-id)
                           (plist-get trace :structure-p))))))
@@ -6418,8 +6445,8 @@ replace those O(n) table copies without changing this delta contract."
                   ((parent-id
                     (node-id)
                     (if (gethash node-id visited-new)
-                        (gethash node-id touched-parent-table)
-                      (gethash node-id old-parent-table)))
+                        (ebox-runtime-index-get node-id touched-parent-table)
+                      (ebox-runtime-index-get node-id old-parent-table)))
                    (depth
                     (node-id)
                     (or (gethash node-id depth-table)
@@ -6475,8 +6502,10 @@ replace those O(n) table copies without changing this delta contract."
             (let ((node-id (plist-get node :node-id)))
               (ebox-incremental--adjust-runtime-type-count
                runtime-type-count-table node -1)
-              (remhash node-id node-table)
-              (remhash node-id parent-table)
+              (setq node-table
+                    (ebox-runtime-index-delete node-id node-table))
+              (setq parent-table
+                    (ebox-runtime-index-delete node-id parent-table))
               (when-let* ((host-ref
                            (ebox-tree-node-source-identity node)))
                 (when (equal (gethash host-ref host-ref-table) node-id)
@@ -6531,13 +6560,17 @@ replace those O(n) table copies without changing this delta contract."
                   (when (hash-table-p old-region-box-count-table)
                     (ebox-incremental--candidate-adjust-region-box-count
                      region-box-count-table old-node -1)))
-                (puthash node-id new-node node-table)
+                (setq node-table
+                      (ebox-runtime-index-put node-id new-node node-table))
                 (when (or (null old-node) (not (eq old-type new-type)))
                   (ebox-incremental--adjust-runtime-type-count
                    runtime-type-count-table new-node 1))
                 (if parent-id
-                    (puthash node-id parent-id parent-table)
-                  (remhash node-id parent-table))
+                    (setq parent-table
+                          (ebox-runtime-index-put
+                           node-id parent-id parent-table))
+                  (setq parent-table
+                        (ebox-runtime-index-delete node-id parent-table)))
                 ;; Replacement subtrees were validated before recording and
                 ;; checked against untouched Host refs before path copying.
                 (when-let* ((new-host-ref
@@ -6568,7 +6601,9 @@ replace those O(n) table copies without changing this delta contract."
           (maphash
            (lambda (region-id _present)
              (remhash region-id region-id-set)
-             (remhash region-id region-node-table)
+             (setq region-node-table
+                   (ebox-runtime-index-delete
+                    region-id region-node-table))
              (remhash region-id region-box-table))
            affected-region-ids)
           ;; TOUCHED is preorder, matching `ebox--runtime-index' ownership:
@@ -6579,13 +6614,21 @@ replace those O(n) table copies without changing this delta contract."
                          (nth 1 entry))))
               (pcase-let ((`(,region-id ,owner-id ,box) record))
                 (puthash region-id t region-id-set)
-                (unless (gethash region-id region-node-table)
-                  (puthash region-id owner-id region-node-table))
+                (unless (ebox-runtime-index-get region-id region-node-table)
+                  (setq region-node-table
+                        (ebox-runtime-index-put
+                         region-id owner-id region-node-table)))
                 (puthash region-id box region-box-table))))
           (when (> (hash-table-count ambiguous-region-ids) 0)
-            (ebox-incremental--candidate-recompute-regions
-             candidate-root ambiguous-region-ids
-             region-id-set region-node-table region-box-table))
+            (pcase-let
+                ((`(,new-region-id-set ,new-region-node-table
+                    ,new-region-box-table)
+                  (ebox-incremental--candidate-recompute-regions
+                   candidate-root ambiguous-region-ids
+                   region-id-set region-node-table region-box-table)))
+              (setq region-id-set new-region-id-set
+                    region-node-table new-region-node-table
+                    region-box-table new-region-box-table)))
           (let* ((range-delta-table (make-hash-table :test #'equal))
                  (_range-deltas
                   (dolist (delta range-index-deltas)
@@ -6613,7 +6656,7 @@ replace those O(n) table copies without changing this delta contract."
                   (if (or range-index-deltas structure-p)
                       (ebox-incremental--candidate-native-postorder
                        candidate-root)
-                    (ebox-incremental--candidate-map-native-postorder
+                    (ebox-incremental--candidate-retain-native-postorder
                      old-state node-table)))
                  (index
                   (list :node-table node-table
@@ -6637,7 +6680,8 @@ replace those O(n) table copies without changing this delta contract."
                          candidate-source-index 'type)
                         :runtime-type-count-table runtime-type-count-table
                         :selector-index-stale-p t
-                        :native-node-postorder native-node-postorder)))
+                        :native-node-postorder native-node-postorder
+                        :native-node-postorder-ids native-node-postorder)))
             (list :index index
                   :dirty-set dirty-set
                   :participation-node-ids
@@ -6651,6 +6695,8 @@ replace those O(n) table copies without changing this delta contract."
                   (mapcar
                    (lambda (node) (plist-get node :node-id))
                    removed)
+                  :touched-region-ids
+                  (ebox-incremental--hash-keys affected-region-ids)
                   :touched-count (length touched)
                   :removed-count (length removed))))))))))
 
@@ -6661,7 +6707,7 @@ The search stops at the first shared node, so a copy-on-write candidate is
 recognized from its first untouched sibling without walking the whole tree."
   (let ((old-root (plist-get old-state :root-node))
         (old-node-table (plist-get old-state :node-table)))
-    (and (hash-table-p old-node-table)
+    (and (ebox-runtime-index-like-p old-node-table)
          (catch 'shared
            (cl-labels
                ((visit (node)
@@ -6669,7 +6715,7 @@ recognized from its first untouched sibling without walking the whole tree."
                     (let ((node-id (plist-get node :node-id)))
                       (when (and node-id
                                  (not (eq node old-root))
-                                 (eq node (gethash node-id old-node-table)))
+                                 (eq node (ebox-runtime-index-get node-id old-node-table)))
                         (throw 'shared t)))
                     (dolist (child (ebox-tree--children-raw node))
                       (visit child)))))
@@ -6795,9 +6841,10 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
                :new-region-ids (ebox--node-all-region-ids candidate-root)
                :old old-root :new candidate-root)
               dirty)
-      (maphash
-       (lambda (node-id new-node)
-         (when-let* ((old-node (gethash node-id old-table)))
+      (dolist (node-id (ebox--runtime-node-ids candidate-root))
+        (let ((new-node (ebox-runtime-index-get node-id new-table)))
+          (when-let* ((old-node
+                       (ebox-runtime-index-get node-id old-table)))
            (let* ((changed-keys
                    (ebox-incremental--candidate-local-changed-keys
                     old-node (plist-get old-state :source-index)
@@ -6832,8 +6879,7 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
                   (ebox-tree-node-local-source-signature new-node))
                  (ebox-incremental--child-change-props
                   old-node new-node children-changed))
-                dirty)))))
-       new-table))
+                dirty)))))))
     (nreverse dirty)))
 
 (defun ebox-incremental--isolate-candidate-caches (state)
@@ -6933,7 +6979,9 @@ candidate therefore owns its cache tables until TP commits the generation."
            (:selector-index-stale-p
             ,(plist-get candidate-index :selector-index-stale-p))
            (:native-node-postorder
-            ,(plist-get candidate-index :native-node-postorder))))
+            ,(plist-get candidate-index :native-node-postorder))
+           (:native-node-postorder-ids
+            ,(plist-get candidate-index :native-node-postorder-ids))))
       (setq state
             (plist-put state (car entry) (cadr entry))))
     (ebox-incremental--isolate-candidate-caches state)))
@@ -6944,11 +6992,11 @@ candidate therefore owns its cache tables until TP commits the generation."
   (let ((candidate-cache (make-hash-table :test 'eq))
         (missing (make-symbol "ebox-candidate-cache-missing")))
     (when (and (hash-table-p old-cache)
-               (hash-table-p old-node-table)
-               (hash-table-p candidate-node-table))
-      (maphash
+               (ebox-runtime-index-like-p old-node-table)
+               (ebox-runtime-index-like-p candidate-node-table))
+      (ebox-runtime-index-map
        (lambda (node-id candidate-node)
-         (when-let* ((old-node (gethash node-id old-node-table)))
+         (when-let* ((old-node (ebox-runtime-index-get node-id old-node-table)))
            (let ((cached (gethash old-node old-cache missing)))
              (unless (eq cached missing)
                (puthash candidate-node cached candidate-cache)))))
@@ -6972,7 +7020,7 @@ must be recomputed in the next publication."
        old-node-table old-parent-table
        candidate-cache nil))
     (dolist (node-id (append touched-node-ids removed-node-ids))
-      (when-let* ((old-node (gethash node-id old-node-table)))
+      (when-let* ((old-node (ebox-runtime-index-get node-id old-node-table)))
         (remhash old-node candidate-cache)))
     candidate-cache))
 
@@ -7026,8 +7074,8 @@ derive render changes from the computed fragment style signatures."
     (mapcar
      (lambda (entry)
        (let* ((node-id (plist-get entry :node-id))
-              (old-node (and node-id (gethash node-id old-nodes)))
-              (new-node (and node-id (gethash node-id new-nodes))))
+              (old-node (and node-id (ebox-runtime-index-get node-id old-nodes)))
+              (new-node (and node-id (ebox-runtime-index-get node-id new-nodes))))
          (if (or (eq (plist-get entry :dirty-kind) 'structure)
                  (not old-node)
                  (not new-node)
@@ -7156,7 +7204,7 @@ certificate."
       (with-current-buffer buffer
         (dolist (entry dirty-set)
           (when (memq (plist-get entry :dirty-kind) '(geometry structure))
-            (when (gethash (plist-get entry :node-id)
+            (when (ebox-runtime-index-get (plist-get entry :node-id)
                            (plist-get old-state :node-table))
               (ebox--ensure-layout-snapshot-spans
                buffer (plist-get entry :node-id)))))
@@ -7454,7 +7502,7 @@ the expensive parent-context mount and role scan first."
         (node-id candidate-id)
         eligible)
     (while (and node-id (not (equal node-id root-id)) (not eligible))
-      (let* ((node (gethash node-id (plist-get old-state :node-table)))
+      (let* ((node (ebox-runtime-index-get node-id (plist-get old-state :node-table)))
              (formatting-p
               (and node
                    (ebox-incremental--formatting-context-reflow-node-p node)))
@@ -7475,7 +7523,7 @@ the expensive parent-context mount and role scan first."
                        (ebox--line-spans-cover-whole-lines-p spans)))
             (setq eligible t))
           (unless eligible
-            (setq node-id (gethash node-id parents)))))
+            (setq node-id (ebox-runtime-index-get node-id parents)))))
       )
     eligible))
 
@@ -7521,11 +7569,11 @@ line count; its outside siblings are shifted by the one scoped replacement."
                 dirty-set))
       (while (and candidate-id (not proof)
                   (not (equal candidate-id root-id)))
-        (let* ((old-node (gethash candidate-id
+        (let* ((old-node (ebox-runtime-index-get candidate-id
                                   (plist-get old-state :node-table)))
-               (new-node (gethash candidate-id
+               (new-node (ebox-runtime-index-get candidate-id
                                   (plist-get candidate-state :node-table)))
-               (parent-id (gethash candidate-id parents))
+               (parent-id (ebox-runtime-index-get candidate-id parents))
                (snapshot
                 (and old-node
                      (ebox--ensure-layout-snapshot-details
@@ -7544,25 +7592,25 @@ line count; its outside siblings are shifted by the one scoped replacement."
                                                (plist-get mount :end))
                                              mounts)))))
                (parent (and parent-id
-                            (gethash parent-id
+                            (ebox-runtime-index-get parent-id
                                      (plist-get old-state :node-table))))
                (parent-new (and parent-id
-                                (gethash parent-id
+                                (ebox-runtime-index-get parent-id
                                          (plist-get candidate-state :node-table))))
                (ancestors-stable-p t)
                (walk parent-id))
           (while (and walk ancestors-stable-p (not (equal walk root-id)))
-            (let ((ancestor (gethash walk (plist-get old-state :node-table))))
+            (let ((ancestor (ebox-runtime-index-get walk (plist-get old-state :node-table))))
               (when (or (not ancestor)
                         (memq (ebox-tree-display-inner ancestor) '(row flex grid))
                         (ebox-tree-node-visible-overflow-p ancestor))
                 (setq ancestors-stable-p nil)))
-            (setq walk (gethash walk parents)))
+            (setq walk (ebox-runtime-index-get walk parents)))
           (when (and old-node new-node parent parent-new
                      (ebox-incremental--formatting-context-reflow-node-p
                       old-node)
-                     (equal (gethash candidate-id parents)
-                            (gethash candidate-id candidate-parents))
+                     (equal (ebox-runtime-index-get candidate-id parents)
+                            (ebox-runtime-index-get candidate-id candidate-parents))
                      (ebox-incremental--node-child-ids-equal-p
                       old-node new-node)
                      (equal (ebox-incremental--layout-slot-style-signature
@@ -7598,7 +7646,7 @@ line count; its outside siblings are shifted by the one scoped replacement."
                         (plist-get old-state
                                    :layout-snapshot-detail-generation))))
           (unless proof
-            (setq candidate-id (gethash candidate-id parents))))))
+            (setq candidate-id (ebox-runtime-index-get candidate-id parents))))))
     proof))
 
 (defun ebox-incremental--two-owner-allocation-proof
@@ -7852,14 +7900,14 @@ suppresses the ordinary fallback when any fact is missing."
                                            :border-bottom-color)))
                                  (plist-get entry :changed-keys))
                        (let* ((node-id (plist-get entry :node-id))
-                              (old-node (gethash node-id old-nodes))
-                              (new-node (gethash node-id new-nodes)))
+                              (old-node (ebox-runtime-index-get node-id old-nodes))
+                              (new-node (ebox-runtime-index-get node-id new-nodes)))
                          (and old-node new-node
                               (ebox-incremental--node-child-ids-equal-p
                                old-node new-node)
-                              (equal (gethash node-id
+                              (equal (ebox-runtime-index-get node-id
                                               (plist-get old-state :parent-table))
-                                     (gethash node-id
+                                     (ebox-runtime-index-get node-id
                                               (plist-get candidate-state
                                                          :parent-table)))
                               (equal (ebox-incremental--layout-slot-style-signature
@@ -7907,7 +7955,7 @@ suppresses the ordinary fallback when any fact is missing."
                (not (plist-get prepared :scroll-patch-fast-p))
                root-id
                (not (equal geometry-owner-id root-id))
-               (> (hash-table-count old-nodes)
+               (> (ebox-runtime-index-size old-nodes)
                   (length (delete-dups (append geometry-owner-ids
                                                paint-owner-ids)))))
       (list :geometry-proof geometry-proof
@@ -7919,7 +7967,7 @@ suppresses the ordinary fallback when any fact is missing."
             :dirty-set (copy-sequence dirty-set)
             :owner-plan (copy-tree owner-plan)
             :outside-complement-count
-            (- (hash-table-count old-nodes)
+            (- (ebox-runtime-index-size old-nodes)
                (length (delete-dups (append geometry-owner-ids
                                             paint-owner-ids))))))))
 
@@ -7938,7 +7986,7 @@ because it could address a run whose topology the closure just replaced."
       (let ((walk node-id))
         (while (and valid walk)
           (when (gethash walk geometry-set) (setq valid nil))
-          (setq walk (and valid (gethash walk parents))))))
+          (setq walk (and valid (ebox-runtime-index-get walk parents))))))
     valid))
 
 (defun ebox-incremental--allocation-closure-ancestor-stable-p
@@ -7951,12 +7999,12 @@ because it could address a run whose topology the closure just replaced."
         (node-id owner-id)
         (valid t))
     (while (and valid node-id)
-      (let* ((old-node (gethash node-id old-nodes))
-             (new-node (gethash node-id new-nodes))
-             (old-parent (gethash node-id old-parents)))
+      (let* ((old-node (ebox-runtime-index-get node-id old-nodes))
+             (new-node (ebox-runtime-index-get node-id new-nodes))
+             (old-parent (ebox-runtime-index-get node-id old-parents)))
         (setq valid
               (and old-node new-node
-                   (equal old-parent (gethash node-id new-parents))
+                   (equal old-parent (ebox-runtime-index-get node-id new-parents))
                    (ebox-incremental--node-child-ids-equal-p
                     old-node new-node)
                    (equal
@@ -8016,15 +8064,15 @@ because it could address a run whose topology the closure just replaced."
                     old-state candidate-state dirty-set)))
       (while (and candidate-id path-valid-p (not proof)
                   (not (equal candidate-id root-id)))
-        (let* ((old-node (gethash candidate-id old-nodes))
-               (new-node (gethash candidate-id new-nodes))
-               (parent-id (gethash candidate-id parents))
+        (let* ((old-node (ebox-runtime-index-get candidate-id old-nodes))
+               (new-node (ebox-runtime-index-get candidate-id new-nodes))
+               (parent-id (ebox-runtime-index-get candidate-id parents))
                (display (and old-node (ebox-tree-display-inner old-node))))
           (setq saw-flex-p (or saw-flex-p (eq display 'flex)))
           (setq path-valid-p
                 (and old-node new-node
                      (equal parent-id
-                            (gethash candidate-id candidate-parents))
+                            (ebox-runtime-index-get candidate-id candidate-parents))
                      (ebox-incremental--node-child-ids-equal-p
                       old-node new-node)
                      (equal
@@ -8288,7 +8336,7 @@ role, overflow, and outside-complement validation."
         (parent-table
          (plist-get (ebox--buffer-render-state buffer) :parent-table))
         ops)
-    (unless (hash-table-p parent-table)
+    (unless (ebox-runtime-index-like-p parent-table)
       (signal 'ebox-patch-plan-error
               (list :missing-parent-table buffer)))
     (ebox--with-layout-snapshot-detail-context buffer
@@ -8468,7 +8516,7 @@ closure may still plan one for a later owner-scoped surface projection."
                 (mapcar (lambda (op) (plist-get op :op)) owner-plan)
                 :owner-ids owner-ids
                 :owner-type
-                (plist-get (gethash single-owner node-table) :ebox-type)
+                (plist-get (ebox-runtime-index-get single-owner node-table) :ebox-type)
                 :span-count
                 (cl-loop for owner-id in owner-ids
                          for snapshot = (and snapshots
@@ -8492,18 +8540,8 @@ closure may still plan one for a later owner-scoped surface projection."
         dirty-set)))
 
 (defun ebox-incremental--hash-key-set-equal-p (left right)
-  "Return non-nil when hash tables LEFT and RIGHT have the same keys."
-  (and (hash-table-p left)
-       (hash-table-p right)
-       (= (hash-table-count left) (hash-table-count right))
-       (let ((equal-p t)
-             (missing (make-symbol "ebox-missing-key")))
-         (maphash
-          (lambda (key _value)
-            (when (eq (gethash key right missing) missing)
-              (setq equal-p nil)))
-          left)
-         equal-p)))
+  "Return non-nil when supported indexes LEFT and RIGHT have the same keys."
+  (ebox-runtime-index-key-set-equal-p left right))
 
 (defun ebox-incremental--span-patch-identity-stable-p
     (buffer old-state candidate-state prepared owner-id)
@@ -8524,7 +8562,7 @@ the surface is allowed to reuse retained TP objects."
                              (plist-get prepared :dirty-set))))
                 (while walk
                   (push walk ids)
-                  (setq walk (gethash walk old-parent-table)))
+                  (setq walk (ebox-runtime-index-get walk old-parent-table)))
                 (delete-dups ids))
             (delete-dups
              (append (plist-get prepared :touched-node-ids)
@@ -8538,8 +8576,8 @@ the surface is allowed to reuse retained TP objects."
               (plist-get candidate-state :region-id-set)))
          (cl-every
           (lambda (node-id)
-            (let ((old-node (gethash node-id old-node-table))
-                  (new-node (gethash node-id new-node-table)))
+            (let ((old-node (ebox-runtime-index-get node-id old-node-table))
+                  (new-node (ebox-runtime-index-get node-id new-node-table)))
               (and old-node new-node
                    (eq (plist-get old-node :ebox-type)
                        (plist-get new-node :ebox-type))
@@ -8548,8 +8586,8 @@ the surface is allowed to reuse retained TP objects."
                      (plist-get old-state :source-index) old-node)
                     (ebox-tree-node-author-key
                      (plist-get candidate-state :source-index) new-node))
-                   (equal (gethash node-id old-parent-table)
-                          (gethash node-id new-parent-table)))))
+                   (equal (ebox-runtime-index-get node-id old-parent-table)
+                          (ebox-runtime-index-get node-id new-parent-table)))))
           (delq nil touched)))))
 
 (defun ebox-incremental--path-span-line-count-stable-p
@@ -8710,10 +8748,10 @@ the complete proof."
              (node-id (plist-get entry :node-id))
              (next-id (and (cdr entries)
                            (plist-get (cadr entries) :node-id)))
-             (old-node (and node-id (gethash node-id old-nodes)))
-             (new-node (and node-id (gethash node-id new-nodes)))
-             (old-parent (and node-id (gethash node-id old-parents)))
-             (new-parent (and node-id (gethash node-id new-parents)))
+             (old-node (and node-id (ebox-runtime-index-get node-id old-nodes)))
+             (new-node (and node-id (ebox-runtime-index-get node-id new-nodes)))
+             (old-parent (and node-id (ebox-runtime-index-get node-id old-parents)))
+             (new-parent (and node-id (ebox-runtime-index-get node-id new-parents)))
              (allocated-style (plist-get entry :allocated-style)))
         (setq valid
               (and old-node new-node allocated-style
@@ -8762,10 +8800,10 @@ candidate's unrendered caches."
         signature valid)
     (setq valid t)
     (while (and valid node-id)
-      (let* ((old-node (gethash node-id old-nodes))
-             (new-node (gethash node-id new-nodes))
-             (old-parent (gethash node-id old-parents))
-             (new-parent (gethash node-id new-parents))
+      (let* ((old-node (ebox-runtime-index-get node-id old-nodes))
+             (new-node (ebox-runtime-index-get node-id new-nodes))
+             (old-parent (ebox-runtime-index-get node-id old-parents))
+             (new-parent (ebox-runtime-index-get node-id new-parents))
              (snapshot (and old-node
                             (ebox-incremental--cached-allocation-snapshot
                              buffer node-id)))
@@ -8859,28 +8897,28 @@ complete published ancestor slot chain remains identical."
   (let* ((old-state (ebox-incremental--proof-base-state buffer))
          (node-id (plist-get entry :node-id))
          (old-node (and node-id
-                        (gethash node-id (plist-get old-state :node-table))))
+                        (ebox-runtime-index-get node-id (plist-get old-state :node-table))))
          (new-node (and node-id
-                        (gethash node-id
+                        (ebox-runtime-index-get node-id
                                  (plist-get candidate-state :node-table))))
          (parent-table (plist-get old-state :parent-table))
          (candidate-parents (plist-get candidate-state :parent-table))
-         (ancestor-id (and node-id (gethash node-id parent-table)))
+         (ancestor-id (and node-id (ebox-runtime-index-get node-id parent-table)))
          grid-id old-grid new-grid)
     (while (and ancestor-id (not grid-id))
       (let ((old-ancestor
-             (gethash ancestor-id (plist-get old-state :node-table)))
+             (ebox-runtime-index-get ancestor-id (plist-get old-state :node-table)))
             (new-ancestor
-             (gethash ancestor-id (plist-get candidate-state :node-table))))
+             (ebox-runtime-index-get ancestor-id (plist-get candidate-state :node-table))))
         (if (and old-ancestor new-ancestor
-                 (equal (gethash ancestor-id parent-table)
-                        (gethash ancestor-id candidate-parents))
+                 (equal (ebox-runtime-index-get ancestor-id parent-table)
+                        (ebox-runtime-index-get ancestor-id candidate-parents))
                  (eq (ebox-tree-display-inner old-ancestor) 'grid)
                  (eq (ebox-tree-display-inner new-ancestor) 'grid))
             (setq grid-id ancestor-id
                   old-grid old-ancestor
                   new-grid new-ancestor)
-          (setq ancestor-id (gethash ancestor-id parent-table)))))
+          (setq ancestor-id (ebox-runtime-index-get ancestor-id parent-table)))))
     (let* ((old-props (and old-grid (ebox-tree-layout-props old-grid)))
            (new-props (and new-grid (ebox-tree-layout-props new-grid)))
          (tracks (and old-props
@@ -8922,16 +8960,16 @@ following sibling.  The surface footprint validator remains the final gate."
   (let* ((old-state (ebox-incremental--proof-base-state buffer))
          (node-id (plist-get entry :node-id))
          (old-node (and node-id
-                        (gethash node-id (plist-get old-state :node-table))))
+                        (ebox-runtime-index-get node-id (plist-get old-state :node-table))))
          (new-node (and node-id
-                        (gethash node-id (plist-get candidate-state :node-table))))
+                        (ebox-runtime-index-get node-id (plist-get candidate-state :node-table))))
          (parents (plist-get old-state :parent-table))
          (candidate-parents (plist-get candidate-state :parent-table))
-         (parent-id (and node-id (gethash node-id parents)))
+         (parent-id (and node-id (ebox-runtime-index-get node-id parents)))
          (old-parent (and parent-id
-                          (gethash parent-id (plist-get old-state :node-table))))
+                          (ebox-runtime-index-get parent-id (plist-get old-state :node-table))))
          (new-parent (and parent-id
-                          (gethash parent-id (plist-get candidate-state :node-table))))
+                          (ebox-runtime-index-get parent-id (plist-get candidate-state :node-table))))
          (old-children (and old-parent (ebox-tree--children-raw old-parent)))
          (position (and old-children
                         (cl-position-if
@@ -8949,8 +8987,8 @@ following sibling.  The surface footprint validator remains the final gate."
                (ebox-incremental--ancestor-slot-signature
                 buffer old-state candidate-state node-id))))
     (and old-state old-node new-node old-parent new-parent
-         (equal (gethash parent-id parents)
-                (gethash parent-id candidate-parents))
+         (equal (ebox-runtime-index-get parent-id parents)
+                (ebox-runtime-index-get parent-id candidate-parents))
          (ebox-incremental--node-child-ids-equal-p old-parent new-parent)
          (equal (ebox-incremental--layout-slot-style-signature old-parent)
                 (ebox-incremental--layout-slot-style-signature new-parent))
@@ -9007,17 +9045,17 @@ proving that changed descendants still fit this slot exactly."
          (new-nodes (plist-get candidate-state :node-table))
          (old-parents (plist-get old-state :parent-table))
          (new-parents (plist-get candidate-state :parent-table))
-         (old-node (and owner-id (gethash owner-id old-nodes)))
-         (new-node (and owner-id (gethash owner-id new-nodes)))
-         (parent-id (and owner-id (gethash owner-id old-parents)))
-         (old-parent (and parent-id (gethash parent-id old-nodes)))
-         (new-parent (and parent-id (gethash parent-id new-nodes)))
+         (old-node (and owner-id (ebox-runtime-index-get owner-id old-nodes)))
+         (new-node (and owner-id (ebox-runtime-index-get owner-id new-nodes)))
+         (parent-id (and owner-id (ebox-runtime-index-get owner-id old-parents)))
+         (old-parent (and parent-id (ebox-runtime-index-get parent-id old-nodes)))
+         (new-parent (and parent-id (ebox-runtime-index-get parent-id new-nodes)))
          (snapshot
           (and old-node
                (ebox-incremental--cached-allocation-snapshot
                 buffer owner-id))))
     (and old-node new-node old-parent new-parent snapshot
-         (equal parent-id (gethash owner-id new-parents))
+         (equal parent-id (ebox-runtime-index-get owner-id new-parents))
          (eq (ebox-tree-display-inner old-parent) 'column)
          (eq (ebox-tree-display-inner new-parent) 'column)
          (ebox-incremental--node-child-ids-equal-p old-node new-node)
@@ -9058,17 +9096,17 @@ style, and the published ancestor slot chain remain mandatory."
   (let* ((old-state (ebox-incremental--proof-base-state buffer))
          (node-id (plist-get entry :node-id))
          (old-node (and node-id
-                        (gethash node-id (plist-get old-state :node-table))))
+                        (ebox-runtime-index-get node-id (plist-get old-state :node-table))))
          (new-node (and node-id
-                        (gethash node-id (plist-get candidate-state
+                        (ebox-runtime-index-get node-id (plist-get candidate-state
                                                     :node-table))))
          (parents (plist-get old-state :parent-table))
          (candidate-parents (plist-get candidate-state :parent-table))
-         (parent-id (and node-id (gethash node-id parents)))
+         (parent-id (and node-id (ebox-runtime-index-get node-id parents)))
          (old-parent (and parent-id
-                          (gethash parent-id (plist-get old-state :node-table))))
+                          (ebox-runtime-index-get parent-id (plist-get old-state :node-table))))
          (new-parent (and parent-id
-                          (gethash parent-id
+                          (ebox-runtime-index-get parent-id
                                    (plist-get candidate-state :node-table))))
          (snapshot (and old-node
                         (ebox-incremental--cached-allocation-snapshot
@@ -9079,8 +9117,8 @@ style, and the published ancestor slot chain remain mandatory."
          (eq (ebox-tree-display-inner old-parent)
              (ebox-tree-display-inner new-parent))
          (memq (ebox-tree-display-inner old-parent) '(row flex))
-         (equal (gethash parent-id parents)
-                (gethash parent-id candidate-parents))
+         (equal (ebox-runtime-index-get parent-id parents)
+                (ebox-runtime-index-get parent-id candidate-parents))
          (ebox-incremental--node-child-ids-equal-p old-parent new-parent)
          (equal (ebox-incremental--layout-slot-style-signature old-parent)
                 (ebox-incremental--layout-slot-style-signature new-parent))
@@ -9113,17 +9151,17 @@ the complete snapshot proof."
          (new-nodes (plist-get candidate-state :node-table))
          (old-parents (plist-get old-state :parent-table))
          (new-parents (plist-get candidate-state :parent-table))
-         (node-id (gethash grid-id old-parents))
+         (node-id (ebox-runtime-index-get grid-id old-parents))
          (seen nil)
          (valid (and node-id t)))
     (while (and valid node-id)
       (if (memq node-id seen)
           (setq valid nil)
         (push node-id seen)
-        (let* ((old-node (gethash node-id old-nodes))
-               (new-node (gethash node-id new-nodes))
-               (old-parent (gethash node-id old-parents))
-               (new-parent (gethash node-id new-parents))
+        (let* ((old-node (ebox-runtime-index-get node-id old-nodes))
+               (new-node (ebox-runtime-index-get node-id new-nodes))
+               (old-parent (ebox-runtime-index-get node-id old-parents))
+               (new-parent (ebox-runtime-index-get node-id new-parents))
                (display (and old-node
                              (ebox-tree-display-inner old-node)))
                (old-width (and old-node (ebox-get old-node :width)))
@@ -9156,22 +9194,22 @@ projection kinds and the surface output validator remains authoritative."
   (let* ((old-state (ebox-incremental--proof-base-state buffer))
          (node-id (plist-get entry :node-id))
          (old-node (and node-id
-                        (gethash node-id (plist-get old-state :node-table))))
+                        (ebox-runtime-index-get node-id (plist-get old-state :node-table))))
          (new-node (and node-id
-                        (gethash node-id
+                        (ebox-runtime-index-get node-id
                                  (plist-get candidate-state :node-table))))
          (parents (plist-get old-state :parent-table))
          (candidate-parents (plist-get candidate-state :parent-table))
-         (ancestor-id (and node-id (gethash node-id parents)))
+         (ancestor-id (and node-id (ebox-runtime-index-get node-id parents)))
          (child-id node-id)
          grid-id old-grid new-grid)
     (while (and ancestor-id (not grid-id))
-      (let* ((old-ancestor (gethash ancestor-id
+      (let* ((old-ancestor (ebox-runtime-index-get ancestor-id
                                     (plist-get old-state :node-table)))
-             (new-ancestor (gethash ancestor-id
+             (new-ancestor (ebox-runtime-index-get ancestor-id
                                     (plist-get candidate-state :node-table)))
-             (parent-id (gethash ancestor-id parents))
-             (new-parent-id (gethash ancestor-id candidate-parents)))
+             (parent-id (ebox-runtime-index-get ancestor-id parents))
+             (new-parent-id (ebox-runtime-index-get ancestor-id candidate-parents)))
         (if (and old-ancestor new-ancestor
                  (equal parent-id new-parent-id)
                  (not (ebox-tree-node-visible-overflow-p old-ancestor)))
@@ -9295,8 +9333,8 @@ metadata; this predicate only authorizes the local attempt."
            (dirty (car (plist-get prepared :dirty-set)))
            (owner-id (plist-get operation :owner-id))
            (changed-keys (plist-get dirty :changed-keys))
-           (old-node (gethash owner-id (plist-get old-state :node-table)))
-           (new-node (gethash owner-id (plist-get candidate-state :node-table)))
+           (old-node (ebox-runtime-index-get owner-id (plist-get old-state :node-table)))
+           (new-node (ebox-runtime-index-get owner-id (plist-get candidate-state :node-table)))
            (slot-dirty
             (plist-put (copy-sequence dirty) :node-id owner-id))
            (snapshot
@@ -9549,8 +9587,8 @@ role, and outside-complement compatibility before publication."
            (owner-id (plist-get operation :owner-id))
            (dirty-set (plist-get prepared :dirty-set))
            (root-id (ebox--buffer-root-node-id buffer))
-           (old-node (gethash owner-id (plist-get old-state :node-table)))
-           (new-node (gethash owner-id
+           (old-node (ebox-runtime-index-get owner-id (plist-get old-state :node-table)))
+           (new-node (ebox-runtime-index-get owner-id
                               (plist-get candidate-state :node-table)))
            (fixed-flex-slot-p
             (ebox--flex-item-fixed-basis-content-allocation-stable-p
@@ -9662,9 +9700,9 @@ role, and outside-complement compatibility before publication."
                    ;; a second proof render here would only duplicate work.
                    (or owner-slot-proof fixed-flex-ancestor-proof
                        content-slot-proof)
-                   (equal (gethash owner-id
+                   (equal (ebox-runtime-index-get owner-id
                                    (plist-get old-state :parent-table))
-                          (gethash owner-id
+                          (ebox-runtime-index-get owner-id
                                    (plist-get candidate-state :parent-table)))
                    (ebox-incremental--node-child-ids-equal-p
                     old-node new-node)
@@ -9719,8 +9757,8 @@ role, and outside-complement compatibility before publication."
            (dirty (car (plist-get prepared :dirty-set)))
            (delta (plist-get dirty :range-delta))
            (owner-id (plist-get operation :owner-id))
-           (old-node (gethash owner-id (plist-get old-state :node-table)))
-           (new-node (gethash owner-id
+           (old-node (ebox-runtime-index-get owner-id (plist-get old-state :node-table)))
+           (new-node (ebox-runtime-index-get owner-id
                               (plist-get candidate-state :node-table)))
            (old-items (and delta (apply #'append
                                        (plist-get delta :old-payloads))))
@@ -9751,8 +9789,8 @@ role, and outside-complement compatibility before publication."
                  (cl-every (lambda (item)
                              (eq (plist-get item :ebox-kind) 'box))
                            new-items)
-                 (equal (gethash owner-id (plist-get old-state :parent-table))
-                        (gethash owner-id
+                 (equal (ebox-runtime-index-get owner-id (plist-get old-state :parent-table))
+                        (ebox-runtime-index-get owner-id
                                  (plist-get candidate-state :parent-table)))
                  (equal (ebox-incremental--layout-slot-style-signature old-node)
                         (ebox-incremental--layout-slot-style-signature new-node))
@@ -10046,6 +10084,8 @@ role, and outside-complement compatibility before publication."
              (plist-get candidate-state :selector-index-stale-p)
              :native-node-postorder
              (plist-get candidate-state :native-node-postorder)
+             :native-node-postorder-ids
+             (plist-get candidate-state :native-node-postorder-ids)
              :surface-node-object-table
              (and (memq projection-kind
                         '(span-patch owner-scoped scroll-patch
@@ -10627,6 +10667,7 @@ When RETAIN-NATIVE-P is non-nil, preserve its committed native frame bases."
         :selector-type-table (plist-get state :selector-type-table)
         :runtime-type-count-table (plist-get state :runtime-type-count-table)
         :native-node-postorder (plist-get state :native-node-postorder)
+        :native-node-postorder-ids (plist-get state :native-node-postorder-ids)
         :runtime-index-prepared-p t
         :scroll-state-table (plist-get state :scroll-state-table)
         :detached-identity-history
@@ -10695,7 +10736,7 @@ topology changes; those continue to use the conservative full projection."
          (region-id (and (= (length scroll-ids) 1)
                          (car scroll-ids)))
          (region-node-id (and region-id region-node-table
-                              (gethash region-id region-node-table)))
+                              (ebox-runtime-index-get region-id region-node-table)))
          (candidate-scroll-table
           (plist-get candidate-state :scroll-state-table)))
     (and old-root candidate-root
@@ -10734,13 +10775,13 @@ the producer's content geometry is the retained boundary."
         (node-table (plist-get state :node-table))
         (scroll-state-table (plist-get state :scroll-state-table)))
     (or (null scroll-ids)
-        (and (hash-table-p region-node-table)
-             (hash-table-p node-table)
+        (and (ebox-runtime-index-like-p region-node-table)
+             (ebox-runtime-index-like-p node-table)
              (hash-table-p scroll-state-table)
              (cl-every
               (lambda (region-id)
-                (let* ((node-id (gethash region-id region-node-table))
-                       (node (and node-id (gethash node-id node-table))))
+                (let* ((node-id (ebox-runtime-index-get region-id region-node-table))
+                       (node (and node-id (ebox-runtime-index-get node-id node-table))))
                   (and node
                        (gethash region-id scroll-state-table)
                        (not (ebox--viewport-dependent-subtree-p node))
@@ -10758,8 +10799,8 @@ fresh by the mixed projection."
         (scroll-state-table (plist-get state :scroll-state-table))
         (stable nil)
         (affected nil))
-    (when (and (hash-table-p region-node-table)
-               (hash-table-p node-table)
+    (when (and (ebox-runtime-index-like-p region-node-table)
+               (ebox-runtime-index-like-p node-table)
                (hash-table-p scroll-state-table))
       (let ((ebox--viewport-dependent-node-ids-cache
              (make-hash-table :test #'eq))
@@ -10768,8 +10809,8 @@ fresh by the mixed projection."
             (ebox--viewport-height-dependent-subtree-cache
              (make-hash-table :test #'eq)))
         (dolist (region-id (plist-get state :scroll-region-ids))
-          (let* ((node-id (gethash region-id region-node-table))
-                 (node (and node-id (gethash node-id node-table)))
+          (let* ((node-id (ebox-runtime-index-get region-id region-node-table))
+                 (node (and node-id (ebox-runtime-index-get node-id node-table)))
                  (scroll-state (gethash region-id scroll-state-table))
                  (stable-p
                   (and node scroll-state
@@ -10821,6 +10862,8 @@ fresh by the mixed projection."
     (plist-get candidate-state :selector-index-stale-p)
     :native-node-postorder
     (plist-get candidate-state :native-node-postorder)
+    :native-node-postorder-ids
+    (plist-get candidate-state :native-node-postorder-ids)
     :runtime-index-prepared-p t
     :surface-node-object-table
     (plist-get old-state :surface-node-object-table))))
