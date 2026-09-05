@@ -484,6 +484,7 @@ struct DocumentInputStats {
     delta_entries_parsed: u64,
     delta_entries_validated: u64,
     trie_path_nodes_copied: u64,
+    source_change_work: layout::SourceChangeWork,
 }
 
 #[derive(Debug)]
@@ -523,6 +524,7 @@ struct RuntimeState {
     document_delta_entries_validated: u64,
     document_trie_path_nodes_copied: u64,
     document_resolver_lookups: u64,
+    source_change_work: layout::SourceChangeWork,
     atom_plan_work: layout::AtomPlanWork,
     line_plan_work: layout::LinePlanWork,
     confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
@@ -602,6 +604,7 @@ struct SessionStats {
     document_delta_entries_validated: u64,
     document_trie_path_nodes_copied: u64,
     document_resolver_lookups: u64,
+    source_change_work: layout::SourceChangeWork,
     atom_plan_work: layout::AtomPlanWork,
     line_plan_work: layout::LinePlanWork,
     pending_baselines: usize,
@@ -676,6 +679,7 @@ impl Session {
                 document_delta_entries_validated: 0,
                 document_trie_path_nodes_copied: 0,
                 document_resolver_lookups: 0,
+                source_change_work: layout::SourceChangeWork::default(),
                 atom_plan_work: layout::AtomPlanWork::default(),
                 line_plan_work: layout::LinePlanWork::default(),
                 confirmed_baseline,
@@ -1019,14 +1023,38 @@ impl Session {
                             .to_owned(),
                     );
                 };
-                let (document, parsed, copied) = document.apply_delta(delta)?;
+                let applied = document.apply_delta(delta)?;
+                if !applied.changes.applies_to(document, &applied.document) {
+                    return Err(
+                        "Native retained source changes document identity mismatch".to_owned()
+                    );
+                }
+                // Consume exact source facts for input accounting. The renderer
+                // still evaluates the target normally; no history-bearing change
+                // object is stored in a job, document or confirmed baseline.
+                let mut source_change_work = applied.stats.source_work;
+                let mut previous_owner = None;
+                applied
+                    .changes
+                    .visit_changed_slots(|owner, _, _, _, fields| {
+                        if previous_owner != Some(owner) {
+                            source_change_work.owners_changed += 1;
+                            previous_owner = Some(owner);
+                        }
+                        source_change_work.slots_changed += 1;
+                        source_change_work.fields_changed += fields.len() as u64;
+                    });
+                let (styles, property_templates) = applied.changes.registry_ranges();
+                source_change_work.styles_appended = styles.len() as u64;
+                source_change_work.property_templates_added = property_templates.len() as u64;
                 (
-                    LayoutSource::Retained(document),
+                    LayoutSource::Retained(applied.document),
                     DocumentInputStats {
                         delta_input_bytes: payload.len() as u64,
-                        delta_entries_parsed: parsed,
-                        delta_entries_validated: parsed,
-                        trie_path_nodes_copied: copied,
+                        delta_entries_parsed: applied.stats.entries_parsed,
+                        delta_entries_validated: applied.stats.entries_parsed,
+                        trie_path_nodes_copied: applied.stats.trie_path_nodes_copied,
+                        source_change_work,
                         ..DocumentInputStats::default()
                     },
                 )
@@ -1113,6 +1141,9 @@ impl Session {
         state.document_delta_entries_parsed += input_stats.delta_entries_parsed;
         state.document_delta_entries_validated += input_stats.delta_entries_validated;
         state.document_trie_path_nodes_copied += input_stats.trie_path_nodes_copied;
+        state
+            .source_change_work
+            .accumulate(input_stats.source_change_work);
         state.pending_baselines.clear();
         if let Some(pending) = output.pending {
             state
@@ -1252,6 +1283,7 @@ impl Session {
             document_delta_entries_validated: state.document_delta_entries_validated,
             document_trie_path_nodes_copied: state.document_trie_path_nodes_copied,
             document_resolver_lookups: state.document_resolver_lookups,
+            source_change_work: state.source_change_work,
             atom_plan_work: state.atom_plan_work,
             line_plan_work: state.line_plan_work,
             pending_baselines,
@@ -2677,6 +2709,14 @@ mod tests {
         assert_eq!(stats.document_delta_entries_validated, 1);
         assert_eq!(stats.document_trie_path_nodes_copied, 17);
         assert_eq!(stats.document_delta_input_bytes, delta.len() as u64);
+        assert_eq!(stats.source_change_work.fields_compared, 1);
+        assert_eq!(stats.source_change_work.text_lines_compared, 1);
+        assert_eq!(stats.source_change_work.text_clusters_compared, 1);
+        assert_eq!(stats.source_change_work.text_bytes_compared, 1);
+        assert_eq!(stats.source_change_work.local_nodes_copied, 1);
+        assert_eq!(stats.source_change_work.owners_changed, 1);
+        assert_eq!(stats.source_change_work.slots_changed, 1);
+        assert_eq!(stats.source_change_work.fields_changed, 1);
         assert_eq!(
             stats.document_resolver_lookups, stats.target_renders,
             "each single-owner render resolves its root; retained context validation resolves no nodes"
@@ -2691,6 +2731,60 @@ mod tests {
         assert!(!child.render_sync(1, &retained).unwrap().is_empty());
         session.stop(true);
         child.stop(true);
+    }
+
+    #[test]
+    fn retained_source_input_counts_noops_and_registries_without_publishing_failed_work() {
+        let session = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = identified_proof_layout_payload(
+            r#"[{"key":1,"viewport-width":80,"viewport-height":10,"root-width":80,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        session.render_sync(1, &first).unwrap();
+        assert!(session.confirm(1, 1, 1).unwrap());
+        let document: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        let content = document["document"]["root"]["content"].clone();
+        let payload = |padding| {
+            serde_json::to_vec(&serde_json::json!({
+            "version": 1, "document-base-revision": 1, "document-target-revision": 2,
+            "document-delta": {
+                "style-base-count": 0, "styles-append": [{"mode": "add", "face": {"foreground": "red"}}],
+                "property-template-base-count": 0, "property-template-target-count": 2,
+                "entries": [{"node-id": 1, "expected-revision": 7, "target-revision": 8,
+                    "slot-patches": [{"slot": 0, "local": {"content": content, "padding-left": padding}}]}]
+            },
+            "frames": [{"key": 2, "viewport-width": 80, "viewport-height": 10,
+                "root-width": 80, "runtime-revision": 1, "context-hash": 77}]
+        })).unwrap()
+        };
+        let before = session.stats().source_change_work;
+        assert!(session.render_sync(2, &payload(-1)).is_err());
+        assert_eq!(session.stats().source_change_work, before);
+        session.render_sync(3, &payload(0)).unwrap();
+        let work = session.stats().source_change_work;
+        assert_eq!(
+            (
+                work.fields_compared,
+                work.text_lines_compared,
+                work.text_clusters_compared,
+                work.text_bytes_compared
+            ),
+            (2, 1, 1, 1)
+        );
+        assert_eq!(
+            (
+                work.local_nodes_copied,
+                work.owners_changed,
+                work.slots_changed,
+                work.fields_changed
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            (work.styles_appended, work.property_templates_added),
+            (1, 2)
+        );
+        assert!(session.confirm(3, 2, 2).unwrap());
+        session.stop(true);
     }
 
     #[test]

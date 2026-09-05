@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+#[path = "source_topology.rs"]
+mod source_topology;
+use source_topology::{LocalStep, SourceTopology, TopologyBuilder};
+
 #[path = "atom_plan.rs"]
 mod atom_plan;
 use atom_plan::AtomPlan;
@@ -149,6 +153,173 @@ struct LocalSlotPatch {
     local: JsonMap<String, JsonValue>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalField {
+    RegionId,
+    Content,
+    ContentRegionId,
+    ContentTypographyStyle,
+    ContentForegroundStyle,
+    ContentSurfaceTemplateId,
+    ContentWidthExact,
+    ContentMinWidth,
+    Width,
+    MinWidth,
+    MaxWidth,
+    Height,
+    MinHeight,
+    MaxHeight,
+    BoxSizing,
+    PaddingLeft,
+    PaddingRight,
+    PaddingTop,
+    PaddingBottom,
+    MarginLeft,
+    MarginRight,
+    MarginTop,
+    MarginBottom,
+    BorderLeft,
+    BorderRight,
+    TypographyStyle,
+    ForegroundStyle,
+    BackgroundStyle,
+    BorderLeftStyle,
+    BorderRightStyle,
+    BorderTopStyle,
+    BorderBottomStyle,
+    SurfaceTemplateId,
+    TextAlign,
+    VerticalAlign,
+    Overflow,
+    WrapMode,
+    ScrollOffset,
+    Direction,
+    Wrap,
+    Justify,
+    AlignItems,
+    AlignContent,
+    RowGap,
+    ColumnGap,
+}
+
+#[derive(Debug)]
+struct SlotChange {
+    slot: u8,
+    fields: Vec<LocalField>,
+}
+
+#[derive(Debug)]
+struct OwnerChange {
+    node_id: u64,
+    expected_revision: u64,
+    target_revision: u64,
+    slots: Vec<SlotChange>,
+}
+
+/// Transient source facts for one exact pair of documents, never retained in a
+/// document or confirmed baseline. The current renderer does not cache by these facts.
+#[derive(Debug)]
+pub(crate) struct SourceChanges {
+    base: Arc<RetainedDocument>,
+    target: Arc<RetainedDocument>,
+    owners: Vec<OwnerChange>,
+    styles: std::ops::Range<u32>,
+    property_templates: std::ops::Range<u32>,
+}
+
+impl SourceChanges {
+    pub(crate) fn applies_to(
+        &self,
+        base: &Arc<RetainedDocument>,
+        target: &Arc<RetainedDocument>,
+    ) -> bool {
+        Arc::ptr_eq(&self.base, base) && Arc::ptr_eq(&self.target, target)
+    }
+
+    pub(crate) fn visit_changed_slots(
+        &self,
+        mut visit: impl FnMut(u64, u64, u64, u8, &[LocalField]),
+    ) {
+        for owner in &self.owners {
+            for slot in &owner.slots {
+                visit(
+                    owner.node_id,
+                    owner.expected_revision,
+                    owner.target_revision,
+                    slot.slot,
+                    &slot.fields,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn registry_ranges(&self) -> (std::ops::Range<u32>, std::ops::Range<u32>) {
+        (self.styles.clone(), self.property_templates.clone())
+    }
+}
+
+/// Counts concrete comparisons/copies at delta preparation and emitted source
+/// changes at input integration. These are not layout-cache or topology counters.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct SourceChangeWork {
+    pub(crate) fields_compared: u64,
+    pub(crate) size_nodes_compared: u64,
+    pub(crate) text_lines_compared: u64,
+    pub(crate) text_clusters_compared: u64,
+    pub(crate) text_bytes_compared: u64,
+    pub(crate) local_nodes_copied: u64,
+    pub(crate) owners_changed: u64,
+    pub(crate) slots_changed: u64,
+    pub(crate) fields_changed: u64,
+    pub(crate) styles_appended: u64,
+    pub(crate) property_templates_added: u64,
+}
+
+impl SourceChangeWork {
+    pub(crate) fn accumulate(&mut self, other: Self) {
+        self.fields_compared += other.fields_compared;
+        self.size_nodes_compared += other.size_nodes_compared;
+        self.text_lines_compared += other.text_lines_compared;
+        self.text_clusters_compared += other.text_clusters_compared;
+        self.text_bytes_compared += other.text_bytes_compared;
+        self.local_nodes_copied += other.local_nodes_copied;
+        self.owners_changed += other.owners_changed;
+        self.slots_changed += other.slots_changed;
+        self.fields_changed += other.fields_changed;
+        self.styles_appended += other.styles_appended;
+        self.property_templates_added += other.property_templates_added;
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DeltaStats {
+    pub(crate) entries_parsed: u64,
+    pub(crate) trie_path_nodes_copied: u64,
+    pub(crate) source_work: SourceChangeWork,
+}
+
+#[derive(Debug)]
+pub(crate) struct AppliedDelta {
+    pub(crate) document: Arc<RetainedDocument>,
+    pub(crate) changes: SourceChanges,
+    pub(crate) stats: DeltaStats,
+}
+
+struct PatchedOwner {
+    node: Arc<LayoutNode>,
+    slot_work: [Arc<LocalWorkSummary>; 2],
+    work_delta: LocalWorkDelta,
+    slots: Vec<SlotChange>,
+}
+
+struct PatchedLocal<'a> {
+    node: Option<LayoutNode>,
+    // Names come from the same dispatch as the typed identifiers, for the
+    // existing local-work summary; no second field classification is needed.
+    fields: Vec<(LocalField, &'a str)>,
+}
+
 #[derive(Debug)]
 struct RetainedEntry {
     revision: u64,
@@ -159,7 +330,7 @@ struct RetainedEntry {
 #[derive(Debug, Clone, Default)]
 struct LocalWorkSummary(BTreeMap<&'static str, LocalFieldWork>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LocalFieldWork {
     units: usize,
     viewport_heights: usize,
@@ -233,6 +404,7 @@ fn radix_insert(
 pub(crate) struct RetainedDocument {
     root_id: u64,
     entries: Arc<RadixNode>,
+    topology: Arc<SourceTopology>,
     styles: Arc<StyleRadixNode>,
     style_count: u32,
     property_template_count: u32,
@@ -352,130 +524,112 @@ fn visit_layout_children(node: &LayoutNode, mut visit: impl FnMut(&LayoutNode)) 
 impl RetainedDocument {
     pub(crate) fn bootstrap(document: LayoutDocument) -> Result<(Arc<Self>, u64), String> {
         let (node_count, work_units) = document.validate_metrics()?;
-        fn install_owner(
-            mut node: LayoutNode,
-            entries: &mut Arc<RadixNode>,
-            seen: &mut HashSet<u64>,
-            count: &mut u64,
-            context_viewport_heights: &mut usize,
-        ) -> Result<u64, String> {
-            fn localize(
-                node: &mut LayoutNode,
-                owner_id: u64,
-                entries: &mut Arc<RadixNode>,
-                seen: &mut HashSet<u64>,
-                count: &mut u64,
-                context_viewport_heights: &mut usize,
-            ) -> Result<(), String> {
-                fn localize_child(
-                    child: LayoutNode,
-                    owner_id: u64,
-                    entries: &mut Arc<RadixNode>,
-                    seen: &mut HashSet<u64>,
-                    count: &mut u64,
-                    context_viewport_heights: &mut usize,
-                ) -> Result<LayoutNode, String> {
-                    if child.node_id().is_some() {
-                        let installed =
-                            install_owner(child, entries, seen, count, context_viewport_heights)?;
-                        return Ok(LayoutNode::NodeRef { node_id: installed });
-                    }
-                    let mut child = child;
-                    localize(
-                        &mut child,
-                        owner_id,
-                        entries,
-                        seen,
-                        count,
-                        context_viewport_heights,
-                    )?;
-                    Ok(child)
-                }
 
-                // Localization visits every input node once, including anonymous
-                // descendants that cannot be named by a later topology-preserving delta.
-                visit_context_height_fields(node, |_, size| {
-                    *context_viewport_heights = context_viewport_heights
-                        .checked_add(context_size_occurrences(size)?)
-                        .ok_or_else(|| {
-                            "Native retained context summary invariant failed".to_owned()
-                        })?;
-                    Ok(())
-                })?;
-                match node {
-                    LayoutNode::Box { child, .. } => {
-                        if let Some(old) = child.take() {
-                            let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
-                            *child = Some(Arc::new(localize_child(
-                                old,
-                                owner_id,
-                                entries,
-                                seen,
-                                count,
-                                context_viewport_heights,
-                            )?));
-                        }
-                    }
-                    LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
-                        let old = std::mem::take(children);
-                        let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
-                        let mut localized = Vec::with_capacity(old.len());
-                        for child in old {
-                            localized.push(localize_child(
-                                child,
-                                owner_id,
-                                entries,
-                                seen,
-                                count,
-                                context_viewport_heights,
-                            )?);
-                        }
-                        *children = Arc::new(localized);
-                    }
-                    LayoutNode::Flex { items, .. } => {
-                        let old = std::mem::take(items);
-                        let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
-                        let mut localized = Vec::with_capacity(old.len());
-                        for mut item in old {
-                            item.node = localize_child(
-                                item.node,
-                                owner_id,
-                                entries,
-                                seen,
-                                count,
-                                context_viewport_heights,
-                            )?;
-                            localized.push(item);
-                        }
-                        *items = Arc::new(localized);
-                    }
-                    LayoutNode::Text { .. } => {}
-                    LayoutNode::NodeRef { .. } => {
-                        return Err(
-                            "Native retained bootstrap received a node reference".to_owned()
-                        );
-                    }
-                }
-                Ok(())
+        struct BootstrapState {
+            entries: Arc<RadixNode>,
+            seen: HashSet<u64>,
+            owner_count: u64,
+            context_viewport_heights: usize,
+            topology: TopologyBuilder,
+        }
+
+        fn localize_child(
+            mut child: LayoutNode,
+            owner_id: u64,
+            path: &mut Vec<LocalStep>,
+            slot: LocalStep,
+            state: &mut BootstrapState,
+        ) -> Result<LayoutNode, String> {
+            if child.node_id().is_some() {
+                let installed = install_owner(child, state)?;
+                state.topology.add_use(owner_id, path, slot, installed)?;
+                return Ok(LayoutNode::NodeRef { node_id: installed });
             }
+            path.push(slot);
+            let result = localize(&mut child, owner_id, path, state);
+            path.pop();
+            result?;
+            Ok(child)
+        }
 
+        fn localize(
+            node: &mut LayoutNode,
+            owner_id: u64,
+            path: &mut Vec<LocalStep>,
+            state: &mut BootstrapState,
+        ) -> Result<(), String> {
+            // This is the existing one-time traversal, including anonymous nodes.
+            visit_context_height_fields(node, |_, size| {
+                state.context_viewport_heights = state
+                    .context_viewport_heights
+                    .checked_add(context_size_occurrences(size)?)
+                    .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
+                Ok(())
+            })?;
+            let column = matches!(node, LayoutNode::Column { .. });
+            match node {
+                LayoutNode::Box { child, .. } => {
+                    if let Some(old) = child.take() {
+                        let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                        *child = Some(Arc::new(localize_child(
+                            old,
+                            owner_id,
+                            path,
+                            LocalStep::BoxChild,
+                            state,
+                        )?));
+                    }
+                }
+                LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+                    let old = std::mem::take(children);
+                    let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                    let mut localized = Vec::with_capacity(old.len());
+                    for (index, child) in old.into_iter().enumerate() {
+                        let slot = if column {
+                            LocalStep::ColumnChild(index)
+                        } else {
+                            LocalStep::RowChild(index)
+                        };
+                        localized.push(localize_child(child, owner_id, path, slot, state)?);
+                    }
+                    *children = Arc::new(localized);
+                }
+                LayoutNode::Flex { items, .. } => {
+                    let old = std::mem::take(items);
+                    let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                    let mut localized = Vec::with_capacity(old.len());
+                    for (index, mut item) in old.into_iter().enumerate() {
+                        item.node = localize_child(
+                            item.node,
+                            owner_id,
+                            path,
+                            LocalStep::FlexItem(index),
+                            state,
+                        )?;
+                        localized.push(item);
+                    }
+                    *items = Arc::new(localized);
+                }
+                LayoutNode::Text { .. } => {}
+                LayoutNode::NodeRef { .. } => {
+                    return Err("Native retained bootstrap received a node reference".to_owned());
+                }
+            }
+            Ok(())
+        }
+
+        fn install_owner(mut node: LayoutNode, state: &mut BootstrapState) -> Result<u64, String> {
             let node_id = node.node_id().ok_or_else(|| {
                 "Native retained document owner is missing its node id".to_owned()
             })?;
             let revision = node.node_revision().ok_or_else(|| {
                 "Native retained document node is missing its revision".to_owned()
             })?;
-            if node_id == 0 || !seen.insert(node_id) {
+            if node_id == 0 || !state.seen.insert(node_id) {
                 return Err("Native retained document has invalid duplicate node id".to_owned());
             }
-            localize(
-                &mut node,
-                node_id,
-                entries,
-                seen,
-                count,
-                context_viewport_heights,
-            )?;
+            // Each owner starts a fresh local address; paths never cross NodeRefs.
+            localize(&mut node, node_id, &mut Vec::new(), state)?;
             let slot_one = match &node {
                 LayoutNode::Box {
                     child: Some(child), ..
@@ -487,24 +641,21 @@ impl RetainedDocument {
                 slot_work: [Arc::new(local_work_summary(&node)?), Arc::new(slot_one)],
                 node: Arc::new(node),
             });
-            let (updated, _) = radix_insert(entries, node_id, entry);
-            *entries = updated;
-            *count += 1;
+            let (updated, _) = radix_insert(&state.entries, node_id, entry);
+            state.entries = updated;
+            state.owner_count += 1;
             Ok(node_id)
         }
 
-        let mut entries = Arc::new(RadixNode::default());
-        let mut seen = HashSet::new();
-        let mut owner_count = 0;
-        let mut context_viewport_heights = 0;
-        let root_id = install_owner(
-            document.root,
-            &mut entries,
-            &mut seen,
-            &mut owner_count,
-            &mut context_viewport_heights,
-        )?;
-        debug_assert!(usize::try_from(owner_count).is_ok_and(|count| count <= node_count));
+        let mut state = BootstrapState {
+            entries: Arc::new(RadixNode::default()),
+            seen: HashSet::new(),
+            owner_count: 0,
+            context_viewport_heights: 0,
+            topology: TopologyBuilder::default(),
+        };
+        let root_id = install_owner(document.root, &mut state)?;
+        debug_assert!(usize::try_from(state.owner_count).is_ok_and(|count| count <= node_count));
         let mut styles = Arc::new(StyleRadixNode::default());
         if document.styles.len() != document.style_count as usize {
             return Err("Native retained style table count mismatch".to_owned());
@@ -513,21 +664,29 @@ impl RetainedDocument {
             let (updated, _) = style_insert(&styles, index as u64, Arc::new(style));
             styles = updated;
         }
+        let topology = state.topology.finish(root_id);
+        debug_assert!(topology.incoming_uses(root_id).is_empty());
+        debug_assert_eq!(
+            topology.build_work().occurrences_written,
+            state.owner_count - 1
+        );
         Ok((
             Arc::new(Self {
                 root_id,
-                entries,
+                entries: state.entries,
+                topology,
                 styles,
                 style_count: document.style_count,
                 property_template_count: document.property_template_count,
                 work_units,
-                context_viewport_heights,
+                context_viewport_heights: state.context_viewport_heights,
             }),
             node_count as u64,
         ))
     }
 
     fn effective_node(&self, node_id: u64) -> Option<&LayoutNode> {
+        debug_assert_eq!(self.root_id, self.topology.root_owner());
         radix_lookup(&self.entries, node_id).map(|entry| entry.node.as_ref())
     }
 
@@ -554,9 +713,9 @@ impl RetainedDocument {
     }
 
     pub(crate) fn apply_delta(
-        &self,
+        self: &Arc<Self>,
         delta: DocumentDelta,
-    ) -> Result<(Arc<Self>, u64, u64), String> {
+    ) -> Result<AppliedDelta, String> {
         if delta.style_base_count != self.style_count
             || delta.property_template_base_count != self.property_template_count
             || delta.property_template_target_count < delta.property_template_base_count
@@ -576,6 +735,8 @@ impl RetainedDocument {
         }
         let mut seen = HashSet::with_capacity(delta.entries.len());
         let mut prepared = Vec::with_capacity(delta.entries.len());
+        let mut owners = Vec::new();
+        let mut stats = DeltaStats::default();
         let mut work_delta_total = 0_i128;
         let mut context_delta_total = 0_i128;
         for update in delta.entries {
@@ -589,38 +750,34 @@ impl RetainedDocument {
             {
                 return Err("Native retained delta node revision mismatch".to_owned());
             }
-            let node = if update.slot_patches.is_empty() {
-                Arc::clone(&old.node)
-            } else {
-                let (patched, slot_work, work_delta) = patch_owner_slots(
-                    &old.node,
-                    &old.slot_work,
-                    &update.slot_patches,
-                    target_style_count,
-                    delta.property_template_target_count,
-                )?;
-                work_delta_total = work_delta_total
-                    .checked_add(work_delta.units as i128)
-                    .ok_or_else(|| "Native layout work estimate overflowed".to_owned())?;
-                context_delta_total = context_delta_total
-                    .checked_add(work_delta.viewport_heights)
-                    .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
-                prepared.push((
-                    update.node_id,
-                    Arc::new(RetainedEntry {
-                        revision: update.target_revision,
-                        node: Arc::new(patched),
-                        slot_work,
-                    }),
-                ));
-                continue;
-            };
+            let patched = patch_owner_slots(
+                &old.node,
+                &old.slot_work,
+                &update.slot_patches,
+                target_style_count,
+                delta.property_template_target_count,
+                &mut stats.source_work,
+            )?;
+            work_delta_total = work_delta_total
+                .checked_add(patched.work_delta.units as i128)
+                .ok_or_else(|| "Native layout work estimate overflowed".to_owned())?;
+            context_delta_total = context_delta_total
+                .checked_add(patched.work_delta.viewport_heights)
+                .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
+            if !patched.slots.is_empty() {
+                owners.push(OwnerChange {
+                    node_id: update.node_id,
+                    expected_revision: update.expected_revision,
+                    target_revision: update.target_revision,
+                    slots: patched.slots,
+                });
+            }
             prepared.push((
                 update.node_id,
                 Arc::new(RetainedEntry {
                     revision: update.target_revision,
-                    node,
-                    slot_work: old.slot_work.clone(),
+                    node: patched.node,
+                    slot_work: patched.slot_work,
                 }),
             ));
         }
@@ -661,51 +818,75 @@ impl RetainedDocument {
             styles = updated;
             copied += count;
         }
-        Ok((
-            Arc::new(Self {
-                root_id: self.root_id,
-                entries,
-                styles,
-                style_count: target_style_count,
-                property_template_count: delta.property_template_target_count,
-                work_units,
-                context_viewport_heights,
-            }),
-            parsed,
-            copied,
-        ))
+        let document = Arc::new(Self {
+            root_id: self.root_id,
+            topology: Arc::clone(&self.topology),
+            entries,
+            styles,
+            style_count: target_style_count,
+            property_template_count: delta.property_template_target_count,
+            work_units,
+            context_viewport_heights,
+        });
+        stats.entries_parsed = parsed;
+        stats.trie_path_nodes_copied = copied;
+        let changes = SourceChanges {
+            base: Arc::clone(self),
+            target: Arc::clone(&document),
+            owners,
+            styles: self.style_count..target_style_count,
+            property_templates: self.property_template_count..document.property_template_count,
+        };
+        Ok(AppliedDelta {
+            document,
+            changes,
+            stats,
+        })
     }
 }
 
 fn patch_owner_slots(
-    base: &LayoutNode,
+    base: &Arc<LayoutNode>,
     base_work: &[Arc<LocalWorkSummary>; 2],
     patches: &[LocalSlotPatch],
     style_count: u32,
     property_template_count: u32,
-) -> Result<(LayoutNode, [Arc<LocalWorkSummary>; 2], LocalWorkDelta), String> {
-    let mut result = base.clone();
+    source_work: &mut SourceChangeWork,
+) -> Result<PatchedOwner, String> {
+    let mut result = Arc::clone(base);
     let mut slot_work = base_work.clone();
     let mut work_delta = 0_isize;
     let mut context_delta = 0_i128;
     let mut seen = [false; 2];
+    let mut slots = Vec::new();
     for patch in patches {
         let index = patch.slot as usize;
         if index >= seen.len() || std::mem::replace(&mut seen[index], true) {
             return Err("Native retained delta has an invalid duplicate slot".to_owned());
         }
         if patch.slot == 0 {
-            let old_work = slot_work[0].changed_work(&patch.local);
-            result = patch_local_node(&result, &patch.local)?;
-            validate_changed_fields(&result, &patch.local, style_count, property_template_count)?;
-            let updated = slot_work[0].updated(&result, &patch.local)?;
-            context_delta += updated.changed_context_occurrences(&patch.local)
-                - slot_work[0].changed_context_occurrences(&patch.local);
-            let new_work = updated.changed_work(&patch.local);
+            let patched = patch_local_node(&result, &patch.local, source_work)?;
+            validate_changed_fields(
+                patched.node.as_ref().unwrap_or(&result),
+                &patch.local,
+                style_count,
+                property_template_count,
+            )?;
+            let Some(node) = patched.node else { continue };
+            let old_work = slot_work[0].changed_work(&patched.fields);
+            let updated = slot_work[0].updated(&node, &patched.fields)?;
+            context_delta += updated.changed_context_occurrences(&patched.fields)
+                - slot_work[0].changed_context_occurrences(&patched.fields);
+            let new_work = updated.changed_work(&patched.fields);
             work_delta += new_work as isize - old_work as isize;
-            slot_work[0] = Arc::new(updated);
+            slot_work[0] = updated;
+            result = Arc::new(node);
+            slots.push(SlotChange {
+                slot: 0,
+                fields: patched.fields.into_iter().map(|(field, _)| field).collect(),
+            });
         } else {
-            let LayoutNode::Box { child, .. } = &mut result else {
+            let LayoutNode::Box { child, .. } = result.as_ref() else {
                 return Err("Native retained delta slot one requires a box owner".to_owned());
             };
             let old_child = child
@@ -714,44 +895,83 @@ fn patch_owner_slots(
             if old_child.node_id().is_some() {
                 return Err("Native retained delta slot one must be anonymous".to_owned());
             }
-            let old_work = slot_work[1].changed_work(&patch.local);
-            let new_child = patch_local_node(old_child, &patch.local)?;
+            let patched = patch_local_node(old_child, &patch.local, source_work)?;
             validate_changed_fields(
-                &new_child,
+                patched.node.as_ref().unwrap_or(old_child),
                 &patch.local,
                 style_count,
                 property_template_count,
             )?;
-            let updated = slot_work[1].updated(&new_child, &patch.local)?;
-            context_delta += updated.changed_context_occurrences(&patch.local)
-                - slot_work[1].changed_context_occurrences(&patch.local);
-            let new_work = updated.changed_work(&patch.local);
+            let Some(new_child) = patched.node else {
+                continue;
+            };
+            let old_work = slot_work[1].changed_work(&patched.fields);
+            let updated = slot_work[1].updated(&new_child, &patched.fields)?;
+            context_delta += updated.changed_context_occurrences(&patched.fields)
+                - slot_work[1].changed_context_occurrences(&patched.fields);
+            let new_work = updated.changed_work(&patched.fields);
             work_delta += new_work as isize - old_work as isize;
-            slot_work[1] = Arc::new(updated);
+            slot_work[1] = updated;
+            if Arc::strong_count(&result) > 1 {
+                source_work.local_nodes_copied += 1;
+            }
+            let LayoutNode::Box { child, .. } = Arc::make_mut(&mut result) else {
+                unreachable!()
+            };
             *child = Some(Arc::new(new_child));
+            slots.push(SlotChange {
+                slot: 1,
+                fields: patched.fields.into_iter().map(|(field, _)| field).collect(),
+            });
         }
     }
-    Ok((
-        result,
+    Ok(PatchedOwner {
+        node: result,
         slot_work,
-        LocalWorkDelta {
+        work_delta: LocalWorkDelta {
             units: work_delta,
             viewport_heights: context_delta,
         },
-    ))
+        slots,
+    })
 }
 
-fn patch_local_node(
+fn patch_local_node<'a>(
     base: &LayoutNode,
-    fields: &JsonMap<String, JsonValue>,
-) -> Result<LayoutNode, String> {
+    fields: &'a JsonMap<String, JsonValue>,
+    source_work: &mut SourceChangeWork,
+) -> Result<PatchedLocal<'a>, String> {
     fn parsed<T: serde::de::DeserializeOwned>(value: &JsonValue) -> Result<T, String> {
         serde_json::from_value(value.clone())
             .map_err(|error| format!("Invalid native retained local field: {error}"))
     }
-    let mut output = base.clone();
+    let mut output = None;
+    let mut changed_fields = Vec::new();
     for (name, value) in fields {
-        match &mut output {
+        macro_rules! assign {
+            ($variant:ident, $field:ident, $id:ident, $same:ident, $parsed:expr) => {{
+                let next = $parsed;
+                source_work.fields_compared += 1;
+                if !$same($field, &next, source_work) {
+                    let node = output.get_or_insert_with(|| {
+                        source_work.local_nodes_copied += 1;
+                        base.clone()
+                    });
+                    let LayoutNode::$variant { $field, .. } = node else {
+                        unreachable!()
+                    };
+                    *$field = next;
+                    changed_fields.push((LocalField::$id, name.as_str()));
+                }
+            }};
+            ($variant:ident, $field:ident, $id:ident) => {
+                assign!($variant, $field, $id, same_scalar_source, parsed(value)?)
+            };
+            ($variant:ident, $field:ident, $id:ident, $same:ident) => {
+                assign!($variant, $field, $id, $same, parsed(value)?)
+            };
+        }
+        match output.as_ref().unwrap_or(base) {
             LayoutNode::Box {
                 region_id,
                 content,
@@ -793,44 +1013,56 @@ fn patch_local_node(
                 scroll_offset,
                 ..
             } => match name.as_str() {
-                "region-id" => *region_id = parsed(value)?,
-                "content" => *content = parsed::<Option<MeasuredText>>(value)?.map(Arc::new),
-                "content-region-id" => *content_region_id = parsed(value)?,
-                "content-typography-style" => *content_typography_style = parsed(value)?,
-                "content-foreground-style" => *content_foreground_style = parsed(value)?,
-                "content-surface-template-id" => *content_surface_template_id = parsed(value)?,
-                "content-width-exact" => *content_width_exact = parsed(value)?,
-                "content-min-width" => *content_min_width = parsed(value)?,
-                "width" => *width = parsed(value)?,
-                "min-width" => *min_width = parsed(value)?,
-                "max-width" => *max_width = parsed(value)?,
-                "height" => *height = parsed(value)?,
-                "min-height" => *min_height = parsed(value)?,
-                "max-height" => *max_height = parsed(value)?,
-                "box-sizing" => *box_sizing = parsed(value)?,
-                "padding-left" => *padding_left = parsed(value)?,
-                "padding-right" => *padding_right = parsed(value)?,
-                "padding-top" => *padding_top = parsed(value)?,
-                "padding-bottom" => *padding_bottom = parsed(value)?,
-                "margin-left" => *margin_left = parsed(value)?,
-                "margin-right" => *margin_right = parsed(value)?,
-                "margin-top" => *margin_top = parsed(value)?,
-                "margin-bottom" => *margin_bottom = parsed(value)?,
-                "border-left" => *border_left = parsed(value)?,
-                "border-right" => *border_right = parsed(value)?,
-                "typography-style" => *typography_style = parsed(value)?,
-                "foreground-style" => *foreground_style = parsed(value)?,
-                "background-style" => *background_style = parsed(value)?,
-                "border-left-style" => *border_left_style = parsed(value)?,
-                "border-right-style" => *border_right_style = parsed(value)?,
-                "border-top-style" => *border_top_style = parsed(value)?,
-                "border-bottom-style" => *border_bottom_style = parsed(value)?,
-                "surface-template-id" => *surface_template_id = parsed(value)?,
-                "text-align" => *text_align = parsed(value)?,
-                "vertical-align" => *vertical_align = parsed(value)?,
-                "overflow" => *overflow = parsed(value)?,
-                "wrap-mode" => *wrap_mode = parsed(value)?,
-                "scroll-offset" => *scroll_offset = parsed(value)?,
+                "region-id" => assign!(Box, region_id, RegionId),
+                "content" => assign!(
+                    Box,
+                    content,
+                    Content,
+                    same_optional_content_source,
+                    parsed::<Option<MeasuredText>>(value)?.map(Arc::new)
+                ),
+                "content-region-id" => assign!(Box, content_region_id, ContentRegionId),
+                "content-typography-style" => {
+                    assign!(Box, content_typography_style, ContentTypographyStyle)
+                }
+                "content-foreground-style" => {
+                    assign!(Box, content_foreground_style, ContentForegroundStyle)
+                }
+                "content-surface-template-id" => {
+                    assign!(Box, content_surface_template_id, ContentSurfaceTemplateId)
+                }
+                "content-width-exact" => assign!(Box, content_width_exact, ContentWidthExact),
+                "content-min-width" => assign!(Box, content_min_width, ContentMinWidth),
+                "width" => assign!(Box, width, Width, same_size_source),
+                "min-width" => assign!(Box, min_width, MinWidth, same_size_source),
+                "max-width" => assign!(Box, max_width, MaxWidth, same_size_source),
+                "height" => assign!(Box, height, Height, same_size_source),
+                "min-height" => assign!(Box, min_height, MinHeight, same_size_source),
+                "max-height" => assign!(Box, max_height, MaxHeight, same_size_source),
+                "box-sizing" => assign!(Box, box_sizing, BoxSizing),
+                "padding-left" => assign!(Box, padding_left, PaddingLeft),
+                "padding-right" => assign!(Box, padding_right, PaddingRight),
+                "padding-top" => assign!(Box, padding_top, PaddingTop),
+                "padding-bottom" => assign!(Box, padding_bottom, PaddingBottom),
+                "margin-left" => assign!(Box, margin_left, MarginLeft),
+                "margin-right" => assign!(Box, margin_right, MarginRight),
+                "margin-top" => assign!(Box, margin_top, MarginTop),
+                "margin-bottom" => assign!(Box, margin_bottom, MarginBottom),
+                "border-left" => assign!(Box, border_left, BorderLeft),
+                "border-right" => assign!(Box, border_right, BorderRight),
+                "typography-style" => assign!(Box, typography_style, TypographyStyle),
+                "foreground-style" => assign!(Box, foreground_style, ForegroundStyle),
+                "background-style" => assign!(Box, background_style, BackgroundStyle),
+                "border-left-style" => assign!(Box, border_left_style, BorderLeftStyle),
+                "border-right-style" => assign!(Box, border_right_style, BorderRightStyle),
+                "border-top-style" => assign!(Box, border_top_style, BorderTopStyle),
+                "border-bottom-style" => assign!(Box, border_bottom_style, BorderBottomStyle),
+                "surface-template-id" => assign!(Box, surface_template_id, SurfaceTemplateId),
+                "text-align" => assign!(Box, text_align, TextAlign),
+                "vertical-align" => assign!(Box, vertical_align, VerticalAlign),
+                "overflow" => assign!(Box, overflow, Overflow),
+                "wrap-mode" => assign!(Box, wrap_mode, WrapMode),
+                "scroll-offset" => assign!(Box, scroll_offset, ScrollOffset),
                 _ => return Err(format!("Unsupported native retained box field {name}")),
             },
             LayoutNode::Text {
@@ -842,12 +1074,18 @@ fn patch_local_node(
                 wrap_mode,
                 ..
             } => match name.as_str() {
-                "region-id" => *region_id = parsed(value)?,
-                "content" => *content = Arc::new(parsed(value)?),
-                "typography-style" => *typography_style = parsed(value)?,
-                "foreground-style" => *foreground_style = parsed(value)?,
-                "surface-template-id" => *surface_template_id = parsed(value)?,
-                "wrap-mode" => *wrap_mode = parsed(value)?,
+                "region-id" => assign!(Text, region_id, RegionId),
+                "content" => assign!(
+                    Text,
+                    content,
+                    Content,
+                    same_text_source,
+                    Arc::new(parsed(value)?)
+                ),
+                "typography-style" => assign!(Text, typography_style, TypographyStyle),
+                "foreground-style" => assign!(Text, foreground_style, ForegroundStyle),
+                "surface-template-id" => assign!(Text, surface_template_id, SurfaceTemplateId),
+                "wrap-mode" => assign!(Text, wrap_mode, WrapMode),
                 _ => return Err(format!("Unsupported native retained text field {name}")),
             },
             LayoutNode::Flex {
@@ -862,15 +1100,15 @@ fn patch_local_node(
                 column_gap,
                 ..
             } => match name.as_str() {
-                "direction" => *direction = parsed(value)?,
-                "wrap" => *wrap = parsed(value)?,
-                "justify" => *justify = parsed(value)?,
-                "align-items" => *align_items = parsed(value)?,
-                "align-content" => *align_content = parsed(value)?,
-                "width" => *width = parsed(value)?,
-                "height" => *height = parsed(value)?,
-                "row-gap" => *row_gap = parsed(value)?,
-                "column-gap" => *column_gap = parsed(value)?,
+                "direction" => assign!(Flex, direction, Direction),
+                "wrap" => assign!(Flex, wrap, Wrap),
+                "justify" => assign!(Flex, justify, Justify),
+                "align-items" => assign!(Flex, align_items, AlignItems),
+                "align-content" => assign!(Flex, align_content, AlignContent),
+                "width" => assign!(Flex, width, Width, same_size_source),
+                "height" => assign!(Flex, height, Height, same_size_source),
+                "row-gap" => assign!(Flex, row_gap, RowGap),
+                "column-gap" => assign!(Flex, column_gap, ColumnGap),
                 _ => return Err(format!("Unsupported native retained flex field {name}")),
             },
             LayoutNode::Row { .. } | LayoutNode::Column { .. } => {
@@ -881,7 +1119,93 @@ fn patch_local_node(
             }
         }
     }
-    Ok(output)
+    Ok(PatchedLocal {
+        node: output,
+        fields: changed_fields,
+    })
+}
+
+fn same_scalar_source<T: PartialEq>(base: &T, target: &T, _: &mut SourceChangeWork) -> bool {
+    base == target
+}
+
+fn same_size_source(base: &Size, target: &Size, work: &mut SourceChangeWork) -> bool {
+    work.size_nodes_compared += 1;
+    match (base, target) {
+        (Size::Pixels { value: left }, Size::Pixels { value: right })
+        | (Size::Lines { value: left }, Size::Lines { value: right }) => left == right,
+        (Size::FitContent { limit: left }, Size::FitContent { limit: right }) => {
+            match (left, right) {
+                (None, None) => true,
+                (Some(left), Some(right)) => same_size_source(left, right, work),
+                _ => false,
+            }
+        }
+        (Size::Add { values: left }, Size::Add { values: right })
+        | (Size::Subtract { values: left }, Size::Subtract { values: right }) => {
+            left.0.len() == right.0.len()
+                && left
+                    .0
+                    .iter()
+                    .zip(right.0.iter())
+                    .all(|(left, right)| same_size_source(left, right, work))
+        }
+        (Size::Auto, Size::Auto)
+        | (Size::Content, Size::Content)
+        | (Size::None, Size::None)
+        | (Size::Viewport, Size::Viewport)
+        | (Size::ViewportHeight, Size::ViewportHeight)
+        | (Size::MinContent, Size::MinContent)
+        | (Size::MaxContent, Size::MaxContent)
+        | (Size::Stretch, Size::Stretch)
+        | (Size::Contain, Size::Contain) => true,
+        _ => false,
+    }
+}
+
+fn same_optional_content_source(
+    base: &Option<Arc<MeasuredText>>,
+    target: &Option<Arc<MeasuredText>>,
+    work: &mut SourceChangeWork,
+) -> bool {
+    match (base, target) {
+        (None, None) => true,
+        (Some(base), Some(target)) => same_text_source(base, target, work),
+        _ => false,
+    }
+}
+
+fn same_text_source(
+    base: &MeasuredText,
+    target: &MeasuredText,
+    work: &mut SourceChangeWork,
+) -> bool {
+    base.lines.len() == target.lines.len()
+        && base.lines.iter().zip(&target.lines).all(|(left, right)| {
+            work.text_lines_compared += 1;
+            left.clusters.len() == right.clusters.len()
+                && left
+                    .clusters
+                    .iter()
+                    .zip(&right.clusters)
+                    .all(|(left, right)| {
+                        work.text_clusters_compared += 1;
+                        left.width == right.width
+                            && left.cjk == right.cjk
+                            && left.space == right.space
+                            && left.pixel_space == right.pixel_space
+                            && left.source_template_id == right.source_template_id
+                            && left.text.len() == right.text.len()
+                            && left
+                                .text
+                                .bytes()
+                                .zip(right.text.bytes())
+                                .all(|(left, right)| {
+                                    work.text_bytes_compared += 1;
+                                    left == right
+                                })
+                    })
+        })
 }
 
 fn measured_text_work(text: &MeasuredText, property_template_count: u32) -> Result<usize, String> {
@@ -1003,32 +1327,39 @@ fn local_work_summary(node: &LayoutNode) -> Result<LocalWorkSummary, String> {
 }
 
 impl LocalWorkSummary {
-    fn changed_work(&self, fields: &JsonMap<String, JsonValue>) -> usize {
+    fn changed_work(&self, fields: &[(LocalField, &str)]) -> usize {
         fields
-            .keys()
-            .filter_map(|name| self.0.get(name.as_str()))
+            .iter()
+            .filter_map(|(_, name)| self.0.get(name))
             .map(|work| work.units)
             .sum()
     }
 
-    fn changed_context_occurrences(&self, fields: &JsonMap<String, JsonValue>) -> i128 {
+    fn changed_context_occurrences(&self, fields: &[(LocalField, &str)]) -> i128 {
         fields
-            .keys()
-            .filter_map(|name| self.0.get(name.as_str()))
+            .iter()
+            .filter_map(|(_, name)| self.0.get(name))
             .map(|work| work.viewport_heights as i128)
             .sum()
     }
 
     fn updated(
-        &self,
+        self: &Arc<Self>,
         node: &LayoutNode,
-        fields: &JsonMap<String, JsonValue>,
-    ) -> Result<Self, String> {
-        let mut output = self.clone();
-        for name in fields.keys() {
+        fields: &[(LocalField, &str)],
+    ) -> Result<Arc<Self>, String> {
+        let mut output = Arc::clone(self);
+        for (_, name) in fields {
             if let Some(value) = field_work(node, name)? {
-                output.0.insert(
-                    match name.as_str() {
+                let value = LocalFieldWork {
+                    units: value,
+                    viewport_heights: context_field_occurrences(node, name)?,
+                };
+                if output.0.get(name) == Some(&value) {
+                    continue;
+                }
+                Arc::make_mut(&mut output).0.insert(
+                    match *name {
                         "content" => "content",
                         "height" => "height",
                         "min-height" => "min-height",
@@ -1040,10 +1371,7 @@ impl LocalWorkSummary {
                         "row-gap" => "row-gap",
                         _ => continue,
                     },
-                    LocalFieldWork {
-                        units: value,
-                        viewport_heights: context_field_occurrences(node, name)?,
-                    },
+                    value,
                 );
             }
         }
@@ -7190,6 +7518,8 @@ fn column_leaves(children: &[LayoutNode]) -> impl Iterator<Item = &LayoutNode> {
 mod tests {
     use super::*;
 
+    include!("source_topology_tests.rs");
+
     #[test]
     fn line_composition_preserves_mixed_ownership_and_decoration_order() {
         let mut child = Line::from_clusters(&[cluster("x", 2, Some(7))]);
@@ -9455,11 +9785,11 @@ mod tests {
                 slot_one.clone(),
             ])]))
             .unwrap()
-            .0;
+            .document;
         let reverse = base
             .apply_delta(context_test_delta(vec![update(vec![slot_one, slot_zero])]))
             .unwrap()
-            .0;
+            .document;
         assert_retained_context_oracle(&base, 1);
         assert_retained_context_oracle(&forward, 5);
         assert_retained_context_oracle(&reverse, 5);
@@ -9469,7 +9799,7 @@ mod tests {
         let no_op = forward
             .apply_delta(context_test_delta(vec![revision]))
             .unwrap()
-            .0;
+            .document;
         assert_retained_context_oracle(&no_op, 5);
         assert!(Arc::ptr_eq(
             &radix_lookup(&forward.entries, 1).unwrap().node,
@@ -9482,7 +9812,7 @@ mod tests {
         let other_fork = base
             .apply_delta(context_test_delta(vec![remove]))
             .unwrap()
-            .0;
+            .document;
         assert_retained_context_oracle(&other_fork, 0);
         assert_retained_context_oracle(&base, 1);
         assert_retained_context_oracle(&forward, 5);
@@ -9557,22 +9887,22 @@ mod tests {
         let flex_only = base
             .apply_delta(context_test_delta(vec![flex_update.clone()]))
             .unwrap()
-            .0;
+            .document;
         let box_only = base
             .apply_delta(context_test_delta(vec![box_update.clone()]))
             .unwrap()
-            .0;
+            .document;
         let forward = base
             .apply_delta(context_test_delta(vec![
                 flex_update.clone(),
                 box_update.clone(),
             ]))
             .unwrap()
-            .0;
+            .document;
         let reverse = base
             .apply_delta(context_test_delta(vec![box_update, flex_update.clone()]))
             .unwrap()
-            .0;
+            .document;
         assert_retained_context_oracle(&base, 4);
         assert_retained_context_oracle(&flex_only, 5);
         assert_retained_context_oracle(&box_only, 3);
@@ -9586,7 +9916,7 @@ mod tests {
                 "slot-patches": [{"slot": 1, "local": {"max-height": {"kind": "none"}}}]}),
             ]))
             .unwrap()
-            .0;
+            .document;
         assert_retained_context_oracle(&removed, 0);
         assert_retained_context_oracle(&forward, 4);
 
@@ -9628,6 +9958,536 @@ mod tests {
             0,
             "retained context validation traversed the document"
         );
+    }
+
+    fn source_test_entry(
+        node_id: u64,
+        expected: u64,
+        target: u64,
+        patches: Vec<JsonValue>,
+    ) -> JsonValue {
+        serde_json::json!({"node-id": node_id, "expected-revision": expected,
+            "target-revision": target, "slot-patches": patches})
+    }
+
+    fn source_test_content(text: &str) -> JsonValue {
+        serde_json::json!({"lines": [{"clusters": [{"text": text, "width": text.len(), "cjk": false, "space": false}]}]})
+    }
+
+    fn source_test_base() -> Arc<RetainedDocument> {
+        RetainedDocument::bootstrap(retained_document(identified(
+            text_box(1, measured_text(vec![vec![cluster("abc", 3, None)]]), None),
+            1,
+            7,
+        )))
+        .unwrap()
+        .0
+    }
+
+    fn source_test_seeds(changes: &SourceChanges) -> Vec<(u64, u64, u64, u8, Vec<LocalField>)> {
+        let mut seeds = Vec::new();
+        changes.visit_changed_slots(|owner, expected, target, slot, fields| {
+            seeds.push((owner, expected, target, slot, fields.to_vec()));
+        });
+        seeds
+    }
+
+    #[test]
+    fn retained_source_noops_preserve_body_summary_identity_and_advance_cas() {
+        let base = source_test_base();
+        let old = radix_lookup(&base.entries, 1).unwrap();
+        for (patches, compared) in [
+            (vec![], 0),
+            (vec![serde_json::json!({"slot": 0, "local": {}})], 0),
+            (
+                vec![serde_json::json!({"slot": 0, "local": {"padding-left": 0}})],
+                1,
+            ),
+            (
+                vec![
+                    serde_json::json!({"slot": 0, "local": {"content": source_test_content("abc")}}),
+                ],
+                1,
+            ),
+        ] {
+            let applied = base
+                .apply_delta(context_test_delta(vec![source_test_entry(
+                    1, 7, 8, patches,
+                )]))
+                .unwrap();
+            let target = radix_lookup(&applied.document.entries, 1).unwrap();
+            assert!(Arc::ptr_eq(&old.node, &target.node));
+            for slot in 0..2 {
+                assert!(Arc::ptr_eq(&old.slot_work[slot], &target.slot_work[slot]));
+            }
+            assert_eq!(target.revision, 8);
+            assert_eq!(old.revision, 7);
+            assert!(source_test_seeds(&applied.changes).is_empty());
+            assert!(applied.changes.applies_to(&base, &applied.document));
+            assert_eq!(applied.stats.source_work.fields_compared, compared);
+            assert_eq!(applied.stats.source_work.local_nodes_copied, 0);
+            assert!(applied
+                .document
+                .apply_delta(context_test_delta(vec![source_test_entry(1, 7, 9, vec![])]))
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn retained_source_mixed_content_compares_payload_and_preserves_equal_arc() {
+        let base = source_test_base();
+        let old = radix_lookup(&base.entries, 1).unwrap();
+        let applied = base.apply_delta(context_test_delta(vec![source_test_entry(1, 7, 8, vec![
+            serde_json::json!({"slot": 0, "local": {"padding-left": 2, "content": source_test_content("abc")}})
+        ])])).unwrap();
+        let target = radix_lookup(&applied.document.entries, 1).unwrap();
+        let LayoutNode::Box {
+            content: Some(old_content),
+            ..
+        } = old.node.as_ref()
+        else {
+            unreachable!()
+        };
+        let LayoutNode::Box {
+            content: Some(target_content),
+            ..
+        } = target.node.as_ref()
+        else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(old_content, target_content));
+        assert!(Arc::ptr_eq(&old.slot_work[0], &target.slot_work[0]));
+        assert_eq!(
+            source_test_seeds(&applied.changes),
+            vec![(1, 7, 8, 0, vec![LocalField::PaddingLeft])]
+        );
+        let work = applied.stats.source_work;
+        assert_eq!(
+            (
+                work.fields_compared,
+                work.text_lines_compared,
+                work.text_clusters_compared,
+                work.text_bytes_compared,
+                work.local_nodes_copied
+            ),
+            (2, 1, 1, 3, 1)
+        );
+
+        let different = base.apply_delta(context_test_delta(vec![source_test_entry(1, 7, 8, vec![
+            serde_json::json!({"slot": 0, "local": {"content": source_test_content("axc")}})
+        ])])).unwrap();
+        assert_eq!(
+            different.stats.source_work.text_bytes_compared, 2,
+            "byte comparison must stop at the actual mismatch"
+        );
+        assert_eq!(
+            source_test_seeds(&different.changes),
+            vec![(1, 7, 8, 0, vec![LocalField::Content])]
+        );
+    }
+
+    #[test]
+    fn retained_source_text_payload_compares_every_cluster_field() {
+        let root = identified(nonuniform_text(1, &[1]), 1, 7);
+        let mut full = retained_document(root);
+        full.property_template_count = 1;
+        let (base, _) = RetainedDocument::bootstrap(full).unwrap();
+        let original_content = source_test_content("x");
+        for (field, value) in [
+            ("text", serde_json::json!("y")),
+            ("width", serde_json::json!(2)),
+            ("cjk", serde_json::json!(true)),
+            ("space", serde_json::json!(true)),
+            ("pixel-space", serde_json::json!(true)),
+            ("source-template-id", serde_json::json!(0)),
+        ] {
+            let mut content = original_content.clone();
+            content["lines"][0]["clusters"][0][field] = value;
+            let mut delta = context_test_delta(vec![source_test_entry(
+                1,
+                7,
+                8,
+                vec![serde_json::json!({"slot": 0, "local": {"content": content}})],
+            )]);
+            delta.property_template_base_count = 1;
+            delta.property_template_target_count = 1;
+            let applied = base.apply_delta(delta).unwrap();
+            assert_eq!(
+                source_test_seeds(&applied.changes),
+                vec![(1, 7, 8, 0, vec![LocalField::Content])],
+                "{field}"
+            );
+        }
+        let mut delta = context_test_delta(vec![source_test_entry(
+            1,
+            7,
+            8,
+            vec![serde_json::json!({"slot": 0, "local": {"content": original_content}})],
+        )]);
+        delta.property_template_base_count = 1;
+        delta.property_template_target_count = 1;
+        let equal = base.apply_delta(delta).unwrap();
+        assert!(Arc::ptr_eq(
+            &radix_lookup(&base.entries, 1).unwrap().node,
+            &radix_lookup(&equal.document.entries, 1).unwrap().node
+        ));
+        assert!(equal.changes.owners.is_empty());
+    }
+
+    #[test]
+    fn retained_source_slot_seeds_are_exact_in_both_orders_and_slot_one_only() {
+        let leaf = identified(
+            text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            2,
+            1,
+        );
+        let root = identified(
+            child_box(1, context_test_flex(Size::Auto, vec![leaf]), None),
+            1,
+            7,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let old = radix_lookup(&base.entries, 1).unwrap();
+        let LayoutNode::Box {
+            child: Some(old_child),
+            ..
+        } = old.node.as_ref()
+        else {
+            unreachable!()
+        };
+        let LayoutNode::Flex {
+            items: old_items, ..
+        } = old_child.as_ref()
+        else {
+            unreachable!()
+        };
+        let slot_zero = serde_json::json!({"slot": 0, "local": {"padding-left": 1, "height": {"kind": "auto"}}});
+        let slot_one = serde_json::json!({"slot": 1, "local": {"height": {"kind": "lines", "value": 1}, "width": {"kind": "viewport-height"}}});
+        for patches in [
+            vec![slot_zero.clone()],
+            vec![slot_one.clone()],
+            vec![slot_zero.clone(), slot_one.clone()],
+            vec![slot_one.clone(), slot_zero.clone()],
+        ] {
+            let expected: Vec<_> = patches
+                .iter()
+                .map(|patch| {
+                    let slot = patch["slot"].as_u64().unwrap() as u8;
+                    (
+                        1,
+                        7,
+                        8,
+                        slot,
+                        vec![if slot == 0 {
+                            LocalField::PaddingLeft
+                        } else {
+                            LocalField::Height
+                        }],
+                    )
+                })
+                .collect();
+            let applied = base
+                .apply_delta(context_test_delta(vec![source_test_entry(
+                    1, 7, 8, patches,
+                )]))
+                .unwrap();
+            assert_eq!(source_test_seeds(&applied.changes), expected);
+            let target = radix_lookup(&applied.document.entries, 1).unwrap();
+            let LayoutNode::Box {
+                child: Some(target_child),
+                ..
+            } = target.node.as_ref()
+            else {
+                unreachable!()
+            };
+            let LayoutNode::Flex {
+                items: target_items,
+                ..
+            } = target_child.as_ref()
+            else {
+                unreachable!()
+            };
+            assert!(Arc::ptr_eq(old_items, target_items));
+            if expected.iter().all(|seed| seed.3 == 0) {
+                assert!(Arc::ptr_eq(old_child, target_child));
+            }
+            if expected.iter().all(|seed| seed.3 == 1) {
+                assert!(Arc::ptr_eq(&old.slot_work[0], &target.slot_work[0]));
+            }
+            assert!(Arc::ptr_eq(
+                &radix_lookup(&base.entries, 2).unwrap().node,
+                &radix_lookup(&applied.document.entries, 2).unwrap().node
+            ));
+        }
+    }
+
+    #[test]
+    fn retained_source_size_expression_identity_is_independent_of_resolved_geometry() {
+        let mut root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            7,
+        );
+        let LayoutNode::Box { height, .. } = &mut root else {
+            unreachable!()
+        };
+        *height = Size::Lines { value: 10 };
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let expression = serde_json::json!({"kind": "add", "values": [{"kind": "lines", "value": 4}, {"kind": "lines", "value": 6}]});
+        let applied = base
+            .apply_delta(context_test_delta(vec![source_test_entry(
+                1,
+                7,
+                8,
+                vec![serde_json::json!({"slot": 0, "local": {"height": expression}})],
+            )]))
+            .unwrap();
+        assert_eq!(
+            source_test_seeds(&applied.changes),
+            vec![(1, 7, 8, 0, vec![LocalField::Height])]
+        );
+        assert_eq!(
+            base.layout_tape(test_context(), None).unwrap(),
+            applied.document.layout_tape(test_context(), None).unwrap()
+        );
+        assert_eq!(applied.stats.source_work.size_nodes_compared, 1);
+        let equal = applied
+            .document
+            .apply_delta(context_test_delta(vec![source_test_entry(
+                1,
+                8,
+                9,
+                vec![serde_json::json!({"slot": 0, "local": {"height": expression}})],
+            )]))
+            .unwrap();
+        assert_eq!(equal.stats.source_work.size_nodes_compared, 3);
+        assert_eq!(equal.stats.source_work.local_nodes_copied, 0);
+        assert!(equal.changes.owners.is_empty());
+    }
+
+    #[test]
+    fn retained_source_registry_only_updates_and_forks_bind_exact_document_identity() {
+        let base = source_test_base();
+        let mut delta = context_test_delta(vec![]);
+        delta.styles_append = vec![serde_json::from_value(
+            serde_json::json!({"mode": "add", "face": {"foreground": "red"}}),
+        )
+        .unwrap()];
+        delta.property_template_target_count = 2;
+        let registry = base.apply_delta(delta).unwrap();
+        assert_eq!(registry.changes.registry_ranges(), (0..1, 0..2));
+        assert!(registry.changes.owners.is_empty());
+        assert_eq!(registry.stats.entries_parsed, 0);
+        assert!(Arc::ptr_eq(&base.entries, &registry.document.entries));
+        assert_eq!(base.style_count, 0);
+
+        let entry = source_test_entry(
+            1,
+            7,
+            8,
+            vec![serde_json::json!({"slot": 0, "local": {"padding-left": 2}})],
+        );
+        let left = base
+            .apply_delta(context_test_delta(vec![entry.clone()]))
+            .unwrap();
+        let right = base.apply_delta(context_test_delta(vec![entry])).unwrap();
+        assert!(left.changes.applies_to(&base, &left.document));
+        assert!(!left.changes.applies_to(&base, &right.document));
+        assert!(!left.changes.applies_to(&right.document, &left.document));
+        assert_eq!(
+            source_test_seeds(&left.changes),
+            source_test_seeds(&right.changes)
+        );
+    }
+
+    #[test]
+    fn retained_source_transient_changes_do_not_retain_document_history() {
+        let base = source_test_base();
+        let weak_base = Arc::downgrade(&base);
+        let applied = base
+            .apply_delta(context_test_delta(vec![source_test_entry(1, 7, 8, vec![])]))
+            .unwrap();
+        let AppliedDelta {
+            document: target,
+            changes,
+            ..
+        } = applied;
+        drop(base);
+        assert!(
+            weak_base.upgrade().is_some(),
+            "the transient descriptor owns its exact base"
+        );
+        drop(changes);
+        assert!(
+            weak_base.upgrade().is_none(),
+            "a target document must not retain its historical base"
+        );
+        let weak_target = Arc::downgrade(&target);
+        let next = target
+            .apply_delta(context_test_delta(vec![source_test_entry(1, 8, 9, vec![])]))
+            .unwrap();
+        drop(target);
+        let AppliedDelta {
+            document: next,
+            changes,
+            ..
+        } = next;
+        drop(changes);
+        assert!(weak_target.upgrade().is_none());
+        assert_eq!(radix_lookup(&next.entries, 1).unwrap().revision, 9);
+    }
+
+    #[test]
+    fn retained_source_local_comparison_work_does_not_grow_with_owner_count() {
+        for count in [32, 128, 512] {
+            let children = (2..count + 2)
+                .map(|id| {
+                    identified(
+                        text_box(id, measured_text(vec![vec![cluster("abc", 3, None)]]), None),
+                        id as u64,
+                        7,
+                    )
+                })
+                .collect();
+            let root = identified(
+                child_box(1, context_test_flex(Size::Auto, children), None),
+                1,
+                7,
+            );
+            let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+            let applied = base.apply_delta(context_test_delta(vec![source_test_entry(2, 7, 8, vec![serde_json::json!({"slot": 0, "local": {"content": source_test_content("abc"), "padding-left": 2}})])])).unwrap();
+            let work = applied.stats.source_work;
+            assert_eq!(
+                (
+                    work.fields_compared,
+                    work.text_lines_compared,
+                    work.text_clusters_compared,
+                    work.text_bytes_compared,
+                    work.local_nodes_copied
+                ),
+                (2, 1, 1, 3, 1)
+            );
+            assert_eq!(applied.stats.trie_path_nodes_copied, 17);
+            assert!(Arc::ptr_eq(&base.topology, &applied.document.topology));
+        }
+    }
+
+    #[test]
+    fn retained_source_rejection_contract_preserves_parent_and_render() {
+        let root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            7,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let before = base.layout_tape(test_context(), None).unwrap();
+        let entry = |id, expected, target, patches: Vec<JsonValue>| {
+            serde_json::json!({
+                "node-id": id, "expected-revision": expected, "target-revision": target,
+                "slot-patches": patches
+            })
+        };
+        let same = serde_json::json!({"slot": 0, "local": {"padding-left": 0}});
+        for (entries, message) in [
+            (
+                vec![entry(1, 6, 8, vec![same.clone()])],
+                "node revision mismatch",
+            ),
+            (
+                vec![entry(1, 7, 7, vec![same.clone()])],
+                "node revision mismatch",
+            ),
+            (vec![entry(99, 7, 8, vec![same.clone()])], "unknown node id"),
+            (
+                vec![entry(1, 7, 8, vec![same.clone()]), entry(1, 7, 9, vec![])],
+                "duplicate node id",
+            ),
+            (
+                vec![entry(1, 7, 8, vec![same.clone(), same.clone()])],
+                "duplicate slot",
+            ),
+            (
+                vec![entry(
+                    1,
+                    7,
+                    8,
+                    vec![
+                        serde_json::json!({"slot": 0, "local": {"padding-left": 0, "unknown-field": 0}}),
+                    ],
+                )],
+                "Unsupported native retained box field",
+            ),
+            (
+                vec![entry(
+                    1,
+                    7,
+                    8,
+                    vec![
+                        serde_json::json!({"slot": 0, "local": {"padding-left": 0, "height": {"kind": "lines", "value": -1}}}),
+                    ],
+                )],
+                "cannot be negative",
+            ),
+            (
+                vec![entry(
+                    1,
+                    7,
+                    8,
+                    vec![
+                        serde_json::json!({"slot": 0, "local": {"padding-left": 0, "content": null}}),
+                    ],
+                )],
+                "exactly one text or child",
+            ),
+            (
+                vec![entry(1, 7, 8, vec![same.clone()]), entry(99, 7, 8, vec![])],
+                "unknown node id",
+            ),
+        ] {
+            let error = base.apply_delta(context_test_delta(entries)).unwrap_err();
+            assert!(error.contains(message), "{error}");
+            assert_eq!(radix_lookup(&base.entries, 1).unwrap().revision, 7);
+            assert_eq!(base.layout_tape(test_context(), None).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn retained_source_equal_and_mixed_fields_preserve_render_contract() {
+        let root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            7,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root.clone())).unwrap();
+        let content = serde_json::json!({"lines": [{"clusters": [{"text": "x", "width": 1, "cjk": false, "space": false}]}]});
+        for local in [
+            serde_json::json!({}),
+            serde_json::json!({"padding-left": 0, "content": content.clone()}),
+            serde_json::json!({"padding-left": 2, "content": content}),
+        ] {
+            let target = base
+                .apply_delta(context_test_delta(vec![serde_json::json!({
+                    "node-id": 1, "expected-revision": 7, "target-revision": 8,
+                    "slot-patches": [{"slot": 0, "local": local}]
+                })]))
+                .unwrap()
+                .document;
+            let mut expected = root.clone();
+            if let LayoutNode::Box { padding_left, .. } = &mut expected {
+                *padding_left = local
+                    .get("padding-left")
+                    .and_then(JsonValue::as_i64)
+                    .unwrap_or(0);
+            }
+            assert_eq!(
+                target.layout_tape(test_context(), None).unwrap(),
+                retained_document(expected)
+                    .layout_tape(test_context(), None)
+                    .unwrap()
+            );
+            assert_eq!(radix_lookup(&target.entries, 1).unwrap().revision, 8);
+        }
+        assert_eq!(radix_lookup(&base.entries, 1).unwrap().revision, 7);
     }
 
     #[test]
@@ -9683,7 +10543,10 @@ mod tests {
             }]
         }))
         .unwrap();
-        let (target, validated, copied) = base.apply_delta(delta).unwrap();
+        let applied = base.apply_delta(delta).unwrap();
+        let target = applied.document;
+        let validated = applied.stats.entries_parsed;
+        let copied = applied.stats.trie_path_nodes_copied;
         assert_eq!(validated, 1);
         assert_eq!(copied, 17);
         let target_root = radix_lookup(&target.entries, 1).unwrap();
@@ -9725,8 +10588,10 @@ mod tests {
             }))
             .unwrap()
         };
-        let (left, _, copied) = base.apply_delta(revision_only(3, 20)).unwrap();
-        let (right, _, _) = base.apply_delta(revision_only(3, 30)).unwrap();
+        let applied = base.apply_delta(revision_only(3, 20)).unwrap();
+        let left = applied.document;
+        let copied = applied.stats.trie_path_nodes_copied;
+        let right = base.apply_delta(revision_only(3, 30)).unwrap().document;
         assert_eq!(copied, 17);
         assert!(Arc::ptr_eq(
             &radix_lookup(&base.entries, 1).unwrap().node,
@@ -9834,11 +10699,11 @@ mod tests {
         let forward = base
             .apply_delta(delta(vec![entry(2, 10), entry(3, high)]))
             .unwrap()
-            .0;
+            .document;
         let reverse = base
             .apply_delta(delta(vec![entry(3, high), entry(2, 10)]))
             .unwrap()
-            .0;
+            .document;
         assert_eq!(forward.work_units, MAX_LAYOUT_WORK_UNITS);
         assert_eq!(reverse.work_units, MAX_LAYOUT_WORK_UNITS);
     }
