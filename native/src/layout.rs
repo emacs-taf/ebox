@@ -19,6 +19,19 @@ pub(crate) fn atom_plan_work() -> AtomPlanWork {
     atom_plan::work()
 }
 
+#[path = "line_plan.rs"]
+mod line_plan;
+use line_plan::LinePlan;
+pub(crate) use line_plan::LinePlanWork;
+
+pub(crate) fn reset_line_plan_work() {
+    line_plan::reset_work();
+}
+
+pub(crate) fn line_plan_work() -> LinePlanWork {
+    line_plan::work()
+}
+
 fn deserialize_arc_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -1835,14 +1848,18 @@ impl Atom {
 
 #[derive(Debug, Clone)]
 struct Rendered {
-    lines: Vec<Line>,
-    breaks: Vec<AtomProperties>,
+    lines: LinePlan,
 }
 
 impl Rendered {
     fn from_lines(lines: Vec<Line>) -> Self {
-        let breaks = vec![AtomProperties::default(); lines.len().saturating_sub(1)];
-        Self { lines, breaks }
+        Self {
+            lines: LinePlan::from_lines(lines),
+        }
+    }
+
+    fn from_line_plan(lines: LinePlan) -> Self {
+        Self { lines }
     }
 
     fn first_width(&self) -> i64 {
@@ -1850,7 +1867,7 @@ impl Rendered {
     }
 
     fn max_width(&self) -> i64 {
-        self.lines.iter().map(|line| line.width).max().unwrap_or(0)
+        self.lines.max_width()
     }
 
     fn min_content_width(&self, wrap_mode: WrapMode) -> i64 {
@@ -1865,28 +1882,29 @@ impl Rendered {
     }
 
     fn height(&self) -> i64 {
-        self.lines.len() as i64
+        self.lines.height()
     }
 
     fn apply_scroll_window(&mut self, region_id: i64) {
-        for line in &mut self.lines {
-            line.atoms = line.atoms.apply_scroll_window(region_id);
-        }
-        for properties in &mut self.breaks {
-            properties.scroll_window = Some(region_id);
-        }
+        self.lines = self
+            .lines
+            .map_lines(|_, mut line| {
+                line.atoms = line.atoms.apply_scroll_window(region_id);
+                line
+            })
+            .map_breaks(|properties| {
+                properties.scroll_window = Some(region_id);
+            });
     }
 
     fn into_tape(self, style_count: u32) -> LayoutTape {
-        let last_line = self.lines.len().saturating_sub(1);
-        let mut breaks = self.breaks.into_iter();
+        line_plan::record_materialized(self.lines.len(), self.lines.prefix_chars(self.lines.len()));
         LayoutTape {
             style_count,
             lines: self
                 .lines
-                .into_iter()
-                .enumerate()
-                .map(|(index, line)| TapeLine {
+                .iter_with_breaks()
+                .map(|(line, break_after)| TapeLine {
                     width: line.width,
                     atoms: line
                         .atoms
@@ -1908,8 +1926,7 @@ impl Rendered {
                             }
                         })
                         .collect(),
-                    break_after: (index < last_line)
-                        .then(|| breaks.next().expect("rendered break invariant")),
+                    break_after: break_after.cloned(),
                 })
                 .collect(),
         }
@@ -5026,7 +5043,7 @@ fn wrap_rendered_line(line: &Line, max_width: i64, mode: WrapMode) -> Vec<Line> 
         return vec![Line::default()];
     }
     if mode == WrapMode::None || line.width <= max_width {
-        return vec![line.clone()];
+        return vec![line_plan::clone_line(line)];
     }
 
     // Wrapping inspects the actual atom boundaries. Composition and decoration
@@ -5112,34 +5129,18 @@ fn wrap_rendered(rendered: Rendered, max_width: i64, mode: WrapMode) -> Rendered
     if mode == WrapMode::None {
         return rendered;
     }
-    let original_breaks = rendered.breaks;
-    let mut lines = Vec::new();
-    let mut breaks = Vec::new();
-    for (line_index, line) in rendered.lines.into_iter().enumerate() {
-        for (piece_index, piece) in wrap_rendered_line(&line, max_width, mode)
-            .into_iter()
-            .enumerate()
-        {
-            if !lines.is_empty() {
-                breaks.push(if piece_index == 0 {
-                    original_breaks[line_index - 1].clone()
-                } else {
-                    AtomProperties::default()
-                });
-            }
-            lines.push(piece);
-        }
+    let mut lines = LinePlan::default();
+    let mut joining_break = AtomProperties::default();
+    for (line, break_after) in rendered.lines.iter_with_breaks() {
+        let pieces = LinePlan::from_lines(wrap_rendered_line(line, max_width, mode));
+        lines = lines.concat_with_break(&pieces, joining_break);
+        joining_break = break_after.cloned().unwrap_or_default();
     }
-    Rendered { lines, breaks }
+    Rendered { lines }
 }
 
-fn vertical_align(
-    mut lines: Vec<Line>,
-    height: usize,
-    align: VerticalAlign,
-    width: i64,
-) -> Vec<Line> {
-    lines.truncate(height);
+fn vertical_align(lines: LinePlan, height: usize, align: VerticalAlign, width: i64) -> LinePlan {
+    let lines = lines.slice(0..lines.len().min(height));
     if lines.len() >= height {
         return lines;
     }
@@ -5149,11 +5150,11 @@ fn vertical_align(
         VerticalAlign::Bottom => rest,
         VerticalAlign::Center => rest / 2,
     };
-    let mut output = Vec::with_capacity(height);
-    output.extend((0..top).map(|_| Line::blank(width)));
-    output.append(&mut lines);
-    output.extend((0..(rest - top)).map(|_| Line::blank(width)));
-    output
+    LinePlan::from_lines((0..top).map(|_| Line::blank(width)))
+        .concat(&lines)
+        .concat(&LinePlan::from_lines(
+            (0..(rest - top)).map(|_| Line::blank(width)),
+        ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5824,7 +5825,7 @@ fn flex_resolved_align(item: &FlexRuntimeItem<'_>, container: FlexAlign) -> Flex
 }
 
 fn pad_rendered_width(mut rendered: Rendered, width: i64, align: FlexAlign) -> Rendered {
-    for line in &mut rendered.lines {
+    rendered.lines = rendered.lines.map_lines(|_, mut line| {
         let extra = (width - line.width).max(0);
         let left = match align {
             FlexAlign::FlexEnd | FlexAlign::End | FlexAlign::Right | FlexAlign::SelfEnd => extra,
@@ -5833,7 +5834,8 @@ fn pad_rendered_width(mut rendered: Rendered, width: i64, align: FlexAlign) -> R
         };
         line.prepend_space(left);
         line.push_space(extra - left);
-    }
+        line
+    });
     rendered
 }
 
@@ -5960,38 +5962,40 @@ fn concat_horizontal_sized(parts: Vec<(Rendered, i64)>, target_height: i64) -> R
         .max()
         .unwrap_or(1)
         .max(target_height);
-    let mut lines = Vec::with_capacity(height as usize);
-    for index in 0..height as usize {
+    let mut parts = parts
+        .iter()
+        .map(|(rendered, width)| (rendered.lines.iter(), *width))
+        .collect::<Vec<_>>();
+    let lines = LinePlan::from_lines((0..height as usize).map(|_| {
         let mut line = Line::default();
-        for (rendered, width) in &parts {
-            if let Some(part) = rendered.lines.get(index) {
+        for (lines, width) in &mut parts {
+            if let Some(part) = lines.next() {
                 line.append(part);
             } else {
                 line.push_space(*width);
             }
         }
-        lines.push(line);
-    }
-    Rendered::from_lines(lines)
+        line
+    }));
+    Rendered { lines }
 }
 
 fn stack_vertical(parts: Vec<Rendered>) -> Rendered {
-    let mut lines = Vec::new();
-    let mut breaks = Vec::new();
-    for mut part in parts {
-        if part.lines.is_empty() {
-            continue;
+    fn join_parts(parts: &[Rendered]) -> LinePlan {
+        match parts {
+            [] => LinePlan::default(),
+            [part] => part.lines.clone(),
+            _ => {
+                let middle = parts.len() / 2;
+                join_parts(&parts[..middle]).concat(&join_parts(&parts[middle..]))
+            }
         }
-        if !lines.is_empty() {
-            breaks.push(AtomProperties::default());
-        }
-        lines.append(&mut part.lines);
-        breaks.append(&mut part.breaks);
     }
+    let mut lines = join_parts(&parts);
     if lines.is_empty() {
-        lines.push(Line::default());
+        lines = LinePlan::from_lines([Line::default()]);
     }
-    Rendered { lines, breaks }
+    Rendered { lines }
 }
 
 fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
@@ -5999,25 +6003,9 @@ fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
     let height = usize::try_from(height.max(0)).unwrap_or(0);
     let end = start.saturating_add(height).min(rendered.lines.len());
     if start >= end {
-        return Rendered {
-            lines: Vec::new(),
-            breaks: Vec::new(),
-        };
+        return Rendered::from_line_plan(LinePlan::default());
     }
-    let line_count = end - start;
-    let lines = rendered
-        .lines
-        .into_iter()
-        .skip(start)
-        .take(line_count)
-        .collect::<Vec<_>>();
-    let breaks = rendered
-        .breaks
-        .into_iter()
-        .skip(start)
-        .take(line_count.saturating_sub(1))
-        .collect::<Vec<_>>();
-    Rendered { lines, breaks }
+    Rendered::from_line_plan(rendered.lines.slice(start..end))
 }
 
 fn exact_rendered_height(
@@ -6113,14 +6101,12 @@ fn render_column_window(
     start: i64,
     height: i64,
 ) -> Result<Rendered, String> {
-    let mut leaves = Vec::new();
-    collect_column_leaves(children, &mut leaves);
     let end = start.saturating_add(height).max(start);
     let target = context.viewport_width.max(0);
     let mut offset = 0_i64;
     let mut parts = Vec::new();
 
-    for child in leaves {
+    for child in column_leaves(children) {
         let child_height = exact_rendered_height(child, resolver, context)
             .ok_or_else(|| "Native layout column window has an unbounded child".to_owned())?;
         let child_end = offset.saturating_add(child_height);
@@ -6152,12 +6138,14 @@ fn render_column_window(
         };
 
         let extra = (target - rendered.first_width()).max(0);
-        for line in &mut rendered.lines {
-            line.push_space(extra);
-        }
         if extra > 0 {
-            rendered.breaks =
-                vec![AtomProperties::default(); rendered.lines.len().saturating_sub(1)];
+            rendered.lines = rendered
+                .lines
+                .map_lines(|_, mut line| {
+                    line.push_space(extra);
+                    line
+                })
+                .clear_breaks();
         }
         if !rendered.lines.is_empty() {
             parts.push(rendered);
@@ -6856,10 +6844,11 @@ fn render_node_with_override(
                 });
             if transparent_preformatted {
                 let mut rendered = child_rendered.take().expect("validated child");
-                for (index, line) in rendered.lines.iter_mut().enumerate() {
+                rendered.lines = rendered.lines.map_lines(|index, mut line| {
                     line.own_content(*region_id, index as i64);
                     line.apply_property_template(*surface_template_id);
-                }
+                    line
+                });
                 return Ok(rendered);
             }
 
@@ -6873,10 +6862,8 @@ fn render_node_with_override(
                         line.apply_property_template(*content_surface_template_id);
                     }
                 }
-                content_lines
-                    .into_iter()
-                    .map(|line| line.padded(content_width, *text_align))
-                    .collect::<Vec<_>>()
+                LinePlan::from_lines(content_lines)
+                    .map_lines(|_, line| line.padded(content_width, *text_align))
             } else {
                 let rendered = child_rendered.expect("validated child");
                 let uniform_width = rendered
@@ -6889,18 +6876,17 @@ fn render_node_with_override(
                 } else {
                     rendered
                 };
-                rendered
-                    .lines
-                    .into_iter()
-                    .map(|line| {
-                        if preserve_exact_width {
-                            line
-                        } else {
-                            line.padded(content_width, *text_align)
-                        }
-                    })
-                    .collect::<Vec<_>>()
+                if preserve_exact_width {
+                    rendered.lines
+                } else {
+                    rendered
+                        .lines
+                        .map_lines(|_, line| line.padded(content_width, *text_align))
+                }
             };
+            // Ordinary Box formatting historically rebuilds default breaks;
+            // the transparent preformatted branch above preserves child breaks.
+            formatted = formatted.clear_breaks();
             let text_height = windowed_child_height.unwrap_or(formatted.len() as i64);
             let minimum_height = resolve_height(
                 min_height,
@@ -6953,7 +6939,7 @@ fn render_node_with_override(
                 && *vertical == VerticalAlign::Top;
 
             let mut content_index_start = 0_i64;
-            let mut overflow_lines = Vec::new();
+            let mut overflow_lines = LinePlan::default();
             if let Some(start) = windowed_child_start {
                 content_index_start = start;
             } else if formatted.len() > content_height as usize {
@@ -6964,48 +6950,46 @@ fn render_node_with_override(
                         if simple_scroll_rendered {
                             content_index_start = start as i64;
                         }
-                        formatted = formatted[start..start + content_height as usize].to_vec();
+                        formatted = formatted.slice(start..start + content_height as usize);
                     }
                     Overflow::Hidden => {
-                        formatted.truncate(content_height as usize);
+                        formatted = formatted.slice(0..content_height as usize);
                     }
                     Overflow::Visible => {
-                        overflow_lines = formatted.split_off(content_height as usize);
+                        overflow_lines = formatted.slice(content_height as usize..formatted.len());
+                        formatted = formatted.slice(0..content_height as usize);
                     }
                 }
             }
-            for (index, line) in formatted.iter_mut().enumerate() {
+            formatted = formatted.map_lines(|index, mut line| {
                 line.own_content(*region_id, content_index_start + index as i64);
-            }
-            let mut lines =
+                line
+            });
+            let lines =
                 vertical_align(formatted, content_height as usize, *vertical, content_width)
-                    .into_iter()
-                    .map(|line| {
+                    .map_lines(|_, line| {
                         if simple_scroll_rendered {
                             line
                         } else {
                             line.collapse_whitespace_content(content_width, *region_id)
                         }
-                    })
-                    .collect::<Vec<_>>();
+                    });
 
-            let mut padded =
-                Vec::with_capacity(lines.len() + *padding_top as usize + *padding_bottom as usize);
-            padded.extend((0..*padding_top).map(|_| {
+            let mut padded = LinePlan::from_lines((0..*padding_top).map(|_| {
                 Line::blank_with_properties(
                     content_width,
                     region_properties(RegionRole::PaddingTop, *region_id, None),
                 )
             }));
-            padded.append(&mut lines);
-            padded.extend((0..*padding_bottom).map(|_| {
+            padded = padded.concat(&lines);
+            padded = padded.concat(&LinePlan::from_lines((0..*padding_bottom).map(|_| {
                 Line::blank_with_properties(
                     content_width,
                     region_properties(RegionRole::PaddingBottom, *region_id, None),
                 )
-            }));
+            })));
 
-            for line in &mut padded {
+            padded = padded.map_lines(|_, mut line| {
                 line.prepend_space_with_properties(
                     *padding_left,
                     region_properties(RegionRole::PaddingLeft, *region_id, None),
@@ -7025,23 +7009,27 @@ fn render_node_with_override(
                     *border_right,
                     region_properties(RegionRole::BorderRight, *region_id, *border_right_style),
                 );
+                line
+            });
+            if border_top_style.is_some() && !padded.is_empty() {
+                padded = padded.update_line(0, |mut line| {
+                    line.apply_style(*border_top_style);
+                    line.apply_role(RegionRole::BorderTop, *region_id);
+                    line
+                });
             }
-            if border_top_style.is_some() {
-                if let Some(first) = padded.first_mut() {
-                    first.apply_style(*border_top_style);
-                    first.apply_role(RegionRole::BorderTop, *region_id);
-                }
+            if border_bottom_style.is_some() && !padded.is_empty() {
+                padded = padded.update_line(padded.len() - 1, |mut line| {
+                    line.apply_style(*border_bottom_style);
+                    line.apply_role(RegionRole::BorderBottom, *region_id);
+                    line
+                });
             }
-            if border_bottom_style.is_some() {
-                if let Some(last) = padded.last_mut() {
-                    last.apply_style(*border_bottom_style);
-                    last.apply_role(RegionRole::BorderBottom, *region_id);
-                }
-            }
-            for line in &mut padded {
+            padded = padded.map_lines(|_, mut line| {
                 line.apply_property_template(*surface_template_id);
-            }
-            for line in &mut padded {
+                line
+            });
+            padded = padded.map_lines(|_, mut line| {
                 line.prepend_space_with_properties(
                     *margin_left,
                     region_properties(RegionRole::MarginLeft, *region_id, None),
@@ -7050,33 +7038,33 @@ fn render_node_with_override(
                     *margin_right,
                     region_properties(RegionRole::MarginRight, *region_id, None),
                 );
-            }
+                line
+            });
             let total_width = content_width + side_width;
-            let mut output =
-                Vec::with_capacity(padded.len() + *margin_top as usize + *margin_bottom as usize);
-            output.extend((0..*margin_top).map(|_| {
+            let mut output = LinePlan::from_lines((0..*margin_top).map(|_| {
                 Line::blank_with_properties(
                     total_width,
                     region_properties(RegionRole::MarginTop, *region_id, None),
                 )
             }));
-            output.append(&mut padded);
-            output.extend((0..*margin_bottom).map(|_| {
+            output = output.concat(&padded);
+            output = output.concat(&LinePlan::from_lines((0..*margin_bottom).map(|_| {
                 Line::blank_with_properties(
                     total_width,
                     region_properties(RegionRole::MarginBottom, *region_id, None),
                 )
-            }));
-            let mut rendered = Rendered::from_lines(output);
+            })));
+            let mut rendered = Rendered::from_line_plan(output);
             if !overflow_lines.is_empty() {
                 let left_space = margin_left + border_left + padding_left;
                 let right_space = padding_right + border_right + margin_right;
-                for line in &mut overflow_lines {
+                overflow_lines = overflow_lines.map_lines(|_, mut line| {
                     line.apply_style(*foreground_style);
                     line.prepend_space(left_space);
                     line.push_space(right_space);
-                }
-                rendered = stack_vertical(vec![rendered, Rendered::from_lines(overflow_lines)]);
+                    line
+                });
+                rendered = stack_vertical(vec![rendered, Rendered::from_line_plan(overflow_lines)]);
             }
             if *overflow == Overflow::Scroll && text_height > content_height {
                 rendered.apply_scroll_window(*region_id);
@@ -7111,30 +7099,17 @@ fn render_node_with_override(
                 .iter()
                 .map(|child| render_node(child, resolver, child_context, intrinsic))
                 .collect::<Result<Vec<_>, _>>()?;
-            let height = rendered
-                .iter()
-                .map(|item| item.lines.len())
-                .max()
-                .unwrap_or(1);
-            let mut lines = Vec::with_capacity(height);
-            for index in 0..height {
-                let mut line = Line::default();
-                for item in &rendered {
-                    if let Some(child_line) = item.lines.get(index) {
-                        line.append(child_line);
-                    } else {
-                        line.push_space(item.first_width());
-                    }
-                }
-                lines.push(line);
-            }
-            Ok(Rendered::from_lines(lines))
+            let parts = rendered
+                .into_iter()
+                .map(|rendered| {
+                    let width = rendered.first_width();
+                    (rendered, width)
+                })
+                .collect();
+            Ok(concat_horizontal_sized(parts, 0))
         }
         LayoutNode::Column { children, .. } => {
-            let mut leaves = Vec::new();
-            collect_column_leaves(children, &mut leaves);
-            let rendered = leaves
-                .into_iter()
+            let rendered = column_leaves(children)
                 .map(|child| render_node(child, resolver, context, intrinsic))
                 .collect::<Result<Vec<_>, _>>()?;
             let maximum = rendered
@@ -7153,12 +7128,14 @@ fn render_node_with_override(
             let mut parts = Vec::with_capacity(rendered.len());
             for mut item in rendered {
                 let extra = (target - item.first_width()).max(0);
-                for line in &mut item.lines {
-                    line.push_space(extra);
-                }
                 if extra > 0 {
-                    item.breaks =
-                        vec![AtomProperties::default(); item.lines.len().saturating_sub(1)];
+                    item.lines = item
+                        .lines
+                        .map_lines(|_, mut line| {
+                            line.push_space(extra);
+                            line
+                        })
+                        .clear_breaks();
                 }
                 parts.push(item);
             }
@@ -7194,14 +7171,19 @@ fn render_node_with_override(
     }
 }
 
-fn collect_column_leaves<'a>(children: &'a [LayoutNode], output: &mut Vec<&'a LayoutNode>) {
-    for child in children {
-        if let LayoutNode::Column { children, .. } = child {
-            collect_column_leaves(children, output);
-        } else {
-            output.push(child);
+// Flatten only literal Columns. In particular, a retained NodeRef remains a
+// child evaluation boundary even when it resolves to an identified Column.
+fn column_leaves(children: &[LayoutNode]) -> impl Iterator<Item = &LayoutNode> {
+    let mut stack = vec![children.iter()];
+    std::iter::from_fn(move || loop {
+        match stack.last_mut()?.next() {
+            Some(LayoutNode::Column { children, .. }) => stack.push(children.iter()),
+            Some(child) => return Some(child),
+            None => {
+                stack.pop();
+            }
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -7711,14 +7693,14 @@ mod tests {
             }),
         )
         .expect("typed column render");
-        assert_eq!(rendered.lines[0].width, 100);
+        assert_eq!(rendered.lines.get(0).unwrap().width, 100);
         assert!(
             matches!(
-                rendered.lines[0].atoms.first(),
+                rendered.lines.get(0).unwrap().atoms.first(),
                 Some(Atom::Space { width: 45, .. })
             ),
             "{:?}",
-            rendered.lines[0].atoms
+            rendered.lines.get(0).unwrap().atoms
         );
     }
 
@@ -8210,18 +8192,28 @@ mod tests {
     #[test]
     fn vertical_stack_and_scroll_preserve_break_metadata() {
         let mut first = Rendered::from_lines(vec![Line::blank(1), Line::blank(1)]);
-        first.breaks[0].owner = Some(11);
+        first.lines = first.lines.with_break(
+            0,
+            AtomProperties {
+                owner: Some(11),
+                ..AtomProperties::default()
+            },
+        );
         let second = Rendered::from_lines(vec![Line::blank(1)]);
         let mut stacked = stack_vertical(vec![first, second]);
 
-        assert_eq!(stacked.breaks.len(), 2);
-        assert_eq!(stacked.breaks[0].owner, Some(11));
-        assert_eq!(stacked.breaks[1], AtomProperties::default());
+        assert_eq!(stacked.lines.len() - 1, 2);
+        assert_eq!(stacked.lines.break_after(0).unwrap().owner, Some(11));
+        assert_eq!(
+            stacked.lines.break_after(1),
+            Some(&AtomProperties::default())
+        );
 
         stacked.apply_scroll_window(9);
         assert!(stacked
-            .breaks
-            .iter()
+            .lines
+            .iter_with_breaks()
+            .filter_map(|(_, properties)| properties)
             .all(|properties| { properties.scroll_window == Some(9) }));
         assert!(stacked.lines.iter().all(|line| {
             line.atoms
@@ -8237,6 +8229,233 @@ mod tests {
             Some(9)
         );
         assert!(tape.lines[2].break_after.is_none());
+    }
+
+    #[test]
+    fn line_sequence_oracle_wrap_slice_and_join_keep_distinct_breaks() {
+        let source = Rendered {
+            lines: LinePlan::from_lines([
+                Line::from_clusters(&[cluster("a", 2, None), cluster("b", 2, None)]),
+                Line::from_clusters(&[cluster("c", 2, None), cluster("d", 2, None)]),
+            ])
+            .with_break(
+                0,
+                AtomProperties {
+                    owner: Some(17),
+                    scroll_window: Some(9),
+                    ..AtomProperties::default()
+                },
+            ),
+        };
+        let wrapped = wrap_rendered(source, 2, WrapMode::Char);
+        let tape = wrapped.clone().into_tape(0);
+        assert_eq!(tape.lines.len(), 4);
+        assert_eq!(tape.lines[0].break_after, Some(AtomProperties::default()));
+        assert_eq!(tape.lines[1].break_after.as_ref().unwrap().owner, Some(17));
+        assert_eq!(tape.lines[2].break_after, Some(AtomProperties::default()));
+        let middle = slice_rendered(wrapped, 1, 2);
+        assert_eq!(
+            middle.clone().into_tape(0).lines,
+            tape.lines[1..3]
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, mut line)| {
+                    if index == 1 {
+                        line.break_after = None;
+                    }
+                    line
+                })
+                .collect::<Vec<_>>()
+        );
+        let joined =
+            stack_vertical(vec![middle, Rendered::from_lines(vec![Line::blank(1)])]).into_tape(0);
+        assert_eq!(
+            joined.lines[0].break_after.as_ref().unwrap().owner,
+            Some(17)
+        );
+        assert_eq!(joined.lines[1].break_after, Some(AtomProperties::default()));
+    }
+
+    fn nonuniform_text(region_id: i64, widths: &[i64]) -> LayoutNode {
+        LayoutNode::Text {
+            node_id: None,
+            node_revision: None,
+            region_id,
+            content: Arc::new(measured_text(
+                widths
+                    .iter()
+                    .map(|width| vec![cluster("x", *width, None)])
+                    .collect(),
+            )),
+            typography_style: None,
+            foreground_style: None,
+            surface_template_id: None,
+            wrap_mode: WrapMode::None,
+        }
+    }
+
+    #[test]
+    fn line_sequence_oracle_column_uses_first_width_and_constant_child_extra() {
+        let column = LayoutNode::Column {
+            node_id: None,
+            node_revision: None,
+            children: Arc::new(vec![
+                nonuniform_text(1, &[2, 9]),
+                nonuniform_text(2, &[5, 1]),
+            ]),
+        };
+        let tape = render_node(&column, None, test_context(), true)
+            .unwrap()
+            .into_tape(0);
+        assert_eq!(
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [5, 12, 5, 1]
+        );
+        let tape = render_node(
+            &column,
+            None,
+            LayoutContext {
+                viewport_width: 3,
+                ..test_context()
+            },
+            false,
+        )
+        .unwrap()
+        .into_tape(0);
+        assert_eq!(
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [3, 10, 5, 1]
+        );
+    }
+
+    #[test]
+    fn line_sequence_oracle_column_flattens_literal_columns_but_not_node_refs() {
+        let inner = identified(
+            LayoutNode::Column {
+                node_id: None,
+                node_revision: None,
+                children: Arc::new(vec![nonuniform_text(1, &[2]), nonuniform_text(2, &[5])]),
+            },
+            2,
+            1,
+        );
+        let root = identified(
+            LayoutNode::Column {
+                node_id: None,
+                node_revision: None,
+                children: Arc::new(vec![inner, nonuniform_text(3, &[8])]),
+            },
+            1,
+            1,
+        );
+        let document = retained_document(root);
+        let (retained, _) = RetainedDocument::bootstrap(document.clone()).unwrap();
+        let full = render_node(&document.root, None, test_context(), true)
+            .unwrap()
+            .into_tape(0);
+        let referenced = render_node(
+            &LayoutNode::NodeRef {
+                node_id: retained.root_id,
+            },
+            Some(&retained),
+            test_context(),
+            true,
+        )
+        .unwrap()
+        .into_tape(0);
+        assert_eq!(
+            full.lines
+                .iter()
+                .map(|line| line.atoms.len())
+                .collect::<Vec<_>>(),
+            [2, 2, 1]
+        );
+        assert_eq!(
+            referenced
+                .lines
+                .iter()
+                .map(|line| line.atoms.len())
+                .collect::<Vec<_>>(),
+            [3, 2, 1]
+        );
+        assert_eq!(
+            full.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [8, 8, 8]
+        );
+        assert_eq!(
+            referenced
+                .lines
+                .iter()
+                .map(|line| line.width)
+                .collect::<Vec<_>>(),
+            [8, 8, 8]
+        );
+    }
+
+    #[test]
+    fn line_sequence_oracle_column_only_positive_extra_clears_scroll_breaks() {
+        let mut scrolled = child_box(11, nonuniform_text(12, &[2, 2, 2]), None);
+        let LayoutNode::Box { height, .. } = &mut scrolled else {
+            unreachable!()
+        };
+        *height = Size::Lines { value: 2 };
+        let column = LayoutNode::Column {
+            node_id: None,
+            node_revision: None,
+            children: Arc::new(vec![scrolled]),
+        };
+        for (width, expected_scroll) in [(1, Some(11)), (2, Some(11)), (3, None)] {
+            let tape = render_node(
+                &column,
+                None,
+                LayoutContext {
+                    viewport_width: width,
+                    ..test_context()
+                },
+                false,
+            )
+            .unwrap()
+            .into_tape(0);
+            assert_eq!(
+                tape.lines[0].break_after.as_ref().unwrap().scroll_window,
+                expected_scroll
+            );
+        }
+    }
+
+    #[test]
+    fn line_sequence_oracle_horizontal_missing_lines_use_first_width() {
+        let row = LayoutNode::Row {
+            node_id: None,
+            node_revision: None,
+            children: Arc::new(vec![
+                nonuniform_text(1, &[2, 9]),
+                nonuniform_text(2, &[5, 1, 3]),
+            ]),
+        };
+        let tape = render_node(&row, None, test_context(), true)
+            .unwrap()
+            .into_tape(0);
+        assert_eq!(
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [7, 10, 5]
+        );
+        let parts = vec![
+            (
+                Rendered::from_lines(vec![Line::blank(2), Line::blank(9)]),
+                4,
+            ),
+            (
+                Rendered::from_lines(vec![Line::blank(5), Line::blank(1), Line::blank(3)]),
+                6,
+            ),
+        ];
+        let tape = concat_horizontal_sized(parts, 4).into_tape(0);
+        assert_eq!(
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [7, 10, 7, 10]
+        );
     }
 
     #[test]
@@ -8258,7 +8477,7 @@ mod tests {
             Line::blank_with_properties(8, properties.clone()),
             Line::blank_with_properties(8, properties.clone()),
         ]);
-        rendered.breaks[0] = properties;
+        rendered.lines = rendered.lines.with_break(0, properties);
         let tape = rendered.into_tape(3);
         let styles = vec![
             StyleTemplate {

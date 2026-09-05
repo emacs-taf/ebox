@@ -470,6 +470,7 @@ struct RenderedJob {
     target_renders: u64,
     resolver_lookups: u64,
     atom_plan_work: layout::AtomPlanWork,
+    line_plan_work: layout::LinePlanWork,
 }
 
 #[derive(Default)]
@@ -523,6 +524,7 @@ struct RuntimeState {
     document_trie_path_nodes_copied: u64,
     document_resolver_lookups: u64,
     atom_plan_work: layout::AtomPlanWork,
+    line_plan_work: layout::LinePlanWork,
     confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
 }
 
@@ -545,6 +547,23 @@ struct Shared {
     readiness_channel: Mutex<Option<ReadinessChannel>>,
     job_available: Condvar,
     result_available: Condvar,
+}
+
+impl Shared {
+    fn request_stop(&self) {
+        // Both worker condition variables inspect `alive` under this mutex.
+        // Publish shutdown under the same lock so notification cannot fall
+        // between a worker's predicate check and its atomic unlock-and-wait.
+        {
+            let _state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            self.alive.store(false, Ordering::Release);
+        }
+        self.job_available.notify_all();
+        self.result_available.notify_all();
+    }
 }
 
 #[derive(Debug)]
@@ -584,6 +603,7 @@ struct SessionStats {
     document_trie_path_nodes_copied: u64,
     document_resolver_lookups: u64,
     atom_plan_work: layout::AtomPlanWork,
+    line_plan_work: layout::LinePlanWork,
     pending_baselines: usize,
     confirmed_baseline: bool,
     confirmed_baseline_bytes: usize,
@@ -657,6 +677,7 @@ impl Session {
                 document_trie_path_nodes_copied: 0,
                 document_resolver_lookups: 0,
                 atom_plan_work: layout::AtomPlanWork::default(),
+                line_plan_work: layout::LinePlanWork::default(),
                 confirmed_baseline,
             }),
             readiness_channel: Mutex::new(None),
@@ -672,8 +693,7 @@ impl Session {
             match spawn {
                 Ok(handle) => handles.push(handle),
                 Err(error) => {
-                    shared.alive.store(false, Ordering::Release);
-                    shared.job_available.notify_all();
+                    shared.request_stop();
                     for handle in handles {
                         let _ = handle.join();
                     }
@@ -1083,6 +1103,7 @@ impl Session {
         state.target_renders += output.target_renders;
         state.document_resolver_lookups += output.resolver_lookups;
         state.atom_plan_work.accumulate(output.atom_plan_work);
+        state.line_plan_work.accumulate(output.line_plan_work);
         state.document_parses += input_stats.parses;
         state.document_validations += input_stats.validations;
         state.document_reuses += input_stats.reuses;
@@ -1232,6 +1253,7 @@ impl Session {
             document_trie_path_nodes_copied: state.document_trie_path_nodes_copied,
             document_resolver_lookups: state.document_resolver_lookups,
             atom_plan_work: state.atom_plan_work,
+            line_plan_work: state.line_plan_work,
             pending_baselines,
             confirmed_baseline: state.confirmed_baseline.is_some(),
             confirmed_baseline_bytes,
@@ -1246,9 +1268,7 @@ impl Session {
 
     fn stop(&self, join: bool) {
         self.detach_readiness_channel();
-        self.shared.alive.store(false, Ordering::Release);
-        self.shared.job_available.notify_all();
-        self.shared.result_available.notify_all();
+        self.shared.request_stop();
         if let Some(handles) = self
             .workers
             .lock()
@@ -1445,6 +1465,7 @@ fn render_layout_payload(
             target_renders: 0,
             resolver_lookups: 0,
             atom_plan_work: layout::AtomPlanWork::default(),
+            line_plan_work: layout::LinePlanWork::default(),
         },
         JobPayload::Layout {
             document,
@@ -1503,6 +1524,7 @@ fn render_layout_payload(
             >;
             layout::reset_resolver_lookups();
             layout::reset_atom_plan_work();
+            layout::reset_line_plan_work();
             let result = catch_unwind(AssertUnwindSafe(|| -> LayoutRenderOutcome {
                 let target_styles = document.styles()?;
                 if let Some(base_context) = base_context {
@@ -1578,6 +1600,7 @@ fn render_layout_payload(
             let resolver_lookups =
                 validation_resolver_lookups.saturating_add(layout::resolver_lookups());
             let atom_plan_work = layout::atom_plan_work();
+            let line_plan_work = layout::line_plan_work();
             match result {
                 Ok(Ok((bytes, tape, styles, baseline_hit, base_renders, target_renders))) => {
                     RenderedJob {
@@ -1594,6 +1617,7 @@ fn render_layout_payload(
                         target_renders,
                         resolver_lookups,
                         atom_plan_work,
+                        line_plan_work,
                     }
                 }
                 Ok(Err(error)) => RenderedJob {
@@ -1604,6 +1628,7 @@ fn render_layout_payload(
                     target_renders: 0,
                     resolver_lookups,
                     atom_plan_work,
+                    line_plan_work,
                 },
                 Err(_) => RenderedJob {
                     bytes: encode_error_tape(identity, "native layout panicked", max_result_bytes),
@@ -1613,6 +1638,7 @@ fn render_layout_payload(
                     target_renders: 0,
                     resolver_lookups,
                     atom_plan_work,
+                    line_plan_work,
                 },
             }
         }
@@ -1763,6 +1789,7 @@ fn worker_loop(shared: Arc<Shared>) {
         state.target_renders += output.target_renders;
         state.document_resolver_lookups += output.resolver_lookups;
         state.atom_plan_work.accumulate(output.atom_plan_work);
+        state.line_plan_work.accumulate(output.line_plan_work);
         state.results.insert(
             (job.generation, job.key),
             ResultEntry {
@@ -2356,6 +2383,69 @@ mod tests {
         assert!(!session.ready(7, 1));
         assert!(session.stats().stale_drops > 0);
         session.stop(true);
+    }
+
+    #[test]
+    fn stopping_serializes_with_a_worker_holding_the_wait_predicate_lock() {
+        let session = Arc::new(Session::new(1, 1, 1, 4).unwrap());
+        let guard = session.shared.state.lock().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let stopping = Arc::clone(&session);
+        let stopper = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            stopping.stop(false);
+            completed_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // A worker holds this mutex between checking the predicate and
+        // entering Condvar::wait. Shutdown must not publish/notify in that gap.
+        let completed_while_locked = completed_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        drop(guard);
+        if !completed_while_locked {
+            completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        stopper.join().unwrap();
+        assert!(
+            !completed_while_locked,
+            "shutdown raced ahead of the worker wait predicate lock"
+        );
+    }
+
+    #[test]
+    fn stopping_joins_a_worker_blocked_on_result_capacity() {
+        let session = Arc::new(Session::new(1, 2, 1, 8).unwrap());
+        session
+            .submit(
+                1,
+                &batch(r#"[{"key":1,"payload":"a"},{"key":2,"payload":"b"}]"#),
+            )
+            .unwrap();
+        wait_until(|| {
+            let stats = session.stats();
+            stats.completed_jobs == 1 && stats.queued_jobs == 0
+        });
+        let stopping = Arc::clone(&session);
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let stopper = thread::spawn(move || {
+            stopping.stop(true);
+            completed_tx.send(()).unwrap();
+        });
+        let completed_without_rescue = completed_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        if !completed_without_rescue {
+            // Preserve the failure, but release a stranded waiter before the
+            // assertion so a broken notification does not hang the test suite.
+            session.shared.job_available.notify_all();
+            session.shared.result_available.notify_all();
+            completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        stopper.join().unwrap();
+        assert!(
+            completed_without_rescue,
+            "shutdown left a capacity waiter asleep"
+        );
     }
 
     #[test]

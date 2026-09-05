@@ -318,6 +318,10 @@ impl AtomPlan {
         self.parts.is_empty()
     }
 
+    pub(super) fn char_count(&self) -> u64 {
+        self.parts.measure().chars
+    }
+
     pub(super) fn append(&self, other: &Self) -> Self {
         if self.is_empty() {
             return other.clone();

@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::sync::Arc;
 
 const LEAF_CAPACITY: usize = 16;
@@ -162,6 +163,51 @@ pub struct Sequence<T> {
     root: Option<Arc<Node<T>>>,
 }
 
+/// Borrowed in-order traversal with an O(log N) stack and no entry clones.
+pub struct Iter<'a, T> {
+    pending: Vec<&'a Node<T>>,
+    leaf: std::slice::Iter<'a, Entry<T>>,
+    remaining: usize,
+    nodes_visited: u64,
+}
+
+impl<T> Iter<'_, T> {
+    pub fn nodes_visited(&self) -> u64 {
+        self.nodes_visited
+    }
+}
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = &'a Entry<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(entry) = self.leaf.next() {
+                self.remaining -= 1;
+                return Some(entry);
+            }
+            let node = self.pending.pop()?;
+            self.nodes_visited = self
+                .nodes_visited
+                .checked_add(1)
+                .expect("sequence traversal count fits u64");
+            match node {
+                Node::Leaf { entries, .. } => self.leaf = entries.iter(),
+                Node::Branch { left, right, .. } => {
+                    self.pending.push(right);
+                    self.pending.push(left);
+                }
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<T> ExactSizeIterator for Iter<'_, T> {}
+
 impl<T> Clone for Sequence<T> {
     fn clone(&self) -> Self {
         Self {
@@ -228,6 +274,15 @@ impl<T> Sequence<T> {
         self.root.as_ref()
     }
 
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter {
+            pending: self.root.as_deref().into_iter().collect(),
+            leaf: [].iter(),
+            remaining: self.len(),
+            nodes_visited: 0,
+        }
+    }
+
     pub fn get(&self, index: usize) -> Option<&Entry<T>> {
         fn get_at<T>(node: &Node<T>, index: usize) -> Option<&Entry<T>> {
             match node {
@@ -268,6 +323,55 @@ impl<T> Sequence<T> {
         self.root
             .as_deref()
             .map_or(Ok(Measure::default()), |root| prefix(root, end))
+    }
+
+    /// Aggregate a range by visiting its boundary paths and cached interior nodes.
+    pub fn range_measure(&self, range: Range<usize>) -> Result<Measure, Error> {
+        fn measure<T>(node: &Node<T>, start: usize, end: usize) -> Result<Measure, Error> {
+            if start == end {
+                return Ok(Measure::default());
+            }
+            if start == 0 && end == node.len() {
+                return Ok(node.measure());
+            }
+            match node {
+                Node::Leaf { entries, .. } => entries[start..end]
+                    .iter()
+                    .try_fold(Measure::default(), |sum, entry| {
+                        sum.checked_combine(entry.measure)
+                    }),
+                Node::Branch { left, right, .. } => {
+                    let middle = left.len();
+                    if end <= middle {
+                        measure(left, start, end)
+                    } else if start >= middle {
+                        measure(right, start - middle, end - middle)
+                    } else {
+                        measure(left, start, middle)?.checked_combine(measure(
+                            right,
+                            0,
+                            end - middle,
+                        )?)
+                    }
+                }
+            }
+        }
+        if range.start > range.end || range.end > self.len() {
+            return Err(Error::IndexOutOfBounds);
+        }
+        self.root.as_deref().map_or(Ok(Measure::default()), |root| {
+            measure(root, range.start, range.end)
+        })
+    }
+
+    /// Share the interior of a range, copying only its two boundary paths.
+    pub fn slice(&self, range: Range<usize>, work: &mut Work) -> Result<Self, Error> {
+        if range.start > range.end || range.end > self.len() {
+            return Err(Error::IndexOutOfBounds);
+        }
+        let (before, _) = self.split_at(range.end, work)?;
+        let (_, selected) = before.split_at(range.start, work)?;
+        Ok(selected)
     }
 
     pub fn split_at(&self, index: usize, work: &mut Work) -> Result<(Self, Self), Error> {
@@ -640,6 +744,47 @@ mod tests {
             assert!(height(&joined) <= 8);
             assert_valid(joined.root().unwrap());
         }
+    }
+
+    #[test]
+    fn borrowed_iteration_and_range_operations_match_exact_measures() {
+        let mut setup = Work::default();
+        let original = Sequence::from_entries((0..97).map(entry), &mut setup).unwrap();
+        let mut iter = original.iter();
+        for index in 0..original.len() {
+            assert_eq!(iter.len(), original.len() - index);
+            assert!(std::ptr::eq(
+                iter.next().unwrap(),
+                original.get(index).unwrap()
+            ));
+        }
+        assert!(iter.next().is_none());
+        assert_eq!(iter.nodes_visited(), setup.nodes_created);
+        for start in 0..=97 {
+            for end in start..=97 {
+                let expected = original
+                    .iter()
+                    .skip(start)
+                    .take(end - start)
+                    .try_fold(Measure::default(), |sum, entry| {
+                        sum.checked_combine(entry.measure())
+                    })
+                    .unwrap();
+                assert_eq!(original.range_measure(start..end).unwrap(), expected);
+                let mut work = Work::default();
+                let selected = original.slice(start..end, &mut work).unwrap();
+                assert_eq!(selected.measure(), expected);
+                assert!(selected
+                    .iter()
+                    .zip(original.iter().skip(start))
+                    .all(|(a, b)| Arc::ptr_eq(a.value(), b.value())));
+            }
+        }
+        assert_eq!(
+            original.slice(98..98, &mut Work::default()).unwrap_err(),
+            Error::IndexOutOfBounds
+        );
+        assert_eq!(original.range_measure(98..98), Err(Error::IndexOutOfBounds));
     }
 
     #[test]
