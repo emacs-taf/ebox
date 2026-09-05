@@ -16,6 +16,7 @@ pub(in crate::layout) enum BoxProjectionSlot {
     MarginEdges,
     OverflowEdges,
     ScrollWindow,
+    ScrollContent,
     TransparentContent,
 }
 

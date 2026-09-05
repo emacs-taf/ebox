@@ -130,6 +130,145 @@ fn assert_oracle(frame: &RetainedFrame, context: LayoutContext, root_width: Opti
     );
 }
 
+fn sole_root_scroll_document(child: LayoutNode) -> Arc<RetainedDocument> {
+    let mut root = child_box(1, child, None);
+    let LayoutNode::Box { height, .. } = &mut root else {
+        unreachable!()
+    };
+    *height = Size::ViewportHeight;
+    RetainedDocument::bootstrap(retained_document(identified(root, 1, 1)))
+        .unwrap()
+        .0
+}
+
+#[test]
+fn root_scroll_producer_preserves_mixed_children_and_cached_effects() {
+    let document = sole_root_scroll_document(LayoutNode::Column {
+        node_id: None,
+        node_revision: None,
+        children: Arc::new(vec![
+            LayoutNode::Row {
+                node_id: None,
+                node_revision: None,
+                children: Arc::new(vec![
+                    nonuniform_text(2, &[1, 1]),
+                    child_box(3, nonuniform_text(4, &[1]), None),
+                ]),
+            },
+            flex(
+                vec![nonuniform_text(5, &[1]), nonuniform_text(6, &[1])],
+                FlexDirection::Column,
+                FlexWrap::Nowrap,
+            ),
+        ]),
+    });
+    let context = LayoutContext {
+        viewport_height: 1,
+        ..test_context()
+    };
+    let frame = document
+        .render_frame_with_root_scroll(None, None, context, None)
+        .unwrap();
+    assert_oracle(&frame, context, None);
+    let producer = frame.root_scroll().expect("sole actual root owner");
+    assert_eq!(producer.region_id, 1);
+    assert!(producer.full_content.len() > 1);
+    assert_eq!(producer.full_content.len(), producer.rendered_content.len());
+    assert_eq!(producer.visible_height, 1);
+    assert_eq!(frame.root.rendered.scroll_owners, 1);
+    assert!(records(&frame.root)
+        .into_iter()
+        .skip(1)
+        .all(|record| record.rendered.root_scroll.is_none()));
+    reset_work();
+    let reused = document
+        .render_frame_with_root_scroll(Some(&frame), None, context, None)
+        .unwrap();
+    assert_eq!(work().hits, 1);
+    assert_eq!(work().body_runs, 0);
+    assert!(std::ptr::eq(producer, reused.root_scroll().unwrap()));
+}
+
+#[test]
+fn root_scroll_producer_rejects_offscreen_nested_owners() {
+    let mut nested = child_box(4, nonuniform_text(5, &[1, 1]), None);
+    let LayoutNode::Box { height, .. } = &mut nested else {
+        unreachable!()
+    };
+    *height = Size::Lines { value: 1 };
+    let document = sole_root_scroll_document(LayoutNode::Column {
+        node_id: None,
+        node_revision: None,
+        children: Arc::new(vec![nonuniform_text(2, &[1, 1, 1]), nested]),
+    });
+    for height in [1, 20] {
+        let context = LayoutContext {
+            viewport_height: height,
+            ..test_context()
+        };
+        let frame = document
+            .render_frame_with_root_scroll(None, None, context, None)
+            .unwrap();
+        assert_oracle(&frame, context, None);
+        assert!(
+            frame.root_scroll().is_none(),
+            "nested owner at height {height}"
+        );
+        assert_eq!(
+            frame.root.rendered.scroll_owners,
+            if height == 1 { 2 } else { 1 }
+        );
+        assert!(records(&frame.root)
+            .into_iter()
+            .any(|record| record.rendered.own_scroll_owner && record.source.path.len() > 1));
+        let reused = document
+            .render_frame_with_root_scroll(Some(&frame), None, context, None)
+            .unwrap();
+        assert!(reused.root_scroll().is_none());
+    }
+}
+
+#[test]
+fn root_scroll_owner_summary_distinguishes_measurements_and_final_windows() {
+    let document = sole_root_scroll_document(nonuniform_text(2, &[1, 1]));
+    let frame = document
+        .render_frame_with_root_scroll(
+            None,
+            None,
+            LayoutContext {
+                viewport_height: 1,
+                ..test_context()
+            },
+            None,
+        )
+        .unwrap();
+    assert_eq!(frame.root.rendered.scroll_owners, 1);
+    for (phase, expected) in [
+        (Phase::FlexMeasure, 0),
+        (Phase::FlexMinWidth, 0),
+        (Phase::FlexAutoMinContent, 0),
+        (Phase::FlexMaxWidth, 0),
+        (Phase::FlexBasisContent, 0),
+        (Phase::FlexBasisWidth, 0),
+        (Phase::ContentIntrinsic, 0),
+        (Phase::FlexCrossProbe, 0),
+        (Phase::FlexFinal, 1),
+        (Phase::WindowFull, 1),
+        (Phase::WindowFallback, 1),
+        (Phase::WindowChildFull, 1),
+        (Phase::WindowChildPartial, 2),
+    ] {
+        let uses = ChildUses::from_fresh(BTreeMap::from([(
+            UseSlot {
+                path: vec![UseStep::Phase(phase)],
+                occurrence: 0,
+            },
+            Arc::clone(&frame.root),
+        )]));
+        assert_eq!(uses.scroll_owners(), expected, "{phase:?}");
+    }
+}
+
 #[test]
 fn instrumentation_records_common_entries_without_changing_full_semantics() {
     let document = mixed(3);
@@ -962,6 +1101,7 @@ fn render_request(
     size_override: Option<BoxOverride>,
 ) -> Arc<RetainedFrame> {
     let transaction = RefCell::new(RenderTxn {
+        complete_scroll_effects: false,
         previous: previous.map(|frame| Arc::clone(&frame.root)),
         dirty: BTreeMap::new(),
         same_shape: true,
@@ -1146,6 +1286,57 @@ fn scroll_document() -> Arc<RetainedDocument> {
 }
 
 #[test]
+fn root_scroll_mode_is_explicit_and_cannot_reuse_lazy_caller_records() {
+    let document = scroll_document();
+    let lazy = document
+        .render_frame(None, None, test_context(), None)
+        .unwrap();
+    assert!(lazy.root_scroll().is_none());
+    assert!(!records(&lazy.root)
+        .iter()
+        .any(|record| record.source.owner_id == 2));
+    assert!(records(&lazy.root)
+        .iter()
+        .all(|record| !record.request.complete_scroll_effects));
+    let complete = document
+        .render_frame_with_root_scroll(Some(&lazy), None, test_context(), None)
+        .unwrap();
+    assert_eq!(complete.root_scroll().unwrap().full_content.len(), 12);
+    assert!(records(&complete.root)
+        .iter()
+        .all(|record| record.request.complete_scroll_effects));
+    assert!(!Arc::ptr_eq(
+        owner_record(&lazy.root, 3),
+        owner_record(&complete.root, 3)
+    ));
+    assert_oracle(&complete, test_context(), None);
+    let update = document
+        .apply_delta(context_test_delta(vec![serde_json::json!({
+            "node-id":2,"expected-revision":1,"target-revision":2,
+            "slot-patches":[{"slot":0,"local":{"height":{"kind":"lines","value":5}}}]
+        })]))
+        .unwrap();
+    let target = update
+        .document
+        .render_frame_with_root_scroll(Some(&complete), Some(&update.changes), test_context(), None)
+        .unwrap();
+    assert_eq!(target.root_scroll().unwrap().full_content.len(), 14);
+    assert_ne!(complete.materialize_tape(), target.materialize_tape());
+    assert_oracle(&target, test_context(), None);
+    reset_work();
+    let lazy_again = update
+        .document
+        .render_frame(Some(&target), None, test_context(), None)
+        .unwrap();
+    assert!(work().height_queries > 0);
+    assert!(lazy_again.root_scroll().is_none());
+    assert!(records(&lazy_again.root)
+        .iter()
+        .all(|record| !record.request.complete_scroll_effects));
+    assert_oracle(&lazy_again, test_context(), None);
+}
+
+#[test]
 fn unrendered_height_dependencies_invalidate_scroll_and_windows_cache_only_complete_values() {
     let document = scroll_document();
     let baseline = document
@@ -1290,6 +1481,7 @@ fn repeated_calls(
         path: Arc::from([]),
     };
     let transaction = RefCell::new(RenderTxn {
+        complete_scroll_effects: false,
         previous: previous.map(|frame| Arc::clone(&frame.root)),
         dirty: BTreeMap::from([(
             source.clone(),
@@ -1313,6 +1505,8 @@ fn repeated_calls(
         path: Vec::new(),
     };
     let request = EvalRequest {
+        root_scroll_request: false,
+        complete_scroll_effects: false,
         context: test_context(),
         intrinsic: false,
         size_override: None,
@@ -1464,6 +1658,7 @@ fn unwinding_discards_current_builder_records_without_mutating_previous_frame() 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let source = baseline.root.source.clone();
         let transaction = RefCell::new(RenderTxn {
+            complete_scroll_effects: false,
             previous: Some(Arc::clone(&baseline.root)),
             dirty: BTreeMap::from([(
                 source.clone(),

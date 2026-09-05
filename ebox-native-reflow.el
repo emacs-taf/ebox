@@ -3333,6 +3333,7 @@ DOCUMENT-DELTA is the stable-topology local replacement batch."
                      (if (plist-member frame :root-metadata)
                          (plist-get frame :root-metadata)
                        t))
+                    (root-scroll-producer (plist-get frame :root-scroll-producer))
                     (delay (or (plist-get frame :delay-ms) 0)))
                 (unless (integerp key)
                   (error "Native reflow layout key must be an integer: %S" key))
@@ -3362,6 +3363,10 @@ DOCUMENT-DELTA is the stable-topology local replacement batch."
                   (error "Native reflow complete flag must be boolean"))
                 (unless (memq root-metadata '(t nil :false))
                   (error "Native reflow root-metadata flag must be boolean"))
+                (unless (memq root-scroll-producer '(t nil :false))
+                  (error "Native reflow root-scroll-producer flag must be boolean"))
+                (when (and (eq root-scroll-producer t) (not (eq complete t)))
+                  (error "Native root scroll producer requires complete properties"))
                 (append
                  (list :key key
                        :viewport-width viewport-width
@@ -3378,6 +3383,8 @@ DOCUMENT-DELTA is the stable-topology local replacement batch."
                        :root-metadata
                        (if (eq root-metadata t) t :false)
                        :delay-ms delay)
+                 (when (eq root-scroll-producer t)
+                   (list :root-scroll-producer t))
                  (when patch-p
                    (list
                     :base-viewport-width base-viewport-width
@@ -4004,7 +4011,12 @@ plist supplied by the caller."
        :role-span-template ,roles
        :box-extent-template ,extents
        :scroll-content-span-template ,scroll
-       :scroll-window-p ,(and window-p (or 'nil 't)))
+       :scroll-window-p ,(and window-p (or 'nil 't)) . ,extra)
+     (unless (or (null extra)
+                 (and (proper-list-p extra) (= (length extra) 2)
+                      (eq (car extra) :root-scroll-producer)
+                      (vectorp (cadr extra)) (= (length (cadr extra)) 6)))
+       (error "Native reflow tape has invalid root scroll metadata"))
      (let ((actual-count
             (+ (ebox-native-reflow--validate-root-role-template
                 roles character-count)
@@ -4012,12 +4024,49 @@ plist supplied by the caller."
                 extents character-count)
                (ebox-native-reflow--validate-root-scroll-template
                 scroll character-count)
-               (if window-p 1 0))))
+               (if window-p 1 0)
+               (if extra 1 0))))
        (unless (= actual-count record-count)
          (error "Native reflow tape metadata record count mismatch")))
      metadata)
     (_
      (error "Native reflow tape has invalid prepared root metadata"))))
+
+(defun ebox-native-reflow--decode-root-scroll-producer
+    (metadata styles property-templates &optional allow-reuse-p)
+  "Validate and decode METADATA's complete retained root scroll producer."
+  (when-let* ((encoded (plist-get metadata :root-scroll-producer)))
+    (unless (and (vectorp encoded) (= (length encoded) 6)
+                 (integerp (aref encoded 0)) (> (aref encoded 0) 0)
+                 (integerp (aref encoded 1)) (> (aref encoded 1) 0)
+                 (integerp (aref encoded 2)) (> (aref encoded 2) 0)
+                 (integerp (aref encoded 3)) (>= (aref encoded 3) 0)
+                 (<= (aref encoded 3)
+                     (max 0 (- (aref encoded 1) (aref encoded 2)))))
+      (error "Native root scroll producer has invalid geometry"))
+    (let ((producer (copy-sequence encoded)))
+      (if (or (and (<= (aref encoded 1) (aref encoded 2))
+                   (eq (aref encoded 4) :inactive)
+                   (eq (aref encoded 5) :inactive))
+              (and allow-reuse-p (> (aref encoded 1) (aref encoded 2))
+                   (eq (aref encoded 4) :reuse)
+                   (eq (aref encoded 5) :reuse)))
+          nil
+        (dolist (index '(4 5))
+        (let* ((literal (aref encoded index))
+               (read-circle t)
+               (read-symbol-shorthands nil)
+               (parsed (and (stringp literal) (read-from-string literal)))
+               (rendered (car parsed)))
+          (unless (and (stringp rendered) (= (cdr parsed) (length literal))
+                       (= (1+ (cl-count ?\n rendered)) (aref encoded 1)))
+            (error "Native root scroll producer has invalid complete content"))
+          (ebox-native-reflow--expand-property-templates rendered property-templates)
+          (ebox-native-reflow--validate-literal-properties
+           rendered styles t property-templates)
+          (aset producer index (ebox-string-lines rendered)))))
+      (plist-put metadata :root-scroll-producer producer)))
+  metadata)
 
 (defun ebox-native-reflow--tape-read-root-metadata
     (cursor metadata-byte-count record-count character-count complete-p
@@ -4459,6 +4508,8 @@ typed line-width and property invariants instead of repeating them in Emacs."
                 (+ (or (plist-get decoded :replacement-bytes) 0)
                    (* patch-count 128)
                    (* metadata-count 64))))
+          (ebox-native-reflow--decode-root-scroll-producer
+           (plist-get decoded :root-render-metadata) styles property-templates t)
           (plist-put decoded :tape-bytes (string-bytes payload))
           (plist-put decoded :artifact-byte-estimate
                      (max (string-bytes payload) retained-estimate))
@@ -4468,6 +4519,8 @@ typed line-width and property invariants instead of repeating them in Emacs."
             (line-widths (aref decoded 2))
             (metadata (aref decoded 3))
             (fragments (aref decoded 4)))
+        (ebox-native-reflow--decode-root-scroll-producer
+         metadata styles property-templates)
         (unless trusted-native-encoder-p
           (ebox-native-reflow--validate-literal-properties
            rendered styles (plist-get header :complete)

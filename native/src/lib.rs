@@ -372,6 +372,8 @@ struct ControlFrame {
     #[serde(default = "default_true")]
     root_metadata: bool,
     #[serde(default)]
+    root_scroll_producer: bool,
+    #[serde(default)]
     delay_ms: u64,
 }
 
@@ -391,6 +393,7 @@ enum JobPayload {
         context_hash: i64,
         complete: bool,
         root_metadata: bool,
+        root_scroll_producer: bool,
         document_base_revision: u64,
         document_target_revision: u64,
         validation_resolver_lookups: u64,
@@ -435,6 +438,7 @@ impl LayoutSource {
         root_width: Option<i64>,
         previous: Option<&RetainedFrame>,
         changes: Option<&SourceChanges>,
+        root_scroll_producer: bool,
     ) -> Result<(LayoutTape, Option<Arc<RetainedFrame>>), String> {
         match self {
             Self::Full(document) => {
@@ -444,7 +448,12 @@ impl LayoutSource {
                 Ok((document.layout_tape(context, root_width)?, None))
             }
             Self::Retained(document) => {
-                let frame = document.render_frame(previous, changes, context, root_width)?;
+                let frame = if root_scroll_producer {
+                    document
+                        .render_frame_with_root_scroll(previous, changes, context, root_width)?
+                } else {
+                    document.render_frame(previous, changes, context, root_width)?
+                };
                 Ok((frame.materialize_tape(), Some(frame)))
             }
         }
@@ -1430,6 +1439,9 @@ fn prepare_layout_job(
     source_changes: Option<SourceChanges>,
 ) -> Result<PreparedJob, String> {
     layout::reset_resolver_lookups();
+    if frame.root_scroll_producer && !frame.complete {
+        return Err("Native root scroll producer requires complete properties".to_owned());
+    }
     if frame.payload.is_some() {
         return Err(format!(
             "Native layout frame {} cannot contain an echo payload",
@@ -1512,6 +1524,7 @@ fn prepare_layout_job(
             context_hash: frame.context_hash,
             complete: frame.complete,
             root_metadata: frame.root_metadata,
+            root_scroll_producer: frame.root_scroll_producer,
             document_base_revision,
             document_target_revision,
             validation_resolver_lookups: layout::resolver_lookups(),
@@ -1553,6 +1566,7 @@ fn render_layout_payload(
             context_hash,
             complete,
             root_metadata,
+            root_scroll_producer,
             document_base_revision,
             document_target_revision,
             validation_resolver_lookups,
@@ -1611,6 +1625,7 @@ fn render_layout_payload(
                             .as_ref()
                             .and_then(|baseline| baseline.retained_frame.as_deref()),
                         source_changes.as_ref(),
+                        root_scroll_producer,
                     )
                 };
                 if let Some(base_context) = base_context {
@@ -1637,12 +1652,15 @@ fn render_layout_payload(
                         .cloned();
                     if require_confirmed_patch_base && base_hit.is_none() {
                         let (target, retained_frame) = render_target()?;
-                        let bytes = layout::encode_layout_tape(
+                        let bytes = layout::encode_layout_tape_with_scroll(
                             target.clone(),
                             &target_styles,
                             identity,
                             output.root_metadata,
                             output.max_bytes,
+                            retained_frame
+                                .as_ref()
+                                .and_then(|frame| frame.root_scroll()),
                         )?;
                         return Ok((bytes, target, target_styles, retained_frame, false, 0, 1));
                     }
@@ -1659,13 +1677,26 @@ fn render_layout_payload(
                         )
                     };
                     let (target, retained_frame) = render_target()?;
-                    let bytes = layout::encode_layout_patch_tape(
+                    let bytes = layout::encode_layout_patch_tape_with_scroll(
                         old,
                         target.clone(),
                         &target_styles,
                         identity,
                         output.root_metadata,
                         output.max_bytes,
+                        retained_frame
+                            .as_ref()
+                            .and_then(|frame| frame.root_scroll())
+                            .map(|scroll| {
+                                (
+                                    scroll,
+                                    confirmed_baseline
+                                        .as_ref()
+                                        .filter(|_| baseline_hit)
+                                        .and_then(|base| base.retained_frame.as_ref())
+                                        .and_then(|frame| frame.root_scroll()),
+                                )
+                            }),
                     )?;
                     Ok((
                         bytes,
@@ -1678,12 +1709,15 @@ fn render_layout_payload(
                     ))
                 } else {
                     let (target, retained_frame) = render_target()?;
-                    let bytes = layout::encode_layout_tape(
+                    let bytes = layout::encode_layout_tape_with_scroll(
                         target.clone(),
                         &target_styles,
                         identity,
                         output.root_metadata,
                         output.max_bytes,
+                        retained_frame
+                            .as_ref()
+                            .and_then(|frame| frame.root_scroll()),
                     )?;
                     Ok((bytes, target, target_styles, retained_frame, false, 0, 1))
                 }

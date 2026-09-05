@@ -1894,14 +1894,34 @@ uses their rendered descendants."
     (cl-loop for line in lines
              for line-index from 0
              do
-             (dolist (region-id (ebox--scroll-line-region-ids line))
-               (when-let* ((span (ebox--scroll-line-region-span
-                                 line (ebox--region-id-set
-                                       (list region-id)))))
-                 (puthash region-id
-                          (cons (cons line-index span)
-                                (gethash region-id index))
-                          index))))
+             (let ((spans (make-hash-table :test 'equal))
+                   (pos 0)
+                   (limit (length line)))
+               ;; Aggregate all owners during the same property-run scan.
+               ;; A foreign direct content owner invalidates that region's
+               ;; entire hull, exactly as the single-region query does.
+               (while (< pos limit)
+                 (let ((next (ebox--string-next-region-property-change
+                              line pos limit))
+                       (roles (ebox--string-region-role-ids-at line pos)))
+                   (dolist (id (ebox--string-region-ids-at line pos))
+                     (let ((span (gethash id spans)))
+                       (unless (eq span 'incompatible)
+                         (cond
+                          ((cl-some (lambda (role)
+                                      (and (eq (car role) 'content)
+                                           (not (equal (cdr role) id))))
+                                    roles)
+                           (puthash id 'incompatible spans))
+                          (span (setcdr span next))
+                          (t (puthash id (cons pos next) spans))))))
+                   (setq pos (max next (1+ pos)))))
+               (maphash
+                (lambda (id span)
+                  (unless (eq span 'incompatible)
+                    (puthash id (cons (cons line-index span)
+                                      (gethash id index)) index)))
+                spans)))
     (maphash (lambda (region-id spans)
                (puthash region-id (nreverse spans) index))
              index)
@@ -3189,7 +3209,9 @@ inside the old prefix, so a line-slide never mixes two layout versions."
               (setq value
                     (plist-put
                      value :retained-scroll-content-p
-                     (and scroll-patch-fast-p root-id owner-id
+                     (and (eq (plist-get commit-input :projection-kind)
+                              'scroll-patch)
+                          scroll-patch-fast-p root-id owner-id
                           (= root-id owner-id))))
               (if (plist-get transition :native-materialize-p)
                   (plist-put value :native-scroll-materialize-p t)

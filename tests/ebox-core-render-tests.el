@@ -13386,4 +13386,35 @@ face patch must match that exactly (issue014)."
                 (should (= (plist-get peer-after :node-id) peer-node-id)))))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
+(ert-deftest ebox-scroll-span-index-scans-property-runs-once ()
+  "Index all regions in one pass while preserving single-region semantics."
+  (let* ((line (apply #'concat
+                      (cl-loop for id from 1 to 32
+                               collect (propertize "x" 'ebox-content id
+                                                   'ebox-content-owners '(999)))))
+         (lines (list line
+                      (concat (propertize "a" 'ebox-content 7)
+                              "gap" (propertize "b" 'ebox-content 7))
+                      "plain"))
+         (expected (make-hash-table :test 'equal))
+         (next (symbol-function 'ebox--string-next-region-property-change))
+         (calls 0) actual)
+    ;; The established query is an independent oracle for compatibility and
+    ;; disconnected hulls, including rejection of a foreign ancestor owner.
+    (cl-loop for text in lines for number from 0 do
+             (dolist (id (ebox--scroll-line-region-ids text))
+               (when-let* ((span (ebox--scroll-line-region-span
+                                 text (ebox--region-id-set (list id)))))
+                 (puthash id (append (gethash id expected)
+                                     (list (cons number span))) expected))))
+    (cl-letf (((symbol-function 'ebox--string-next-region-property-change)
+               (lambda (&rest args)
+                 (cl-incf calls)
+                 (apply next args))))
+      (setq actual (ebox--scroll-build-region-line-span-index lines)))
+    (should (= (hash-table-count actual) (hash-table-count expected)))
+    (maphash (lambda (id spans) (should (equal (gethash id actual) spans))) expected)
+    (should-not (gethash 999 actual))
+    (should (= calls 36))))
+
 ;;; ebox-core-render-tests.el ends here

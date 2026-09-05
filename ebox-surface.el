@@ -2964,8 +2964,9 @@ valid because their declarative layout and viewport did not change."
                      (ebox--render-layout node)))))
           (unless (plist-get state :native-render-p)
             (ebox--record-render-output-provenance rendered))
-          (ebox-surface--restore-scroll-metadata
-           scroll-table scroll-metadata)
+          (unless (plist-get state :native-render-p)
+            (ebox-surface--restore-scroll-metadata
+             scroll-table scroll-metadata))
           (plist-put state :scroll-state-table scroll-table)
           (plist-put state :scroll-region-ids
                      (ebox-surface--hash-keys scroll-table))

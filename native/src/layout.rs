@@ -2191,17 +2191,48 @@ impl Atom {
 #[derive(Debug, Clone)]
 struct Rendered {
     lines: LinePlan,
+    root_scroll: Option<Arc<RootScrollPlan>>,
+    own_scroll_owner: bool,
+    scroll_owners: u8,
+}
+
+#[derive(Debug)]
+pub(crate) struct RootScrollPlan {
+    region_id: i64,
+    full_content: LinePlan,
+    rendered_content: LinePlan,
+    visible_height: i64,
+    effective_offset: i64,
+    text_input: Option<RootTextInput>,
+}
+
+#[derive(Debug)]
+struct RootTextInput {
+    source: Arc<MeasuredText>,
+    width: i64,
+    wrap: WrapMode,
+    region: Option<i64>,
+    styles: [Option<u32>; 3],
+    lines: LinePlan,
 }
 
 impl Rendered {
     fn from_lines(lines: Vec<Line>) -> Self {
         Self {
             lines: LinePlan::from_lines(lines),
+            root_scroll: None,
+            own_scroll_owner: false,
+            scroll_owners: 0,
         }
     }
 
     fn from_line_plan(lines: LinePlan) -> Self {
-        Self { lines }
+        Self {
+            lines,
+            root_scroll: None,
+            own_scroll_owner: false,
+            scroll_owners: 0,
+        }
     }
 
     fn first_width(&self) -> i64 {
@@ -3520,6 +3551,79 @@ struct RootMetadataPayload {
     fragment_count: usize,
 }
 
+fn append_scroll_metadata(
+    payload: &mut Option<RootMetadataPayload>,
+    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
+    styles: &[CompiledStyle],
+    style_count: u32,
+    max_bytes: usize,
+) -> Result<(), String> {
+    let (Some(payload), Some((scroll, base))) = (payload.as_mut(), scroll) else {
+        return Ok(());
+    };
+    let mut effect = format!(
+        " :root-scroll-producer [{} {} {} {} ",
+        scroll.region_id,
+        scroll.full_content.len(),
+        scroll.visible_height,
+        scroll.effective_offset
+    );
+    let inactive = scroll.full_content.len() as i64 <= scroll.visible_height;
+    let reused = !inactive
+        && base.is_some_and(|base| {
+            base.region_id == scroll.region_id
+                && base.full_content.len() as i64 > base.visible_height
+                && base.full_content.ptr_eq(&scroll.full_content)
+                && base.rendered_content.ptr_eq(&scroll.rendered_content)
+        });
+    if inactive {
+        // The receiver needs only geometry to retire its active scroll state.
+        // Keep the complete plans in this frame for a later clipped request.
+        effect.push_str(":inactive :inactive ");
+    } else if reused {
+        effect.push_str(":reuse :reuse ");
+        evaluation::record(EvalWork {
+            scroll_producer_reuses: 1,
+            ..EvalWork::default()
+        });
+    } else {
+        for plan in [&scroll.full_content, &scroll.rendered_content] {
+            evaluation::record(EvalWork {
+                scroll_producer_lines_encoded: plan.len() as u64,
+                scroll_producer_chars_encoded: plan.prefix_chars(plan.len()),
+                ..EvalWork::default()
+            });
+            let tape = Rendered::from_line_plan(plan.clone()).into_tape(style_count);
+            let flat = flatten_layout_tape(tape, true)?;
+            let (text, spaces, properties) = tape_character_encoding_parts(&flat.characters)?;
+            let literal = encode_lisp_literal(
+                &text,
+                &spaces,
+                &properties,
+                styles,
+                flat.characters.len() as u64,
+                max_bytes,
+            )?;
+            // Each nested literal has its own read-circle label namespace.
+            push_lisp_string(&mut effect, &literal);
+            effect.push(' ');
+        }
+    }
+    effect.push_str("])");
+    payload.literal.pop();
+    payload.literal.push_str(&effect);
+    payload.record_count += 1;
+    if payload
+        .literal
+        .len()
+        .saturating_add(payload.fragment_bytes.len())
+        > max_bytes
+    {
+        return Err("Native scroll producer exceeds its byte limit".to_owned());
+    }
+    Ok(())
+}
+
 fn metadata_role_symbol(kind: u8) -> Option<&'static str> {
     match kind {
         METADATA_ROLE_CONTENT => Some("content"),
@@ -3984,6 +4088,7 @@ fn build_emacs_commit_batch(
     complete: bool,
     root_metadata: bool,
     max_bytes: usize,
+    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
 ) -> Result<EmacsCommitBatch, String> {
     let core = tape_commit_batch(&old.characters, &target.characters);
     let publication_edits = coalesce_publication_edits(&core.semantic_edits);
@@ -4008,6 +4113,13 @@ fn build_emacs_commit_batch(
         &target_property_spans,
         complete,
         root_metadata,
+        payload_limit,
+    )?;
+    append_scroll_metadata(
+        &mut metadata_payload,
+        scroll,
+        compiled_styles,
+        target.style_count,
         payload_limit,
     )?;
     let old_fragments = if metadata_payload.is_some() {
@@ -4090,6 +4202,7 @@ fn build_emacs_commit_batch(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn encode_layout_patch_tape(
     old_tape: LayoutTape,
     target_tape: LayoutTape,
@@ -4097,6 +4210,26 @@ pub(crate) fn encode_layout_patch_tape(
     identity: TapeIdentity,
     root_metadata: bool,
     max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    encode_layout_patch_tape_with_scroll(
+        old_tape,
+        target_tape,
+        styles,
+        identity,
+        root_metadata,
+        max_bytes,
+        None,
+    )
+}
+
+pub(crate) fn encode_layout_patch_tape_with_scroll(
+    old_tape: LayoutTape,
+    target_tape: LayoutTape,
+    styles: &[StyleTemplate],
+    identity: TapeIdentity,
+    root_metadata: bool,
+    max_bytes: usize,
+    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
 ) -> Result<Vec<u8>, String> {
     let old = flatten_layout_tape(old_tape, identity.complete)?;
     let target = flatten_layout_tape(target_tape, identity.complete)?;
@@ -4114,6 +4247,7 @@ pub(crate) fn encode_layout_patch_tape(
         identity.complete,
         root_metadata,
         max_bytes,
+        scroll.filter(|_| identity.complete),
     )?;
     let patch_count = count_u32(batch.publication_edits.len(), "patches")?;
     let coordinate_patch_count =
@@ -4177,12 +4311,24 @@ pub(crate) fn encode_layout_patch_tape(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn encode_layout_tape(
     tape: LayoutTape,
     styles: &[StyleTemplate],
     identity: TapeIdentity,
     root_metadata: bool,
     max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    encode_layout_tape_with_scroll(tape, styles, identity, root_metadata, max_bytes, None)
+}
+
+pub(crate) fn encode_layout_tape_with_scroll(
+    tape: LayoutTape,
+    styles: &[StyleTemplate],
+    identity: TapeIdentity,
+    root_metadata: bool,
+    max_bytes: usize,
+    scroll: Option<&RootScrollPlan>,
 ) -> Result<Vec<u8>, String> {
     if tape.lines.is_empty() {
         return Err("Native layout tape has no lines".to_owned());
@@ -4292,12 +4438,21 @@ pub(crate) fn encode_layout_tape(
         .checked_sub(TAPE_HEADER_LEN)
         .and_then(|remaining| remaining.checked_sub(fixed_body_bytes))
         .ok_or_else(|| "Native layout tape exceeds its byte limit".to_owned())?;
-    let metadata_payload = root_metadata_payload(
+    let mut metadata_payload = root_metadata_payload(
         &text,
         &spaces,
         &property_spans,
         identity.complete,
         root_metadata,
+        metadata_limit,
+    )?;
+    append_scroll_metadata(
+        &mut metadata_payload,
+        scroll
+            .filter(|_| identity.complete)
+            .map(|scroll| (scroll, None)),
+        &compiled_styles,
+        tape.style_count,
         metadata_limit,
     )?;
     let metadata_bytes = metadata_payload
@@ -5477,7 +5632,7 @@ fn wrap_rendered(rendered: Rendered, max_width: i64, mode: WrapMode) -> Rendered
             .map(|view| view.materialize().into_owned())
             .unwrap_or_default();
     }
-    Rendered { lines }
+    Rendered::from_line_plan(lines)
 }
 
 #[cfg(test)]
@@ -6347,7 +6502,7 @@ fn concat_horizontal_sized(parts: Vec<(Rendered, i64)>, target_height: i64) -> R
         }
         line
     }));
-    Rendered { lines }
+    Rendered::from_line_plan(lines)
 }
 
 fn stack_vertical(parts: Vec<Rendered>) -> Rendered {
@@ -6365,7 +6520,7 @@ fn stack_vertical(parts: Vec<Rendered>) -> Rendered {
     if lines.is_empty() {
         lines = LinePlan::from_lines([Line::default()]);
     }
-    Rendered { lines }
+    Rendered::from_line_plan(lines)
 }
 
 fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
@@ -7097,6 +7252,10 @@ fn render_node_body(
                 }
             };
             let simple_scroll_window = *overflow == Overflow::Scroll
+                // Only a requested complete producer needs effects from every
+                // child, including offscreen owners. Ordinary retained layout
+                // keeps the existing window shortcut.
+                && !scope.complete_scroll_effects_requested()
                 && child.is_some()
                 && definite_content_width.is_some()
                 && definite_content_height.is_some()
@@ -7265,6 +7424,8 @@ fn render_node_body(
                 });
             if transparent_preformatted {
                 let mut rendered = child_rendered.take().expect("validated child");
+                rendered.root_scroll = None;
+                rendered.own_scroll_owner = false;
                 let mut ops = vec![LineOp::OwnContent {
                     region: *region_id,
                     start: 0,
@@ -7283,7 +7444,28 @@ fn render_node_body(
                 return Ok(rendered);
             }
 
-            let mut formatted = if let Some(text) = content {
+            let previous_scroll = scope.previous_root_scroll();
+            let text_styles = [
+                *content_typography_style,
+                *content_foreground_style,
+                *content_surface_template_id,
+            ];
+            let reusable_text = previous_scroll
+                .as_ref()
+                .and_then(|scroll| scroll.text_input.as_ref())
+                .filter(|input| {
+                    content
+                        .as_ref()
+                        .is_some_and(|text| Arc::ptr_eq(text, &input.source))
+                        && input.width == content_width
+                        && input.wrap == *wrap_mode
+                        && input.region == *content_region_id
+                        && input.styles == text_styles
+                });
+            let mut formatted = if let Some(input) = reusable_text {
+                child_change = Some(PlanChange::same(&input.lines));
+                input.lines.clone()
+            } else if let Some(text) = content {
                 let mut content_lines = measured_lines(text, content_width, *wrap_mode);
                 if let Some(content_region_id) = content_region_id {
                     for (index, line) in content_lines.iter_mut().enumerate() {
@@ -7304,6 +7486,18 @@ fn render_node_body(
                     rendered
                 };
                 rendered.lines
+            };
+            let text_input = if scope.root_scroll_requested() {
+                content.as_ref().map(|text| RootTextInput {
+                    source: Arc::clone(text),
+                    width: content_width,
+                    wrap: *wrap_mode,
+                    region: *content_region_id,
+                    styles: text_styles,
+                    lines: formatted.clone(),
+                })
+            } else {
+                None
             };
             // Ordinary Box formatting historically rebuilds default breaks;
             // the transparent preformatted branch above preserves child breaks.
@@ -7373,6 +7567,55 @@ fn render_node_body(
                 && border_top_style.is_none()
                 && border_bottom_style.is_none()
                 && *vertical == VerticalAlign::Top;
+
+            let root_scroll = if scope.root_scroll_requested()
+                && *overflow == Overflow::Scroll
+                && *padding_left == 0
+                && *padding_right == 0
+                && *padding_top == 0
+                && *padding_bottom == 0
+                && *margin_left == 0
+                && *margin_right == 0
+                && *margin_top == 0
+                && *margin_bottom == 0
+                && *border_left == 0
+                && *border_right == 0
+                && border_top_style.is_none()
+                && border_bottom_style.is_none()
+                && surface_template_id.is_none()
+                && *vertical == VerticalAlign::Top
+            {
+                let full_content = formatted.clone();
+                let mut ops = vec![LineOp::OwnContent {
+                    region: *region_id,
+                    start: 0,
+                }];
+                ops.extend(
+                    [*typography_style, *foreground_style, *background_style]
+                        .into_iter()
+                        .flatten()
+                        .map(LineOp::Style),
+                );
+                let rendered_content = project_box_lines(
+                    scope,
+                    BoxProjectionSlot::ScrollContent,
+                    full_content.clone(),
+                    &mut change.clone(),
+                    ops,
+                );
+                Some(Arc::new(RootScrollPlan {
+                    region_id: *region_id,
+                    full_content,
+                    rendered_content,
+                    visible_height: content_height,
+                    effective_offset: (*scroll_offset)
+                        .max(0)
+                        .min((text_height - content_height).max(0)),
+                    text_input,
+                }))
+            } else {
+                None
+            };
 
             let mut content_index_start = 0_i64;
             let mut overflow_lines = LinePlan::default();
@@ -7590,6 +7833,7 @@ fn render_node_body(
                 change = None;
             }
             if *overflow == Overflow::Scroll && text_height > content_height {
+                rendered.own_scroll_owner = true;
                 rendered.lines = project_box_lines(
                     scope,
                     BoxProjectionSlot::ScrollWindow,
@@ -7598,6 +7842,7 @@ fn render_node_body(
                     vec![LineOp::ScrollWindow(*region_id)],
                 );
             }
+            rendered.root_scroll = root_scroll;
             if let Some(change) = change {
                 scope.publish_change(change);
             }
@@ -8798,6 +9043,9 @@ mod tests {
     #[test]
     fn line_sequence_oracle_wrap_slice_and_join_keep_distinct_breaks() {
         let source = Rendered {
+            root_scroll: None,
+            own_scroll_owner: false,
+            scroll_owners: 0,
             lines: LinePlan::from_lines([
                 Line::from_clusters(&[cluster("a", 2, None), cluster("b", 2, None)]),
                 Line::from_clusters(&[cluster("c", 2, None), cluster("d", 2, None)]),

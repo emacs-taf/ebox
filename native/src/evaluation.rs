@@ -40,6 +40,9 @@ pub(crate) struct EvalWork {
     pub(crate) column_tree_nodes_created: u64,
     pub(crate) column_tree_nodes_visited: u64,
     pub(crate) column_full_rebuilds: u64,
+    pub(crate) scroll_producer_lines_encoded: u64,
+    pub(crate) scroll_producer_chars_encoded: u64,
+    pub(crate) scroll_producer_reuses: u64,
 }
 
 thread_local! {
@@ -77,7 +80,10 @@ impl EvalWork {
             column_slots_updated,
             column_tree_nodes_created,
             column_tree_nodes_visited,
-            column_full_rebuilds
+            column_full_rebuilds,
+            scroll_producer_lines_encoded,
+            scroll_producer_chars_encoded,
+            scroll_producer_reuses
         );
     }
 }
@@ -142,6 +148,8 @@ struct EvalRequest {
     context: LayoutContext,
     intrinsic: bool,
     size_override: Option<BoxOverride>,
+    root_scroll_request: bool,
+    complete_scroll_effects: bool,
 }
 
 #[derive(Debug)]
@@ -167,6 +175,7 @@ struct UseNode {
     right: ChildUses,
     height: u32,
     len: usize,
+    scroll_owners: u8,
 }
 
 impl ChildUses {
@@ -196,16 +205,52 @@ impl ChildUses {
         self.0.as_ref().map_or(0, |node| node.len)
     }
 
+    fn scroll_owners(&self) -> u8 {
+        self.0.as_ref().map_or(0, |node| node.scroll_owners)
+    }
+
     fn node(slot: Arc<UseSlot>, value: Arc<EvalRecord>, left: Self, right: Self) -> Self {
         record(EvalWork {
             child_use_nodes_created: 1,
             ..EvalWork::default()
         });
+        let final_use = !slot.path.iter().any(|step| {
+            matches!(
+                step,
+                UseStep::Phase(
+                    Phase::FlexMeasure
+                        | Phase::FlexMinWidth
+                        | Phase::FlexAutoMinContent
+                        | Phase::FlexMaxWidth
+                        | Phase::FlexBasisContent
+                        | Phase::FlexBasisWidth
+                        | Phase::ContentIntrinsic
+                        | Phase::FlexCrossProbe
+                )
+            )
+        });
+        let incomplete_window = slot
+            .path
+            .iter()
+            .any(|step| matches!(step, UseStep::Phase(Phase::WindowChildPartial)));
+        let scroll_owners = (left.scroll_owners()
+            + right.scroll_owners()
+            + if final_use {
+                if incomplete_window {
+                    2
+                } else {
+                    value.rendered.scroll_owners
+                }
+            } else {
+                0
+            })
+        .min(2);
         Self(Some(Arc::new(UseNode {
             slot,
             value,
             height: 1 + left.height().max(right.height()),
             len: 1 + left.len() + right.len(),
+            scroll_owners,
             left,
             right,
         })))
@@ -396,6 +441,9 @@ pub(crate) struct RetainedFrame {
 }
 
 impl RetainedFrame {
+    pub(crate) fn root_scroll(&self) -> Option<&super::RootScrollPlan> {
+        self.root.rendered.root_scroll.as_deref()
+    }
     pub(crate) fn materialize_tape(&self) -> LayoutTape {
         self.root
             .rendered
@@ -424,6 +472,7 @@ struct RenderTxn {
     same_shape: bool,
     stack: Vec<BuildingRecord>,
     root: Option<Arc<EvalRecord>>,
+    complete_scroll_effects: bool,
 }
 
 impl RenderTxn {
@@ -499,7 +548,13 @@ impl RenderTxn {
 
     fn finish(&mut self, rendered: Result<Rendered, String>) -> Result<RenderedChange, String> {
         let current = self.stack.pop().expect("native evaluation builder stack");
-        let rendered = rendered?;
+        let mut rendered = rendered?;
+        let children = current.children.finish();
+        let child_owners = children.scroll_owners();
+        rendered.scroll_owners = (child_owners + u8::from(rendered.own_scroll_owner)).min(2);
+        if child_owners != 0 {
+            rendered.root_scroll = None;
+        }
         let change = current.previous.as_ref().map(|previous| {
             current
                 .pending_change
@@ -516,7 +571,7 @@ impl RenderTxn {
             source: current.source,
             request: current.request,
             rendered: rendered.clone(),
-            children: current.children.finish(),
+            children,
             column: current.column,
             projections: current.projections,
         });
@@ -671,6 +726,9 @@ impl<'a> RenderScope<'a> {
                 context,
                 intrinsic,
                 size_override,
+                root_scroll_request: transaction.borrow().complete_scroll_effects
+                    && transaction.borrow().stack.is_empty(),
+                complete_scroll_effects: transaction.borrow().complete_scroll_effects,
             };
             if let Some(rendered) =
                 transaction
@@ -698,6 +756,33 @@ impl<'a> RenderScope<'a> {
 
     pub(super) fn is_retained(&self) -> bool {
         self.transaction.is_some()
+    }
+
+    pub(super) fn root_scroll_requested(&self) -> bool {
+        self.transaction.is_some_and(|transaction| {
+            transaction
+                .borrow()
+                .stack
+                .last()
+                .is_some_and(|record| record.request.root_scroll_request)
+        })
+    }
+
+    pub(super) fn complete_scroll_effects_requested(&self) -> bool {
+        self.transaction
+            .is_some_and(|transaction| transaction.borrow().complete_scroll_effects)
+    }
+
+    pub(super) fn previous_root_scroll(&self) -> Option<Arc<super::RootScrollPlan>> {
+        let transaction = self.transaction?.borrow();
+        let current = transaction.stack.last()?;
+        current
+            .previous
+            .as_ref()
+            .filter(|old| old.source == current.source)?
+            .rendered
+            .root_scroll
+            .clone()
     }
 
     pub(super) fn publish_change(&self, change: PlanChange) {
@@ -894,6 +979,27 @@ impl RetainedDocument {
         context: LayoutContext,
         root_width_override: Option<i64>,
     ) -> Result<Arc<RetainedFrame>, String> {
+        self.render_frame_mode(previous, changes, context, root_width_override, false)
+    }
+
+    pub(crate) fn render_frame_with_root_scroll(
+        self: &Arc<Self>,
+        previous: Option<&RetainedFrame>,
+        changes: Option<&SourceChanges>,
+        context: LayoutContext,
+        root_width_override: Option<i64>,
+    ) -> Result<Arc<RetainedFrame>, String> {
+        self.render_frame_mode(previous, changes, context, root_width_override, true)
+    }
+
+    fn render_frame_mode(
+        self: &Arc<Self>,
+        previous: Option<&RetainedFrame>,
+        changes: Option<&SourceChanges>,
+        context: LayoutContext,
+        root_width_override: Option<i64>,
+        complete_scroll_effects: bool,
+    ) -> Result<Arc<RetainedFrame>, String> {
         let reusable = match (previous, changes) {
             (Some(previous), Some(changes)) => {
                 if !changes.applies_to(&previous.document, self) {
@@ -918,6 +1024,7 @@ impl RetainedDocument {
             _ => BTreeMap::new(),
         };
         let transaction = RefCell::new(RenderTxn {
+            complete_scroll_effects,
             previous: reusable.map(|previous| Arc::clone(&previous.root)),
             dirty,
             same_shape: reusable
