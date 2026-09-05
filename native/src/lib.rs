@@ -1,8 +1,8 @@
 mod layout;
 
 use layout::{
-    encode_error_tape, LayoutContext, LayoutDocument, LayoutTape, TapeIdentity, TapeOutputOptions,
-    MAX_LAYOUT_DIMENSION, MIN_TAPE_BYTES,
+    encode_error_tape, DocumentDelta, LayoutContext, LayoutDocument, LayoutTape, RetainedDocument,
+    TapeIdentity, TapeOutputOptions, MAX_LAYOUT_DIMENSION, MIN_TAPE_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -324,6 +324,8 @@ struct ControlBatch {
     version: u32,
     #[serde(default)]
     document: Option<LayoutDocument>,
+    #[serde(default, rename = "document-delta")]
+    document_delta: Option<DocumentDelta>,
     #[serde(default, rename = "document-base-revision")]
     document_base_revision: Option<u64>,
     #[serde(default, rename = "document-target-revision")]
@@ -375,7 +377,7 @@ struct ControlFrame {
 enum JobPayload {
     Echo(Vec<u8>),
     Layout {
-        document: Arc<LayoutDocument>,
+        document: LayoutSource,
         context: LayoutContext,
         root_width: i64,
         root_width_override: bool,
@@ -388,7 +390,41 @@ enum JobPayload {
         root_metadata: bool,
         document_base_revision: u64,
         document_target_revision: u64,
+        validation_resolver_lookups: u64,
     },
+}
+
+#[derive(Clone, Debug)]
+enum LayoutSource {
+    Full(Arc<LayoutDocument>),
+    Retained(Arc<RetainedDocument>),
+}
+
+impl LayoutSource {
+    fn validate_context(&self, context: LayoutContext) -> Result<(), String> {
+        match self {
+            Self::Full(document) => document.validate_context(context),
+            Self::Retained(document) => document.validate_context(context),
+        }
+    }
+
+    fn layout_tape(
+        &self,
+        context: LayoutContext,
+        root_width: Option<i64>,
+    ) -> Result<LayoutTape, String> {
+        match self {
+            Self::Full(document) => document.layout_tape(context, root_width),
+            Self::Retained(document) => document.layout_tape(context, root_width),
+        }
+    }
+
+    fn styles(&self) -> Result<Vec<layout::StyleTemplate>, String> {
+        match self {
+            Self::Full(document) => Ok(document.styles.clone()),
+            Self::Retained(document) => document.styles(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -404,7 +440,7 @@ struct BaselineIdentity {
 #[derive(Clone, Debug)]
 struct ConfirmedBaseline {
     identity: BaselineIdentity,
-    document: Arc<LayoutDocument>,
+    document: LayoutSource,
     document_revision: u64,
     tape: LayoutTape,
     styles: Vec<layout::StyleTemplate>,
@@ -413,7 +449,7 @@ struct ConfirmedBaseline {
 #[derive(Debug)]
 struct PendingBaseline {
     confirmed_identity: BaselineIdentity,
-    document: Arc<LayoutDocument>,
+    document: LayoutSource,
     document_revision: u64,
     tape: LayoutTape,
     styles: Vec<layout::StyleTemplate>,
@@ -431,6 +467,20 @@ struct RenderedJob {
     baseline_hit: bool,
     base_renders: u64,
     target_renders: u64,
+    resolver_lookups: u64,
+}
+
+#[derive(Default)]
+struct DocumentInputStats {
+    parses: u64,
+    validations: u64,
+    reuses: u64,
+    full_input_bytes: u64,
+    delta_input_bytes: u64,
+    full_nodes_parsed: u64,
+    delta_entries_parsed: u64,
+    delta_entries_validated: u64,
+    trie_path_nodes_copied: u64,
 }
 
 #[derive(Debug)]
@@ -463,6 +513,13 @@ struct RuntimeState {
     document_parses: u64,
     document_validations: u64,
     document_reuses: u64,
+    document_full_input_bytes: u64,
+    document_delta_input_bytes: u64,
+    document_full_nodes_parsed: u64,
+    document_delta_entries_parsed: u64,
+    document_delta_entries_validated: u64,
+    document_trie_path_nodes_copied: u64,
+    document_resolver_lookups: u64,
     confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
 }
 
@@ -491,7 +548,7 @@ struct Shared {
 struct Session {
     shared: Arc<Shared>,
     workers: Mutex<Option<Vec<JoinHandle<()>>>>,
-    layout_document: Mutex<Option<Arc<LayoutDocument>>>,
+    layout_document: Mutex<Option<LayoutSource>>,
     worker_count: usize,
 }
 
@@ -516,6 +573,13 @@ struct SessionStats {
     document_parses: u64,
     document_validations: u64,
     document_reuses: u64,
+    document_full_input_bytes: u64,
+    document_delta_input_bytes: u64,
+    document_full_nodes_parsed: u64,
+    document_delta_entries_parsed: u64,
+    document_delta_entries_validated: u64,
+    document_trie_path_nodes_copied: u64,
+    document_resolver_lookups: u64,
     pending_baselines: usize,
     confirmed_baseline: bool,
     confirmed_baseline_bytes: usize,
@@ -581,6 +645,13 @@ impl Session {
                 document_parses: 0,
                 document_validations: 0,
                 document_reuses: 0,
+                document_full_input_bytes: 0,
+                document_delta_input_bytes: 0,
+                document_full_nodes_parsed: 0,
+                document_delta_entries_parsed: 0,
+                document_delta_entries_validated: 0,
+                document_trie_path_nodes_copied: 0,
+                document_resolver_lookups: 0,
                 confirmed_baseline,
             }),
             readiness_channel: Mutex::new(None),
@@ -611,7 +682,7 @@ impl Session {
             .unwrap_or_else(|poison| poison.into_inner())
             .confirmed_baseline
             .as_ref()
-            .map(|baseline| Arc::clone(&baseline.document));
+            .map(|baseline| baseline.document.clone());
         Ok(Box::new(Self {
             shared,
             workers: Mutex::new(Some(handles)),
@@ -643,6 +714,9 @@ impl Session {
 
     fn submit(&self, generation: u64, payload: &[u8]) -> Result<usize, String> {
         let batch = parse_control_batch(payload)?;
+        if batch.document_delta.is_some() {
+            return Err("Native async reflow does not accept retained document deltas".to_owned());
+        }
         if !self.shared.alive.load(Ordering::Acquire) {
             return Err("Native reflow session is closed".to_owned());
         }
@@ -672,12 +746,12 @@ impl Session {
         let document = match batch.document {
             Some(document) => {
                 document.validate()?;
-                Some(Arc::new(document))
+                Some(LayoutSource::Full(Arc::new(document)))
             }
             None if layout_requested => Some(
                 confirmed_baseline
                     .as_ref()
-                    .map(|baseline| Arc::clone(&baseline.document))
+                    .map(|baseline| baseline.document.clone())
                     .or_else(|| {
                         self.layout_document
                             .lock()
@@ -852,10 +926,13 @@ impl Session {
             .unwrap_or_else(|poison| poison.into_inner())
             .confirmed_baseline
             .clone();
-        let (document, document_parses, document_validations, document_reuses) = match batch
-            .document
-        {
-            Some(document) => {
+        let (document, input_stats) = match (batch.document, batch.document_delta) {
+            (Some(_), Some(_)) => {
+                return Err(
+                    "Native retained render cannot combine document and document-delta".to_owned(),
+                );
+            }
+            (Some(document), None) => {
                 if document_base_revision.checked_add(1) != Some(document_target_revision) {
                     return Err(
                         "Native retained document replacement must advance one revision".to_owned(),
@@ -876,10 +953,60 @@ impl Session {
                     }
                     _ => {}
                 }
-                document.validate()?;
-                (Arc::new(document), 1, 1, 0)
+                let retained = document.retained_root_p();
+                let (source, node_count) = if retained {
+                    let (document, node_count) = RetainedDocument::bootstrap(document)?;
+                    (LayoutSource::Retained(document), node_count)
+                } else {
+                    document.validate()?;
+                    let node_count = document.input_node_count();
+                    (LayoutSource::Full(Arc::new(document)), node_count)
+                };
+                (
+                    source,
+                    DocumentInputStats {
+                        parses: 1,
+                        validations: 1,
+                        full_input_bytes: payload.len() as u64,
+                        full_nodes_parsed: node_count,
+                        ..DocumentInputStats::default()
+                    },
+                )
             }
-            None => {
+            (None, Some(delta)) => {
+                if document_base_revision.checked_add(1) != Some(document_target_revision) {
+                    return Err(
+                        "Native retained document delta must advance one revision".to_owned()
+                    );
+                }
+                let baseline = confirmed.as_ref().ok_or_else(|| {
+                    "Native retained document delta requires a confirmed baseline".to_owned()
+                })?;
+                if baseline.document_revision != document_base_revision {
+                    return Err(
+                        "Native retained document delta base revision does not match confirmed state"
+                            .to_owned(),
+                    );
+                }
+                let LayoutSource::Retained(document) = &baseline.document else {
+                    return Err(
+                        "Native retained document delta requires an identified bootstrap"
+                            .to_owned(),
+                    );
+                };
+                let (document, parsed, copied) = document.apply_delta(delta)?;
+                (
+                    LayoutSource::Retained(document),
+                    DocumentInputStats {
+                        delta_input_bytes: payload.len() as u64,
+                        delta_entries_parsed: parsed,
+                        delta_entries_validated: parsed,
+                        trie_path_nodes_copied: copied,
+                        ..DocumentInputStats::default()
+                    },
+                )
+            }
+            (None, None) => {
                 if document_base_revision != document_target_revision {
                     return Err(
                         "Native retained document reuse requires equal base and target revisions"
@@ -902,7 +1029,13 @@ impl Session {
                             .to_owned(),
                     );
                 }
-                (Arc::clone(&baseline.document), 0, 0, 1)
+                (
+                    baseline.document.clone(),
+                    DocumentInputStats {
+                        reuses: 1,
+                        ..DocumentInputStats::default()
+                    },
+                )
             }
         };
         let frame = batch
@@ -943,9 +1076,16 @@ impl Session {
         }
         state.base_renders += output.base_renders;
         state.target_renders += output.target_renders;
-        state.document_parses += document_parses;
-        state.document_validations += document_validations;
-        state.document_reuses += document_reuses;
+        state.document_resolver_lookups += output.resolver_lookups;
+        state.document_parses += input_stats.parses;
+        state.document_validations += input_stats.validations;
+        state.document_reuses += input_stats.reuses;
+        state.document_full_input_bytes += input_stats.full_input_bytes;
+        state.document_delta_input_bytes += input_stats.delta_input_bytes;
+        state.document_full_nodes_parsed += input_stats.full_nodes_parsed;
+        state.document_delta_entries_parsed += input_stats.delta_entries_parsed;
+        state.document_delta_entries_validated += input_stats.delta_entries_validated;
+        state.document_trie_path_nodes_copied += input_stats.trie_path_nodes_copied;
         state.pending_baselines.clear();
         if let Some(pending) = output.pending {
             state
@@ -1078,6 +1218,13 @@ impl Session {
             document_parses: state.document_parses,
             document_validations: state.document_validations,
             document_reuses: state.document_reuses,
+            document_full_input_bytes: state.document_full_input_bytes,
+            document_delta_input_bytes: state.document_delta_input_bytes,
+            document_full_nodes_parsed: state.document_full_nodes_parsed,
+            document_delta_entries_parsed: state.document_delta_entries_parsed,
+            document_delta_entries_validated: state.document_delta_entries_validated,
+            document_trie_path_nodes_copied: state.document_trie_path_nodes_copied,
+            document_resolver_lookups: state.document_resolver_lookups,
             pending_baselines,
             confirmed_baseline: state.confirmed_baseline.is_some(),
             confirmed_baseline_bytes,
@@ -1129,7 +1276,7 @@ fn parse_control_batch(payload: &[u8]) -> Result<ControlBatch, String> {
 }
 
 fn checked_layout_context(
-    document: &LayoutDocument,
+    document: &LayoutSource,
     frame_key: i64,
     viewport_width: i64,
     viewport_width_known: bool,
@@ -1179,11 +1326,12 @@ fn confirmed_baseline_matches(
 }
 
 fn prepare_layout_job(
-    document: &Arc<LayoutDocument>,
+    document: &LayoutSource,
     frame: ControlFrame,
     document_base_revision: u64,
     document_target_revision: u64,
 ) -> Result<PreparedJob, String> {
+    layout::reset_resolver_lookups();
     if frame.payload.is_some() {
         return Err(format!(
             "Native layout frame {} cannot contain an echo payload",
@@ -1197,7 +1345,7 @@ fn prepare_layout_job(
         .viewport_height
         .ok_or_else(|| format!("Native layout frame {} requires viewport-height", frame.key))?;
     let context = checked_layout_context(
-        document.as_ref(),
+        document,
         frame.key,
         viewport_width,
         frame.viewport_width_known,
@@ -1223,7 +1371,7 @@ fn prepare_layout_job(
             )
         })?;
         let base_context = checked_layout_context(
-            document.as_ref(),
+            document,
             frame.key,
             base_viewport_width,
             frame.base_viewport_width_known,
@@ -1254,7 +1402,7 @@ fn prepare_layout_job(
         key: frame.key,
         delay_ms: frame.delay_ms,
         payload: JobPayload::Layout {
-            document: Arc::clone(document),
+            document: document.clone(),
             context,
             root_width,
             root_width_override: frame.root_width_override,
@@ -1267,6 +1415,7 @@ fn prepare_layout_job(
             root_metadata: frame.root_metadata,
             document_base_revision,
             document_target_revision,
+            validation_resolver_lookups: layout::resolver_lookups(),
         },
     })
 }
@@ -1287,6 +1436,7 @@ fn render_layout_payload(
             baseline_hit: false,
             base_renders: 0,
             target_renders: 0,
+            resolver_lookups: 0,
         },
         JobPayload::Layout {
             document,
@@ -1302,6 +1452,7 @@ fn render_layout_payload(
             root_metadata,
             document_base_revision,
             document_target_revision,
+            validation_resolver_lookups,
         } => {
             let identity = TapeIdentity {
                 session_id,
@@ -1331,8 +1482,20 @@ fn render_layout_payload(
             // job with neither result nor error tape, so the Elisp ready
             // watcher would poll forever.  Convert panics into the same
             // error-tape channel ordinary layout failures use.
-            type LayoutRenderOutcome = Result<(Vec<u8>, LayoutTape, bool, u64, u64), String>;
+            type LayoutRenderOutcome = Result<
+                (
+                    Vec<u8>,
+                    LayoutTape,
+                    Vec<layout::StyleTemplate>,
+                    bool,
+                    u64,
+                    u64,
+                ),
+                String,
+            >;
+            layout::reset_resolver_lookups();
             let result = catch_unwind(AssertUnwindSafe(|| -> LayoutRenderOutcome {
+                let target_styles = document.styles()?;
                 if let Some(base_context) = base_context {
                     let base_identity = BaselineIdentity {
                         context: base_context,
@@ -1351,7 +1514,7 @@ fn render_layout_payload(
                                 &base_identity,
                             ) && layout::style_registry_extends_exact_prefix(
                                 &baseline.styles,
-                                &document.styles,
+                                &target_styles,
                             )
                         })
                         .cloned();
@@ -1360,12 +1523,12 @@ fn render_layout_payload(
                             .layout_tape(context, root_width_override.then_some(root_width))?;
                         let bytes = layout::encode_layout_tape(
                             target.clone(),
-                            &document.styles,
+                            &target_styles,
                             identity,
                             output.root_metadata,
                             output.max_bytes,
                         )?;
-                        return Ok((bytes, target, false, 0, 1));
+                        return Ok((bytes, target, target_styles, false, 0, 1));
                     }
                     let (old, baseline_hit, base_renders) = if let Some(baseline) = base_hit {
                         (baseline.tape.clone(), true, 0)
@@ -1384,45 +1547,51 @@ fn render_layout_payload(
                     let bytes = layout::encode_layout_patch_tape(
                         old,
                         target.clone(),
-                        &document.styles,
+                        &target_styles,
                         identity,
                         output.root_metadata,
                         output.max_bytes,
                     )?;
-                    Ok((bytes, target, baseline_hit, base_renders, 1))
+                    Ok((bytes, target, target_styles, baseline_hit, base_renders, 1))
                 } else {
                     let target =
                         document.layout_tape(context, root_width_override.then_some(root_width))?;
                     let bytes = layout::encode_layout_tape(
                         target.clone(),
-                        &document.styles,
+                        &target_styles,
                         identity,
                         output.root_metadata,
                         output.max_bytes,
                     )?;
-                    Ok((bytes, target, false, 0, 1))
+                    Ok((bytes, target, target_styles, false, 0, 1))
                 }
             }));
+            let resolver_lookups =
+                validation_resolver_lookups.saturating_add(layout::resolver_lookups());
             match result {
-                Ok(Ok((bytes, tape, baseline_hit, base_renders, target_renders))) => RenderedJob {
-                    bytes,
-                    pending: Some(PendingBaseline {
-                        confirmed_identity: pending_identity,
-                        document: Arc::clone(&document),
-                        document_revision: document_target_revision,
-                        tape,
-                        styles: document.styles.clone(),
-                    }),
-                    baseline_hit,
-                    base_renders,
-                    target_renders,
-                },
+                Ok(Ok((bytes, tape, styles, baseline_hit, base_renders, target_renders))) => {
+                    RenderedJob {
+                        bytes,
+                        pending: Some(PendingBaseline {
+                            confirmed_identity: pending_identity,
+                            document: document.clone(),
+                            document_revision: document_target_revision,
+                            tape,
+                            styles,
+                        }),
+                        baseline_hit,
+                        base_renders,
+                        target_renders,
+                        resolver_lookups,
+                    }
+                }
                 Ok(Err(error)) => RenderedJob {
                     bytes: encode_error_tape(identity, &error, max_result_bytes),
                     pending: None,
                     baseline_hit: false,
                     base_renders: 0,
                     target_renders: 0,
+                    resolver_lookups,
                 },
                 Err(_) => RenderedJob {
                     bytes: encode_error_tape(identity, "native layout panicked", max_result_bytes),
@@ -1430,6 +1599,7 @@ fn render_layout_payload(
                     baseline_hit: false,
                     base_renders: 0,
                     target_renders: 0,
+                    resolver_lookups,
                 },
             }
         }
@@ -1464,7 +1634,8 @@ fn render_proof(payload: &[u8]) -> Result<Vec<u8>, String> {
     if frame.delay_ms != 0 {
         return Err("Native proof render cannot contain delay-ms".to_owned());
     }
-    let prepared = prepare_layout_job(&Arc::new(document), frame, 0, 1)?;
+    let document = LayoutSource::Full(Arc::new(document));
+    let prepared = prepare_layout_job(&document, frame, 0, 1)?;
     let output = render_layout_payload(
         prepared.payload,
         SYNC_RENDER_SESSION_ID,
@@ -1577,6 +1748,7 @@ fn worker_loop(shared: Arc<Shared>) {
         }
         state.base_renders += output.base_renders;
         state.target_renders += output.target_renders;
+        state.document_resolver_lookups += output.resolver_lookups;
         state.results.insert(
             (job.generation, job.key),
             ResultEntry {
@@ -1994,6 +2166,14 @@ mod tests {
         .into_bytes()
     }
 
+    fn identified_proof_layout_payload(frames: &str) -> Vec<u8> {
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(&proof_layout_payload(frames)).unwrap();
+        payload["document"]["root"]["node-id"] = serde_json::json!(1);
+        payload["document"]["root"]["node-revision"] = serde_json::json!(7);
+        serde_json::to_vec(&payload).unwrap()
+    }
+
     fn replacement_layout_payload(
         document_base_revision: u64,
         document_target_revision: u64,
@@ -2334,6 +2514,79 @@ mod tests {
         parent.stop(true);
         child.stop(true);
         grandchild.stop(true);
+    }
+
+    #[test]
+    fn nonzero_document_delta_renders_and_promotes_without_full_reparse() {
+        let session = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = identified_proof_layout_payload(
+            r#"[{"key":1,"viewport-width":80,"viewport-height":10,"root-width":80,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        let first_tape = session.render_sync(1, &first).unwrap();
+        assert!(!tape_patch_p(&first_tape));
+        assert!(session.confirm(1, 1, 1).unwrap());
+
+        let delta = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "document-base-revision": 1,
+            "document-target-revision": 2,
+            "document-delta": {
+                "style-base-count": 0,
+                "styles-append": [],
+                "property-template-base-count": 0,
+                "property-template-target-count": 0,
+                "entries": [{
+                    "node-id": 1,
+                    "expected-revision": 7,
+                    "target-revision": 21,
+                    "slot-patches": [{
+                        "slot": 0,
+                        "local": {
+                            "content": {"lines": [{"clusters": [{
+                                "text": "y", "width": 8, "cjk": false, "space": false
+                            }]}]}
+                        }
+                    }]
+                }]
+            },
+            "frames": [{
+                "key": 2,
+                "viewport-width": 80,
+                "viewport-height": 10,
+                "root-width": 80,
+                "patch": true,
+                "base-viewport-width": 80,
+                "base-viewport-height": 10,
+                "base-root-width": 80,
+                "runtime-revision": 1,
+                "context-hash": 77
+            }]
+        }))
+        .unwrap();
+        let delta_tape = session.render_sync(2, &delta).unwrap();
+        assert!(tape_patch_p(&delta_tape));
+        let stats = session.stats();
+        assert_eq!(stats.document_parses, 1);
+        assert_eq!(stats.document_validations, 1);
+        assert_eq!(stats.document_full_nodes_parsed, 1);
+        assert_eq!(stats.document_delta_entries_parsed, 1);
+        assert_eq!(stats.document_delta_entries_validated, 1);
+        assert_eq!(stats.document_trie_path_nodes_copied, 17);
+        assert_eq!(stats.document_delta_input_bytes, delta.len() as u64);
+        assert!(
+            stats.document_resolver_lookups >= 3,
+            "target/base validation and target render lookups must all remain visible"
+        );
+        assert!(session.confirm(2, 2, 2).unwrap());
+
+        let child = session.fork_confirmed().unwrap();
+        let retained = retained_layout_payload(
+            2,
+            r#"[{"key":3,"viewport-width":80,"viewport-height":10,"root-width":80,"runtime-revision":2,"context-hash":77}]"#,
+        );
+        assert!(!child.render_sync(1, &retained).unwrap().is_empty());
+        session.stop(true);
+        child.stop(true);
     }
 
     #[test]

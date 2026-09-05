@@ -411,6 +411,55 @@
      :authority ebox :lifetime candidate-until-final-accept
      :rollback private-session-discard :rebuild native-frame-stage
      :cleanup confirm-or-rollback)
+    (:id candidate/native-local-dirty-entries
+     :storage (:state-key :native-local-dirty-entries)
+     :proposed-category generation-fact :owner ebox-native-commit
+     :authority ebox :lifetime candidate-until-native-input
+     :rollback candidate-discard :rebuild prepared-dirty-set
+     :cleanup native-frame-consume-or-downgrade)
+    (:id native-session/layout-fragment-index
+     :storage (:struct-slot ebox-native-reflow-session layout-fragment-index)
+     :proposed-category generation-bound-mutable :owner ebox-native-reflow
+     :authority ebox :lifetime private-native-session
+     :rollback private-session-discard :rebuild full-bootstrap-or-path-copy
+     :cleanup native-session-release)
+    (:id native-session/layout-style-index
+     :storage (:struct-slot ebox-native-reflow-session layout-style-index)
+     :proposed-category generation-bound-mutable :owner ebox-native-reflow
+     :authority ebox :lifetime private-native-session
+     :rollback private-session-discard :rebuild full-bootstrap-or-style-append
+     :cleanup native-session-release)
+    (:id native-session/layout-property-template-index
+     :storage
+     (:struct-slot ebox-native-reflow-session layout-property-template-index)
+     :proposed-category generation-bound-mutable :owner ebox-native-reflow
+     :authority ebox :lifetime private-native-session
+     :rollback private-session-discard :rebuild full-bootstrap
+     :cleanup native-session-release)
+    (:id native-compile/style-index
+     :storage (:global ebox-native-reflow--compile-style-index)
+     :proposed-category generation-fact :owner ebox-native-reflow
+     :authority ebox :lifetime dynamic-native-compile
+     :rollback dynamic-binding-unwind :rebuild retained-session-root
+     :cleanup dynamic-binding-unwind)
+    (:id native-compile/property-template-index
+     :storage (:global ebox-native-reflow--compile-property-template-index)
+     :proposed-category generation-fact :owner ebox-native-reflow
+     :authority ebox :lifetime dynamic-native-compile
+     :rollback dynamic-binding-unwind :rebuild retained-session-root
+     :cleanup dynamic-binding-unwind)
+    (:id native-package/fragment-index
+     :storage (:state-key :native-fragment-index)
+     :proposed-category generation-fact :owner ebox-native-reflow
+     :authority ebox :lifetime native-call-until-success
+     :rollback package-discard :rebuild path-copied-session-root
+     :cleanup strip-from-confirmed-package)
+    (:id native-package/style-index
+     :storage (:state-key :native-style-index)
+     :proposed-category generation-fact :owner ebox-native-reflow
+     :authority ebox :lifetime native-call-until-success
+     :rollback package-discard :rebuild style-append-path-copy
+     :cleanup strip-from-confirmed-package)
     (:id process/scroll-global-state
      :storage (:global ebox--scroll-global-state)
      :proposed-category generation-bound-mutable :owner ebox-incremental

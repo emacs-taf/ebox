@@ -339,6 +339,7 @@ new session with the same bounded configuration used by retained frames."
        (progn
          (plist-put candidate-state :native-topology-stable-p t)
          (plist-put candidate-state :native-touched-node-ids nil)
+         (plist-put candidate-state :native-local-dirty-entries nil)
          (plist-put candidate-state :native-removed-node-ids nil)
          t)))
 
@@ -375,6 +376,8 @@ new session with the same bounded configuration used by retained frames."
                 old-state candidate-state))
       (plist-put candidate-state :native-topology-stable-p stable)
       (plist-put candidate-state :native-touched-node-ids layout-touched)
+      (plist-put candidate-state :native-local-dirty-entries
+                 (copy-tree (plist-get prepared :dirty-set)))
       (plist-put candidate-state :native-inherited-dirty-node-ids
                  (ebox-native-commit-inherited-dirty-node-ids prepared))
       (when context-axes-stable
@@ -612,6 +615,7 @@ publication transaction can still roll back."
                        (1+ (or (plist-get state :runtime-revision) 0))))
       (plist-put state :native-frame-kind
                  (if (plist-get frame :native-patch) 'patch 'full))
+      (cl-remf state :native-local-dirty-entries)
       frame)))
 
 (defconst ebox-native-commit--failed-render-state-keys
@@ -632,6 +636,7 @@ publication transaction can still roll back."
     :native-reuse-mount-projection-p
     :native-reuse-ownership-p
     :native-inherited-dirty-node-ids
+    :native-local-dirty-entries
     :native-topology-stable-p
     :native-touched-node-ids
     :native-removed-node-ids)

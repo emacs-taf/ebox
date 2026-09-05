@@ -95,7 +95,7 @@
 
 (defvar ebox--flex-content-min-width-table)
 
-(defconst ebox-native-reflow-abi-version "11:7:12"
+(defconst ebox-native-reflow-abi-version "12:7:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -222,7 +222,10 @@ module while loading the package."
   styles
   layout-package
   layout-fragment-cache
+  layout-fragment-index
   layout-fragment-revision
+  layout-style-index
+  layout-property-template-index
   readiness-process
   readiness-preparation
   released-p)
@@ -286,8 +289,73 @@ module while loading the package."
 (defvar ebox-native-reflow--compile-styles nil
   "Dynamically bound ordered style registry for one Layout IR compile.")
 
+(defvar ebox-native-reflow--compile-style-base-count 0
+  "Number of retained styles preceding the current append batch.")
+
+(defvar ebox-native-reflow--compile-style-index nil
+  "Persistent retained style-to-id index for incremental compilation.")
+
 (defvar ebox-native-reflow--compile-property-templates nil
   "Dynamically bound ordered opaque text-property registry.")
+
+(defvar ebox-native-reflow--compile-property-template-base-count 0
+  "Number of retained property templates preceding current additions.")
+
+(defvar ebox-native-reflow--compile-property-template-index nil
+  "Persistent retained property-template-to-id index.")
+
+(defvar ebox-native-reflow--compile-retained-registry-p nil
+  "Non-nil while style and property registries append incrementally.")
+
+(defconst ebox-native-reflow--persistent-index-depth 16
+  "Fixed number of four-bit branches in a retained native index path.")
+
+(defun ebox-native-reflow--persistent-index-code (key)
+  "Return a stable nonnegative retained-index code for KEY."
+  (if (and (integerp key) (>= key 0))
+      key
+    (logand (sxhash-equal key) #xffffffffffffffff)))
+
+(defun ebox-native-reflow--persistent-index-get (root key &optional missing)
+  "Return KEY's value from persistent ROOT, or MISSING."
+  (let ((node root)
+        (code (ebox-native-reflow--persistent-index-code key))
+        (depth 0))
+    (while (and node (< depth ebox-native-reflow--persistent-index-depth))
+      (setq node (and (vectorp node)
+                      (aref node (logand (ash code (* -4 depth)) 15)))
+            depth (1+ depth)))
+    (if (= depth ebox-native-reflow--persistent-index-depth)
+        (let ((pair (cl-assoc key node :test #'equal)))
+          (if pair (cdr pair) missing))
+      missing)))
+
+(defun ebox-native-reflow--persistent-index-put (root key value &optional depth)
+  "Return persistent ROOT updated to map KEY to VALUE.
+Only the fixed-depth path for KEY is copied.  DEPTH is for recursion."
+  (let ((depth (or depth 0)))
+    (if (= depth ebox-native-reflow--persistent-index-depth)
+        (cons (cons key value)
+              (cl-remove key root :key #'car :test #'equal))
+      (let* ((code (ebox-native-reflow--persistent-index-code key))
+             (branch (logand (ash code (* -4 depth)) 15))
+             (copy (if (vectorp root)
+                       (copy-sequence root)
+                     (make-vector 16 nil))))
+        (aset copy branch
+              (ebox-native-reflow--persistent-index-put
+               (aref copy branch) key value (1+ depth)))
+        copy))))
+
+(defun ebox-native-reflow--persistent-index-from-sequence (sequence)
+  "Return an immutable persistent index for ordered SEQUENCE values."
+  (let (root)
+    (cl-loop for value across (vconcat sequence)
+             for id from 0
+             do (setq root
+                      (ebox-native-reflow--persistent-index-put
+                       root value id)))
+    root))
 
 (defvar ebox-native-reflow--compile-property-template-ids nil
   "Dynamically bound opaque property-template lookup table.")
@@ -1338,14 +1406,20 @@ copied separately; no pending frame or registered Rust document is inherited."
     (condition-case err
         (progn
           (setf (ebox-native-reflow-session-styles fork)
-                (copy-sequence (ebox-native-reflow-session-styles session))
+                (ebox-native-reflow-session-styles session)
                 (ebox-native-reflow-session-layout-package fork)
                 (ebox-native-reflow-session-layout-package session)
                 (ebox-native-reflow-session-layout-fragment-cache fork)
-                (copy-hash-table
-                 (ebox-native-reflow-session-layout-fragment-cache session))
+                (ebox-native-reflow-session-layout-fragment-cache session)
+                (ebox-native-reflow-session-layout-fragment-index fork)
+                (ebox-native-reflow-session-layout-fragment-index session)
                 (ebox-native-reflow-session-layout-fragment-revision fork)
-                (ebox-native-reflow-session-layout-fragment-revision session))
+                (ebox-native-reflow-session-layout-fragment-revision session)
+                (ebox-native-reflow-session-layout-style-index fork)
+                (ebox-native-reflow-session-layout-style-index session)
+                (ebox-native-reflow-session-layout-property-template-index fork)
+                (ebox-native-reflow-session-layout-property-template-index
+                 session))
           fork)
       (error
        (ebox-native-reflow-release-session fork)
@@ -1409,7 +1483,11 @@ copied separately; no pending frame or registered Rust document is inherited."
                         :properties owned-properties))
            (missing (make-symbol "missing-property-template"))
            (existing
-            (if (hash-table-p
+            (if ebox-native-reflow--compile-retained-registry-p
+                (ebox-native-reflow--persistent-index-get
+                 ebox-native-reflow--compile-property-template-index
+                 entry missing)
+              (if (hash-table-p
                  ebox-native-reflow--compile-property-template-ids)
                 (gethash
                  entry ebox-native-reflow--compile-property-template-ids
@@ -1417,13 +1495,19 @@ copied separately; no pending frame or registered Rust document is inherited."
               (or (cl-position
                    entry ebox-native-reflow--compile-property-templates
                    :test #'equal)
-                  missing))))
+                  missing)))))
       (if (not (eq existing missing))
           existing
-        (let ((id (length ebox-native-reflow--compile-property-templates)))
+        (let ((id (+ ebox-native-reflow--compile-property-template-base-count
+                     (length ebox-native-reflow--compile-property-templates))))
           (setq ebox-native-reflow--compile-property-templates
                 (append ebox-native-reflow--compile-property-templates
                         (list entry)))
+          (when ebox-native-reflow--compile-retained-registry-p
+            (setq ebox-native-reflow--compile-property-template-index
+                  (ebox-native-reflow--persistent-index-put
+                   ebox-native-reflow--compile-property-template-index
+                   entry id)))
           (when (hash-table-p
                  ebox-native-reflow--compile-property-template-ids)
             (puthash
@@ -1592,13 +1676,27 @@ When FORMATTED-P is non-nil, preserve exact display spaces produced by KP."
 (defun ebox-native-reflow--register-style (mode face)
   "Return the stable numeric id for a MODE and FACE operation."
   (let* ((entry (list :mode mode :face face))
-         (existing (cl-position entry ebox-native-reflow--compile-styles
-                                :test #'equal)))
-    (or existing
-        (prog1 (length ebox-native-reflow--compile-styles)
+         (missing (make-symbol "missing-native-style"))
+         (existing
+          (if ebox-native-reflow--compile-retained-registry-p
+              (ebox-native-reflow--persistent-index-get
+               ebox-native-reflow--compile-style-index entry missing)
+            (or (cl-position entry ebox-native-reflow--compile-styles
+                             :test #'equal)
+                missing))))
+    (if (not (eq existing missing))
+        existing
+      (prog1 (+ ebox-native-reflow--compile-style-base-count
+                (length ebox-native-reflow--compile-styles))
           (setq ebox-native-reflow--compile-styles
                 (append ebox-native-reflow--compile-styles
-                        (list entry)))))))
+                        (list entry)))
+          (when ebox-native-reflow--compile-retained-registry-p
+            (setq ebox-native-reflow--compile-style-index
+                  (ebox-native-reflow--persistent-index-put
+                   ebox-native-reflow--compile-style-index entry
+                   (+ ebox-native-reflow--compile-style-base-count
+                      (1- (length ebox-native-reflow--compile-styles))))))))))
 
 (defun ebox-native-reflow--compile-add-face-style (face)
   "Register additive FACE and return its id, or nil."
@@ -2286,6 +2384,16 @@ Otherwise return CANDIDATE with the next document revision."
         (plist-put replacement :document-revision
                    (1+ (or (plist-get old :document-revision) 0)))))))
 
+(defun ebox-native-reflow--confirmed-layout-package (package)
+  "Return PACKAGE without one-shot retained input transport fields."
+  (if (plist-get package :document-delta)
+      (let ((confirmed (copy-sequence package)))
+        (dolist (key '(:document-delta :native-fragment-index
+                       :native-fragment-revision :native-style-index))
+          (cl-remf confirmed key))
+        confirmed)
+    package))
+
 (defun ebox-native-reflow--buffer-display-signature (buffer)
   "Return BUFFER's live canonical Surface display capability."
   (with-current-buffer buffer
@@ -2491,9 +2599,9 @@ per call, and no call recursively visits the captured Ebox tree."
                   (gethash child flex-content-min-widths)))
            (ebox-native-reflow--retained-layout-children node))))))
 
-(defun ebox-native-reflow--compile-retained-layout-package
+(defun ebox-native-reflow--compile-retained-layout-package-full
     (session state node)
-  "Compile NODE incrementally into retained native SESSION from STATE."
+  "Compile a complete retained package for NODE in SESSION from STATE."
   (let ((postorder (plist-get state :native-node-postorder)))
     (unless (and (vectorp postorder) (> (length postorder) 0))
       (setq postorder
@@ -2632,7 +2740,9 @@ per call, and no call recursively visits the captured Ebox tree."
                     (setq fragment
                           (ebox-native-reflow--compile-scene-node
                            current fragments flex-content-min-widths)
+                          fragment (plist-put fragment :node-id node-id)
                           revision (1+ revision)
+                          fragment (plist-put fragment :node-revision revision)
                           entry (list :signature (copy-tree signature)
                                       :fragment fragment
                                       :revision revision)))
@@ -2658,9 +2768,353 @@ per call, and no call recursively visits the captured Ebox tree."
                    candidate)))
             (setf (ebox-native-reflow-session-layout-fragment-cache session)
                   new-cache
+                  (ebox-native-reflow-session-layout-fragment-index session)
+                  (let (index)
+                    (maphash
+                     (lambda (node-id entry)
+                       (setq index
+                             (ebox-native-reflow--persistent-index-put
+                              index node-id entry)))
+                     new-cache)
+                    index)
                   (ebox-native-reflow-session-layout-fragment-revision session)
-                  revision)
+                  revision
+                  (ebox-native-reflow-session-layout-style-index session)
+                  (ebox-native-reflow--persistent-index-from-sequence
+                   (plist-get package :styles))
+                  (ebox-native-reflow-session-layout-property-template-index
+                   session)
+                  (ebox-native-reflow--persistent-index-from-sequence
+                   (plist-get package :property-templates)))
             package)))))
+
+(defconst ebox-native-reflow--delta-edge-fields
+  '(:type :child :children :items :node-id :node-revision)
+  "Fragment fields that a stable local node delta cannot replace.")
+
+(defconst ebox-native-reflow--delta-flex-edge-properties
+  '(:order :flex-grow :flex-shrink :flex-basis :align-self
+    :flex-direction :cross-align)
+  "Changed properties that alter retained Flex item metadata in N1.")
+
+(defun ebox-native-reflow--delta-flex-edge-change-p (state)
+  "Return non-nil when STATE changes unsupported Flex edge metadata."
+  (cl-some
+   (lambda (dirty)
+     (let* ((keys (plist-get dirty :changed-keys))
+            (parents (plist-get state :parent-table))
+            (nodes (plist-get state :node-table))
+            (dirty-id (plist-get dirty :node-id))
+            (dirty-node (and nodes (gethash dirty-id nodes)))
+            (raw-parent-id (and parents (gethash dirty-id parents)))
+            (raw-parent (and nodes (gethash raw-parent-id nodes)))
+            (owner-id
+             (if (and (eq (plist-get dirty-node :ebox-kind) 'text)
+                      (eq (plist-get raw-parent :ebox-kind) 'box)
+                      (when-let* ((layout
+                                   (plist-get raw-parent
+                                              :ebox-layout-config)))
+                        (eq (ebox-layout-config-kind layout) 'normal)))
+                 raw-parent-id
+               dirty-id))
+            (edge-parent-id (and parents (gethash owner-id parents)))
+            (edge-parent (and nodes (gethash edge-parent-id nodes)))
+            (config
+             (and edge-parent
+                  (plist-get edge-parent :ebox-layout-config))))
+       (or
+        (cl-some (lambda (key)
+                   (memq key ebox-native-reflow--delta-flex-edge-properties))
+                 keys)
+        ;; A child-local edit can change content-min-width in a Flex item or
+        ;; derived align-self in typed axis lowering.  N1 has no edge patch,
+        ;; so retain correctness through full input until exact edge facts are
+        ;; independently addressable.
+        (or (eq (plist-get edge-parent :ebox-type) 'flex)
+            (and config
+                 (let ((kind (ebox-layout-config-kind config))
+                       (props (ebox-layout-config-props config)))
+                   (or (eq kind 'flex)
+                       (and (memq kind '(row column))
+                            (not (and (equal (plist-get props :item-gap) 0)
+                                      (eq (plist-get props :cross-align)
+                                          'stretch)))))))))))
+   (plist-get state :native-local-dirty-entries)))
+
+(defun ebox-native-reflow--fragment-local (fragment)
+  "Return FRAGMENT's scalar and local-content fields."
+  (let ((tail fragment) local)
+    (while tail
+      (let ((key (pop tail))
+            (value (pop tail)))
+        (unless (memq key ebox-native-reflow--delta-edge-fields)
+          (setq local (nconc local (list key value))))))
+    local))
+
+(defun ebox-native-reflow--local-difference (old new)
+  "Return NEW local fields whose values differ from OLD."
+  (let ((tail new) difference)
+    (while tail
+      (let ((key (pop tail))
+            (value (pop tail)))
+        (unless (equal value (plist-get old key))
+          (setq difference (nconc difference (list key value))))))
+    difference))
+
+(defun ebox-native-reflow--apply-local-difference (fragment difference)
+  "Return FRAGMENT with scalar fields from DIFFERENCE replaced."
+  (let ((copy (copy-sequence fragment))
+        (tail difference))
+    (while tail
+      (setq copy (plist-put copy (pop tail) (pop tail))))
+    copy))
+
+(defun ebox-native-reflow--delta-owner-id (state node-id index)
+  "Return addressable owner for NODE-ID in STATE and retained INDEX."
+  (let ((parents (plist-get state :parent-table))
+        (nodes (plist-get state :node-table))
+        (current node-id))
+    (when-let* ((source (and nodes (gethash current nodes)))
+                (parent-id (and parents (gethash current parents)))
+                (parent (and nodes (gethash parent-id nodes))))
+      (when (and (eq (plist-get source :ebox-kind) 'text)
+                 (eq (plist-get parent :ebox-kind) 'box)
+                 (eq (ebox-layout-config-kind
+                      (plist-get parent :ebox-layout-config))
+                     'normal))
+        (setq current parent-id)))
+    (while (and current
+                (null (ebox-native-reflow--persistent-index-get
+                       index current)))
+      (setq current (and parents (gethash current parents))))
+    current))
+
+(defun ebox-native-reflow--compile-delta-slots (node old-fragment)
+  "Compile NODE local slots while retaining OLD-FRAGMENT edges."
+  (pcase (plist-get node :ebox-type)
+    ('box
+     (if (eq (plist-get node :ebox-kind) 'text)
+         (vector (ebox-native-reflow--compile-text-node node))
+       (let* ((config (and (eq (plist-get node :ebox-kind) 'box)
+                           (plist-get node :ebox-layout-config)))
+              (kind (and config (ebox-layout-config-kind config)))
+              (old-child (plist-get old-fragment :child))
+              (fused-p (and (eq kind 'normal)
+                            (let ((child (car (ebox-tree-node-children node))))
+                              (and child
+                                   (eq (plist-get child :ebox-kind) 'text)))))
+              (inner
+               (pcase kind
+                 ((or 'row 'column)
+                  (ebox-native-reflow--compile-typed-axis-children
+                   kind config nil))
+                 ('flex
+                  (ebox-native-reflow--compile-flex-inner
+                   (copy-sequence (ebox-layout-config-props config)) nil))
+                 (_ nil)))
+              (child (cond (fused-p
+                            (ebox-native-reflow--compile-text-node
+                             (car (ebox-tree-node-children node))))
+                           (inner inner)
+                           (t old-child)))
+              (outer (ebox-native-reflow--compile-box node child nil t)))
+         (if inner (vector outer inner) (vector outer)))))
+    ('flex
+     (let* ((wrapper (plist-get node :box))
+            (props (ebox--flex-container-content-props
+                    (plist-get node :props) (plist-get node :raw-props)
+                    wrapper)))
+       (when wrapper
+         (plist-put props :width nil)
+         (when (plist-member (plist-get node :raw-props) :height)
+           (plist-put props :height 'viewport-height)))
+       (let ((inner (ebox-native-reflow--compile-flex-inner props nil)))
+         (if wrapper
+             (vector (ebox-native-reflow--compile-box wrapper inner t) inner)
+           (vector inner)))))
+    (_ (vector old-fragment))))
+
+(defun ebox-native-reflow--delta-direct-owner-ids (state index)
+  "Return owners for STATE's direct dirty entries found in INDEX."
+  (let ((seen (make-hash-table :test 'equal)) result)
+    (dolist (dirty (plist-get state :native-local-dirty-entries))
+      (when-let* ((owner
+                   (ebox-native-reflow--delta-owner-id
+                    state (plist-get dirty :node-id) index)))
+        (unless (gethash owner seen)
+          (puthash owner t seen)
+          (push owner result))))
+    (nreverse result)))
+
+(defun ebox-native-reflow--compile-retained-layout-delta
+    (session state node)
+  "Return SESSION's local delta for NODE under STATE, or nil for fallback."
+  (let* ((old-package (ebox-native-reflow-session-layout-package session))
+         (old-index (ebox-native-reflow-session-layout-fragment-index session))
+         (node-table (plist-get state :node-table))
+         (touched (plist-get state :native-touched-node-ids)))
+    (when (and old-package old-index (hash-table-p node-table)
+               (plist-get state :native-topology-stable-p)
+               (plist-member state :native-local-dirty-entries)
+               (not (ebox-native-reflow--delta-flex-edge-change-p state))
+               ;; Descendant inherited-style expansion needs its own bounded
+               ;; affected-node index.  Until then it is an explicit full
+               ;; input fallback rather than a partial semantic update.
+               (null (plist-get state :native-inherited-dirty-node-ids)))
+      (if (null touched)
+          old-package
+        (let* ((style-base (length (plist-get old-package :styles)))
+               (template-base
+                (length (plist-get old-package :property-templates)))
+               (ebox-native-reflow--compile-styles nil)
+               (ebox-native-reflow--compile-style-base-count style-base)
+               (ebox-native-reflow--compile-style-index
+                (ebox-native-reflow-session-layout-style-index session))
+               (ebox-native-reflow--compile-property-templates nil)
+               (ebox-native-reflow--compile-property-template-base-count
+                template-base)
+               (ebox-native-reflow--compile-property-template-index
+                (ebox-native-reflow-session-layout-property-template-index
+                 session))
+               (ebox-native-reflow--compile-retained-registry-p t)
+               (ebox-native-reflow--compile-display-signature
+                (ebox--current-display-signature))
+               (ebox-native-reflow--compile-root-node node)
+               (ebox--render-string-pixel-width-cache
+                (make-hash-table :test 'equal))
+               (ebox--render-string-max-pixel-width-cache
+                (make-hash-table :test 'eq))
+               (direct (ebox-native-reflow--delta-direct-owner-ids
+                        state old-index))
+               (direct-set (make-hash-table :test 'equal))
+               (entry-ids nil)
+               (seen (make-hash-table :test 'equal))
+               (new-index old-index)
+               (revision
+                (or (ebox-native-reflow-session-layout-fragment-revision
+                     session) 0))
+               entries unsupported)
+          (dolist (id direct) (puthash id t direct-set))
+          (dolist (id touched)
+            (when-let* ((owner
+                         (ebox-native-reflow--delta-owner-id state id old-index)))
+              (unless (gethash owner seen)
+                (puthash owner t seen)
+                (push owner entry-ids))))
+          (dolist (owner-id (nreverse entry-ids))
+            (let* ((cached (ebox-native-reflow--persistent-index-get
+                            old-index owner-id))
+                   (old-fragment (plist-get cached :fragment))
+                   (source (gethash owner-id node-table))
+                   (expected (plist-get cached :revision))
+                   patches new-fragment)
+              (unless (and cached source (integerp expected))
+                (setq unsupported t))
+              (when (and (not unsupported) (gethash owner-id direct-set))
+                (let ((slots
+                       (ebox-native-reflow--compile-delta-slots
+                        source old-fragment)))
+                  (unless (equal (plist-get (aref slots 0) :type)
+                                 (plist-get old-fragment :type))
+                    (setq unsupported t))
+                  (unless unsupported
+                    (let ((local
+                           (ebox-native-reflow--local-difference
+                            (ebox-native-reflow--fragment-local old-fragment)
+                            (ebox-native-reflow--fragment-local
+                             (aref slots 0)))))
+                      (when local
+                        (push (list :slot 0 :local local) patches)
+                        (setq new-fragment
+                              (ebox-native-reflow--apply-local-difference
+                               old-fragment local))))
+                    (when (> (length slots) 1)
+                      (let ((old-inner (plist-get old-fragment :child))
+                            (new-inner (aref slots 1)))
+                        (unless (equal (plist-get old-inner :type)
+                                       (plist-get new-inner :type))
+                          (setq unsupported t))
+                        (unless unsupported
+                          (let ((local
+                                 (ebox-native-reflow--local-difference
+                                  (ebox-native-reflow--fragment-local old-inner)
+                                  (ebox-native-reflow--fragment-local new-inner))))
+                            (when local
+                              (push (list :slot 1 :local local) patches)
+                              (let ((outer (or new-fragment
+                                               (copy-sequence old-fragment))))
+                                (plist-put
+                                 outer :child
+                                 (ebox-native-reflow--apply-local-difference
+                                  old-inner local))
+                                (setq new-fragment outer))))))))))
+              (unless unsupported
+                (setq revision (1+ revision))
+                (unless new-fragment
+                  (setq new-fragment (copy-sequence old-fragment)))
+                (plist-put new-fragment :node-id owner-id)
+                (plist-put new-fragment :node-revision revision)
+                (let* ((entry
+                        (append
+                         (list :node-id owner-id
+                               :expected-revision expected
+                               :target-revision revision)
+                         (when patches
+                           (list :slot-patches (vconcat (nreverse patches))))))
+                       (new-cache-entry
+                        (list :signature nil
+                              :fragment (or new-fragment old-fragment)
+                              :revision revision)))
+                  (push entry entries)
+                  (setq new-index
+                        (ebox-native-reflow--persistent-index-put
+                         new-index owner-id new-cache-entry))))))
+          (when (and (not unsupported)
+                     ;; N1 can authenticate retained templates, but cannot
+                     ;; append their Emacs-owned values to Rust atomically.
+                     (= template-base
+                        (+ template-base
+                           (length ebox-native-reflow--compile-property-templates))))
+            (let* ((styles-append ebox-native-reflow--compile-styles)
+                   (styles
+                    (if styles-append
+                        ;; Materializing the global style output is explicitly
+                        ;; outside retained input work; the common no-append
+                        ;; path preserves the old vector by identity.
+                        (vconcat (plist-get old-package :styles) styles-append)
+                      (plist-get old-package :styles)))
+                   (base (or (plist-get old-package :document-revision) 0))
+                   (package (copy-sequence old-package)))
+              (plist-put package :document-revision (1+ base))
+              (plist-put package :styles styles)
+              (plist-put
+               package :document-delta
+               (list :style-base-count style-base
+                     :styles-append
+                     (vconcat
+                      (mapcar
+                       (lambda (descriptor)
+                         (list :mode (symbol-name (plist-get descriptor :mode))
+                               :face
+                               (list :lisp
+                                     (prin1-to-string
+                                      (plist-get descriptor :face)))))
+                       styles-append))
+                     :property-template-base-count template-base
+                     :property-template-target-count template-base
+                     :entries (vconcat (nreverse entries))))
+              (plist-put package :native-fragment-index new-index)
+              (plist-put package :native-fragment-revision revision)
+              (plist-put package :native-style-index
+                         ebox-native-reflow--compile-style-index)
+              package)))))))
+
+(defun ebox-native-reflow--compile-retained-layout-package
+    (session state node)
+  "Compile NODE for SESSION using a delta when STATE proves it supported."
+  (or (ebox-native-reflow--compile-retained-layout-delta session state node)
+      (ebox-native-reflow--compile-retained-layout-package-full
+       session state node)))
 
 (defun ebox-native-reflow-compile-layout-ir (node)
   "Compile NODE to one complete versioned native layout document."
@@ -2682,9 +3136,10 @@ per call, and no call recursively visits the captured Ebox tree."
 
 (defun ebox-native-reflow--layout-control-json
     (document frames &optional document-base-revision
-              document-target-revision)
+              document-target-revision document-delta)
   "Return strict control JSON for optional layout DOCUMENT and FRAMES.
-DOCUMENT-BASE-REVISION and DOCUMENT-TARGET-REVISION bind retained input."
+DOCUMENT-BASE-REVISION and DOCUMENT-TARGET-REVISION bind retained input.
+DOCUMENT-DELTA is the stable-topology local replacement batch."
   (unless (and (listp frames) frames)
     (error "Native reflow requires at least one layout frame"))
   (let ((control
@@ -2792,6 +3247,8 @@ DOCUMENT-BASE-REVISION and DOCUMENT-TARGET-REVISION bind retained input."
                        document-target-revision)))
     (when document
       (setq control (plist-put control :document document)))
+    (when document-delta
+      (setq control (plist-put control :document-delta document-delta)))
     (ebox-native-reflow--serialize-layout-control control)))
 
 (defun ebox-native-reflow-submit-layout
@@ -2807,9 +3264,12 @@ LAYOUT-PACKAGE may reuse a caller-validated document for the same NODE."
                node
                (ebox-native-reflow-session-styles session)
                (plist-get old-package :property-templates))))
+         (document-delta (plist-get candidate-package :document-delta))
          (package
-          (ebox-native-reflow--reuse-exact-layout-package
-           old-package candidate-package))
+          (if document-delta
+              candidate-package
+            (ebox-native-reflow--reuse-exact-layout-package
+             old-package candidate-package)))
          (register-layout-p
           (not (eq package
                    old-package)))
@@ -2821,12 +3281,14 @@ LAYOUT-PACKAGE may reuse a caller-validated document for the same NODE."
            (ebox-native-reflow--live-handle session)
            generation
            (ebox-native-reflow--layout-control-json
-            (and register-layout-p (plist-get package :document)) frames
-            base-revision target-revision))))
+            (and register-layout-p (not document-delta)
+                 (plist-get package :document))
+            frames base-revision target-revision document-delta))))
     (setf (ebox-native-reflow-session-generation session) generation)
     (setf (ebox-native-reflow-session-styles session)
           (plist-get package :styles))
-    (setf (ebox-native-reflow-session-layout-package session) package)
+    (setf (ebox-native-reflow-session-layout-package session)
+          (ebox-native-reflow--confirmed-layout-package package))
     accepted))
 
 (defun ebox-native-reflow--tape-cursor (payload &optional position)
@@ -3968,13 +4430,16 @@ root effect metadata required by a thin host commit."
                  (plist-get
                   (ebox-native-reflow-session-layout-package session)
                   :property-templates)))))
+         (document-delta (plist-get candidate-package :document-delta))
          (package
-          (ebox-native-reflow--reuse-exact-layout-package
-           old-package candidate-package))
+          (if document-delta
+              candidate-package
+            (ebox-native-reflow--reuse-exact-layout-package
+             old-package candidate-package)))
          (generation (1+ (ebox-native-reflow-session-generation session)))
          (control-frame (copy-sequence frame))
          (native-key (or (plist-get control-frame :key) 1))
-         (reuse-document-p (eq package old-package))
+         (reuse-document-p (or document-delta (eq package old-package)))
          (base-revision (or (plist-get old-package :document-revision) 0))
          (target-revision (or (plist-get package :document-revision)
                               (1+ base-revision))))
@@ -3986,12 +4451,22 @@ root effect metadata required by a thin host commit."
              generation
              (ebox-native-reflow--layout-control-json
               (unless reuse-document-p (plist-get package :document))
-              (list control-frame) base-revision target-revision))
+              (list control-frame) base-revision target-revision
+              document-delta))
             package control-frame generation)))
       (setf (ebox-native-reflow-session-generation session) generation
-            (ebox-native-reflow-session-layout-package session) package
+            (ebox-native-reflow-session-layout-package session)
+            (ebox-native-reflow--confirmed-layout-package package)
             (ebox-native-reflow-session-styles session)
             (plist-get package :styles))
+      (when document-delta
+        (setf (ebox-native-reflow-session-layout-fragment-cache session) nil
+              (ebox-native-reflow-session-layout-fragment-index session)
+              (plist-get package :native-fragment-index)
+              (ebox-native-reflow-session-layout-fragment-revision session)
+              (plist-get package :native-fragment-revision)
+              (ebox-native-reflow-session-layout-style-index session)
+              (plist-get package :native-style-index)))
       result)))
 
 (defun ebox-native-reflow-render-proof-sync

@@ -1,14 +1,49 @@
 use etaf_core::{diff_commit_batch, CommitBatch, SpanEdit};
-use serde::Deserialize;
-use std::collections::BTreeMap;
-
-#[cfg(test)]
+use serde::{Deserialize, Deserializer};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::collections::HashSet;
+use std::sync::Arc;
 
-#[cfg(test)]
+fn deserialize_arc_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Vec::<T>::deserialize(deserializer).map(Arc::new)
+}
+
+fn deserialize_optional_arc<'de, D, T>(deserializer: D) -> Result<Option<Arc<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(|value| value.map(Arc::new))
+}
+
+fn deserialize_arc<'de, D, T>(deserializer: D) -> Result<Arc<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Arc::new)
+}
+
 thread_local! {
+    static RESOLVER_LOOKUP_COUNT: Cell<u64> = const { Cell::new(0) };
+    #[cfg(test)]
     static TEST_RENDER_NODE_COUNT: Cell<Option<usize>> = const { Cell::new(None) };
+    #[cfg(test)]
     static TEST_DISABLE_WINDOW_RENDER: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) fn reset_resolver_lookups() {
+    RESOLVER_LOOKUP_COUNT.with(|count| count.set(0));
+}
+
+pub(crate) fn resolver_lookups() -> u64 {
+    RESOLVER_LOOKUP_COUNT.with(Cell::get)
 }
 
 const LAYOUT_VERSION: u32 = 2;
@@ -47,7 +82,7 @@ const METADATA_SCROLL_CONTENT: u8 = 16;
 const METADATA_SCROLL_OWNER: u8 = 17;
 const METADATA_SCROLL_WINDOW: u8 = 18;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct LayoutDocument {
     version: u32,
@@ -58,6 +93,962 @@ pub struct LayoutDocument {
     #[serde(default)]
     pub(crate) styles: Vec<StyleTemplate>,
     root: LayoutNode,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) struct DocumentDelta {
+    pub(crate) style_base_count: u32,
+    #[serde(default)]
+    pub(crate) styles_append: Vec<StyleTemplate>,
+    pub(crate) property_template_base_count: u32,
+    pub(crate) property_template_target_count: u32,
+    pub(crate) entries: Vec<DocumentDeltaEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) struct DocumentDeltaEntry {
+    pub(crate) node_id: u64,
+    pub(crate) expected_revision: u64,
+    pub(crate) target_revision: u64,
+    #[serde(default)]
+    slot_patches: Vec<LocalSlotPatch>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct LocalSlotPatch {
+    slot: u8,
+    local: JsonMap<String, JsonValue>,
+}
+
+#[derive(Debug)]
+struct RetainedEntry {
+    revision: u64,
+    node: Arc<LayoutNode>,
+    slot_work: [Arc<LocalWorkSummary>; 2],
+}
+
+#[derive(Debug, Clone, Default)]
+struct LocalWorkSummary(BTreeMap<&'static str, usize>);
+
+#[derive(Debug)]
+struct RadixNode {
+    children: [Option<Arc<RadixNode>>; 16],
+    value: Option<Arc<RetainedEntry>>,
+}
+
+impl Default for RadixNode {
+    fn default() -> Self {
+        Self {
+            children: std::array::from_fn(|_| None),
+            value: None,
+        }
+    }
+}
+
+fn radix_lookup(root: &Arc<RadixNode>, key: u64) -> Option<&Arc<RetainedEntry>> {
+    let mut current = root.as_ref();
+    for level in 0..16 {
+        let shift = 60 - level * 4;
+        current = current.children[((key >> shift) & 0xf) as usize].as_deref()?;
+    }
+    current.value.as_ref()
+}
+
+fn radix_insert(
+    root: &Arc<RadixNode>,
+    key: u64,
+    value: Arc<RetainedEntry>,
+) -> (Arc<RadixNode>, u64) {
+    fn insert_at(
+        node: &Arc<RadixNode>,
+        key: u64,
+        level: usize,
+        value: &Arc<RetainedEntry>,
+        copied: &mut u64,
+    ) -> Arc<RadixNode> {
+        *copied += 1;
+        let mut children = node.children.clone();
+        let mut stored = node.value.clone();
+        if level == 16 {
+            stored = Some(Arc::clone(value));
+        } else {
+            let shift = 60 - level * 4;
+            let index = ((key >> shift) & 0xf) as usize;
+            let child = children[index]
+                .clone()
+                .unwrap_or_else(|| Arc::new(RadixNode::default()));
+            children[index] = Some(insert_at(&child, key, level + 1, value, copied));
+        }
+        Arc::new(RadixNode {
+            children,
+            value: stored,
+        })
+    }
+
+    let mut copied = 0;
+    (insert_at(root, key, 0, &value, &mut copied), copied)
+}
+
+#[derive(Debug)]
+pub(crate) struct RetainedDocument {
+    root_id: u64,
+    entries: Arc<RadixNode>,
+    styles: Arc<StyleRadixNode>,
+    style_count: u32,
+    property_template_count: u32,
+    work_units: usize,
+}
+
+#[derive(Debug)]
+struct StyleRadixNode {
+    children: [Option<Arc<StyleRadixNode>>; 16],
+    value: Option<Arc<StyleTemplate>>,
+}
+
+impl Default for StyleRadixNode {
+    fn default() -> Self {
+        Self {
+            children: std::array::from_fn(|_| None),
+            value: None,
+        }
+    }
+}
+
+fn style_lookup(root: &Arc<StyleRadixNode>, key: u64) -> Option<&Arc<StyleTemplate>> {
+    let mut current = root.as_ref();
+    for level in 0..16 {
+        let shift = 60 - level * 4;
+        current = current.children[((key >> shift) & 0xf) as usize].as_deref()?;
+    }
+    current.value.as_ref()
+}
+
+fn style_insert(
+    root: &Arc<StyleRadixNode>,
+    key: u64,
+    value: Arc<StyleTemplate>,
+) -> (Arc<StyleRadixNode>, u64) {
+    fn insert_at(
+        node: &Arc<StyleRadixNode>,
+        key: u64,
+        level: usize,
+        value: &Arc<StyleTemplate>,
+        copied: &mut u64,
+    ) -> Arc<StyleRadixNode> {
+        *copied += 1;
+        let mut children = node.children.clone();
+        let mut stored = node.value.clone();
+        if level == 16 {
+            stored = Some(Arc::clone(value));
+        } else {
+            let shift = 60 - level * 4;
+            let index = ((key >> shift) & 0xf) as usize;
+            let child = children[index]
+                .clone()
+                .unwrap_or_else(|| Arc::new(StyleRadixNode::default()));
+            children[index] = Some(insert_at(&child, key, level + 1, value, copied));
+        }
+        Arc::new(StyleRadixNode {
+            children,
+            value: stored,
+        })
+    }
+
+    let mut copied = 0;
+    (insert_at(root, key, 0, &value, &mut copied), copied)
+}
+
+impl LayoutNode {
+    fn node_id(&self) -> Option<u64> {
+        match self {
+            Self::Box { node_id, .. }
+            | Self::Text { node_id, .. }
+            | Self::Row { node_id, .. }
+            | Self::Column { node_id, .. }
+            | Self::Flex { node_id, .. } => *node_id,
+            Self::NodeRef { node_id } => Some(*node_id),
+        }
+    }
+
+    fn node_revision(&self) -> Option<u64> {
+        match self {
+            Self::Box { node_revision, .. }
+            | Self::Text { node_revision, .. }
+            | Self::Row { node_revision, .. }
+            | Self::Column { node_revision, .. }
+            | Self::Flex { node_revision, .. } => *node_revision,
+            Self::NodeRef { .. } => None,
+        }
+    }
+}
+
+fn visit_layout_children(node: &LayoutNode, mut visit: impl FnMut(&LayoutNode)) {
+    match node {
+        LayoutNode::Box { child, .. } => {
+            if let Some(child) = child.as_deref() {
+                visit(child);
+            }
+        }
+        LayoutNode::Row { children, .. } => {
+            for child in children.iter() {
+                visit(child);
+            }
+        }
+        LayoutNode::Column { children, .. } => {
+            for child in children.iter() {
+                visit(child);
+            }
+        }
+        LayoutNode::Flex { items, .. } => {
+            for item in items.iter() {
+                visit(&item.node);
+            }
+        }
+        LayoutNode::Text { .. } | LayoutNode::NodeRef { .. } => {}
+    }
+}
+
+impl RetainedDocument {
+    pub(crate) fn bootstrap(document: LayoutDocument) -> Result<(Arc<Self>, u64), String> {
+        let (node_count, work_units) = document.validate_metrics()?;
+        fn install_owner(
+            mut node: LayoutNode,
+            entries: &mut Arc<RadixNode>,
+            seen: &mut HashSet<u64>,
+            count: &mut u64,
+        ) -> Result<u64, String> {
+            fn localize(
+                node: &mut LayoutNode,
+                owner_id: u64,
+                entries: &mut Arc<RadixNode>,
+                seen: &mut HashSet<u64>,
+                count: &mut u64,
+            ) -> Result<(), String> {
+                fn localize_child(
+                    child: LayoutNode,
+                    owner_id: u64,
+                    entries: &mut Arc<RadixNode>,
+                    seen: &mut HashSet<u64>,
+                    count: &mut u64,
+                ) -> Result<LayoutNode, String> {
+                    if child.node_id().is_some() {
+                        let installed = install_owner(child, entries, seen, count)?;
+                        return Ok(LayoutNode::NodeRef { node_id: installed });
+                    }
+                    let mut child = child;
+                    localize(&mut child, owner_id, entries, seen, count)?;
+                    Ok(child)
+                }
+
+                match node {
+                    LayoutNode::Box { child, .. } => {
+                        if let Some(old) = child.take() {
+                            let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                            *child = Some(Arc::new(localize_child(
+                                old, owner_id, entries, seen, count,
+                            )?));
+                        }
+                    }
+                    LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+                        let old = std::mem::take(children);
+                        let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                        let mut localized = Vec::with_capacity(old.len());
+                        for child in old {
+                            localized.push(localize_child(child, owner_id, entries, seen, count)?);
+                        }
+                        *children = Arc::new(localized);
+                    }
+                    LayoutNode::Flex { items, .. } => {
+                        let old = std::mem::take(items);
+                        let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                        let mut localized = Vec::with_capacity(old.len());
+                        for mut item in old {
+                            item.node = localize_child(item.node, owner_id, entries, seen, count)?;
+                            localized.push(item);
+                        }
+                        *items = Arc::new(localized);
+                    }
+                    LayoutNode::Text { .. } => {}
+                    LayoutNode::NodeRef { .. } => {
+                        return Err(
+                            "Native retained bootstrap received a node reference".to_owned()
+                        );
+                    }
+                }
+                Ok(())
+            }
+
+            let node_id = node.node_id().ok_or_else(|| {
+                "Native retained document owner is missing its node id".to_owned()
+            })?;
+            let revision = node.node_revision().ok_or_else(|| {
+                "Native retained document node is missing its revision".to_owned()
+            })?;
+            if node_id == 0 || !seen.insert(node_id) {
+                return Err("Native retained document has invalid duplicate node id".to_owned());
+            }
+            localize(&mut node, node_id, entries, seen, count)?;
+            let slot_one = match &node {
+                LayoutNode::Box {
+                    child: Some(child), ..
+                } if child.node_id().is_none() => local_work_summary(child)?,
+                _ => LocalWorkSummary::default(),
+            };
+            let entry = Arc::new(RetainedEntry {
+                revision,
+                slot_work: [Arc::new(local_work_summary(&node)?), Arc::new(slot_one)],
+                node: Arc::new(node),
+            });
+            let (updated, _) = radix_insert(entries, node_id, entry);
+            *entries = updated;
+            *count += 1;
+            Ok(node_id)
+        }
+
+        let mut entries = Arc::new(RadixNode::default());
+        let mut seen = HashSet::new();
+        let mut owner_count = 0;
+        let root_id = install_owner(document.root, &mut entries, &mut seen, &mut owner_count)?;
+        debug_assert!(usize::try_from(owner_count).is_ok_and(|count| count <= node_count));
+        let mut styles = Arc::new(StyleRadixNode::default());
+        if document.styles.len() != document.style_count as usize {
+            return Err("Native retained style table count mismatch".to_owned());
+        }
+        for (index, style) in document.styles.into_iter().enumerate() {
+            let (updated, _) = style_insert(&styles, index as u64, Arc::new(style));
+            styles = updated;
+        }
+        Ok((
+            Arc::new(Self {
+                root_id,
+                entries,
+                styles,
+                style_count: document.style_count,
+                property_template_count: document.property_template_count,
+                work_units,
+            }),
+            node_count as u64,
+        ))
+    }
+
+    fn effective_node(&self, node_id: u64) -> Option<&LayoutNode> {
+        radix_lookup(&self.entries, node_id).map(|entry| entry.node.as_ref())
+    }
+
+    fn resolve<'a>(&'a self, fallback: &'a LayoutNode) -> Result<&'a LayoutNode, String> {
+        match fallback {
+            LayoutNode::NodeRef { node_id } => {
+                RESOLVER_LOOKUP_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+                self.effective_node(*node_id).ok_or_else(|| {
+                    "Native retained document has an unknown node reference".to_owned()
+                })
+            }
+            _ => Ok(fallback),
+        }
+    }
+
+    pub(crate) fn styles(&self) -> Result<Vec<StyleTemplate>, String> {
+        (0..self.style_count)
+            .map(|index| {
+                style_lookup(&self.styles, index as u64)
+                    .map(|style| style.as_ref().clone())
+                    .ok_or_else(|| "Native retained style registry has a gap".to_owned())
+            })
+            .collect()
+    }
+
+    pub(crate) fn apply_delta(
+        &self,
+        delta: DocumentDelta,
+    ) -> Result<(Arc<Self>, u64, u64), String> {
+        if delta.style_base_count != self.style_count
+            || delta.property_template_base_count != self.property_template_count
+            || delta.property_template_target_count < delta.property_template_base_count
+            || delta.property_template_target_count > MAX_PROPERTY_TEMPLATE_COUNT
+        {
+            return Err("Native retained delta registry base mismatch".to_owned());
+        }
+        for style in &delta.styles_append {
+            style.face.validate()?;
+        }
+        let target_style_count = self
+            .style_count
+            .checked_add(delta.styles_append.len() as u32)
+            .ok_or_else(|| "Native retained style table count overflow".to_owned())?;
+        if target_style_count as usize > MAX_TAPE_PROPERTY_ENTRIES {
+            return Err("Native retained style table exceeds its entry limit".to_owned());
+        }
+        let mut seen = HashSet::with_capacity(delta.entries.len());
+        let mut prepared = Vec::with_capacity(delta.entries.len());
+        let mut work_delta_total = 0_i128;
+        for update in delta.entries {
+            if !seen.insert(update.node_id) {
+                return Err("Native retained delta contains a duplicate node id".to_owned());
+            }
+            let old = radix_lookup(&self.entries, update.node_id)
+                .ok_or_else(|| "Native retained delta names an unknown node id".to_owned())?;
+            if old.revision != update.expected_revision
+                || update.target_revision <= update.expected_revision
+            {
+                return Err("Native retained delta node revision mismatch".to_owned());
+            }
+            let node = if update.slot_patches.is_empty() {
+                Arc::clone(&old.node)
+            } else {
+                let (patched, slot_work, work_delta) = patch_owner_slots(
+                    &old.node,
+                    &old.slot_work,
+                    &update.slot_patches,
+                    target_style_count,
+                    delta.property_template_target_count,
+                )?;
+                work_delta_total = work_delta_total
+                    .checked_add(work_delta as i128)
+                    .ok_or_else(|| "Native layout work estimate overflowed".to_owned())?;
+                prepared.push((
+                    update.node_id,
+                    Arc::new(RetainedEntry {
+                        revision: update.target_revision,
+                        node: Arc::new(patched),
+                        slot_work,
+                    }),
+                ));
+                continue;
+            };
+            prepared.push((
+                update.node_id,
+                Arc::new(RetainedEntry {
+                    revision: update.target_revision,
+                    node,
+                    slot_work: old.slot_work.clone(),
+                }),
+            ));
+        }
+        let work_units = if work_delta_total < 0 {
+            self.work_units
+                .checked_sub(
+                    usize::try_from(-work_delta_total)
+                        .map_err(|_| "Native retained work summary invariant failed".to_owned())?,
+                )
+                .ok_or_else(|| "Native retained work summary invariant failed".to_owned())?
+        } else {
+            self.work_units
+                .checked_add(
+                    usize::try_from(work_delta_total)
+                        .map_err(|_| "Native layout work estimate overflowed".to_owned())?,
+                )
+                .ok_or_else(|| "Native layout work estimate overflowed".to_owned())?
+        };
+        if work_units > MAX_LAYOUT_WORK_UNITS {
+            return Err("Native layout exceeds the work-unit limit".to_owned());
+        }
+        let parsed = prepared.len() as u64;
+        let mut entries = Arc::clone(&self.entries);
+        let mut copied = 0;
+        for (node_id, entry) in prepared {
+            let (next, count) = radix_insert(&entries, node_id, entry);
+            entries = next;
+            copied += count;
+        }
+        let mut styles = Arc::clone(&self.styles);
+        for (offset, style) in delta.styles_append.into_iter().enumerate() {
+            let style_id = self.style_count as u64 + offset as u64;
+            let (updated, count) = style_insert(&styles, style_id, Arc::new(style));
+            styles = updated;
+            copied += count;
+        }
+        Ok((
+            Arc::new(Self {
+                root_id: self.root_id,
+                entries,
+                styles,
+                style_count: target_style_count,
+                property_template_count: delta.property_template_target_count,
+                work_units,
+            }),
+            parsed,
+            copied,
+        ))
+    }
+}
+
+fn patch_owner_slots(
+    base: &LayoutNode,
+    base_work: &[Arc<LocalWorkSummary>; 2],
+    patches: &[LocalSlotPatch],
+    style_count: u32,
+    property_template_count: u32,
+) -> Result<(LayoutNode, [Arc<LocalWorkSummary>; 2], isize), String> {
+    let mut result = base.clone();
+    let mut slot_work = base_work.clone();
+    let mut work_delta = 0_isize;
+    let mut seen = [false; 2];
+    for patch in patches {
+        let index = patch.slot as usize;
+        if index >= seen.len() || std::mem::replace(&mut seen[index], true) {
+            return Err("Native retained delta has an invalid duplicate slot".to_owned());
+        }
+        if patch.slot == 0 {
+            let old_work = slot_work[0].changed_work(&patch.local);
+            result = patch_local_node(&result, &patch.local)?;
+            validate_changed_fields(&result, &patch.local, style_count, property_template_count)?;
+            let updated = slot_work[0].updated(&result, &patch.local)?;
+            let new_work = updated.changed_work(&patch.local);
+            work_delta += new_work as isize - old_work as isize;
+            slot_work[0] = Arc::new(updated);
+        } else {
+            let LayoutNode::Box { child, .. } = &mut result else {
+                return Err("Native retained delta slot one requires a box owner".to_owned());
+            };
+            let old_child = child
+                .as_deref()
+                .ok_or_else(|| "Native retained delta slot one is absent".to_owned())?;
+            if old_child.node_id().is_some() {
+                return Err("Native retained delta slot one must be anonymous".to_owned());
+            }
+            let old_work = slot_work[1].changed_work(&patch.local);
+            let new_child = patch_local_node(old_child, &patch.local)?;
+            validate_changed_fields(
+                &new_child,
+                &patch.local,
+                style_count,
+                property_template_count,
+            )?;
+            let updated = slot_work[1].updated(&new_child, &patch.local)?;
+            let new_work = updated.changed_work(&patch.local);
+            work_delta += new_work as isize - old_work as isize;
+            slot_work[1] = Arc::new(updated);
+            *child = Some(Arc::new(new_child));
+        }
+    }
+    Ok((result, slot_work, work_delta))
+}
+
+fn patch_local_node(
+    base: &LayoutNode,
+    fields: &JsonMap<String, JsonValue>,
+) -> Result<LayoutNode, String> {
+    fn parsed<T: serde::de::DeserializeOwned>(value: &JsonValue) -> Result<T, String> {
+        serde_json::from_value(value.clone())
+            .map_err(|error| format!("Invalid native retained local field: {error}"))
+    }
+    let mut output = base.clone();
+    for (name, value) in fields {
+        match &mut output {
+            LayoutNode::Box {
+                region_id,
+                content,
+                content_region_id,
+                content_typography_style,
+                content_foreground_style,
+                content_surface_template_id,
+                content_width_exact,
+                content_min_width,
+                width,
+                min_width,
+                max_width,
+                height,
+                min_height,
+                max_height,
+                box_sizing,
+                padding_left,
+                padding_right,
+                padding_top,
+                padding_bottom,
+                margin_left,
+                margin_right,
+                margin_top,
+                margin_bottom,
+                border_left,
+                border_right,
+                typography_style,
+                foreground_style,
+                background_style,
+                border_left_style,
+                border_right_style,
+                border_top_style,
+                border_bottom_style,
+                surface_template_id,
+                text_align,
+                vertical_align,
+                overflow,
+                wrap_mode,
+                scroll_offset,
+                ..
+            } => match name.as_str() {
+                "region-id" => *region_id = parsed(value)?,
+                "content" => *content = parsed::<Option<MeasuredText>>(value)?.map(Arc::new),
+                "content-region-id" => *content_region_id = parsed(value)?,
+                "content-typography-style" => *content_typography_style = parsed(value)?,
+                "content-foreground-style" => *content_foreground_style = parsed(value)?,
+                "content-surface-template-id" => *content_surface_template_id = parsed(value)?,
+                "content-width-exact" => *content_width_exact = parsed(value)?,
+                "content-min-width" => *content_min_width = parsed(value)?,
+                "width" => *width = parsed(value)?,
+                "min-width" => *min_width = parsed(value)?,
+                "max-width" => *max_width = parsed(value)?,
+                "height" => *height = parsed(value)?,
+                "min-height" => *min_height = parsed(value)?,
+                "max-height" => *max_height = parsed(value)?,
+                "box-sizing" => *box_sizing = parsed(value)?,
+                "padding-left" => *padding_left = parsed(value)?,
+                "padding-right" => *padding_right = parsed(value)?,
+                "padding-top" => *padding_top = parsed(value)?,
+                "padding-bottom" => *padding_bottom = parsed(value)?,
+                "margin-left" => *margin_left = parsed(value)?,
+                "margin-right" => *margin_right = parsed(value)?,
+                "margin-top" => *margin_top = parsed(value)?,
+                "margin-bottom" => *margin_bottom = parsed(value)?,
+                "border-left" => *border_left = parsed(value)?,
+                "border-right" => *border_right = parsed(value)?,
+                "typography-style" => *typography_style = parsed(value)?,
+                "foreground-style" => *foreground_style = parsed(value)?,
+                "background-style" => *background_style = parsed(value)?,
+                "border-left-style" => *border_left_style = parsed(value)?,
+                "border-right-style" => *border_right_style = parsed(value)?,
+                "border-top-style" => *border_top_style = parsed(value)?,
+                "border-bottom-style" => *border_bottom_style = parsed(value)?,
+                "surface-template-id" => *surface_template_id = parsed(value)?,
+                "text-align" => *text_align = parsed(value)?,
+                "vertical-align" => *vertical_align = parsed(value)?,
+                "overflow" => *overflow = parsed(value)?,
+                "wrap-mode" => *wrap_mode = parsed(value)?,
+                "scroll-offset" => *scroll_offset = parsed(value)?,
+                _ => return Err(format!("Unsupported native retained box field {name}")),
+            },
+            LayoutNode::Text {
+                region_id,
+                content,
+                typography_style,
+                foreground_style,
+                surface_template_id,
+                wrap_mode,
+                ..
+            } => match name.as_str() {
+                "region-id" => *region_id = parsed(value)?,
+                "content" => *content = Arc::new(parsed(value)?),
+                "typography-style" => *typography_style = parsed(value)?,
+                "foreground-style" => *foreground_style = parsed(value)?,
+                "surface-template-id" => *surface_template_id = parsed(value)?,
+                "wrap-mode" => *wrap_mode = parsed(value)?,
+                _ => return Err(format!("Unsupported native retained text field {name}")),
+            },
+            LayoutNode::Flex {
+                direction,
+                wrap,
+                justify,
+                align_items,
+                align_content,
+                width,
+                height,
+                row_gap,
+                column_gap,
+                ..
+            } => match name.as_str() {
+                "direction" => *direction = parsed(value)?,
+                "wrap" => *wrap = parsed(value)?,
+                "justify" => *justify = parsed(value)?,
+                "align-items" => *align_items = parsed(value)?,
+                "align-content" => *align_content = parsed(value)?,
+                "width" => *width = parsed(value)?,
+                "height" => *height = parsed(value)?,
+                "row-gap" => *row_gap = parsed(value)?,
+                "column-gap" => *column_gap = parsed(value)?,
+                _ => return Err(format!("Unsupported native retained flex field {name}")),
+            },
+            LayoutNode::Row { .. } | LayoutNode::Column { .. } => {
+                return Err("Native retained axis slots have no local scalar fields".to_owned());
+            }
+            LayoutNode::NodeRef { .. } => {
+                return Err("Native retained node reference cannot be patched".to_owned())
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn measured_text_work(text: &MeasuredText, property_template_count: u32) -> Result<usize, String> {
+    if text.lines.is_empty() {
+        return Err("Native layout measured text must contain one line".to_owned());
+    }
+    let mut work = text.lines.len();
+    for line in &text.lines {
+        work = work
+            .checked_add(line.clusters.len())
+            .ok_or_else(|| "Native layout work estimate overflowed".to_owned())?;
+        for cluster in &line.clusters {
+            if cluster.text.is_empty() {
+                return Err("Native layout cluster text cannot be empty".to_owned());
+            }
+            validate_dimension("cluster width", cluster.width)?;
+            if cluster
+                .source_template_id
+                .is_some_and(|id| id >= property_template_count)
+            {
+                return Err(
+                    "Native layout property template id exceeds the property template table"
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    Ok(work)
+}
+
+fn size_work(size: &Size) -> Result<usize, String> {
+    let mut work = 0;
+    add_vertical_size_work(size, &mut work)?;
+    Ok(work)
+}
+
+fn field_work(node: &LayoutNode, name: &str) -> Result<Option<usize>, String> {
+    Ok(match (node, name) {
+        (LayoutNode::Box { content, .. }, "content") => {
+            content.as_deref().map_or(Ok(Some(0)), |text| {
+                measured_text_work(text, u32::MAX).map(Some)
+            })?
+        }
+        (LayoutNode::Text { content, .. }, "content") => {
+            Some(measured_text_work(content, u32::MAX)?)
+        }
+        (LayoutNode::Box { height, .. }, "height") => Some(size_work(height)?),
+        (LayoutNode::Box { min_height, .. }, "min-height") => Some(size_work(min_height)?),
+        (LayoutNode::Box { max_height, .. }, "max-height") => Some(size_work(max_height)?),
+        (LayoutNode::Flex { height, .. }, "height") => Some(size_work(height)?),
+        (LayoutNode::Box { padding_top, .. }, "padding-top") => {
+            Some(usize::try_from(*padding_top).unwrap_or(usize::MAX))
+        }
+        (LayoutNode::Box { padding_bottom, .. }, "padding-bottom") => {
+            Some(usize::try_from(*padding_bottom).unwrap_or(usize::MAX))
+        }
+        (LayoutNode::Box { margin_top, .. }, "margin-top") => {
+            Some(usize::try_from(*margin_top).unwrap_or(usize::MAX))
+        }
+        (LayoutNode::Box { margin_bottom, .. }, "margin-bottom") => {
+            Some(usize::try_from(*margin_bottom).unwrap_or(usize::MAX))
+        }
+        (LayoutNode::Flex { row_gap, items, .. }, "row-gap") => Some(
+            usize::try_from(*row_gap)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(items.len()),
+        ),
+        _ => None,
+    })
+}
+
+fn local_work_summary(node: &LayoutNode) -> Result<LocalWorkSummary, String> {
+    const FIELDS: [&str; 9] = [
+        "content",
+        "height",
+        "min-height",
+        "max-height",
+        "padding-top",
+        "padding-bottom",
+        "margin-top",
+        "margin-bottom",
+        "row-gap",
+    ];
+    let mut values = BTreeMap::new();
+    for name in FIELDS {
+        if let Some(value) = field_work(node, name)? {
+            values.insert(name, value);
+        }
+    }
+    Ok(LocalWorkSummary(values))
+}
+
+impl LocalWorkSummary {
+    fn changed_work(&self, fields: &JsonMap<String, JsonValue>) -> usize {
+        fields
+            .keys()
+            .filter_map(|name| self.0.get(name.as_str()))
+            .copied()
+            .sum()
+    }
+
+    fn updated(
+        &self,
+        node: &LayoutNode,
+        fields: &JsonMap<String, JsonValue>,
+    ) -> Result<Self, String> {
+        let mut output = self.clone();
+        for name in fields.keys() {
+            if let Some(value) = field_work(node, name)? {
+                output.0.insert(
+                    match name.as_str() {
+                        "content" => "content",
+                        "height" => "height",
+                        "min-height" => "min-height",
+                        "max-height" => "max-height",
+                        "padding-top" => "padding-top",
+                        "padding-bottom" => "padding-bottom",
+                        "margin-top" => "margin-top",
+                        "margin-bottom" => "margin-bottom",
+                        "row-gap" => "row-gap",
+                        _ => continue,
+                    },
+                    value,
+                );
+            }
+        }
+        Ok(output)
+    }
+}
+
+fn validate_changed_fields(
+    node: &LayoutNode,
+    fields: &JsonMap<String, JsonValue>,
+    style_count: u32,
+    property_template_count: u32,
+) -> Result<(), String> {
+    let style_field = |name: &str| {
+        matches!(
+            name,
+            "typography-style"
+                | "foreground-style"
+                | "background-style"
+                | "border-left-style"
+                | "border-right-style"
+                | "border-top-style"
+                | "border-bottom-style"
+                | "content-typography-style"
+                | "content-foreground-style"
+        )
+    };
+    let template_field =
+        |name: &str| matches!(name, "surface-template-id" | "content-surface-template-id");
+    for (name, value) in fields {
+        if style_field(name) {
+            let id: Option<u32> = serde_json::from_value(value.clone())
+                .map_err(|error| format!("Invalid native retained style field: {error}"))?;
+            if id.is_some_and(|id| id >= style_count) {
+                return Err("Native retained style id exceeds the style table".to_owned());
+            }
+        }
+        if template_field(name) {
+            let id: Option<u32> = serde_json::from_value(value.clone())
+                .map_err(|error| format!("Invalid native retained template field: {error}"))?;
+            if id.is_some_and(|id| id >= property_template_count) {
+                return Err("Native retained property template id exceeds the table".to_owned());
+            }
+        }
+    }
+    match node {
+        LayoutNode::Box {
+            region_id,
+            content,
+            child,
+            content_region_id,
+            content_min_width,
+            width,
+            min_width,
+            max_width,
+            height,
+            min_height,
+            max_height,
+            padding_left,
+            padding_right,
+            padding_top,
+            padding_bottom,
+            margin_left,
+            margin_right,
+            margin_top,
+            margin_bottom,
+            border_left,
+            border_right,
+            scroll_offset,
+            ..
+        } => {
+            if fields.contains_key("region-id") && *region_id <= 0 {
+                return Err("Native retained box region id must be positive".to_owned());
+            }
+            if fields.contains_key("content") {
+                if content.is_some() == child.is_some() {
+                    return Err(
+                        "Native layout box must contain exactly one text or child value".to_owned(),
+                    );
+                }
+                if let Some(text) = content {
+                    measured_text_work(text, property_template_count)?;
+                }
+            }
+            if fields.contains_key("content-region-id")
+                && (content_region_id.is_some_and(|id| id <= 0)
+                    || content_region_id.is_some() && content.is_none())
+            {
+                return Err("Native retained content region id is invalid".to_owned());
+            }
+            if fields.contains_key("content-min-width") {
+                if let Some(value) = content_min_width {
+                    validate_dimension("content-min-width", *value)?;
+                }
+            }
+            for (name, size) in [
+                ("width", width),
+                ("min-width", min_width),
+                ("max-width", max_width),
+                ("height", height),
+                ("min-height", min_height),
+                ("max-height", max_height),
+            ] {
+                if fields.contains_key(name) {
+                    validate_size(name, size)?;
+                }
+            }
+            for (name, value) in [
+                ("padding-left", *padding_left),
+                ("padding-right", *padding_right),
+                ("padding-top", *padding_top),
+                ("padding-bottom", *padding_bottom),
+                ("margin-left", *margin_left),
+                ("margin-right", *margin_right),
+                ("margin-top", *margin_top),
+                ("margin-bottom", *margin_bottom),
+                ("border-left", *border_left),
+                ("border-right", *border_right),
+                ("scroll-offset", *scroll_offset),
+            ] {
+                if fields.contains_key(name) {
+                    validate_dimension(name, value)?;
+                }
+            }
+        }
+        LayoutNode::Text {
+            region_id, content, ..
+        } => {
+            if fields.contains_key("region-id") && *region_id <= 0 {
+                return Err("Native retained text region id must be positive".to_owned());
+            }
+            if fields.contains_key("content") {
+                measured_text_work(content, property_template_count)?;
+            }
+        }
+        LayoutNode::Flex {
+            width,
+            height,
+            row_gap,
+            column_gap,
+            ..
+        } => {
+            if fields.contains_key("width") {
+                validate_size("flex width", width)?;
+            }
+            if fields.contains_key("height") {
+                validate_size("flex height", height)?;
+            }
+            if fields.contains_key("row-gap") {
+                validate_dimension("flex row gap", *row_gap)?;
+            }
+            if fields.contains_key("column-gap") {
+                validate_dimension("flex column gap", *column_gap)?;
+            }
+        }
+        LayoutNode::Row { .. } | LayoutNode::Column { .. } | LayoutNode::NodeRef { .. } => {}
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -108,7 +1099,7 @@ struct UnderlineTemplate {
     color: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 // Keeping the node payload inline avoids another allocation on the hot layout path.
 #[allow(clippy::large_enum_variant)]
 #[serde(
@@ -118,9 +1109,17 @@ struct UnderlineTemplate {
     deny_unknown_fields
 )]
 enum LayoutNode {
+    NodeRef {
+        node_id: u64,
+    },
     Box {
+        #[serde(default)]
+        node_id: Option<u64>,
+        #[serde(default)]
+        node_revision: Option<u64>,
         region_id: i64,
-        content: Option<Box<MeasuredText>>,
+        #[serde(default, deserialize_with = "deserialize_optional_arc")]
+        content: Option<Arc<MeasuredText>>,
         #[serde(default)]
         content_region_id: Option<i64>,
         #[serde(default)]
@@ -129,7 +1128,12 @@ enum LayoutNode {
         content_foreground_style: Option<u32>,
         #[serde(default)]
         content_surface_template_id: Option<u32>,
-        child: Option<Box<LayoutNode>>,
+        #[serde(
+            default,
+            deserialize_with = "deserialize_optional_arc",
+            skip_serializing
+        )]
+        child: Option<Arc<LayoutNode>>,
         content_width_exact: bool,
         #[serde(default)]
         content_min_width: Option<i64>,
@@ -167,8 +1171,13 @@ enum LayoutNode {
         scroll_offset: i64,
     },
     Text {
+        #[serde(default)]
+        node_id: Option<u64>,
+        #[serde(default)]
+        node_revision: Option<u64>,
         region_id: i64,
-        content: Box<MeasuredText>,
+        #[serde(deserialize_with = "deserialize_arc")]
+        content: Arc<MeasuredText>,
         #[serde(default)]
         typography_style: Option<u32>,
         foreground_style: Option<u32>,
@@ -177,12 +1186,26 @@ enum LayoutNode {
         wrap_mode: WrapMode,
     },
     Row {
-        children: Vec<LayoutNode>,
+        #[serde(default)]
+        node_id: Option<u64>,
+        #[serde(default)]
+        node_revision: Option<u64>,
+        #[serde(default, deserialize_with = "deserialize_arc_vec", skip_serializing)]
+        children: Arc<Vec<LayoutNode>>,
     },
     Column {
-        children: Vec<LayoutNode>,
+        #[serde(default)]
+        node_id: Option<u64>,
+        #[serde(default)]
+        node_revision: Option<u64>,
+        #[serde(default, deserialize_with = "deserialize_arc_vec", skip_serializing)]
+        children: Arc<Vec<LayoutNode>>,
     },
     Flex {
+        #[serde(default)]
+        node_id: Option<u64>,
+        #[serde(default)]
+        node_revision: Option<u64>,
         direction: FlexDirection,
         wrap: FlexWrap,
         justify: FlexAlign,
@@ -192,11 +1215,12 @@ enum LayoutNode {
         height: Size,
         row_gap: i64,
         column_gap: i64,
-        items: Vec<FlexItem>,
+        #[serde(default, deserialize_with = "deserialize_arc_vec", skip_serializing)]
+        items: Arc<Vec<FlexItem>>,
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum Size {
     Auto,
@@ -226,7 +1250,7 @@ enum Size {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(transparent)]
 struct SizeValues(Box<[Size]>);
 
@@ -270,7 +1294,7 @@ enum FlexAlign {
     SpaceEvenly,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct FlexItem {
     node: LayoutNode,
@@ -320,13 +1344,13 @@ enum WrapMode {
     Char,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MeasuredText {
     lines: Vec<MeasuredLine>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MeasuredLine {
     clusters: Vec<MeasuredCluster>,
@@ -2922,7 +3946,19 @@ pub fn encode_error_tape(identity: TapeIdentity, message: &str, max_bytes: usize
 }
 
 impl LayoutDocument {
-    pub fn validate(&self) -> Result<(), String> {
+    pub(crate) fn retained_root_p(&self) -> bool {
+        self.root.node_id().is_some()
+    }
+
+    pub(crate) fn input_node_count(&self) -> u64 {
+        fn count(node: &LayoutNode) -> u64 {
+            let mut total = 1;
+            visit_layout_children(node, |child| total += count(child));
+            total
+        }
+        count(&self.root)
+    }
+    fn validate_metrics(&self) -> Result<(usize, usize), String> {
         if self.version != LAYOUT_VERSION {
             return Err(format!(
                 "Unsupported native layout IR version {}",
@@ -2953,7 +3989,12 @@ impl LayoutDocument {
             &mut work_units,
             self.style_count,
             self.property_template_count,
-        )
+        )?;
+        Ok((nodes, work_units))
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.validate_metrics().map(|_| ())
     }
 
     pub fn validate_context(&self, context: LayoutContext) -> Result<(), String> {
@@ -2971,6 +4012,83 @@ impl LayoutDocument {
         } else {
             render_node_with_override(
                 &self.root,
+                None,
+                context,
+                false,
+                root_width_override.map(|declared_width| BoxOverride {
+                    declared_width: Some(declared_width),
+                    ..BoxOverride::default()
+                }),
+            )
+            .map(|rendered| rendered.into_tape(self.style_count))
+        }
+    }
+}
+
+impl RetainedDocument {
+    pub(crate) fn validate_context(&self, context: LayoutContext) -> Result<(), String> {
+        fn add_retained_context_work(
+            node: &LayoutNode,
+            document: &RetainedDocument,
+            context: LayoutContext,
+            work_units: &mut usize,
+        ) -> Result<(), String> {
+            let node = document.resolve(node)?;
+            match node {
+                LayoutNode::NodeRef { .. } => unreachable!("resolver returned a node reference"),
+                LayoutNode::Text { .. } => {}
+                LayoutNode::Box {
+                    child,
+                    height,
+                    min_height,
+                    max_height,
+                    ..
+                } => {
+                    for size in [height, min_height, max_height] {
+                        add_context_size_work(size, context, work_units)?;
+                    }
+                    if let Some(child) = child {
+                        add_retained_context_work(child, document, context, work_units)?;
+                    }
+                }
+                LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+                    for child in children.iter() {
+                        add_retained_context_work(child, document, context, work_units)?;
+                    }
+                }
+                LayoutNode::Flex { height, items, .. } => {
+                    add_context_size_work(height, context, work_units)?;
+                    for item in items.iter() {
+                        add_retained_context_work(&item.node, document, context, work_units)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let root = self
+            .effective_node(self.root_id)
+            .ok_or_else(|| "Native retained document lost its root".to_owned())?;
+        RESOLVER_LOOKUP_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+        let mut work_units = 0;
+        add_retained_context_work(root, self, context, &mut work_units)
+    }
+
+    pub(crate) fn layout_tape(
+        &self,
+        context: LayoutContext,
+        root_width_override: Option<i64>,
+    ) -> Result<LayoutTape, String> {
+        let root = self
+            .effective_node(self.root_id)
+            .ok_or_else(|| "Native retained document lost its root".to_owned())?;
+        RESOLVER_LOOKUP_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+        if root_width_override.is_some() && !matches!(root, LayoutNode::Box { .. }) {
+            Err("Native root width override requires a box root".to_owned())
+        } else {
+            render_node_with_override(
+                root,
+                Some(self),
                 context,
                 false,
                 root_width_override.map(|declared_width| BoxOverride {
@@ -3056,6 +4174,9 @@ fn add_context_work(
     work_units: &mut usize,
 ) -> Result<(), String> {
     match node {
+        LayoutNode::NodeRef { .. } => {
+            return Err("Native full layout cannot contain a node reference".to_owned());
+        }
         LayoutNode::Text { .. } => {}
         LayoutNode::Box {
             child,
@@ -3071,14 +4192,14 @@ fn add_context_work(
                 add_context_work(child, context, work_units)?;
             }
         }
-        LayoutNode::Row { children } | LayoutNode::Column { children } => {
-            for child in children {
+        LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+            for child in children.iter() {
                 add_context_work(child, context, work_units)?;
             }
         }
         LayoutNode::Flex { height, items, .. } => {
             add_context_size_work(height, context, work_units)?;
-            for item in items {
+            for item in items.iter() {
                 add_context_work(&item.node, context, work_units)?;
             }
         }
@@ -3129,6 +4250,9 @@ fn validate_node(
     }
     add_work_units(work_units, 1)?;
     match node {
+        LayoutNode::NodeRef { .. } => {
+            return Err("Native full layout cannot contain a node reference".to_owned());
+        }
         LayoutNode::Text {
             region_id,
             content,
@@ -3332,11 +4456,11 @@ fn validate_node(
                 )?;
             }
         }
-        LayoutNode::Row { children } | LayoutNode::Column { children } => {
+        LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
             if children.is_empty() {
                 return Err("Native layout container must contain a child".to_owned());
             }
-            for child in children {
+            for child in children.iter() {
                 validate_node(
                     child,
                     depth + 1,
@@ -3369,7 +4493,7 @@ fn validate_node(
                     .unwrap_or(usize::MAX)
                     .saturating_mul(items.len()),
             )?;
-            for item in items {
+            for item in items.iter() {
                 if !item.grow.is_finite()
                     || item.grow < 0.0
                     || !item.shrink.is_finite()
@@ -4078,6 +5202,7 @@ fn box_vertical_side(node: &LayoutNode) -> Option<i64> {
 
 fn box_content_intrinsics(
     node: &LayoutNode,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
 ) -> Result<Option<(i64, i64)>, String> {
     let LayoutNode::Box {
@@ -4100,7 +5225,7 @@ fn box_content_intrinsics(
         // current inline viewport.  Treating that width as unknown makes
         // responsive descendants collapse to their narrow intrinsic form and
         // produces a different automatic minimum from the visible renderer.
-        let rendered = render_node(child, context, true)?;
+        let rendered = render_node(child, resolver, context, true)?;
         Ok(Some((
             content_min_width.unwrap_or_else(|| rendered.min_content_width(*wrap_mode)),
             rendered.max_width(),
@@ -4114,6 +5239,7 @@ fn flex_box_resolve_width(
     node: &LayoutNode,
     size: &Size,
     fallback: Option<i64>,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
 ) -> Result<Option<i64>, String> {
     let LayoutNode::Box {
@@ -4127,7 +5253,8 @@ fn flex_box_resolve_width(
     else {
         return Ok(fallback);
     };
-    let (min_content, max_content) = box_content_intrinsics(node, context)?.unwrap_or((0, 0));
+    let (min_content, max_content) =
+        box_content_intrinsics(node, resolver, context)?.unwrap_or((0, 0));
     let side = box_horizontal_side(node).unwrap_or(0);
     let stretch = context
         .viewport_width_known
@@ -4176,6 +5303,7 @@ fn flex_min_main(
     source: &LayoutNode,
     rendered: &Rendered,
     axis: FlexAxis,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
 ) -> Result<i64, String> {
     let LayoutNode::Box {
@@ -4195,13 +5323,17 @@ fn flex_min_main(
         FlexAxis::Row => {
             let side = box_horizontal_side(source).unwrap_or(0);
             let declared =
-                flex_box_resolve_width(source, min_width, Some(0), context)?.unwrap_or(0);
+                flex_box_resolve_width(source, min_width, Some(0), resolver, context)?.unwrap_or(0);
             if *wrap_mode == WrapMode::None {
                 rendered.max_width().max(side + declared)
             } else {
                 let content_min = match content_min_width {
                     Some(content_min_width) => *content_min_width,
-                    None => box_content_intrinsics(source, context)?.unwrap_or((0, 0)).0,
+                    None => {
+                        box_content_intrinsics(source, resolver, context)?
+                            .unwrap_or((0, 0))
+                            .0
+                    }
                 };
                 side + declared.max(content_min)
             }
@@ -4218,6 +5350,7 @@ fn flex_min_main(
 fn flex_max_main(
     source: &LayoutNode,
     axis: FlexAxis,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
 ) -> Result<Option<i64>, String> {
     let LayoutNode::Box {
@@ -4229,7 +5362,7 @@ fn flex_max_main(
         return Ok(None);
     };
     Ok(match axis {
-        FlexAxis::Row => flex_box_resolve_width(source, max_width, None, context)?
+        FlexAxis::Row => flex_box_resolve_width(source, max_width, None, resolver, context)?
             .map(|value| value + box_horizontal_side(source).unwrap_or(0)),
         FlexAxis::Column => flex_box_resolve_height(source, max_height, None, context)
             .map(|value| value + box_vertical_side(source).unwrap_or(0)),
@@ -4257,6 +5390,7 @@ fn flex_basis_main(
     rendered: &Rendered,
     axis: FlexAxis,
     basis: &Size,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
 ) -> Result<i64, String> {
     let rendered_main = match axis {
@@ -4268,14 +5402,15 @@ fn flex_basis_main(
     }
     if matches!(basis, Size::Content) {
         if axis == FlexAxis::Row && matches!(source, LayoutNode::Box { .. }) {
-            let (_, content_max) = box_content_intrinsics(source, context)?.unwrap_or((0, 0));
+            let (_, content_max) =
+                box_content_intrinsics(source, resolver, context)?.unwrap_or((0, 0));
             return Ok(box_horizontal_side(source).unwrap_or(0) + content_max);
         }
         return Ok(rendered_main);
     }
     if axis == FlexAxis::Row && matches!(source, LayoutNode::Box { .. }) {
-        let (_, content_max) = box_content_intrinsics(source, context)?.unwrap_or((0, 0));
-        let content = flex_box_resolve_width(source, basis, Some(content_max), context)?
+        let (_, content_max) = box_content_intrinsics(source, resolver, context)?.unwrap_or((0, 0));
+        let content = flex_box_resolve_width(source, basis, Some(content_max), resolver, context)?
             .unwrap_or(content_max);
         return Ok(box_horizontal_side(source).unwrap_or(0) + content);
     }
@@ -4309,9 +5444,14 @@ fn measure_flex_item<'a>(
     item: &'a FlexItem,
     axis: FlexAxis,
     inline_viewport: Option<i64>,
+    resolver: Option<&'a RetainedDocument>,
     context: LayoutContext,
 ) -> Result<FlexRuntimeItem<'a>, String> {
-    let uses_inline_viewport = flex_item_uses_inline_viewport(&item.node);
+    let source = match resolver {
+        Some(resolver) => resolver.resolve(&item.node)?,
+        None => &item.node,
+    };
+    let uses_inline_viewport = flex_item_uses_inline_viewport(source);
     let measurement_context = LayoutContext {
         viewport_width: if uses_inline_viewport {
             inline_viewport.unwrap_or(0)
@@ -4322,13 +5462,13 @@ fn measure_flex_item<'a>(
         viewport_height: context.viewport_height,
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
-    let rendered = render_node(&item.node, measurement_context, uses_inline_viewport)?;
-    let min_main = flex_min_main(&item.node, &rendered, axis, context)?;
-    let max_main = flex_max_main(&item.node, axis, context)?;
-    let base = flex_basis_main(&item.node, &rendered, axis, &item.basis, context)?.max(0);
+    let rendered = render_node(source, resolver, measurement_context, uses_inline_viewport)?;
+    let min_main = flex_min_main(source, &rendered, axis, resolver, context)?;
+    let max_main = flex_max_main(source, axis, resolver, context)?;
+    let base = flex_basis_main(source, &rendered, axis, &item.basis, resolver, context)?.max(0);
     let hypothetical = flex_clamp_main(base, min_main, max_main);
     Ok(FlexRuntimeItem {
-        source: &item.node,
+        source,
         grow: item.grow,
         shrink: item.shrink,
         align_self: item.align_self,
@@ -4665,12 +5805,14 @@ fn box_override_for_flex(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_flex_sized_entry(
     item: &FlexRuntimeItem<'_>,
     axis: FlexAxis,
     main: i64,
     cross: Option<i64>,
     container_align: FlexAlign,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<FlexSizedEntry, String> {
@@ -4693,8 +5835,13 @@ fn render_flex_sized_entry(
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let override_size = box_override_for_flex(item.source, axis, main, cross, stretch);
-    let mut rendered =
-        render_node_with_override(item.source, render_context, intrinsic, override_size)?;
+    let mut rendered = render_node_with_override(
+        item.source,
+        resolver,
+        render_context,
+        intrinsic,
+        override_size,
+    )?;
     match axis {
         FlexAxis::Row => {
             rendered = pad_rendered_width(rendered, main, FlexAlign::FlexStart);
@@ -4794,8 +5941,16 @@ fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
     Rendered { lines, breaks }
 }
 
-fn exact_rendered_height(node: &LayoutNode, context: LayoutContext) -> Option<i64> {
+fn exact_rendered_height(
+    node: &LayoutNode,
+    resolver: Option<&RetainedDocument>,
+    context: LayoutContext,
+) -> Option<i64> {
+    let node = resolver
+        .and_then(|value| value.resolve(node).ok())
+        .unwrap_or(node);
     match node {
+        LayoutNode::NodeRef { .. } => None,
         LayoutNode::Text { content, .. } => i64::try_from(content.lines.len()).ok(),
         LayoutNode::Box {
             height,
@@ -4824,15 +5979,15 @@ fn exact_rendered_height(node: &LayoutNode, context: LayoutContext) -> Option<i6
             )?;
             Some(content_height + padding_top + padding_bottom + margin_top + margin_bottom)
         }
-        LayoutNode::Row { children } => children
+        LayoutNode::Row { children, .. } => children
             .iter()
-            .map(|child| exact_rendered_height(child, context))
+            .map(|child| exact_rendered_height(child, resolver, context))
             .try_fold(1_i64, |maximum, height| {
                 height.map(|height| maximum.max(height))
             }),
-        LayoutNode::Column { children } => children
+        LayoutNode::Column { children, .. } => children
             .iter()
-            .map(|child| exact_rendered_height(child, context))
+            .map(|child| exact_rendered_height(child, resolver, context))
             .try_fold(0_i64, |total, height| {
                 height.and_then(|height| total.checked_add(height))
             }),
@@ -4842,25 +5997,31 @@ fn exact_rendered_height(node: &LayoutNode, context: LayoutContext) -> Option<i6
 
 fn render_node_window(
     node: &LayoutNode,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
     start: i64,
     height: i64,
 ) -> Option<Result<Rendered, String>> {
-    let total_height = exact_rendered_height(node, context)?;
+    let node = resolver
+        .and_then(|value| value.resolve(node).ok())
+        .unwrap_or(node);
+    let total_height = exact_rendered_height(node, resolver, context)?;
     if start <= 0 && height >= total_height {
-        return Some(render_node(node, context, intrinsic));
+        return Some(render_node(node, resolver, context, intrinsic));
     }
     match node {
-        LayoutNode::Column { children }
+        LayoutNode::Column { children, .. }
             if !intrinsic
                 && !context.inline_auto_width_intrinsic
                 && context.viewport_width_known =>
         {
-            Some(render_column_window(children, context, start, height))
+            Some(render_column_window(
+                children, resolver, context, start, height,
+            ))
         }
         _ => Some(
-            render_node(node, context, intrinsic)
+            render_node(node, resolver, context, intrinsic)
                 .map(|rendered| slice_rendered(rendered, start, height)),
         ),
     }
@@ -4868,6 +6029,7 @@ fn render_node_window(
 
 fn render_column_window(
     children: &[LayoutNode],
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     start: i64,
     height: i64,
@@ -4880,7 +6042,7 @@ fn render_column_window(
     let mut parts = Vec::new();
 
     for child in leaves {
-        let child_height = exact_rendered_height(child, context)
+        let child_height = exact_rendered_height(child, resolver, context)
             .ok_or_else(|| "Native layout column window has an unbounded child".to_owned())?;
         let child_end = offset.saturating_add(child_height);
         if child_end <= start {
@@ -4894,13 +6056,20 @@ fn render_column_window(
         let child_start = start.saturating_sub(offset);
         let child_window_height = (child_end.min(end) - (offset + child_start)).max(0);
         let mut rendered = if child_start == 0 && child_window_height >= child_height {
-            render_node(child, context, false)?
+            render_node(child, resolver, context, false)?
         } else {
-            render_node_window(child, context, false, child_start, child_window_height)
-                .unwrap_or_else(|| {
-                    render_node(child, context, false)
-                        .map(|rendered| slice_rendered(rendered, child_start, child_window_height))
-                })?
+            render_node_window(
+                child,
+                resolver,
+                context,
+                false,
+                child_start,
+                child_window_height,
+            )
+            .unwrap_or_else(|| {
+                render_node(child, resolver, context, false)
+                    .map(|rendered| slice_rendered(rendered, child_start, child_window_height))
+            })?
         };
 
         let extra = (target - rendered.first_width()).max(0);
@@ -4924,6 +6093,7 @@ fn flex_line_cross(
     line: &[FlexRuntimeItem<'_>],
     axis: FlexAxis,
     container_align: FlexAlign,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<i64, String> {
@@ -4936,6 +6106,7 @@ fn flex_line_cross(
                 item.target,
                 None,
                 container_align,
+                resolver,
                 context,
                 intrinsic,
             )?
@@ -4992,6 +6163,7 @@ fn render_flex_row_line(
     main_gap: i64,
     justify: FlexAlign,
     align: FlexAlign,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -5006,6 +6178,7 @@ fn render_flex_row_line(
             item.target,
             Some(line_cross),
             align,
+            resolver,
             context,
             intrinsic,
         )?;
@@ -5028,6 +6201,7 @@ fn render_flex_column_line(
     main_gap: i64,
     justify: FlexAlign,
     align: FlexAlign,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -5049,6 +6223,7 @@ fn render_flex_column_line(
                 item.target,
                 Some(line_cross),
                 align,
+                resolver,
                 context,
                 intrinsic,
             )?
@@ -5075,6 +6250,7 @@ fn render_flex_row(
     align: FlexAlign,
     align_content: FlexAlign,
     single_line: bool,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -5093,7 +6269,7 @@ fn render_flex_row(
     } else {
         lines
             .iter()
-            .map(|line| flex_line_cross(line, FlexAxis::Row, align, context, intrinsic))
+            .map(|line| flex_line_cross(line, FlexAxis::Row, align, resolver, context, intrinsic))
             .collect::<Result<Vec<_>, _>>()?
     };
     let cross_layout =
@@ -5119,6 +6295,7 @@ fn render_flex_row(
             main_gap,
             justify,
             align,
+            resolver,
             context,
             intrinsic,
         )?);
@@ -5149,6 +6326,7 @@ fn render_flex_column(
     align: FlexAlign,
     align_content: FlexAlign,
     single_line: bool,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -5160,7 +6338,9 @@ fn render_flex_column(
     } else {
         lines
             .iter()
-            .map(|line| flex_line_cross(line, FlexAxis::Column, align, context, intrinsic))
+            .map(|line| {
+                flex_line_cross(line, FlexAxis::Column, align, resolver, context, intrinsic)
+            })
             .collect::<Result<Vec<_>, _>>()?
     };
     let cross_layout =
@@ -5176,7 +6356,7 @@ fn render_flex_column(
         .enumerate()
     {
         let rendered = render_flex_column_line(
-            line, line_cross, main_size, main_gap, justify, align, context, intrinsic,
+            line, line_cross, main_size, main_gap, justify, align, resolver, context, intrinsic,
         )?;
         parts.push((rendered, line_cross));
         if index + 1 < line_count {
@@ -5205,6 +6385,7 @@ fn render_flex(
     row_gap: i64,
     column_gap: i64,
     source_items: &[FlexItem],
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -5220,7 +6401,15 @@ fn render_flex(
     indices.sort_by_key(|index| (source_items[*index].order, *index));
     let mut items = indices
         .into_iter()
-        .map(|index| measure_flex_item(&source_items[index], axis, inline_viewport, context))
+        .map(|index| {
+            measure_flex_item(
+                &source_items[index],
+                axis,
+                inline_viewport,
+                resolver,
+                context,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     if flex_direction_reversed(direction) {
         items.reverse();
@@ -5245,6 +6434,7 @@ fn render_flex(
             align_items,
             align_content,
             single_line,
+            resolver,
             context,
             intrinsic,
         ),
@@ -5258,6 +6448,7 @@ fn render_flex(
             align_items,
             align_content,
             single_line,
+            resolver,
             context,
             intrinsic,
         ),
@@ -5273,18 +6464,24 @@ struct BoxOverride {
 
 fn render_node(
     node: &LayoutNode,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
-    render_node_with_override(node, context, intrinsic, None)
+    render_node_with_override(node, resolver, context, intrinsic, None)
 }
 
 fn render_node_with_override(
     node: &LayoutNode,
+    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
     size_override: Option<BoxOverride>,
 ) -> Result<Rendered, String> {
+    let node = match resolver {
+        Some(resolver) => resolver.resolve(node)?,
+        None => node,
+    };
     #[cfg(test)]
     TEST_RENDER_NODE_COUNT.with(|count| {
         if let Some(value) = count.get() {
@@ -5292,6 +6489,7 @@ fn render_node_with_override(
         }
     });
     match node {
+        LayoutNode::NodeRef { .. } => Err("Native unresolved retained node reference".to_owned()),
         LayoutNode::Box {
             region_id,
             content,
@@ -5332,6 +6530,7 @@ fn render_node_with_override(
             overflow,
             wrap_mode,
             scroll_offset,
+            ..
         } => {
             let declared_width_override =
                 size_override.and_then(|override_size| override_size.declared_width);
@@ -5445,7 +6644,9 @@ fn render_node_with_override(
                         && matches!(effective_width, Size::Auto),
                 };
                 if simple_scroll_window {
-                    if let Some(total_height) = exact_rendered_height(child, child_context) {
+                    if let Some(total_height) =
+                        exact_rendered_height(child, resolver, child_context)
+                    {
                         let content_height = definite_content_height.expect("checked above");
                         let max_offset = (total_height - content_height).max(0);
                         let start = (*scroll_offset).max(0).min(max_offset);
@@ -5454,6 +6655,7 @@ fn render_node_with_override(
                         Some(
                             render_node_window(
                                 child,
+                                resolver,
                                 child_context,
                                 intrinsic || intrinsic_child,
                                 start,
@@ -5464,6 +6666,7 @@ fn render_node_with_override(
                     } else {
                         Some(render_node(
                             child,
+                            resolver,
                             child_context,
                             intrinsic || intrinsic_child,
                         )?)
@@ -5471,6 +6674,7 @@ fn render_node_with_override(
                 } else {
                     Some(render_node(
                         child,
+                        resolver,
                         child_context,
                         intrinsic || intrinsic_child,
                     )?)
@@ -5807,6 +7011,7 @@ fn render_node_with_override(
             foreground_style,
             surface_template_id,
             wrap_mode,
+            ..
         } => {
             let width = measured_max_width(content);
             let mut lines = measured_lines(content, width, *wrap_mode);
@@ -5818,14 +7023,14 @@ fn render_node_with_override(
             }
             Ok(Rendered::from_lines(lines))
         }
-        LayoutNode::Row { children } => {
+        LayoutNode::Row { children, .. } => {
             let child_context = LayoutContext {
                 inline_auto_width_intrinsic: true,
                 ..context
             };
             let rendered = children
                 .iter()
-                .map(|child| render_node(child, child_context, intrinsic))
+                .map(|child| render_node(child, resolver, child_context, intrinsic))
                 .collect::<Result<Vec<_>, _>>()?;
             let height = rendered
                 .iter()
@@ -5846,12 +7051,12 @@ fn render_node_with_override(
             }
             Ok(Rendered::from_lines(lines))
         }
-        LayoutNode::Column { children } => {
+        LayoutNode::Column { children, .. } => {
             let mut leaves = Vec::new();
             collect_column_leaves(children, &mut leaves);
             let rendered = leaves
                 .into_iter()
-                .map(|child| render_node(child, context, intrinsic))
+                .map(|child| render_node(child, resolver, context, intrinsic))
                 .collect::<Result<Vec<_>, _>>()?;
             let maximum = rendered
                 .iter()
@@ -5891,6 +7096,7 @@ fn render_node_with_override(
             row_gap,
             column_gap,
             items,
+            ..
         } => render_flex(
             *direction,
             *wrap,
@@ -5902,6 +7108,7 @@ fn render_node_with_override(
             *row_gap,
             *column_gap,
             items,
+            resolver,
             context,
             intrinsic,
         ),
@@ -5910,7 +7117,7 @@ fn render_node_with_override(
 
 fn collect_column_leaves<'a>(children: &'a [LayoutNode], output: &mut Vec<&'a LayoutNode>) {
     for child in children {
-        if let LayoutNode::Column { children } = child {
+        if let LayoutNode::Column { children, .. } = child {
             collect_column_leaves(children, output);
         } else {
             output.push(child);
@@ -5973,8 +7180,10 @@ mod tests {
         surface_template_id: Option<u32>,
     ) -> LayoutNode {
         LayoutNode::Box {
+            node_id: None,
+            node_revision: None,
             region_id,
-            content: Some(Box::new(content)),
+            content: Some(Arc::new(content)),
             content_region_id: None,
             content_typography_style: None,
             content_foreground_style: None,
@@ -6034,13 +7243,15 @@ mod tests {
         surface_template_id: Option<u32>,
     ) -> LayoutNode {
         LayoutNode::Box {
+            node_id: None,
+            node_revision: None,
             region_id,
             content: None,
             content_region_id: None,
             content_typography_style: None,
             content_foreground_style: None,
             content_surface_template_id: None,
-            child: Some(Box::new(child)),
+            child: Some(Arc::new(child)),
             content_width_exact: true,
             content_min_width: None,
             width: Size::Content,
@@ -6076,23 +7287,79 @@ mod tests {
         }
     }
 
+    fn identified(mut node: LayoutNode, node_id: u64, revision: u64) -> LayoutNode {
+        match &mut node {
+            LayoutNode::Box {
+                node_id: id,
+                node_revision,
+                ..
+            }
+            | LayoutNode::Text {
+                node_id: id,
+                node_revision,
+                ..
+            }
+            | LayoutNode::Row {
+                node_id: id,
+                node_revision,
+                ..
+            }
+            | LayoutNode::Column {
+                node_id: id,
+                node_revision,
+                ..
+            }
+            | LayoutNode::Flex {
+                node_id: id,
+                node_revision,
+                ..
+            } => {
+                *id = Some(node_id);
+                *node_revision = Some(revision);
+            }
+            LayoutNode::NodeRef { .. } => panic!("cannot identify a retained node reference"),
+        }
+        node
+    }
+
+    fn retained_document(root: LayoutNode) -> LayoutDocument {
+        LayoutDocument {
+            version: LAYOUT_VERSION,
+            space_width: 1,
+            style_count: 0,
+            property_template_count: 0,
+            styles: Vec::new(),
+            root,
+        }
+    }
+
     fn fixed_scroll_column_document(scroll_offset: i64) -> LayoutDocument {
-        let children = (0..20)
-            .map(|index| {
-                let mut node = text_box(
-                    index + 2,
-                    measured_text(vec![vec![cluster(&format!("line-{index:03}"), 8, None)]]),
-                    Some((index % 2) as u32),
-                );
-                let LayoutNode::Box { width, height, .. } = &mut node else {
-                    unreachable!();
-                };
-                *width = Size::Viewport;
-                *height = Size::Lines { value: 1 };
-                node
-            })
-            .collect();
-        let mut root = child_box(1, LayoutNode::Column { children }, Some(2));
+        let children = Arc::new(
+            (0..20)
+                .map(|index| {
+                    let mut node = text_box(
+                        index + 2,
+                        measured_text(vec![vec![cluster(&format!("line-{index:03}"), 8, None)]]),
+                        Some((index % 2) as u32),
+                    );
+                    let LayoutNode::Box { width, height, .. } = &mut node else {
+                        unreachable!();
+                    };
+                    *width = Size::Viewport;
+                    *height = Size::Lines { value: 1 };
+                    node
+                })
+                .collect(),
+        );
+        let mut root = child_box(
+            1,
+            LayoutNode::Column {
+                node_id: None,
+                node_revision: None,
+                children,
+            },
+            Some(2),
+        );
         let LayoutNode::Box {
             width,
             height,
@@ -6234,6 +7501,8 @@ mod tests {
         *content_width_exact = false;
         *text_align = HorizontalAlign::Center;
         let column = LayoutNode::Flex {
+            node_id: None,
+            node_revision: None,
             direction: FlexDirection::Column,
             wrap: FlexWrap::Nowrap,
             justify: FlexAlign::FlexStart,
@@ -6243,14 +7512,14 @@ mod tests {
             height: Size::Auto,
             row_gap: 0,
             column_gap: 0,
-            items: vec![FlexItem {
+            items: Arc::new(vec![FlexItem {
                 node: label,
                 order: 0,
                 grow: 0.0,
                 shrink: 0.0,
                 basis: Size::Auto,
                 align_self: FlexAlign::Stretch,
-            }],
+            }]),
         };
         let mut outer = child_box(1, column, None);
         let LayoutNode::Box {
@@ -6265,6 +7534,7 @@ mod tests {
         *content_width_exact = true;
         let rendered = render_node_with_override(
             &outer,
+            None,
             test_context(),
             false,
             Some(BoxOverride {
@@ -7202,22 +8472,32 @@ mod tests {
 
     #[test]
     fn fixed_height_scroll_layout_does_not_render_offscreen_column_suffix() {
-        let children = (0..200)
-            .map(|index| {
-                let mut node = text_box(
-                    index + 2,
-                    measured_text(vec![vec![cluster(&format!("line-{index:03}"), 8, None)]]),
-                    None,
-                );
-                let LayoutNode::Box { width, height, .. } = &mut node else {
-                    unreachable!();
-                };
-                *width = Size::Viewport;
-                *height = Size::Lines { value: 1 };
-                node
-            })
-            .collect();
-        let mut root = child_box(1, LayoutNode::Column { children }, None);
+        let children = Arc::new(
+            (0..200)
+                .map(|index| {
+                    let mut node = text_box(
+                        index + 2,
+                        measured_text(vec![vec![cluster(&format!("line-{index:03}"), 8, None)]]),
+                        None,
+                    );
+                    let LayoutNode::Box { width, height, .. } = &mut node else {
+                        unreachable!();
+                    };
+                    *width = Size::Viewport;
+                    *height = Size::Lines { value: 1 };
+                    node
+                })
+                .collect(),
+        );
+        let mut root = child_box(
+            1,
+            LayoutNode::Column {
+                node_id: None,
+                node_revision: None,
+                children,
+            },
+            None,
+        );
         let LayoutNode::Box {
             width,
             height,
@@ -7252,22 +8532,26 @@ mod tests {
     #[test]
     fn row_auto_children_do_not_duplicate_column_viewport() {
         let row = LayoutNode::Row {
-            children: vec![
+            node_id: None,
+            node_revision: None,
+            children: Arc::new(vec![
                 auto_text_box(2, measured_text(vec![vec![cluster("Left", 4, None)]]), None),
                 auto_text_box(
                     3,
                     measured_text(vec![vec![cluster("Right", 5, None)]]),
                     None,
                 ),
-            ],
+            ]),
         };
         let mut root = child_box(
             1,
             LayoutNode::Column {
-                children: vec![
+                node_id: None,
+                node_revision: None,
+                children: Arc::new(vec![
                     row,
                     auto_text_box(4, measured_text(vec![vec![cluster("Body", 4, None)]]), None),
-                ],
+                ]),
             },
             None,
         );
@@ -7539,5 +8823,218 @@ mod tests {
             fragment_region_mount_projection(&changed)
         );
         assert!(fragment_style_delta(&old, &changed).is_none());
+    }
+
+    #[test]
+    fn retained_scalar_patch_path_copies_only_radix_and_shares_wide_edges() {
+        let children = Arc::new(
+            (0..512)
+                .map(|index| {
+                    identified(
+                        text_box(
+                            index + 2,
+                            measured_text(vec![vec![cluster("x", 1, None)]]),
+                            None,
+                        ),
+                        index as u64 + 2,
+                        1,
+                    )
+                })
+                .collect(),
+        );
+        let root = identified(
+            child_box(
+                1,
+                LayoutNode::Column {
+                    node_id: None,
+                    node_revision: None,
+                    children,
+                },
+                None,
+            ),
+            1,
+            7,
+        );
+        let (base, parsed) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        assert_eq!(parsed, 514, "anonymous content-layout is also parsed input");
+        let base_root = radix_lookup(&base.entries, 1).unwrap();
+        let LayoutNode::Box {
+            child: Some(base_child),
+            ..
+        } = base_root.node.as_ref()
+        else {
+            panic!("expected retained box root");
+        };
+        let delta: DocumentDelta = serde_json::from_value(serde_json::json!({
+            "style-base-count": 0,
+            "styles-append": [],
+            "property-template-base-count": 0,
+            "property-template-target-count": 0,
+            "entries": [{
+                "node-id": 1,
+                "expected-revision": 7,
+                "target-revision": 19,
+                "slot-patches": [{"slot": 0, "local": {"padding-left": 1}}]
+            }]
+        }))
+        .unwrap();
+        let (target, validated, copied) = base.apply_delta(delta).unwrap();
+        assert_eq!(validated, 1);
+        assert_eq!(copied, 17);
+        let target_root = radix_lookup(&target.entries, 1).unwrap();
+        let LayoutNode::Box {
+            child: Some(target_child),
+            padding_left,
+            ..
+        } = target_root.node.as_ref()
+        else {
+            panic!("expected patched box root");
+        };
+        assert_eq!(*padding_left, 1);
+        assert!(Arc::ptr_eq(base_child, target_child));
+        let LayoutNode::Box { padding_left, .. } = base_root.node.as_ref() else {
+            unreachable!();
+        };
+        assert_eq!(*padding_left, 0, "persistent parent was mutated");
+    }
+
+    #[test]
+    fn retained_revision_only_shares_body_and_fork_roots() {
+        let root = identified(
+            text_box(1, measured_text(vec![vec![cluster("old", 3, None)]]), None),
+            1,
+            3,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let revision_only = |expected, target| {
+            serde_json::from_value(serde_json::json!({
+                "style-base-count": 0,
+                "styles-append": [],
+                "property-template-base-count": 0,
+                "property-template-target-count": 0,
+                "entries": [{
+                    "node-id": 1,
+                    "expected-revision": expected,
+                    "target-revision": target
+                }]
+            }))
+            .unwrap()
+        };
+        let (left, _, copied) = base.apply_delta(revision_only(3, 20)).unwrap();
+        let (right, _, _) = base.apply_delta(revision_only(3, 30)).unwrap();
+        assert_eq!(copied, 17);
+        assert!(Arc::ptr_eq(
+            &radix_lookup(&base.entries, 1).unwrap().node,
+            &radix_lookup(&left.entries, 1).unwrap().node,
+        ));
+        assert_eq!(radix_lookup(&left.entries, 1).unwrap().revision, 20);
+        assert_eq!(radix_lookup(&right.entries, 1).unwrap().revision, 30);
+        assert_eq!(radix_lookup(&base.entries, 1).unwrap().revision, 3);
+    }
+
+    #[test]
+    fn retained_bootstrap_rejects_duplicate_ancestor_identity() {
+        let child = identified(
+            text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            2,
+        );
+        let root = identified(child_box(1, child, None), 1, 1);
+        assert!(RetainedDocument::bootstrap(retained_document(root))
+            .unwrap_err()
+            .contains("duplicate node id"));
+    }
+
+    #[test]
+    fn retained_delta_rejects_invalid_local_value_without_mutating_parent() {
+        let root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            4,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let invalid = serde_json::from_value(serde_json::json!({
+            "style-base-count": 0,
+            "styles-append": [],
+            "property-template-base-count": 0,
+            "property-template-target-count": 0,
+            "entries": [{
+                "node-id": 1,
+                "expected-revision": 4,
+                "target-revision": 5,
+                "slot-patches": [{"slot": 0, "local": {"padding-left": -1}}]
+            }]
+        }))
+        .unwrap();
+        assert!(base
+            .apply_delta(invalid)
+            .unwrap_err()
+            .contains("cannot be negative"));
+        assert_eq!(radix_lookup(&base.entries, 1).unwrap().revision, 4);
+    }
+
+    #[test]
+    fn retained_work_limit_validates_the_final_batch_independent_of_entry_order() {
+        let mut first = text_box(2, measured_text(vec![vec![cluster("a", 1, None)]]), None);
+        let mut second = text_box(3, measured_text(vec![vec![cluster("b", 1, None)]]), None);
+        let LayoutNode::Box {
+            padding_top: first_padding,
+            ..
+        } = &mut first
+        else {
+            unreachable!();
+        };
+        *first_padding = 0;
+        let LayoutNode::Box {
+            padding_top: second_padding,
+            ..
+        } = &mut second
+        else {
+            unreachable!();
+        };
+        *second_padding = (MAX_LAYOUT_WORK_UNITS - 8) as i64;
+        let root = identified(
+            child_box(
+                1,
+                LayoutNode::Column {
+                    node_id: None,
+                    node_revision: None,
+                    children: Arc::new(vec![identified(first, 2, 1), identified(second, 3, 1)]),
+                },
+                None,
+            ),
+            1,
+            1,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let entry = |node_id: u64, padding_top: usize| {
+            serde_json::json!({
+                "node-id": node_id,
+                "expected-revision": 1,
+                "target-revision": 2,
+                "slot-patches": [{"slot": 0, "local": {"padding-top": padding_top}}]
+            })
+        };
+        let delta = |entries: Vec<JsonValue>| {
+            serde_json::from_value(serde_json::json!({
+                "style-base-count": 0,
+                "styles-append": [],
+                "property-template-base-count": 0,
+                "property-template-target-count": 0,
+                "entries": entries
+            }))
+            .unwrap()
+        };
+        let high = MAX_LAYOUT_WORK_UNITS - 18;
+        let forward = base
+            .apply_delta(delta(vec![entry(2, 10), entry(3, high)]))
+            .unwrap()
+            .0;
+        let reverse = base
+            .apply_delta(delta(vec![entry(3, high), entry(2, 10)]))
+            .unwrap()
+            .0;
+        assert_eq!(forward.work_units, MAX_LAYOUT_WORK_UNITS);
+        assert_eq!(reverse.work_units, MAX_LAYOUT_WORK_UNITS);
     }
 }
