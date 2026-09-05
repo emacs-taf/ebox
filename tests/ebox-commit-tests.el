@@ -2592,13 +2592,17 @@ remain retained identities."
   (require 'ebox-native-reflow)
   (let* ((cache (make-hash-table :test 'equal))
          (index (ebox-native-reflow--persistent-index-put nil 1 'entry))
+         (edge-index
+          (ebox-native-reflow--persistent-index-put
+           nil '(rule . 1) '(:kind direct-axis)))
          (styles (vector 'style))
          (session
           (ebox-native-reflow--make-session
            :handle 'parent :generation 4 :styles styles
            :layout-package 'package :layout-fragment-cache cache
            :layout-fragment-index index :layout-fragment-revision 8
-           :layout-style-index index :layout-property-template-index index)))
+           :layout-style-index index :layout-property-template-index index
+           :layout-edge-index edge-index)))
     (cl-letf (((symbol-function 'ebox-native--module-fork-confirmed)
                (lambda (_handle) 'child)))
       (let ((fork (ebox-native-reflow-fork-session session)))
@@ -2606,6 +2610,8 @@ remain retained identities."
                     (ebox-native-reflow-session-layout-fragment-cache fork)))
         (should (eq index
                     (ebox-native-reflow-session-layout-fragment-index fork)))
+        (should (eq edge-index
+                    (ebox-native-reflow-session-layout-edge-index fork)))
         (should (eq styles (ebox-native-reflow-session-styles fork)))
         (should (= 8
                    (ebox-native-reflow-session-layout-fragment-revision
@@ -2618,13 +2624,17 @@ remain retained identities."
          (base-index (ebox-native-reflow--persistent-index-put nil 1 'old))
          (next-index
           (ebox-native-reflow--persistent-index-put base-index 1 'new))
+         (edge-index
+          (ebox-native-reflow--persistent-index-put
+           nil '(child . 1) '(:parent-id 9)))
          (old (list :document '(:version 2) :document-revision 4
                     :styles [] :property-templates []))
          (next (copy-sequence old))
          (parent
-          (ebox-native-reflow--make-session
+         (ebox-native-reflow--make-session
            :handle 'parent :layout-package old :styles []
-           :layout-fragment-cache cache :layout-fragment-index base-index)))
+           :layout-fragment-cache cache :layout-fragment-index base-index
+           :layout-edge-index edge-index)))
     (plist-put next :document-revision 5)
     (plist-put next :document-delta
                '(:style-base-count 0 :styles-append []
@@ -2647,6 +2657,10 @@ remain retained identities."
                       (ebox-native-reflow-session-layout-fragment-index fork)))
           (should (eq base-index
                       (ebox-native-reflow-session-layout-fragment-index parent)))
+          (should (eq edge-index
+                      (ebox-native-reflow-session-layout-edge-index fork)))
+          (should (eq edge-index
+                      (ebox-native-reflow-session-layout-edge-index parent)))
           (should (eq cache
                       (ebox-native-reflow-session-layout-fragment-cache fork))))))))
 
@@ -2912,7 +2926,8 @@ remain retained identities."
   "Default Row/Column edges carry no derived Flex item metadata."
   (require 'ebox-native-reflow)
   (let ((nodes (make-hash-table :test 'equal))
-        (parents (make-hash-table :test 'equal)))
+        (parents (make-hash-table :test 'equal))
+        (index (ebox-native-reflow--persistent-index-put nil 2 'owner)))
     (puthash 1
              (list :node-id 1 :ebox-type 'box :ebox-kind 'box
                    :ebox-layout-config (ebox-column-layout-create))
@@ -2925,11 +2940,170 @@ remain retained identities."
     (puthash 2 1 parents)
     (puthash 3 2 parents)
     (should-not
-     (ebox-native-reflow--delta-flex-edge-change-p
+     (ebox-native-reflow--delta-edge-change-p
+      (ebox-native-reflow--make-session
+       :layout-edge-index
+       (ebox-native-reflow--persistent-index-put
+        nil '(rule . 1)
+        '(:parent-id 1 :slot 1 :kind direct-axis :axis column)))
       (list :node-table nodes :parent-table parents
             :native-local-dirty-entries
             '((:node-id 3 :dirty-kind geometry
-                        :changed-keys (:content))))))))
+                        :changed-keys (:content))))
+      index))))
+
+(ert-deftest ebox-native-flex-fused-paint-proves-retained-edge-unchanged ()
+  "A fused paint edit under Flex uses its exact retained item fact."
+  (require 'ebox-native-reflow)
+  (let* ((text '(:node-id 3 :ebox-type box :ebox-kind text))
+         (owner
+          (list :node-id 2 :ebox-type 'box :ebox-kind 'box
+                :ebox-layout-config (ebox-normal-layout-create)
+                :children (list text)))
+         (parent
+          (list :node-id 1 :ebox-type 'box :ebox-kind 'box
+                :ebox-layout-config (ebox-flex-layout-create)
+                :children (list owner)))
+         (item (ebox-native-reflow--compile-flex-item
+                owner 'row '(:type "box") t 17 t))
+         (fragment
+          (list :type "box"
+                :child (list :type "flex" :items (vector item))))
+         (cache (make-hash-table :test 'equal))
+         (nodes (make-hash-table :test 'equal))
+         (parents (make-hash-table :test 'equal))
+         (widths (make-hash-table :test 'eq))
+         (owner-fragment
+          '(:type "box" :background-style :null :child :null
+            :node-id 2 :node-revision 1))
+         (index
+          (ebox-native-reflow--persistent-index-put
+           nil 2 (list :fragment owner-fragment :revision 1)))
+         (_index
+          (setq index
+                (ebox-native-reflow--persistent-index-put
+                 index 1 (list :fragment fragment :revision 2)))))
+    (puthash 1 (list :fragment fragment :revision 1) cache)
+    (puthash 1 parent nodes)
+    (puthash 2 owner nodes)
+    (puthash 3 text nodes)
+    (puthash 2 1 parents)
+    (puthash 3 2 parents)
+    (puthash owner 17 widths)
+    (let* ((session
+           (ebox-native-reflow--make-session
+            :layout-package
+            '(:document (:version 2) :document-revision 1
+              :styles [] :property-templates [])
+            :layout-fragment-index index :layout-fragment-revision 2
+            :layout-edge-index
+            (ebox-native-reflow--retained-edge-index
+             (vector owner parent) cache)))
+           (state
+            (list :node-table nodes :parent-table parents
+                  :flex-content-min-widths widths
+                  :native-topology-stable-p t
+                  :native-touched-node-ids '(3 2 1)
+                  :native-local-dirty-entries
+                  '((:node-id 3 :dirty-kind paint
+                              :changed-keys (:background-color))))))
+      (cl-letf (((symbol-function 'ebox-tree-node-children)
+                 (lambda (&rest _)
+                   (ert-fail "delta edge proof enumerated siblings")))
+                ((symbol-function 'ebox--current-display-signature)
+                 (lambda () 'display))
+                ((symbol-function 'ebox-native-reflow--compile-delta-slots)
+                 (lambda (_node _old)
+                   (vector
+                    '(:type "box" :background-style 0 :child :null)))))
+        (should-not
+         (ebox-native-reflow--delta-edge-change-p
+          session state index))
+        (let ((package
+               (ebox-native-reflow--compile-retained-layout-delta
+                session state parent)))
+          (should (plist-get package :document-delta))
+          (should (= 2 (length
+                        (plist-get (plist-get package :document-delta)
+                                   :entries)))))))))
+
+(ert-deftest ebox-native-flex-measurement-change-keeps-full-fallback ()
+  "A changed exact Flex measurement still requires the future edge protocol."
+  (require 'ebox-native-reflow)
+  (let* ((owner
+         (list :node-id 2 :ebox-type 'box :ebox-kind 'box
+                :ebox-layout-config (ebox-normal-layout-create)
+                :wrap-mode 'word))
+         (parent
+          (list :node-id 1 :ebox-type 'box :ebox-kind 'box
+                :ebox-layout-config (ebox-flex-layout-create)
+                :children (list owner)))
+         (item (ebox-native-reflow--compile-flex-item
+                owner 'row '(:type "box") t 17 t))
+         (fragment
+          (list :type "box"
+                :child (list :type "flex" :items (vector item))))
+         (cache (make-hash-table :test 'equal))
+         (nodes (make-hash-table :test 'equal))
+         (parents (make-hash-table :test 'equal))
+         (widths (make-hash-table :test 'eq))
+         (index (ebox-native-reflow--persistent-index-put nil 2 'owner)))
+    (puthash 1 (list :fragment fragment :revision 1) cache)
+    (puthash 1 parent nodes)
+    (puthash 2 owner nodes)
+    (puthash 2 1 parents)
+    (puthash owner 23 widths)
+    (should
+     (ebox-native-reflow--delta-edge-change-p
+      (ebox-native-reflow--make-session
+       :layout-edge-index
+       (ebox-native-reflow--retained-edge-index
+        (vector owner parent) cache))
+      (list :node-table nodes :parent-table parents
+            :flex-content-min-widths widths
+            :native-local-dirty-entries
+            '((:node-id 2 :dirty-kind content :changed-keys (:content))))
+      index))))
+
+(ert-deftest ebox-native-nondefault-axis-fused-edit-uses-exact-edge-fact ()
+  "A fused edit under nondefault Row reuses an unchanged align-self fact."
+  (require 'ebox-native-reflow)
+  (let* ((text '(:node-id 3 :ebox-type box :ebox-kind text))
+         (owner
+          (list :node-id 2 :ebox-type 'box :ebox-kind 'box
+                :ebox-layout-config (ebox-normal-layout-create)
+                :children (list text)))
+         (parent
+          (list :node-id 1 :ebox-type 'box :ebox-kind 'box
+                :ebox-layout-config
+                (ebox-row-layout-create :item-gap 2 :cross-align 'stretch)
+                :children (list owner)))
+         (item
+          (list :node '(:type "box") :order 0 :grow 0 :shrink 0
+                :basis '(:kind "auto") :align-self "stretch"))
+         (fragment
+          (list :type "box"
+                :child (list :type "flex" :items (vector item))))
+         (cache (make-hash-table :test 'equal))
+         (nodes (make-hash-table :test 'equal))
+         (parents (make-hash-table :test 'equal))
+         (index (ebox-native-reflow--persistent-index-put nil 2 'owner)))
+    (puthash 1 (list :fragment fragment :revision 1) cache)
+    (puthash 1 parent nodes)
+    (puthash 2 owner nodes)
+    (puthash 3 text nodes)
+    (puthash 2 1 parents)
+    (puthash 3 2 parents)
+    (should-not
+     (ebox-native-reflow--delta-edge-change-p
+      (ebox-native-reflow--make-session
+       :layout-edge-index
+       (ebox-native-reflow--retained-edge-index
+        (vector owner parent) cache))
+      (list :node-table nodes :parent-table parents
+            :native-local-dirty-entries
+            '((:node-id 3 :dirty-kind content :changed-keys (:content))))
+      index))))
 
 (ert-deftest ebox-native-surface-overrides-carry-local-dirty-entries ()
   "The incremental producer preserves exact local dirtiness to native input."
