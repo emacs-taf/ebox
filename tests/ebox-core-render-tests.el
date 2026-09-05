@@ -1652,7 +1652,7 @@
         (kill-buffer buffer)))))
 
 (ert-deftest ebox-root-width-cache-prewarm-yields-to-user-input ()
-  "Ordinary root prediction should run only after an idle interval."
+  "Ordinary root prediction should wait a fresh interval even while idle."
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-box :id "root" :width '(240)
@@ -1674,7 +1674,9 @@
                  (generate-new-buffer-name " *ebox-root-schedule*")
                  layout))
           (let ((root-id (ebox-test--selector-region-id buffer "#root")))
-            (cl-letf (((symbol-function 'run-at-time)
+            (cl-letf (((symbol-function 'current-idle-time)
+                       (lambda () (seconds-to-time 0.4)))
+                      ((symbol-function 'run-at-time)
                        (lambda (&rest _)
                          (ert-fail "Resize prediction must yield to input")))
                       ((symbol-function 'run-with-idle-timer)
@@ -1687,13 +1689,79 @@
               (ebox--schedule-buffer-root-width-cache-prewarm
                buffer root-id 240 260)))
           (should (= scheduled-delay
-                     ebox-runtime-idle-reflow-cache-prewarm-delay))
+                     (+ 0.4 ebox-runtime-idle-reflow-cache-prewarm-delay)))
           (should-not scheduled-repeat)
           (should (eq scheduled-function
                       #'ebox--run-root-width-cache-prewarm))
           (should (equal (car scheduled-arguments) buffer))
           (should (eq (gethash buffer ebox--reflow-cache-prewarm-timers)
                       'scheduled-reflow-timer)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-reflow-prewarm-replacement-and-one-shot-completion ()
+  "Fresh and zero-delay predictions replace old jobs and complete once."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-viewport-width 900)
+        (ebox-viewport-height 4)
+        (ebox-runtime-idle-prewarm nil)
+        (ebox-runtime-idle-reflow-cache-prewarm t)
+        (ebox--runtime-prewarm-allow-noninteractive t)
+        buffer)
+    (unwind-protect
+        (progn
+          (setq buffer
+                (ebox-render-to-buffer
+                 (generate-new-buffer-name " *ebox-prewarm-one-shot*")
+                 (ebox-test-box :id "root" :width '(240) :height 1
+                                (ebox-test-text "prediction"))))
+          (let ((state (ebox--buffer-render-state buffer))
+                (root-id (ebox-test--selector-region-id buffer "#root")))
+            (dolist (kind '(viewport root-width))
+              (dolist (case '((nil 0.15 0.15) (0.4 0 0.4)))
+                (pcase-let* ((`(,idle-age ,delay ,threshold) case)
+                             (ebox-runtime-idle-reflow-cache-prewarm-delay delay)
+                             (scratch (plist-get state :reflow-prewarm-scratch))
+                             (cancel (symbol-function 'cancel-timer))
+                             (registrations 0)
+                             (scheduled nil)
+                             (cancelled nil))
+                  (cl-letf
+                      (((symbol-function 'current-idle-time)
+                        (lambda () (and idle-age (seconds-to-time idle-age))))
+                       ((symbol-function 'cancel-timer)
+                        (lambda (timer)
+                          (push timer cancelled)
+                          (funcall cancel timer)))
+                       ((symbol-function 'run-with-idle-timer)
+                        (lambda (seconds repeat function &rest arguments)
+                          (cl-incf registrations)
+                          (setq scheduled (list seconds repeat function arguments))
+                          (timer-create))))
+                    (dotimes (attempt 2)
+                      (let ((old (gethash buffer ebox--reflow-cache-prewarm-timers)))
+                        (pcase kind
+                          ('viewport
+                           (ebox--schedule-buffer-reflow-cache-prewarm
+                            buffer 880 900))
+                          ('root-width
+                           (ebox--schedule-buffer-root-width-cache-prewarm
+                            buffer root-id 240 260)))
+                        (when (= attempt 1)
+                          (should (memq old cancelled))
+                          (should-not
+                           (eq old (gethash buffer ebox--reflow-cache-prewarm-timers))))))
+                    (should (= registrations 2))
+                    (should (= (car scheduled) threshold))
+                    (should-not (cadr scheduled))
+                    (should (eq scratch (plist-get state :reflow-prewarm-scratch)))
+                    ;; Advance the same idle period beyond the fixed threshold.
+                    ;; Run the real callback, including its state/revision guards.
+                    (setq idle-age (+ threshold 1))
+                    (should (apply (nth 2 scheduled) (nth 3 scheduled)))
+                    (should (plist-get state :reflow-prewarm-scratch))
+                    (should-not (gethash buffer ebox--reflow-cache-prewarm-timers))
+                    (should (= registrations 2))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -10656,7 +10724,7 @@
                            :rendered-region-line-span-index-deferred))))))
 
 (ert-deftest ebox-reflow-cache-prewarm-uses-first-valid-width-delta ()
-  "Predictive warming should start from the first valid resize velocity."
+  "First resize prediction should wait a fresh interval even while idle."
   (ebox-test--reset-runtime-state)
   (let* ((layout
           (ebox-test-box :id "root" :width '(viewport) :height 2
@@ -10676,7 +10744,9 @@
           (setq buffer
                 (ebox-render-to-buffer
                  (generate-new-buffer-name " *ebox-test*") layout))
-          (cl-letf (((symbol-function 'run-at-time)
+          (cl-letf (((symbol-function 'current-idle-time)
+                     (lambda () (seconds-to-time 0.4)))
+                    ((symbol-function 'run-at-time)
                      (lambda (&rest _)
                        (ert-fail "Resize prediction must yield to input")))
                     ((symbol-function 'run-with-idle-timer)
@@ -10688,7 +10758,7 @@
                        'scheduled-reflow-timer)))
             (ebox-rerender-buffer-with-context buffer 260 4))
           (should (= scheduled-delay
-                     ebox-runtime-idle-reflow-cache-prewarm-delay))
+                     (+ 0.4 ebox-runtime-idle-reflow-cache-prewarm-delay)))
           (should-not scheduled-repeat)
           (should (eq scheduled-function #'ebox--run-reflow-cache-prewarm))
           (should (equal (car scheduled-arguments) buffer))

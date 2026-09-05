@@ -2463,7 +2463,8 @@ publishes the prepared rendered-body entry plus its derived root templates."
         (puthash
          buffer
          (run-with-idle-timer
-          (max 0 ebox-runtime-idle-reflow-cache-prewarm-delay)
+          (ebox--idle-continuation-delay
+           ebox-runtime-idle-reflow-cache-prewarm-delay)
           nil #'ebox--run-root-width-cache-prewarm
           buffer state revision region-id source-width target-width)
          ebox--reflow-cache-prewarm-timers)))))
@@ -2505,7 +2506,8 @@ predictions are skipped."
           (puthash
            buffer
            (run-with-idle-timer
-            (max 0 ebox-runtime-idle-reflow-cache-prewarm-delay)
+            (ebox--idle-continuation-delay
+             ebox-runtime-idle-reflow-cache-prewarm-delay)
             nil #'ebox--run-reflow-cache-prewarm
             buffer state revision viewport-width target-width viewport-height)
            ebox--reflow-cache-prewarm-timers))))))
