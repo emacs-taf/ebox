@@ -6,6 +6,19 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+#[path = "atom_plan.rs"]
+mod atom_plan;
+use atom_plan::AtomPlan;
+pub(crate) use atom_plan::AtomPlanWork;
+
+pub(crate) fn reset_atom_plan_work() {
+    atom_plan::reset_work();
+}
+
+pub(crate) fn atom_plan_work() -> AtomPlanWork {
+    atom_plan::work()
+}
+
 fn deserialize_arc_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -131,7 +144,18 @@ struct RetainedEntry {
 }
 
 #[derive(Debug, Clone, Default)]
-struct LocalWorkSummary(BTreeMap<&'static str, usize>);
+struct LocalWorkSummary(BTreeMap<&'static str, LocalFieldWork>);
+
+#[derive(Debug, Clone)]
+struct LocalFieldWork {
+    units: usize,
+    viewport_heights: usize,
+}
+
+struct LocalWorkDelta {
+    units: isize,
+    viewport_heights: i128,
+}
 
 #[derive(Debug)]
 struct RadixNode {
@@ -200,6 +224,7 @@ pub(crate) struct RetainedDocument {
     style_count: u32,
     property_template_count: u32,
     work_units: usize,
+    context_viewport_heights: usize,
 }
 
 #[derive(Debug)]
@@ -319,6 +344,7 @@ impl RetainedDocument {
             entries: &mut Arc<RadixNode>,
             seen: &mut HashSet<u64>,
             count: &mut u64,
+            context_viewport_heights: &mut usize,
         ) -> Result<u64, String> {
             fn localize(
                 node: &mut LayoutNode,
@@ -326,6 +352,7 @@ impl RetainedDocument {
                 entries: &mut Arc<RadixNode>,
                 seen: &mut HashSet<u64>,
                 count: &mut u64,
+                context_viewport_heights: &mut usize,
             ) -> Result<(), String> {
                 fn localize_child(
                     child: LayoutNode,
@@ -333,22 +360,46 @@ impl RetainedDocument {
                     entries: &mut Arc<RadixNode>,
                     seen: &mut HashSet<u64>,
                     count: &mut u64,
+                    context_viewport_heights: &mut usize,
                 ) -> Result<LayoutNode, String> {
                     if child.node_id().is_some() {
-                        let installed = install_owner(child, entries, seen, count)?;
+                        let installed =
+                            install_owner(child, entries, seen, count, context_viewport_heights)?;
                         return Ok(LayoutNode::NodeRef { node_id: installed });
                     }
                     let mut child = child;
-                    localize(&mut child, owner_id, entries, seen, count)?;
+                    localize(
+                        &mut child,
+                        owner_id,
+                        entries,
+                        seen,
+                        count,
+                        context_viewport_heights,
+                    )?;
                     Ok(child)
                 }
 
+                // Localization visits every input node once, including anonymous
+                // descendants that cannot be named by a later topology-preserving delta.
+                visit_context_height_fields(node, |_, size| {
+                    *context_viewport_heights = context_viewport_heights
+                        .checked_add(context_size_occurrences(size)?)
+                        .ok_or_else(|| {
+                            "Native retained context summary invariant failed".to_owned()
+                        })?;
+                    Ok(())
+                })?;
                 match node {
                     LayoutNode::Box { child, .. } => {
                         if let Some(old) = child.take() {
                             let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
                             *child = Some(Arc::new(localize_child(
-                                old, owner_id, entries, seen, count,
+                                old,
+                                owner_id,
+                                entries,
+                                seen,
+                                count,
+                                context_viewport_heights,
                             )?));
                         }
                     }
@@ -357,7 +408,14 @@ impl RetainedDocument {
                         let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
                         let mut localized = Vec::with_capacity(old.len());
                         for child in old {
-                            localized.push(localize_child(child, owner_id, entries, seen, count)?);
+                            localized.push(localize_child(
+                                child,
+                                owner_id,
+                                entries,
+                                seen,
+                                count,
+                                context_viewport_heights,
+                            )?);
                         }
                         *children = Arc::new(localized);
                     }
@@ -366,7 +424,14 @@ impl RetainedDocument {
                         let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
                         let mut localized = Vec::with_capacity(old.len());
                         for mut item in old {
-                            item.node = localize_child(item.node, owner_id, entries, seen, count)?;
+                            item.node = localize_child(
+                                item.node,
+                                owner_id,
+                                entries,
+                                seen,
+                                count,
+                                context_viewport_heights,
+                            )?;
                             localized.push(item);
                         }
                         *items = Arc::new(localized);
@@ -390,7 +455,14 @@ impl RetainedDocument {
             if node_id == 0 || !seen.insert(node_id) {
                 return Err("Native retained document has invalid duplicate node id".to_owned());
             }
-            localize(&mut node, node_id, entries, seen, count)?;
+            localize(
+                &mut node,
+                node_id,
+                entries,
+                seen,
+                count,
+                context_viewport_heights,
+            )?;
             let slot_one = match &node {
                 LayoutNode::Box {
                     child: Some(child), ..
@@ -411,7 +483,14 @@ impl RetainedDocument {
         let mut entries = Arc::new(RadixNode::default());
         let mut seen = HashSet::new();
         let mut owner_count = 0;
-        let root_id = install_owner(document.root, &mut entries, &mut seen, &mut owner_count)?;
+        let mut context_viewport_heights = 0;
+        let root_id = install_owner(
+            document.root,
+            &mut entries,
+            &mut seen,
+            &mut owner_count,
+            &mut context_viewport_heights,
+        )?;
         debug_assert!(usize::try_from(owner_count).is_ok_and(|count| count <= node_count));
         let mut styles = Arc::new(StyleRadixNode::default());
         if document.styles.len() != document.style_count as usize {
@@ -429,6 +508,7 @@ impl RetainedDocument {
                 style_count: document.style_count,
                 property_template_count: document.property_template_count,
                 work_units,
+                context_viewport_heights,
             }),
             node_count as u64,
         ))
@@ -484,6 +564,7 @@ impl RetainedDocument {
         let mut seen = HashSet::with_capacity(delta.entries.len());
         let mut prepared = Vec::with_capacity(delta.entries.len());
         let mut work_delta_total = 0_i128;
+        let mut context_delta_total = 0_i128;
         for update in delta.entries {
             if !seen.insert(update.node_id) {
                 return Err("Native retained delta contains a duplicate node id".to_owned());
@@ -506,8 +587,11 @@ impl RetainedDocument {
                     delta.property_template_target_count,
                 )?;
                 work_delta_total = work_delta_total
-                    .checked_add(work_delta as i128)
+                    .checked_add(work_delta.units as i128)
                     .ok_or_else(|| "Native layout work estimate overflowed".to_owned())?;
+                context_delta_total = context_delta_total
+                    .checked_add(work_delta.viewport_heights)
+                    .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
                 prepared.push((
                     update.node_id,
                     Arc::new(RetainedEntry {
@@ -545,6 +629,10 @@ impl RetainedDocument {
         if work_units > MAX_LAYOUT_WORK_UNITS {
             return Err("Native layout exceeds the work-unit limit".to_owned());
         }
+        let context_viewport_heights = (self.context_viewport_heights as i128)
+            .checked_add(context_delta_total)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
         let parsed = prepared.len() as u64;
         let mut entries = Arc::clone(&self.entries);
         let mut copied = 0;
@@ -568,6 +656,7 @@ impl RetainedDocument {
                 style_count: target_style_count,
                 property_template_count: delta.property_template_target_count,
                 work_units,
+                context_viewport_heights,
             }),
             parsed,
             copied,
@@ -581,10 +670,11 @@ fn patch_owner_slots(
     patches: &[LocalSlotPatch],
     style_count: u32,
     property_template_count: u32,
-) -> Result<(LayoutNode, [Arc<LocalWorkSummary>; 2], isize), String> {
+) -> Result<(LayoutNode, [Arc<LocalWorkSummary>; 2], LocalWorkDelta), String> {
     let mut result = base.clone();
     let mut slot_work = base_work.clone();
     let mut work_delta = 0_isize;
+    let mut context_delta = 0_i128;
     let mut seen = [false; 2];
     for patch in patches {
         let index = patch.slot as usize;
@@ -596,6 +686,8 @@ fn patch_owner_slots(
             result = patch_local_node(&result, &patch.local)?;
             validate_changed_fields(&result, &patch.local, style_count, property_template_count)?;
             let updated = slot_work[0].updated(&result, &patch.local)?;
+            context_delta += updated.changed_context_occurrences(&patch.local)
+                - slot_work[0].changed_context_occurrences(&patch.local);
             let new_work = updated.changed_work(&patch.local);
             work_delta += new_work as isize - old_work as isize;
             slot_work[0] = Arc::new(updated);
@@ -618,13 +710,22 @@ fn patch_owner_slots(
                 property_template_count,
             )?;
             let updated = slot_work[1].updated(&new_child, &patch.local)?;
+            context_delta += updated.changed_context_occurrences(&patch.local)
+                - slot_work[1].changed_context_occurrences(&patch.local);
             let new_work = updated.changed_work(&patch.local);
             work_delta += new_work as isize - old_work as isize;
             slot_work[1] = Arc::new(updated);
             *child = Some(Arc::new(new_child));
         }
     }
-    Ok((result, slot_work, work_delta))
+    Ok((
+        result,
+        slot_work,
+        LocalWorkDelta {
+            units: work_delta,
+            viewport_heights: context_delta,
+        },
+    ))
 }
 
 fn patch_local_node(
@@ -804,6 +905,28 @@ fn size_work(size: &Size) -> Result<usize, String> {
     Ok(work)
 }
 
+fn context_size_occurrences(size: &Size) -> Result<usize, String> {
+    let mut count = 0_usize;
+    visit_context_size_occurrences(size, &mut || {
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+fn context_field_occurrences(node: &LayoutNode, name: &str) -> Result<usize, String> {
+    let mut count = 0;
+    visit_context_height_fields(node, |field, size| {
+        if field == name {
+            count = context_size_occurrences(size)?;
+        }
+        Ok(())
+    })?;
+    Ok(count)
+}
+
 fn field_work(node: &LayoutNode, name: &str) -> Result<Option<usize>, String> {
     Ok(match (node, name) {
         (LayoutNode::Box { content, .. }, "content") => {
@@ -854,7 +977,13 @@ fn local_work_summary(node: &LayoutNode) -> Result<LocalWorkSummary, String> {
     let mut values = BTreeMap::new();
     for name in FIELDS {
         if let Some(value) = field_work(node, name)? {
-            values.insert(name, value);
+            values.insert(
+                name,
+                LocalFieldWork {
+                    units: value,
+                    viewport_heights: context_field_occurrences(node, name)?,
+                },
+            );
         }
     }
     Ok(LocalWorkSummary(values))
@@ -865,7 +994,15 @@ impl LocalWorkSummary {
         fields
             .keys()
             .filter_map(|name| self.0.get(name.as_str()))
-            .copied()
+            .map(|work| work.units)
+            .sum()
+    }
+
+    fn changed_context_occurrences(&self, fields: &JsonMap<String, JsonValue>) -> i128 {
+        fields
+            .keys()
+            .filter_map(|name| self.0.get(name.as_str()))
+            .map(|work| work.viewport_heights as i128)
             .sum()
     }
 
@@ -890,7 +1027,10 @@ impl LocalWorkSummary {
                         "row-gap" => "row-gap",
                         _ => continue,
                     },
-                    value,
+                    LocalFieldWork {
+                        units: value,
+                        viewport_heights: context_field_occurrences(node, name)?,
+                    },
                 );
             }
         }
@@ -1504,23 +1644,27 @@ enum Atom {
 
 #[derive(Debug, Clone, Default)]
 struct Line {
-    atoms: Vec<Atom>,
+    atoms: AtomPlan,
     width: i64,
 }
 
 impl Line {
     fn from_clusters(clusters: &[MeasuredCluster]) -> Self {
-        let mut line = Self::default();
+        let mut atoms = Vec::with_capacity(clusters.len());
         for cluster in clusters {
             let properties = AtomProperties {
                 property_template_ids: cluster.source_template_id.into_iter().collect(),
                 ..AtomProperties::default()
             };
             if cluster.pixel_space {
-                line.push_space_with_properties(cluster.width, properties);
+                if cluster.width > 0 {
+                    atoms.push(Atom::Space {
+                        width: cluster.width,
+                        properties,
+                    });
+                }
             } else {
-                line.width += cluster.width;
-                line.atoms.push(Atom::Text {
+                atoms.push(Atom::Text {
                     text: cluster.text.clone(),
                     width: cluster.width,
                     cjk: cluster.cjk,
@@ -1529,13 +1673,18 @@ impl Line {
                 });
             }
         }
-        line
+        let atoms = AtomPlan::from_owned_atoms(atoms);
+        Self {
+            width: atoms.width(),
+            atoms,
+        }
     }
 
     fn from_atoms(atoms: &[Atom]) -> Self {
+        let atoms = AtomPlan::from_atoms(atoms);
         Self {
-            atoms: atoms.to_vec(),
-            width: atoms.iter().map(Atom::width).sum(),
+            width: atoms.width(),
+            atoms,
         }
     }
 
@@ -1548,7 +1697,7 @@ impl Line {
             return;
         }
         self.width += width;
-        self.atoms.push(Atom::Space { width, properties });
+        self.atoms = self.atoms.push(Atom::Space { width, properties });
     }
 
     fn prepend_space(&mut self, width: i64) {
@@ -1560,12 +1709,12 @@ impl Line {
             return;
         }
         self.width += width;
-        self.atoms.insert(0, Atom::Space { width, properties });
+        self.atoms = self.atoms.prepend(Atom::Space { width, properties });
     }
 
     fn append(&mut self, other: &Self) {
         self.width += other.width;
-        self.atoms.extend(other.atoms.iter().cloned());
+        self.atoms = self.atoms.append(&other.atoms);
     }
 
     fn padded(mut self, target: i64, align: HorizontalAlign) -> Self {
@@ -1593,63 +1742,23 @@ impl Line {
     }
 
     fn whitespace_only(&self) -> bool {
-        self.atoms.iter().all(|atom| match atom {
-            Atom::Space { .. } => true,
-            Atom::Text { text, .. } => text.trim().is_empty(),
-        })
+        self.atoms.whitespace_only()
     }
 
     fn has_noncontent_properties(&self) -> bool {
-        self.atoms.iter().any(|atom| {
-            let properties = atom.properties();
-            !properties.style_ids.is_empty()
-                || !properties.roles.is_empty()
-                || !properties.property_template_ids.is_empty()
-        })
+        self.atoms.has_noncontent_properties()
     }
 
     fn own_content(&mut self, region_id: i64, content_idx: i64) {
-        let has_owner = self
-            .atoms
-            .iter()
-            .any(|atom| atom.properties().owner.is_some() || !atom.properties().owners.is_empty());
-        for atom in &mut self.atoms {
-            let properties = atom.properties_mut();
-            if has_owner {
-                let mut owners = properties.owners.clone();
-                if let Some(owner) = properties.owner {
-                    if !owners.contains(&owner) {
-                        owners.push(owner);
-                    }
-                }
-                if !owners.contains(&region_id) {
-                    owners.push(region_id);
-                }
-                properties.owner = Some(region_id);
-                properties.owners = owners;
-            } else {
-                properties.owner = Some(region_id);
-                properties.owners = vec![region_id];
-            }
-        }
-        let has_content = self
-            .atoms
-            .iter()
-            .any(|atom| atom.properties().content.is_some());
-        if !has_content {
-            for atom in &mut self.atoms {
-                let properties = atom.properties_mut();
-                properties.content = Some(region_id);
-                properties.content_idx = Some(content_idx);
-            }
-        }
+        self.atoms = self.atoms.own_content(region_id, content_idx);
     }
 
     fn collapse_whitespace_content(self, width: i64, region_id: i64) -> Self {
         if !self.whitespace_only() || self.has_noncontent_properties() {
             return self;
         }
-        let first = self.atoms.first().map(Atom::properties);
+        let first_atom = self.atoms.first();
+        let first = first_atom.as_ref().map(Atom::properties);
         let mut properties = AtomProperties {
             content: first
                 .and_then(|properties| properties.content)
@@ -1670,28 +1779,18 @@ impl Line {
 
     fn apply_style(&mut self, style_id: Option<u32>) {
         if let Some(style_id) = style_id {
-            for atom in &mut self.atoms {
-                atom.properties_mut().style_ids.push(style_id);
-            }
+            self.atoms = self.atoms.apply_style(style_id);
         }
     }
 
     fn apply_property_template(&mut self, template_id: Option<u32>) {
         if let Some(template_id) = template_id {
-            for atom in &mut self.atoms {
-                atom.properties_mut()
-                    .property_template_ids
-                    .push(template_id);
-            }
+            self.atoms = self.atoms.apply_template(template_id);
         }
     }
 
     fn apply_role(&mut self, role: RegionRole, region_id: i64) {
-        for atom in &mut self.atoms {
-            atom.properties_mut()
-                .roles
-                .push(RegionRoleEntry { role, region_id });
-        }
+        self.atoms = self.atoms.apply_role(role, region_id);
     }
 }
 
@@ -1760,22 +1859,7 @@ impl Rendered {
         }
         self.lines
             .iter()
-            .map(|line| {
-                let mut maximum = 0;
-                let mut run = 0;
-                for atom in &line.atoms {
-                    if atom.wrap_space() {
-                        maximum = maximum.max(run);
-                        run = 0;
-                    } else if atom.wrap_cjk() {
-                        maximum = maximum.max(run).max(atom.width());
-                        run = 0;
-                    } else {
-                        run += atom.width();
-                    }
-                }
-                maximum.max(run)
-            })
+            .map(|line| line.atoms.min_content_width())
             .max()
             .unwrap_or(0)
     }
@@ -1786,9 +1870,7 @@ impl Rendered {
 
     fn apply_scroll_window(&mut self, region_id: i64) {
         for line in &mut self.lines {
-            for atom in &mut line.atoms {
-                atom.properties_mut().scroll_window = Some(region_id);
-            }
+            line.atoms = line.atoms.apply_scroll_window(region_id);
         }
         for properties in &mut self.breaks {
             properties.scroll_window = Some(region_id);
@@ -1808,6 +1890,7 @@ impl Rendered {
                     width: line.width,
                     atoms: line
                         .atoms
+                        .to_vec()
                         .into_iter()
                         .map(|atom| match atom {
                             Atom::Text {
@@ -4027,51 +4110,19 @@ impl LayoutDocument {
 
 impl RetainedDocument {
     pub(crate) fn validate_context(&self, context: LayoutContext) -> Result<(), String> {
-        fn add_retained_context_work(
-            node: &LayoutNode,
-            document: &RetainedDocument,
-            context: LayoutContext,
-            work_units: &mut usize,
-        ) -> Result<(), String> {
-            let node = document.resolve(node)?;
-            match node {
-                LayoutNode::NodeRef { .. } => unreachable!("resolver returned a node reference"),
-                LayoutNode::Text { .. } => {}
-                LayoutNode::Box {
-                    child,
-                    height,
-                    min_height,
-                    max_height,
-                    ..
-                } => {
-                    for size in [height, min_height, max_height] {
-                        add_context_size_work(size, context, work_units)?;
-                    }
-                    if let Some(child) = child {
-                        add_retained_context_work(child, document, context, work_units)?;
-                    }
-                }
-                LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
-                    for child in children.iter() {
-                        add_retained_context_work(child, document, context, work_units)?;
-                    }
-                }
-                LayoutNode::Flex { height, items, .. } => {
-                    add_context_size_work(height, context, work_units)?;
-                    for item in items.iter() {
-                        add_retained_context_work(&item.node, document, context, work_units)?;
-                    }
-                }
-            }
+        // Bootstrap establishes the root/reference invariant and deltas cannot
+        // change topology. The full traversal adds the same nonnegative amount
+        // for every occurrence, stopping at the work limit before a later add
+        // could overflow. Division preserves that error without multiplying.
+        if self.context_viewport_heights == 0 {
+            return Ok(());
+        }
+        let height = usize::try_from(context.viewport_height).unwrap_or(usize::MAX);
+        if height > MAX_LAYOUT_WORK_UNITS / self.context_viewport_heights {
+            Err("Native layout exceeds the work-unit limit".to_owned())
+        } else {
             Ok(())
         }
-
-        let root = self
-            .effective_node(self.root_id)
-            .ok_or_else(|| "Native retained document lost its root".to_owned())?;
-        RESOLVER_LOOKUP_COUNT.with(|count| count.set(count.get().saturating_add(1)));
-        let mut work_units = 0;
-        add_retained_context_work(root, self, context, &mut work_units)
     }
 
     pub(crate) fn layout_tape(
@@ -4145,22 +4196,17 @@ fn add_vertical_size_work(size: &Size, work_units: &mut usize) -> Result<(), Str
     }
 }
 
-fn add_context_size_work(
+fn visit_context_size_occurrences(
     size: &Size,
-    context: LayoutContext,
-    work_units: &mut usize,
+    visit: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
+    // Validation work adds every operand, including subtraction operands.
     match size {
-        Size::ViewportHeight => add_work_units(
-            work_units,
-            usize::try_from(context.viewport_height).unwrap_or(usize::MAX),
-        ),
-        Size::FitContent { limit: Some(limit) } => {
-            add_context_size_work(limit, context, work_units)
-        }
+        Size::ViewportHeight => visit(),
+        Size::FitContent { limit: Some(limit) } => visit_context_size_occurrences(limit, visit),
         Size::Add { values } | Size::Subtract { values } => {
             for value in &values.0 {
-                add_context_size_work(value, context, work_units)?;
+                visit_context_size_occurrences(value, visit)?;
             }
             Ok(())
         }
@@ -4168,26 +4214,58 @@ fn add_context_size_work(
     }
 }
 
-fn add_context_work(
-    node: &LayoutNode,
+fn add_context_size_work(
+    size: &Size,
     context: LayoutContext,
     work_units: &mut usize,
 ) -> Result<(), String> {
+    visit_context_size_occurrences(size, &mut || {
+        add_work_units(
+            work_units,
+            usize::try_from(context.viewport_height).unwrap_or(usize::MAX),
+        )
+    })
+}
+
+fn visit_context_height_fields(
+    node: &LayoutNode,
+    mut visit: impl FnMut(&'static str, &Size) -> Result<(), String>,
+) -> Result<(), String> {
     match node {
-        LayoutNode::NodeRef { .. } => {
-            return Err("Native full layout cannot contain a node reference".to_owned());
-        }
-        LayoutNode::Text { .. } => {}
         LayoutNode::Box {
-            child,
             height,
             min_height,
             max_height,
             ..
         } => {
-            for size in [height, min_height, max_height] {
-                add_context_size_work(size, context, work_units)?;
+            for (name, size) in [
+                ("height", height),
+                ("min-height", min_height),
+                ("max-height", max_height),
+            ] {
+                visit(name, size)?;
             }
+        }
+        LayoutNode::Flex { height, .. } => visit("height", height)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn add_context_work(
+    node: &LayoutNode,
+    context: LayoutContext,
+    work_units: &mut usize,
+) -> Result<(), String> {
+    visit_context_height_fields(node, |_, size| {
+        add_context_size_work(size, context, work_units)
+    })?;
+    match node {
+        LayoutNode::NodeRef { .. } => {
+            return Err("Native full layout cannot contain a node reference".to_owned());
+        }
+        LayoutNode::Text { .. } => {}
+        LayoutNode::Box { child, .. } => {
             if let Some(child) = child {
                 add_context_work(child, context, work_units)?;
             }
@@ -4197,8 +4275,7 @@ fn add_context_work(
                 add_context_work(child, context, work_units)?;
             }
         }
-        LayoutNode::Flex { height, items, .. } => {
-            add_context_size_work(height, context, work_units)?;
+        LayoutNode::Flex { items, .. } => {
             for item in items.iter() {
                 add_context_work(&item.node, context, work_units)?;
             }
@@ -4952,7 +5029,9 @@ fn wrap_rendered_line(line: &Line, max_width: i64, mode: WrapMode) -> Vec<Line> 
         return vec![line.clone()];
     }
 
-    let atoms = &line.atoms;
+    // Wrapping inspects the actual atom boundaries. Composition and decoration
+    // preserve the plan; only this geometry-dependent operation materializes it.
+    let atoms = line.atoms.to_vec();
     let count = atoms.len();
     let mut ranges = Vec::new();
     let mut line_start = 0;
@@ -7129,6 +7208,94 @@ fn collect_column_leaves<'a>(children: &'a [LayoutNode], output: &mut Vec<&'a La
 mod tests {
     use super::*;
 
+    #[test]
+    fn line_composition_preserves_mixed_ownership_and_decoration_order() {
+        let mut child = Line::from_clusters(&[cluster("x", 2, Some(7))]);
+        child.own_content(11, 3);
+        child.apply_style(Some(2));
+        let original = Rendered::from_lines(vec![child.clone()]).into_tape(10);
+        let mut parent = Line::blank(4);
+        parent.append(&child);
+        parent.own_content(22, 9);
+        parent.apply_style(Some(5));
+        parent.apply_property_template(Some(8));
+        parent.apply_role(RegionRole::BorderTop, 22);
+        parent.push_space(6);
+        let tape = Rendered::from_lines(vec![parent]).into_tape(10);
+        assert_eq!(tape.lines[0].width, 12);
+        let TapeAtom::Space {
+            properties: left, ..
+        } = &tape.lines[0].atoms[0]
+        else {
+            panic!()
+        };
+        assert_eq!(left.owner, Some(22));
+        assert_eq!(left.owners, vec![22]);
+        assert_eq!(
+            left.content, None,
+            "a sibling's content prevents assigning padding content"
+        );
+        assert_eq!(left.style_ids, vec![5]);
+        let TapeAtom::Text {
+            properties: text, ..
+        } = &tape.lines[0].atoms[1]
+        else {
+            panic!()
+        };
+        assert_eq!(text.owner, Some(22));
+        assert_eq!(text.owners, vec![11, 22]);
+        assert_eq!(text.content, Some(11));
+        assert_eq!(text.content_idx, Some(3));
+        assert_eq!(text.style_ids, vec![2, 5]);
+        assert_eq!(text.property_template_ids, vec![7, 8]);
+        assert_eq!(
+            text.roles,
+            vec![RegionRoleEntry {
+                role: RegionRole::BorderTop,
+                region_id: 22
+            }]
+        );
+        let TapeAtom::Space {
+            properties: right, ..
+        } = &tape.lines[0].atoms[2]
+        else {
+            panic!()
+        };
+        assert_eq!(
+            right,
+            &AtomProperties::default(),
+            "later padding stays outside prior decorations"
+        );
+        assert_eq!(
+            Rendered::from_lines(vec![child]).into_tape(10),
+            original,
+            "composing a parent must preserve its reusable child"
+        );
+    }
+
+    #[test]
+    fn line_whitespace_collapse_preserves_property_boundaries() {
+        let mut plain = Line::blank(5);
+        plain.own_content(10, 4);
+        let collapsed =
+            Rendered::from_lines(vec![plain.collapse_whitespace_content(7, 20)]).into_tape(0);
+        let TapeAtom::Space { width, properties } = &collapsed.lines[0].atoms[0] else {
+            panic!()
+        };
+        assert_eq!(*width, 7);
+        assert_eq!(properties.content, Some(10));
+        assert_eq!(properties.content_idx, Some(4));
+        assert_eq!(properties.owner, Some(20));
+        assert!(properties.owners.is_empty());
+        let mut styled = Line::blank(5);
+        styled.apply_property_template(Some(3));
+        let before = Rendered::from_lines(vec![styled.clone()]).into_tape(0);
+        assert_eq!(
+            Rendered::from_lines(vec![styled.collapse_whitespace_content(7, 20)]).into_tape(0),
+            before
+        );
+    }
+
     fn counted_layout_tape(
         document: &LayoutDocument,
         context: LayoutContext,
@@ -7617,6 +7784,7 @@ mod tests {
             .iter()
             .map(|line| {
                 line.atoms
+                    .to_vec()
                     .iter()
                     .map(|atom| match atom {
                         Atom::Text { text, .. } => text.as_str(),
@@ -8057,6 +8225,7 @@ mod tests {
             .all(|properties| { properties.scroll_window == Some(9) }));
         assert!(stacked.lines.iter().all(|line| {
             line.atoms
+                .to_vec()
                 .iter()
                 .all(|atom| atom.properties().scroll_window == Some(9))
         }));
@@ -8823,6 +8992,423 @@ mod tests {
             fragment_region_mount_projection(&changed)
         );
         assert!(fragment_style_delta(&old, &changed).is_none());
+    }
+
+    // Reconstruct the full document so its original context traversal remains an
+    // independent oracle for summaries, including after retained local patches.
+    fn retained_context_full_document(document: &RetainedDocument) -> LayoutDocument {
+        fn expand(node: &LayoutNode, document: &RetainedDocument) -> LayoutNode {
+            let mut node = document.resolve(node).unwrap().clone();
+            match &mut node {
+                LayoutNode::Box { child, .. } => {
+                    *child = child
+                        .as_deref()
+                        .map(|child| Arc::new(expand(child, document)));
+                }
+                LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+                    *children =
+                        Arc::new(children.iter().map(|node| expand(node, document)).collect());
+                }
+                LayoutNode::Flex { items, .. } => {
+                    *items = Arc::new(
+                        items
+                            .iter()
+                            .map(|item| {
+                                let mut item = item.clone();
+                                item.node = expand(&item.node, document);
+                                item
+                            })
+                            .collect(),
+                    );
+                }
+                LayoutNode::Text { .. } => {}
+                LayoutNode::NodeRef { .. } => unreachable!(),
+            }
+            node
+        }
+        retained_document(expand(
+            &LayoutNode::NodeRef {
+                node_id: document.root_id,
+            },
+            document,
+        ))
+    }
+
+    fn assert_retained_context_oracle(document: &RetainedDocument, occurrences: usize) {
+        assert_eq!(document.context_viewport_heights, occurrences);
+        let full = retained_context_full_document(document);
+        let boundary = MAX_LAYOUT_WORK_UNITS / occurrences.max(1);
+        for height in [
+            i64::MIN,
+            -1,
+            0,
+            1,
+            boundary as i64,
+            boundary as i64 + 1,
+            MAX_LAYOUT_WORK_UNITS as i64,
+            MAX_LAYOUT_WORK_UNITS as i64 + 1,
+            MAX_LAYOUT_DIMENSION,
+            i64::MAX,
+        ] {
+            let context = LayoutContext {
+                viewport_height: height,
+                ..test_context()
+            };
+            let expected = full.validate_context(context);
+            assert_eq!(
+                document.validate_context(context),
+                expected,
+                "height {height}"
+            );
+            let accepted = occurrences == 0 || height >= 0 && height <= boundary as i64;
+            assert_eq!(
+                expected.is_ok(),
+                accepted,
+                "{occurrences} occurrences at height {height}"
+            );
+            if !accepted {
+                assert_eq!(
+                    expected.unwrap_err(),
+                    "Native layout exceeds the work-unit limit"
+                );
+            }
+        }
+    }
+
+    fn context_test_delta(entries: Vec<JsonValue>) -> DocumentDelta {
+        serde_json::from_value(serde_json::json!({
+            "style-base-count": 0,
+            "styles-append": [],
+            "property-template-base-count": 0,
+            "property-template-target-count": 0,
+            "entries": entries
+        }))
+        .unwrap()
+    }
+
+    fn context_test_flex(height: Size, nodes: Vec<LayoutNode>) -> LayoutNode {
+        LayoutNode::Flex {
+            node_id: None,
+            node_revision: None,
+            direction: FlexDirection::Column,
+            wrap: FlexWrap::Nowrap,
+            justify: FlexAlign::FlexStart,
+            align_items: FlexAlign::Stretch,
+            align_content: FlexAlign::Stretch,
+            width: Size::ViewportHeight,
+            height,
+            row_gap: 0,
+            column_gap: 0,
+            items: Arc::new(
+                nodes
+                    .into_iter()
+                    .map(|node| FlexItem {
+                        node,
+                        order: 0,
+                        grow: 0.0,
+                        shrink: 0.0,
+                        basis: Size::ViewportHeight,
+                        align_self: FlexAlign::Stretch,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn retained_context_bootstrap_counts_deep_anonymous_and_nested_expressions() {
+        let mut leaf = text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None);
+        let LayoutNode::Box {
+            height,
+            min_height,
+            max_height,
+            ..
+        } = &mut leaf
+        else {
+            unreachable!();
+        };
+        *height = serde_json::from_value(serde_json::json!({
+            "kind": "subtract", "values": [
+                {"kind": "viewport-height"},
+                {"kind": "fit-content", "limit": {
+                    "kind": "add", "values": [
+                        {"kind": "viewport-height"}, {"kind": "viewport-height"},
+                        {"kind": "viewport"}, {"kind": "lines", "value": 2}
+                    ]
+                }}
+            ]
+        }))
+        .unwrap();
+        *min_height = Size::ViewportHeight;
+        *max_height = Size::FitContent {
+            limit: Some(Box::new(Size::ViewportHeight)),
+        };
+        let mut anonymous = context_test_flex(Size::ViewportHeight, vec![identified(leaf, 2, 1)]);
+        for index in 0..48 {
+            let mut wrapper = child_box(index + 3, anonymous, None);
+            let LayoutNode::Box { height, .. } = &mut wrapper else {
+                unreachable!()
+            };
+            *height = Size::ViewportHeight;
+            anonymous = LayoutNode::Row {
+                node_id: None,
+                node_revision: None,
+                children: Arc::new(vec![wrapper]),
+            };
+        }
+        let root = identified(child_box(1, anonymous, None), 1, 1);
+        let full = retained_document(root);
+        let (retained, parsed) = RetainedDocument::bootstrap(full.clone()).unwrap();
+        assert_eq!(parsed, 99);
+        assert_retained_context_oracle(&retained, 54);
+        for height in [0, 1, 4629, 4630, -1, i64::MAX] {
+            let context = LayoutContext {
+                viewport_height: height,
+                ..test_context()
+            };
+            assert_eq!(
+                retained.validate_context(context),
+                full.validate_context(context)
+            );
+        }
+    }
+
+    #[test]
+    fn retained_context_ignores_widths_and_preserves_zero_occurrence_errors() {
+        let mut leaf = text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None);
+        let LayoutNode::Box {
+            width,
+            min_width,
+            max_width,
+            height,
+            ..
+        } = &mut leaf
+        else {
+            unreachable!();
+        };
+        *width = Size::ViewportHeight;
+        *min_width = Size::ViewportHeight;
+        *max_width = Size::ViewportHeight;
+        *height = Size::FitContent { limit: None };
+        let root = identified(
+            child_box(1, context_test_flex(Size::Auto, vec![leaf]), None),
+            1,
+            1,
+        );
+        let (retained, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        assert_retained_context_oracle(&retained, 0);
+    }
+
+    #[test]
+    fn retained_context_slot_orders_revision_only_forks_and_invalid_cas_match_oracle() {
+        let leaf = identified(
+            text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            2,
+            1,
+        );
+        let root = identified(
+            child_box(1, context_test_flex(Size::ViewportHeight, vec![leaf]), None),
+            1,
+            7,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let slot_zero = serde_json::json!({"slot": 0, "local": {
+            "height": {"kind": "viewport-height"},
+            "min-height": {"kind": "viewport-height"},
+            "max-height": {"kind": "fit-content", "limit": {"kind": "viewport-height"}},
+            "padding-left": 2
+        }});
+        let slot_one = serde_json::json!({"slot": 1, "local": {
+            "height": {"kind": "subtract", "values": [
+                {"kind": "viewport-height"}, {"kind": "viewport-height"}
+            ]},
+            "width": {"kind": "viewport-height"}
+        }});
+        let update = |patches: Vec<JsonValue>| {
+            serde_json::json!({
+                "node-id": 1, "expected-revision": 7, "target-revision": 8,
+                "slot-patches": patches
+            })
+        };
+        let forward = base
+            .apply_delta(context_test_delta(vec![update(vec![
+                slot_zero.clone(),
+                slot_one.clone(),
+            ])]))
+            .unwrap()
+            .0;
+        let reverse = base
+            .apply_delta(context_test_delta(vec![update(vec![slot_one, slot_zero])]))
+            .unwrap()
+            .0;
+        assert_retained_context_oracle(&base, 1);
+        assert_retained_context_oracle(&forward, 5);
+        assert_retained_context_oracle(&reverse, 5);
+
+        let revision =
+            serde_json::json!({"node-id": 1, "expected-revision": 8, "target-revision": 9});
+        let no_op = forward
+            .apply_delta(context_test_delta(vec![revision]))
+            .unwrap()
+            .0;
+        assert_retained_context_oracle(&no_op, 5);
+        assert!(Arc::ptr_eq(
+            &radix_lookup(&forward.entries, 1).unwrap().node,
+            &radix_lookup(&no_op.entries, 1).unwrap().node
+        ));
+
+        let remove = update(vec![
+            serde_json::json!({"slot": 1, "local": {"height": {"kind": "auto"}}}),
+        ]);
+        let other_fork = base
+            .apply_delta(context_test_delta(vec![remove]))
+            .unwrap()
+            .0;
+        assert_retained_context_oracle(&other_fork, 0);
+        assert_retained_context_oracle(&base, 1);
+        assert_retained_context_oracle(&forward, 5);
+
+        for (expected_revision, target_revision) in [(6, 8), (7, 7), (7, 6)] {
+            let invalid = serde_json::json!({
+                "node-id": 1, "expected-revision": expected_revision, "target-revision": target_revision,
+                "slot-patches": [{"slot": 1, "local": {"height": {"kind": "auto"}}}]
+            });
+            assert_eq!(
+                base.apply_delta(context_test_delta(vec![invalid]))
+                    .unwrap_err(),
+                "Native retained delta node revision mismatch"
+            );
+            assert_retained_context_oracle(&base, 1);
+        }
+    }
+
+    #[test]
+    fn retained_context_large_occurrence_count_accepts_zero_height() {
+        let mut root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            1,
+        );
+        let LayoutNode::Box { height, .. } = &mut root else {
+            unreachable!()
+        };
+        *height = Size::Add {
+            values: Box::new(SizeValues(
+                vec![Size::ViewportHeight; MAX_LAYOUT_WORK_UNITS + 1].into_boxed_slice(),
+            )),
+        };
+        let (retained, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        assert_retained_context_oracle(&retained, MAX_LAYOUT_WORK_UNITS + 1);
+    }
+
+    #[test]
+    fn retained_context_flex_owner_and_anonymous_box_batch_updates_are_atomic() {
+        let mut anonymous = text_box(3, measured_text(vec![vec![cluster("x", 1, None)]]), None);
+        let LayoutNode::Box {
+            height,
+            min_height,
+            max_height,
+            ..
+        } = &mut anonymous
+        else {
+            unreachable!()
+        };
+        *height = Size::ViewportHeight;
+        *min_height = Size::ViewportHeight;
+        *max_height = Size::ViewportHeight;
+        let owner = identified(child_box(2, anonymous, None), 2, 1);
+        let root = identified(context_test_flex(Size::ViewportHeight, vec![owner]), 1, 1);
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let flex_update = serde_json::json!({
+            "node-id": 1, "expected-revision": 1, "target-revision": 2,
+            "slot-patches": [{"slot": 0, "local": {"height": {"kind": "add", "values": [
+                {"kind": "viewport-height"}, {"kind": "viewport-height"}
+            ]}}}]
+        });
+        let box_update = serde_json::json!({
+            "node-id": 2, "expected-revision": 1, "target-revision": 2,
+            "slot-patches": [{"slot": 1, "local": {
+                "height": {"kind": "auto"},
+                "min-height": {"kind": "lines", "value": 2},
+                "max-height": {"kind": "subtract", "values": [
+                    {"kind": "viewport-height"}, {"kind": "viewport-height"}
+                ]}
+            }}]
+        });
+        let flex_only = base
+            .apply_delta(context_test_delta(vec![flex_update.clone()]))
+            .unwrap()
+            .0;
+        let box_only = base
+            .apply_delta(context_test_delta(vec![box_update.clone()]))
+            .unwrap()
+            .0;
+        let forward = base
+            .apply_delta(context_test_delta(vec![
+                flex_update.clone(),
+                box_update.clone(),
+            ]))
+            .unwrap()
+            .0;
+        let reverse = base
+            .apply_delta(context_test_delta(vec![box_update, flex_update.clone()]))
+            .unwrap()
+            .0;
+        assert_retained_context_oracle(&base, 4);
+        assert_retained_context_oracle(&flex_only, 5);
+        assert_retained_context_oracle(&box_only, 3);
+        assert_retained_context_oracle(&forward, 4);
+        assert_retained_context_oracle(&reverse, 4);
+        let removed = forward
+            .apply_delta(context_test_delta(vec![
+                serde_json::json!({"node-id": 1, "expected-revision": 2, "target-revision": 3,
+                "slot-patches": [{"slot": 0, "local": {"height": {"kind": "auto"}}}]}),
+                serde_json::json!({"node-id": 2, "expected-revision": 2, "target-revision": 3,
+                "slot-patches": [{"slot": 1, "local": {"max-height": {"kind": "none"}}}]}),
+            ]))
+            .unwrap()
+            .0;
+        assert_retained_context_oracle(&removed, 0);
+        assert_retained_context_oracle(&forward, 4);
+
+        // A later CAS/field failure must discard the first entry's prepared summary.
+        for invalid in [
+            serde_json::json!({"node-id": 2, "expected-revision": 0, "target-revision": 2}),
+            serde_json::json!({"node-id": 2, "expected-revision": 1, "target-revision": 2,
+                "slot-patches": [{"slot": 1, "local": {"height": {"kind": "lines", "value": -1}}}]}),
+        ] {
+            assert!(base
+                .apply_delta(context_test_delta(vec![flex_update.clone(), invalid]))
+                .is_err());
+            assert_retained_context_oracle(&base, 4);
+            assert_eq!(radix_lookup(&base.entries, 1).unwrap().revision, 1);
+        }
+    }
+
+    #[test]
+    fn retained_context_validation_performs_zero_resolver_lookups() {
+        let nodes = (2..514)
+            .map(|id| {
+                identified(
+                    text_box(id, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+                    id as u64,
+                    1,
+                )
+            })
+            .collect();
+        let root = identified(
+            child_box(1, context_test_flex(Size::ViewportHeight, nodes), None),
+            1,
+            1,
+        );
+        let (retained, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        reset_resolver_lookups();
+        retained.validate_context(test_context()).unwrap();
+        assert_eq!(
+            resolver_lookups(),
+            0,
+            "retained context validation traversed the document"
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 mod layout;
+pub mod sequence;
 
 use layout::{
     encode_error_tape, DocumentDelta, LayoutContext, LayoutDocument, LayoutTape, RetainedDocument,
@@ -468,6 +469,7 @@ struct RenderedJob {
     base_renders: u64,
     target_renders: u64,
     resolver_lookups: u64,
+    atom_plan_work: layout::AtomPlanWork,
 }
 
 #[derive(Default)]
@@ -520,6 +522,7 @@ struct RuntimeState {
     document_delta_entries_validated: u64,
     document_trie_path_nodes_copied: u64,
     document_resolver_lookups: u64,
+    atom_plan_work: layout::AtomPlanWork,
     confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
 }
 
@@ -580,6 +583,7 @@ struct SessionStats {
     document_delta_entries_validated: u64,
     document_trie_path_nodes_copied: u64,
     document_resolver_lookups: u64,
+    atom_plan_work: layout::AtomPlanWork,
     pending_baselines: usize,
     confirmed_baseline: bool,
     confirmed_baseline_bytes: usize,
@@ -652,6 +656,7 @@ impl Session {
                 document_delta_entries_validated: 0,
                 document_trie_path_nodes_copied: 0,
                 document_resolver_lookups: 0,
+                atom_plan_work: layout::AtomPlanWork::default(),
                 confirmed_baseline,
             }),
             readiness_channel: Mutex::new(None),
@@ -1077,6 +1082,7 @@ impl Session {
         state.base_renders += output.base_renders;
         state.target_renders += output.target_renders;
         state.document_resolver_lookups += output.resolver_lookups;
+        state.atom_plan_work.accumulate(output.atom_plan_work);
         state.document_parses += input_stats.parses;
         state.document_validations += input_stats.validations;
         state.document_reuses += input_stats.reuses;
@@ -1225,6 +1231,7 @@ impl Session {
             document_delta_entries_validated: state.document_delta_entries_validated,
             document_trie_path_nodes_copied: state.document_trie_path_nodes_copied,
             document_resolver_lookups: state.document_resolver_lookups,
+            atom_plan_work: state.atom_plan_work,
             pending_baselines,
             confirmed_baseline: state.confirmed_baseline.is_some(),
             confirmed_baseline_bytes,
@@ -1437,6 +1444,7 @@ fn render_layout_payload(
             base_renders: 0,
             target_renders: 0,
             resolver_lookups: 0,
+            atom_plan_work: layout::AtomPlanWork::default(),
         },
         JobPayload::Layout {
             document,
@@ -1494,6 +1502,7 @@ fn render_layout_payload(
                 String,
             >;
             layout::reset_resolver_lookups();
+            layout::reset_atom_plan_work();
             let result = catch_unwind(AssertUnwindSafe(|| -> LayoutRenderOutcome {
                 let target_styles = document.styles()?;
                 if let Some(base_context) = base_context {
@@ -1568,6 +1577,7 @@ fn render_layout_payload(
             }));
             let resolver_lookups =
                 validation_resolver_lookups.saturating_add(layout::resolver_lookups());
+            let atom_plan_work = layout::atom_plan_work();
             match result {
                 Ok(Ok((bytes, tape, styles, baseline_hit, base_renders, target_renders))) => {
                     RenderedJob {
@@ -1583,6 +1593,7 @@ fn render_layout_payload(
                         base_renders,
                         target_renders,
                         resolver_lookups,
+                        atom_plan_work,
                     }
                 }
                 Ok(Err(error)) => RenderedJob {
@@ -1592,6 +1603,7 @@ fn render_layout_payload(
                     base_renders: 0,
                     target_renders: 0,
                     resolver_lookups,
+                    atom_plan_work,
                 },
                 Err(_) => RenderedJob {
                     bytes: encode_error_tape(identity, "native layout panicked", max_result_bytes),
@@ -1600,6 +1612,7 @@ fn render_layout_payload(
                     base_renders: 0,
                     target_renders: 0,
                     resolver_lookups,
+                    atom_plan_work,
                 },
             }
         }
@@ -1749,6 +1762,7 @@ fn worker_loop(shared: Arc<Shared>) {
         state.base_renders += output.base_renders;
         state.target_renders += output.target_renders;
         state.document_resolver_lookups += output.resolver_lookups;
+        state.atom_plan_work.accumulate(output.atom_plan_work);
         state.results.insert(
             (job.generation, job.key),
             ResultEntry {
@@ -2573,9 +2587,9 @@ mod tests {
         assert_eq!(stats.document_delta_entries_validated, 1);
         assert_eq!(stats.document_trie_path_nodes_copied, 17);
         assert_eq!(stats.document_delta_input_bytes, delta.len() as u64);
-        assert!(
-            stats.document_resolver_lookups >= 3,
-            "target/base validation and target render lookups must all remain visible"
+        assert_eq!(
+            stats.document_resolver_lookups, stats.target_renders,
+            "each single-owner render resolves its root; retained context validation resolves no nodes"
         );
         assert!(session.confirm(2, 2, 2).unwrap());
 
