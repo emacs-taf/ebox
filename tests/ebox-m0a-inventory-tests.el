@@ -231,6 +231,8 @@ scratch tables, which are intentionally outside the retained-store inventory."
            (:global ebox--scroll-idle-prefetch-timers)
            (:global ebox--runtime-prewarm-jobs)
            (:global ebox--runtime-prewarm-timers)
+           (:global ebox--window-size-change-pending-frames)
+           (:global ebox--window-size-change-timer)
            (:global ebox--window-line-renderer-table)
            (:global ebox--window-line-prewarmer-table)
            (:global ebox-native-reflow--compile-property-template-ids)

@@ -117,6 +117,18 @@
      :rollback cancel-candidate-work
      :rebuild-proof reschedule-from-committed-generation
      :cleanup cancel-timers-jobs-and-gc-lease)
+    (:id viewport-event-authority
+     :storage (ebox--window-size-change-pending-frames
+               ebox--window-size-change-timer)
+     :current-contract frame-intent-queue-and-single-event-loop-task
+     :target-contract frame-intent-queue-and-single-event-loop-task
+     :category generation-bound-mutable-authority
+     :owner ebox-viewport
+     :mutation-api window-notify-schedule-and-drain
+     :generation-binding current-mounted-generation-sampled-at-delivery
+     :rollback publication-owned-rollback-and-requeue-unstarted-frames
+     :rebuild-proof subsequent-window-notification
+     :cleanup consume-frame-intents-and-release-dispatched-timer)
     (:id incremental-batch-authority
      :storage (ebox-incremental--batch-table)
      :current-contract process-buffer-keyed-open-batch-state

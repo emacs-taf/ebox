@@ -407,7 +407,8 @@ exclusion freshness, but only retained/container evidence is coverage-gated."
 (ert-deftest ebox-state-contract-never-classifies-live-authority-as-cache ()
   "Cleanup-sensitive handles retain generation-bound mutable authority."
   (dolist (id '(scroll-runtime-authority native-runtime-authority
-                runtime-prewarm-authority incremental-batch-authority
+                runtime-prewarm-authority viewport-event-authority
+                incremental-batch-authority
                 layout-context-port-authority identity-allocation-authority
                 buffer-surface-runtime-authority))
     (let ((record (ebox-state-contract-record id)))

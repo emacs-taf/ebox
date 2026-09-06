@@ -280,6 +280,18 @@
      :authority ebox :lifetime process-by-buffer
      :rollback tp-client-state-or-snapshot :rebuild render-or-commit
      :cleanup buffer-kill-and-unmount)
+    (:id viewport/pending-frames
+     :storage (:global ebox--window-size-change-pending-frames)
+     :owner ebox-viewport :authority ebox :lifetime until-event-loop-drain
+     :rollback unstarted-frames-requeued-on-quit
+     :rebuild subsequent-window-size-notification
+     :cleanup drain-consumption-and-dead-frame-pruning)
+    (:id viewport/drain-timer
+     :storage (:global ebox--window-size-change-timer)
+     :owner ebox-viewport :authority ebox :lifetime until-event-loop-drain
+     :rollback not-publication-authority
+     :rebuild schedule-remaining-pending-frames
+     :cleanup timer-entry)
     (:id buffer-runtime/node-table
      :storage (:state-key :node-table)
      :proposed-category generation-fact :owner ebox-tree :authority ebox
