@@ -1741,11 +1741,20 @@ PREVIOUS-STATE's node-object table."
 (defun ebox-surface--complete-projection
     (context root source-index style-required-p projection)
   "Complete a retained PROJECTION for ROOT after a local proof miss.
-The initial span attempt already owns the surface and node-root identities in
+The local attempt already owns the surface and node-root identities in
 CONTEXT, so full fallback must populate those same objects instead of creating
 the projection roots a second time."
+  (when (and style-required-p
+             (ebox-source--index-derived-stale-p source-index))
+    ;; Local subject deltas can retain a child's old parent object.  The full
+    ;; style walk requires one coherent ancestry for its eq-keyed bindings.
+    (setq source-index
+          (ebox-tree-source-index
+           root t ebox--render-root-parent-kind source-index)))
   (let* ((node-root (plist-get projection :node-root))
-         (objects-by-node (plist-get projection :objects-by-node))
+         ;; The retained projection may share the published node-id table.
+         ;; Full projection visits every node and writes node-keyed entries.
+         (objects-by-node (make-hash-table :test 'eq))
          (style-state-table
           (plist-get projection :style-binding-states))
          (stylesheet-signature
@@ -1762,6 +1771,8 @@ the projection roots a second time."
          (states-by-subject (make-hash-table :test 'eq))
          (subjects (when style-required-p
                      (ebox-tree-subject-index root source-index))))
+    (plist-put projection :source-index source-index)
+    (plist-put projection :objects-by-node objects-by-node)
     (tp-object-retain context node-root)
     (ebox-surface--ensure-node-tree
      context node-root root source-index objects-by-node
@@ -6080,26 +6091,37 @@ published runtime and must be consumed without clearing those shared nodes."
                    (or (ebox-surface--scroll-patch-output
                         (ebox-surface--signals-buffer signals) state)
                        (ebox-surface--render-candidate state)))
-                  ((eq projection-kind 'formatting-context-reflow)
-                   (or (ebox-surface--formatting-context-reflow-output
-                        (ebox-surface--signals-buffer signals) state)
-                       (ebox-surface--render-candidate state)))
-                  ((eq projection-kind 'mixed-owner-reflow)
-                   (or (ebox-surface--mixed-owner-output
-                        (ebox-surface--signals-buffer signals)
-                        previous-state state)
-                       (ebox-surface--render-candidate state)))
-                 ((memq projection-kind '(span-patch owner-scoped))
-                   (if-let* ((span-output
-                             (ebox-surface--span-patch-output
-                              (ebox-surface--signals-buffer signals)
-                              previous-state state)))
-                       span-output
-                     (setq projection
-                           (ebox-surface--complete-projection
-                            context root source-index
-                            style-required-p projection))
-                       (setq state
+                  ((memq projection-kind
+                         '(span-patch owner-scoped formatting-context-reflow
+                           mixed-owner-reflow))
+                   (if-let* ((local-output
+                              (pcase projection-kind
+                                ('formatting-context-reflow
+                                 (ebox-surface--formatting-context-reflow-output
+                                  (ebox-surface--signals-buffer signals) state))
+                                ('mixed-owner-reflow
+                                 (ebox-surface--mixed-owner-output
+                                  (ebox-surface--signals-buffer signals)
+                                  previous-state state))
+                                (_
+                                 (ebox-surface--span-patch-output
+                                  (ebox-surface--signals-buffer signals)
+                                  previous-state state)))))
+                       local-output
+                     ;; A declined output may already have staged coordinates,
+                     ;; fragments or paint layers.  Rebuild from the original
+                     ;; candidate inputs before producing ordinary full output.
+                     ;; Range deltas already projected their complete object
+                     ;; map, including newly registered keys in this context.
+                     (unless (and (eq projection-kind 'mixed-owner-reflow)
+                                  (ebox-surface--mixed-range-splice-p state))
+                       (setq projection
+                             (ebox-surface--complete-projection
+                              context root source-index
+                              style-required-p projection)))
+                     (setq projection-kind nil)
+                     (setq source-index (plist-get projection :source-index))
+                     (setq state
                              (ebox-surface--projection-state
                               root previous-state state-overrides nil
                               stylesheet-active-p cascade-required-p axes

@@ -2996,6 +2996,370 @@ remain retained identities."
                   (ebox-test-text "paint-c") :color paint-c))
     candidate))
 
+(defun ebox-commit-test--mixed-formatting-ownership (scenario &optional inherited-p)
+  "Check public ownership for specialized or declined formatting SCENARIO.
+When INHERITED-P is non-nil, keep ancestor color across an untouched sibling."
+  (cl-labels
+      ((fixture (left right paint-a paint-b paint-c)
+         (let ((tree (ebox-commit-test--mixed-owner-root
+                      left right paint-a paint-b paint-c)))
+           (if inherited-p
+               (ebox-test-box :key 'inherited-parent :color "#345678" tree)
+             tree)))
+       (nodes (state)
+         (let (result)
+           (cl-labels ((walk (node path)
+                        (push (cons path node) result)
+                        (cl-loop for child in (ebox-tree-node-children node)
+                                 for index from 0
+                                 do (walk child (append path (list index))))))
+             (walk (plist-get state :root-node) '(root)))
+           (nreverse result)))
+       (region-paths (state)
+         (let ((paths (make-hash-table :test #'eql))
+               (regions (make-hash-table :test #'eql)))
+           (dolist (entry (nodes state))
+             (puthash (plist-get (cdr entry) :node-id) (car entry) paths))
+           (maphash (lambda (region node-id)
+                      (puthash region (gethash node-id paths) regions))
+                    (plist-get state :region-node-table))
+           regions))
+       (region-path (regions id)
+         (or (gethash id regions)
+             (ert-fail (list :unknown-region id))))
+       (source-ancestry (state)
+         (let* ((index (plist-get state :source-index))
+                (subjects (ebox-source--index-node-subjects index)))
+           (mapcar
+            (lambda (entry)
+              (let ((subject
+                     (ebox-source--subject-table-get
+                      subjects (ebox-tree-node-source-handle (cdr entry)))))
+                (list subject (ecss-subject-parent subject)
+                      (copy-sequence (ecss-subject-children subject)))))
+            (nodes state))))
+       (same-source-ancestry-p (before after)
+         (and (= (length before) (length after))
+              (cl-every
+               (lambda (old new)
+                 (and (eq (car old) (car new))
+                      (eq (cadr old) (cadr new))
+                      (= (length (nth 2 old)) (length (nth 2 new)))
+                      (cl-every #'eq (nth 2 old) (nth 2 new))))
+               before after)))
+       (contents (buffer)
+         ;; Preserve every property, renaming only buffer-local region ids.
+         (let* ((text (ebox-commit-test--buffer-string buffer))
+                (regions (region-paths (ebox--buffer-render-state buffer)))
+                (properties
+                 (delete-dups
+                  (append (mapcar #'cdr ebox-region-types)
+                          '(ebox-scroll-window
+                            ebox-overflow-foreground-source))))
+                (position 0))
+           (while (< position (length text))
+             (let ((end (or (next-property-change position text) (length text)))
+                   (props (text-properties-at position text)))
+               (dolist (property properties)
+                 (when-let* ((id (plist-get props property)))
+                   (setq props
+                         (plist-put props property (region-path regions id)))))
+               (when-let* ((owners (plist-get props 'ebox-content-owners)))
+                 (setq props
+                       (plist-put props 'ebox-content-owners
+                                  (mapcar (lambda (id) (region-path regions id))
+                                          owners))))
+               (set-text-properties position end props text)
+               (setq position end)))
+           text))
+       (mounts (state node)
+         (let ((regions (region-paths state))
+               (object (gethash (plist-get node :node-id)
+                                (plist-get state :surface-node-object-table))))
+           ;; TP does not require a particular ordering of an owner's mounts.
+           (sort
+            (mapcar
+             (lambda (mount)
+               (let ((tags (plist-get mount :tags)))
+                 (when-let* ((region (plist-get tags :ebox/region-id)))
+                   (plist-put tags :ebox/region-id (region-path regions region)))
+                 mount))
+             (tp-object-mounts object))
+            (lambda (a b)
+              (string< (prin1-to-string a) (prin1-to-string b)))))))
+    (let* ((buffer
+            (ebox-render-to-buffer
+             (generate-new-buffer-name " *ebox-mixed-formatting-fallback*")
+             (fixture
+              "left-old" "right-old" "#111111" "#222222" "#333333")))
+           (fresh nil)
+           (left "left changed\nleft again")
+           (right "right changed\nright again")
+           (before (ebox--buffer-render-state buffer))
+           (surface (with-current-buffer buffer ebox-surface--buffer-surface))
+           (revision (tp-surface-revision surface))
+           (runtime-revision (plist-get before :runtime-revision))
+           (old-objects (plist-get before :surface-node-object-table))
+           (old-object-facts
+            (let (facts)
+              (maphash (lambda (id object)
+                         (push (list id object (tp-object-mounts object)) facts))
+                       old-objects)
+              facts))
+           (old-text (ebox-commit-test--buffer-string buffer))
+           (old-report (tp-surface-report surface))
+           (old-mounts (tp--surface-mounts surface))
+           (old-mount-ids (mapcar #'tp--surface-mount-id old-mounts))
+           (old-mount-index (tp--surface-mount-index surface))
+           (old-index (tp--surface-index surface))
+           (old-ranges (plist-get before :surface-owned-ranges))
+           (old-range-facts (ebox-surface--snapshot-owned-ranges old-ranges))
+           (old-fragments (plist-get before :surface-fragments))
+           (old-fragment-facts (copy-tree old-fragments))
+           (old-source-index (plist-get before :source-index))
+           (old-source-ancestry (and inherited-p (source-ancestry before)))
+           (root-render (symbol-function 'ebox-surface--render-candidate))
+           (formatting-output
+            (symbol-function 'ebox-surface--formatting-context-reflow-output))
+           (mixed-output (symbol-function 'ebox-surface--mixed-owner-output))
+           (formatting-calls 0)
+           (mixed-calls 0)
+           (publication-failures 0)
+           (root-renders 0)
+           geometry-owner-id
+           report)
+      (unwind-protect
+          (progn
+            ;; Only the specialized output boundary declines.  The real
+            ;; public candidate, planner, mixed projector, and full renderer
+            ;; run normally; no candidate facts or reports are fabricated.
+            (cl-letf
+                (((symbol-function
+                   'ebox-surface--formatting-context-reflow-output)
+                  (lambda (target state)
+                    (cl-incf formatting-calls)
+                    (should (eq (plist-get state :projection-kind)
+                                'mixed-owner-reflow))
+                    (let ((proof (plist-get state :mixed-owner-proof)))
+                      (should (eq (plist-get proof :geometry-kind)
+                                  'formatting-context-reflow))
+                      (setq geometry-owner-id
+                            (plist-get (plist-get proof :geometry-proof)
+                                       :owner-id)))
+                    (when inherited-p
+                      (let* ((index (plist-get state :source-index))
+                             (subjects (ebox-source--index-node-subjects index))
+                             (peer (ebox--host-ref-node buffer 'untouched))
+                             (subject
+                              (ebox-source--subject-table-get
+                               subjects (ebox-tree-node-source-handle peer)))
+                             (parent-id
+                              (gethash (plist-get peer :node-id)
+                                       (plist-get state :parent-table)))
+                             (parent
+                              (gethash parent-id (plist-get state :node-table)))
+                             (parent-subject
+                              (ebox-source--subject-table-get
+                               subjects (ebox-tree-node-source-handle parent))))
+                        (message "Inherited fallback candidate: derived-stale=%S untouched-parent-coherent=%S"
+                                 (ebox-source--index-derived-stale-p index)
+                                 (eq parent-subject (ecss-subject-parent subject)))))
+                    (unless (memq scenario '(decline rollback))
+                      (let ((output (funcall formatting-output target state)))
+                        (should (stringp output))
+                        output))))
+                 ((symbol-function 'ebox-surface--mixed-owner-output)
+                  (lambda (target previous state)
+                    (cl-incf mixed-calls)
+                    (let ((output (funcall mixed-output target previous state)))
+                      (if (eq scenario 'late-decline)
+                          (progn
+                            ;; Decline only after the actual projector has
+                            ;; produced all three kinds of temporary state.
+                            (should (stringp output))
+                            (should (plist-get state :content-coordinate-patches))
+                            (should (plist-get state :mixed-owner-fragment-data))
+                            (should (plist-get state :paint-property-contributions))
+                            nil)
+                        output))))
+                 ((symbol-function 'ebox-surface--render-candidate)
+                  (lambda (state)
+                    (cl-incf root-renders)
+                    (funcall root-render state))))
+              (when (eq scenario 'rollback)
+                (let ((tp--surface-publication-step-function
+                       (lambda (step target)
+                         (when (eq step 'client-state)
+                           (should (eq target surface))
+                           (cl-incf publication-failures)
+                           (should (= root-renders 1))
+                           (should (= (tp-surface-revision surface)
+                                      (1+ revision)))
+                           (should-not (eq before (tp-surface-client-state surface)))
+                           (should-not
+                            (equal-including-properties
+                             old-text (ebox-commit-test--buffer-string buffer)))
+                           (error "Reject formatting fallback publication")))))
+                  (should
+                   (equal
+                    (should-error
+                     (ebox-commit
+                      buffer
+                      (ebox-commit-test--mixed-owner-candidate
+                       buffer left right "#AAAAAA" "#BBBBBB" "#CCCCCC")))
+                    '(error "Reject formatting fallback publication"))))
+                (should (= publication-failures 1))
+                (should (eq before (ebox--buffer-render-state buffer)))
+                (should (eq before (tp-surface-client-state surface)))
+                (should (= revision (tp-surface-revision surface)))
+                (should (= runtime-revision
+                           (plist-get before :runtime-revision)))
+                (should (equal old-report (tp-surface-report surface)))
+                (should (equal-including-properties
+                         old-text (ebox-commit-test--buffer-string buffer)))
+                (should (eq old-mounts (tp--surface-mounts surface)))
+                (should (eq old-mount-index (tp--surface-mount-index surface)))
+                (should (eq old-index (tp--surface-index surface)))
+                (should (equal old-mount-ids
+                               (mapcar #'tp--surface-mount-id old-mounts)))
+                (should (eq old-objects
+                            (plist-get before :surface-node-object-table)))
+                (should (= (length old-object-facts) (hash-table-count old-objects)))
+                (dolist (fact old-object-facts)
+                  (should (eq (nth 1 fact) (gethash (car fact) old-objects)))
+                  (should (equal (nth 2 fact)
+                                 (tp-object-mounts (nth 1 fact)))))
+                (should (eq old-ranges (plist-get before :surface-owned-ranges)))
+                (should (equal old-range-facts
+                               (ebox-surface--snapshot-owned-ranges old-ranges)))
+                (should (eq old-fragments (plist-get before :surface-fragments)))
+                (should (equal-including-properties
+                         old-fragment-facts old-fragments))
+                (when inherited-p
+                  (should (eq old-source-index (plist-get before :source-index)))
+                  (should (same-source-ancestry-p
+                           old-source-ancestry (source-ancestry before)))))
+              ;; Retry builds a new public candidate from the restored state.
+              (setq report
+                    (ebox-commit
+                     buffer
+                     (ebox-commit-test--mixed-owner-candidate
+                      buffer left right "#AAAAAA" "#BBBBBB" "#CCCCCC"))))
+            (should (= formatting-calls (if (eq scenario 'rollback) 2 1)))
+            (should (= mixed-calls formatting-calls))
+            (should (= root-renders
+                       (if (eq scenario 'specialized) 0 formatting-calls)))
+            (should geometry-owner-id)
+            (message "Formatting ownership scenario=%S specialized-calls=%d root-renders=%d publication-failures=%d"
+                     scenario formatting-calls root-renders publication-failures)
+            (when (eq scenario 'specialized)
+              (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
+              (should-not (plist-get report :tp-full-root))
+              (should-not (plist-get report :tp-scope-fallback)))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should (zerop (plist-get report :created-objects)))
+            (should (zerop (plist-get report :removed-objects)))
+            (let* ((after (ebox--buffer-render-state buffer))
+                   (objects (plist-get after :surface-node-object-table)))
+              (should (= (plist-get after :runtime-revision)
+                         (1+ runtime-revision)))
+              (should (= (length old-object-facts) (hash-table-count old-objects)))
+              (should (= (hash-table-count old-objects)
+                         (hash-table-count objects)))
+              (dolist (fact old-object-facts)
+                (should (eq (nth 1 fact) (gethash (car fact) old-objects)))
+                (should (eq (nth 1 fact) (gethash (car fact) objects))))
+              (when (eq scenario 'specialized)
+                (let ((owner-mounts
+                       (tp-object-mounts (gethash geometry-owner-id objects))))
+                  (should (= (length owner-mounts) 1))
+                  (should (equal (plist-get (plist-get (car owner-mounts) :tags)
+                                            :ebox/roles)
+                                 '(content-owner content)))))
+              (setq fresh
+                    (ebox-render-to-buffer
+                     (generate-new-buffer-name " *ebox-mixed-formatting-full*")
+                     (fixture
+                      left right "#AAAAAA" "#BBBBBB" "#CCCCCC")))
+              (when inherited-p
+                (should (eq old-source-index (plist-get before :source-index)))
+                (should (same-source-ancestry-p
+                         old-source-ancestry (source-ancestry before)))
+                (let ((actual-style
+                       (plist-get (ebox--host-ref-node buffer 'untouched)
+                                  :ebox-computed-style))
+                      (expected-style
+                       (plist-get (ebox--host-ref-node fresh 'untouched)
+                                  :ebox-computed-style)))
+                  (message "Untouched inherited color: actual=%S expected=%S"
+                           (ecss-computed-style-value actual-style :color)
+                           (ecss-computed-style-value expected-style :color))))
+              (should (equal-including-properties
+                       (contents buffer) (contents fresh)))
+              (when inherited-p
+                (let ((actual-style
+                       (plist-get (ebox--host-ref-node buffer 'untouched)
+                                  :ebox-computed-style))
+                      (expected-style
+                       (plist-get (ebox--host-ref-node fresh 'untouched)
+                                  :ebox-computed-style)))
+                  (should (equal "#345678"
+                                 (ecss-computed-style-value expected-style :color)))
+                  (should (equal (ecss-computed-style-values actual-style)
+                                 (ecss-computed-style-values expected-style)))))
+              (let* ((expected (ebox--buffer-render-state fresh))
+                     (actual-nodes (nodes after))
+                     (expected-nodes (nodes expected)))
+                (should (equal (mapcar #'car actual-nodes)
+                               (mapcar #'car expected-nodes)))
+                (cl-mapc
+                 (lambda (actual wanted)
+                   (ert-info ((format "public owner mounts at %S" (car actual)))
+                     (let ((actual-mounts (mounts after (cdr actual)))
+                           (expected-mounts (mounts expected (cdr wanted))))
+                       (when (eq scenario 'specialized)
+                         ;; Local context ownership deliberately has explicit
+                         ;; content-role tags; full output uses descendant tags.
+                         ;; Both must publish the same complete coordinates.
+                         (setq actual-mounts
+                               (mapcar (lambda (mount)
+                                         (list (plist-get mount :start)
+                                               (plist-get mount :end)))
+                                       actual-mounts)
+                               expected-mounts
+                               (mapcar (lambda (mount)
+                                         (list (plist-get mount :start)
+                                               (plist-get mount :end)))
+                                       expected-mounts)))
+                       (should (equal actual-mounts expected-mounts)))))
+                 actual-nodes expected-nodes))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))
+        (when (buffer-live-p fresh) (kill-buffer fresh))))))
+
+(ert-deftest ebox-commit-mixed-formatting-specialized-preserves-owner-coverage ()
+  "Successful formatting specialization stays local and owns its full output."
+  (ebox-commit-test--mixed-formatting-ownership 'specialized))
+
+(ert-deftest ebox-commit-mixed-formatting-fallback-preserves-full-ownership ()
+  "A declined mixed formatting output must publish full-render ownership."
+  (ebox-commit-test--mixed-formatting-ownership 'decline))
+
+(ert-deftest ebox-commit-mixed-formatting-fallback-rolls-back-and-retries ()
+  "Fallback publication failure restores exact ownership before a fresh retry."
+  (ebox-commit-test--mixed-formatting-ownership 'rollback))
+
+(ert-deftest ebox-commit-mixed-formatting-late-fallback-preserves-full-ownership ()
+  "A late decline cannot reuse the successful projector's temporary results."
+  (ebox-commit-test--mixed-formatting-ownership 'late-decline))
+
+(ert-deftest ebox-commit-mixed-formatting-fallback-preserves-untouched-inheritance ()
+  "Full fallback preserves inherited color through copied ancestor subjects."
+  (ebox-commit-test--mixed-formatting-ownership 'decline t))
+
+(ert-deftest ebox-commit-mixed-formatting-inheritance-rolls-back-and-retries ()
+  "Inherited fallback preserves the old source ancestry on rollback and retry."
+  (ebox-commit-test--mixed-formatting-ownership 'rollback t))
+
 
 
 
@@ -3138,7 +3502,8 @@ remain retained identities."
                    (should (ebox-surface--mixed-range-splice-p candidate-state))
                    (funcall root-render candidate-state))))
         (setq report (ebox-commit (current-buffer) candidate)))
-      (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
+      (should (eq (plist-get report :strategy) 'mixed-owner-reflow))
+      (should-not (plist-get report :projection-kind))
       (should (= 1 root-renders))
       (should-not (plist-get report :tp-retained-content))
       (should (> (plist-get report :created-objects) 0))
