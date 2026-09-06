@@ -1730,5 +1730,53 @@ entry before final allocation, providing the original rerendering reference."
                 (ebox-test-box (ebox-test-text "B") :width '(60) :height 1)
                 (ebox-test-box (ebox-test-text "C") :width '(60) :height 1)))))))
 
+(ert-deftest ebox-flex-allocation-content-keeps-warm-child-scroll-clears ()
+  "Distinct allocation copies retain a warm child's A-to-B-to-A clears."
+  (let* ((child (ebox-test-root
+                 (ebox-test-box
+                     (ebox-test-text (propertize "first\nsecond" 'help-echo "kept"))
+                   :width '(80) :height 3 :overflow 'scroll)))
+         (source (ebox-test-root
+                  (ebox-test-box (ebox-test-text "parent") :width 'stretch)))
+         (ebox--surface-materialization-active t)
+         (ebox--render-cache-table (make-hash-table :test 'equal))
+         (ebox--box-content-render-cache (make-hash-table :test 'eq))
+         (ebox--region-box-table (make-hash-table :test 'equal))
+         (ebox--scroll-global-state (make-hash-table :test 'equal))
+         (ebox--scroll-idle-prefetch-timers (make-hash-table :test 'equal))
+         (ebox--render-cache-scroll-state-region-ids (make-hash-table :test 'equal))
+         ;; Normal bounded eviction removes the old child entry after B.
+         (ebox-render-cache-max-entries 1)
+         (warm (ebox--render-with-cache child))
+         (region-id (plist-get child :region-id))
+         (calls 0) first-admitted actual final-state)
+    (should (plist-member (ebox--render-cache-probe child) :rendered))
+    (should-not (gethash region-id ebox--scroll-global-state))
+    (cl-labels ((render-parent (width renderer)
+                  (ebox--render-box-content-cached
+                   (ebox--flex-copy-node-for-size source 'row width nil t)
+                   renderer))
+                (render-a ()
+                  (cl-incf calls)
+                  (ebox--render-with-cache child)))
+      (should (equal-including-properties
+               warm (render-parent 120 #'render-a)))
+      (setq first-admitted (and (gethash source ebox--box-content-render-cache) t))
+      (render-parent
+       150
+       (lambda ()
+         (ebox--render-with-cache
+          (ebox--flex-copy-node-for-size child 'row 80 1 t))))
+      (should (gethash region-id ebox--scroll-global-state))
+      (should-not (plist-member (ebox--render-cache-probe child) :rendered))
+      (setq actual (render-parent 120 #'render-a)
+            final-state (gethash region-id ebox--scroll-global-state))
+      (let ((ebox--box-content-render-cache nil))
+        (should (equal-including-properties actual (ebox--render-with-cache child)))))
+    (should (equal-including-properties warm actual))
+    (should-not final-state)
+    (should-not first-admitted)
+    (should (= calls 2))))
+
 (provide 'ebox-flex-tests)
 ;;; ebox-flex-tests.el ends here
