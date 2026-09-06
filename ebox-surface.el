@@ -5630,10 +5630,17 @@ published runtime and must be consumed without clearing those shared nodes."
                context projection state
                (ebox-surface--paint-fragments
                 previous-state state dirty-set old-text)))
-          (unless (memq projection-kind
-                        '(scroll-patch formatting-context-reflow
-                          mixed-owner-reflow))
-            (plist-put state :region-box-table (make-hash-table :test 'equal)))
+          (cond
+           ((memq projection-kind '(span-patch owner-scoped))
+            ;; A local owner render visits only its own regions.  Keep the
+            ;; complete candidate registry, including disjoint retained scroll
+            ;; boxes, in a private table until the transaction is accepted.
+            (plist-put state :region-box-table
+                       (copy-hash-table (plist-get state :region-box-table))))
+           ((not (memq projection-kind
+                       '(scroll-patch formatting-context-reflow
+                         mixed-owner-reflow)))
+            (plist-put state :region-box-table (make-hash-table :test 'equal))))
           (let* ((_initial-native
                   (when initial-native-p
                     ;; Initial mount has no incremental planner.  Surface owns

@@ -40,6 +40,218 @@
   "Return one stable declarative root containing CONTENT."
   (ebox-test-box :key 'root (ebox-test-text content)))
 
+(defun ebox-commit-test--scroll-sibling-root (content &optional nested)
+  "Return CONTENT beside an active scroll box, or inside it when NESTED."
+  (let ((label (ebox-test-text content :key 'label :source-identity 'label)))
+    (ebox-test-column :key 'root :width '(120)
+      (unless nested label)
+      (ebox-test-box :key 'scroll :id "scroll" :height 2 :width '(80)
+        :overflow 'scroll
+        (ebox-test-column
+          (when nested label)
+          (ebox-test-text "line-a\nline-b\nline-c\nline-d"
+                          :key 'scroll-lines :source-identity 'scroll-lines
+                          :color "#123456"))))))
+
+(defun ebox-commit-test--replace-scroll-sibling-label (buffer content)
+  "Commit CONTENT into BUFFER's stable label host."
+  (let ((candidate (ebox-candidate-begin buffer)))
+    (ebox-candidate-replace-host-ref
+     candidate 'label
+     (ebox-test-text content :key 'label :source-identity 'label))
+    (ebox-commit buffer candidate)))
+
+(ert-deftest ebox-commit-local-content-retains-disjoint-scroll ()
+  "An unrelated scroll box keeps its caches and registry across a local edit."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-commit-test--scroll-sibling-root "old"))
+    (let* ((before (ebox--buffer-render-state (current-buffer)))
+           (scroll-id (car (plist-get before :scroll-region-ids)))
+           (old-scroll (gethash scroll-id ebox--scroll-global-state))
+           (raw (plist-get old-scroll :content-lines))
+           (rendered (plist-get old-scroll :rendered-content-lines))
+           (region-count (hash-table-count (plist-get before :region-box-table)))
+           (root-render (symbol-function 'ebox-surface--render-candidate))
+           (root-renders 0)
+           report)
+      (should scroll-id)
+      (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                 (lambda (state)
+                   (cl-incf root-renders)
+                   (funcall root-render state))))
+        (setq report
+              (ebox-commit-test--replace-scroll-sibling-label
+               (current-buffer) "new")))
+      (should (memq (plist-get report :projection-kind) '(span-patch owner-scoped)))
+      (should (zerop root-renders))
+      (should-not (plist-get report :tp-full-root))
+      (let* ((after (ebox--buffer-render-state (current-buffer)))
+             (scroll (gethash scroll-id ebox--scroll-global-state)))
+        (should (= region-count (hash-table-count (plist-get after :region-box-table))))
+        (should (eq (plist-get scroll :box) (gethash scroll-id ebox--region-box-table)))
+        (should (eq raw (plist-get scroll :content-lines)))
+        (should (eq rendered (plist-get scroll :rendered-content-lines))))
+      (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+      (should (string-match-p "new" (buffer-string)))
+      (should (string-match-p "line-c" (buffer-string)))
+      (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+      (should (string-match-p "new" (buffer-string)))
+      (should (string-match-p "line-a" (buffer-string))))))
+
+(ert-deftest ebox-commit-disjoint-scroll-rolls-back-with-local-content ()
+  "Late rejection restores both the local content and the scroll registry."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-commit-test--scroll-sibling-root "old"))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (scroll-id (car (plist-get state :scroll-region-ids)))
+           (scroll (gethash scroll-id ebox--scroll-global-state))
+           (box (gethash scroll-id ebox--region-box-table))
+           (before (buffer-string)))
+      (cl-letf (((symbol-function 'accept-change-group)
+                 (lambda (_) (error "Reject local content publication"))))
+        (should-error
+         (ebox-commit-test--replace-scroll-sibling-label (current-buffer) "new")))
+      (should (eq state (ebox--buffer-render-state (current-buffer))))
+      (should (eq scroll (gethash scroll-id ebox--scroll-global-state)))
+      (should (eq box (gethash scroll-id ebox--region-box-table)))
+      (should (equal-including-properties before (buffer-string)))
+      (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+      (should (string-match-p "old" (buffer-string)))
+      (ebox-commit-test--replace-scroll-sibling-label (current-buffer) "new")
+      (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+      (should (string-match-p "new" (buffer-string))))))
+
+(ert-deftest ebox-commit-local-content-inside-scroll-keeps-full-cache-update ()
+  "A scrolling ancestor still needs its retained content regenerated."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-commit-test--scroll-sibling-root "old" t))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (scroll-id (car (plist-get state :scroll-region-ids)))
+           (report (ebox-commit-test--replace-scroll-sibling-label
+                    (current-buffer) "new")))
+      (should-not (memq (plist-get report :projection-kind) '(span-patch owner-scoped)))
+      (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+      (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+      (should (string-match-p "new" (buffer-string)))
+      (should-not (string-match-p "old" (buffer-string))))))
+
+(ert-deftest ebox-commit-disjoint-scroll-proof-rejects-incomplete-or-overlapping-state ()
+  "Missing mappings, changed membership and either ancestor direction reject."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-commit-test--scroll-sibling-root "old"))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (owner (plist-get (ebox--host-ref-node (current-buffer) 'label) :node-id))
+           (root (plist-get (plist-get state :root-node) :node-id))
+           (region (car (plist-get state :scroll-region-ids)))
+           (scroll (gethash region ebox--scroll-global-state))
+           (scroll-id (plist-get (plist-get scroll :box) :node-id))
+           (table (make-hash-table :test 'equal))
+           (prepared (list :scroll-state-table table))
+           (candidate (copy-sequence state)))
+      (puthash region scroll table)
+      (should (ebox-incremental--span-owner-disjoint-from-scroll-p
+               (current-buffer) state prepared candidate owner))
+      (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+                   (current-buffer) state prepared candidate root))
+      (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+                   (current-buffer) state prepared candidate scroll-id))
+      (remhash region table)
+      (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+                   (current-buffer) state prepared candidate owner))
+      (puthash 'different-region scroll table)
+      (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+                   (current-buffer) state prepared candidate owner))
+      (clrhash table)
+      (puthash region scroll table)
+      (let ((regions (copy-hash-table (plist-get state :region-box-table))))
+        (remhash region regions)
+        (plist-put candidate :region-box-table regions)
+        (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+                     (current-buffer) state prepared candidate owner)))
+      (plist-put candidate :region-box-table (plist-get state :region-box-table))
+      (let ((parents (copy-hash-table (plist-get state :parent-table))))
+        (puthash scroll-id owner parents)
+        (plist-put candidate :parent-table parents)
+        (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+                     (current-buffer) state prepared candidate owner))))))
+
+(ert-deftest ebox-commit-content-shift-preserves-later-scroll-targets ()
+  "Longer and shorter local text retain the later scroll widget's targets."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-commit-test--scroll-sibling-root "old"))
+    (let ((scroll-id (car (plist-get (ebox--buffer-render-state (current-buffer))
+                                    :scroll-region-ids))))
+      (dolist (value '("longer" "x"))
+        (ebox-commit-test--replace-scroll-sibling-label (current-buffer) value)
+        (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+        (should (string-match-p (concat "\\`" value) (buffer-string)))
+        (should (string-match-p "line-c" (buffer-string)))
+        (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+        (should (string-match-p (concat "\\`" value) (buffer-string)))
+        (should (string-match-p "line-a" (buffer-string)))))))
+
+(ert-deftest ebox-commit-mixed-content-and-scroll-paint-refreshes-cache ()
+  "An unrelated label edit cannot authorize stale paint in a scroll cache."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-commit-test--scroll-sibling-root "old"))
+    (let* ((scroll-id (car (plist-get (ebox--buffer-render-state (current-buffer))
+                                     :scroll-region-ids)))
+           (candidate (ebox-candidate-begin (current-buffer))))
+      (ebox-candidate-replace-host-ref
+       candidate 'label (ebox-test-text "new" :key 'label :source-identity 'label))
+      (ebox-candidate-replace-host-ref
+       candidate 'scroll-lines
+       (ebox-test-text "line-a\nline-b\nline-c\nline-d"
+                       :key 'scroll-lines :source-identity 'scroll-lines
+                       :color "#654321"))
+      (let ((report (ebox-commit (current-buffer) candidate)))
+        (should-not (eq (plist-get report :projection-kind) 'mixed-owner-reflow)))
+      (dotimes (_ 2)
+        (goto-char (point-min))
+        (search-forward "line-a")
+        (should (equal "#654321"
+                       (ebox-commit-test--face-value
+                        (get-text-property (1- (point)) 'face) :foreground)))
+        (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+        (should (= -1 (ebox--scroll-region-by scroll-id -1)))))))
+
+(ert-deftest ebox-commit-disjoint-scroll-validates-rendered-font-extent ()
+  "Equal raw widths do not authorize changed rendered glyph widths."
+  (let ((measure (symbol-function 'ebox--string-pixel-width)))
+    ;; Model an unchanged proportional font: raw WWW/iii both measure three
+    ;; units, but styled iii is narrower.  The final painted line must still
+    ;; include exactly the filler required by its 120px parent allocation.
+    (cl-letf (((symbol-function 'ebox--string-pixel-width)
+               (lambda (string)
+                 (let ((width (funcall measure string)) (start 0))
+                   (while (string-match "iii" string start)
+                     (when (get-text-property (match-beginning 0) 'face string)
+                       (cl-decf width))
+                     (setq start (match-end 0)))
+                   width))))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-test-column :key 'root :width '(120)
+           (ebox-test-text "WWW" :font-size 16 :key 'label :source-identity 'label)
+           (ebox-test-box :height 1 :overflow 'scroll
+             (ebox-test-text "first\nsecond"))))
+        (let ((candidate (ebox-candidate-begin (current-buffer))))
+          (ebox-candidate-replace-host-ref
+           candidate 'label
+           (ebox-test-text "iii" :font-size 16 :key 'label :source-identity 'label))
+          (ebox-commit (current-buffer) candidate))
+        (goto-char (point-min))
+        (should (looking-at "iii"))
+        (should (= 120 (ebox--string-pixel-width
+                        (buffer-substring (point) (line-end-position)))))))))
+
 (defun ebox-commit-test--hash-facts (table &optional values)
   "Return sorted TABLE keys, or key/value pairs when VALUES is non-nil."
   (let (facts)

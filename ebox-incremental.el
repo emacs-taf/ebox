@@ -7903,6 +7903,12 @@ suppresses the ordinary fallback when any fact is missing."
                        :retain-external-owner-suffix-p t)))
     (when (and geometry-proof paint-valid-p disjoint-p
                allocation-disjoint-p cascade-safe-p
+               ;; The single-owner span proof can retain unrelated scroll
+               ;; subtrees.  Its geometry partition does not prove that this
+               ;; mixed transaction's paint owners leave scroll caches intact.
+               (null (plist-get old-state :scroll-region-ids))
+               (null (ebox-incremental--hash-keys
+                      (plist-get prepared :scroll-state-table)))
                (not (plist-get prepared :scroll-state-transaction))
                (not (plist-get prepared :scroll-patch-fast-p))
                root-id
@@ -9282,6 +9288,39 @@ the surface renderer and role/overflow validators remain the final proof."
                                  (plist-get slot :start-pixel)))
                             slots))))))
 
+(defun ebox-incremental--span-owner-disjoint-from-scroll-p
+    (buffer old-state prepared candidate-state owner-id)
+  "Return non-nil when OWNER-ID cannot change any retained scroll content.
+The active scroll set and each scroll box identity must survive preparation.
+An ancestor or descendant scroll box still requires the ordinary renderer to
+regenerate its cached lines; only separate branches may keep those lines."
+  (let* ((regions (plist-get old-state :scroll-region-ids))
+         (next-table (plist-get prepared :scroll-state-table)))
+    (and (= (length regions)
+            (if (hash-table-p next-table) (hash-table-count next-table) 0))
+         (cl-every
+          (lambda (region)
+            (let* ((old-scroll (gethash region ebox--scroll-global-state))
+                   (next-scroll (and next-table (gethash region next-table)))
+                   (old-box (plist-get old-scroll :box))
+                   (next-box (plist-get next-scroll :box))
+                   (scroll-id (plist-get old-box :node-id)))
+              (and scroll-id next-box
+                   (eq (plist-get old-scroll :buffer) buffer)
+                   (equal scroll-id (plist-get next-box :node-id))
+                   (eq old-box (gethash scroll-id (plist-get old-state :node-table)))
+                   (eq old-box (gethash region (plist-get old-state :region-box-table)))
+                   (eq next-box (gethash scroll-id (plist-get candidate-state :node-table)))
+                   (eq next-box (gethash region (plist-get candidate-state :region-box-table)))
+                   (not (equal scroll-id owner-id))
+                   (not (ebox--runtime-ancestor-id-p buffer scroll-id owner-id))
+                   (not (ebox--runtime-ancestor-id-p buffer owner-id scroll-id))
+                   (let ((ebox-incremental--buffer-render-state-override
+                          (cons buffer candidate-state)))
+                     (and (not (ebox--runtime-ancestor-id-p buffer scroll-id owner-id))
+                          (not (ebox--runtime-ancestor-id-p buffer owner-id scroll-id)))))))
+          regions))))
+
 (defun ebox-incremental--single-span-patch-projection-proof
     (buffer old-state prepared candidate-state owner-plan
              &optional path-copied-p)
@@ -9411,10 +9450,22 @@ metadata; this predicate only authorizes the local attempt."
                               local-typography-p)
                           (ebox-incremental--cascade-local-owner-proof-p
                            old-state candidate-state (list dirty))))
-                 (null (plist-get old-state :scroll-region-ids))
-                 (or (null (plist-get candidate-state :scroll-region-ids))
-                     (null (ebox-incremental--hash-keys
-                            (plist-get candidate-state :scroll-state-table))))
+                 (ebox-incremental--span-owner-disjoint-from-scroll-p
+                  buffer old-state prepared candidate-state owner-id)
+                 ;; Admit the new scroll coexistence case only for an exact
+                 ;; content extent.  Length or width changes can alter an
+                 ;; ancestor's line filler outside the local owner's spans.
+                 (or (null (plist-get old-state :scroll-region-ids))
+                     (let ((before (plist-get (plist-get dirty :old-signature)
+                                             :content))
+                           (after (plist-get (plist-get dirty :new-signature)
+                                            :content)))
+                       (and (stringp before) (stringp after)
+                            (not (cl-intersection
+                                  changed-keys ebox--typography-style-signature-keys))
+                            (= (length before) (length after))
+                            (= (ebox--string-pixel-width before)
+                               (ebox--string-pixel-width after)))))
                  ;; The ancestor allocation proof is tied to the published
                  ;; viewport slot.  A declarative commit does not alter that
                  ;; context; final footprint validation still rejects a miss.
@@ -9465,6 +9516,10 @@ metadata; this predicate only authorizes the local attempt."
               :ancestor-slot-signature ancestor-slot-signature
               :variable-content-p
               (and snapshot
+                   ;; With retained scroll siblings, the final rendered
+                   ;; footprint must remain exact even when raw content has
+                   ;; equal width under the current buffer's default font.
+                   (null (plist-get old-state :scroll-region-ids))
                    (memq :content changed-keys)
                    (stringp
                     (plist-get (plist-get dirty :new-signature) :content))
