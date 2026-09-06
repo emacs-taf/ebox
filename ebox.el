@@ -590,24 +590,27 @@ segments that incremental publication still needs."
            ebox-content-owner ebox-content-owners)))))
 
 (defun ebox--lines-pad-vertical (string height &optional offset padding-string)
-  "Extend STRING to HEIGHT lines.
+  "Pad or clip STRING to HEIGHT lines.
 OFFSET controls content shift: positive (top), negative (bottom).
-PADDING-STRING is used to fill empty lines, defaults to empty string."
-  (let* ((lines (ebox-string-lines string))
-         (line-count (length lines))
-         (padding-string (or padding-string
-                             (ebox--pixel-blank
-                              (ebox--string-pixel-width string) 1))))
-    (when (> height line-count)
-      (let* ((rest (- height line-count))
-             (offset (or offset 0))
-             (top-pad (cond ((>= offset 0) (min offset rest))
-                            (t (max 0 (+ offset rest)))))
-             (bottom-pad (- rest top-pad))
-             (pad-lines (make-list top-pad padding-string))
-             (bottom-lines (make-list bottom-pad padding-string)))
-        (setq lines (append pad-lines lines bottom-lines))))
-    (ebox-lines-join (seq-take lines height))))
+PADDING-STRING fills added lines; its default matches STRING's first-line width."
+  (if (and (stringp string) (integerp height) (= height 1)
+           (not (string-match-p "\n" string)))
+      (copy-sequence string)
+    (let* ((lines (ebox-string-lines string))
+           (line-count (length lines)))
+      (when (> height line-count)
+        (let* ((padding-string (or padding-string
+                                   (ebox--pixel-blank
+                                    (ebox--string-pixel-width string) 1)))
+               (rest (- height line-count))
+               (offset (or offset 0))
+               (top-pad (cond ((>= offset 0) (min offset rest))
+                              (t (max 0 (+ offset rest)))))
+               (bottom-pad (- rest top-pad))
+               (pad-lines (make-list top-pad padding-string))
+               (bottom-lines (make-list bottom-pad padding-string)))
+          (setq lines (append pad-lines lines bottom-lines))))
+      (ebox-lines-join (seq-take lines height)))))
 
 (defun ebox--lines-align-vertical (string height align)
   "Align STRING to HEIGHT lines.
