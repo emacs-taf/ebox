@@ -2277,14 +2277,11 @@ VALIDATED-P means the caller owns a current topology certificate for SOURCE."
     candidate))
 
 (defun ebox-surface--isolated-viewport-overrides (overrides)
-  "Copy mutable viewport caches in OVERRIDES for a private reflow candidate.
-The retained viewport projection may reuse the TP object topology, but its
-layout pass still writes Ebox-side caches.  Keep those writes out of the
-published generation so a failed transaction has no cache state to restore."
+  "Isolate persistent viewport caches in OVERRIDES for a reflow candidate.
+Keep writes to retained output and layout fragments out of the published
+generation.  Node memos follow the source-copy policy in the projector."
   (let ((copy (copy-sequence overrides)))
-    (dolist (key '(:render-cache :layout-fragments :render-signature-cache
-                   :flex-content-min-widths
-                   :viewport-height-dependent-subtree-cache))
+    (dolist (key '(:render-cache :layout-fragments))
       (when (plist-member copy key)
         (let ((value (plist-get copy key)))
           (when (hash-table-p value)
@@ -5468,6 +5465,17 @@ published runtime and must be consumed without clearing those shared nodes."
              (_source-index
               (progn
                 (setq state-overrides (copy-sequence state-overrides))
+                ;; A copied runtime root starts a new EQ memo generation on
+                ;; every producer evaluation, including ordinary fallbacks.
+                ;; Already isolated or path-copied sources keep their prepared
+                ;; seed/prune contract and same-candidate native handoff.
+                (unless (eq root source)
+                  (dolist (key '(:render-signature-cache
+                                 :viewport-height-dependent-subtree-cache
+                                 :flex-content-min-widths))
+                    (setq state-overrides
+                          (plist-put state-overrides key
+                                     (make-hash-table :test 'eq)))))
                 (cl-remf state-overrides :source-base-index)
                 (setq state-overrides
                       (plist-put state-overrides :source-index source-index))))

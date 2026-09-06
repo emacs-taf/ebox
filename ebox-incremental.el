@@ -10829,8 +10829,14 @@ fresh regardless of whether any stable producers exist."
                buffer old-state old-state
                (plist-get old-state :region-box-table)))
              (candidate-state
-              (ebox-incremental--isolate-candidate-caches
-               (copy-sequence old-state)))
+              (let ((state (copy-sequence old-state)))
+                ;; EQ memo keys belong to one node generation.  Start fresh
+                ;; before isolation can copy historical node keys.
+                (dolist (key '(:render-signature-cache
+                               :viewport-height-dependent-subtree-cache
+                               :flex-content-min-widths))
+                  (plist-put state key (make-hash-table :test 'eq)))
+                (ebox-incremental--isolate-candidate-caches state)))
              (prepared
               (list :root (plist-get old-state :root-node)
                     :dirty-set dirty-set
