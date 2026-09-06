@@ -12011,8 +12011,8 @@ explicit visible-window handoff may admit its full-content publication."
       (should (ebox-surface-region-mounts (current-buffer) target-id))
       (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
 
-(ert-deftest ebox-wheel-scroll-uses-buffer-scroll-region-without-point ()
-  "Wheel events from fringe-like areas should still scroll the ebox page."
+(ert-deftest ebox-wheel-scroll-without-hovered-text-keeps-native-routing ()
+  "Non-text and invalid wheel positions must not select any scroll owner."
   (ebox-test--reset-runtime-state)
   (let* ((layout (ebox-test-box :id "root" :height 2 :overflow 'scroll
 	       (ebox-test-column
@@ -12020,24 +12020,129 @@ explicit visible-window handoff may admit its full-content publication."
 		(ebox-test-box (ebox-test-text "B") :height 1)
 		(ebox-test-box (ebox-test-text "C") :height 1))))
          (root-id (car (ebox-region-ids layout)))
-         mwheel-called)
+         mwheel-args)
     (ebox-test--with-rendered-buffer layout
+      (save-window-excursion
+        (switch-to-buffer (current-buffer))
+        (let ((before (buffer-string)))
+          ;; The hovered box is authoritative.  An earlier contract routed
+          ;; mode-line events to any root scroll box in the buffer instead.
+          (dolist (position (list 'mode-line 'left-fringe 'right-fringe
+                                  'vertical-scroll-bar nil
+                                  (point-max) (+ (point-max) 10)
+                                  (1- (point-min))))
+            (ert-info ((format "wheel position: %S" position))
+              (let ((event (list 'wheel-down
+                                 (list (selected-window) position '(0 . 0)
+                                       0 nil nil nil nil nil nil))))
+                (setq mwheel-args nil)
+                (cl-letf (((symbol-function 'mwheel-scroll)
+                           (lambda (&rest args) (setq mwheel-args args))))
+                  (ebox--wheel-scroll event 1 'prefix))
+                (should (equal mwheel-args (list event 'prefix)))
+                (should (= (plist-get (ebox--scroll-get-state root-id)
+                                      :scroll-offset)
+                           0))
+                (should (equal-including-properties before (buffer-string)))))))))))
+
+(defun ebox-test--wheel-columns ()
+  "Return a scroll box whose mounted lines are separated by another column."
+  (ebox-test-row
+   (ebox-test-box :id "peer" :width '(20) :height 3
+     (ebox-test-text "peer0\npeer1\npeer2"))
+   (ebox-test-box :id "help" :width '(20) :height 3 :overflow 'scroll
+     (ebox-test-text "help0\nhelp1\nhelp2\nhelp3\nhelp4"))))
+
+(ert-deftest ebox-wheel-native-event-rejects-non-text-and-out-of-range-positions ()
+  "Native root wheel routing must validate the mouse position before dispatch."
+  (with-temp-buffer
+    (insert "abc")
+    (save-window-excursion
       (switch-to-buffer (current-buffer))
-      (cl-letf (((symbol-function 'event-start)
-                 (lambda (_event)
-                   (list (selected-window) 'mode-line '(0 . 0)
-                         0 nil nil nil nil nil nil)))
-                ((symbol-function 'mwheel-scroll)
-                 (lambda (&rest _args)
-                   (setq mwheel-called t))))
-        (ebox--wheel-scroll 'fake-wheel-event 1))
-      (should-not mwheel-called)
-      (should (= (plist-get (ebox--scroll-get-state root-id)
-                            :scroll-offset)
-                 1))
-      (let ((plain (buffer-substring-no-properties (point-min) (point-max))))
-        (should (string-match-p "B" plain))
-        (should (string-match-p "C" plain))))))
+      (let (calls)
+        (cl-letf (((symbol-function 'ebox--native-buffer-scroll-at-position)
+                   (lambda (buffer position delta)
+                     (push (list buffer position delta) calls)
+                     1)))
+          (dolist (position (list 'mode-line 'right-fringe nil
+                                  (point-max) (+ (point-max) 10)
+                                  (1- (point-min))))
+            (ert-info ((format "native wheel position: %S" position))
+              (ebox--native-buffer-scroll-at-event
+               (list 'wheel-down (list (selected-window) position '(0 . 0) 0))
+               1)
+              (should-not calls)))
+          (goto-char (point-max))
+          (should (= 1 (ebox--native-buffer-scroll-at-event
+                        (list 'wheel-down (list (selected-window) 2 '(0 . 0) 0))
+                        1)))
+          (should (equal calls (list (list (current-buffer) 2 1)))))))))
+
+(ert-deftest ebox-scroll-mount-hit-test-excludes-between-line-column-gaps ()
+  "Only exact mounted spans belong to a multi-line scroll box."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer (ebox-test--wheel-columns)
+    (let* ((region-id (ebox-test--selector-region-id (current-buffer) "#help"))
+           (mounts (ebox-surface-region-mounts (current-buffer) region-id))
+           (bounds (ebox-surface-region-bounds (current-buffer) region-id))
+           (gap-count 0))
+      (should (>= (length mounts) 3))
+      (cl-loop for position from (car bounds) below (cdr bounds)
+               for inside = (cl-some
+                             (lambda (mount)
+                               (and (<= (plist-get mount :start) position)
+                                    (< position (plist-get mount :end))))
+                             mounts)
+               do (unless inside (cl-incf gap-count))
+               do (ert-info ((format "mounted hit at position %S" position))
+                    (should (eq (and (memq region-id
+                                          (ebox--scroll-region-ids-in-mounts-at-pos
+                                           position))
+                                     t)
+                                inside))))
+      (should (> gap-count 0)))))
+
+(ert-deftest ebox-wheel-scroll-follows-hovered-column-instead-of-point ()
+  "A column gap stays native; hovering help scrolls it with point elsewhere."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer (ebox-test--wheel-columns)
+    (save-window-excursion
+      (switch-to-buffer (current-buffer))
+      (let* ((region-id (ebox-test--selector-region-id (current-buffer) "#help"))
+             (mounts (ebox-surface-region-mounts (current-buffer) region-id))
+             (inside (plist-get (car mounts) :start))
+             (gap (save-excursion
+                    (goto-char (point-min))
+                    (search-forward "peer1")
+                    (1- (point))))
+             (before (buffer-string))
+             native-events)
+        (should (< inside gap))
+        (should-not (cl-some (lambda (mount)
+                               (and (<= (plist-get mount :start) gap)
+                                    (< gap (plist-get mount :end))))
+                             mounts))
+        (goto-char inside)
+        (let ((event (list 'wheel-down
+                           (list (selected-window) gap '(0 . 0) 0))))
+          (cl-letf (((symbol-function 'mwheel-scroll)
+                     (lambda (&rest args) (push args native-events))))
+            (ebox--wheel-scroll event 1))
+          (should (equal native-events (list (list event nil))))
+          (should (= (plist-get (ebox-scroll-state region-id) :scroll-offset) 0))
+          (should (equal-including-properties before (buffer-string))))
+        (setq native-events nil)
+        (goto-char (point-min))
+        (let ((event (list 'wheel-down
+                           (list (selected-window) inside '(0 . 0) 0))))
+          (cl-letf (((symbol-function 'mwheel-scroll)
+                     (lambda (&rest args) (push args native-events))))
+            (ebox--wheel-scroll event 1)))
+        (should-not native-events)
+        (should (= (plist-get (ebox-scroll-state region-id) :scroll-offset) 1))
+        (should (string-match-p "help3" (buffer-string)))
+        (should-not (string-match-p "help0" (buffer-string)))
+        (should (string-match-p "peer0" (buffer-string)))))))
 
 (ert-deftest ebox-scroll-first-region-ignores-zero-consumption ()
   "A zero-line scroll result should not consume the scroll event."
@@ -12148,6 +12253,64 @@ explicit visible-window handoff may admit its full-content publication."
         (should-not (ebox-scroll-state outer-id))
         (should (= native-lines -2))))))
 
+(ert-deftest ebox-wheel-scroll-distributes-real-nested-capacity-both-directions ()
+  "Real wheel hits drain nested owners and preserve signed native residuals."
+  (ebox-test--reset-runtime-state)
+  (let ((layout
+         (ebox-test-box :id "outer" :height 6 :overflow 'scroll
+           (ebox-test-column
+            (ebox-test-box :id "middle" :height 4 :overflow 'scroll
+              (ebox-test-column
+               ;; Keep the inner viewport visible after the middle owner
+               ;; moves, so the reverse event also uses an actual mouse hit.
+               (ebox-test-box (ebox-test-text "before 0\nbefore 1\nbefore 2")
+                 :height 3)
+               (ebox-test-box :id "inner" :height 1 :overflow 'scroll
+                 (ebox-test-text "inner 0\ninner 1"))
+               (ebox-test-box (ebox-test-text "middle 0\nmiddle 1") :height 2)))
+            (ebox-test-box (ebox-test-text "outer 0\nouter 1") :height 2)))))
+    (ebox-test--with-rendered-buffer layout
+      (save-window-excursion
+        (switch-to-buffer (current-buffer))
+        (let ((inner-id (ebox-test--selector-region-id (current-buffer) "#inner"))
+              (middle-id (ebox-test--selector-region-id (current-buffer) "#middle"))
+              (outer-id (ebox-test--selector-region-id (current-buffer) "#outer")))
+          (dolist (delta '(5 -5))
+            (ert-info ((format "nested wheel request: %S" delta))
+              (let* ((forward-p (> delta 0))
+                     (hover
+                      (save-excursion
+                        (goto-char (point-min))
+                        (search-forward (if forward-p "inner 0" "inner 1"))
+                        (1- (point))))
+                     (event (list (if forward-p 'wheel-down 'wheel-up)
+                                  (list (selected-window) hover '(0 . 0) 0)))
+                     native-calls result)
+                (goto-char (point-min))
+                (search-forward "outer 0")
+                (cl-letf (((symbol-function 'ebox--wheel-native-residual)
+                           (lambda (received residual requested arg)
+                             (push (list received residual requested arg)
+                                   native-calls))))
+                  (setq result (ebox--wheel-scroll event delta)))
+                (should (= (plist-get (ebox-scroll-state inner-id) :scroll-offset)
+                           (if forward-p 1 0)))
+                (should (= (plist-get (ebox-scroll-state middle-id) :scroll-offset)
+                           (if forward-p 2 0)))
+                (should-not (ebox-scroll-state outer-id))
+                (should (= (alist-get inner-id (plist-get result :consumption))
+                           (if forward-p 1 -1)))
+                (should (= (alist-get middle-id (plist-get result :consumption))
+                           (if forward-p 2 -2)))
+                (should (= (plist-get result :requested) delta))
+                (should (= delta (+ (plist-get result :ebox-consumed)
+                                    (plist-get result :native-residual))))
+                (should (equal native-calls
+                               (list (list event (if forward-p 2 -2) delta nil))))
+                (should (string-match-p (if forward-p "inner 1" "inner 0")
+                                        (buffer-string)))
+                (should (string-match-p "outer 0" (buffer-string)))))))))))
+
 (ert-deftest ebox-scroll-intent-refresh-at-boundary-does-not-swallow-input ()
   "Refreshing unchanged pixels should leave the complete line intent residual."
   (let (native-residual)
@@ -12256,8 +12419,8 @@ explicit visible-window handoff may admit its full-content publication."
   (let ((ebox--scroll-global-state (make-hash-table :test 'equal)))
     (puthash 'z-owner t ebox--scroll-global-state)
     (puthash 'a-owner t ebox--scroll-global-state)
-    (cl-letf (((symbol-function 'ebox-surface-region-bounds)
-               (lambda (&rest _) '(1 . 5)))
+    (cl-letf (((symbol-function 'ebox-surface-region-mounts)
+               (lambda (&rest _) '((:start 1 :end 5))))
               ((symbol-function 'ebox--scroll-region-semantic-depth)
                (lambda (_region-id) 2)))
       (should (equal (ebox--scroll-region-ids-in-mounts-at-pos 2)

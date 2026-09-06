@@ -170,9 +170,12 @@ handles.
 
 ## 7. Resize and scroll
 
-A finite height plus `:overflow scroll` creates a scroll window. Ebox buffer
-mode installs keyboard and wheel commands that route through the innermost
-scroll owner before falling back to ordinary Emacs scrolling.
+When content exceeds a finite height, `:overflow scroll` creates an internal
+scroll window. Keyboard scrolling targets point; wheel and trackpad scrolling
+target the mouse position carried by the event. Remaining distance passes
+through enclosing scroll owners from inner to outer, then to ordinary Emacs
+scrolling. Events over another column, outside a box, or on the mode line do
+not select an unrelated scroll box elsewhere on the page.
 
 ```elisp
 (ebox-build

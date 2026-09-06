@@ -157,8 +157,10 @@ retained TP surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
 
 ## 7. Resize 与滚动
 
-有限高度加 `:overflow scroll` 会创建 scroll window。Ebox buffer mode 安装键盘和
-滚轮命令：先交给最内层 scroll owner，无法继续消费时才回退到普通 Emacs 滚动。
+内容超过有限高度时，`:overflow scroll` 会创建内部 scroll window。键盘滚动以
+文本光标（point）为目标；鼠标和触摸板滚动以事件中的鼠标位置为目标。剩余滚动距离
+沿包含该位置的 scroll owner 从内向外传递，最后交给普通 Emacs 滚动。鼠标位于
+其他栏、盒子外或 mode line 时，不会选取页面中无关的滚动盒子。
 
 ```elisp
 (ebox-build

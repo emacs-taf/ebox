@@ -1485,9 +1485,16 @@ coordinator."
   (when-let* ((start (ignore-errors (event-start event)))
               (window (posn-window start))
               ((window-live-p window))
-              (buffer (window-buffer window))
-              (position (posn-point start)))
-    (ebox--native-buffer-scroll-at-position buffer position delta)))
+              ((null (posn-area start))))
+    (with-current-buffer (window-buffer window)
+      (let* ((position (posn-point start))
+             (pos (if (markerp position)
+                      (and (eq (marker-buffer position) (current-buffer))
+                           (marker-position position))
+                    position)))
+        (when (and (integerp pos) (<= (point-min) pos) (< pos (point-max)))
+          (ebox--native-buffer-scroll-at-position
+           (current-buffer) pos delta))))))
 
 (defun ebox--scroll-box-contains-grid-p (box)
   "Return non-nil when BOX's retained scroll source contains a Grid node."
@@ -2926,13 +2933,16 @@ Return non-nil while more work remains."
   (let (candidates)
     (maphash
      (lambda (region-id _state)
-       (when-let* ((bounds
-                   (ebox-surface-region-bounds
-                    (current-buffer) region-id)))
-         (when (and (<= (car bounds) pos) (< pos (cdr bounds)))
-           (push (cons region-id
-                       (ebox--scroll-region-semantic-depth region-id))
-                 candidates))))
+       ;; Rows can interleave this box's mounts with unrelated columns.
+       ;; Their enclosing interval is not the box's mouse hit area.
+       (when (cl-some
+              (lambda (mount)
+                (and (<= (plist-get mount :start) pos)
+                     (< pos (plist-get mount :end))))
+              (ebox-surface-region-mounts (current-buffer) region-id))
+         (push (cons region-id
+                     (ebox--scroll-region-semantic-depth region-id))
+               candidates)))
      ebox--scroll-global-state)
     (mapcar #'car
             (sort candidates
@@ -2950,26 +2960,6 @@ nested owners may render equal-sized clipped spans."
          (region-nodes (plist-get state :region-node-table))
          (node-id (and region-nodes (gethash region-id region-nodes))))
     (if node-id (ebox-surface--node-depth state node-id) -1)))
-
-(defun ebox--scroll-region-ids-in-buffer-outer-first ()
-  "Return scroll region ids in the current buffer from outer to inner."
-  (let (candidates)
-    (maphash
-     (lambda (region-id _state)
-       (when-let* ((bounds
-                   (ebox-surface-region-bounds
-                    (current-buffer) region-id)))
-         (push (cons region-id
-                     (ebox--scroll-region-semantic-depth region-id))
-               candidates)))
-     ebox--scroll-global-state)
-    (mapcar #'car
-            (sort candidates
-                  (lambda (a b)
-                    (if (= (cdr a) (cdr b))
-                        (string< (format "%S" (car a))
-                                 (format "%S" (car b)))
-                      (< (cdr a) (cdr b))))))))
 
 (defun ebox--scroll-region-ids-at-pos (pos)
   "Return scroll candidate region ids at POS from inner to outer."
@@ -3615,20 +3605,16 @@ line count so scroll distance is neither duplicated nor dropped."
   "Return ebox scroll candidate region ids under mouse wheel EVENT."
   (when-let* ((start (ignore-errors (event-start event)))
               (window (posn-window start))
-              ((window-live-p window)))
+              ((window-live-p window))
+              ((null (posn-area start))))
     (with-current-buffer (window-buffer window)
       (let* ((position (posn-point start))
-             (ids
-              (when (and (integer-or-marker-p position)
-                         (< (point-min) (point-max)))
-                (let ((pos (if (markerp position)
-                               (marker-position position)
-                             position)))
-                  (ebox--scroll-region-ids-at-pos
-                   (min (max pos (point-min))
-                        (1- (point-max))))))))
-        (or ids
-            (ebox--scroll-region-ids-in-buffer-outer-first))))))
+             (pos (if (markerp position)
+                      (and (eq (marker-buffer position) (current-buffer))
+                           (marker-position position))
+                    position)))
+        (when (and (integerp pos) (<= (point-min) pos) (< pos (point-max)))
+          (ebox--scroll-region-ids-at-pos pos))))))
 
 (defun ebox--wheel-region-id (event)
   "Return the innermost ebox region id under mouse wheel EVENT, or nil."
