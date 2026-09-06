@@ -5552,6 +5552,7 @@ relative face contributions and performs the final merge during prepare."
         (when affected-p
           (plist-put copy :face-baseline (copy-tree baseline))
           (plist-put copy :face-baseline-known-p t))
+        (cl-remf copy :old-paint-role-ids)
         (push copy result)
         (setq offset (+ offset length))))
     (plist-put state :paint-property-contributions

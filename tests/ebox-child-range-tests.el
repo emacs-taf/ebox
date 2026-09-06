@@ -1146,6 +1146,190 @@
            (ebox-test-text (format "row-%d" row))))))
     candidate))
 
+(ert-deftest ebox-child-range-paint-marker-consumption-preserves-input-baselines ()
+  "Layering consumes transient markers without changing input or permanent facts."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (let* ((state (copy-sequence (ebox--buffer-render-state (current-buffer))))
+           (template (car (ebox-surface--materialized-fragment-ledger state)))
+           (roles (plist-get template :paint-role-ids))
+           (fragments
+            (cl-loop for text in '("A" "B" "")
+                     for marker in (list roles nil nil)
+                     for baseline in '((:slant italic) nil nil)
+                     collect
+                     (let ((fragment (copy-sequence template)))
+                       (plist-put fragment :text (propertize text 'face 'bold))
+                       (plist-put fragment :text-source-p nil)
+                       (plist-put fragment :face-baseline baseline)
+                       (plist-put fragment :face-baseline-known-p t)
+                       (plist-put fragment :old-paint-role-ids marker))))
+           (before (copy-tree fragments))
+           (before-text (mapcar (lambda (fragment)
+                                 (copy-sequence (plist-get fragment :text)))
+                               fragments))
+           (result (ebox-surface--layer-paint-contributions "" fragments state)))
+      (should roles)
+      (should (equal-including-properties fragments before))
+      (should (plist-get state :paint-property-contributions))
+      (cl-mapc
+       (lambda (input output text)
+         (should (equal-including-properties (plist-get input :text) text))
+         (should (plist-member input :old-paint-role-ids))
+         (should-not (eq input output))
+         (dolist (key '(:paint-role-ids :paint-address :paint-node-chain))
+           (should (eq (plist-get input key) (plist-get output key))))
+         (should (equal (plist-get input :face-baseline)
+                        (plist-get output :face-baseline)))
+         (should (plist-get output :face-baseline-known-p))
+         (when (> (length (plist-get output :text)) 0)
+           (should (equal (get-text-property 0 'face (plist-get output :text))
+                          (plist-get input :face-baseline)))))
+       fragments result before-text)
+      (dolist (fragment result)
+        (should-not (plist-member fragment :old-paint-role-ids))))))
+
+(defun ebox-child-range-test--paint-owner-candidate (buffer title &optional ref color)
+  "Return BUFFER's TITLE update and optional disjoint REF paint COLOR."
+  (let ((candidate (ebox-candidate-begin buffer)))
+    (ebox-candidate-replace-host-ref
+     candidate 'title
+     (ebox-test-text (propertize title 'face '(:weight bold))
+                     :key 'title :source-identity 'title))
+    (when ref
+      (ebox-candidate-replace-host-ref
+       candidate ref
+       (ebox-test-box :key ref :source-identity ref :color color
+         (ebox-test-text (symbol-name ref)))))
+    candidate))
+
+(ert-deftest ebox-child-range-paint-marker-consumption-isolates-disjoint-history ()
+  "Mixed A, retained text, mixed B, and A publish only their current paint work."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (ebox-commit
+     (current-buffer)
+     (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+    (let* ((surface ebox-surface--buffer-surface)
+           (state (ebox--buffer-render-state (current-buffer)))
+           (mounts (tp--surface-mounts surface))
+           (mount-ids (mapcar #'tp--surface-mount-id mounts))
+           (mount-index (tp--surface-mount-index surface))
+           (ranges (plist-get state :surface-owned-ranges)))
+      (dolist (step '(("title-2" row-1 "#224466") ("title-3")
+                     ("title-4" row-2 "#446688") ("title-5" row-1 "#6688AA")))
+        (let* ((ref (nth 1 step))
+               (paint-object
+                (and ref
+                     (gethash (plist-get (ebox--host-ref-node (current-buffer) ref) :node-id)
+                              (plist-get state :surface-node-object-table))))
+               layers report
+               (observer
+                (lambda (_context _projection candidate-state _output &optional _kind)
+                  (setq layers (copy-tree (plist-get candidate-state
+                                                     :paint-property-contributions))))))
+          (advice-add 'ebox-surface--projection-result :before observer)
+          (unwind-protect
+              (setq report
+                    (ebox-commit
+                     (current-buffer)
+                     (apply #'ebox-child-range-test--paint-owner-candidate
+                            (current-buffer) step)))
+            (advice-remove 'ebox-surface--projection-result observer))
+          (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+          (should (eq (plist-get report :projection-kind)
+                      (if ref 'mixed-owner-reflow 'owner-scoped)))
+          (if (not ref)
+              (should-not layers)
+            (should layers)
+            (let ((owned (tp-object-mounts paint-object)))
+              (dolist (layer layers)
+                (ert-info ((format "current owner %S layer %S mounts %S" ref layer owned))
+                  (should
+                   (cl-loop for offset from (plist-get layer :start)
+                            below (plist-get layer :end)
+                            always (cl-some
+                                    (lambda (mount)
+                                      (and (<= (plist-get mount :start) (1+ offset))
+                                           (< (1+ offset) (plist-get mount :end))))
+                                    owned)))))))
+          (let ((next-state (ebox--buffer-render-state (current-buffer))))
+            (dolist (fragment (ebox-surface--materialized-fragment-ledger next-state))
+              (should-not (plist-member fragment :old-paint-role-ids)))
+            (should (eq ranges (plist-get next-state :surface-owned-ranges))))
+          (should (plist-get (tp-surface-report surface) :commit-batch))
+          (should (plist-get (tp-surface-report surface) :retained-mount-state))
+          (should (eq mounts (tp--surface-mounts surface)))
+          (should (eq mount-index (tp--surface-mount-index surface)))
+          (should (equal mount-ids (mapcar #'tp--surface-mount-id mounts))))))))
+
+(ert-deftest ebox-child-range-paint-marker-consumption-rolls-back-and-retries ()
+  "Rejected layering preserves its prior ledger exactly before a fresh retry."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (ebox-commit
+     (current-buffer)
+     (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+    (dolist (step '(("title-2" row-1 "#224466") ("title-3")))
+      (ebox-commit
+       (current-buffer)
+       (apply #'ebox-child-range-test--paint-owner-candidate (current-buffer) step)))
+    (let* ((surface ebox-surface--buffer-surface)
+           (state (ebox--buffer-render-state (current-buffer)))
+           (revision (tp-surface-revision surface))
+           (runtime-revision (plist-get state :runtime-revision))
+           (ledger (plist-get state :surface-fragments))
+           (ledger-before (copy-tree ledger))
+           (ranges (plist-get state :surface-owned-ranges))
+           (mounts (tp--surface-mounts surface))
+           (mount-ids (mapcar #'tp--surface-mount-id mounts))
+           (mount-index (tp--surface-mount-index surface))
+           (index (tp--surface-index surface))
+           (before (buffer-string)) (layer-calls 0) trace
+           (observer (lambda (&rest _arguments) (cl-incf layer-calls))))
+      (advice-add 'ebox-surface--layer-paint-contributions :after observer)
+      (unwind-protect
+          (should-error
+           (ebox-commit
+            (current-buffer)
+            (ebox-child-range-test--paint-owner-candidate
+             (current-buffer) "title-4" 'row-2 "#446688")
+            (lambda (_report)
+              (should (= layer-calls 1))
+              (push 'publish trace)
+              (error "reject consumed paint markers"))
+            (lambda (_report) (push 'rollback trace))))
+        (advice-remove 'ebox-surface--layer-paint-contributions observer))
+      (should (= layer-calls 1))
+      (should (equal trace '(rollback publish)))
+      (should (eq state (ebox--buffer-render-state (current-buffer))))
+      (should (eq state (tp-surface-client-state surface)))
+      (should (= revision (tp-surface-revision surface)))
+      (should (= runtime-revision (plist-get state :runtime-revision)))
+      (should (eq ledger (plist-get state :surface-fragments)))
+      (should (equal-including-properties ledger-before ledger))
+      (should (eq ranges (plist-get state :surface-owned-ranges)))
+      (should (eq mounts (tp--surface-mounts surface)))
+      (should (eq mount-index (tp--surface-mount-index surface)))
+      (should (eq index (tp--surface-index surface)))
+      (should (equal mount-ids (mapcar #'tp--surface-mount-id mounts)))
+      (should (equal-including-properties before (buffer-string)))
+      (ebox-commit
+       (current-buffer)
+       (ebox-child-range-test--paint-owner-candidate
+        (current-buffer) "title-4" 'row-2 "#446688"))
+      (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+      (should (= (1+ revision) (tp-surface-revision surface)))
+      (should (plist-get (tp-surface-report surface) :retained-mount-state))
+      (should (eq mounts (tp--surface-mounts surface)))
+      (should (eq mount-index (tp--surface-mount-index surface)))
+      (dolist (fragment (ebox-surface--materialized-fragment-ledger
+                        (ebox--buffer-render-state (current-buffer))))
+        (should-not (plist-member fragment :old-paint-role-ids))))))
+
 (ert-deftest ebox-child-range-retained-kind-replacement-allows-mixed-followups ()
   "Later title and row paint edits remain local beside disjoint scrolling."
   (with-temp-buffer
