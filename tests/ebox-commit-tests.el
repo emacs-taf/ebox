@@ -20,6 +20,22 @@
       (widen)
       (buffer-substring (point-min) (point-max)))))
 
+(defun ebox-commit-test--count-root-renders (function)
+  "Return (RESULT . COUNT) for FUNCTION and its full-root render calls."
+  (let* ((count 0)
+         (observer (lambda (&rest _arguments) (cl-incf count))))
+    (advice-add 'ebox-surface--render-candidate :before observer)
+    (unwind-protect
+        (cons (funcall function) count)
+      (advice-remove 'ebox-surface--render-candidate observer))))
+
+(defun ebox-commit-test--assert-full-render-equivalent ()
+  "Assert current buffer exactly matches its committed root's full render."
+  (let* ((state (ebox--buffer-render-state (current-buffer)))
+         (expected (ebox--render-node (plist-get state :root-node)
+                                     (plist-get state :source-index))))
+    (should (equal-including-properties expected (buffer-string)))))
+
 (defun ebox-commit-test--face-value (face key)
   "Return KEY from FACE whether FACE is one plist or a face stack."
   (cond
@@ -277,23 +293,47 @@
                     (get-text-property (1- (point)) 'face) :foreground)))))
 
 (ert-deftest ebox-commit-content-patch-retains-ancestor-paint ()
-  "Changing text keeps the paint supplied by its containing boxes."
+  "Local text retains nested paint, caller faces and opaque property values."
   (with-temp-buffer
-    (ebox-render-to-buffer
-     (current-buffer)
-     (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
-       (ebox-test-box :bgcolor "#E0E8E0"
-         (ebox-test-text "10" :key 'counter :source-identity 'counter))
-       (ebox-test-text "untouched")))
-    (let ((candidate (ebox-candidate-begin (current-buffer))))
-      (ebox-candidate-replace-host-ref
-       candidate 'counter
-       (ebox-test-text "20" :key 'counter :source-identity 'counter))
-      (ebox-commit (current-buffer) candidate))
-    (let* ((state (ebox--buffer-render-state (current-buffer)))
-           (expected (ebox--render-node (plist-get state :root-node)
-                                       (plist-get state :source-index))))
-      (should (equal-including-properties expected (buffer-string))))))
+    (let* ((callback (lambda () 'counter-action))
+           (payload (make-hash-table :test #'eq))
+           (slot (tp-paint-slot-create '(:background "#E0E8E0")))
+           (face '(:weight bold)))
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+         :surface-properties (list 'help-echo callback)
+         (ebox-test-box :bgcolor slot
+           (ebox-test-text (propertize "10" 'face face 'custom payload)
+                           :key 'counter :source-identity 'counter))
+         (ebox-test-text "untouched")))
+      (let* ((candidate (ebox-candidate-begin (current-buffer)))
+             (before-id (plist-get (ebox--host-ref-node (current-buffer) 'counter)
+                                   :node-id)))
+        (ebox-candidate-replace-host-ref
+         candidate 'counter
+         (ebox-test-text (propertize "20" 'face face 'custom payload)
+                         :key 'counter :source-identity 'counter))
+        (let* ((result (ebox-commit-test--count-root-renders
+                        (lambda () (ebox-commit (current-buffer) candidate))))
+               (report (car result)))
+          (ebox-commit-test--assert-full-render-equivalent)
+          (should (= before-id
+                     (plist-get (ebox--host-ref-node (current-buffer) 'counter)
+                                :node-id)))
+          (dotimes (offset 2)
+            (let ((position (+ (point-min) offset)))
+              (should (eq callback (get-text-property position 'help-echo)))
+              (should (eq payload (get-text-property position 'custom)))
+              (should (eq 'bold
+                          (ebox-commit-test--face-value
+                           (get-text-property position 'face) :weight)))
+              (should (memq (tp-paint-slot-face slot)
+                            (flatten-tree (get-text-property position 'face))))))
+          (should (zerop (cdr result)))
+          (should (memq (plist-get report :projection-kind)
+                        '(span-patch owner-scoped)))
+          (should-not (plist-get report :tp-full-root)))))))
 
 (ert-deftest ebox-commit-content-patch-retains-ancestor-surface-properties ()
   "Changing text retains properties supplied by its containing box."
@@ -301,17 +341,273 @@
     (ebox-render-to-buffer
      (current-buffer)
      (ebox-test-column :width '(200) :surface-properties '(help-echo "parent")
-       (ebox-test-text "10" :key 'counter :source-identity 'counter)
+       (ebox-test-text "10" :key 'counter :source-identity (list 'counter))
        (ebox-test-text "untouched")))
     (let ((candidate (ebox-candidate-begin (current-buffer))))
       (ebox-candidate-replace-host-ref
-       candidate 'counter
-       (ebox-test-text "20" :key 'counter :source-identity 'counter))
-      (ebox-commit (current-buffer) candidate))
-    (let* ((state (ebox--buffer-render-state (current-buffer)))
-           (expected (ebox--render-node (plist-get state :root-node)
-                                       (plist-get state :source-index))))
-      (should (equal-including-properties expected (buffer-string))))))
+       candidate (list 'counter)
+       (ebox-test-text "20" :key 'counter :source-identity (list 'counter)))
+      (let ((result (ebox-commit-test--count-root-renders
+                     (lambda () (ebox-commit (current-buffer) candidate)))))
+        (ebox-commit-test--assert-full-render-equivalent)
+        (should (zerop (cdr result)))
+        (should-not (plist-get (car result) :tp-full-root))))))
+
+(ert-deftest ebox-commit-inherited-box-checkbox-roundtrip-retains-properties ()
+  "A fixed-width Box under Flex retains paint with fresh equal identities."
+  (with-temp-buffer
+    (let ((previous-identity (list 'control 'checkbox)))
+      (cl-labels
+          ((checkbox (text identity)
+             (ebox-test-box :key 'checkbox :source-identity identity :width '(24)
+               (ebox-test-text text :key 'glyph
+                               :source-identity (append identity '(glyph))))))
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+           (ebox-test-flex :width '(160) :height 1 :bgcolor "#E0E8E0"
+             :surface-properties '(help-echo "checkbox control")
+             (checkbox "□" previous-identity))
+           (ebox-test-text "untouched")))
+        (let ((owner-id
+               (plist-get (ebox--host-ref-node (current-buffer) previous-identity)
+                          :node-id)))
+          (dolist (text '("☑" "□" "☑" "□"))
+            (let ((identity (list 'control 'checkbox))
+                  (candidate (ebox-candidate-begin (current-buffer))))
+              (should (equal previous-identity identity))
+              (should-not (eq previous-identity identity))
+              (ebox-candidate-replace-host-ref
+               candidate identity (checkbox text identity))
+              (let* ((result (ebox-commit-test--count-root-renders
+                              (lambda () (ebox-commit (current-buffer) candidate))))
+                     (report (car result)))
+                (ebox-commit-test--assert-full-render-equivalent)
+                (should (string-prefix-p text (buffer-string)))
+                (should (= owner-id
+                           (plist-get (ebox--host-ref-node (current-buffer) identity)
+                                      :node-id)))
+                (should (equal "checkbox control"
+                               (get-text-property (point-min) 'help-echo)))
+                (should (zerop (cdr result)))
+                (should (memq (plist-get report :projection-kind)
+                              '(span-patch owner-scoped)))
+                (should-not (plist-get report :tp-full-root)))
+              (setq previous-identity identity))))))))
+
+(ert-deftest ebox-commit-inherited-text-roundtrip-keeps-paint-provenance ()
+  "Repeated text edits retain the baseline needed to replace/remove paint."
+  (with-temp-buffer
+    (let ((face '(:weight bold))
+          (callback (lambda () 'counter-action)))
+      (cl-labels
+          ((counter (text)
+             (ebox-test-text (propertize text 'face face 'action callback)
+                             :key 'counter :source-identity 'counter))
+           (parent (color)
+             (apply #'ebox-test-box
+                    (append (list :key 'parent :source-identity 'parent
+                                  :surface-properties '(help-echo "parent")
+                                  (counter "10"))
+                            (and color (list :bgcolor color))))))
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+           (parent "#E0E8E0")
+           (ebox-test-text "untouched")))
+        (let* ((initial (ebox--buffer-render-state (current-buffer)))
+               (fragments (copy-tree (plist-get initial :surface-fragments)))
+               (root-renders 0)
+               (counter-id
+                (plist-get (ebox--host-ref-node (current-buffer) 'counter)
+                           :node-id)))
+          (dolist (text '("20" "10" "20" "10"))
+            (let ((candidate (ebox-candidate-begin (current-buffer))))
+              (ebox-candidate-replace-host-ref candidate 'counter (counter text))
+              (let ((result (ebox-commit-test--count-root-renders
+                             (lambda () (ebox-commit (current-buffer) candidate)))))
+                (ebox-commit-test--assert-full-render-equivalent)
+                (should (equal fragments
+                               (plist-get (ebox--buffer-render-state (current-buffer))
+                                          :surface-fragments)))
+                (cl-incf root-renders (cdr result)))))
+          (let ((previous "#E0E8E0"))
+            (dolist (color '("#667788" nil))
+              (let ((candidate (ebox-candidate-begin (current-buffer))))
+                (should (ebox-candidate-patch-host-paint
+                         candidate 'parent (parent previous) (parent color)))
+                (let ((report (ebox-commit (current-buffer) candidate)))
+                  (should (eq (plist-get report :projection-kind) 'paint)))
+                (ebox-commit-test--assert-full-render-equivalent)
+                (should (eq callback (get-text-property (point-min) 'action)))
+                (should (eq 'bold
+                            (ebox-commit-test--face-value
+                             (get-text-property (point-min) 'face) :weight)))
+                (should (equal (or color "#FFFDF8")
+                               (ebox-commit-test--face-value
+                                (get-text-property (point-min) 'face) :background)))
+                (should (= counter-id
+                           (plist-get (ebox--host-ref-node (current-buffer) 'counter)
+                                      :node-id))))
+              (setq previous color)))
+          (should (zerop root-renders)))))))
+
+(ert-deftest ebox-commit-inherited-text-exclusions-render-current-properties ()
+  "Property, extent, display and identity changes retain the exact fallback."
+  (dolist (change '(property char-length display identity opaque-callback))
+    (ert-info ((format "inherited text exclusion: %S" change))
+      (with-temp-buffer
+        (let* ((make-callback (lambda ()
+                                (let ((value (vector t))) (lambda () value))))
+               (old-callback (funcall make-callback))
+               (new-callback (if (eq change 'opaque-callback)
+                                 (funcall make-callback) old-callback))
+               (old (propertize "10" 'help-echo "old" 'action old-callback))
+               (new (propertize (if (eq change 'char-length) "200" "20")
+                                'help-echo (if (eq change 'property) "new" "old")
+                                'action new-callback)))
+          (when (eq change 'opaque-callback)
+            (should (equal old-callback new-callback))
+            (should-not (eq old-callback new-callback)))
+          (when (eq change 'display)
+            (add-text-properties 0 2 '(display (raise 0)) old)
+            (add-text-properties 0 2 '(display (raise 0)) new))
+          (ebox-render-to-buffer
+           (current-buffer)
+           (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+             (ebox-test-text old :key 'counter :source-identity 'counter)
+             (ebox-test-text "untouched")))
+          (let ((candidate (ebox-candidate-begin (current-buffer))))
+            (ebox-candidate-replace-host-ref
+             candidate 'counter
+             (ebox-test-text new :key 'counter
+                             :source-identity
+                             (if (eq change 'identity) 'new-counter 'counter)))
+            (let ((result (ebox-commit-test--count-root-renders
+                           (lambda () (ebox-commit (current-buffer) candidate)))))
+              (ebox-commit-test--assert-full-render-equivalent)
+              (should (eq new-callback (get-text-property (point-min) 'action)))
+              (when (eq change 'identity)
+                (should-not (ebox--host-ref-node (current-buffer) 'counter))
+                (should (ebox--host-ref-node (current-buffer) 'new-counter)))
+              (should (> (cdr result) 0)))))))))
+
+(ert-deftest ebox-commit-inherited-text-rolls-back-properties-and-retries ()
+  "Late publication rejection retains text, metadata and one old generation."
+  (with-temp-buffer
+    (let ((callback (lambda () 'counter-action))
+          (face '(:weight bold)))
+      (cl-labels
+          ((counter (text)
+             (ebox-test-text (propertize text 'face face 'action callback)
+                             :key 'counter :source-identity 'counter))
+           (candidate ()
+             (let ((candidate (ebox-candidate-begin (current-buffer))))
+               (ebox-candidate-replace-host-ref candidate 'counter (counter "20"))
+               candidate)))
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+           :surface-properties '(help-echo "parent")
+           (counter "10") (ebox-test-text "untouched")))
+        (let* ((before (buffer-string))
+               (state (ebox--buffer-render-state (current-buffer)))
+               (fragments (copy-tree (plist-get state :surface-fragments)))
+               (revision (tp-surface-revision ebox-surface--buffer-surface))
+               (rejected
+                (ebox-commit-test--count-root-renders
+                 (lambda ()
+                   (cl-letf (((symbol-function 'accept-change-group)
+                              (lambda (_) (error "Reject inherited text"))))
+                     (should-error (ebox-commit (current-buffer) (candidate))))))))
+          (should (equal (car rejected) '(error "Reject inherited text")))
+          (should (eq state (ebox--buffer-render-state (current-buffer))))
+          (should (equal fragments (plist-get state :surface-fragments)))
+          (should (= revision (tp-surface-revision ebox-surface--buffer-surface)))
+          (should (equal-including-properties before (buffer-string)))
+          (should (eq callback (get-text-property (point-min) 'action)))
+          (let ((retry (ebox-commit-test--count-root-renders
+                        (lambda () (ebox-commit (current-buffer) (candidate))))))
+            (ebox-commit-test--assert-full-render-equivalent)
+            (should (string-prefix-p "20" (buffer-string)))
+            (should (eq callback (get-text-property (point-min) 'action)))
+            (should (equal fragments
+                           (plist-get (ebox--buffer-render-state (current-buffer))
+                                      :surface-fragments)))
+            (should (zerop (cdr rejected)))
+            (should (zerop (cdr retry)))
+            (should-not (plist-get (car retry) :tp-full-root))))))))
+
+(ert-deftest ebox-commit-inherited-text-probe-error-aborts-before-publication ()
+  "An old-owner probe failure propagates intact and permits a local retry."
+  (with-temp-buffer
+    (let ((callback (lambda () 'counter-action)))
+      (cl-labels
+          ((counter (text)
+             (ebox-test-text (propertize text 'action callback 'face '(:weight bold))
+                             :key 'counter :source-identity 'counter))
+           (candidate ()
+             (let ((candidate (ebox-candidate-begin (current-buffer))))
+               (ebox-candidate-replace-host-ref candidate 'counter (counter "20"))
+               candidate)))
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+           :surface-properties '(help-echo "parent")
+           (counter "10") (ebox-test-text "untouched")))
+        (let* ((before (buffer-string))
+               (state (ebox--buffer-render-state (current-buffer)))
+               (fragments (copy-tree (plist-get state :surface-fragments)))
+               (surface ebox-surface--buffer-surface)
+               (revision (tp-surface-revision surface))
+               (modified-tick (buffer-modified-tick))
+               (owner-id (plist-get (ebox--host-ref-node (current-buffer) 'counter)
+                                     :node-id))
+               (payload (make-symbol "old-owner-probe"))
+               (failure-data (list "Old-owner probe invariant failed" payload))
+               (old-probes 0)
+               (publications 0)
+               (injector
+                (lambda (render-state node)
+                  (when (and (eq node (plist-get render-state :root-node))
+                             (equal owner-id (plist-get node :node-id))
+                             (ebox-text-node-p node)
+                             (equal "10" (ebox-text-node-value node)))
+                    (cl-incf old-probes)
+                    (signal 'error failure-data))))
+               rejected)
+          (advice-add 'ebox-surface--render-candidate-node :before injector)
+          (unwind-protect
+              (setq rejected
+                    (ebox-commit-test--count-root-renders
+                     (lambda ()
+                       (condition-case condition
+                           (ebox-commit (current-buffer) (candidate)
+                                        (lambda (_report) (cl-incf publications)))
+                         (error condition)))))
+            (advice-remove 'ebox-surface--render-candidate-node injector))
+          (should (= old-probes 1))
+          (should (equal (car rejected) (cons 'error failure-data)))
+          (should (eq payload (nth 2 (car rejected))))
+          (should (zerop publications))
+          (should (zerop (cdr rejected)))
+          (should (eq state (ebox--buffer-render-state (current-buffer))))
+          (should (eq surface ebox-surface--buffer-surface))
+          (should (= revision (tp-surface-revision surface)))
+          (should (= modified-tick (buffer-modified-tick)))
+          (should (equal fragments (plist-get state :surface-fragments)))
+          (should (equal-including-properties before (buffer-string)))
+          (should (eq callback (get-text-property (point-min) 'action)))
+          (let* ((retry (ebox-commit-test--count-root-renders
+                         (lambda () (ebox-commit (current-buffer) (candidate)))))
+                 (report (car retry)))
+            (ebox-commit-test--assert-full-render-equivalent)
+            (should (string-prefix-p "20" (buffer-string)))
+            (should (eq callback (get-text-property (point-min) 'action)))
+            (should (zerop (cdr retry)))
+            (should (memq (plist-get report :projection-kind)
+                          '(span-patch owner-scoped)))
+            (should-not (plist-get report :tp-full-root))))))))
 
 (ert-deftest ebox-commit-range-patch-retains-ancestor-paint ()
   "An equal-line Range replacement retains enclosing paint."
