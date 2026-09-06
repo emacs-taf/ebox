@@ -2468,8 +2468,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-viewport-reflow-falls-back-for-scroll-and-visible-overflow ()
-  "Nested scroll state and visible overflow must not enter retained reflow."
+(ert-deftest ebox-viewport-reflow-falls-back-only-for-visible-overflow ()
+  "Nested scroll retains topology; visible overflow still requires fallback."
   (ebox-surface-test--with-elisp-backend
     (dolist (fixture
            (list
@@ -2504,8 +2504,19 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                          (apply original-ensure args))))
               (ebox-rerender-buffer-with-context buffer 240 6))
             (let ((report (ebox-buffer-update-report buffer)))
-              (should (> ensured-node-count 0))
-              (should-not (plist-get report :projection-kind))
+              (if (eq (car fixture) 'visible-overflow)
+                  (progn
+                    (should (> ensured-node-count 0))
+                    (should-not (plist-get report :projection-kind)))
+                (should (= ensured-node-count 0))
+                (should (eq (plist-get report :projection-kind) 'viewport-reflow))
+                (let* ((state (ebox--buffer-render-state buffer))
+                       (ebox-viewport-width 240)
+                       (ebox-viewport-height 6))
+                  (should-not (plist-get state :layout-fragments-reuse-p))
+                  (should (equal-including-properties
+                           (with-current-buffer buffer (buffer-string))
+                           (ebox-surface-test--render-runtime state)))))
               (should (plist-get report :runtime-published))))
         (when (buffer-live-p buffer)
           (kill-buffer buffer)))))))

@@ -10671,21 +10671,17 @@ When RETAIN-NATIVE-P is non-nil, preserve its committed native frame bases."
 (defun ebox-incremental--viewport-reflow-safe-p
     (old-state candidate-state dirty-set owner-plan style-context-stable-p)
   "Return non-nil when a viewport reflow can reuse the retained node tree.
-This strict projection retains only viewport-independent scroll producers."
-  (and (ebox-incremental--viewport-root-proof-p
-        old-state candidate-state dirty-set owner-plan
-        style-context-stable-p)
-       (or (ebox-incremental--stable-scroll-state-p old-state)
-           (ebox-incremental--viewport-root-scroll-reflow-proof-p
-            old-state candidate-state style-context-stable-p))))
+Scroll producer and spatial reuse require their own independent proofs."
+  (ebox-incremental--viewport-root-proof-p
+   old-state candidate-state dirty-set owner-plan style-context-stable-p))
 
 (defun ebox-incremental--viewport-root-scroll-reflow-proof-p
     (old-state candidate-state style-context-stable-p)
   "Return non-nil for one resizable root scroll owner.
 The root itself is the only scroll producer, so its viewport-dependent
-content is exactly the formatting context being reflowed.  This proof does
-not authorize nested scroll owners, visible overflow, cascade changes, or
-topology changes; those continue to use the conservative full projection."
+content is exactly the formatting context being reflowed.  This spatial reuse
+proof does not authorize nested scroll owners, visible overflow, cascade
+changes, or topology changes."
   (let* ((old-root (plist-get old-state :root-node))
          (candidate-root (plist-get candidate-state :root-node))
          (root-id (and old-root (plist-get old-root :node-id)))
@@ -10723,44 +10719,20 @@ topology changes; those continue to use the conservative full projection."
           (plist-get old-state :parent-table)
           (plist-get candidate-state :parent-table)))))
 
-(defun ebox-incremental--stable-scroll-state-p (state)
-  "Return non-nil when STATE's scroll producers are safe to retain.
-The proof is local to each scroll owner: its measured subtree must be
-independent of both viewport axes, must not spill visible overflow, and must
-have a published scroll state.  A changing ancestor position is harmless;
-the producer's content geometry is the retained boundary."
-  (let ((scroll-ids (plist-get state :scroll-region-ids))
-        (region-node-table (plist-get state :region-node-table))
-        (node-table (plist-get state :node-table))
-        (scroll-state-table (plist-get state :scroll-state-table)))
-    (or (null scroll-ids)
-        (and (hash-table-p region-node-table)
-             (hash-table-p node-table)
-             (hash-table-p scroll-state-table)
-             (cl-every
-              (lambda (region-id)
-                (let* ((node-id (gethash region-id region-node-table))
-                       (node (and node-id (gethash node-id node-table))))
-                  (and node
-                       (gethash region-id scroll-state-table)
-                       (not (ebox--viewport-dependent-subtree-p node))
-                       (not (ebox--viewport-height-dependent-subtree-p node))
-                       (not (ebox-tree-node-visible-overflow-p node)))))
-              scroll-ids)))))
-
 (defun ebox-incremental--viewport-scroll-partition (state)
   "Partition STATE scroll owners into stable and viewport-affected sets.
 A producer is stable only when its own subtree is independent of both
 viewport axes and has no visible overflow; an affected producer is rendered
-fresh by the mixed projection."
+fresh regardless of whether any stable producers exist."
   (let ((region-node-table (plist-get state :region-node-table))
         (node-table (plist-get state :node-table))
         (scroll-state-table (plist-get state :scroll-state-table))
         (stable nil)
         (affected nil))
-    (when (and (hash-table-p region-node-table)
-               (hash-table-p node-table)
-               (hash-table-p scroll-state-table))
+    (if (not (and (hash-table-p region-node-table)
+                  (hash-table-p node-table)
+                  (hash-table-p scroll-state-table)))
+        (setq affected (reverse (plist-get state :scroll-region-ids)))
       (let ((ebox--viewport-dependent-node-ids-cache
              (make-hash-table :test #'eq))
             (ebox--viewport-dependent-subtree-cache
@@ -10778,23 +10750,12 @@ fresh by the mixed projection."
                        (not (ebox-tree-node-visible-overflow-p node)))))
             (if stable-p
                 (push region-id stable)
-              (push region-id affected)))))
+              (push region-id affected))))))
     (setq stable (nreverse stable)
           affected (nreverse affected))
     (list :stable stable
           :affected affected
-          :all (append stable affected)))))
-
-(defun ebox-incremental--viewport-mixed-scroll-proof-p
-    (old-state candidate-state dirty-set owner-plan partition
-               style-context-stable-p)
-  "Return PARTITION when a mixed viewport projection is proven safe."
-  (and (ebox-incremental--viewport-root-proof-p
-        old-state candidate-state dirty-set owner-plan
-        style-context-stable-p)
-       (plist-get partition :stable)
-       (plist-get partition :affected)
-       partition))
+          :all (append stable affected))))
 
 (defun ebox-incremental--viewport-reflow-state-overrides
     (old-state candidate-state &optional scroll-partition)
@@ -10882,14 +10843,12 @@ fresh by the mixed projection."
                             :target-viewport-width viewport-width
                             :target-viewport-height target-height)))
              owner-plan report projection-kind scroll-partition
-             viewport-reflow-safe-p native-continuity-p)
+             viewport-reflow-safe-p spatial-reuse-safe-p native-continuity-p)
         (plist-put candidate-state :viewport-width viewport-width)
         (plist-put candidate-state :viewport-height target-height)
         (plist-put candidate-state :display-signature display-signature)
-        ;; Fragment reuse is a consequence of the complete viewport-reflow
-        ;; proof below, not a proxy for "the display did not change".  An
-        ;; owner-rerender can still change intrinsic measurements, scroll
-        ;; dependencies, and generation-sensitive side effects.
+        ;; Retaining logical objects does not authorize spatial reuse.
+        ;; Affected producers still own fresh geometry and scroll effects.
         (plist-put candidate-state :layout-fragments-reuse-p nil)
         (plist-put candidate-state :runtime-revision
                    (1+ (or (plist-get old-state :runtime-revision) 0)))
@@ -10910,8 +10869,15 @@ fresh by the mixed projection."
                    (ebox-incremental--viewport-reflow-safe-p
                     old-state candidate-state dirty-set owner-plan
                     style-context-stable-p)))
+        (when viewport-reflow-safe-p
+          (setq scroll-partition
+                (ebox-incremental--viewport-scroll-partition candidate-state)
+                spatial-reuse-safe-p
+                (or (null (plist-get scroll-partition :affected))
+                    (ebox-incremental--viewport-root-scroll-reflow-proof-p
+                     old-state candidate-state style-context-stable-p))))
         (setq native-continuity-p
-              (and viewport-reflow-safe-p
+              (and viewport-reflow-safe-p spatial-reuse-safe-p
                    (require 'ebox-native-commit nil t)
                    (ebox-native-commit-prepare-viewport-continuity
                     old-state candidate-state)))
@@ -10919,15 +10885,10 @@ fresh by the mixed projection."
               (cond
                (native-continuity-p 'native-frame)
                (viewport-reflow-safe-p
-                'viewport-reflow)
-               ((and (not display-changed)
-                     (setq scroll-partition
-                           (ebox-incremental--viewport-scroll-partition
-                            candidate-state))
-                     (ebox-incremental--viewport-mixed-scroll-proof-p
-                      old-state candidate-state dirty-set owner-plan
-                      scroll-partition style-context-stable-p))
-                'viewport-reflow-mixed-scroll)))
+                (if (and (plist-get scroll-partition :stable)
+                         (plist-get scroll-partition :affected))
+                    'viewport-reflow-mixed-scroll
+                  'viewport-reflow))))
         (when native-continuity-p
           (plist-put candidate-state :native-topology-stable-p t)
           (plist-put candidate-state :native-touched-node-ids nil)
@@ -10939,8 +10900,13 @@ fresh by the mixed projection."
                  (ebox-incremental--layout-owner-report
                   prepared owner-plan candidate-state)
                  report-overrides)))
-        (when (memq projection-kind
-                    '(viewport-reflow viewport-reflow-mixed-scroll))
+        (when (and (memq projection-kind
+                         '(viewport-reflow viewport-reflow-mixed-scroll))
+                   ;; Preserve the prior spatial permissions: all-stable,
+                   ;; sole root scroll, or mixed stable/affected producers.
+                   ;; Newly admitted all-affected topology gets none of these.
+                   (or spatial-reuse-safe-p
+                       (plist-get scroll-partition :stable)))
           (plist-put candidate-state :layout-fragments-reuse-p t))
         (when projection-kind
           (setq report (plist-put report :projection-kind projection-kind))
@@ -10975,9 +10941,7 @@ fresh by the mixed projection."
                ((memq projection-kind
                       '(viewport-reflow viewport-reflow-mixed-scroll))
                 (ebox-incremental--viewport-reflow-state-overrides
-                 old-state candidate-state
-                 (and (eq projection-kind 'viewport-reflow-mixed-scroll)
-                      scroll-partition)))
+                 old-state candidate-state scroll-partition))
                (t
                 (ebox-incremental--viewport-state-overrides
                  candidate-state))))))))
