@@ -3370,6 +3370,21 @@ old allocated width while the owner changes its natural content length."
               (setq position (max (1+ position) next)))))))
     (and valid seen common)))
 
+(defun ebox-surface--owner-needs-ancestor-paint-p (state owner-id)
+  "Return non-nil if STATE's detached OWNER-ID omits enclosing effects.
+Ordinary span publication does not recompose enclosing paint or surface
+properties.  Its local renderer cannot prove equivalence for such an owner."
+  (let ((parents (plist-get state :parent-table))
+        (nodes (plist-get state :node-table))
+        (node-id owner-id)
+        needed)
+    (while (and (not needed) (setq node-id (gethash node-id parents)))
+      (when-let* ((box (ebox-fragment-style-source-node (gethash node-id nodes))))
+        (setq needed
+              (or (ebox-get box :surface-properties)
+                  (ebox-surface--region-face-contributions box '(bt bb) t)))))
+    (not (null needed))))
+
 (defun ebox-surface--owner-patch-candidate
     (buffer state owner-id allocated-width
             &optional variable-content-p variable-content-max-width
@@ -3409,7 +3424,15 @@ old allocated width while the owner changes its natural content length."
                      (or variable-content-p role-owned-lines-p))
                 (plist-put (copy-sequence node) :width allocated-width)
               node))))
-    (when (and old-snapshot spans node render-node)
+    (when (and old-snapshot spans node render-node
+               ;; Mixed projection has a separate paint recomposition step.
+               ;; Ordinary spans have only the detached owner's rendered
+               ;; faces; retain the full renderer when enclosing paint would
+               ;; otherwise disappear from changed text.
+               (or (not (memq (plist-get state :projection-kind)
+                              '(span-patch owner-scoped)))
+                   (not (ebox-surface--owner-needs-ancestor-paint-p
+                         state owner-id))))
       (let* ((rendered
               (prog1
                   (ebox-surface--render-candidate-node state render-node)
@@ -3543,7 +3566,9 @@ old allocated width while the owner changes its natural content length."
               (mapcar
                (lambda (proof)
                  (if (plist-get proof :range-splice-p)
-                     (ebox-surface--range-patch-candidate buffer state proof)
+                     (unless (ebox-surface--owner-needs-ancestor-paint-p
+                              state (plist-get proof :owner-id))
+                       (ebox-surface--range-patch-candidate buffer state proof))
                    (ebox-surface--owner-patch-candidate
                     buffer state (plist-get proof :owner-id)
                     (plist-get proof :allocated-width)

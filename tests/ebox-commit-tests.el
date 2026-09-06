@@ -276,6 +276,63 @@
                    (ebox-commit-test--face-value
                     (get-text-property (1- (point)) 'face) :foreground)))))
 
+(ert-deftest ebox-commit-content-patch-retains-ancestor-paint ()
+  "Changing text keeps the paint supplied by its containing boxes."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+       (ebox-test-box :bgcolor "#E0E8E0"
+         (ebox-test-text "10" :key 'counter :source-identity 'counter))
+       (ebox-test-text "untouched")))
+    (let ((candidate (ebox-candidate-begin (current-buffer))))
+      (ebox-candidate-replace-host-ref
+       candidate 'counter
+       (ebox-test-text "20" :key 'counter :source-identity 'counter))
+      (ebox-commit (current-buffer) candidate))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (expected (ebox--render-node (plist-get state :root-node)
+                                       (plist-get state :source-index))))
+      (should (equal-including-properties expected (buffer-string))))))
+
+(ert-deftest ebox-commit-content-patch-retains-ancestor-surface-properties ()
+  "Changing text retains properties supplied by its containing box."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-test-column :width '(200) :surface-properties '(help-echo "parent")
+       (ebox-test-text "10" :key 'counter :source-identity 'counter)
+       (ebox-test-text "untouched")))
+    (let ((candidate (ebox-candidate-begin (current-buffer))))
+      (ebox-candidate-replace-host-ref
+       candidate 'counter
+       (ebox-test-text "20" :key 'counter :source-identity 'counter))
+      (ebox-commit (current-buffer) candidate))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (expected (ebox--render-node (plist-get state :root-node)
+                                       (plist-get state :source-index))))
+      (should (equal-including-properties expected (buffer-string))))))
+
+(ert-deftest ebox-commit-range-patch-retains-ancestor-paint ()
+  "An equal-line Range replacement retains enclosing paint."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+       (ebox-test-box :width '(80) :height 1
+         (ebox-test-column
+           (ebox-test-child-range 'items
+             (ebox-test-text "10" :key 'old))))
+       (ebox-test-text "untouched")))
+    (let ((candidate (ebox-candidate-begin (current-buffer))))
+      (ebox-candidate-replace-range-ref
+       candidate 'items (ebox-test-text "20" :key 'new))
+      (ebox-commit (current-buffer) candidate))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (expected (ebox--render-node (plist-get state :root-node)
+                                       (plist-get state :source-index))))
+      (should (equal-including-properties expected (buffer-string))))))
+
 (ert-deftest ebox-commit-paint-retains-disjoint-scroll ()
   "Pure sibling paint retains scroll caches and stays painted after scrolling."
   (with-temp-buffer
