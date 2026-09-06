@@ -86,12 +86,11 @@
 
 (defun ebox-surface--mixed-range-splice-p (state)
   "Return non-nil when STATE's mixed proof contains one Range splice."
-  (cl-some
-   (lambda (owner-proof)
-     (plist-get owner-proof :range-splice-p))
-   (plist-get
-    (plist-get (plist-get state :mixed-owner-proof) :geometry-proof)
-    :owner-proofs)))
+  (let ((proof (plist-get (plist-get state :mixed-owner-proof) :geometry-proof)))
+    (or (plist-get proof :range-splice-p)
+        (cl-some (lambda (owner-proof)
+                   (plist-get owner-proof :range-splice-p))
+                 (plist-get proof :owner-proofs)))))
 
 (declare-function ebox--render-layout "ebox-layout" (node))
 (declare-function ebox--maplines "ebox" (function string))
@@ -1813,7 +1812,12 @@ the projection roots a second time."
          (region-objects
           (or (and scroll-fast-p
                    (plist-get state :region-surface-object-table))
-              (ebox-surface--region-object-table state node-objects))))
+              (ebox-surface--region-object-table state node-objects)))
+         (property-contributions
+          (plist-get state :paint-property-contributions)))
+    ;; Paint contributions belong to this one publication.  Keep them out of
+    ;; the transferred client state so later paint cannot replay old layers.
+    (cl-remf state :paint-property-contributions)
     (plist-put state :surface-node-object-table node-objects)
     (plist-put state :region-surface-object-table region-objects)
     (unless (and scroll-fast-p
@@ -1827,7 +1831,8 @@ the projection roots a second time."
     (or (and native-retained-p
              (ebox-surface--native-patch-result
               context projection state output node-objects region-objects))
-        (and (memq projection-kind
+        (and (null property-contributions)
+             (memq projection-kind
                    '(span-patch owner-scoped mixed-owner-reflow))
              (ebox-surface--span-coordinate-result
               context projection state output previous-owned-ranges))
@@ -1840,10 +1845,9 @@ the projection roots a second time."
                  scroll-fast-p))
                (plan (car prepared))
                (rendered (cadr prepared))
-               (owned-ranges (nth 2 prepared))
-               (property-contributions
-                (plist-get state :paint-property-contributions)))
-          (or (and (memq projection-kind
+               (owned-ranges (nth 2 prepared)))
+          (or (and (null property-contributions)
+                   (memq projection-kind
                           '(span-patch owner-scoped mixed-owner-reflow))
                    (ebox-surface--coordinate-commit
                     context state rendered owned-ranges (nth 3 prepared)
@@ -3395,11 +3399,14 @@ old allocated width while the owner changes its natural content length."
                           (cons buffer state)))
                      (ebox--flex-item-slot-sized-node
                       buffer owner-id old-snapshot changed-keys)))
-            ;; Variable content is explicitly shaped into a retained slot.
-            ;; Typography-only changes must render at their natural size so
+            ;; Grouped owners and variable content have a proven retained
+            ;; allocation.  Rendering there does not grant permission for
+            ;; the final footprint to vary.
+            ;; Ungrouped typography changes render at their natural size so
             ;; the final footprint check observes any intrinsic-width change
             ;; instead of hiding it behind the old allocation.
-            (if (and node allocated-width variable-content-p)
+            (if (and node allocated-width
+                     (or variable-content-p role-owned-lines-p))
                 (plist-put (copy-sequence node) :width allocated-width)
               node))))
     (when (and old-snapshot spans node render-node)
@@ -3876,7 +3883,12 @@ owners are then recomposed from the committed semantic fragment ledger, never
 by peeling an already-composed face suffix.  Any missing address/baseline
 causes the caller to use the ordinary full projection."
   (let* ((proof (plist-get state :mixed-owner-proof))
-         (geometry-proof (and proof (plist-get proof :geometry-proof)))
+         ;; Range splices may change the TP object set, so the retained
+         ;; content result cannot carry their paint layers.  Preserve the
+         ;; ordinary renderer before producing a cleaned paint baseline.
+         (geometry-proof (and proof
+                              (not (ebox-surface--mixed-range-splice-p state))
+                              (plist-get proof :geometry-proof)))
          (geometry-kind (and proof (plist-get proof :geometry-kind)))
          (paint-owner-ids (and proof (plist-get proof :paint-owner-ids)))
          (output
@@ -4005,7 +4017,9 @@ causes the caller to use the ordinary full projection."
                      output fragments state))
               (plist-put state :mixed-owner-fragment-data fragments)
               (plist-put state :mixed-owner-content-p t)
-              output)))))))
+              (apply #'concat
+                     (mapcar (lambda (fragment) (plist-get fragment :text))
+                             fragments)))))))))
 
 (defun ebox-surface--scroll-patch-output (_buffer state)
   "Return a staged visible scroll window without rerunning layout when safe.
@@ -5344,6 +5358,7 @@ but cannot introduce or remove a viewport expression or node identity."
               (copy-sequence previous-state)
             (ebox--new-buffer-render-state root))
           (copy-sequence state-overrides))))
+    (cl-remf state :paint-property-contributions)
     (plist-put state :root-node root)
     (when (plist-get state :native-sync-confirmed-p)
       (ebox-native-commit-attach-confirmed-base previous-state state))
@@ -5622,7 +5637,14 @@ published runtime and must be consumed without clearing those shared nodes."
                          (with-current-buffer buffer
                            (save-restriction
                              (widen)
-                             (buffer-substring (point-min) (point-max)))))))
+                           (buffer-substring (point-min) (point-max)))))))
+              ;; Retaining scroll pixels still requires the producer's
+              ;; reactive scroll subscription in this paint-only evaluation.
+              (when (and signals
+                         (hash-table-p (plist-get state :scroll-state-table))
+                         (> (hash-table-count
+                             (plist-get state :scroll-state-table)) 0))
+                (tp-signal-read (ebox-surface--signals-scroll signals)))
               (setq state (ebox-surface--finish-runtime-state state))
               (ebox-surface--refresh-paint-snapshots state dirty-set)
               (cl-remf state :paint-dirty-set)

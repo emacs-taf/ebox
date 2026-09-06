@@ -153,31 +153,43 @@
            (prepared (list :scroll-state-table table))
            (candidate (copy-sequence state)))
       (puthash region scroll table)
-      (should (ebox-incremental--span-owner-disjoint-from-scroll-p
+      (should (ebox-incremental--owner-disjoint-from-scroll-p
                (current-buffer) state prepared candidate owner))
-      (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+      (should-not (ebox-incremental--owner-disjoint-from-scroll-p
                    (current-buffer) state prepared candidate root))
-      (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+      (should-not (ebox-incremental--owner-disjoint-from-scroll-p
                    (current-buffer) state prepared candidate scroll-id))
       (remhash region table)
-      (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+      (should-not (ebox-incremental--owner-disjoint-from-scroll-p
                    (current-buffer) state prepared candidate owner))
       (puthash 'different-region scroll table)
-      (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+      (should-not (ebox-incremental--owner-disjoint-from-scroll-p
                    (current-buffer) state prepared candidate owner))
       (clrhash table)
       (puthash region scroll table)
       (let ((regions (copy-hash-table (plist-get state :region-box-table))))
         (remhash region regions)
         (plist-put candidate :region-box-table regions)
-        (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
+        (should-not (ebox-incremental--owner-disjoint-from-scroll-p
                      (current-buffer) state prepared candidate owner)))
       (plist-put candidate :region-box-table (plist-get state :region-box-table))
       (let ((parents (copy-hash-table (plist-get state :parent-table))))
         (puthash scroll-id owner parents)
         (plist-put candidate :parent-table parents)
-        (should-not (ebox-incremental--span-owner-disjoint-from-scroll-p
-                     (current-buffer) state prepared candidate owner))))))
+        (should-not (ebox-incremental--owner-disjoint-from-scroll-p
+                     (current-buffer) state prepared candidate owner)))
+      (plist-put candidate :parent-table (plist-get state :parent-table))
+      (let* ((parents (copy-hash-table (plist-get state :parent-table)))
+             (overlapping-old-state (copy-sequence state))
+             (ebox-incremental--buffer-render-state-override
+              (cons (current-buffer) candidate)))
+        ;; The caller may already expose candidate ancestry.  Old-state
+        ;; ancestry must still reject an owner that used to be inside scroll.
+        (puthash owner scroll-id parents)
+        (plist-put overlapping-old-state :parent-table parents)
+        (should-not (ebox-incremental--owner-disjoint-from-scroll-p
+                     (current-buffer) overlapping-old-state prepared
+                     candidate owner))))))
 
 (ert-deftest ebox-commit-content-shift-preserves-later-scroll-targets ()
   "Longer and shorter local text retain the later scroll widget's targets."
@@ -220,6 +232,224 @@
                         (get-text-property (1- (point)) 'face) :foreground)))
         (should (= 1 (ebox--scroll-region-by scroll-id 1)))
         (should (= -1 (ebox--scroll-region-by scroll-id -1)))))))
+
+(defun ebox-commit-test--scroll-family-root (left right color)
+  "Return independent fixed-width LEFT, RIGHT and COLOR owners beside scroll."
+  (ebox-test-column :key 'family-root :width '(120)
+    (ebox-test-box :key 'left :source-identity 'left :width '(80)
+      (ebox-test-text left))
+    (ebox-test-box :key 'right :source-identity 'right :width '(80)
+      (ebox-test-text right))
+    (ebox-test-box :key 'paint :source-identity 'paint :color color
+      (ebox-test-text "paint"))
+    (ebox-commit-test--scroll-sibling-root "untouched")))
+
+(defun ebox-commit-test--scroll-family-candidate (buffer color &optional content)
+  "Return BUFFER candidate changing COLOR and, when CONTENT, both text owners."
+  (let ((candidate (ebox-candidate-begin buffer)))
+    (when content
+      (ebox-candidate-replace-host-ref
+       candidate 'left
+       (ebox-test-box :key 'left :source-identity 'left :width '(80)
+         (ebox-test-text "left-new")))
+      (ebox-candidate-replace-host-ref
+       candidate 'right
+       (ebox-test-box :key 'right :source-identity 'right :width '(80)
+         (ebox-test-text "right-new"))))
+    (ebox-candidate-replace-host-ref
+     candidate 'paint
+     (if color
+         (ebox-test-box :key 'paint :source-identity 'paint :color color
+           (ebox-test-text "paint"))
+       (ebox-test-box :key 'paint :source-identity 'paint
+         (ebox-test-text "paint"))))
+    candidate))
+
+(defun ebox-commit-test--assert-scroll-family-output (left right color)
+  "Assert current buffer contains LEFT, RIGHT, and the painted COLOR."
+  (should (string-match-p left (buffer-string)))
+  (should (string-match-p right (buffer-string)))
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward "paint")
+    (should (equal color
+                   (ebox-commit-test--face-value
+                    (get-text-property (1- (point)) 'face) :foreground)))))
+
+(ert-deftest ebox-commit-paint-retains-disjoint-scroll ()
+  "Pure sibling paint retains scroll caches and stays painted after scrolling."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-commit-test--scroll-family-root "left-old" "right-old" "#123456"))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (scroll-id (car (plist-get state :scroll-region-ids)))
+           (scroll (gethash scroll-id ebox--scroll-global-state))
+           (raw (plist-get scroll :content-lines))
+           (rendered (plist-get scroll :rendered-content-lines))
+           (region-count (hash-table-count ebox--region-box-table))
+           (root-render (symbol-function 'ebox-surface--render-candidate))
+           (root-renders 0)
+           report)
+      (should scroll-id)
+      (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                 (lambda (candidate-state)
+                   (cl-incf root-renders)
+                   (funcall root-render candidate-state))))
+        (setq report
+              (ebox-commit
+               (current-buffer)
+               (ebox-commit-test--scroll-family-candidate
+                (current-buffer) "#654321"))))
+      (should (eq (plist-get report :projection-kind) 'paint))
+      (should (zerop root-renders))
+      (should-not (plist-get report :tp-full-root))
+      (should (= 1 (tp-signal-subscriber-count
+                    (ebox-surface--signals-scroll
+                     ebox-surface--context-signals))))
+      (let ((next-scroll (gethash scroll-id ebox--scroll-global-state)))
+        (should (eq raw (plist-get next-scroll :content-lines)))
+        (should (eq rendered (plist-get next-scroll :rendered-content-lines)))
+        (should (eq (plist-get next-scroll :box)
+                    (gethash scroll-id ebox--region-box-table)))
+        (should (= region-count (hash-table-count ebox--region-box-table))))
+      (ebox-commit-test--assert-scroll-family-output "left-old" "right-old" "#654321")
+      (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+      (should (string-match-p "line-c" (buffer-string)))
+      (ebox-commit-test--assert-scroll-family-output "left-old" "right-old" "#654321")
+      (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+      (should (string-match-p "line-a" (buffer-string)))
+      (ebox-commit-test--assert-scroll-family-output "left-old" "right-old" "#654321"))))
+
+(ert-deftest ebox-commit-mixed-owners-retain-disjoint-scroll-and-rollback ()
+  "Two text owners plus paint retain exact output, scroll caches and rollback."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-commit-test--scroll-family-root "left-old" "right-old" "#123456"))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (scroll-id (car (plist-get state :scroll-region-ids)))
+           (scroll (gethash scroll-id ebox--scroll-global-state))
+           (box (gethash scroll-id ebox--region-box-table))
+           (raw (plist-get scroll :content-lines))
+           (rendered (plist-get scroll :rendered-content-lines))
+           (region-count (hash-table-count ebox--region-box-table))
+           (before (buffer-string))
+           (footprint (ebox--rendered-span-footprint-signature before))
+           (expected (replace-regexp-in-string
+                      "right-old" "right-new"
+                      (replace-regexp-in-string "left-old" "left-new"
+                                                (substring-no-properties before))))
+           (root-render (symbol-function 'ebox-surface--render-candidate))
+           (root-renders 0)
+           report)
+      (should scroll-id)
+      (cl-letf (((symbol-function 'accept-change-group)
+                 (lambda (_) (error "Reject mixed sibling publication"))))
+        (should
+         (equal
+          (should-error
+           (ebox-commit
+            (current-buffer)
+            (ebox-commit-test--scroll-family-candidate
+             (current-buffer) "#654321" t)))
+          '(error "Reject mixed sibling publication"))))
+      (should (eq state (ebox--buffer-render-state (current-buffer))))
+      (should (equal-including-properties before (buffer-string)))
+      (should (eq scroll (gethash scroll-id ebox--scroll-global-state)))
+      (should (eq box (gethash scroll-id ebox--region-box-table)))
+      (should (eq raw (plist-get scroll :content-lines)))
+      (should (eq rendered (plist-get scroll :rendered-content-lines)))
+      (should (= region-count (hash-table-count ebox--region-box-table)))
+      (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+      (ebox-commit-test--assert-scroll-family-output "left-old" "right-old" "#123456")
+      (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+      (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                 (lambda (candidate-state)
+                   (cl-incf root-renders)
+                   (funcall root-render candidate-state))))
+        (setq report
+              (ebox-commit
+               (current-buffer)
+               (ebox-commit-test--scroll-family-candidate
+                (current-buffer) "#654321" t))))
+      (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
+      (should (zerop root-renders))
+      (should-not (plist-get report :tp-full-root))
+      (should (equal expected (buffer-substring-no-properties (point-min) (point-max))))
+      (should (equal footprint
+                     (ebox--rendered-span-footprint-signature (buffer-string))))
+      (let ((next-scroll (gethash scroll-id ebox--scroll-global-state)))
+        (should (eq raw (plist-get next-scroll :content-lines)))
+        (should (eq rendered (plist-get next-scroll :rendered-content-lines)))
+        (should (eq (plist-get next-scroll :box)
+                    (gethash scroll-id ebox--region-box-table)))
+        (should (= region-count (hash-table-count ebox--region-box-table))))
+      (ebox-commit-test--assert-scroll-family-output "left-new" "right-new" "#654321")
+      (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+      (should (string-match-p "line-c" (buffer-string)))
+      (ebox-commit-test--assert-scroll-family-output "left-new" "right-new" "#654321")
+      (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+      (should (string-match-p "line-a" (buffer-string)))
+      (ebox-commit-test--assert-scroll-family-output "left-new" "right-new" "#654321"))))
+
+(ert-deftest ebox-commit-mixed-paint-followups-replace-and-remove-prior-color ()
+  "Mixed paint must not reappear after pure paint, removal, rollback or scroll."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-commit-test--scroll-family-root "left-old" "right-old" "#123456"))
+    (let* ((initial (ebox--buffer-render-state (current-buffer)))
+           (scroll-id (car (plist-get initial :scroll-region-ids)))
+           (scroll (gethash scroll-id ebox--scroll-global-state))
+           (raw (plist-get scroll :content-lines))
+           (rendered (plist-get scroll :rendered-content-lines))
+           (paint-id (plist-get (ebox--host-ref-node (current-buffer) 'paint) :node-id)))
+      (dolist (stage '(("#0000FF" t mixed-owner-reflow)
+                       ("#00FF00" nil paint)
+                       (nil nil paint)))
+        (let ((color (car stage))
+              (content-p (cadr stage)))
+          (ert-info ((format "paint transition: %S" stage))
+            (when (equal color "#00FF00")
+              (let ((before (buffer-string))
+                    (state (ebox--buffer-render-state (current-buffer)))
+                    (old-scroll (gethash scroll-id ebox--scroll-global-state)))
+                (cl-letf (((symbol-function 'accept-change-group)
+                           (lambda (_) (error "Reject followup paint"))))
+                  (should
+                   (equal
+                    (should-error
+                     (ebox-commit
+                      (current-buffer)
+                      (ebox-commit-test--scroll-family-candidate (current-buffer) color)))
+                    '(error "Reject followup paint"))))
+                (should (eq state (ebox--buffer-render-state (current-buffer))))
+                (should (eq old-scroll (gethash scroll-id ebox--scroll-global-state)))
+                (should (equal-including-properties before (buffer-string)))))
+            (let ((report
+                   (ebox-commit
+                    (current-buffer)
+                    (ebox-commit-test--scroll-family-candidate
+                     (current-buffer) color content-p))))
+              (should (eq (plist-get report :projection-kind) (nth 2 stage))))
+            (should (= paint-id (plist-get (ebox--host-ref-node (current-buffer) 'paint)
+                                           :node-id)))
+            (dolist (delta '(0 1 -1))
+              (unless (zerop delta)
+                (should (= delta (ebox--scroll-region-by scroll-id delta))))
+              (ebox-commit-test--assert-scroll-family-output "left-new" "right-new" color)
+              (let* ((contents (buffer-string))
+                     (start (string-match "paint" contents)))
+                (dotimes (offset (length "paint"))
+                  (should (equal (get-text-property (+ start offset) 'face contents)
+                                 (and color (list :foreground color)))))))
+            (should (string-match-p "line-a" (buffer-string)))
+            (let ((next-scroll (gethash scroll-id ebox--scroll-global-state)))
+              (should (eq raw (plist-get next-scroll :content-lines)))
+              (should (eq rendered (plist-get next-scroll :rendered-content-lines)))
+              (should (eq (plist-get next-scroll :box)
+                          (gethash scroll-id ebox--region-box-table))))))))))
 
 (ert-deftest ebox-commit-disjoint-scroll-validates-rendered-font-extent ()
   "Equal raw widths do not authorize changed rendered glyph widths."
@@ -2158,15 +2388,21 @@ remain retained identities."
                        :foreground))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(defun ebox-commit-test--fixed-basis-selection-root (row-1 row-2)
-  "Return a stretched fixed-basis panel containing two selectable rows."
-  (let ((panel
-         (ebox-test-box
-          :key 'selection-panel :width 'stretch :min-width 0 :min-height 24
-          :flex-grow 2 :flex-shrink 1 :flex-basis '(340)
+(defun ebox-commit-test--fixed-basis-selection-root (row-1 row-2 &optional scroll)
+  "Return a fixed-basis panel with two rows, inside a scroll box when SCROLL."
+  (let* ((rows
           (ebox-test-column
            (ebox-test-box :key 'row-1 :source-identity 'row-1 (ebox-test-text row-1))
-           (ebox-test-box :key 'row-2 :source-identity 'row-2 (ebox-test-text row-2))))))
+           (ebox-test-box :key 'row-2 :source-identity 'row-2 (ebox-test-text row-2))))
+         (panel
+          (ebox-test-box
+           :key 'selection-panel :width 'stretch :min-width 0 :min-height 24
+           :flex-grow 2 :flex-shrink 1 :flex-basis '(340)
+           (if scroll
+               (ebox-test-box :key 'scroll :id "scroll" :height 2 :width '(80)
+                 :overflow 'scroll
+                 (ebox-test-column rows (ebox-test-text "line-c\nline-d")))
+             rows))))
     (ebox-test-flex
      :key 'fixed-basis-selection-root
      :width '(900) :height 24
@@ -2187,6 +2423,125 @@ remain retained identities."
      candidate 'row-2
      (ebox-test-box :key 'row-2 :source-identity 'row-2 (ebox-test-text row-2)))
     candidate))
+
+(ert-deftest ebox-commit-grouped-owners-retain-disjoint-scroll ()
+  "A stable slot groups two text edits, with optional paint, beside scroll."
+  (dolist (paint-p '(nil t))
+    (ert-info ((format "grouped geometry with external paint: %S" paint-p))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-test-column :width '(900)
+           (if paint-p
+               (ebox-test-box :width '(200) :height 2
+                 (ebox-test-column :key 'header :source-identity 'header
+                   (ebox-test-text "[x] row 1" :key 'row-1 :source-identity 'row-1)
+                   (ebox-test-text "[ ] row 2" :key 'row-2 :source-identity 'row-2)))
+             (ebox-commit-test--fixed-basis-selection-root "[x] row 1" "[ ] row 2"))
+           (ebox-test-box :key 'paint :source-identity 'paint :color "#123456"
+             (ebox-test-text "paint"))
+           (ebox-commit-test--scroll-sibling-root "untouched")))
+        (let* ((state (ebox--buffer-render-state (current-buffer)))
+               (scroll-id (car (plist-get state :scroll-region-ids)))
+               (scroll (gethash scroll-id ebox--scroll-global-state))
+               (raw (plist-get scroll :content-lines))
+               (rendered (plist-get scroll :rendered-content-lines))
+               (region-count (hash-table-count ebox--region-box-table))
+               (owner-id
+                (if paint-p
+                    (plist-get (ebox--host-ref-node (current-buffer) 'header) :node-id)
+                  (ebox-incremental--nearest-fixed-basis-flex-item-owner-id
+                   (current-buffer)
+                   (plist-get (ebox--host-ref-node (current-buffer) 'row-1) :node-id))))
+               (before (buffer-substring-no-properties (point-min) (point-max)))
+               (footprint (ebox--rendered-span-footprint-signature (buffer-string)))
+               (expected (replace-regexp-in-string
+                          (regexp-quote "[ ] row 2") "[x] row 2"
+                          (replace-regexp-in-string
+                           (regexp-quote "[x] row 1") "[ ] row 1" before)))
+               (root-render (symbol-function 'ebox-surface--render-candidate))
+               (root-renders 0)
+               report)
+          (should scroll-id)
+          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                     (lambda (candidate-state)
+                       (cl-incf root-renders)
+                       (funcall root-render candidate-state))))
+            (let ((candidate
+                   (if paint-p
+                       (ebox-candidate-begin (current-buffer))
+                     (ebox-commit-test--fixed-basis-selection-candidate
+                      (current-buffer) "[ ] row 1" "[x] row 2"))))
+              (when paint-p
+                (ebox-candidate-replace-host-ref
+                 candidate 'row-1
+                 (ebox-test-text "[ ] row 1" :key 'row-1 :source-identity 'row-1))
+                (ebox-candidate-replace-host-ref
+                 candidate 'row-2
+                 (ebox-test-text "[x] row 2" :key 'row-2 :source-identity 'row-2))
+                (ebox-candidate-replace-host-ref
+                 candidate 'paint
+                 (ebox-test-box :key 'paint :source-identity 'paint :color "#654321"
+                   (ebox-test-text "paint"))))
+              (setq report (ebox-commit (current-buffer) candidate))))
+          (if paint-p
+              (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
+            (should (memq (plist-get report :projection-kind) '(span-patch owner-scoped))))
+          (should (equal (plist-get report :owner-ids)
+                         (append (list owner-id)
+                                 (when paint-p
+                                   (list (plist-get
+                                          (ebox--host-ref-node (current-buffer) 'paint)
+                                          :node-id))))))
+          (should (zerop root-renders))
+          (should-not (plist-get report :tp-full-root))
+          (should (equal expected (buffer-substring-no-properties (point-min) (point-max))))
+          (should (equal footprint
+                         (ebox--rendered-span-footprint-signature (buffer-string))))
+          (let ((next-scroll (gethash scroll-id ebox--scroll-global-state)))
+            (should (eq raw (plist-get next-scroll :content-lines)))
+            (should (eq rendered (plist-get next-scroll :rendered-content-lines)))
+            (should (eq (plist-get next-scroll :box)
+                        (gethash scroll-id ebox--region-box-table)))
+            (should (= region-count (hash-table-count ebox--region-box-table))))
+          (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+          (should (string-match-p "line-c" (buffer-string)))
+          (should (string-match-p (regexp-quote "[x] row 2") (buffer-string)))
+          (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+          (should (string-match-p "line-a" (buffer-string)))
+          (should (equal expected (buffer-substring-no-properties (point-min) (point-max))))
+          (ebox-commit-test--assert-scroll-family-output
+           (regexp-quote "[ ] row 1") (regexp-quote "[x] row 2")
+           (if paint-p "#654321" "#123456")))))))
+
+(ert-deftest ebox-commit-group-containing-scroll-refreshes-cache ()
+  "A group containing scrolling descendants must rebuild their cached text."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-commit-test--fixed-basis-selection-root "[x] row 1" "[ ] row 2" t))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (scroll-id (car (plist-get state :scroll-region-ids)))
+           (raw (plist-get (gethash scroll-id ebox--scroll-global-state)
+                           :content-lines))
+           (report
+            (ebox-commit
+             (current-buffer)
+             (ebox-commit-test--fixed-basis-selection-candidate
+              (current-buffer) "[ ] row 1" "[x] row 2"))))
+      (should scroll-id)
+      (should-not (memq (plist-get report :projection-kind)
+                        '(span-patch owner-scoped)))
+      (should-not (eq raw (plist-get (gethash scroll-id ebox--scroll-global-state)
+                                     :content-lines)))
+      (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+      (should (string-match-p "line-c" (buffer-string)))
+      (should (string-match-p (regexp-quote "[x] row 2") (buffer-string)))
+      (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+      (should (string-match-p (regexp-quote "[ ] row 1") (buffer-string)))
+      (should (string-match-p (regexp-quote "[x] row 2") (buffer-string)))
+      (should-not (string-match-p (regexp-quote "[x] row 1") (buffer-string)))
+      (should-not (string-match-p (regexp-quote "[ ] row 2") (buffer-string))))))
 
 (ert-deftest ebox-commit-fixed-basis-selection-round-trip-stays-local ()
   "Continuous row-1 -> row-2 -> row-1 publication keeps local TP scope."
@@ -2388,6 +2743,78 @@ remain retained identities."
           (should (string-match-p "new"
                                   (ebox-commit-test--buffer-string buffer))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-commit-range-splice-paint-preserves-kept-identities-and-faces ()
+  "Range object replacement falls back with current paint and kept peers."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-test-column :width '(120)
+       (ebox-test-box :key 'keep :source-identity 'keep :height 1
+         (ebox-test-text "keep"))
+       (ebox-test-box :width '(80) :height 1
+         (ebox-test-column :key 'rows :source-identity 'rows
+           (ebox-test-child-range
+            'items
+            (ebox-test-box :key 'old :source-identity 'old :height 1
+              (ebox-test-text "old")))))
+       (ebox-test-box :key 'paint :source-identity 'paint :color "#123456"
+         (ebox-test-text "paint"))))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (keep-id (plist-get (ebox--host-ref-node (current-buffer) 'keep) :node-id))
+           (old-id (plist-get (ebox--host-ref-node (current-buffer) 'old) :node-id))
+           (paint-id (plist-get (ebox--host-ref-node (current-buffer) 'paint) :node-id))
+           (objects (plist-get state :surface-node-object-table))
+           (keep-object (gethash keep-id objects))
+           (paint-object (gethash paint-id objects))
+           (candidate (ebox-candidate-begin (current-buffer)))
+           (root-render (symbol-function 'ebox-surface--render-candidate))
+           (root-renders 0)
+           report)
+      (ebox-candidate-replace-range-ref
+       candidate 'items
+       (ebox-test-box :key 'new :source-identity 'new :height 1
+         (ebox-test-text "new")))
+      (ebox-candidate-replace-host-ref
+       candidate 'paint
+       (ebox-test-box :key 'paint :source-identity 'paint :color "#0000FF"
+         (ebox-test-text "paint")))
+      (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                 (lambda (candidate-state)
+                   (cl-incf root-renders)
+                   (should (ebox-surface--mixed-range-splice-p candidate-state))
+                   (funcall root-render candidate-state))))
+        (setq report (ebox-commit (current-buffer) candidate)))
+      (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
+      (should (= 1 root-renders))
+      (should-not (plist-get report :tp-retained-content))
+      (should (> (plist-get report :created-objects) 0))
+      (should (> (plist-get report :removed-objects) 0))
+      (should-not (ebox--host-ref-node (current-buffer) 'old))
+      (should-not (= old-id (plist-get (ebox--host-ref-node (current-buffer) 'new)
+                                      :node-id)))
+      (ebox-commit-test--assert-scroll-family-output "keep" "new" "#0000FF")
+      (dolist (color '("#0000FF" "#00FF00"))
+        (when (equal color "#00FF00")
+          (let ((paint-report
+                 (ebox-commit
+                  (current-buffer)
+                  (ebox-commit-test--scroll-family-candidate (current-buffer) color))))
+            (should (eq (plist-get paint-report :projection-kind) 'paint))))
+        (ebox-commit-test--assert-scroll-family-output "keep" "new" color)
+        (let* ((next (ebox--buffer-render-state (current-buffer)))
+               (next-objects (plist-get next :surface-node-object-table))
+               (contents (buffer-string))
+               (start (string-match "paint" contents)))
+          (should (= keep-id (plist-get (ebox--host-ref-node (current-buffer) 'keep)
+                                        :node-id)))
+          (should (= paint-id (plist-get (ebox--host-ref-node (current-buffer) 'paint)
+                                         :node-id)))
+          (should (eq keep-object (gethash keep-id next-objects)))
+          (should (eq paint-object (gethash paint-id next-objects)))
+          (dotimes (offset (length "paint"))
+            (should (equal (get-text-property (+ start offset) 'face contents)
+                           (list :foreground color)))))))))
 
 
 (defun ebox-commit-test--allocation-closure-root
