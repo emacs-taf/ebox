@@ -1806,11 +1806,16 @@ the projection roots a second time."
          (previous-owned-ranges
           (plist-get state :previous-surface-owned-ranges))
          (retained-owned-ranges
-          (and (eq projection-kind 'mixed-owner-reflow)
-               (eq (plist-get (plist-get state :mixed-owner-proof)
-                              :geometry-kind)
-                   'span-patch)
-               (not (ebox-surface--mixed-range-splice-p state))
+          (and (or (and (eq projection-kind 'mixed-owner-reflow)
+                        (eq (plist-get (plist-get state :mixed-owner-proof)
+                                       :geometry-kind)
+                            'span-patch)
+                        (not (ebox-surface--mixed-range-splice-p state)))
+                   (and (eq projection-kind 'owner-scoped)
+                        (null (plist-get state :paint-property-contributions))
+                        (let ((proofs (plist-get state :owner-scoped-proofs)))
+                          (and (= (length proofs) 1)
+                               (not (plist-get (car proofs) :range-splice-p))))))
                (plist-get state :span-patch-retained-owned-ranges)))
          (node-objects
           (or (and scroll-fast-p
