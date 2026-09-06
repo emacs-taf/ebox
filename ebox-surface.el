@@ -3022,9 +3022,44 @@ valid because their declarative layout and viewport did not change."
        (puthash region-id state table)))
    snapshot))
 
+(defun ebox-surface--refresh-rendered-layout-snapshots (state)
+  "Refresh stale base snapshots after rendering STATE's complete root.
+Keep unchanged entries and their details.  Old published geometry remains
+available during planning; replacements here belong only to the candidate."
+  (let ((snapshots (plist-get state :layout-snapshots))
+        (nodes (plist-get state :node-table))
+        (ebox--node-region-ids-cache (make-hash-table :test 'eq))
+        updated)
+    (when (hash-table-p snapshots)
+      (maphash
+       (lambda (node-id snapshot)
+         (let* ((node (gethash node-id nodes))
+                (fresh (and node (ebox--node-layout-snapshot nil node nil))))
+           (unless (and fresh
+                        (cl-every
+                         (lambda (key)
+                           (equal (plist-get snapshot key) (plist-get fresh key)))
+                         '(:node-id :type :display :region-ids
+                           :style-signature :child-ids)))
+             (unless updated (setq updated (copy-hash-table snapshots)))
+             (if fresh
+                 (puthash node-id fresh updated)
+               (remhash node-id updated)))))
+       snapshots)
+      (when updated
+        (plist-put state :layout-snapshots updated))))
+  state)
+
 (defun ebox-surface--render-candidate (state)
-  "Render candidate STATE or optional NODE in isolated side tables."
-  (ebox-surface--render-candidate-node state (plist-get state :root-node)))
+  "Render candidate STATE's complete root in isolated side tables."
+  (let ((rendered
+         (ebox-surface--render-candidate-node state (plist-get state :root-node))))
+    ;; A retained node id can now describe a different display or subtree.
+    ;; Refresh the complete lightweight snapshot, including ancestor region
+    ;; membership; stripping only span details would preserve stale style facts.
+    (setq state (ebox-surface--finish-runtime-state state))
+    (ebox-surface--refresh-rendered-layout-snapshots state)
+    rendered))
 
 (defun ebox-surface--render-candidate-node (state node)
   "Render NODE from candidate STATE in isolated Ebox side tables."
@@ -3594,17 +3629,15 @@ Proof mismatches return nil; unexpected rendering errors propagate."
               node)))
          (retain-properties-p
           (and (memq (plist-get state :projection-kind)
-                     '(span-patch owner-scoped))
+                     '(span-patch owner-scoped mixed-owner-reflow))
                (ebox-surface--owner-needs-ancestor-paint-p state owner-id))))
     (when (and old-snapshot spans node render-node
-               ;; Mixed projection has a separate paint recomposition step.
-               ;; Ordinary spans have only the detached owner's rendered
-               ;; faces; retain the full renderer when enclosing paint would
-               ;; otherwise disappear from changed text.
+               ;; Detached geometry omits enclosing effects.  Mixed paint
+               ;; only recomposes dirty paint owners, so unchanged ancestors
+               ;; must also survive its geometry replacement.
                (or (not retain-properties-p)
                    (and previous-state
-                        (not (or role-owned-lines-p allocation-closure-p
-                                 retain-external-owner-suffix-p))
+                        (not (or role-owned-lines-p allocation-closure-p))
                         (ebox-surface--unchanged-enclosing-effects-p
                          previous-state state owner-id))))
       (let* ((rendered
@@ -3642,9 +3675,14 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                       retain-external-owner-suffix-p)
                   (and owned-rendered
                        (when-let* ((owners
-                                   (ebox-surface--retained-external-owner-suffix
+                                    (ebox-surface--retained-external-owner-suffix
                                     buffer spans region-ids)))
-                         (ebox--add-content-owners owned-rendered owners)))
+                         ;; The retained-property proof compares detached
+                         ;; renders, then restores the complete published
+                         ;; owner stack together with every other property.
+                         (if retain-properties-p
+                             owned-rendered
+                           (ebox--add-content-owners owned-rendered owners))))
                 owned-rendered))
              (replacement
               (and owned-rendered

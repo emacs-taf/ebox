@@ -816,6 +816,196 @@
                                  (buffer-string)))))))))
       (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
+(defun ebox-child-range-test--snapshot-detail (expanded &optional title)
+  "Return a retained detail root, with TITLE and status when EXPANDED."
+  (if expanded
+      (ebox-test-column :key 'detail :source-identity 'detail :overflow 'scroll
+        :bgcolor "#E8DED1"
+        (ebox-test-text (propertize (or title "title-1") 'face '(:weight bold))
+                        :key 'title :source-identity 'title)
+        (ebox-test-text "status" :key 'status :source-identity 'status))
+    (ebox-test-text "placeholder" :key 'detail :source-identity 'detail)))
+
+(defun ebox-child-range-test--snapshot-replacement-root ()
+  "Return a detail Range beside painted rows and an active scroll sibling."
+  (ebox-test-column :width '(200) :bgcolor "#FFFDF8"
+    (ebox-test-box :key 'row-1 :source-identity 'row-1 :color "#123456"
+      (ebox-test-text "row-1"))
+    (ebox-test-box :key 'row-2 :source-identity 'row-2 :color "#654321"
+      (ebox-test-text "row-2"))
+    (ebox-test-column :bgcolor "#DDE7EF"
+      :surface-properties '(help-echo "retained detail help")
+      (ebox-test-child-range
+       'details (ebox-child-range-test--snapshot-detail nil)))
+    (ebox-test-box :key 'scroll :source-identity 'scroll
+      :height 2 :width '(80) :overflow 'scroll
+      (ebox-test-text "line-a\nline-b\nline-c\nline-d"))))
+
+(defun ebox-child-range-test--replace-snapshot-detail (buffer expanded)
+  "Return a BUFFER candidate replacing its detail Range with EXPANDED content."
+  (let ((candidate (ebox-candidate-begin buffer)))
+    (ebox-candidate-replace-range-ref
+     candidate 'details (ebox-child-range-test--snapshot-detail expanded))
+    candidate))
+
+(defun ebox-child-range-test--assert-current-snapshot (buffer node-id)
+  "Assert BUFFER's NODE-ID snapshot reflects its current structural/style facts."
+  (let* ((node (ebox--buffer-runtime-node buffer node-id))
+         (expected (ebox--node-layout-snapshot buffer node))
+         (actual (ebox--layout-snapshot buffer node-id)))
+    (dolist (key '(:type :display :region-ids :style-signature :child-ids))
+      (ert-info ((format "current snapshot field %S" key))
+        (should (equal (plist-get expected key) (plist-get actual key)))))))
+
+(defun ebox-child-range-test--assert-full-render-equivalent (buffer)
+  "Assert BUFFER exactly matches a full render of its published root."
+  (with-current-buffer buffer
+    (let* ((state (ebox--buffer-render-state buffer))
+           (expected (ebox--render-node (plist-get state :root-node)
+                                       (plist-get state :source-index))))
+      (should (equal-including-properties expected (buffer-string))))))
+
+(ert-deftest ebox-child-range-retained-kind-replacement-refreshes-snapshots ()
+  "Text/Column roundtrips refresh facts only after successful publication."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (let* ((owner-id (plist-get (ebox--host-ref-node (current-buffer) 'detail)
+                                :node-id))
+           (sibling-id (plist-get (ebox--host-ref-node (current-buffer) 'row-1)
+                                  :node-id))
+           (ancestors
+            (let ((node-id owner-id)
+                  (parents (plist-get (ebox--buffer-render-state (current-buffer))
+                                      :parent-table))
+                  result)
+              (while (setq node-id (gethash node-id parents))
+                (push node-id result))
+              result)))
+      (dolist (expanded '(t nil t))
+        (ert-info ((format "detail expanded=%S" expanded))
+          (dolist (ancestor ancestors)
+            (ebox--layout-snapshot (current-buffer) ancestor))
+          (ebox--ensure-layout-snapshot-details (current-buffer) sibling-id)
+          (let* ((old (ebox--ensure-layout-snapshot-details (current-buffer) owner-id))
+                 (old-facts (copy-tree old))
+                 (state (ebox--buffer-render-state (current-buffer)))
+                 (snapshots (plist-get state :layout-snapshots))
+                 (runtime-revision (plist-get state :runtime-revision))
+                 (surface-revision (tp-surface-revision ebox-surface--buffer-surface))
+                 (scroll-id (car (plist-get state :scroll-region-ids)))
+                 (scroll (gethash scroll-id ebox--scroll-global-state))
+                 (before (buffer-string))
+                 sibling-seed sibling-seed-facts
+                 (seed-observer
+                  (lambda (candidate-state)
+                    (setq sibling-seed
+                          (gethash sibling-id (plist-get candidate-state
+                                                        :layout-snapshots))
+                          sibling-seed-facts (copy-tree sibling-seed)))))
+            (should (equal (if expanded '(inline flow) '(block column))
+                           (plist-get old :display)))
+            (should (eq (if expanded 'visible 'scroll)
+                        (plist-get (plist-get old :style-signature) :overflow)))
+            (cl-letf (((symbol-function 'accept-change-group)
+                       (lambda (_) (error "Reject retained kind replacement"))))
+              (should (equal
+                       (should-error
+                        (ebox-commit
+                         (current-buffer)
+                         (ebox-child-range-test--replace-snapshot-detail
+                          (current-buffer) expanded)))
+                       '(error "Reject retained kind replacement"))))
+            (should (eq state (ebox--buffer-render-state (current-buffer))))
+            (should (eq snapshots (plist-get state :layout-snapshots)))
+            (should (eq old (gethash owner-id snapshots)))
+            (should (equal old-facts old))
+            (should (= runtime-revision (plist-get state :runtime-revision)))
+            (should (= surface-revision
+                       (tp-surface-revision ebox-surface--buffer-surface)))
+            (should (eq scroll (gethash scroll-id ebox--scroll-global-state)))
+            (should (equal-including-properties before (buffer-string)))
+            (advice-add 'ebox-surface--render-candidate :before seed-observer)
+            (unwind-protect
+                (ebox-commit
+                 (current-buffer)
+                 (ebox-child-range-test--replace-snapshot-detail
+                  (current-buffer) expanded))
+              (advice-remove 'ebox-surface--render-candidate seed-observer))
+            (should (ebox--layout-snapshot-detailed-p sibling-seed))
+            (should (eq sibling-seed
+                        (gethash sibling-id
+                                 (plist-get (ebox--buffer-render-state (current-buffer))
+                                            :layout-snapshots))))
+            (should (equal sibling-seed-facts sibling-seed))
+            (should (= owner-id
+                       (plist-get (ebox--host-ref-node (current-buffer) 'detail)
+                                  :node-id)))
+            (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+            (ebox-child-range-test--assert-current-snapshot
+             (current-buffer) owner-id)
+            (dolist (ancestor ancestors)
+              (ebox-child-range-test--assert-current-snapshot
+               (current-buffer) ancestor))))))))
+
+(ert-deftest ebox-child-range-retained-kind-replacement-allows-mixed-followups ()
+  "Later title and row paint edits remain local beside disjoint scrolling."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (ebox--ensure-layout-snapshot-details
+     (current-buffer)
+     (plist-get (ebox--host-ref-node (current-buffer) 'detail) :node-id))
+    (ebox-commit
+     (current-buffer)
+     (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (scroll-id (car (plist-get state :scroll-region-ids)))
+           (scroll (gethash scroll-id ebox--scroll-global-state))
+           (raw (plist-get scroll :content-lines))
+           (rendered (plist-get scroll :rendered-content-lines))
+           (identities
+            (mapcar (lambda (ref)
+                      (cons ref (plist-get (ebox--host-ref-node (current-buffer) ref)
+                                           :node-id)))
+                    '(row-1 row-2 detail title status scroll))))
+      (should scroll-id)
+      (should (= (length (plist-get state :scroll-region-ids)) 1))
+      (dolist (selected '(2 1 2))
+        (let* ((candidate (ebox-candidate-begin (current-buffer)))
+               (root-renders 0)
+               (observer (lambda (&rest _arguments) (cl-incf root-renders)))
+               report)
+          (ebox-candidate-replace-host-ref
+           candidate 'title
+           (ebox-test-text (propertize (format "title-%d" selected)
+                                      'face '(:weight bold))
+                           :key 'title :source-identity 'title))
+          (dolist (row '(1 2))
+            (let ((ref (intern (format "row-%d" row))))
+              (ebox-candidate-replace-host-ref
+               candidate ref
+               (ebox-test-box :key ref :source-identity ref
+                 :color (if (= row selected) "#123456" "#654321")
+                 (ebox-test-text (format "row-%d" row))))))
+          (advice-add 'ebox-surface--render-candidate :before observer)
+          (unwind-protect
+              (setq report (ebox-commit (current-buffer) candidate))
+            (advice-remove 'ebox-surface--render-candidate observer))
+          (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+          (dolist (entry identities)
+            (should (= (cdr entry)
+                       (plist-get (ebox--host-ref-node (current-buffer) (car entry))
+                                  :node-id))))
+          (ert-info ((format "selected=%S root-renders=%S report=%S"
+                             selected root-renders report))
+            (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
+            (should (zerop root-renders))
+            (should-not (plist-get report :tp-full-root)))
+          (let ((next-scroll (gethash scroll-id ebox--scroll-global-state)))
+            (should (eq raw (plist-get next-scroll :content-lines)))
+            (should (eq rendered (plist-get next-scroll :rendered-content-lines)))))))))
+
 (ert-deftest ebox-child-range-does-not-reuse-disappeared-key-positionally ()
   "A new keyed item must not inherit a removed peer's runtime identity."
   (let ((buffer (generate-new-buffer " *ebox-range-key-reentry*")))
