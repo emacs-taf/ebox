@@ -72,8 +72,7 @@
          (input (ebox-dsl-test--constructor-input tag plist))
          (builder (car input))
          (node
-          (let ((ebox-canonical--source-builder builder))
-            (apply #'ebox-box-create (cdr input))))
+          (apply #'ebox-box-create :source-builder builder (cdr input)))
          (index (ebox-source-builder-finish builder)))
     (ebox-canonical-input-create (list node) index)))
 
@@ -876,7 +875,8 @@
              "AB"))
     (should (equal (mapcar #'ebox--string-pixel-width
                            (ebox-string-lines rendered))
-                   '(120 120 120)))))
+                   ;; Two rows with the default zero gap occupy two lines.
+                   '(120 120)))))
 
 (ert-deftest ebox-canonical-grid-consumes-direct-child-placement ()
   "Grid placement should stay on child Boxes without grid-item wrappers."

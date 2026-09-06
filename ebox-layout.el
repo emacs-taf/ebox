@@ -490,6 +490,12 @@ START-INDEX is the first source line index represented by LINES."
     (lines region-id content-height padding-line-filler color bgcolor)
   "Finish chrome-free top-aligned underfilled scroll LINES in one pass."
   (let ((ebox--propertize-private-content-line-p t)
+        ;; Resolve paint inputs once, as `ebox--propertize-colors' does, while
+        ;; retaining the private-line, in-place finishing pass below.
+        (foreground-face
+         (and color (ebox-buffer--color-face color 'foreground)))
+        (background-face
+         (and bgcolor (ebox-buffer--color-face bgcolor 'background)))
         rendered-lines)
     (cl-labels
         ((finish-line (line index source-p)
@@ -516,12 +522,12 @@ START-INDEX is the first source line index represented by LINES."
            ;; `ebox-string-lines' made these source lines private, and blank
            ;; normalization above creates a fresh filler.  Apply the same face
            ;; properties in place instead of copying every viewport-wide line.
-          (when color
+           (when foreground-face
              (ebox--add-render-face!
-              line 0 (length line) `(:foreground ,color) t))
-           (when bgcolor
+              line 0 (length line) foreground-face t))
+           (when background-face
              (ebox--add-render-face!
-              line 0 (length line) `(:background ,bgcolor) t))
+              line 0 (length line) background-face t))
            line))
       (cl-loop for line in lines
                for index from 0
@@ -1018,21 +1024,23 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
     (when (and (= (length children) 1)
                (eq (plist-get (car children) :ebox-kind) 'text)
                (not (eq (ebox-get box :wrap-mode) 'kp)))
-      (throw
-       'rendered
-       (ebox--call-with-box-content-context
-        box
-        (lambda ()
-          (let* ((child (car children))
-                 (width (ebox--wrapper-content-viewport-pixel box))
-                 (wrap-mode (ebox-get box :wrap-mode))
-                 (rendered
-                  (let ((ebox--inline-auto-width-intrinsic-p t))
-                    (ebox--render-with-cache child))))
-            (if (and width (> width 0)
-                     (ebox-style-soft-wrap-p wrap-mode))
-                (ebox--wrap-text rendered width wrap-mode)
-              rendered))))))
+      ;; Resolve against the outer containing block.  Inside the content
+      ;; context a responsive width would subtract this Box's chrome twice.
+      (let ((width (ebox--wrapper-content-viewport-pixel box)))
+        (throw
+         'rendered
+         (ebox--call-with-box-content-context
+          box
+          (lambda ()
+            (let* ((child (car children))
+                   (wrap-mode (ebox-get box :wrap-mode))
+                   (rendered
+                    (let ((ebox--inline-auto-width-intrinsic-p t))
+                      (ebox--render-with-cache child))))
+              (if (and width (> width 0)
+                       (ebox-style-soft-wrap-p wrap-mode))
+                  (ebox--wrap-text rendered width wrap-mode)
+                rendered)))))))
   (let* ((resolved-width (ebox--wrapper-content-viewport-pixel box))
          (content-width (and resolved-width (> resolved-width 0)
                              resolved-width))
@@ -1559,19 +1567,14 @@ Internal implementation of `ebox-render' for box nodes."
 
          ;; Border Dimensions and Colors
          (border-left-pixel (ebox-get box :border-left-pixel))
-         (border-left-color (ebox-get box :border-left-color))
          (border-right-pixel (ebox-get box :border-right-pixel))
-         (border-right-color (ebox-get box :border-right-color))
          (border-top-p (> (ebox-get box :border-top-pixel) 0))
-         (border-top-color (ebox-get box :border-top-color))
          (border-bottom-p (> (ebox-get box :border-bottom-pixel) 0))
-         (border-bottom-color (ebox-get box :border-bottom-color))
 
          ;; Style and Layout
          (color (and (ebox-style--text-paint-owner-p box)
                      (ebox-get box :color)))
          (bgcolor (ebox-get box :bgcolor))
-         (inner-height (+ content-height padding-top padding-bottom))
          (padding-line-filler (ebox-pixel-space content-pixel))
 
          (scroll-offset (or (ebox-get box :scroll-offset) 0))
@@ -1696,7 +1699,7 @@ Internal implementation of `ebox-render' for box nodes."
     ;; 保留原有的 ebox-content/ebox-content-idx 属性
     (unless simple-scroll-rendered-lines
       (setq result
-            (ebox--maplines
+            (mapcar
              (lambda (line)
                (if (and (string-empty-p (string-trim line))
                         (ebox--line-content-metadata-uniform-p line)
@@ -1714,116 +1717,46 @@ Internal implementation of `ebox-render' for box nodes."
                                    'ebox-content-idx 0
                                    'ebox-content-owner region-id)))
                  line))
-             result)))
+             (ebox-string-lines result))))
 
-    ;; 2. Vertical Padding (Top/Bottom) - 添加区域标记
-    (when (or (> padding-top 0) (> padding-bottom 0))
-      (let ((pt-str (when (> padding-top 0)
-                      (ebox--propertize-region
-                       (ebox--pixel-blank content-pixel padding-top)
-                       'ebox-pt region-id)))
-            (pb-str (when (> padding-bottom 0)
-                      (ebox--propertize-region
-                       (ebox--pixel-blank content-pixel padding-bottom)
-                       'ebox-pb region-id))))
-        (setq result (ebox--lines-stack-vertical pt-str result pb-str))))
+    ;; Scroll state describes formatted content, independently of chrome.
+    (puthash region-id box ebox--region-box-table)
+    ;; Intrinsic measurement must leave published scroll state alone: its
+    ;; placeholder content would clear the live lazy producer state.
+    (unless (or ebox--intrinsic-layout-measurement
+                ebox--scroll-window-skip-state-rebuild-p)
+      (if (and (eq overflow 'scroll) (> text-height content-height))
+          (ebox--scroll-set-state
+           region-id
+           (append
+            (list :scroll-offset scroll-offset
+                  :content-lines formatted-lines
+                  :content-height content-height
+                  :rendered-content-lines scroll-rendered-lines
+                  :box box)
+            (when scroll-window-result
+              (list :content-lines-complete-p
+                    (plist-get scroll-window-result :complete)
+                    :scroll-window-producer-spec
+                    (plist-get scroll-window-result :scroll-window-producer-spec)
+                    :render-content-prefix
+                    (plist-get scroll-window-result :render-content-prefix)
+                    :materialize-content-lines
+                    (plist-get scroll-window-result :materialize-content-lines)))))
+        (ebox--scroll-clear-state region-id)))
 
-    ;; 3. Horizontal Padding (Left/Right)
-    (let* ((pl-str (when (> padding-left 0)
-                     (ebox--propertize-region
-                      (ebox--pixel-blank padding-left inner-height)
-                      'ebox-pl region-id)))
-           (pr-str (when (> padding-right 0)
-                     (ebox--propertize-region
-                      (ebox--pixel-blank padding-right inner-height)
-                      'ebox-pr region-id))))
-      ;; Cache box definition for dynamic content updates
-      (puthash region-id box ebox--region-box-table)
-      ;; Cache scroll state only when the box can actually move.  Most boxes
-      ;; use scroll overflow by default but have no hidden lines; keeping them
-      ;; out of the global scroll table keeps wheel hit-testing cheap.
-      ;; Intrinsic measurement must leave published scroll state alone: its
-      ;; placeholder content always looks fully visible and would clear the
-      ;; live lazy producer state.
-      (unless (or ebox--intrinsic-layout-measurement
-                  ebox--scroll-window-skip-state-rebuild-p)
-        (if (and (eq overflow 'scroll)
-                 (> text-height content-height))
-            (ebox--scroll-set-state
-             region-id
-             (append
-              (list :scroll-offset scroll-offset
-                    :content-lines formatted-lines
-                    :content-height content-height
-                    :rendered-content-lines scroll-rendered-lines
-                    :box box)
-              (when scroll-window-result
-                (list :content-lines-complete-p
-                      (plist-get scroll-window-result :complete)
-                      :scroll-window-producer-spec
-                      (plist-get scroll-window-result
-                                 :scroll-window-producer-spec)
-                      :render-content-prefix
-                      (plist-get scroll-window-result
-                                 :render-content-prefix)
-                      :materialize-content-lines
-                      (plist-get scroll-window-result
-                                 :materialize-content-lines)))))
-          (ebox--scroll-clear-state region-id)))
-      (when (or pl-str pr-str)
-        (setq result
-              (ebox--lines-concat-horizontal pl-str result pr-str))))
-
-    ;; 4. Foreground and Background Color
-    (when (and (or color bgcolor)
-               (not simple-scroll-rendered-lines))
+    ;; Ownership, alignment and blank normalization are complete.  Compose
+    ;; padding, paint, borders and the host surface as lines, sharing the
+    ;; window wrapper's decoration algorithm instead of repeatedly flattening
+    ;; full-height padding/border strips and splitting the result again.
+    (if simple-scroll-rendered-lines
+        ;; The existing scroll path has already completed chrome and paint.
+        (ebox--apply-surface-properties result (ebox-get box :surface-properties))
       (setq result
-            (ebox--maplines
-             (lambda (line)
-               (ebox--propertize-colors line color bgcolor))
-             result)))
-
-    ;; 5. Left/Right Border - 添加区域标记
-    (when (or (> border-left-pixel 0) (> border-right-pixel 0))
-      (let ((bl-str (when (> border-left-pixel 0)
-                      (ebox--propertize-region
-                       (ebox--pixel-border border-left-pixel
-                                           inner-height border-left-color)
-                       'ebox-bl region-id)))
-            (br-str (when (> border-right-pixel 0)
-                      (ebox--propertize-region
-                       (ebox--pixel-border border-right-pixel
-                                           inner-height border-right-color)
-                       'ebox-br region-id))))
-        (setq result
-              (ebox--lines-concat-horizontal
-               bl-str result br-str))))
-
-    ;; 6. Top/Bottom Border (implemented as overline/underline) - 添加区域标记
-    ;;
-    ;; Apply horizontal borders after horizontal padding and side borders are
-    ;; assembled, so the overline/underline spans the same full outer line that
-    ;; owns the left/right border display spaces.  This keeps corners visually
-    ;; connected when text-scale changes line metrics.
-    (when (or border-top-p border-bottom-p)
-      (let ((lines (ebox-string-lines result)))
-        (when border-top-p
-          (setf (car lines)
-                (propertize
-                 (ebox--propertize-overline (car lines) border-top-color)
-                 'ebox-bt region-id)))
-        (when border-bottom-p
-          (setf (car (last lines))
-                (propertize
-                 (ebox--propertize-underline (car (last lines)) border-bottom-color)
-                 'ebox-bb region-id)))
-        (setq result (ebox-lines-join lines))))
-
-    ;; The host interaction surface is the border box.  Apply it after all
-    ;; content, padding, and border characters exist, but before margins and
-    ;; visible overflow are appended.  Nested text properties retain priority.
-    (ebox--apply-surface-properties
-     result (ebox-get box :surface-properties))
+            (ebox-lines-join
+             (ebox--window-render-flat-wrapper-chunk-lines
+              box result 0 region-id padding-line-filler
+              t t t))))
 
     ;; 7. Left/Right Margin - 添加区域标记
     (when (or (> margin-left 0) (> margin-right 0))
@@ -1976,15 +1909,17 @@ also pass a pre-rendered string while an active surface owns runtime facts."
   (let* ((explicit-source-index-p (and base-source-index t))
          (handle (and (listp node) (ebox-tree-node-source-handle node)))
          (node-id (and (listp node) (plist-get node :node-id)))
+         (source-state
+          (and (not explicit-source-index-p) node-id
+               (cl-find-if
+                (lambda (state)
+                  (let ((table (plist-get state :node-table)))
+                    (and (hash-table-p table)
+                         (eq node (gethash node-id table)))))
+                ebox--render-source-states)))
          (base-source-index
           (or base-source-index
-              (and node-id
-                   (cl-loop
-                    for state in ebox--render-source-states
-                    for table = (plist-get state :node-table)
-                    when (and (hash-table-p table)
-                              (eq node (gethash node-id table)))
-                    return (plist-get state :source-index)))
+              (plist-get source-state :source-index)
               (and handle
                    (cl-find-if
                     (lambda (index)
@@ -2009,9 +1944,20 @@ also pass a pre-rendered string while an active surface owns runtime facts."
            (if (and (not (stringp node))
                     (not (ebox-style-cascade-active-p))
                     (zerop (ebox-tree-author-style-count node))
-                    (not
-                     (ebox-render-context-inline-inheritance-required-p
-                      node source-index)))
+                    (or
+                     ;; A retained node already carries its ancestor cascade.
+                     ;; Probe an isolated copy of those computed facts instead
+                     ;; of publishing the detached subtree with a whole-tree
+                     ;; source index.  Explicit input and active stylesheets
+                     ;; still use the complete canonical projection boundary.
+                     (and source-state
+                          (eq base-source-index
+                              (plist-get source-state :source-index))
+                          (ecss-computed-style-p
+                           (plist-get node :ebox-computed-style)))
+                     (not
+                      (ebox-render-context-inline-inheritance-required-p
+                       node source-index))))
                (let ((ebox--region-id-counter ebox--region-id-counter)
                      (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
                  (ebox--render-ephemeral-static node))
@@ -2126,6 +2072,15 @@ TARGET-WIDTH is the containing block width used to pad narrower leaves."
          (window-lines (plist-get window :lines))
          (rendered (unless window
                      (ebox--render-with-cache leaf)))
+         (wrap-mode
+          (and (eq (plist-get leaf :ebox-kind) 'text)
+               (or ebox--containing-wrap-mode (ebox-get leaf :wrap-mode))))
+         (rendered
+          (if (and rendered (> target-width 0)
+                   (ebox-style-soft-wrap-p wrap-mode))
+              (ebox--lines-justify
+               (ebox--wrap-text rendered target-width wrap-mode) target-width)
+            rendered))
          (width (cond
                  ((plist-member window :pixel-width)
                   (plist-get window :pixel-width))
@@ -2628,8 +2583,14 @@ last cached leaf instead of walking the stack from the beginning."
                       rendered-content-lines-tail tail)))
             (unless cached-hit
               (condition-case err
-                  (let* ((window (ebox--render-scroll-window-source
-                                  source limit source-cache))
+                  (let* ((window
+                          (let ((ebox-viewport-width
+                                 (or (ebox--wrapper-content-viewport-pixel box)
+                                     ebox-viewport-width))
+                                (ebox--containing-wrap-mode
+                                 (ebox-get box :wrap-mode)))
+                            (ebox--render-scroll-window-source
+                             source limit source-cache)))
                      (next-source-cache (plist-get window :cache))
                      (next-complete-cache (plist-get window :complete))
                      (source-lines-exact-p
@@ -2888,10 +2849,14 @@ are always resolved from BOX so no closure can retain a replaced runtime."
 (defun ebox--scroll-window-source-lines-exact-p (box window)
   "Return non-nil when WINDOW lines can be used as BOX formatted content."
   (and (plist-get window :content-width-exact-p)
-       (ebox-style-no-soft-wrap-p (ebox-get box :wrap-mode))
+       (or (ebox-style-no-soft-wrap-p (ebox-get box :wrap-mode))
+           ;; A Column already wrapped its Text leaves; its Box/Flex/Grid
+           ;; children retain their own geometry, including explicit overflow.
+           (ebox--scroll-window-canonical-column-p box))
        (eq (ebox-get box :text-align) 'left)
-       (= (ebox--content-pixel box)
-          (or (ebox--viewport-pixel-width nil) 0))))
+       (let ((content-viewport (ebox--wrapper-content-viewport-pixel box)))
+         (and (numberp content-viewport)
+              (= (ebox--content-pixel box) content-viewport)))))
 
 (defun ebox--scroll-window-formatted-lines (box window)
   "Return formatted scroll content lines for BOX from WINDOW."
@@ -2928,12 +2893,14 @@ are always resolved from BOX so no closure can retain a replaced runtime."
 
 (defun ebox--window-render-flat-wrapper-chunk-lines
     (box content-lines start-index region-id padding-line-filler
-         &optional include-top include-bottom)
-  "Render a marginless BOX wrapper around CONTENT-LINES in one pass.
+         &optional include-top include-bottom content-prepared-p)
+  "Render BOX's border box around CONTENT-LINES in one pass.
 START-INDEX and REGION-ID identify the wrapped content lines.  INCLUDE-TOP
 adds top padding and border chrome.  INCLUDE-BOTTOM adds bottom padding and
-border chrome.  The caller guarantees that BOX has no horizontal margins and
-no included vertical margin."
+border chrome.  This helper does not consume BOX's margins; the caller owns
+their outer composition.  CONTENT-PREPARED-P means CONTENT-LINES already
+carry final ownership, indices and blank normalization, letting a complete Box
+and a window chunk share the same chrome compositor."
   (let* ((padding-left (ebox-get box :padding-left-pixel))
          (padding-right (ebox-get box :padding-right-pixel))
          (padding-top (if include-top
@@ -3019,12 +2986,18 @@ no included vertical margin."
              for idx from start-index
              collect
              (let* ((blank-replacement-p
-                    (and (string-blank-p source-line)
+                    (and (not content-prepared-p)
+                         (string-blank-p source-line)
                           (ebox--line-content-metadata-uniform-p source-line)
                           (not (ebox--line-has-non-content-properties-p
                                 source-line))))
                     (line
-                     (if blank-replacement-p
+                     (cond
+                      (content-prepared-p
+                       (if (or color bgcolor)
+                           (ebox--propertize-colors source-line color bgcolor)
+                         source-line))
+                      (blank-replacement-p
                          (let ((content-id
                                 (get-text-property
                                  0 'ebox-content source-line))
@@ -3057,9 +3030,10 @@ no included vertical margin."
                                   'ebox-content-owner region-id)
                                (propertize
                                 padding-line-filler
-                                'ebox-content region-id
-                                'ebox-content-idx idx
-                                'ebox-content-owner region-id))))
+                                 'ebox-content region-id
+                                 'ebox-content-idx idx
+                                 'ebox-content-owner region-id)))))
+                      (t
                        (let* ((colored-p (or color bgcolor))
                               (owned-source
                                (if colored-p
@@ -3070,7 +3044,7 @@ no included vertical margin."
                                 colored-p))
                            (ebox--propertize-content-line
                             owned-source region-id idx
-                            padding-line-filler))))))
+                            padding-line-filler)))))))
                (when (and blank-replacement-p (or color bgcolor))
                  (setq line (ebox--propertize-colors line color bgcolor)))
                (concat border-left-line padding-left-line line
@@ -3428,18 +3402,22 @@ only used for incomplete lazy prefixes."
             (or (ebox--pixel-blank (ebox--content-pixel box)
                                    content-height)
                 ""))
-        (let ((ebox-viewport-width
-               (or content-viewport ebox-viewport-width)))
+        ;; Source children use the inner viewport.  Formatting BOX and its
+        ;; retained producers still requires the containing viewport, or its
+        ;; padding and borders would be subtracted from that inner width again.
+        (let ((viewport-width ebox-viewport-width)
+              (viewport-height ebox-viewport-height))
           (let* ((target-lines
                   (+ scroll-offset
                      content-height 1
                      (ebox--scroll-window-initial-lookahead-lines)))
-                 (window (ebox--render-scroll-window-source
-                          source target-lines))
+                 (window
+                  (let ((ebox-viewport-width
+                         (or content-viewport viewport-width))
+                        (ebox--containing-wrap-mode (ebox-get box :wrap-mode)))
+                    (ebox--render-scroll-window-source source target-lines)))
                  (formatted-lines
-                  (ebox--scroll-window-formatted-lines box window))
-                 (viewport-width ebox-viewport-width)
-                 (viewport-height ebox-viewport-height))
+                  (ebox--scroll-window-formatted-lines box window)))
             (setq ebox--scroll-window-render-result
                   (list :complete (plist-get window :complete)
                         :content-height content-height

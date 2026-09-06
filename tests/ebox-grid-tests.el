@@ -109,6 +109,179 @@
                       entry-left rendered 100 '(:justify-items stretch))))
       (should (= calls 1)))))
 
+(ert-deftest ebox-grid-renders-assigned-cell-width-once ()
+  "Final Grid assembly must reuse the width-sized cell's complete output."
+  (let* ((cell-region 91001)
+         (input
+          (ebox-test-grid
+           :width '(80)
+           :grid-template-columns '((minmax (0) (fr 1)) (fr 1))
+           :column-gap '(4)
+           (ebox-test-box
+            :region-id cell-region :width 'stretch :wrap-mode 'word
+            :color "#112233" :bgcolor "#ddeeff"
+            (ebox-test-text "alpha beta gamma delta epsilon zeta eta theta"))
+           (ebox-test-box (ebox-test-text "peer") :width 'stretch)))
+         (original (symbol-function 'ebox--render-box))
+         contexts
+         sized-output
+         output)
+    (cl-letf (((symbol-function 'ebox--render-box)
+               (lambda (box)
+                 (let ((rendered (funcall original box)))
+                   (when (eq (ebox-get box :region-id) cell-region)
+                     (push (list ebox-viewport-width
+                                 ebox--intrinsic-layout-measurement)
+                           contexts)
+                     (when (and (equal ebox-viewport-width 38)
+                                (not ebox--intrinsic-layout-measurement))
+                       (setq sized-output rendered)))
+                   rendered))))
+      (setq output (ebox-render input)))
+    ;; The intrinsic pass is still required by the general Grid algorithm;
+    ;; one final render establishes both row height and the published cell.
+    (should (= 1 (cl-count '(nil t) contexts :test #'equal)))
+    (should (= 1 (cl-count '(38 nil) contexts :test #'equal)))
+    (let ((face (get-text-property
+                 (string-match "alpha" sized-output) 'face sized-output)))
+      (should face)
+      (should (equal face (get-text-property
+                          (string-match "alpha" output) 'face output))))
+    (let ((lines (ebox-string-lines output)))
+      (should (> (length lines) 1))
+      (should (equal (mapcar #'ebox--string-pixel-width lines)
+                     (make-list (length lines) 80))))))
+
+(ert-deftest ebox-grid-definite-stretched-cells-skip-unused-intrinsic-output ()
+  "Definite fixed/fr columns need only the stretched cell's final output."
+  (dolist (width '(80 120))
+    (dolist (cell-width '(nil auto stretch contain))
+      (let* ((cell-region 91002)
+             (input
+              (ebox-test-grid
+               :width (list width)
+               :grid-template-columns '((fr 1) (28)) :column-gap '(4)
+               (apply #'ebox-test-box
+                      (append
+                       (list :region-id cell-region :wrap-mode 'word
+                             :color "#112233" :bgcolor "#ddeeff")
+                       (and cell-width (list :width cell-width))
+                       (list
+                        (ebox-test-text
+                         "alpha beta gamma delta epsilon zeta eta theta iota kappa"))))
+               (ebox-test-box (ebox-test-text "peer") :width 'stretch)))
+             (original (symbol-function 'ebox--render-box))
+             (intrinsic-count 0)
+             (assigned-count 0)
+             fast slow)
+        (cl-letf (((symbol-function 'ebox--render-box)
+                   (lambda (box)
+                     (when (eq (ebox-get box :region-id) cell-region)
+                       (if (and (null ebox-viewport-width)
+                                ebox--intrinsic-layout-measurement)
+                           (cl-incf intrinsic-count)
+                         (when (equal ebox-viewport-width (- width 32))
+                           (cl-incf assigned-count))))
+                     (funcall original box))))
+          (setq fast (ebox-render input)))
+        (should (zerop intrinsic-count))
+        (should (= assigned-count 1))
+        (cl-letf (((symbol-function 'ebox-grid--content-independent-columns-p)
+                   (lambda (&rest _) nil)))
+          (setq slow (ebox-render input)))
+        (should (equal-including-properties fast slow))))))
+
+(ert-deftest ebox-grid-intrinsic-elision-preserves-spans-nesting-and-row-height ()
+  "Reusing final cell output preserves wrapped rows, spans, and paint."
+  (dolist (alignment '(start center end stretch))
+    (let* ((input
+            (ebox-test-grid
+             :width '(96) :grid-template-columns '((fr 1) (fr 1))
+             :grid-template-rows '(auto auto auto)
+             :column-gap '(4) :row-gap 1 :align-items alignment
+             (ebox-test-column
+              :grid-column '(1 :span 2) :width 'stretch
+              :color "#123456" :bgcolor "#ddeeff"
+              (ebox-test-text "spanning header")
+              (ebox-test-row
+               (ebox-test-box (ebox-test-text "control") :padding '(0 (2)))
+               (ebox-test-box (ebox-test-text "action") :padding '(0 (2)))))
+             (ebox-test-box
+              :grid-row '(2 :span 2) :grid-column 1
+              :width 'stretch :wrap-mode 'word :min-width 'min-content
+              (ebox-test-text
+               "alpha beta gamma delta epsilon zeta eta theta iota kappa"))
+             (ebox-test-box :grid-row 2 :grid-column 2 :width 'stretch
+                            (ebox-test-text "peer"))
+             (ebox-test-box :grid-row 3 :grid-column 2 :width 'stretch
+                            (ebox-test-text "tail"))))
+           (fast (ebox-render input))
+           slow)
+      (cl-letf (((symbol-function 'ebox-grid--content-independent-columns-p)
+                 (lambda (&rest _) nil)))
+        (setq slow (ebox-render input)))
+      (should (equal-including-properties fast slow))
+      (should (> (ebox-string-height fast) 3)))))
+
+(ert-deftest ebox-grid-keeps-consumed-intrinsic-output ()
+  "Content tracks, natural alignment, and indefinite sizes keep measurement."
+  (dolist (case
+           '((:width (80) :columns (auto (fr 1)))
+             (:width (80) :columns (min-content (fr 1)))
+             (:width (80) :columns (max-content (fr 1)))
+             (:width (80) :columns ((minmax (0) (fr 1)) (fr 1)))
+             (:width (80) :columns ((40)) :implicit t)
+             (:width max-content :columns ((fr 1) (fr 1)))
+             (:width (0) :columns ((fr 1) (fr 1)))
+             (:width (80) :columns ((fr 1) (fr 1)) :justify start)
+             (:width (80) :columns ((fr 1) (fr 1)) :justify center)
+             (:width (80) :columns ((fr 1) (fr 1)) :justify end)
+             (:width (80) :columns ((fr 1) (fr 1)) :cell-width (20))))
+    (let* ((cell-region 91003)
+           (input
+            (ebox-test-grid
+             :width (plist-get case :width)
+             :grid-template-columns (plist-get case :columns)
+             :grid-auto-flow (if (plist-get case :implicit) 'column 'row)
+             :justify-items (or (plist-get case :justify) 'stretch)
+             (ebox-test-box
+              :region-id cell-region
+              :width (or (plist-get case :cell-width) 'stretch)
+              (ebox-test-text "natural content"))
+             (ebox-test-box (ebox-test-text "peer") :width 'stretch)))
+           (original (symbol-function 'ebox--render-box))
+           (intrinsic-count 0))
+      (cl-letf (((symbol-function 'ebox--render-box)
+                 (lambda (box)
+                   (when (and (eq (ebox-get box :region-id) cell-region)
+                              (null ebox-viewport-width)
+                              ebox--intrinsic-layout-measurement)
+                     (cl-incf intrinsic-count))
+                   (funcall original box))))
+        (ebox-render input))
+      (should (> intrinsic-count 0)))))
+
+(ert-deftest ebox-grid-missing-intrinsic-output-requires-unconditional-stretch ()
+  "Only unconditional width-sized rendering may consume an unmeasured cell."
+  (let* ((node (ebox-test-root
+                (ebox-test-box (ebox-test-text "cell") :width 'stretch)))
+         (entry (list :node node))
+         (rendered (make-hash-table :test #'eq))
+         (calls 0))
+    (cl-letf (((symbol-function 'ebox--render-with-cache)
+               (lambda (&rest _)
+                 (cl-incf calls)
+                 "assigned")))
+      (should (equal "assigned"
+                     (ebox-grid--entry-source
+                      entry rendered 40 '(:justify-items stretch))))
+      (should-error
+       (ebox-grid--entry-source entry rendered 40 '(:justify-items start)))
+      (plist-put node :width '(20))
+      (should-error
+       (ebox-grid--entry-source entry rendered 40 '(:justify-items stretch)))
+      (should (= calls 1)))))
+
 (ert-deftest ebox-grid-constrains-auto-width-children-to-track-size ()
   "Auto-width grid children should render within their assigned track."
   (let* ((ebox-viewport-width 120)
@@ -215,6 +388,146 @@
            (ebox-test-box (ebox-test-text "Right") :grid-row 2 :grid-column 2)))))
     (should (string-match-p "Header" plain))
     (should (string-match-p "Left.*Right" plain))))
+
+(ert-deftest ebox-grid-grown-rows-keep-independent-occupancy ()
+  "Growing several rows must allocate a distinct occupancy vector per row."
+  (let* ((original (ebox-grid--occupancy 1 2))
+         (grown (ebox-grid--grow original 3 2)))
+    (should (eq (aref original 0) (aref grown 0)))
+    (should-not (eq (aref grown 1) (aref grown 2)))
+    (aset (aref grown 1) 1 'occupied)
+    (should-not (aref (aref grown 0) 1))
+    (should-not (aref (aref grown 2) 1)))
+  (let* ((input
+          (ebox-test-grid
+           :grid-template-columns '((20) (20)) :row-gap 0
+           (ebox-test-box :grid-row 1 :grid-column '(1 :span 2)
+                          (ebox-test-text "header"))
+           (ebox-test-box :grid-row '(2 :span 2) :grid-column 1
+                          (ebox-test-text "spanned"))
+           (ebox-test-box :grid-row 2 :grid-column 2
+                          (ebox-test-text "middle"))
+           (ebox-test-box :grid-row 3 :grid-column 2
+                          (ebox-test-text "last"))))
+         (lines (seq-remove
+                 #'string-blank-p
+                 (mapcar #'substring-no-properties
+                         (ebox-string-lines (ebox-render input))))))
+    (should (= (length lines) 3))
+    (should (string-match-p "header" (nth 0 lines)))
+    (should (string-match-p "spanned.*middle" (nth 1 lines)))
+    (should (string-match-p "last" (nth 2 lines)))))
+
+(ert-deftest ebox-grid-zero-row-gap-adds-no-display-line ()
+  "Row gaps contribute exactly their declared line count, including zero."
+  (dolist (gap '(0 1 2))
+    (let* ((input
+            (ebox-test-grid
+             :grid-template-columns '((20) (20))
+             :grid-template-rows '(1 2) :row-gap gap
+             (ebox-test-box :grid-row 1 :grid-column '(1 :span 2)
+                            (ebox-test-text "header"))
+             (ebox-test-box :grid-row 2 :grid-column 1
+                            (ebox-test-text "body\ntail"))
+             (ebox-test-box :grid-row 2 :grid-column 2
+                            (ebox-test-text ""))))
+           (lines (ebox-string-lines (ebox-render input))))
+      (should (= (length lines) (+ 3 gap)))
+      (should (string-match-p "header" (nth 0 lines)))
+      (dotimes (index gap)
+        (should (string-blank-p (nth (1+ index) lines))))
+      (should (string-match-p "body" (nth (1+ gap) lines)))
+      (should (string-match-p "tail" (nth (+ 2 gap) lines))))))
+
+(ert-deftest ebox-grid-row-spans-preserve-text-across-gaps ()
+  "A spanning cell retains text and paint across rows and positive gaps."
+  (dolist (gap '(0 1 2))
+    (dolist (alignment '(start center end stretch))
+      (let* ((input
+              (ebox-test-grid
+               :grid-template-columns '((20) (20))
+               :grid-template-rows '(2 2) :row-gap gap :align-items alignment
+               (ebox-test-box
+                :grid-row '(1 :span 2) :grid-column 1
+                :color "#123456"
+                :surface-properties '(help-echo "spanning-help")
+                (ebox-test-text "spanned\ncontinued"))
+               (ebox-test-box :grid-row 1 :grid-column 2
+                              (ebox-test-text "top"))
+               (ebox-test-box :grid-row 2 :grid-column 2
+                              (ebox-test-text "bottom"))))
+             (rendered (ebox-render input))
+             (lines (ebox-string-lines rendered))
+             (start (pcase alignment
+                      ('center (/ (+ 2 gap) 2))
+                      ('end (+ 2 gap))
+                      (_ 0))))
+        (should (= (length lines) (+ 4 gap)))
+        (should (string-match-p "spanned" (nth start lines)))
+        (should (string-match-p "continued" (nth (1+ start) lines)))
+        (dotimes (index gap)
+          (should-not (string-match-p "top\\|bottom" (nth (+ 2 index) lines))))
+        (let ((face (get-text-property (string-match "spanned" rendered)
+                                       'face rendered)))
+          (should face)
+          (should (equal face (get-text-property
+                               (string-match "continued" rendered)
+                               'face rendered)))
+          (dolist (label '("spanned" "continued"))
+            (should (equal "spanning-help"
+                           (get-text-property (string-match label rendered)
+                                              'help-echo rendered)))))))))
+
+(ert-deftest ebox-grid-zero-height-track-contributes-only-its-gap ()
+  "A zero-height track adds no text line, while declared gaps remain real."
+  (dolist (gap '(0 1 2))
+    (dolist (rows '((0 1) (1 0)))
+      (let* ((leading-zero-p (zerop (car rows)))
+             (input
+              (ebox-build
+               `(grid :width (40) :grid-template-columns ((40))
+                      :grid-template-rows ,rows :row-gap ,gap
+                 (text ,(if leading-zero-p "hidden" "visible"))
+                 (text ,(if leading-zero-p "visible" "hidden")))))
+             (rendered (ebox-render input))
+             (lines (ebox-string-lines rendered)))
+        (should (= (length lines) (1+ gap)))
+        (should-not (string-match-p "hidden" rendered))
+        (should (string-match-p "visible"
+                                (nth (if leading-zero-p gap 0) lines)))
+        (dolist (line (if leading-zero-p (butlast lines) (cdr lines)))
+          (should (string-blank-p line)))))))
+
+(ert-deftest ebox-grid-row-span-preserves-lines-across-zero-height-track ()
+  "A zero-height row within a span changes offsets only through its gaps."
+  (dolist (gap '(0 1 2))
+    (let* ((height (+ 2 (* 2 gap)))
+           (labels (cl-loop for index below height
+                            collect (format "line-%d" index)))
+           (input
+            (ebox-test-grid
+             :width '(40) :grid-template-columns '((20) (20))
+             :grid-template-rows '(1 0 1) :row-gap gap
+             (ebox-test-box
+              :grid-row '(1 :span 3) :grid-column 1
+              :surface-properties '(help-echo "spanning-help")
+              (ebox-test-text (mapconcat #'identity labels "\n")))
+             (ebox-test-box :grid-row 1 :grid-column 2
+                            (ebox-test-text "top"))
+             (ebox-test-box :grid-row 2 :grid-column 2
+                            (ebox-test-text "hidden"))
+             (ebox-test-box :grid-row 3 :grid-column 2
+                            (ebox-test-text "bottom"))))
+           (rendered (ebox-render input))
+           (lines (ebox-string-lines rendered)))
+      (should (= (length lines) height))
+      (should-not (string-match-p "hidden" rendered))
+      (cl-loop for label in labels
+               for line in lines
+               do (should (string-match-p label line))
+               do (should (equal "spanning-help"
+                                 (get-text-property (string-match label line)
+                                                    'help-echo line)))))))
 
 (ert-deftest ebox-grid-uses-implicit-track-templates ()
   "Implicit columns should use `:grid-auto-columns' when they grow."

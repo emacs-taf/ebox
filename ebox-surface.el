@@ -791,6 +791,119 @@ Headless/test windows retain the body width fallback."
       (tp-surface-revision surface)
     (error "Ebox buffer has no committed surface revision: %S" buffer)))
 
+(defun ebox-surface--snapshot-root (root)
+  "Detach ROOT's structural and mutable input data from a live mount.
+Opaque capabilities, including functions, keymaps and source handles, keep
+identity.  No runtime identity, cache or TP attachment is exported."
+  (let ((copy (ebox-tree-copy-node-structure root))
+        (copies (make-hash-table :test #'eq)))
+    (cl-labels
+        ((data (value)
+           (cond
+            ((or (functionp value) (keymapp value)) value)
+            ((gethash value copies))
+            ((ebox-layout-config-p value)
+             (let ((result (ebox-layout-config--copy value)))
+               (puthash value result copies)
+               result))
+            ((recordp value) value)
+            ((stringp value)
+             (let ((result (copy-sequence value)) (position 0))
+               (puthash value result copies)
+               (while (< position (length value))
+                 (let ((end (next-property-change position value (length value))))
+                   (set-text-properties position end
+                                        (data (text-properties-at position value))
+                                        result)
+                   (setq position end)))
+               result))
+            ((consp value)
+             (let ((result (cons nil nil)))
+               (puthash value result copies)
+               (setcar result (data (car value)))
+               (setcdr result (data (cdr value)))
+               result))
+            ((hash-table-p value)
+             (let ((result (copy-hash-table value)))
+               (puthash value result copies)
+               (clrhash result)
+               (maphash (lambda (key item) (puthash (data key) (data item) result))
+                        value)
+               result))
+            ((char-table-p value)
+             (let* ((result (copy-sequence value))
+                    (default (char-table-range value nil))
+                    (parent (char-table-parent value))
+                    (missing (make-symbol "no-extra-slot"))
+                    (index 0)
+                    extra)
+               (puthash value result copies)
+               ;; Traverse only explicit entries; materializing inherited or
+               ;; default values would change later lookup semantics.
+               (set-char-table-parent result nil)
+               (set-char-table-range result nil nil)
+               (map-char-table
+                (lambda (range item) (set-char-table-range result range (data item)))
+                result)
+               (set-char-table-range result nil (data default))
+               (set-char-table-parent result (data parent))
+               (while (not (eq missing
+                               (setq extra
+                                     (condition-case nil
+                                         (char-table-extra-slot value index)
+                                       (args-out-of-range missing)))))
+                 (set-char-table-extra-slot result index (data extra))
+                 (setq index (1+ index)))
+               result))
+            ((vectorp value)
+             (let ((result (copy-sequence value)))
+               (puthash value result copies)
+               (dotimes (index (length result))
+                 (aset result index (data (aref value index))))
+               result))
+            ((bool-vector-p value)
+             (let ((result (copy-sequence value)))
+               (puthash value result copies)
+               result))
+            (t value)))
+         (visit (node)
+           (cl-loop for tail on node by #'cddr
+                    for key = (car tail)
+                    unless (memq key ebox-tree--child-source-keys)
+                    do (setcar (cdr tail)
+                               (unless (memq key ebox-tree--runtime-source-keys)
+                                 (data (cadr tail)))))
+           (ebox-tree-for-each-direct-child node #'visit)))
+      (visit copy))
+    copy))
+
+(defun ebox-surface-buffer-snapshot (buffer)
+  "Export BUFFER's current committed canonical input on explicit request.
+Return a plist with :input, :revision and :mount-id.  The integer mount ID
+distinguishes remounts whose revisions may coincide.  Query is rejected while
+a TP transaction is active or BUFFER has no live Ebox surface.
+
+This explicit operation copies node structure and mutable input data, retaining
+exact immutable source facts and opaque capabilities such as callbacks and
+keymaps.  It neither renders nor publishes, and never advances the revision.
+Cost is linear in exported data plus TP's latest retained diagnostic report.
+The returned input survives later commits and unmounting; it can be rendered
+independently.  It does not freeze external capabilities or the display
+environment, and old Host references gain no authority over another mount."
+  (when (tp-transaction-active-p)
+    (error "Ebox committed snapshot is unavailable during a TP transaction"))
+  (let* ((surface (or (ebox-surface--live-buffer-surface buffer)
+                      (error "Ebox buffer has no committed snapshot: %S" buffer)))
+         (state (tp-surface-client-state surface))
+         (revision (tp-surface-revision surface))
+         (root (ebox-surface--snapshot-root (plist-get state :root-node)))
+         (builder (ebox-source-builder-create)))
+    (ebox-source-builder-import builder (plist-get state :source-index))
+    (list :input (ebox-canonical-input-create
+                  (list root) (ebox-source-builder-finish builder))
+          :revision revision
+          :mount-id (plist-get (tp-surface-inspect surface) :id))))
+
 (defun ebox-surface-region-mounts (buffer region-id &optional roles)
   "Return REGION-ID's TP-owned output mounts in BUFFER.
 When ROLES is non-nil, keep only direct mounts owning a listed Ebox role.
@@ -1442,15 +1555,26 @@ PREVIOUS-STATE's node-object table."
                          (not range-splice-p)))))
          (_materialized-source-index
           (when (and subjects-required-p
-                     (ebox-source--index-derived-stale-p source-index))
-            ;; A local candidate patches exact handle→subject ancestry in
-            ;; O(changed) while marking document-order selector views stale.
-            ;; Style projection consumes that patched table directly; only a
-            ;; fact-only input with no subjects needs a full tree derivation.
-            (unless (ebox-source--index-node-subjects source-index)
-              (setq source-index
-                    (ebox-tree-source-index
-                     root t ebox--render-root-parent-kind source-index)))))
+                     (ebox-source--index-derived-stale-p source-index)
+                     (not
+                      (when-let* ((previous-index
+                                   (plist-get previous-state :source-index)))
+                        (and
+                         (ebox-source--index-node-subjects source-index)
+                         (not (ebox-source--index-derived-stale-p previous-index))
+                         (eq (ebox-source--index-subjects source-index)
+                             (ebox-source--index-subjects previous-index))))))
+            ;; A local delta copies touched subjects, while unchanged children
+            ;; can still reference their previous parent subjects.  A full
+            ;; style projection needs coherent ancestry for its eq-keyed
+            ;; bindings.  A declaration-only rebind instead shares an already
+            ;; validated subject tree and merely invalidates query entries;
+            ;; retain that persistent tree.  Never certify a previously stale
+            ;; tree from table identity alone.  Local projections above do not
+            ;; request subjects and retain their O(changed) source-index path.
+            (setq source-index
+                  (ebox-tree-source-index
+                   root t ebox--render-root-parent-kind source-index))))
          (subjects (when subjects-required-p
                      (ebox-tree-subject-index root source-index)))
          (selector-tree-snapshot
@@ -4094,6 +4218,59 @@ Each owner appears at most once for one rendered fragment."
           (setq node-id (gethash node-id parent-table)))))
     (nreverse owners)))
 
+(defun ebox-surface--line-layout-dependencies (fragments rendered)
+  "Record allocation dependencies for one line's FRAGMENTS from RENDERED.
+A boundary display-space with only content-owner roles fills its containing
+line.  Its width depends on descendant content and chrome in that container.
+Interior gaps remain outside this permission.  Keep publication dependencies
+separate from semantic and paint ownership."
+  (let ((contributors (make-hash-table :test #'equal)))
+    (dolist (fragment fragments)
+      (let* ((roles (plist-get fragment :role-ids))
+             (direct (delete-dups
+                      (cl-loop for (role . id) in roles
+                               unless (eq role 'content-owner)
+                               collect id))))
+        (when direct
+          (dolist (owner (delete-dups (mapcar #'cdr roles)))
+            (dolist (id direct)
+              ;; A container's own padding/border is outside the allocation
+              ;; it fills.  Descendant chrome participates in that allocation.
+              (unless (equal id owner)
+                (let ((entry
+                       (or (gethash owner contributors)
+                           (puthash
+                            owner
+                            (list :ids nil :seen (make-hash-table :test #'equal)
+                                  :start (plist-get fragment :start)
+                                  :end (plist-get fragment :end))
+                            contributors))))
+                  (unless (gethash id (plist-get entry :seen))
+                    (plist-put entry :ids (cons id (plist-get entry :ids)))
+                    (puthash id t (plist-get entry :seen)))
+                  (plist-put entry :start
+                             (min (plist-get entry :start)
+                                  (plist-get fragment :start)))
+                  (plist-put entry :end
+                             (max (plist-get entry :end)
+                                  (plist-get fragment :end))))))))))
+    (dolist (fragment fragments)
+      (let* ((roles (plist-get fragment :role-ids))
+             (start (plist-get fragment :start))
+             (end (plist-get fragment :end)))
+        (when (and roles
+                   (cl-every (lambda (role) (eq (car role) 'content-owner))
+                             roles)
+                   (= (- end start) 1)
+                   (= (aref rendered start) ?\s)
+                   (eq (car-safe (get-text-property start 'display rendered))
+                       'space))
+          (when-let* ((entry (gethash (cdar roles) contributors)))
+            (when (or (<= end (plist-get entry :start))
+                      (>= start (plist-get entry :end)))
+              (plist-put fragment :layout-region-ids
+                         (plist-get entry :ids)))))))))
+
 (defun ebox-surface--rendered-fragments (rendered)
   "Return an offset index of Ebox-owned property runs in RENDERED.
 The complete propertized string remains the sole text storage.  Runs keep
@@ -4105,7 +4282,7 @@ when it needs to mutate them."
         (line 0)
         (role-cache (make-hash-table :test #'equal))
         (ordinal-table (make-hash-table :test #'equal))
-        fragments previous-role-ids next-role-ids)
+        fragments line-fragments previous-role-ids next-role-ids)
     (while (< position limit)
       (let* ((next (or (next-property-change position rendered limit)
                        limit))
@@ -4136,11 +4313,18 @@ when it needs to mutate them."
                     :face-baseline baseline
                     :face-baseline-known-p (and origin t))
               fragments)
+        (push (car fragments) line-fragments)
         (when origin
           (remove-text-properties
            position next (list ebox--paint-origin-property nil) rendered))
-        (cl-incf line (cl-count ?\n rendered :start position :end next))
+        (let ((line-count (cl-count ?\n rendered :start position :end next)))
+          (when (> line-count 0)
+            (ebox-surface--line-layout-dependencies line-fragments rendered)
+            (setq line-fragments nil))
+          (cl-incf line line-count))
         (setq position (max next (1+ position)))))
+    (when line-fragments
+      (ebox-surface--line-layout-dependencies line-fragments rendered))
     (setq fragments (nreverse fragments))
     (dolist (fragment fragments)
       (if-let* ((roles (plist-get fragment :role-ids)))
@@ -4375,20 +4559,40 @@ fragment's complete paint-owner ancestor chain."
 (defun ebox-surface--owned-ranges-from-runs
     (context leaf state node-objects region-objects attach-p visit-runs)
   "Attach merged ownership produced by VISIT-RUNS to candidate LEAF.
-VISIT-RUNS receives one callback accepting ROLE-IDS, START, and END.
+VISIT-RUNS receives one callback accepting ROLE-IDS, START, END, and optional
+layout dependency region ids.
 Adjacent ranges merge only when both their owner and opaque tags match."
   (let ((active (make-hash-table :test #'eq))
         (owner-cache (make-hash-table :test #'equal))
         ranges)
     (funcall
      visit-runs
-     (lambda (role-ids start end)
-       (let ((owners (gethash role-ids owner-cache 'ebox/no-owners)))
+     (lambda (role-ids start end &optional layout-region-ids)
+       (let* ((cache-key (if layout-region-ids
+                             (cons layout-region-ids role-ids)
+                           role-ids))
+              (owners (gethash cache-key owner-cache 'ebox/no-owners)))
          (when (eq owners 'ebox/no-owners)
            (setq owners
                  (ebox-surface--fragment-owners
                   role-ids state node-objects region-objects))
-           (puthash role-ids owners owner-cache))
+           (when layout-region-ids
+             (let ((attached (make-hash-table :test #'eq)))
+               (dolist (owner owners) (puthash (car owner) t attached))
+               (dolist (region-id layout-region-ids)
+                 (let ((node-id (gethash region-id
+                                         (plist-get state :region-node-table))))
+                   (while node-id
+                     (let ((object (gethash node-id node-objects)))
+                       (unless object
+                         (error "Ebox layout dependency has no TP object: %S"
+                                node-id))
+                       (unless (gethash object attached)
+                         (push (list object '(:ebox/layout-output t)) owners)
+                         (puthash object t attached)))
+                     (setq node-id
+                           (gethash node-id (plist-get state :parent-table))))))))
+           (puthash cache-key owners owner-cache))
          (dolist (owner owners)
            (let* ((object (nth 0 owner))
                   (tags (nth 1 owner))
@@ -4425,7 +4629,8 @@ Adjacent ranges merge only when both their owner and opaque tags match."
                 (end (if source-p
                          (plist-get fragment :end)
                        (+ offset (length (plist-get fragment :text))))))
-           (funcall visit (plist-get fragment :role-ids) start end)
+           (funcall visit (plist-get fragment :role-ids) start end
+                    (plist-get fragment :layout-region-ids))
            (setq offset
                  (if source-p
                      end
@@ -4446,7 +4651,8 @@ Adjacent ranges merge only when both their owner and opaque tags match."
              (funcall visit
                       (plist-get fragment :role-ids)
                       (+ offset (plist-get fragment :start))
-                      (+ offset (plist-get fragment :end))))
+                      (+ offset (plist-get fragment :end))
+                      (plist-get fragment :layout-region-ids)))
            (setq offset (+ offset (length line) 1))))))))
 
 (defun ebox-surface--native-owned-ranges
@@ -4750,12 +4956,6 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
             (puthash role-ids chain ebox-surface--paint-node-chain-cache))
           chain)))))
 
-(defun ebox-surface--foreground-face (color)
-  "Return the Ebox foreground face for COLOR."
-  (if (eq color 'ebox/default-foreground)
-      '(:inherit default)
-    (list :foreground color)))
-
 (defun ebox-surface--box-face-contributions (box)
   "Return BOX typography and color contributions in render order."
   (let (faces)
@@ -4766,9 +4966,9 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
                    (ebox-buffer--text-decoration-face box)))
         (push decoration faces))
       (when-let* ((color (plist-get box :color)))
-        (push (ebox-surface--foreground-face color) faces)))
+        (push (ebox-buffer--color-face color 'foreground) faces)))
     (when-let* ((background (plist-get box :bgcolor)))
-      (push (list :background background) faces))
+      (push (ebox-buffer--color-face background 'background) faces))
     (nreverse faces)))
 
 (defun ebox-surface--region-face-contributions (box roles ancestor-p)
@@ -4778,7 +4978,7 @@ ANCESTOR-P means BOX wraps a more specific rendered surface."
     (cond
      ((memq 'overflow-foreground roles)
       (when-let* ((color (plist-get box :color)))
-        (push (ebox-surface--foreground-face color) faces)))
+        (push (ebox-buffer--color-face color 'foreground) faces)))
      ((memq 'bl roles)
       (push (ebox-buffer-side-border-face
              (plist-get box :border-left-color)) faces))
@@ -4792,19 +4992,15 @@ ANCESTOR-P means BOX wraps a more specific rendered surface."
                (> (or (plist-get box :border-top-pixel) 0) 0))
       (setq faces
             (append faces
-                    (list (list :overline
-                                (or (plist-get box :border-top-color) t))))))
+                    (list (ebox-buffer--color-face
+                           (plist-get box :border-top-color) 'overline)))))
     (when (and (memq 'bb roles)
                (> (or (plist-get box :border-bottom-pixel) 0) 0))
       (setq faces
             (append
              faces
-             (list
-              (list :underline
-                    (append '(:position t)
-                            (when-let* ((color
-                                        (plist-get box :border-bottom-color)))
-                              (list :color color))))))))
+             (list (ebox-buffer--color-face
+                    (plist-get box :border-bottom-color) 'underline)))))
     faces))
 
 (defconst ebox-surface--node-face-cache-missing

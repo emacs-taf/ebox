@@ -162,7 +162,9 @@ Set this to nil to leave `gc-cons-percentage' unchanged.")
         :gc-cons-percentage percentage))
 
 (defun ebox--deferred-render-gc-restore ()
-  "Restore GC settings saved by `ebox--with-deferred-render-gc'."
+  "Restore caller GC policy saved by `ebox--with-deferred-render-gc'.
+The render burst owns temporary settings, not collection of the entire Emacs
+heap.  Normal allocation pressure decides when to collect after restoration."
   (let ((state ebox--deferred-render-gc-state))
     (cl-incf ebox--deferred-render-gc-generation)
     (setq ebox--deferred-render-gc-state nil)
@@ -172,8 +174,7 @@ Set this to nil to leave `gc-cons-percentage' unchanged.")
       (setq gc-cons-threshold
             (plist-get state :gc-cons-threshold))
       (setq gc-cons-percentage
-            (plist-get state :gc-cons-percentage))
-      (garbage-collect))))
+            (plist-get state :gc-cons-percentage)))))
 
 (defun ebox--deferred-render-gc-enter ()
   "Raise GC settings for an interactive render transaction."
@@ -408,30 +409,56 @@ foreground color."
         '(:inherit default)
       (list :foreground foreground))))
 
+(defun ebox-buffer--color-face (color role)
+  "Return COLOR's canonical face contribution for paint ROLE.
+Paint slots retain their named-face address.  ROLE is `foreground',
+`background', `overline', or `underline'; nil horizontal border colors
+retain the ordinary default-color border semantics."
+  (if (tp-paint-slot-p color)
+      (tp-paint-slot-face color)
+    (pcase role
+      ('foreground
+       (if (eq color 'ebox/default-foreground)
+           (ebox-buffer--default-foreground-face)
+         (list :foreground color)))
+      ('background (list :background color))
+      ('overline (list :overline (or color t)))
+      ('underline
+       (list :underline (append '(:position t) (and color (list :color color)))))
+      (_ (error "Unknown Ebox color paint role: %S" role)))))
+
 (defun ebox-buffer-paint-text-properties (style role)
   "Return Emacs text properties for computed STYLE in paint ROLE.
 This backend mapper intentionally accepts computed style facts and emits only
 buffer-facing paint properties.  Layout-only properties never pass through."
-  (let ((face (ebox-buffer--font-face style)))
+  (let ((face (ebox-buffer--font-face style))
+        named-faces)
     (when-let* ((decoration (ebox-buffer--text-decoration-face style)))
       (setq face (append face decoration)))
     (when-let* ((foreground (ebox-buffer--paint-color style role)))
-      (setq face
-            (cond
-             ((tp-paint-slot-p foreground)
-              (let ((slot-face (tp-paint-slot-face foreground)))
-                (if face (list slot-face face) slot-face)))
-             ((eq foreground 'ebox/default-foreground)
-              (append (ebox-buffer--default-foreground-face) face))
-             (t (plist-put face :foreground foreground)))))
+      (let ((contribution (ebox-buffer--color-face foreground 'foreground)))
+        (if (symbolp contribution)
+            (push contribution named-faces)
+          (setq face
+                (if (eq foreground 'ebox/default-foreground)
+                    (append contribution face)
+                  (plist-put face :foreground
+                             (plist-get contribution :foreground)))))))
     (when-let* ((background (ebox-buffer--paint-background-color style role)))
-      (setq face
-            (if (tp-paint-slot-p background)
-                (let ((slot-face (tp-paint-slot-face background)))
-                  (if face (list slot-face face) slot-face))
-              (plist-put face :background background))))
-    (when face
-      (list 'face face))))
+      (let ((contribution (ebox-buffer--color-face background 'background)))
+        (if (symbolp contribution)
+            (push contribution named-faces)
+          (setq face (plist-put face :background
+                                (plist-get contribution :background))))))
+    ;; Keep the anonymous plist writable until every color has been mapped.
+    ;; Named faces compose only at the end, as a flat precedence-ordered list.
+    (when (or named-faces face)
+      (list 'face
+            (cond
+             ((null named-faces) face)
+             (face (append named-faces (list face)))
+             ((cdr named-faces) named-faces)
+             (t (car named-faces)))))))
 
 (defun ebox--propertize-typography (string style)
   "Apply STYLE's typography to one copy of STRING."
@@ -479,9 +506,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
          (length (length string)))
     (ebox--add-render-face!
      string 0 length
-     (if (tp-paint-slot-p bgcolor)
-         (tp-paint-slot-face bgcolor)
-       `(:background ,bgcolor))
+     (ebox-buffer--color-face bgcolor 'background)
      t)
     (ebox--register-render-owned-face-values source string)))
 
@@ -492,11 +517,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
          (length (length string)))
     (ebox--add-render-face!
      string 0 length
-     (cond
-      ((tp-paint-slot-p color) (tp-paint-slot-face color))
-      ((eq color 'ebox/default-foreground)
-       (ebox-buffer--default-foreground-face))
-      (t `(:foreground ,color)))
+     (ebox-buffer--color-face color 'foreground)
      t)
     (ebox--register-render-owned-face-values source string)))
 
@@ -508,18 +529,12 @@ buffer-facing paint properties.  Layout-only properties never pass through."
     (when color
       (ebox--add-render-face!
        string 0 length
-       (cond
-        ((tp-paint-slot-p color) (tp-paint-slot-face color))
-        ((eq color 'ebox/default-foreground)
-         (ebox-buffer--default-foreground-face))
-        (t `(:foreground ,color)))
+       (ebox-buffer--color-face color 'foreground)
        t))
     (when bgcolor
       (ebox--add-render-face!
        string 0 length
-       (if (tp-paint-slot-p bgcolor)
-           (tp-paint-slot-face bgcolor)
-         `(:background ,bgcolor))
+       (ebox-buffer--color-face bgcolor 'background)
        t))
     (ebox--register-render-owned-face-values source string)))
 
@@ -529,9 +544,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
          (string (copy-sequence source)))
     (ebox--add-render-face!
      string 0 (length string)
-     (if (tp-paint-slot-p color)
-         (tp-paint-slot-face color)
-       `(:overline ,(or color t)))
+     (ebox-buffer--color-face color 'overline)
      t)
     (ebox--register-render-owned-face-values source string)))
 
@@ -541,9 +554,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
          (string (copy-sequence source)))
     (ebox--add-render-face!
      string 0 (length string)
-     (if (tp-paint-slot-p color)
-         (tp-paint-slot-face color)
-       `(:underline (:position t ,@(when color `(:color ,color)))))
+     (ebox-buffer--color-face color 'underline)
      t)
     (ebox--register-render-owned-face-values source string)))
 

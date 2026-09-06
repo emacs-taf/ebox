@@ -63,9 +63,6 @@
   (make-hash-table :test #'eq :weakness 'key)
   "Declaration-identity keyed validated canonical node facts.")
 
-(defvar ebox-canonical--source-builder nil
-  "Transaction-local source builder available during typed tree assembly.")
-
 (cl-defstruct (ebox-canonical-facts
                (:constructor ebox-canonical--make-facts))
   "Already computed node-owned projection of one source declaration set."
@@ -397,8 +394,8 @@ only the current canonical-node projection needed before G4c separates paint."
           (setq offset after))))
     (nreverse anchors)))
 
-(defun ebox-canonical--normalize-children (children)
-  "Return material children and optional Range sequence for CHILDREN."
+(defun ebox-canonical--normalize-children (children source-builder)
+  "Normalize CHILDREN, using explicit SOURCE-BUILDER for Range ownership."
   (let (material segments range-p)
     (dolist (entry children)
       (if (ebox-child-range--descriptor-p entry)
@@ -421,19 +418,27 @@ only the current canonical-node projection needed before G4c separates paint."
         (push entry material)))
     (setq material (nreverse material)
           segments (nreverse segments))
-    (when (and range-p (not (ebox-source-builder-p
-                             ebox-canonical--source-builder)))
-      (error "Ebox Range children require one canonical source builder"))
-    (let ((source-builder (and range-p ebox-canonical--source-builder)))
+    (when source-builder
+      (ebox-source--builder-assert-open source-builder)
+      (dolist (child material)
+        (unless (ebox-source--builder-record
+                 source-builder (ebox-node-source-handle child))
+          (error "Ebox child is not owned by :source-builder"))))
+    (when range-p
+      (unless (ebox-source-builder-p source-builder)
+        (error "Ebox Range children require an explicit :source-builder"))
+      (ebox-source--builder-assert-open source-builder))
+    (let ((source-builder (and range-p source-builder)))
       (list material
             (and range-p
                  (ebox-child-range--build
                   segments
                   (lambda (node)
-                    (when-let* ((record
-                                (ebox-source--builder-record
-                                 source-builder
-                                 (ebox-node-source-handle node))))
+                    (let ((record
+                           (ebox-source--builder-record
+                            source-builder (ebox-node-source-handle node))))
+                      (unless record
+                        (error "Ebox Range child is not owned by :source-builder"))
                       (ebox-source-record-key record)))
                   nil t))))))
 
@@ -482,14 +487,17 @@ computed Text measurement facts."
   "Create a canonical BoxNode from evaluated PLIST.
 
 `:layout' must occur exactly once as an `ebox-layout-config'.
-`:children' is a list of canonical nodes.  Every Layout accepts zero or more
-children according to its own formatting algorithm.  `:source-handle' is the
-only author source input."
+`:children' is a list of canonical nodes or transparent Range descriptors.
+Range children require an open `:source-builder' owning their source handles.
+Every Layout accepts zero or more children according to its own formatting
+algorithm.  `:source-handle' remains the node's only author source input."
   (ebox-canonical--validate-plist plist "ebox-box-create")
   (let* ((layout (ebox-canonical--required-field
                   plist :layout "Ebox Box"))
          (children-field (ebox-canonical--optional-field
                           plist :children "Ebox Box"))
+         (builder-field (ebox-canonical--optional-field
+                         plist :source-builder "Ebox Box"))
          (outer-field (ebox-canonical--optional-field
                        plist :outer "Ebox Box"))
          (source-handle (ebox-canonical--source-handle plist "Ebox Box"))
@@ -499,7 +507,7 @@ only author source input."
          child-sequence
          (outer (if outer-field (cdr outer-field) 'block))
          (props (ebox-canonical--without-keys
-                 plist (append '(:layout :children :outer :owned-facts)
+                 plist (append '(:layout :children :outer :owned-facts :source-builder)
                                ebox-canonical--source-fields))))
     (unless (ebox-layout-config-p layout)
       (error "Ebox Box :layout must be a typed layout config: %S"
@@ -509,8 +517,11 @@ only author source input."
       (error "Ebox Box :outer must be inline or block: %S" outer))
     (unless (proper-list-p children)
       (error "Ebox Box :children must be a proper list: %S" children))
+    (when builder-field
+      (unless (ebox-source--builder-record (cdr builder-field) source-handle)
+        (error "Ebox Box is not owned by :source-builder")))
     (pcase-let ((`(,material-children ,normalized-sequence)
-                 (ebox-canonical--normalize-children children)))
+                 (ebox-canonical--normalize-children children (cdr builder-field))))
       (setq children material-children)
       (setq child-sequence normalized-sequence))
     (unless (memq (ebox-layout-config-kind layout)

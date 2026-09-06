@@ -692,8 +692,8 @@ grapheme."
             (ebox--normalize-horizontal-size-value
              basis ebox--preferred-size-keywords))
            (content-size
-            (ebox--resolve-size-content-pixel
-             source normalized (ebox--content-max-pixel source))))
+            (or (ebox--resolve-size-content-pixel source normalized nil)
+                (ebox--content-max-pixel source))))
       (+ (ebox--side-pixel source) content-size)))
    (t
     (ebox--flex-main-value axis basis 0))))
@@ -1058,7 +1058,19 @@ Return a sized render entry containing the rendered string and dimensions."
               (and natural-context-compatible-p
                    (= cross (ebox--flex-sized-entry-cross natural-entry))
                    (or (not stretch)
-                       (not source-box-p))
+                       (not source-box-p)
+                       ;; A numeric cross size already equal to the assigned
+                       ;; Box property leaves its complete geometry unchanged.
+                       ;; Auto/relative sizes and overflow-expanded output
+                       ;; still need the final stretched Box render.
+                       (let ((declared-cross
+                              (ebox-get source (if (eq axis 'row)
+                                                   :height :width))))
+                         (and (numberp declared-cross)
+                              (= declared-cross
+                                 (ebox--flex-box-main-property
+                                  source (if (eq axis 'row) 'column 'row)
+                                  cross)))))
                    natural-entry)))
          (persistent-signature
           (and (not local-entry)
@@ -1664,15 +1676,21 @@ metadata and rendering decisions."
     rendered))
 
 (defun ebox--render-flex-children (config constraints children)
-  "Render Flex CONFIG under frame CONSTRAINTS over flat CHILDREN."
-  (let* ((props (append config constraints))
+  "Render Flex CONFIG under resolved CONSTRAINTS over flat CHILDREN.
+Width is in pixels and height in lines; nil means unbounded, including an
+intrinsic max-content measurement.  Author units and viewport defaults have
+already been resolved by the Box or legacy adapter."
+  (let* ((props config)
          (axis (ebox--flex-axis props))
          (main-size (if (eq axis 'row)
-                        (ebox--flex-horizontal-value (plist-get props :width))
-                      (ebox--flex-line-value (plist-get props :height))))
+                        (plist-get constraints :width)
+                      (plist-get constraints :height)))
          (cross-size (if (eq axis 'row)
-                         (ebox--flex-line-value (plist-get props :height))
-                       (ebox--flex-horizontal-value (plist-get props :width))))
+                         (plist-get constraints :height)
+                       (plist-get constraints :width)))
+         ;; Nil is an explicit unbounded containing block, not permission for
+         ;; a deeper responsive Flex to recover this Box's outer viewport.
+         (ebox-viewport-width (plist-get constraints :width))
          (inline-viewport (ebox--flex-inline-viewport
                            axis main-size cross-size))
          (items (ebox--flex-collect-items children axis inline-viewport))
@@ -1680,9 +1698,8 @@ metadata and rendering decisions."
                     (nreverse items)
                   items))
          (row-gap (or (ebox--flex-line-value (plist-get props :row-gap) 0) 0))
-         (column-gap (or (ebox--flex-horizontal-value
-                          (plist-get props :column-gap) 0)
-                         0))
+         ;; FlexConfig stores the gap in pixels after author-unit expansion.
+         (column-gap (or (plist-get props :column-gap) 0))
          (main-gap (if (eq axis 'row) column-gap row-gap))
          (cross-gap (if (eq axis 'row) row-gap column-gap))
          (lines (ebox--flex-break-lines
@@ -1696,12 +1713,15 @@ metadata and rendering decisions."
                                 main-gap cross-gap))))
 
 (defun ebox--flex-box-constraints (box)
-  "Project BOX content dimensions to private FlexConstraints."
-  (let ((width (ebox--wrapper-content-viewport-pixel box))
-        (height (ebox--resolve-size-content-height
+  "Project BOX content dimensions to resolved private FlexConstraints."
+  (list :width (ebox--wrapper-content-viewport-pixel box)
+        :height (ebox--resolve-size-content-height
                  box (ebox-get box :height) nil)))
-    (list :width (and width (list width))
-          :height height)))
+
+(defun ebox--flex-legacy-constraints (props)
+  "Resolve legacy PROPS' author units and defaults to FlexConstraints."
+  (list :width (ebox--flex-horizontal-value (plist-get props :width))
+        :height (ebox--flex-line-value (plist-get props :height))))
 
 (defun ebox--render-flex-box-children (box props children)
   "Render canonical BOX Flex PROPS over flat CHILDREN."
@@ -1720,7 +1740,7 @@ metadata and rendering decisions."
      node
      (ebox--render-flex-children
       (ebox--plist-remove-keys props '(:width :height))
-      (ebox--plist-keep-keys props '(:width :height))
+      (ebox--flex-legacy-constraints props)
       (ebox-tree-layout-children node)))))
 
 (defun ebox--flex-prewarm-sized-item (node _target-width)
@@ -1753,8 +1773,7 @@ assembles already-rendered items."
                    (ebox--flex-default-order-p children))
           (let* ((row-gap (or (ebox--flex-line-value
                                (plist-get props :row-gap) 0) 0))
-                 (column-gap (or (ebox--flex-horizontal-value
-                                  (plist-get props :column-gap) 0) 0)))
+                 (column-gap (or (plist-get props :column-gap) 0)))
             (setq entry
                   (list :children children
                         :measure-index 0
@@ -1820,15 +1839,17 @@ assembles already-rendered items."
     (plist-get node :box)))
 
 (defun ebox--flex-window-props (node)
-  "Return NODE's resolved Flex properties for lazy row production."
+  "Return NODE's Flex properties with resolved dimensions for lazy rows."
   (if (ebox--flex-window-canonical-node-p node)
       (append
        (ebox-layout-config-props (plist-get node :ebox-layout-config))
        (ebox--flex-box-constraints node))
-    (ebox--flex-container-content-props
-     (plist-get node :props)
-     (plist-get node :raw-props)
-     (plist-get node :box))))
+    (let ((props (ebox--flex-container-content-props
+                  (plist-get node :props)
+                  (plist-get node :raw-props)
+                  (plist-get node :box))))
+      (append (ebox--plist-remove-keys props '(:width :height))
+              (ebox--flex-legacy-constraints props)))))
 
 (defun ebox--flex-window-wrapper-supported-p (box)
   "Return non-nil when BOX can safely wrap an incomplete flex prefix."
@@ -2447,15 +2468,11 @@ Return nil when the flex container needs the normal full renderer."
                   (axis (ebox--flex-axis props))
                   (children (ebox-tree-layout-children node))
                   (main-size (if (eq axis 'row)
-                                 (ebox--flex-horizontal-value
-                                  (plist-get props :width))
-                               (ebox--flex-line-value
-                                (plist-get props :height))))
+                                 (plist-get props :width)
+                               (plist-get props :height)))
                   (cross-size (if (eq axis 'row)
-                                  (ebox--flex-line-value
-                                   (plist-get props :height))
-                                (ebox--flex-horizontal-value
-                                 (plist-get props :width))))
+                                  (plist-get props :height)
+                                (plist-get props :width)))
                   (wrap (plist-get props :flex-wrap)))
              (unless (ebox--flex-window-supported-p
                       node props axis main-size cross-size children)
@@ -2465,9 +2482,7 @@ Return nil when the flex container needs the normal full renderer."
                     (row-gap (or (ebox--flex-line-value
                                   (plist-get props :row-gap) 0)
                                  0))
-                    (column-gap (or (ebox--flex-horizontal-value
-                                     (plist-get props :column-gap) 0)
-                                    0))
+                    (column-gap (or (plist-get props :column-gap) 0))
                     (main-gap column-gap)
                     (cross-gap row-gap)
                     current
@@ -2489,7 +2504,11 @@ Return nil when the flex container needs the normal full renderer."
                           (when add-gap
                             (push (ebox--pixel-blank main-size cross-gap)
                                   pieces))
-                        (let* ((line (nreverse current))
+                        ;; Match the full renderer's content containing block
+                        ;; only while sizing/rendering children.  The wrapper
+                        ;; below still resolves against its outer viewport.
+                        (let* ((ebox-viewport-width main-size)
+                               (line (nreverse current))
                                (line-main
                                 (+ (cl-reduce
                                     #'+ line
@@ -2532,9 +2551,10 @@ Return nil when the flex container needs the normal full renderer."
                  (catch 'enough
                    (while (< index (length children))
                      (let* ((child (nth index children))
-                            (item (or (ebox--flex-window-cheap-item
-                                       child axis index)
-                                      (throw 'unsupported nil)))
+                            (item (let ((ebox-viewport-width main-size))
+                                    (or (ebox--flex-window-cheap-item
+                                         child axis index)
+                                        (throw 'unsupported nil))))
                             (base (plist-get item :hypothetical))
                             (next-size (+ (or current-size 0)
                                           (if current main-gap 0)
@@ -2598,9 +2618,7 @@ known-row render is used only if the new item footprint is not smaller."
              (row-gap (or (ebox--flex-line-value
                            (plist-get props :row-gap) 0)
                           0))
-             (column-gap (or (ebox--flex-horizontal-value
-                              (plist-get props :column-gap) 0)
-                             0))
+             (column-gap (or (plist-get props :column-gap) 0))
              (main-gap column-gap))
         (when (ebox--flex-default-order-p children)
           (let* ((items (ebox--flex-collect-items-for-source-ids
@@ -2654,9 +2672,7 @@ Return nil when NODE's flex configuration needs a full rerender."
              (row-gap (or (ebox--flex-line-value
                            (plist-get props :row-gap) 0)
                           0))
-             (column-gap (or (ebox--flex-horizontal-value
-                              (plist-get props :column-gap) 0)
-                             0))
+             (column-gap (or (plist-get props :column-gap) 0))
              (main-gap column-gap)
              (lines (ebox--flex-break-lines items main-size main-gap wrap)))
         (when (eq wrap 'wrap-reverse)

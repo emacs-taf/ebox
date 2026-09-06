@@ -2152,7 +2152,7 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
       (plist-get props :height) 'vertical "auto")
      :row-gap (or (ebox--flex-line-value (plist-get props :row-gap) 0) 0)
      :column-gap
-     (or (ebox--horizontal-size-pixels (plist-get props :column-gap) 0) 0)
+     (or (plist-get props :column-gap) 0)
      :items
      (vconcat
       (mapcar

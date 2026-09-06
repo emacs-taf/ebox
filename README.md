@@ -46,6 +46,13 @@ assemble typed nodes with one `ebox-source-builder`, then seal the forest and
 its source generation as one `CanonicalEboxInput`; that evaluated API is not a
 second author grammar.
 
+Typed Box construction containing `ebox-child-range` descriptors passes its
+open builder explicitly as `:source-builder`. The builder must own the Box
+and its immediate children's source handles; an empty Range still requires
+an open builder. It is used only during construction. To compose an existing canonical input,
+use `ebox-canonical-input-roots` and `ebox-canonical-input-import-roots`;
+frameworks must not access private canonical fields or dynamic context.
+
 ## Layout choices
 
 - `box` creates a normal visual box.
@@ -64,9 +71,20 @@ do not require a wrapper node.
 - `ebox-commit` atomically publishes a newly built canonical input.
 - `ebox-buffer-update-report` returns the last successful update report.
 - `ebox-rerender-buffer-with-context` applies an explicit viewport change.
+- `ebox-surface-buffer-snapshot` explicitly exports the current committed
+  `:input`, `:revision`, and `:mount-id` as one plist.
 
 Ebox copies canonical input before assigning runtime identity, so one built
 value may be mounted in multiple buffers without sharing live ownership.
+
+Snapshots traverse exported data and TP's latest retained diagnostic report
+only when requested; ordinary updates do not create them.
+Their canonical input remains usable after later updates or unmounting. Mutable
+node data is detached, while immutable source facts and opaque capabilities
+(callbacks, keymaps, records) retain identity. The display environment and
+external capabilities are not frozen. Querying during a TP transaction or
+after unmounting signals an error. Compare both mount ID and revision when
+identifying a committed generation; remounting can restart revision numbers.
 
 Ebox registers rollback-capable state only through TP's public structured
 participant API. TP 1.0.1 supports the consumer-first migration protocol;

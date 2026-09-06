@@ -416,6 +416,70 @@
   "Return the update property names covered by CASES."
   (mapcar #'car cases))
 
+(ert-deftest ebox-normal-single-text-uses-content-width-once ()
+  "One Text and fragmented Text fit the same padded responsive content box."
+  (let ((ebox--string-pixel-width-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'string-pixel-width)
+               (lambda (string) (* 7 (string-width string))))
+              ((symbol-function 'ebox--space-pixel-width) (lambda () 7)))
+      (dolist (width '(stretch (viewport) (96)))
+        (dolist (label '("未完成" "已完成" "Pending"))
+          (let* ((ebox-viewport-width 96)
+                 (props (list :width width :padding '(0 (14))
+                              :border '(1 solid)))
+                 (single (ebox-render
+                          (apply #'ebox-test-box
+                                 (append props (list (ebox-test-text label))))))
+                 (fragmented
+                  (ebox-render
+                   (apply #'ebox-test-box
+                          (append props
+                                  (mapcar (lambda (char)
+                                            (ebox-test-text (char-to-string char)))
+                                          (string-to-list label)))))))
+            (should (= (ebox-string-height single) 1))
+            (should (= (ebox--string-max-pixel-width single) 96))
+            (should (equal (substring-no-properties single)
+                           (substring-no-properties fragmented)))
+            (should (equal (mapcar #'ebox--string-pixel-width
+                                  (ebox-string-lines single))
+                           (mapcar #'ebox--string-pixel-width
+                                   (ebox-string-lines fragmented))))))))))
+
+(ert-deftest ebox-normal-single-text-preserves-genuine-narrow-wrap ()
+  "A real content-width shortage still wraps CJK without losing characters."
+  (let ((ebox-viewport-width 58)
+        (ebox--string-pixel-width-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'string-pixel-width)
+               (lambda (string) (* 7 (string-width string))))
+              ((symbol-function 'ebox--space-pixel-width) (lambda () 7)))
+      (let ((single
+             (ebox-render
+              (ebox-test-box :width 'stretch :padding '(0 (14))
+                             :border '(1 solid)
+                (ebox-test-text "未完成"))))
+            (fragmented
+             (ebox-render
+              (ebox-test-box :width 'stretch :padding '(0 (14))
+                             :border '(1 solid)
+                (ebox-test-text "未") (ebox-test-text "完")
+                (ebox-test-text "成")))))
+        (should (= (ebox-string-height single) 2))
+        (should (equal (mapcar #'ebox--string-pixel-width
+                              (ebox-string-lines single))
+                       '(58 58)))
+        (should (equal (substring-no-properties single)
+                       (substring-no-properties fragmented)))
+        (should (string-match-p "未完[^\n]*\n[^\n]*成" single)))
+      (let ((unwrapped
+             (ebox-render
+              (ebox-test-box :width 'stretch :padding '(0 (14))
+                             :border '(1 solid) :wrap-mode 'none
+                (ebox-test-text "未完成")))))
+        (should (= (ebox-string-height unwrapped) 1))
+        (should (= (ebox--string-max-pixel-width unwrapped) 72))
+        (should (string-match-p "未完成" unwrapped))))))
+
 (ert-deftest ebox-root-background-covers-transparent-layout-wrappers ()
   "A root canvas background should remain under transparent child wrappers."
   (ebox-test--reset-runtime-state)
@@ -699,6 +763,79 @@
      (equal (ebox-test--effective-face-value measured-face :family)
             "Child Family"))
     (should (= (ebox-test--effective-face-value measured-face :height) 120))))
+
+(defun ebox-test--intrinsic-subtree-input (content)
+  "Return a styled Flex whose intrinsic Column contains CONTENT."
+  (ebox-test-flex
+   :width '(240) :color "#112233" :font-family "Parent Family"
+   :font-size 16 :font-weight 'bold
+   (ebox-test-column
+    :id 'item :width 'max-content :flex-shrink 0
+    (ebox-test-box :id 'label :min-width 'max-content :wrap-mode 'none
+                   (ebox-test-text content)))
+   (ebox-test-box :id 'sibling :width '(40) (ebox-test-text "other"))))
+
+(ert-deftest ebox-retained-intrinsic-subtree-keeps-inherited-style ()
+  "A retained subtree probe must keep computed ancestry and private caches."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer (ebox-test--intrinsic-subtree-input "alpha")
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (root (plist-get state :root-node))
+           (node (ebox-test--selector-node (current-buffer) "#label"))
+           (root-before (copy-tree root))
+           (index (plist-get state :source-index))
+           (cache (plist-get state :render-cache))
+           (cache-before (and cache (copy-hash-table cache)))
+           (expected-face (get-text-property (point-min) 'face))
+           (ebox--render-source-states (list state))
+           (ebox--render-source-index index)
+           (ebox--render-root-parent-kind 'column)
+           (rendered (ebox--render-node node)))
+      (should (string-match-p "alpha" rendered))
+      (should (equal (get-text-property 0 'face rendered) expected-face))
+      (should (equal (ebox-test--effective-face-value expected-face :family)
+                     "Parent Family"))
+      (should (eq (ebox-test--effective-face-value expected-face :weight)
+                  'bold))
+      (should (equal root root-before))
+      (should (eq index (plist-get state :source-index)))
+      (when cache
+        (should (eq cache (plist-get state :render-cache)))
+        (should (= (hash-table-count cache) (hash-table-count cache-before)))
+        (maphash (lambda (key value)
+                   (should (eq value (gethash key cache))))
+                 cache-before)))))
+
+(ert-deftest ebox-retained-intrinsic-subtree-requires-exact-source-ownership ()
+  "A retained probe cannot bless explicit roots, copied nodes, or new rules."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer (ebox-test--intrinsic-subtree-input "alpha")
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (node (ebox-test--selector-node (current-buffer) "#label"))
+           (index (plist-get state :source-index))
+           (ebox--render-source-states (list state))
+           (ebox--render-source-index index)
+           (ebox--render-root-parent-kind 'column))
+      ;; Explicit canonical input must still own exactly its complete forest.
+      (should-error (ebox--render-node node index))
+      ;; A copied node with the same runtime id has no retained-state proof.
+      (should-error (ebox--render-node (copy-sequence node)))
+      (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+        (ebox-style-add-rule "#label" '(:font-size 24))
+        (should-error (ebox--render-node node))))))
+
+(ert-deftest ebox-max-content-column-update-keeps-inherited-layout ()
+  "A public update may intrinsically measure a styled max-content Column."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer (ebox-test--intrinsic-subtree-input "alpha")
+    (ebox-commit (current-buffer)
+                 (ebox-test--intrinsic-subtree-input "alpha expanded"))
+    (should (string-match-p "alpha expanded" (buffer-string)))
+    (let ((face (get-text-property (point-min) 'face)))
+      (should (equal (ebox-test--effective-face-value face :family)
+                     "Parent Family"))
+      (should (eq (ebox-test--effective-face-value face :weight) 'bold)))
+    (should (ebox-test--buffer-visually-matches-runtime-render-p))))
 
 (ert-deftest ebox-column-background-owns-blank-lines-with-child-override ()
   "A column background should fill its blank lines without hiding child paint."
@@ -1752,6 +1889,51 @@
     (should props)
     (should (plist-member props 'face))))
 
+(ert-deftest ebox-buffer-backend-composes-mixed-paint-slots-and-typography ()
+  "Literal and named colors compose in both directions without losing fonts."
+  (let* ((foreground (tp-paint-slot-create '(:foreground "#112233")))
+         (background (tp-paint-slot-create '(:background "#ddeeff")))
+         (font (ebox-font-project-values
+                '(ebox/font-weight bold ebox/font-style italic)
+                '(ebox/font-weight ebox/font-style) nil))
+         (font-before (ebox-font-paint-face font)))
+    (dolist (typography '(nil t))
+      (dolist (slots '((t nil) (nil t) (t t) (nil nil)))
+        (let* ((style
+                (append (list :color (if (car slots) foreground "#112233")
+                              :bgcolor (if (cadr slots) background "#ddeeff"))
+                        (and typography
+                             (list :ebox-font-fact font
+                                   :text-decoration-line 'underline))))
+               (before (copy-tree style))
+               (face (plist-get (ebox-buffer-paint-text-properties
+                                 style 'content) 'face))
+               (faces (if (or (symbolp face) (keywordp (car-safe face)))
+                          (list face)
+                        face)))
+          ;; Emacs accepts a named face, one face plist, or a flat list of
+          ;; those contributions.  A named face is never a mutable plist.
+          (should (cl-every (lambda (entry)
+                              (or (symbolp entry)
+                                  (keywordp (car-safe entry))))
+                            faces))
+          (should (equal (cl-remove-if-not #'symbolp faces)
+                         (append
+                          (and (cadr slots) (list (tp-paint-slot-face background)))
+                          (and (car slots) (list (tp-paint-slot-face foreground))))))
+          (if (car slots)
+              (should (memq (tp-paint-slot-face foreground) faces))
+            (should (ebox-test--face-has-key-value-p face :foreground "#112233")))
+          (if (cadr slots)
+              (should (memq (tp-paint-slot-face background) faces))
+            (should (ebox-test--face-has-key-value-p face :background "#ddeeff")))
+          (when typography
+            (should (ebox-test--face-has-key-value-p face :weight 'bold))
+            (should (ebox-test--face-has-key-value-p face :slant 'italic))
+            (should (ebox-test--face-has-key-p face :underline)))
+          (should (equal style before))
+          (should (equal font-before (ebox-font-paint-face font))))))))
+
 (ert-deftest ebox-text-decoration-projects-to-one-emacs-face ()
   "Canonical decoration facts should remain paint-only and visibly compose."
   (let* ((style
@@ -2709,7 +2891,7 @@
         (kill-buffer buffer)))))
 
 (ert-deftest ebox-deferred-render-gc-uses-interactive-burst-threshold ()
-  "Interactive render bursts should stay bounded and collect when settled."
+  "Interactive bursts restore caller policy without forcing a global collection."
   (let ((gc-cons-threshold 1000)
         (gc-cons-percentage 0.1)
         (ebox-deferred-render-gc-cons-threshold 2000)
@@ -2726,9 +2908,9 @@
           (ebox--deferred-render-gc-restore)
           (should (= gc-cons-threshold 1000))
           (should (= gc-cons-percentage 0.1))
-          (should (= gc-count 1))
+          (should (= gc-count 0))
           (ebox--deferred-render-gc-restore)
-          (should (= gc-count 1)))
+          (should (= gc-count 0)))
       (when (timerp ebox--deferred-render-gc-timer)
         (cancel-timer ebox--deferred-render-gc-timer)))))
 
@@ -2901,7 +3083,43 @@
         (apply (nth 2 current) (nth 3 current)))
       (should (= gc-cons-threshold 1000))
       (should (= gc-cons-percentage 0.1))
-      (should (= gc-count 1)))))
+      (should (= gc-count 0)))))
+
+(ert-deftest ebox-interactive-render-burst-restores-policy-after-nonlocal-exit ()
+  "Error and quit release the render lease without collecting unrelated heaps."
+  (dolist (exit '(error quit))
+    (let ((noninteractive nil)
+          (gc-cons-threshold 1000000) (gc-cons-percentage 0.1)
+          (ebox-deferred-render-gc-cons-threshold 4000000)
+          (ebox-render-gc-cons-percentage 0.8)
+          (ebox--deferred-render-gc-state nil)
+          (ebox--deferred-render-gc-timer nil)
+          (ebox--deferred-render-gc-depth 0)
+          (ebox--deferred-render-gc-generation 0)
+          (ebox--render-burst-stack nil)
+          (ebox--render-burst-records (make-hash-table :test 'eq))
+          callback observed-exit (collections 0))
+      (cl-letf (((symbol-function 'run-at-time)
+                 (lambda (_delay _repeat function &rest args)
+                   (setq callback (cons function args)) 'test-timer))
+                ((symbol-function 'garbage-collect)
+                 (lambda () (cl-incf collections))))
+        (condition-case condition
+            (ebox-call-with-render-burst
+             (lambda () (signal exit '("failed render"))))
+          ((error quit) (setq observed-exit (car condition))))
+        (should (eq observed-exit exit))
+        (should-not ebox--render-burst-stack)
+        (should (= 0 (hash-table-count ebox--render-burst-records)))
+        (should (= 0 ebox--deferred-render-gc-depth))
+        (should callback)
+        (apply (car callback) (cdr callback))
+        (should (= gc-cons-threshold 1000000))
+        (should (= gc-cons-percentage 0.1))
+        (should-not ebox--deferred-render-gc-state)
+        (should-not ebox--deferred-render-gc-timer)
+        (apply (car callback) (cdr callback))
+        (should (= 0 collections))))))
 
 (ert-deftest ebox-public-render-burst-nests-around-interactive-commit ()
   "A framework burst should own GC before and throughout Ebox commit."
@@ -3076,7 +3294,7 @@
               (apply (nth 1 scheduled) (nth 2 scheduled))
               (should (= gc-cons-threshold 1000))
               (should (= gc-cons-percentage 0.1))
-              (should (= gc-count 1)))))
+              (should (= gc-count 0)))))
       (ebox-test--reset-runtime-state)
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
@@ -4326,6 +4544,176 @@
       (ebox-test--render-input-node parent))
     (should (eq (gethash region-id ebox--scroll-global-state) state))))
 
+(defun ebox-test--legacy-box-chrome-lines (box lines region-id filler)
+  "Decorate prepared LINES using the former string-based Box algorithm.
+This independent reference keeps each flattening step to verify the shared
+line compositor's complete property output, including empty lines and chrome."
+  (let* ((pt (floor (ebox-get box :padding-top-height)))
+         (pb (floor (ebox-get box :padding-bottom-height)))
+         (pl (ebox-get box :padding-left-pixel))
+         (pr (ebox-get box :padding-right-pixel))
+         (bl (ebox-get box :border-left-pixel))
+         (br (ebox-get box :border-right-pixel))
+         (height (+ (length lines) pt pb))
+         (color (and (ebox-style--text-paint-owner-p box)
+                     (ebox-get box :color)))
+         (bgcolor (ebox-get box :bgcolor))
+         (result (ebox-lines-join lines)))
+    (when (or (> pt 0) (> pb 0))
+      (setq result
+            (ebox--lines-stack-vertical
+             (when (> pt 0)
+               (ebox--propertize-region
+                (ebox--string-repeat-lines filler pt) 'ebox-pt region-id))
+             result
+             (when (> pb 0)
+               (ebox--propertize-region
+                (ebox--string-repeat-lines filler pb) 'ebox-pb region-id)))))
+    (when (or (> pl 0) (> pr 0))
+      (setq result
+            (ebox--lines-concat-horizontal
+             (when (> pl 0)
+               (ebox--propertize-region
+                (ebox--pixel-blank pl height) 'ebox-pl region-id))
+             result
+             (when (> pr 0)
+               (ebox--propertize-region
+                (ebox--pixel-blank pr height) 'ebox-pr region-id)))))
+    (when (or color bgcolor)
+      (setq result (ebox--maplines
+                    (lambda (line) (ebox--propertize-colors line color bgcolor))
+                    result)))
+    (when (or (> bl 0) (> br 0))
+      (setq result
+            (ebox--lines-concat-horizontal
+             (when (> bl 0)
+               (ebox--propertize-region
+                (ebox--pixel-border bl height (ebox-get box :border-left-color))
+                'ebox-bl region-id))
+             result
+             (when (> br 0)
+               (ebox--propertize-region
+                (ebox--pixel-border br height (ebox-get box :border-right-color))
+                'ebox-br region-id)))))
+    (let ((result-lines (ebox-string-lines result)))
+      (when (> (ebox-get box :border-top-pixel) 0)
+        (setcar result-lines
+                (propertize
+                 (ebox--propertize-overline
+                  (car result-lines) (ebox-get box :border-top-color))
+                 'ebox-bt region-id)))
+      (when (> (ebox-get box :border-bottom-pixel) 0)
+        (let ((tail (last result-lines)))
+          (setcar tail
+                  (propertize
+                   (ebox--propertize-underline
+                    (car tail) (ebox-get box :border-bottom-color))
+                   'ebox-bb region-id))))
+      (setq result (ebox-lines-join result-lines)))
+    (ebox--apply-surface-properties result (ebox-get box :surface-properties))
+    (ebox-string-lines result)))
+
+(defun ebox-test--box-full-height-joins (input min-height)
+  "Render INPUT and record real post-format joins reaching MIN-HEIGHT."
+  (let* ((handle (ebox-node-source-handle (ebox-test-root input)))
+         (original-box (symbol-function 'ebox--render-box))
+         (original-format (symbol-function 'ebox--format-content))
+         (original-mapconcat (symbol-function 'mapconcat))
+         active formatting full-height-joins rendered)
+    (cl-letf (((symbol-function 'ebox--render-box)
+               (lambda (box)
+                 (let ((previous active))
+                   (setq active (eq (ebox-node-source-handle box) handle))
+                   (unwind-protect (funcall original-box box)
+                     (setq active previous)))))
+              ((symbol-function 'ebox--format-content)
+               (lambda (box)
+                 (let ((previous formatting))
+                   (setq formatting t)
+                   (unwind-protect (funcall original-format box)
+                     (setq formatting previous)))))
+              ((symbol-function 'mapconcat)
+               (lambda (function sequence separator)
+                 (let ((result (funcall original-mapconcat
+                                        function sequence separator)))
+                   (when (and active (not formatting)
+                              (equal separator "\n")
+                              (>= (ebox-string-height result) min-height))
+                     (push (list (ebox-string-height result)
+                                 (string-bytes result))
+                           full-height-joins))
+                   result))))
+      (setq rendered (ebox-render input)))
+    (list :rendered rendered :joins (nreverse full-height-joins))))
+
+(ert-deftest ebox-box-chrome-avoids-intermediate-multiline-materialization ()
+  "One Box should not flatten full-height strips for padding and borders."
+  (let* ((input
+          (ebox-build
+           '(box :width (120) :height 8 :overflow hidden
+                 :padding (1 (3)) :border (1 solid "#112233")
+                 :bgcolor "#ddeeff"
+              (text "alpha\nbeta"))))
+         (observed (ebox-test--box-full-height-joins input 6))
+         (joins (plist-get observed :joins)))
+    (should (= (ebox-string-height (plist-get observed :rendered)) 8))
+    ;; Alignment joins once; blank normalization retains its line result and
+    ;; the shared compositor adds only the final border-box join.
+    (ert-info ((format "Materialized (height bytes): %S"
+                       joins))
+      (should (= (length joins) 2)))))
+
+(ert-deftest ebox-box-chrome-keeps-complete-scroll-materialization ()
+  "Existing fully painted scroll output must not enter decoration again."
+  (dolist (text '("alpha\nbeta" "1\n2\n3\n4\n5\n6\n7\n8\n9"))
+    (let* ((input
+            (ebox-build
+             `(box :width (120) :height 8 :overflow scroll :bgcolor "#ddeeff"
+                (text ,text))))
+           (observed (ebox-test--box-full-height-joins input 8)))
+      (should (= (ebox-string-height (plist-get observed :rendered)) 8))
+      (ert-info ((format "Complete scroll joins: %S" (plist-get observed :joins)))
+        (should (= (length (plist-get observed :joins)) 1))))))
+
+(ert-deftest ebox-box-chrome-matches-legacy-full-property-output ()
+  "Shared decoration preserves alignment, margins, overflow and rich blanks."
+  (ebox-test--reset-runtime-state)
+  (let ((rich (concat "\n" (propertize "alpha" 'face '(:weight bold)
+                                      'help-echo "leaf")
+                      "\n" (propertize " " 'help-echo "rich blank")
+                      "\nomega\n"))
+        (foreground (tp-paint-slot-create '(:foreground "#112233")))
+        (background (tp-paint-slot-create '(:background "#ddeeff"))))
+    (dolist (height '(0 4 8))
+      (dolist (align '(top center bottom))
+        (dolist (overflow '(hidden visible scroll))
+          (dolist (margins '(nil t))
+            (let* ((input
+                    (ebox-test-box
+                     (ebox-test-text rich) :width '(120) :height height
+                     :padding '(1 (3)) :margin (if margins '(1 (2)) 0)
+                     :border '(1 solid "#112233") :overflow overflow
+                     :color (if margins foreground "#112233")
+                     :bgcolor (if margins background "#ddeeff")
+                     :surface-properties '(help-echo "host" mouse-face highlight)))
+                   (box (ebox-test-root input))
+                   (original
+                    (symbol-function 'ebox--window-render-flat-wrapper-chunk-lines))
+                   actual expected)
+              (plist-put box :vertical-align align)
+              (setq actual (ebox-render input))
+              (cl-letf (((symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)
+                         (lambda (&rest arguments)
+                           (if (nth 7 arguments)
+                               (ebox-test--legacy-box-chrome-lines
+                                (nth 0 arguments) (nth 1 arguments)
+                                (nth 3 arguments) (nth 4 arguments))
+                             (apply original arguments)))))
+                (setq expected (ebox-render input)))
+              (ert-info ((format "height=%S align=%S overflow=%S margins=%S"
+                                 height align overflow margins))
+                (should (equal-including-properties actual expected))))))))))
+
 (ert-deftest ebox-flat-preformatted-fixed-box-rejects-layout-work ()
   "Fixed wrappers should stay generic when clipping or alignment is required."
   (ebox-test--reset-runtime-state)
@@ -4339,17 +4727,24 @@
              :box-sizing 'border-box :overflow (nth 1 case)
              :wrap-mode 'none))
            (box (ebox-test-root box-input))
-           (calls 0)
+           (raw-calls 0)
+           (prepared-calls 0)
            (original
             (symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)))
       (plist-put box :vertical-align (nth 2 case))
       (plist-put box :ebox-content-width-exact-p t)
       (cl-letf (((symbol-function 'ebox--window-render-flat-wrapper-chunk-lines)
                  (lambda (&rest arguments)
-                   (cl-incf calls)
+                   (if (nth 7 arguments)
+                       (cl-incf prepared-calls)
+                     (cl-incf raw-calls))
                    (apply original arguments))))
         (ebox-test--render-input-node box-input))
-      (should (= calls 0)))))
+      ;; Clipping/alignment must finish in the generic renderer before the
+      ;; shared decorator consumes prepared lines; raw window input is unsafe.
+      (should (= raw-calls 0))
+      ;; Complete chrome-free scroll output already owns its final paint.
+      (should (= prepared-calls (if (eq (nth 1 case) 'scroll) 0 1))))))
 
 (ert-deftest ebox-string-pixel-width-cache-ignores-ebox-ownership-metadata ()
   "Reuse visual width measurements across Ebox-owned text properties."
@@ -6912,6 +7307,69 @@
     (should (equal-including-properties actual expected))
     (should-not (ebox--scroll-get-state region-id))))
 
+(ert-deftest ebox-underfilled-scroll-paints-stable-slot-faces ()
+  "Fused scroll finishing must publish slot face addresses on every line."
+  (ebox-test--reset-runtime-state)
+  (let* ((foreground (tp-paint-slot-create '(:foreground "#112233")))
+         (background (tp-paint-slot-create '(:background "#ddeeff")))
+         (content (concat (propertize "alpha" 'face '(:weight bold))
+                          "\n \nomega"))
+         (box (ebox-test-box (ebox-test-text content)
+                            :width 140 :height 5 :overflow 'scroll
+                            :color foreground :bgcolor background))
+         (region-id (ebox--ensure-region-id (ebox-test-root box)))
+         (reference (ebox-test-box (ebox-test-text content)
+                                  :width 140 :height 5 :overflow 'hidden
+                                  :color foreground :bgcolor background))
+         (original
+          (symbol-function 'ebox--render-underfilled-simple-scroll-lines))
+         (finish-calls 0)
+         actual)
+    (plist-put (ebox-test-root reference) :region-id region-id)
+    (cl-letf (((symbol-function 'ebox--render-underfilled-simple-scroll-lines)
+               (lambda (&rest args)
+                 (cl-incf finish-calls)
+                 (apply original args))))
+      (setq actual (ebox-render box)))
+    (should (= finish-calls 1))
+    (should (equal-including-properties actual (ebox-render reference)))
+    ;; Include rich content, normalized blanks, and added viewport filler.
+    (let ((lines (ebox-string-lines actual)))
+      (should (= (length lines) 5))
+      (dolist (line lines)
+        (let ((face-values (flatten-tree (get-text-property 0 'face line))))
+          (should (memq (tp-paint-slot-face background) face-values))
+          (should-not (seq-some #'tp-paint-slot-p face-values)))))
+    (should (memq (tp-paint-slot-face foreground)
+                  (flatten-tree (get-text-property 0 'face actual))))
+    (let ((painted (copy-sequence actual)))
+      (tp-paint-slot-update foreground '(:foreground "#445566"))
+      (tp-paint-slot-update background '(:background "#aabbcc"))
+      (should (equal-including-properties actual painted))
+      (should (equal (face-attribute (tp-paint-slot-face foreground)
+                                    :foreground nil nil)
+                     "#445566"))
+      (should (equal (face-attribute (tp-paint-slot-face background)
+                                    :background nil nil)
+                     "#aabbcc")))))
+
+(ert-deftest ebox-underfilled-scroll-resolves-foreground-faces ()
+  "Fused scroll finishing must resolve slot and default foreground faces."
+  (ebox-test--reset-runtime-state)
+  (cl-letf (((symbol-function 'ebox-buffer--default-foreground-face)
+             (lambda () '(:foreground "#123456"))))
+    (dolist (color (list (tp-paint-slot-create '(:foreground "#112233"))
+                        'ebox/default-foreground))
+      (let ((lines (ebox--render-underfilled-simple-scroll-lines
+                    (list (copy-sequence "alpha"))
+                    1 3 (ebox-pixel-space 140) color "#ddeeff"))
+            (expected (get-text-property
+                       0 'face
+                       (ebox--propertize-colors "alpha" color "#ddeeff"))))
+        (should (= (length lines) 3))
+        (dolist (line lines)
+          (should (equal (get-text-property 0 'face line) expected)))))))
+
 (ert-deftest ebox-lazy-scroll-rendered-window-uses-preformatted-lines ()
   "Lazy scroll windows should not rebuild visible content lines per tick."
   (ebox-test--reset-runtime-state)
@@ -8113,7 +8571,8 @@
          record-scans
          (original-seq-take (symbol-function 'seq-take))
          (renderer
-          (ebox--scroll-window-prefix-renderer box :test-source 20 4)))
+          (ebox--scroll-window-prefix-renderer
+           (ebox-test-root box) :test-source 20 4)))
     (cl-letf (((symbol-function 'ebox--render-scroll-window-source)
                (lambda (_source limit &optional _cache)
                  (cl-incf calls)

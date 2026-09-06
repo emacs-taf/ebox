@@ -160,15 +160,15 @@ author identity; opaque source handles remain internal to SourceBuilder."
                           (ebox-test--normalize-child builder child))
                         children))
          (node
-          (let ((ebox-canonical--source-builder builder))
-            (ebox-box-create
+          (ebox-box-create
+             :source-builder builder
              :layout (ebox-test--layout tag props declarations)
              :outer (or (plist-get props :outer) 'block)
              :children nodes
              :owned-facts
              (ebox-canonical-facts-from-declarations tag declarations)
              :source-handle
-             (ebox-test--source-handle builder props declarations))))
+             (ebox-test--source-handle builder props declarations)))
          (index (ebox-source-builder-finish builder)))
     (dolist (key ebox-test--direct-fields)
       (when (plist-member props key)

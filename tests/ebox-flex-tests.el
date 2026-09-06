@@ -4,10 +4,247 @@
 (require 'ert)
 
 (load-file (expand-file-name "../ebox.el" (file-name-directory (or load-file-name buffer-file-name))))
+(require 'ebox-native-reflow)
 
 (defun ebox-flex-test--render (node)
   "Render NODE once for flex tests."
   (ebox-render node))
+
+(ert-deftest ebox-flex-resolved-constraints-preserve-pixels-and-unbounded-width ()
+  "Resolved constraints do not reapply author units or ambient defaults."
+  (let ((ebox-viewport-width 300)
+        (config (ebox-layout-config-props (ebox-flex-layout-create))))
+    (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 7)))
+      (should (= (ebox--string-max-pixel-width
+                  (ebox--render-flex-children
+                   config '(:width 50 :height nil) '("X")))
+                 50))
+      (should (= (ebox--string-max-pixel-width
+                  (ebox--render-flex-children
+                   config '(:width nil :height nil) '("X")))
+                 (ebox--string-pixel-width "X")))
+      ;; The private legacy adapter still supplies its omitted-width default.
+      (should (= (ebox--string-max-pixel-width
+                  (ebox--render-flex
+                   (list :ebox-type 'flex :props config :children '("X"))))
+                 300)))))
+
+(defun ebox-flex-test--intrinsic-toolbar (color &optional grow)
+  "Return a nested max-content Flex using COLOR and optional GROW."
+  (ebox-test-flex :width '(240) :flex-wrap 'wrap
+    (ebox-test-column :width '(40) :flex-grow (if grow 0 1)
+      (ebox-test-text "Title"))
+    (ebox-test-flex :id "toolbar" :width 'max-content
+                   :padding '(0 (3)) :margin '(0 (4))
+                   :column-gap '(2) :justify-content 'space-between
+                   :flex-grow (if grow 1 0) :bgcolor color
+      (ebox-test-box :width '(20) (ebox-test-text "A"))
+      (ebox-test-box :width '(30) (ebox-test-text "B")))))
+
+(ert-deftest ebox-flex-nested-max-content-survives-paint-and-fresh-render ()
+  "A paint change preserves the same single-line intrinsic Flex geometry."
+  (let* ((ebox-viewport-width 240)
+         (layout (ebox-flex-test--intrinsic-toolbar "white"))
+         (buffer (generate-new-buffer " *ebox-intrinsic-toolbar*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer layout)
+          (dolist (color '("white" "black" "white"))
+            (ebox-region-update (ebox-region-resolve buffer "toolbar")
+                                :bgcolor color)
+            (let ((retained (with-current-buffer buffer (buffer-string)))
+                  (fresh (ebox-render
+                          (ebox-flex-test--intrinsic-toolbar color))))
+              (dolist (rendered (list retained fresh))
+                (should (= (ebox-string-height rendered) 1))
+                (should (= (ebox--string-max-pixel-width rendered) 240))
+                ;; 174px title + 4px margin + 3px padding, counted once.
+                (should (= (ebox--string-pixel-width
+                            (substring rendered 0 (string-match "A" rendered)))
+                           181)))
+              (should (equal (substring-no-properties retained)
+                             (substring-no-properties fresh))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-flex-max-content-respects-parent-allocation ()
+  "Intrinsic measurement does not discard a later definite Flex allocation."
+  (let* ((ebox-viewport-width 240)
+         (rendered (ebox-render
+                    (ebox-flex-test--intrinsic-toolbar "white" t))))
+    (should (= (ebox-string-height rendered) 1))
+    (should (= (ebox--string-max-pixel-width rendered) 240))
+    (should (= (ebox--string-pixel-width
+                (substring rendered 0 (string-match "A" rendered)))
+               47))
+    (should (= (ebox--string-pixel-width
+                (substring rendered 0 (string-match "B" rendered)))
+               203))))
+
+(ert-deftest ebox-flex-unbounded-constraint-reaches-nested-auto-flex ()
+  "An auto Flex inside max-content must not recover the outer viewport."
+  (let* ((ebox-viewport-width 300)
+         (layout
+          (ebox-test-flex :width 'max-content
+            (ebox-test-flex
+              (ebox-test-box :width '(20) (ebox-test-text "A"))
+              (ebox-test-box :width '(30) (ebox-test-text "B"))))))
+    (should (= (ebox--string-max-pixel-width (ebox-render layout)) 50))))
+
+(ert-deftest ebox-flex-padded-lazy-children-use-content-viewport ()
+  "Lazy responsive Flex items use the same content viewport as full layout."
+  (let* ((ebox-viewport-width 300)
+         (ebox-viewport-height 5)
+         (layout
+          (ebox-test-column :width '(viewport) :height '(viewport-height)
+            (ebox-test-flex :width 'stretch :padding '(0 (10))
+                           :flex-wrap 'wrap
+              (ebox-test-flex :width 'stretch :wrap-mode 'none
+                (ebox-test-box :width '(20) (ebox-test-text "A"))
+                (ebox-test-box :width '(30) (ebox-test-text "B"))))))
+         (_ (ebox-region-ids (ebox-test-root layout)))
+         (eager (let ((ebox--scroll-window-render-disabled t))
+                  (ebox-render layout)))
+         (original (symbol-function 'ebox--render-flex-window-lines))
+         (lazy-renders 0)
+         lazy)
+    (cl-letf (((symbol-function 'ebox--render-flex-window-lines)
+               (lambda (node limit)
+                 (let ((result (funcall original node limit)))
+                   (when result (cl-incf lazy-renders))
+                   result))))
+      (setq lazy (ebox-render layout)))
+    (should (> lazy-renders 0))
+    (should (= (ebox--string-max-pixel-width eager) 300))
+    (should (= (ebox--string-max-pixel-width lazy) 300))
+    (should (equal-including-properties lazy eager))))
+
+(ert-deftest ebox-flex-normalized-gap-keeps-pixels-on-wide-fonts ()
+  "Flex gaps convert character units once and preserve explicit pixel units."
+  (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 7)))
+    (dolist (case '((2 . 14) ((2) . 2)))
+      (let* ((layout
+              (ebox-test-flex :width '(100) :column-gap (car case)
+                (ebox-test-text "A")
+                (ebox-test-text "B")))
+             (rendered (ebox-render layout))
+             (left (string-match "A" rendered))
+             (right (string-match "B" rendered)))
+        (should left)
+        (should right)
+        (should (= (ebox--string-pixel-width
+                    (substring rendered (1+ left) right))
+                   (cdr case)))
+        (should
+         (= (plist-get
+             (ebox-native-reflow--compile-flex-inner
+              (ebox-layout-config-props
+               (ebox-box-node-layout (ebox-test-root layout))) nil)
+             :column-gap)
+            (cdr case)))))))
+
+(ert-deftest ebox-flex-panels-in-padded-viewport-column-match-eager-layout ()
+  "Lazy Column layout must preserve nested panel geometry and borders."
+  (dolist (padding '(0 (1 2)))
+    (dolist (viewport-width '(140 96 140))
+      (let* ((ebox-viewport-width viewport-width)
+             (ebox-viewport-height 30)
+             (layout
+              (ebox-test-column
+               :width '(viewport) :height '(viewport-height)
+               :padding padding :bgcolor "white"
+               (ebox-test-flex :width 'stretch :flex-wrap 'wrap :gap '(1 2)
+                 (ebox-test-column
+                  :flex-basis '(20) :flex-shrink 0
+                  :padding '(1 2) :border "gray"
+                  (ebox-test-text "Sidebar"))
+                 (ebox-test-column
+                  :flex-grow 1 :flex-basis '(48) :min-width 0
+                  :padding '(1 2) :border "gray"
+                  (ebox-test-text "Main"))
+                 (ebox-test-column
+                  :flex-grow 1 :flex-basis '(28) :min-width 0
+                  (ebox-test-column :padding '(1 2) :border "gray"
+                    (ebox-test-text "Details") (ebox-test-text "Body"))
+                  (ebox-test-column :padding '(1 2) :border "gray"
+                    (ebox-test-text "Service") (ebox-test-text "Ready"))))))
+             (_ (ebox-region-ids (ebox-test-root layout)))
+             (eager (let ((ebox--scroll-window-render-disabled t))
+                      (ebox-render layout)))
+             (lazy (ebox-render layout)))
+        (should (equal (substring-no-properties lazy)
+                       (substring-no-properties eager)))
+        (should (equal (mapcar #'ebox--string-pixel-width
+                              (ebox-string-lines lazy))
+                       (mapcar #'ebox--string-pixel-width
+                              (ebox-string-lines eager))))
+        (should (equal-including-properties lazy eager))))))
+
+(ert-deftest ebox-flex-viewport-column-wraps-text-and-preserves-box-overflow ()
+  "A lazy Column wraps raw Text but keeps a definite child's spatial output."
+  (let* ((ebox-viewport-width 20)
+         (ebox-viewport-height 10)
+         (layout
+          (ebox-test-column
+           :width '(viewport) :height '(viewport-height) :padding '(0 (2))
+           (ebox-test-text "one two three four five six")
+           (ebox-test-box :width '(30) :wrap-mode 'none :border "blue"
+             (ebox-test-text "wide child"))))
+         (_ (ebox-region-ids (ebox-test-root layout)))
+         (eager (let ((ebox--scroll-window-render-disabled t))
+                  (ebox-render layout)))
+         (lazy (ebox-render layout)))
+    (should (equal-including-properties lazy eager))))
+
+(ert-deftest ebox-flex-padded-scroll-producers-retain-containing-viewport ()
+  "Lazy extension and full materialization keep the initial content width."
+  (let* ((ebox-viewport-width 100)
+         (ebox-viewport-height 4)
+         (ebox-scroll-lazy-prefix-lookahead-lines 0)
+         (ebox-wheel-scroll-step 0)
+         (ebox-scroll-lazy-idle-prefetch-delay 999)
+         (layout
+          (apply #'ebox-test-column
+                 (append
+                  '(:id "padded-scroll" :width (viewport)
+                    :height (viewport-height) :padding (0 (2)))
+                  (cl-loop for index below 30
+                           collect
+                           (ebox-test-column :border "gray"
+                             (ebox-test-text (format "row %02d" index)))))))
+         (buffer (generate-new-buffer " *ebox-padded-scroll*"))
+         root-id)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer layout)
+          (setq root-id
+                (plist-get (car (ebox-selector-query-buffer
+                                buffer "#padded-scroll")) :region-id))
+          (let* ((state (ebox-scroll-state root-id))
+                 (prefix (plist-get state :render-content-prefix))
+                 (materialize (plist-get state :materialize-content-lines)))
+            (should prefix)
+            (should materialize)
+            (let* ((extended
+                    (ebox--scroll-state-ensure-prefix-lines root-id state 12 t))
+                   (partial-lines (plist-get extended :content-lines))
+                   (complete
+                    (ebox--scroll-state-materialize-lines root-id extended))
+                   (full-lines (plist-get complete :content-lines)))
+              (should (= (length partial-lines) 12))
+              (should (= (length full-lines) 30))
+              (dolist (line (append partial-lines full-lines))
+                (should (= (ebox--string-pixel-width line) 96)))
+              (should (cl-every #'identity
+                               (cl-mapcar
+                                (lambda (partial full)
+                                  (equal-including-properties
+                                   (ebox--strip-paint-origins!
+                                    (copy-sequence partial))
+                                   (ebox--strip-paint-origins!
+                                    (copy-sequence full))))
+                                partial-lines (seq-take full-lines 12)))))))
+      (when root-id (ebox--scroll-cancel-idle-prefetch root-id))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (defun ebox-flex-test--plain-lines (node)
   "Return rendered NODE as plain lines."
@@ -275,6 +512,80 @@
              :flex-basis 'min-content)))
          (widths (ebox-flex-test--content-widths layout)))
     (should (equal widths (list max-content min-content)))))
+
+(ert-deftest ebox-flex-definite-basis-does-not-materialize-fallback ()
+  "A definite basis must not materialize a subtree for an unused fallback."
+  (dolist (basis '((0) (40) 40))
+    (let* ((input
+            (ebox-test-box
+             (ebox-test-column
+              (ebox-test-text "nested content")
+              (ebox-test-text "second line"))))
+           (source (ebox-test-root input))
+           (ebox--surface-materialization-active t)
+           (expected (ebox--normalize-horizontal-size-value
+                      basis ebox--preferred-size-keywords))
+           (original-max (symbol-function 'ebox--content-max-pixel))
+           (original-render (symbol-function 'ebox--render-layout))
+           (max-calls 0)
+           (materializations 0))
+      (cl-letf (((symbol-function 'ebox--content-max-pixel)
+                 (lambda (box)
+                   (cl-incf max-calls)
+                   (funcall original-max box)))
+                ((symbol-function 'ebox--render-layout)
+                 (lambda (node)
+                   (cl-incf materializations)
+                   (funcall original-render node))))
+        (should (= expected (ebox--flex-basis-main source "" 'row basis))))
+      (should (zerop max-calls))
+      (should (zerop materializations)))))
+
+(ert-deftest ebox-flex-basis-retains-required-intrinsic-fallback ()
+  "Viewport-like basis values measure only when their viewport is absent."
+  (dolist (viewport '(nil 120))
+    (dolist (basis '(viewport stretch contain))
+      (let* ((content "natural content")
+             (source (ebox-test-root (ebox-test-box (ebox-test-text content))))
+             (ebox--surface-materialization-active t)
+             (ebox-viewport-width viewport)
+             (original-max (symbol-function 'ebox--content-max-pixel))
+             (max-calls 0))
+        (cl-letf (((symbol-function 'ebox--content-max-pixel)
+                   (lambda (box)
+                     (cl-incf max-calls)
+                     (funcall original-max box))))
+          (should (= (or viewport (ebox--string-pixel-width content))
+                     (ebox--flex-basis-main source "" 'row basis))))
+        (should (= max-calls (if viewport 0 1)))))))
+
+(ert-deftest ebox-flex-lazy-basis-fallback-preserves-public-dsl-output ()
+  "Public Flex layout retains complete output when unused probes disappear."
+  (let* ((input
+          (ebox-build
+           '(flex :width (140) :flex-wrap wrap :gap (1 (4))
+              (box :flex-basis (40) :flex-grow 1 :min-width 0
+                   :wrap-mode word :padding (1 (2))
+                   :color "#123456" :bgcolor "#ddeeff"
+                (column
+                 (text "alpha beta gamma delta epsilon")
+                 (text "second line")))
+              (box :flex-basis (20) :min-width 0 :wrap-mode word
+                (text "peer")))))
+         (original-basis (symbol-function 'ebox--flex-basis-main))
+         (fast (ebox-render input))
+         eager)
+    ;; Reintroduce only the eager fallback's materialization, using the same
+    ;; public input and the unchanged resolver for the reference output.
+    (cl-letf (((symbol-function 'ebox--flex-basis-main)
+               (lambda (source rendered axis basis)
+                 (when (and (eq axis 'row)
+                            (ebox--flex-box-source-p source)
+                            (ebox--flex-fixed-basis-value-p basis))
+                   (ebox--content-max-pixel source))
+                 (funcall original-basis source rendered axis basis))))
+      (setq eager (ebox-render input)))
+    (should (equal-including-properties fast eager))))
 
 (ert-deftest ebox-flex-grow-redistributes-space-after-max-width-clamp ()
   "A max-width-clamped item should freeze and leave space for flexible siblings."
@@ -669,6 +980,205 @@
                            (ebox-string-lines rendered))
                    '(220 220 220 220)))
     (should (= calls 2))))
+
+(defun ebox-flex-test--observe-sized-box (input &optional force-final-render)
+  "Render INPUT and observe its first child's actual Box materializations.
+When FORCE-FINAL-RENDER is non-nil, discard only the child's natural sized
+entry before final allocation, providing the original rerendering reference."
+  (let* ((source (car (ebox-tree-layout-children (ebox-test-root input))))
+         (handle (ebox-node-source-handle source))
+         (render-box (symbol-function 'ebox--render-box))
+         (render-sized (symbol-function 'ebox--flex-render-sized-entry))
+         allocation observations final-source scroll-state rendered)
+    (cl-letf (((symbol-function 'ebox--render-box)
+               (lambda (box)
+                 (when (and allocation
+                            (eq (ebox-node-source-handle box) handle))
+                   (push
+                    (list :allocation allocation
+                          :width (ebox-get box :width)
+                          :height (ebox-get box :height)
+                          :constraints
+                          (ebox--render-cache-plist-signature box)
+                          :context
+                          (list ebox-viewport-width ebox-viewport-height
+                                ebox--intrinsic-layout-measurement
+                                ebox--inline-auto-width-intrinsic-p
+                                ebox--containing-wrap-mode
+                                ebox--box-content-cache-purpose
+                                ebox--render-region-id
+                                ebox--render-root-parent-kind
+                                ebox--scroll-window-render-disabled))
+                    observations))
+                 (funcall render-box box)))
+              ((symbol-function 'ebox--flex-render-sized-entry)
+               (lambda (item axis main cross align)
+                 (let* ((target (eq (ebox-node-source-handle
+                                    (plist-get item :source))
+                                   handle))
+                        (previous-allocation allocation))
+                   (when (and target cross force-final-render)
+                     (setq item (copy-sequence item))
+                     (plist-put item :render-cache nil))
+                   (setq allocation (and target (list axis main cross align)))
+                   (unwind-protect
+                       (prog1 (funcall render-sized item axis main cross align)
+                         (when (and target cross)
+                           (let ((region-id
+                                  (ebox-get (plist-get item :source) :region-id)))
+                             (setq final-source
+                                   (ebox-node-source-handle
+                                    (gethash region-id ebox--region-box-table))
+                                   scroll-state (ebox-scroll-state region-id)))))
+                     (setq allocation previous-allocation))))))
+      (setq rendered (ebox-render input)))
+    (list :rendered rendered :observations (nreverse observations)
+          :source-handle final-source :scroll-state scroll-state)))
+
+(ert-deftest ebox-flex-identical-cross-materializes-box-once ()
+  "An already assigned numeric cross size must not materialize a Box twice."
+  (let* ((input
+          (ebox-build
+           '(flex :width (120) :flex-wrap wrap
+              (box :flex-basis (40) :flex-grow 1 :min-width 0
+                   :height 2 :wrap-mode word
+                (text "short")))))
+         (observed (ebox-flex-test--observe-sized-box input))
+         (calls (plist-get observed :observations))
+         (first (car calls)))
+    (should (= (ebox-string-height (plist-get observed :rendered)) 2))
+    (should (equal (mapcar #'ebox--string-pixel-width
+                           (ebox-string-lines (plist-get observed :rendered)))
+                   '(120 120)))
+    (should (= (plist-get first :width) 120))
+    (should (= (plist-get first :height) 2))
+    ;; Before the fix both actual Box renders have identical complete node
+    ;; declarations and dynamic contexts; only the caller's allocation differs.
+    (dolist (call (cdr calls))
+      (should (equal (plist-get first :constraints)
+                     (plist-get call :constraints)))
+      (should (equal (plist-get first :context)
+                     (plist-get call :context))))
+    (ert-info ((format "Actual Box allocations: %S"
+                       (mapcar (lambda (call) (plist-get call :allocation))
+                               calls)))
+      (should (= (length calls) 1)))))
+
+(ert-deftest ebox-flex-identical-cross-preserves-properties-and-source ()
+  "Reused row/column output retains chrome, text properties, and source ids."
+  (dolist (axis '(row column))
+    (dolist (sizing '(border-box content-box))
+      (let* ((ebox-viewport-width nil)
+             (row-p (eq axis 'row))
+             (label (propertize "alpha beta" 'help-echo "retained leaf"
+                                'mouse-face 'highlight))
+             (input
+              (ebox-build
+               `(flex ,@(if row-p '(:width (140)) '(:height 10))
+                      :flex-direction ,axis :flex-wrap wrap
+                  (box :flex-basis ,(if row-p '(40) 2) :flex-grow 1
+                       :min-width 0 :wrap-mode word :overflow hidden
+                       ,@(if row-p
+                             (list :height (if (eq sizing 'border-box) 6 2))
+                           '(:width (60)))
+                       :box-sizing ,sizing :padding (1 (2)) :margin (1 (3))
+                       :border (1 solid "#123456")
+                       :color "#123456" :bgcolor "#ddeeff"
+                    (column :width ,(if row-p '(100) '(40))
+                      (text ,label) (text "second"))))))
+             (source (car (ebox-tree-layout-children (ebox-test-root input))))
+             (handle (ebox-node-source-handle source))
+             (fast (ebox-flex-test--observe-sized-box input))
+             (reference (ebox-flex-test--observe-sized-box input t))
+             (rendered (plist-get fast :rendered)))
+        (ert-info ((format "axis=%S sizing=%S" axis sizing))
+          (should (= (length (plist-get fast :observations)) 1))
+          (should (= (length (plist-get reference :observations)) 2))
+          (should (equal-including-properties
+                   rendered (plist-get reference :rendered)))
+          (should (eq (plist-get fast :source-handle) handle))
+          (should (eq (plist-get reference :source-handle) handle))
+          (let ((position (string-match "alpha" rendered)))
+            (should position)
+            (should (equal (get-text-property position 'help-echo rendered)
+                           "retained leaf"))
+            (should (eq (get-text-property position 'mouse-face rendered)
+                        'highlight))
+            (should (get-text-property position 'face rendered))))))))
+
+(ert-deftest ebox-flex-identical-cross-keeps-changing-constraints ()
+  "Automatic, relative, clamped, and enlarged cross constraints rerender."
+  (dolist (case '(nil
+                  (:height (viewport-height))
+                  (:height 1 :overflow visible)
+                  (:height 2 :peer-height 4)
+                  (:height 4 :max-height 2)
+                  (:height 2 :min-height 3)))
+    (let* ((ebox-viewport-height 2)
+           (peer-height (plist-get case :peer-height))
+           (input
+            (ebox-build
+             `(flex :width (120) :flex-wrap wrap
+                (box :flex-basis (40) :flex-grow 1 :min-width 0
+                     :wrap-mode word
+                     ,@(ebox--plist-remove-keys case '(:peer-height))
+                  (text "A\nB"))
+                ,@(when peer-height
+                    `((box :width (20) :height ,peer-height "peer"))))))
+           (observed (ebox-flex-test--observe-sized-box input)))
+      (ert-info ((format "Cross constraint: %S" case))
+        (should (= (length (plist-get observed :observations)) 2))
+        (should (equal-including-properties
+                 (plist-get observed :rendered)
+                 (plist-get (ebox-flex-test--observe-sized-box input t)
+                            :rendered)))))))
+
+(ert-deftest ebox-flex-identical-cross-keeps-dependent-column-viewport ()
+  "A numeric cross declaration alone cannot override viewport dependence."
+  (let* ((ebox-viewport-width nil)
+         (input
+          (ebox-build
+           '(flex :height 4 :flex-direction column :flex-wrap wrap
+              (box :width (60) :flex-basis 2 :flex-grow 1 :overflow hidden
+                (box :width (viewport) (text "responsive"))))))
+         (observed (ebox-flex-test--observe-sized-box input))
+         (calls (plist-get observed :observations)))
+    (should (= (length calls) 2))
+    (should (equal (mapcar (lambda (call) (plist-get call :width)) calls)
+                   '(60 60)))
+    (should (equal (mapcar (lambda (call) (car (plist-get call :context))) calls)
+                   '(nil 60)))
+    (should (equal-including-properties
+             (plist-get observed :rendered)
+             (plist-get (ebox-flex-test--observe-sized-box input t)
+                        :rendered)))))
+
+(ert-deftest ebox-flex-identical-cross-retains-scroll-state ()
+  "A reused fixed-height Box retains the already rendered scroll geometry."
+  (let* ((input
+          (ebox-build
+           '(flex :width (120) :flex-wrap wrap
+              (box :flex-basis (40) :flex-grow 1 :min-width 0
+                   :height 2 :wrap-mode word :overflow scroll
+                (column (text "A") (text "B") (text "C") (text "D"))))))
+         (fast (ebox-flex-test--observe-sized-box input))
+         (reference (ebox-flex-test--observe-sized-box input t))
+         (state (plist-get fast :scroll-state))
+         (old-state (plist-get reference :scroll-state)))
+    (should (= (length (plist-get fast :observations)) 1))
+    (should (= (length (plist-get reference :observations)) 2))
+    (should (equal-including-properties
+             (plist-get fast :rendered) (plist-get reference :rendered)))
+    (should state)
+    (should (= (plist-get state :content-height) 2))
+    (should (= (ebox-get (plist-get state :box) :width) 120))
+    (should (= (ebox-get (plist-get state :box) :height) 2))
+    (dolist (property '(:scroll-offset :content-height
+                       :content-lines-complete-p))
+      (should (equal (plist-get state property) (plist-get old-state property))))
+    (should (equal-including-properties
+             (ebox-lines-join (plist-get state :content-lines))
+             (ebox-lines-join (plist-get old-state :content-lines))))))
 
 (ert-deftest ebox-flex-natural-reuse-preserves-stretched-visible-overflow-ownership ()
   "Stretch sizing should absorb visible overflow into the final box region."

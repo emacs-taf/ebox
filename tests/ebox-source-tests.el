@@ -5,6 +5,65 @@
 (require 'ert)
 (require 'ebox)
 
+(ert-deftest ebox-canonical-range-construction-has-explicit-source-ownership ()
+  "Typed Range construction needs only a public builder, with exact ownership."
+  (let* ((builder (ebox-source-builder-create))
+         (box-handle (ebox-source-builder-bind builder :identity 'range-parent))
+         (text-handle (ebox-source-builder-bind builder :identity 'range-text :key 'first))
+         (text (ebox-text-create
+                :value "explicit range" :source-handle text-handle
+                :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))
+         (arguments
+          (list :layout (ebox-normal-layout-create)
+                :children (list (ebox-child-range 'items text))
+                :source-handle box-handle
+                :owned-facts (ebox-canonical-facts-from-declarations 'box nil))))
+    (should-error (apply #'ebox-box-create arguments))
+    (should-error
+     (apply #'ebox-box-create :source-builder (ebox-source-builder-create) arguments))
+    (let* ((node (apply #'ebox-box-create :source-builder builder arguments))
+           (input (ebox-canonical-input-create
+                   (list node) (ebox-source-builder-finish builder))))
+      (should (eq text-handle
+                  (ebox-node-source-handle (car (ebox-box-node-children node)))))
+      (should (equal '((:ref items :before 0 :after 1))
+                     (ebox-box-node-range-anchors node)))
+      (should (string-match-p "explicit range" (ebox-render input)))
+      (should-error (apply #'ebox-box-create :source-builder builder arguments)))))
+
+(ert-deftest ebox-canonical-builder-validates-empty-ranges-and-static-siblings ()
+  "Empty ranges retain ownership, and static siblings cannot borrow foreign facts."
+  (let* ((builder (ebox-source-builder-create))
+         (foreign (ebox-source-builder-create))
+         (parent (ebox-source-builder-bind builder :identity 'parent))
+         (foreign-parent (ebox-source-builder-bind foreign :identity 'foreign-parent))
+         (foreign-text
+          (ebox-text-create
+           :value "foreign" :source-handle
+           (ebox-source-builder-bind foreign :identity 'foreign-text)
+           :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))
+         (arguments (list :layout (ebox-normal-layout-create)
+                          :source-handle parent
+                          :owned-facts (ebox-canonical-facts-from-declarations 'box nil))))
+    (should-error
+     (apply #'ebox-box-create :children (list (ebox-child-range 'empty)) arguments))
+    (should-error
+     (apply #'ebox-box-create :source-builder builder
+            :children (list (ebox-child-range 'empty) foreign-text) arguments))
+    (should-error
+     (ebox-box-create :layout (ebox-normal-layout-create)
+                      :source-builder builder :source-handle foreign-parent
+                      :owned-facts (ebox-canonical-facts-from-declarations 'box nil)))
+    (let ((node (apply #'ebox-box-create :source-builder builder
+                       :children (list (ebox-child-range 'empty)) arguments)))
+      (should (equal '((:ref empty :before 0 :after 0))
+                     (ebox-box-node-range-anchors node)))
+      (should-not (memq builder node))
+      (ebox-source-builder-finish builder)
+      (should-error
+       (apply #'ebox-box-create :source-builder builder
+              :children (list (ebox-child-range 'empty)) arguments)))))
+
 (ert-deftest ebox-source-index-is-the-sole-source-fact-owner ()
   "Source construction and public reads cannot mutate an immutable index."
   (let* ((class (list (copy-sequence "row")))
@@ -408,7 +467,26 @@
                (plist-get state :node-table))
               (let ((records (ebox-source--index-records index))
                     (subjects (ebox-source--index-subjects index))
-                    (node-subjects (ebox-source--index-node-subjects index)))
+                    (node-subjects (ebox-source--index-node-subjects index))
+                    (handle (ebox-node-source-handle (plist-get first :node)))
+                    (root-subject (ebox-source--index-root-subject index))
+                    (contents (with-current-buffer buffer (buffer-string))))
+                (let ((children (copy-sequence
+                                 (ecss-subject-children root-subject)))
+                      (tp--surface-publication-step-function
+                       (lambda (step _surface)
+                         (when (eq step 'client-state)
+                           (error "Reject declaration-only source rebind")))))
+                  (should-error
+                   (ebox-selector-update-buffer
+                    buffer "#first" :color "#123456"))
+                  (should (eq state (ebox--buffer-render-state buffer)))
+                  (should (eq index (plist-get state :source-index)))
+                  (should (equal-including-properties
+                           contents (with-current-buffer buffer (buffer-string))))
+                  (should (equal children (ecss-subject-children root-subject)))
+                  (dolist (child children)
+                    (should (eq root-subject (ecss-subject-parent child)))))
                 (ebox-selector-update-buffer
                  buffer "#first" :color "#123456")
                 (let* ((next-index
@@ -424,7 +502,32 @@
                   (should (eq subjects next-subjects))
                   (should
                    (eq node-subjects
-                       (ebox-source-table-base next-node-subjects))))))))
+                       (ebox-source-table-base next-node-subjects)))
+                  (let* ((next-node
+                          (gethash old-id
+                                   (plist-get (ebox--buffer-render-state buffer)
+                                              :node-table)))
+                         (next-handle (ebox-node-source-handle next-node)))
+                    (should-not (eq handle next-handle))
+                    (should (equal (ebox-source-handle-id handle)
+                                   (ebox-source-handle-id next-handle)))
+                    (should (ebox-source-index-handle-member-p index handle))
+                    (should-not
+                     (ebox-source-index-handle-member-p index next-handle))
+                    (should-not
+                     (ebox-source-index-handle-member-p next-index handle))
+                    (should-not
+                     (plist-get (ebox-source-record-declarations
+                                 (ebox-source-index-record index handle))
+                                'ebox/color))
+                    (should (equal "#123456"
+                                   (plist-get
+                                    (ebox-source-record-declarations
+                                     (ebox-source-index-record
+                                      next-index next-handle))
+                                    'ebox/color)))
+                    (should (eq root-subject
+                                (ebox-source--index-root-subject next-index)))))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

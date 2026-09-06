@@ -424,8 +424,8 @@ grid-gap aliases are rejected at the author schema boundary."
     (when (> rows (length result))
       (setq result
             (vconcat result
-                     (make-vector (- rows (length result))
-                                  (make-vector target-columns nil)))))
+                     (ebox-grid--occupancy (- rows (length result))
+                                           target-columns))))
     result))
 
 (defun ebox-grid--free-p (matrix row column row-span column-span)
@@ -620,6 +620,16 @@ letting the grid fall back to each child's intrinsic width."
                                          (/ (float factor) fr-total))))))))
     sizes))
 
+(defun ebox-grid--content-independent-columns-p (tracks count available)
+  "Return non-nil when TRACKS determine COUNT widths without cell content.
+Require a positive definite AVAILABLE width and explicit fixed/fr tracks.
+Implicit and intrinsic tracks retain the ordinary measurement path."
+  (and (numberp available) (> available 0)
+       (>= (length tracks) count)
+       (cl-every (lambda (track)
+                   (memq (plist-get track :kind) '(fixed fr)))
+                 tracks)))
+
 (defun ebox-grid--distribute (amount count)
   "Return COUNT integer shares that sum to AMOUNT."
   (let ((base (if (> count 0) (/ amount count) 0))
@@ -673,9 +683,11 @@ size for start/center/end alignment unless it would overflow its track."
          (source (gethash node rendered))
          (auto-width-p (ebox-grid--auto-width-node-p node))
          (justify (or (plist-get props :justify-items) 'stretch))
-         (stretch-p (memq justify '(normal stretch)))
-         (overflow-p (> (ebox--string-max-pixel-width source) width)))
-    (if (and auto-width-p (or stretch-p overflow-p))
+         (stretch-p (memq justify '(normal stretch))))
+    (unless (or (and auto-width-p stretch-p) (stringp source))
+      (error "ebox-grid: Grid item requires missing intrinsic output"))
+    (if (and auto-width-p
+             (or stretch-p (> (ebox--string-max-pixel-width source) width)))
         (let ((ebox-viewport-width width))
           (ebox--render-with-cache node))
       source)))
@@ -705,10 +717,10 @@ size for start/center/end alignment unless it would overflow its track."
        (_ 'top)))))
 
 (defun ebox-grid--entry-string (entry rendered widths heights col-gap row-gap props)
-  "Render and align ENTRY within its grid rectangle."
+  "Align ENTRY's already width-sized RENDERED output within its rectangle."
   (let* ((width (ebox-grid--entry-size entry widths col-gap))
          (height (ebox-grid--row-entry-size entry heights row-gap))
-         (source (ebox-grid--entry-source entry rendered width props))
+         (source (gethash (plist-get entry :node) rendered))
          (justify (or (plist-get props :justify-items) 'stretch))
          (align (or (plist-get props :align-items) 'stretch)))
     (ebox-grid--align source width height justify align)))
@@ -731,9 +743,11 @@ size for start/center/end alignment unless it would overflow its track."
        (aref (aref matrix row) column)))
 
 (defun ebox-grid--entry-start-p (entry row column)
-  "Return non-nil when ENTRY starts at zero-based ROW and COLUMN."
-  (and (= row (1- (plist-get entry :row)))
-       (= column (1- (plist-get entry :column)))))
+  "Return non-nil when ENTRY's slice starts at zero-based ROW and COLUMN."
+  (let ((start (1- (plist-get entry :row))))
+    (and (<= start row)
+         (< row (+ start (plist-get entry :row-span)))
+         (= column (1- (plist-get entry :column))))))
 
 (defun ebox-grid--blank (width height)
   "Return a blank grid area of WIDTH pixels and HEIGHT lines."
@@ -765,9 +779,12 @@ size for start/center/end alignment unless it would overflow its track."
                                         col-gap row-gap props)
                strings))
     (dotimes (row (length heights))
-      (let ((parts nil)
-            (column 0))
-        (while (< column (length widths))
+      (let* ((row-height (nth row heights))
+             (gap-after (if (< row (1- (length heights))) row-gap 0))
+             (height (+ row-height gap-after))
+             (parts nil)
+             (column 0))
+        (while (and (> height 0) (< column (length widths)))
           (let ((entry (ebox-grid--entry-at matrix row column)))
             (if (and entry (ebox-grid--entry-start-p entry row column))
                 (let* ((string (gethash entry strings))
@@ -775,15 +792,31 @@ size for start/center/end alignment unless it would overflow its track."
                        (offset (+ (ebox-grid--sum
                                    (seq-subseq heights start row))
                                   (* row-gap (- row start))))
-                       (height (nth row heights)))
-                  (push (ebox-grid--slice string offset height) parts)
+                       (continues-p
+                        (> (+ start (plist-get entry :row-span)) (1+ row)))
+                       (slice-height (if continues-p height row-height))
+                       (piece (and (> slice-height 0)
+                                   (ebox-grid--slice
+                                    string offset slice-height))))
+                  ;; A spanning cell owns the intervening gap lines too.
+                  ;; Other cells leave that same area blank after clipping
+                  ;; their output to the allocated row height.
+                  (when (and (> gap-after 0) (not continues-p))
+                    (let ((gap (ebox-grid--blank
+                                (ebox-grid--entry-size entry widths col-gap)
+                                gap-after)))
+                      (setq piece (if piece
+                                      (ebox-lines-join (list piece gap))
+                                    gap))))
+                  (push piece parts)
                   (setq column (+ column (plist-get entry :column-span))))
               (let ((width (nth column widths)))
-                (push (ebox-grid--blank width (nth row heights)) parts)
+                (push (ebox-grid--blank width height) parts)
                 (setq column (1+ column))))
             (when (< column (length widths))
               (push (ebox-pixel-space col-gap) parts))))
-        (setq result
+        (when parts
+          (setq result
               (append result
                       (list (apply #'ebox--lines-concat-horizontal
                                    (append
@@ -793,11 +826,7 @@ size for start/center/end alignment unless it would overflow its track."
                                     (nreverse parts)
                                     (when (> (plist-get column-layout :trailing) 0)
                                       (list (ebox-pixel-space
-                                             (plist-get column-layout :trailing)))))))))
-        (when (< row (1- (length heights)))
-          (setq result
-                (append result
-                        (list (ebox-grid--blank total-width row-gap)))))
+                                             (plist-get column-layout :trailing))))))))))
         ))
     (ebox-lines-join
      (append
@@ -857,14 +886,25 @@ size for start/center/end alignment unless it would overflow its track."
          (column-count (nth 3 placed))
          (available (plist-get constraints :width))
          (height (plist-get constraints :height))
+         (content-independent-p
+          (and (ebox-grid--content-independent-columns-p
+                columns column-count available)
+               (memq (or (plist-get props :justify-items) 'stretch)
+                     '(normal stretch))))
          (rendered (make-hash-table :test 'eq)))
     (unless (memq flow '(row column))
       (error "ebox-grid: :grid-auto-flow must be `row' or `column'"))
     (dolist (entry entries)
       (let ((child (plist-get entry :node)))
-        (let ((ebox-viewport-width nil)
-              (ebox--intrinsic-layout-measurement t))
-          (puthash child (ebox--render-with-cache child) rendered))))
+        ;; Neither column sizing nor unconditional stretch consumes this
+        ;; natural output.  The final Box render still resolves its own
+        ;; min/max constraints before its output is used to size rows.
+        (unless (and content-independent-p
+                     (ebox-box-node-p child)
+                     (ebox-grid--auto-width-node-p child))
+          (let ((ebox-viewport-width nil)
+                (ebox--intrinsic-layout-measurement t))
+            (puthash child (ebox--render-with-cache child) rendered)))))
     (let* ((widths (ebox-grid--resolve-sizes columns column-count 'columns
                                              entries rendered (cdr gaps)
                                              available auto-columns))

@@ -49,6 +49,250 @@
     (propertize "Open" 'keymap map 'mouse-face 'highlight
                 'help-echo "Open this item")))
 
+(ert-deftest ebox-surface-snapshot-exports-current-detached-input ()
+  "A snapshot follows local commits and owns its mutable node payloads."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (let* ((owner (current-buffer))
+             (payload (list :nested (vector "original")))
+             (table (make-hash-table :test 'equal))
+             (keymap (make-sparse-keymap))
+             (callback (lambda () 'callback))
+             (value (propertize "before" 'custom payload 'action callback
+                                'custom-table table 'keymap keymap))
+             (input (ebox-test-column :width '(100) :source-identity 'root
+                      (ebox-test-text value :source-identity 'content))))
+        (puthash "value" (vector "original") table)
+        (puthash "self" table table)
+        (ebox-render-to-buffer owner input)
+        (let* ((first (ebox-surface-buffer-snapshot owner))
+               (first-input (plist-get first :input))
+               (first-root (car (ebox-canonical-input-roots first-input)))
+               (first-text (car (ebox-box-node-children first-root)))
+               (text-value (ebox-text-node-value first-text))
+               (first-render (ebox-render first-input))
+               (candidate (ebox-candidate-begin owner)))
+          (should (eq callback (get-text-property 0 'action text-value)))
+          (should (eq keymap (get-text-property 0 'keymap text-value)))
+          (should-not (eq payload (get-text-property 0 'custom text-value)))
+          (let ((export-table (get-text-property 0 'custom-table text-value)))
+            (should-not (eq table export-table))
+            (should (eq export-table (gethash "self" export-table)))
+            (aset (gethash "value" export-table) 0 "changed export")
+            (should (equal "original" (aref (gethash "value" table) 0))))
+          (aset (plist-get (get-text-property 0 'custom text-value) :nested)
+                0 "changed export")
+          (should (equal "original" (aref (plist-get payload :nested) 0)))
+          (ebox-candidate-replace-host-ref
+           candidate 'content (ebox-test-text "after" :source-identity 'content))
+          (ebox-commit owner candidate)
+          (let* ((second (ebox-surface-buffer-snapshot owner))
+                 (revision (ebox-surface-buffer-revision owner)))
+            (should (> (plist-get second :revision) (plist-get first :revision)))
+            (should (= revision (plist-get second :revision)))
+            (should (= (plist-get first :mount-id) (plist-get second :mount-id)))
+            (should (string-match-p "after" (ebox-render (plist-get second :input))))
+            (should (string-match-p "before" first-render))
+            (should (string-match-p "before" (ebox-render first-input)))
+            (should (= revision (ebox-surface-buffer-revision owner)))
+            (ebox-unmount-buffer owner)
+            (with-temp-buffer
+              (ebox-render-to-buffer (current-buffer) (plist-get second :input))
+              (should (string-match-p "after" (buffer-string))))))))))
+
+(ert-deftest ebox-surface-snapshot-rejects-provisional-and-dead-mounts ()
+  "Query refuses transaction state and separates remount revisions."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (let ((owner (current-buffer))
+            (input (ebox-test-box (ebox-test-text "committed"))))
+        (should-error (ebox-surface-buffer-snapshot owner))
+        (ebox-render-to-buffer owner input)
+        (let ((snapshot (ebox-surface-buffer-snapshot owner)))
+          (should-error
+           (tp-with-transaction (ebox-surface-buffer-snapshot owner)))
+          (should-error
+           (ebox-commit
+            owner (ebox-test-box (ebox-test-text "rejected"))
+            (lambda (_report)
+              (should-error (ebox-surface-buffer-snapshot owner))
+              (error "reject candidate"))))
+          (should (= (plist-get snapshot :revision)
+                     (plist-get (ebox-surface-buffer-snapshot owner) :revision)))
+          (should (string-match-p "committed" (buffer-string)))
+          (ebox-unmount-buffer owner)
+          (should-error (ebox-surface-buffer-snapshot owner))
+          (ebox-render-to-buffer owner input)
+          (should-not (= (plist-get snapshot :mount-id)
+                         (plist-get (ebox-surface-buffer-snapshot owner) :mount-id))))))))
+
+(ert-deftest ebox-surface-snapshot-preserves-empty-and-keyed-ranges ()
+  "Detached export keeps exact source handles and transparent Range shape."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (let* ((builder (ebox-source-builder-create))
+             (handle (ebox-source-builder-bind builder :identity 'root))
+             (children (mapcar
+                        (lambda (key)
+                          (ebox-text-create
+                           :value (symbol-name key)
+                           :source-handle (ebox-source-builder-bind
+                                           builder :identity key :key key)
+                           :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))
+                        '(one two)))
+             (input (ebox-canonical-input-create
+                     (list (ebox-box-create
+                            :source-handle handle :source-builder builder
+                            :owned-facts (ebox-canonical-facts-from-declarations 'box nil)
+                            :layout (ebox-column-layout-create)
+                            :children (list (ebox-child-range 'empty)
+                                            (apply #'ebox-child-range 'items children))))
+                     (ebox-source-builder-finish builder)))
+             (root (car (ebox-canonical-input-roots input))))
+        (ebox-render-to-buffer (current-buffer) input)
+        (let* ((snapshot (ebox-surface-buffer-snapshot (current-buffer)))
+               (export (plist-get snapshot :input))
+               (copy (car (ebox-canonical-input-roots export))))
+          (should (equal (ebox-box-node-range-anchors root)
+                         (ebox-box-node-range-anchors copy)))
+          (should (eq (ebox-node-source-handle root) (ebox-node-source-handle copy)))
+          (cl-mapc (lambda (before after)
+                     (should (eq (ebox-node-source-handle before)
+                                 (ebox-node-source-handle after))))
+                   (ebox-box-node-children root) (ebox-box-node-children copy))
+          (should (string-match-p "one" (ebox-render export)))
+          (should-not (plist-get copy :node-id))
+          (should-not (plist-get copy :surface-object))
+          (should-not (plist-get copy :render-cache)))))))
+
+(ert-deftest ebox-surface-snapshot-detaches-character-tables ()
+  "Character table defaults, inheritance, extras and shared bits are detached."
+  (let* ((purpose (make-symbol "ebox-snapshot-character-table"))
+         (_ (put purpose 'char-table-extra-slots 1))
+         (parent (make-char-table purpose))
+         (table (make-char-table purpose))
+         (bits (make-bool-vector 3 t))
+         (default (list "default")))
+    (set-char-table-range table nil default)
+    (set-char-table-range table ?a (list "entry"))
+    (set-char-table-range parent ?b (list "inherited"))
+    (set-char-table-parent table parent)
+    (set-char-table-extra-slot table 0 (vector table bits bits))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer) (ebox-test-text (propertize "x" 'custom table)))
+      (let* ((input (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))
+             (text (ebox-text-node-value (car (ebox-canonical-input-roots input))))
+             (copy (get-text-property 0 'custom text))
+             (extra (char-table-extra-slot copy 0)))
+        (should-not (eq table copy))
+        (should (eq copy (aref extra 0)))
+        (should (eq (aref extra 1) (aref extra 2)))
+        (should-not (eq bits (aref extra 1)))
+        (setcar (char-table-range copy nil) "changed default")
+        (setcar (char-table-range copy ?a) "changed entry")
+        (set-char-table-range copy nil nil)
+        (setcar (char-table-range (char-table-parent copy) ?b) "changed parent")
+        (should (equal "default" (car default)))
+        (should (equal '("entry") (char-table-range table ?a)))
+        (should (equal '("inherited") (char-table-range parent ?b)))
+        (should (equal '("changed parent") (char-table-range copy ?b)))))))
+
+(defun ebox-surface-test--filler-root (value kind)
+  "Return a KIND layout whose named Text VALUE changes ancestor filling."
+  (let ((content (ebox-test-text value :key 'content :id "content"
+                                 :source-identity 'content)))
+    (ebox-test-column :width '(100) :height 5 :key 'root
+      (if (eq kind 'column)
+          (ebox-test-column :key 'group content)
+        (ebox-test-flex :key 'row
+          (ebox-test-box :key 'static (ebox-test-text "fixed"))
+          (ebox-test-column :key 'group :flex-basis '(40) :flex-grow 1
+            content)))
+      ;; A separate scroll owner prevents the ordinary fixed-span shortcut.
+      ;; Its visible and hidden content must survive this unrelated edit.
+      (ebox-test-box :key 'outside :height 1 :overflow 'scroll
+        (ebox-test-text "outside\nother\nmore")))))
+
+(ert-deftest ebox-surface-text-update-owns-dependent-line-filler ()
+  "Text growth and shrinkage publish the exact dependent ancestor filler."
+  (ebox-surface-test--with-elisp-backend
+    (dolist (kind '(column flex))
+      (with-temp-buffer
+        (let ((ebox-viewport-width 100) (ebox-viewport-height 5))
+          (ebox-render-to-buffer
+           (current-buffer)
+           (ebox-surface-test--filler-root "okay" kind))
+          (let* ((entry (car (ebox-selector-query-buffer
+                             (current-buffer) "#content")))
+                 (region-id (plist-get entry :region-id))
+                 (surface ebox-surface--buffer-surface)
+                 (outside (save-excursion
+                            (goto-char (point-min))
+                            (forward-line 1)
+                            (buffer-substring (point) (point-max)))))
+            (dolist (value '("longer" "x"))
+              (let* ((input
+                      (if (equal value "x")
+                          (let ((candidate
+                                 (ebox-candidate-begin (current-buffer))))
+                            (ebox-candidate-replace-host-ref
+                             candidate 'content
+                             (ebox-test-text value :key 'content :id "content"
+                                             :source-identity 'content))
+                            candidate)
+                        (ebox-surface-test--filler-root value kind)))
+                     (report (ebox-commit (current-buffer) input)))
+                (should (= (plist-get report :tp-scope-count) 1))
+                (should-not (plist-get report :tp-full-root))
+                (should-not (plist-get report :tp-scope-fallback))
+                ;; Publication permission must not extend the public semantic
+                ;; bounds of the Text to include its ancestor's blank area.
+                (let ((bounds (ebox-surface-region-bounds
+                               (current-buffer) region-id)))
+                  (should (equal value (buffer-substring-no-properties
+                                        (car bounds) (cdr bounds)))))
+                (save-excursion
+                  (goto-char (point-min))
+                  (should (= 100 (ebox--string-pixel-width
+                                  (buffer-substring (point)
+                                                    (line-end-position)))))
+                  (forward-line 1)
+                  (should (equal-including-properties
+                           outside (buffer-substring (point) (point-max)))))))
+            (let ((before (buffer-string))
+                  (state (tp-surface-client-state surface))
+                  (revision (tp-surface-revision surface))
+                  rollback)
+              (should-error
+               (ebox-commit
+                (current-buffer)
+                (ebox-surface-test--filler-root "failure" kind)
+                (lambda (_report) (error "reject filler publication"))
+                (lambda (_report) (setq rollback t))))
+              (should rollback)
+              (should (equal-including-properties before (buffer-string)))
+              (should (eq state (tp-surface-client-state surface)))
+              (should (= revision (tp-surface-revision surface)))
+              ;; The dependency range authorizes the filler, not unrelated
+              ;; output elsewhere in the complete candidate.
+              (let ((render (symbol-function 'ebox-surface--render-candidate)))
+                (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                           (lambda (candidate)
+                             (let* ((output (funcall render candidate))
+                                    (start (string-match "outside" output)))
+                               (put-text-property start (1+ start)
+                                                  'help-echo "unrelated" output)
+                               output))))
+                  (should-error
+                   (ebox-commit
+                    (current-buffer)
+                    (ebox-surface-test--filler-root "next" kind))
+                   :type 'tp-scope-mismatch)))
+              (should (equal-including-properties before (buffer-string)))
+              (should (eq state (tp-surface-client-state surface)))
+              (should (= revision (tp-surface-revision surface))))))))))
+
 (ert-deftest ebox-range-ref-present-p-is-a-read-only-boundary-query ()
   "Expose mounted Range anchor presence without leaking runtime tables."
   (let ((buffer (generate-new-buffer " *ebox-range-anchor-query*"))
@@ -891,6 +1135,92 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       open
       (ebox-tree-source-index
        open nil nil (ebox-test-source-index open-input))))))
+
+(defun ebox-surface-test--inherited-range-root ()
+  "Return a styled Range with static siblings inheriting from copied parents."
+  (ebox-test-column :color "red" :width '(100) :height 10
+    (ebox-test-row :id "header"
+      (ebox-test-text "Header" :class "title"))
+    (ebox-test-child-range 'items (ebox-test-text "Old" :key 'old))
+    (ebox-test-row (ebox-test-text "Footer" :id "footer"))))
+
+(defun ebox-surface-test--replace-inherited-range ()
+  "Commit a structural change between the static inherited Text siblings."
+  (let ((candidate (ebox-candidate-begin (current-buffer))))
+    (ebox-candidate-replace-range-ref
+     candidate 'items
+     (ebox-test-forest-input
+      (ebox-test-text "New" :key 'new)
+      (ebox-test-text "More" :key 'more)))
+    (ebox-commit (current-buffer) candidate)))
+
+(defun ebox-surface-test--assert-inherited-range-style ()
+  "Check that retained Text styles and source parent identities agree."
+  (let* ((state (ebox--buffer-render-state (current-buffer)))
+         (source-index (plist-get state :source-index))
+         (nodes (plist-get state :node-table))
+         (parents (plist-get state :parent-table))
+         (checked 0))
+    (maphash
+     (lambda (id node)
+       (when (member (plist-get node :ebox-text-value) '("Header" "Footer"))
+         (cl-incf checked)
+         (should (equal (plist-get node :color) "red"))
+         (should (equal (ecss-computed-style-value
+                         (plist-get node :ebox-computed-style) 'ebox/color)
+                        "red"))
+         (should (eq (ecss-subject-parent
+                      (ebox-tree-node-subject source-index node))
+                     (ebox-tree-node-subject
+                      source-index (gethash (gethash id parents) nodes))))))
+     nodes)
+    (should (= checked 2))))
+
+(ert-deftest ebox-surface-stale-parent-subjects-preserve-inherited-style ()
+  "Full style projection reconnects static children after a local Range delta."
+  (ebox-surface-test--with-elisp-backend
+    (let ((ebox-style-stylesheet (ecss-stylesheet-create))
+          (ebox-viewport-width 100)
+          (ebox-viewport-height 10))
+      (ebox-style-add-rule ".title" '(:font-weight bold))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-surface-test--inherited-range-root))
+        (ebox-surface-test--assert-inherited-range-style)
+        (ebox-surface-test--replace-inherited-range)
+        (ebox-surface-test--assert-inherited-range-style)
+        ;; A later local edit must agree with the already published siblings.
+        (ebox-region-update (ebox-region-resolve (current-buffer) "header")
+                            :content "Header!")
+        (let ((state (ebox--buffer-render-state (current-buffer))))
+          (should (equal-including-properties
+                   (buffer-string)
+                   (ebox-surface-test--render-runtime state))))))))
+
+(ert-deftest ebox-surface-stale-parent-subjects-rollback-preserves-publication ()
+  "Failed coherent style preparation leaves the published subject tree intact."
+  (ebox-surface-test--with-elisp-backend
+    (let ((ebox-style-stylesheet (ecss-stylesheet-create))
+          (ebox-viewport-width 100)
+          (ebox-viewport-height 10))
+      (ebox-style-add-rule ".title" '(:font-weight bold))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-surface-test--inherited-range-root))
+        (let* ((state (ebox--buffer-render-state (current-buffer)))
+               (source-index (plist-get state :source-index))
+               (contents (buffer-string))
+               (tp--surface-publication-step-function
+                (lambda (step _surface)
+                  (when (eq step 'client-state)
+                    (error "Reject coherent style candidate")))))
+          (should-error (ebox-surface-test--replace-inherited-range))
+          (should (eq state (ebox--buffer-render-state (current-buffer))))
+          (should (eq source-index (plist-get state :source-index)))
+          (should (equal-including-properties contents (buffer-string)))
+          (ebox-surface-test--assert-inherited-range-style))
+        (ebox-surface-test--replace-inherited-range)
+        (ebox-surface-test--assert-inherited-range-style)))))
 
 (ert-deftest ebox-box-content-cache-reuses-fixed-viewport-subtree ()
   "A fixed box content viewport should reuse its exact composite layout."
@@ -3085,6 +3415,69 @@ changes.  Geometry and non-inherited computed values must remain identical."
                                       (buffer-string))))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
+
+(ert-deftest ebox-surface-nested-grid-paint-keeps-slot-face-addresses ()
+  "A local restyle after resize preserves named paint faces outside its scope."
+  (ebox-surface-test--with-elisp-backend
+    (let ((foreground (tp-paint-slot-create '(:foreground "#152030")))
+          (background (tp-paint-slot-create '(:background "#F8FAFC")))
+          (top (tp-paint-slot-create '(:overline "#CBD5E1")))
+          (bottom (tp-paint-slot-create
+                   '(:underline (:position t :color "#CBD5E1")))))
+      (cl-labels
+          ((row (key selected)
+             (ebox-test-row :key key
+               :color (if selected "#FFFFFF" foreground)
+               :bgcolor (if selected "#2563EB" background)
+               :border-top-width 1 :border-top-style 'solid :border-top-color top
+               :border-bottom-width 1 :border-bottom-style 'solid
+               :border-bottom-color bottom
+               (ebox-test-grid :key 'cells :width 'stretch
+                 :grid-template-columns '((fr 1) (22))
+                 (ebox-test-box :key 'label (ebox-test-text "Label"))
+                 (ebox-test-box :key 'action (ebox-test-text "Action")))))
+           (root (selected)
+             (ebox-test-column :key 'root :width 'viewport
+               (row 'first nil) (row 'second selected))))
+        (with-temp-buffer
+          (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+            (ebox-render-to-buffer (current-buffer) (root nil)))
+          (ebox-surface-update-buffer-viewport (current-buffer) 420 10)
+          (let ((original (buffer-string))
+                (first-line (buffer-substring (point-min)
+                                              (save-excursion
+                                                (goto-char (point-min))
+                                                (line-end-position)))))
+            (dolist (slot (list foreground background top bottom))
+              (should (memq (tp-paint-slot-face slot)
+                            (flatten-tree
+                             (get-text-property 0 'face first-line)))))
+            (let ((report (ebox-commit (current-buffer) (root t))))
+              (should (eq (plist-get report :projection-kind) 'paint))
+              (should-not (plist-get report :tp-full-root))
+              (should-not (plist-get report :tp-scope-fallback))
+              (should (= (plist-get report :tp-scope-count) 1)))
+            (should (equal-including-properties
+                     first-line
+                     (buffer-substring (point-min)
+                                       (save-excursion
+                                         (goto-char (point-min))
+                                         (line-end-position)))))
+            ;; Restoring slot-backed colors must emit the same named faces
+            ;; as the initial renderer, including both horizontal borders.
+            (ebox-commit (current-buffer) (root nil))
+            (should (equal-including-properties original (buffer-string)))
+            (let ((before (buffer-string))
+                  (revision (ebox-surface-buffer-revision (current-buffer)))
+                  rollback)
+              (should-error
+               (ebox-commit (current-buffer) (root t)
+                            (lambda (_report) (error "Reject restyle"))
+                            (lambda (_report) (setq rollback t))))
+              (should rollback)
+              (should (= revision (ebox-surface-buffer-revision
+                                   (current-buffer))))
+              (should (equal-including-properties before (buffer-string))))))))))
 
 (ert-deftest ebox-region-handle-becomes-stale-with-its-object ()
   "A handle should fail after a commit removes its retained object."
