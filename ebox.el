@@ -589,6 +589,36 @@ segments that incremental publication still needs."
          '(ebox-content ebox-content-idx
            ebox-content-owner ebox-content-owners)))))
 
+(defun ebox--pad-lines-vertical (lines height &optional offset padding-string)
+  "Pad or clip LINES to HEIGHT without changing their strings or list spine.
+OFFSET shifts content toward the bottom when positive and toward the top when
+negative.  PADDING-STRING defaults to a blank matching the first line's width.
+The result may borrow LINES or their strings.  Treat it as read-only.
+Empty input has zero lines before padding.  Height zero clips to nil."
+  (let ((count (length lines)))
+    (if (> height count)
+        (let* ((fill (or padding-string
+                         (ebox--pixel-blank
+                          (ebox--string-pixel-width (car lines)) 1)
+                         ""))
+               (rest (- height count))
+               (offset (or offset 0))
+               (top (if (>= offset 0) (min offset rest)
+                      (max 0 (+ offset rest))))
+               (bottom (- rest top)))
+          (append (make-list top fill)
+                  (if (> bottom 0)
+                      (append lines (make-list bottom fill))
+                    lines)))
+      (if (= height count) lines (seq-take lines height)))))
+
+(defun ebox--vertical-alignment-offset (line-count height align)
+  "Return the offset for LINE-COUNT lines in HEIGHT using ALIGN."
+  (pcase align
+    ('bottom (- height line-count))
+    ('center (/ (- height line-count) 2))
+    (_ 0)))
+
 (defun ebox--lines-pad-vertical (string height &optional offset padding-string)
   "Pad or clip STRING to HEIGHT lines.
 OFFSET controls content shift: positive (top), negative (bottom).
@@ -596,31 +626,15 @@ PADDING-STRING fills added lines; its default matches STRING's first-line width.
   (if (and (stringp string) (integerp height) (= height 1)
            (not (string-match-p "\n" string)))
       (copy-sequence string)
-    (let* ((lines (ebox-string-lines string))
-           (line-count (length lines)))
-      (when (> height line-count)
-        (let* ((padding-string (or padding-string
-                                   (ebox--pixel-blank
-                                    (ebox--string-pixel-width string) 1)))
-               (rest (- height line-count))
-               (offset (or offset 0))
-               (top-pad (cond ((>= offset 0) (min offset rest))
-                              (t (max 0 (+ offset rest)))))
-               (bottom-pad (- rest top-pad))
-               (pad-lines (make-list top-pad padding-string))
-               (bottom-lines (make-list bottom-pad padding-string)))
-          (setq lines (append pad-lines lines bottom-lines))))
-      (ebox-lines-join (seq-take lines height)))))
+    (ebox-lines-join
+     (ebox--pad-lines-vertical
+      (ebox-string-lines string) height offset padding-string))))
 
 (defun ebox--lines-align-vertical (string height align)
   "Align STRING to HEIGHT lines.
 ALIGN can be `top', `center', or `bottom'."
-  (let* ((line-count (ebox-string-height string))
-         (offset (pcase align
-                   ('top 0)
-                   ('bottom (- height line-count))
-                   ('center (/ (- height line-count) 2))
-                   (_ 0))))
+  (let ((offset (ebox--vertical-alignment-offset
+                 (ebox-string-height string) height align)))
     (ebox--lines-pad-vertical string height offset)))
 
 (defun ebox--string-lines-pad-bottom (string height)

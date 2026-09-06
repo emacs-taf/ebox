@@ -4657,11 +4657,11 @@ line compositor's complete property output, including empty lines and chrome."
          (observed (ebox-test--box-full-height-joins input 6))
          (joins (plist-get observed :joins)))
     (should (= (ebox-string-height (plist-get observed :rendered)) 8))
-    ;; Alignment joins once; blank normalization retains its line result and
-    ;; the shared compositor adds only the final border-box join.
+    ;; Alignment and blank normalization retain lines; the shared compositor
+    ;; performs the only full-height join at the border-box output boundary.
     (ert-info ((format "Materialized (height bytes): %S"
                        joins))
-      (should (= (length joins) 2)))))
+      (should (= (length joins) 1)))))
 
 (ert-deftest ebox-box-chrome-keeps-complete-scroll-materialization ()
   "Existing fully painted scroll output must not enter decoration again."
