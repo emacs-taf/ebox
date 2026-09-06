@@ -1805,6 +1805,13 @@ the projection roots a second time."
               (ebox-surface--native-full-frame-p state projection-kind)))
          (previous-owned-ranges
           (plist-get state :previous-surface-owned-ranges))
+         (retained-owned-ranges
+          (and (eq projection-kind 'mixed-owner-reflow)
+               (eq (plist-get (plist-get state :mixed-owner-proof)
+                              :geometry-kind)
+                   'span-patch)
+               (not (ebox-surface--mixed-range-splice-p state))
+               (plist-get state :span-patch-retained-owned-ranges)))
          (node-objects
           (or (and scroll-fast-p
                    (plist-get state :surface-node-object-table))
@@ -1818,6 +1825,7 @@ the projection roots a second time."
     ;; Paint contributions belong to this one publication.  Keep them out of
     ;; the transferred client state so later paint cannot replay old layers.
     (cl-remf state :paint-property-contributions)
+    (cl-remf state :span-patch-retained-owned-ranges)
     (plist-put state :surface-node-object-table node-objects)
     (plist-put state :region-surface-object-table region-objects)
     (unless (and scroll-fast-p
@@ -1831,11 +1839,12 @@ the projection roots a second time."
     (or (and native-retained-p
              (ebox-surface--native-patch-result
               context projection state output node-objects region-objects))
-        (and (null property-contributions)
+        (and (or (null property-contributions) retained-owned-ranges)
              (memq projection-kind
                    '(span-patch owner-scoped mixed-owner-reflow))
              (ebox-surface--span-coordinate-result
-              context projection state output previous-owned-ranges))
+              context projection state output previous-owned-ranges
+              property-contributions retained-owned-ranges))
         (let* ((range-splice-p
                 (and (eq projection-kind 'mixed-owner-reflow)
                      (ebox-surface--mixed-range-splice-p state)))
@@ -1849,9 +1858,15 @@ the projection roots a second time."
           (or (and (null property-contributions)
                    (memq projection-kind
                           '(span-patch owner-scoped mixed-owner-reflow))
-                   (ebox-surface--coordinate-commit
-                    context state rendered owned-ranges (nth 3 prepared)
-                    previous-owned-ranges))
+                   (when-let* ((batch
+                                (ebox-surface--coordinate-batch
+                                 state rendered previous-owned-ranges)))
+                     (tp-commit-batch-result-create
+                      context batch
+                      :mount-specs
+                      (ebox-surface--commit-mount-specs
+                       (nth 3 prepared) owned-ranges)
+                      :client-state state)))
               (if (and (not range-splice-p)
                        (or full-surface-p native-retained-p
                            property-contributions))
@@ -1965,13 +1980,68 @@ content projection order; fragment and surface records follow unchanged."
            (ebox-surface--commit-mount-specs mount-records owned-ranges)
            :client-state state))))))
 
-(defun ebox-surface--coordinate-commit
-    (context state rendered owned-ranges mount-records previous-owned-ranges)
-  "Return STATE's exact proven-owner coordinate commit, or nil.
-PREVIOUS-OWNED-RANGES identify the committed owner intervals.  The mixed
+(defun ebox-surface--patch-property-contributions
+    (patches contributions extent)
+  "Return fresh PATCHES carrying completely covered CONTRIBUTIONS, or nil.
+CONTRIBUTIONS use target coordinates bounded by EXTENT.  Preserve their order
+inside every patch; a gap rejects the batch rather than dropping paint."
+  (when (proper-list-p contributions)
+    (catch 'uncovered
+      (let* ((targets (vconcat (mapcar #'copy-sequence patches)))
+             (count (length targets))
+             (layers (make-vector count nil)))
+        (dolist (contribution contributions)
+          (let ((start (plist-get contribution :start))
+                (end (plist-get contribution :end))
+                (props (plist-get contribution :props)))
+            ;; Validate the original interval before clipping.  On a proof
+            ;; miss the retained-content path reports invalid inputs through
+            ;; TP's ordinary contribution validator.
+            (unless (and (integerp start) (integerp end)
+                         (<= 0 start end extent)
+                         (ebox-style--valid-plist-p props)
+                         (cl-loop for (key _value) on props by #'cddr
+                                  always (symbolp key)))
+              (throw 'uncovered nil))
+            (when (< start end)
+              (let ((low 0) (high count) (position start))
+                ;; Patches are ordered and disjoint.  Locate the first one
+                ;; once per layer, then visit only its actual intersections.
+                (while (< low high)
+                  (let ((middle (/ (+ low high) 2)))
+                    (if (<= (plist-get (aref targets middle) :new-end) start)
+                        (setq low (1+ middle))
+                      (setq high middle))))
+                (while (< position end)
+                  (when (>= low count) (throw 'uncovered nil))
+                  (let* ((patch (aref targets low))
+                         (patch-start (plist-get patch :new-start))
+                         (next (min end (plist-get patch :new-end))))
+                    (when (> patch-start position) (throw 'uncovered nil))
+                    (when (< position next)
+                      (push (list :start (- position patch-start)
+                                  :end (- next patch-start) :props props)
+                            (aref layers low)))
+                    (setq position next low (1+ low))))))))
+        (dotimes (index count)
+          (when (aref layers index)
+            (aset targets index
+                  (plist-put (aref targets index) :property-contributions
+                             (nreverse (aref layers index))))))
+        (append targets nil)))))
+
+(defun ebox-surface--coordinate-batch
+    (state rendered previous-owned-ranges
+           &optional property-contributions retained-origin)
+  "Return STATE's exact proven-owner coordinate batch, or nil.
+RENDERED is the candidate text.  PREVIOUS-OWNED-RANGES identify the committed
+owner intervals.  The mixed
 projection has already produced exact coordinate patches and final text; this
 function composes those retained facts into TP's standard validated commit
-batch without asking TP to rediscover the same diff from a full plan."
+batch without asking TP to rediscover the same diff from a full plan.
+PROPERTY-CONTRIBUTIONS add ordered target paint.  RETAINED-ORIGIN is the live
+surface origin when an exact ownership proof permits indexed owner lookup.
+This proof step does not register objects in the active prepare context."
   (let* ((proof (plist-get state :mixed-owner-proof))
          (owner-ids
           (or (plist-get proof :owner-ids)
@@ -2006,19 +2076,32 @@ batch without asking TP to rediscover the same diff from a full plan."
                      :new-start (plist-get patch :new-start)
                      :new-end (plist-get patch :new-end)))
              coordinate-patches))
-      (dolist (range previous-owned-ranges)
-        (when (gethash (plist-get range :object) owner-set)
-          (when-let* ((new-start
-                      (ebox-surface--rebase-coordinate
-                       (plist-get range :start) coordinate-patches))
-                     (new-end
-                      (ebox-surface--rebase-coordinate
-                       (plist-get range :end) coordinate-patches)))
-            (push (list :old-start (plist-get range :start)
-                        :old-end (plist-get range :end)
-                        :new-start (car new-start)
-                        :new-end (car new-end))
-                  intervals))))
+      (if retained-origin
+          ;; The strict retained-property witness preserves the complete
+          ;; mount projection.  Read just the changed owners from TP's
+          ;; existing index, including baseline-only paint removals.
+          (maphash
+           (lambda (object _present)
+             (dolist (mount (tp-object-mounts object))
+               (let ((start (- (plist-get mount :start) retained-origin))
+                     (end (- (plist-get mount :end) retained-origin)))
+                 (push (list :old-start start :old-end end
+                             :new-start start :new-end end)
+                       intervals))))
+           owner-set)
+        (dolist (range previous-owned-ranges)
+          (when (gethash (plist-get range :object) owner-set)
+            (when-let* ((new-start
+                        (ebox-surface--rebase-coordinate
+                         (plist-get range :start) coordinate-patches))
+                       (new-end
+                        (ebox-surface--rebase-coordinate
+                         (plist-get range :end) coordinate-patches)))
+              (push (list :old-start (plist-get range :start)
+                          :old-end (plist-get range :end)
+                          :new-start (car new-start)
+                          :new-end (car new-end))
+                    intervals)))))
       (setq intervals
             (sort intervals
                   (lambda (left right)
@@ -2077,56 +2160,103 @@ batch without asking TP to rediscover the same diff from a full plan."
                           :patches patches
                           :coordinate-patches intervals)
                        (tp-surface-error nil)))))
+          (when (and batch property-contributions)
+            (setq batch
+                  (when-let* ((layered
+                               (ebox-surface--patch-property-contributions
+                                patches property-contributions target-extent)))
+                    ;; The bare batch above proves geometry.  Composition
+                    ;; runs outside its proof-miss catch: a merger can signal
+                    ;; any condition, including `tp-surface-error', and must
+                    ;; preserve ordinary transaction failure and rollback.
+                    (tp-commit-batch-create
+                     :base-revision base-revision
+                     :target-revision (1+ base-revision)
+                     :base-extent source-extent :target-extent target-extent
+                     :patches layered :coordinate-patches intervals))))
           (when batch
-            (prog1
+            (cl-remf state :content-base-extent)
+            batch))))))
+
+(defun ebox-surface--span-coordinate-result
+    (context projection state rendered previous-owned-ranges
+             &optional property-contributions retained-owned-ranges)
+  "Return a direct span commit from retained coordinate metadata, or nil.
+CONTEXT and PROJECTION supply retained object identities.  STATE and RENDERED
+hold the candidate coordinates and text; PREVIOUS-OWNED-RANGES is the committed
+ownership snapshot.  PROPERTY-CONTRIBUTIONS are ordered candidate paint layers.
+RETAINED-OWNED-RANGES witnesses unchanged ownership when it is that snapshot."
+  (let* ((patches (plist-get state :content-coordinate-patches))
+         (surface-root (plist-get projection :surface-root))
+         (retained-origin
+          (when (and surface-root patches retained-owned-ranges
+                     (eq retained-owned-ranges previous-owned-ranges)
+                     (equal (plist-get state :content-base-extent)
+                            (length rendered))
+                     (cl-every
+                      (lambda (patch)
+                        (and (= (plist-get patch :old-start)
+                                (plist-get patch :new-start))
+                             (= (plist-get patch :old-end)
+                                (plist-get patch :new-end))))
+                      patches))
+            (let ((mounts (tp-object-mounts surface-root)))
+              (when (and (= (length mounts) 1)
+                         (= (- (plist-get (car mounts) :end)
+                               (plist-get (car mounts) :start))
+                            (length rendered)))
+                (plist-get (car mounts) :start))))))
+    (when-let* ((fragments
+                 (and surface-root patches
+                      (or (plist-get state :mixed-owner-fragment-data)
+                          (plist-get state :span-patch-fragment-data))))
+                (rebased
+                 (if retained-origin
+                     (cons t previous-owned-ranges)
+                   (and (null property-contributions) previous-owned-ranges
+                        (ebox-surface--rebase-owned-ranges
+                         previous-owned-ranges patches (length rendered)))))
+                (batch
+                 (ebox-surface--coordinate-batch
+                  state rendered previous-owned-ranges
+                  property-contributions retained-origin))
+                (fragment-root
+                 (tp-object-ensure context surface-root
+                                   ebox-surface--fragments-key 'ebox/fragments))
+                (text-leaf
+                 (tp-object-ensure context fragment-root
+                                   ebox-surface--text-key 'ebox/text)))
+      (let* ((owned-ranges (cdr rebased))
+             (rendered-length (length rendered))
+             (mount-records
+              (unless retained-origin
+                (list (list :object text-leaf :start 0 :end rendered-length
+                            :props nil :tags nil :leaf t)
+                      (list :object fragment-root :start 0 :end rendered-length
+                            :props nil :tags nil :leaf nil)
+                      (list :object surface-root :start 0 :end rendered-length
+                            :props nil :tags nil :leaf nil))))
+             (result
+              (if retained-origin
+                  (tp-commit-batch-result-create
+                   context batch :client-state state :reuse-mount-projection t)
                 (tp-commit-batch-result-create
                  context batch
                  :mount-specs
                  (ebox-surface--commit-mount-specs mount-records owned-ranges)
-                 :client-state state)
-              (cl-remf state :content-base-extent))))))))
-
-(defun ebox-surface--span-coordinate-result
-    (context projection state rendered previous-owned-ranges)
-  "Return a direct span commit from retained coordinate metadata, or nil."
-  (when-let* ((fragments
-               (or (plist-get state :mixed-owner-fragment-data)
-                   (plist-get state :span-patch-fragment-data)))
-              (patches (plist-get state :content-coordinate-patches))
-              (rebased
-               (and previous-owned-ranges
-                    (ebox-surface--rebase-owned-ranges
-                     previous-owned-ranges patches (length rendered))))
-              (surface-root (plist-get projection :surface-root))
-              (fragment-root
-               (tp-object-ensure context surface-root
-                                 ebox-surface--fragments-key 'ebox/fragments))
-              (text-leaf
-               (tp-object-ensure context fragment-root
-                                 ebox-surface--text-key 'ebox/text)))
-    (let* ((owned-ranges (cdr rebased))
-           (rendered-length (length rendered))
-           (mount-records
-            (list (list :object text-leaf :start 0 :end rendered-length
-                        :props nil :tags nil :leaf t)
-                  (list :object fragment-root :start 0 :end rendered-length
-                        :props nil :tags nil :leaf nil)
-                  (list :object surface-root :start 0 :end rendered-length
-                        :props nil :tags nil :leaf nil)))
-           (result
-            (ebox-surface--coordinate-commit
-             context state rendered owned-ranges mount-records
-             previous-owned-ranges)))
-      (when result
-        (plist-put state :surface-owned-ranges
-                   (ebox-surface--snapshot-owned-ranges owned-ranges))
-        (plist-put state :surface-fragments fragments)
-        (cl-remf state :previous-surface-owned-ranges)
-        (cl-remf state :mixed-owner-fragment-data)
-        (cl-remf state :mixed-owner-content-p)
-        (cl-remf state :span-patch-fragment-data)
-        (cl-remf state :span-patch-content-p)
-        result))))
+                 :client-state state))))
+        (when result
+          (plist-put state :surface-owned-ranges
+                     (if retained-origin
+                         owned-ranges
+                       (ebox-surface--snapshot-owned-ranges owned-ranges)))
+          (plist-put state :surface-fragments fragments)
+          (cl-remf state :previous-surface-owned-ranges)
+          (cl-remf state :mixed-owner-fragment-data)
+          (cl-remf state :mixed-owner-content-p)
+          (cl-remf state :span-patch-fragment-data)
+          (cl-remf state :span-patch-content-p)
+          result)))))
 
 (defun ebox-surface--mounted-object-for-node (state node-id)
   "Return NODE-ID's nearest live retained object with mounts in STATE."
@@ -3926,7 +4056,10 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                               output old-fragments
                               (plist-get state :content-coordinate-patches)))))
                 (plist-put state :span-patch-fragment-data fragments)
-                (plist-put state :span-patch-content-p t))
+                (plist-put state :span-patch-content-p t)
+                (when (and retained-properties-p (not coordinate-shift-p))
+                  (plist-put state :span-patch-retained-owned-ranges
+                             (plist-get previous-state :surface-owned-ranges))))
               output)))))))
 
 (defun ebox-surface--formatting-context-reflow-lines
@@ -5617,6 +5750,7 @@ but cannot introduce or remove a viewport expression or node identity."
             (ebox--new-buffer-render-state root))
           (copy-sequence state-overrides))))
     (cl-remf state :paint-property-contributions)
+    (cl-remf state :span-patch-retained-owned-ranges)
     (plist-put state :root-node root)
     (when (plist-get state :native-sync-confirmed-p)
       (ebox-native-commit-attach-confirmed-base previous-state state))

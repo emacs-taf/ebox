@@ -948,6 +948,23 @@
               (ebox-child-range-test--assert-current-snapshot
                (current-buffer) ancestor))))))))
 
+(defun ebox-child-range-test--mixed-followup-candidate (buffer selected &optional title)
+  "Return BUFFER's title and row-paint candidate for SELECTED, using TITLE."
+  (let ((candidate (ebox-candidate-begin buffer)))
+    (ebox-candidate-replace-host-ref
+     candidate 'title
+     (ebox-test-text (propertize (or title (format "title-%d" selected))
+                                'face '(:weight bold))
+                     :key 'title :source-identity 'title))
+    (dolist (row '(1 2))
+      (let ((ref (intern (format "row-%d" row))))
+        (ebox-candidate-replace-host-ref
+         candidate ref
+         (ebox-test-box :key ref :source-identity ref
+           :color (if (= row selected) "#123456" "#654321")
+           (ebox-test-text (format "row-%d" row))))))
+    candidate))
+
 (ert-deftest ebox-child-range-retained-kind-replacement-allows-mixed-followups ()
   "Later title and row paint edits remain local beside disjoint scrolling."
   (with-temp-buffer
@@ -960,6 +977,12 @@
      (current-buffer)
      (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
     (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (surface ebox-surface--buffer-surface)
+           (mounts (tp--surface-mounts surface))
+           (mount-ids (mapcar #'tp--surface-mount-id mounts))
+           (mount-index (tp--surface-mount-index surface))
+           (index (tp--surface-index surface))
+           (ranges (plist-get state :surface-owned-ranges))
            (scroll-id (car (plist-get state :scroll-region-ids)))
            (scroll (gethash scroll-id ebox--scroll-global-state))
            (raw (plist-get scroll :content-lines))
@@ -972,22 +995,12 @@
       (should scroll-id)
       (should (= (length (plist-get state :scroll-region-ids)) 1))
       (dolist (selected '(2 1 2))
-        (let* ((candidate (ebox-candidate-begin (current-buffer)))
+        (let* ((candidate
+                (ebox-child-range-test--mixed-followup-candidate
+                 (current-buffer) selected))
                (root-renders 0)
                (observer (lambda (&rest _arguments) (cl-incf root-renders)))
                report)
-          (ebox-candidate-replace-host-ref
-           candidate 'title
-           (ebox-test-text (propertize (format "title-%d" selected)
-                                      'face '(:weight bold))
-                           :key 'title :source-identity 'title))
-          (dolist (row '(1 2))
-            (let ((ref (intern (format "row-%d" row))))
-              (ebox-candidate-replace-host-ref
-               candidate ref
-               (ebox-test-box :key ref :source-identity ref
-                 :color (if (= row selected) "#123456" "#654321")
-                 (ebox-test-text (format "row-%d" row))))))
           (advice-add 'ebox-surface--render-candidate :before observer)
           (unwind-protect
               (setq report (ebox-commit (current-buffer) candidate))
@@ -1001,10 +1014,307 @@
                              selected root-renders report))
             (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
             (should (zerop root-renders))
-            (should-not (plist-get report :tp-full-root)))
+            (should-not (plist-get report :tp-full-root))
+            (should (plist-get (tp-surface-report surface) :commit-batch))
+            (should (plist-get (tp-surface-report surface) :retained-mount-state))
+            (should (eq mounts (tp--surface-mounts surface)))
+            (should (equal mount-ids
+                           (mapcar #'tp--surface-mount-id
+                                   (tp--surface-mounts surface))))
+            (should (eq mount-index (tp--surface-mount-index surface)))
+            (should (eq index (tp--surface-index surface)))
+            (should (eq ranges
+                        (plist-get (ebox--buffer-render-state (current-buffer))
+                                   :surface-owned-ranges))))
           (let ((next-scroll (gethash scroll-id ebox--scroll-global-state)))
             (should (eq raw (plist-get next-scroll :content-lines)))
             (should (eq rendered (plist-get next-scroll :rendered-content-lines)))))))))
+
+(ert-deftest ebox-child-range-mixed-followup-publish-failure-restores-and-retries ()
+  "A failed public mixed commit restores the old generation before retry."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (ebox--ensure-layout-snapshot-details
+     (current-buffer)
+     (plist-get (ebox--host-ref-node (current-buffer) 'detail) :node-id))
+    (ebox-commit
+     (current-buffer)
+     (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+    (let* ((state (ebox--buffer-render-state (current-buffer)))
+           (surface ebox-surface--buffer-surface)
+           (revision (tp-surface-revision surface))
+           (previous-report (tp-surface-report surface))
+           (before (buffer-string))
+           (mounts (tp--surface-mounts surface))
+           (mount-ids (mapcar #'tp--surface-mount-id mounts))
+           (mount-index (tp--surface-mount-index surface))
+           (index (tp--surface-index surface))
+           (ranges (plist-get state :surface-owned-ranges))
+           (scroll-id (car (plist-get state :scroll-region-ids)))
+           (scroll (gethash scroll-id ebox--scroll-global-state))
+           trace)
+      (should-error
+       (ebox-commit
+        (current-buffer)
+        (ebox-child-range-test--mixed-followup-candidate (current-buffer) 2)
+        (lambda (_report) (push 'publish trace) (error "reject mixed publication"))
+        (lambda (_report) (push 'rollback trace))))
+      (should (equal trace '(rollback publish)))
+      (should (eq state (ebox--buffer-render-state (current-buffer))))
+      (should (eq state (tp-surface-client-state surface)))
+      (should (= revision (tp-surface-revision surface)))
+      (should (eq ranges (plist-get state :surface-owned-ranges)))
+      (should (eq mounts (tp--surface-mounts surface)))
+      (should (equal mount-ids (mapcar #'tp--surface-mount-id mounts)))
+      (should (eq mount-index (tp--surface-mount-index surface)))
+      (should (eq index (tp--surface-index surface)))
+      (should (eq scroll (gethash scroll-id ebox--scroll-global-state)))
+      (should (equal-including-properties before (buffer-string)))
+      (should (equal previous-report (tp-surface-report surface)))
+      (let ((report
+             (ebox-commit
+              (current-buffer)
+              (ebox-child-range-test--mixed-followup-candidate
+               (current-buffer) 2))))
+        (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+        (should (= (1+ revision) (tp-surface-revision surface)))
+        (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
+        (should-not (plist-get report :tp-full-root))
+        (should (plist-get (tp-surface-report surface) :commit-batch))
+        (should (plist-get (tp-surface-report surface) :retained-mount-state))
+        (should (eq mounts (tp--surface-mounts surface)))
+        (should (equal mount-ids (mapcar #'tp--surface-mount-id mounts)))
+        (should (eq mount-index (tp--surface-mount-index surface)))
+        (should (eq index (tp--surface-index surface)))
+        (should (eq (plist-get scroll :content-lines)
+                    (plist-get (gethash scroll-id ebox--scroll-global-state)
+                               :content-lines)))))))
+
+(ert-deftest ebox-child-range-mixed-followup-removes-face-without-contribution ()
+  "A paint owner with no new face still publishes its baseline-only removal."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-test-column :width '(200)
+       (ebox-test-column :bgcolor "#DDE7EF"
+         (ebox-test-text (propertize "title-1" 'face '(:weight bold))
+                         :key 'title :source-identity 'title))
+       (ebox-test-box :key 'row-1 :source-identity 'row-1 :color "#123456"
+         (ebox-test-text (propertize "row-1" 'face '(:slant italic))))))
+    (let* ((surface ebox-surface--buffer-surface)
+           (mounts (tp--surface-mounts surface))
+           (mount-index (tp--surface-mount-index surface))
+           (candidate (ebox-candidate-begin (current-buffer)))
+           (observed nil) (contributions 'not-observed)
+           (observer
+            (lambda (_context _projection state _output &optional kind)
+              (when (eq kind 'mixed-owner-reflow)
+                (setq observed t
+                      contributions (plist-get state :paint-property-contributions)))))
+           report)
+      (ebox-candidate-replace-host-ref
+       candidate 'title
+       (ebox-test-text (propertize "title-2" 'face '(:weight bold))
+                       :key 'title :source-identity 'title))
+      (ebox-candidate-replace-host-ref
+       candidate 'row-1
+       (ebox-test-box :key 'row-1 :source-identity 'row-1
+         (ebox-test-text (propertize "row-1" 'face '(:slant italic)))))
+      (advice-add 'ebox-surface--projection-result :before observer)
+      (unwind-protect
+          (setq report (ebox-commit (current-buffer) candidate))
+        (advice-remove 'ebox-surface--projection-result observer))
+      (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+      (should observed)
+      (should-not contributions)
+      (should (eq (plist-get report :projection-kind) 'mixed-owner-reflow))
+      (should (equal (get-text-property (string-match "row-1" (buffer-string))
+                                       'face (buffer-string))
+                     '(:slant italic)))
+      (should (plist-get (tp-surface-report surface) :commit-batch))
+      (should (plist-get (tp-surface-report surface) :retained-mount-state))
+      (should (eq mounts (tp--surface-mounts surface)))
+      (should (eq mount-index (tp--surface-mount-index surface))))))
+
+(ert-deftest ebox-child-range-mixed-followup-coordinate-change-keeps-fallback ()
+  "A longer title cannot claim the stable-coordinate mount-reuse proof."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (ebox-commit
+     (current-buffer)
+     (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+    (let ((extent (buffer-size)))
+      (ebox-commit
+       (current-buffer)
+       (ebox-child-range-test--mixed-followup-candidate
+        (current-buffer) 2 "title-2 with a longer extent"))
+      (should-not (= extent (buffer-size))))
+    (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+    (should-not (plist-get (tp-surface-report ebox-surface--buffer-surface)
+                           :retained-mount-state))))
+
+(ert-deftest ebox-child-range-mixed-followup-patch-layers-require-complete-coverage ()
+  "Ordered paint may cross adjacent patches, but cannot disappear into a gap."
+  (let* ((baseline (propertize "abcdefgh" 'face 'bold 'help-echo "base"))
+         (patches
+          (mapcar (lambda (range)
+                    (list :old-start (car range) :old-end (cdr range)
+                          :new-start (car range) :new-end (cdr range)
+                          :replacement (substring baseline (car range) (cdr range))))
+                  '((0 . 2) (2 . 4) (6 . 8))))
+         (before (copy-tree patches))
+         (layers '((:start 0 :end 4 :props (face italic))
+                   (:start 1 :end 3 :props (face nil help-echo nil))
+                   (:start 6 :end 8 :props (face (:foreground "red")))))
+         (mapped (ebox-surface--patch-property-contributions patches layers 8))
+         (batch (tp-commit-batch-create
+                 :base-revision 1 :target-revision 2 :base-extent 8 :target-extent 8
+                 :patches mapped))
+         (stored (tp-commit-batch-patches batch))
+         (actual (concat (plist-get (nth 0 stored) :replacement)
+                         (plist-get (nth 1 stored) :replacement)
+                         (substring baseline 4 6)
+                         (plist-get (nth 2 stored) :replacement))))
+    (should (equal-including-properties
+             actual (tp--compose-relative-property-contributions baseline layers)))
+    (should (equal-including-properties before patches))
+    (should-not (eq (car patches) (car mapped)))
+    (should-not
+     (ebox-surface--patch-property-contributions
+      patches '((:start 1 :end 7 :props (face italic))) 8))
+    (dolist (invalid '((:start -1 :end 1 :props (face bold))
+                      (:start 0 :end 9 :props (face bold))
+                      (:start 0 :end 1 :props (face))))
+      (should-not
+       (ebox-surface--patch-property-contributions patches (list invalid) 8)))
+    (should
+     (ebox-surface--patch-property-contributions
+      patches '((:start 5 :end 5 :props (face bold))) 8))))
+
+(ert-deftest ebox-child-range-mixed-followup-proof-misses-preserve-fallback ()
+  "Missing ownership or paint coverage returns to exact retained-content work."
+  (dolist (miss '(ownership coverage))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+      (ebox-commit
+       (current-buffer)
+       (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+      (let* ((function (if (eq miss 'ownership)
+                           'ebox-surface--span-patch-output
+                         'ebox-surface--patch-property-contributions))
+             observed
+             (observer
+              (lambda (original &rest arguments)
+                (setq observed t)
+                (when (eq miss 'ownership)
+                  (prog1 (apply original arguments)
+                    (cl-remf (nth 2 arguments) :span-patch-retained-owned-ranges))))))
+        (advice-add function :around observer)
+        (unwind-protect
+            (ebox-commit
+             (current-buffer)
+             (ebox-child-range-test--mixed-followup-candidate (current-buffer) 2))
+          (advice-remove function observer))
+        (should observed)
+        (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+        (should-not (plist-get (tp-surface-report ebox-surface--buffer-surface)
+                               :retained-mount-state))))))
+
+(ert-deftest ebox-child-range-mixed-followup-merger-errors-escape-proof-fallback ()
+  "Even a constructor-like merger error propagates once and preserves state."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (ebox-commit
+     (current-buffer)
+     (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+    (let* ((surface ebox-surface--buffer-surface)
+           (state (ebox--buffer-render-state (current-buffer)))
+           (revision (tp-surface-revision surface))
+           (mounts (tp--surface-mounts surface))
+           (index (tp--surface-mount-index surface))
+           (before (buffer-string))
+           (merge-calls 0) (contributed-batches 0) contributed-face
+           (observer
+            (lambda (original &rest arguments)
+              (let* ((patches (mapcar #'copy-sequence (plist-get arguments :patches)))
+                     (patch (cl-find-if
+                             (lambda (entry) (plist-get entry :property-contributions))
+                             patches)))
+                (when patch
+                  ;; Exception-boundary fixture: TP merges only over a present
+                  ;; baseline property.  Keep Ebox's actual generated layers,
+                  ;; adding a baseline only to a detached constructor argument.
+                  ;; Inline row faces would change the fixture's geometry proof.
+                  (let* ((layer (car (plist-get patch :property-contributions)))
+                         (start (plist-get layer :start))
+                         (replacement (copy-sequence (plist-get patch :replacement))))
+                    (should (< start (plist-get layer :end)))
+                    (setq contributed-face (plist-get (plist-get layer :props) 'face))
+                    (should contributed-face)
+                    (put-text-property start (1+ start) 'face '(:slant italic) replacement)
+                    (plist-put patch :replacement replacement)
+                    (setq arguments (plist-put (copy-sequence arguments) :patches patches))
+                    (cl-incf contributed-batches)))
+                (apply original arguments)))))
+      (let ((tp--property-policies (copy-hash-table tp--property-policies))
+            (tp--property-policy-order (copy-sequence tp--property-policy-order)))
+        (tp-define-property-policy
+         (tp-text-property-id 'face)
+         :projector (tp-property-policy-projector
+                     (tp-property-policy (tp-text-property-id 'face)))
+         :merge (lambda (old new)
+                  (should (equal old '(:slant italic)))
+                  (should (equal new contributed-face))
+                  (cl-incf merge-calls)
+                  (signal 'tp-surface-error '(:commit-patch merger-failure))))
+        (advice-add 'tp-commit-batch-create :around observer)
+        (unwind-protect
+            (let ((condition
+                   (should-error
+                    (ebox-commit
+                     (current-buffer)
+                     (ebox-child-range-test--mixed-followup-candidate
+                      (current-buffer) 2))
+                    :type 'tp-surface-error)))
+              (should (equal (seq-take condition 3)
+                             '(tp-surface-error :commit-patch merger-failure))))
+          (advice-remove 'tp-commit-batch-create observer)))
+      (should (= contributed-batches 1))
+      (should (= merge-calls 1))
+      (should (= revision (tp-surface-revision surface)))
+      (should (eq state (tp-surface-client-state surface)))
+      (should (eq state (ebox--buffer-render-state (current-buffer))))
+      (should (eq mounts (tp--surface-mounts surface)))
+      (should (eq index (tp--surface-mount-index surface)))
+      (should (equal-including-properties before (buffer-string)))
+      (ebox-commit
+       (current-buffer)
+       (ebox-child-range-test--mixed-followup-candidate (current-buffer) 2))
+      (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+      (should (plist-get (tp-surface-report surface) :retained-mount-state)))))
+
+(ert-deftest ebox-child-range-mixed-followup-role-change-keeps-fallback ()
+  "Replacing text with a new box role cannot reuse the old mount topology."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (ebox-commit
+     (current-buffer)
+     (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+    (let ((candidate
+           (ebox-child-range-test--mixed-followup-candidate (current-buffer) 2)))
+      (ebox-candidate-replace-host-ref
+       candidate 'title
+       (ebox-test-box :key 'title :source-identity 'title
+         (ebox-test-text (propertize "title-2" 'face '(:weight bold)))))
+      (ebox-commit (current-buffer) candidate))
+    (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+    (should-not (plist-get (tp-surface-report ebox-surface--buffer-surface)
+                           :retained-mount-state))))
 
 (ert-deftest ebox-child-range-does-not-reuse-disappeared-key-positionally ()
   "A new keyed item must not inherit a removed peer's runtime identity."
