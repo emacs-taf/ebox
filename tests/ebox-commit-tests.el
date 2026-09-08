@@ -2777,6 +2777,714 @@ remain retained identities."
      (ebox-test-box :key 'row-2 :source-identity 'row-2 (ebox-test-text row-2)))
     candidate))
 
+(defun ebox-commit-test--allocated-single-root
+    (content color &optional boundary sibling-content)
+  "Return CONTENT and COLOR beside scroll, with BOUNDARY and SIBLING-CONTENT."
+  (let ((root
+         (ebox-test-column :width '(900)
+           (ebox-commit-test--fixed-basis-selection-root
+            content (or sibling-content "stable") (eq boundary 'scroll))
+           (ebox-test-box :key 'paint :source-identity 'paint :color color
+             (ebox-test-text "paint"))
+           (unless (eq boundary 'scroll)
+             (ebox-commit-test--scroll-sibling-root "untouched")))))
+    (if (eq boundary 'enclosing-paint)
+        (ebox-test-box :bgcolor "#EEEEEE" root)
+      root)))
+
+(defun ebox-commit-test--allocated-single-candidate (buffer content &optional color)
+  "Return BUFFER candidate replacing one row with CONTENT and optional COLOR."
+  (let ((candidate (ebox-candidate-begin buffer)))
+    (ebox-candidate-replace-host-ref
+     candidate 'row-1
+     (ebox-test-box :key 'row-1 :source-identity 'row-1 (ebox-test-text content)))
+    (when color
+      (ebox-candidate-replace-host-ref
+       candidate 'paint
+       (ebox-test-box :key 'paint :source-identity 'paint :color color
+         (ebox-test-text "paint"))))
+    candidate))
+
+(defun ebox-commit-test--allocated-single-output (buffer)
+  "Return BUFFER's complete text and public mount coordinates by tree path.
+Normalize only buffer-local region identifiers; retain every text property."
+  (let* ((state (ebox--buffer-render-state buffer))
+         (objects (plist-get state :surface-node-object-table))
+         (paths (make-hash-table :test #'eql))
+         (regions (make-hash-table :test #'eql))
+         (text (ebox-commit-test--buffer-string buffer))
+         (properties (delete-dups
+                      (append (mapcar #'cdr ebox-region-types)
+                              '(ebox-scroll-window
+                                ebox-overflow-foreground-source))))
+         nodes mounts)
+    (cl-labels ((walk (node path)
+                  (push (cons path node) nodes)
+                  (puthash (plist-get node :node-id) path paths)
+                  (cl-loop for child in (ebox-tree-node-children node)
+                           for index from 0
+                           do (walk child (append path (list index)))))
+                (region-path (id)
+                  (or (gethash id regions)
+                      (ert-fail (list :unknown-region id)))))
+      (walk (plist-get state :root-node) '(root))
+      (maphash (lambda (region node-id)
+                 (puthash region (gethash node-id paths) regions))
+               (plist-get state :region-node-table))
+      (let ((position 0))
+        (while (< position (length text))
+          (let ((end (or (next-property-change position text) (length text)))
+                (props (text-properties-at position text)))
+            (dolist (property properties)
+              (when-let* ((id (plist-get props property)))
+                (setq props (plist-put props property (region-path id)))))
+            (when-let* ((owners (plist-get props 'ebox-content-owners)))
+              (setq props (plist-put props 'ebox-content-owners
+                                     (mapcar #'region-path owners))))
+            (set-text-properties position end props text)
+            (setq position end))))
+      (dolist (entry nodes)
+        (let* ((object (gethash (plist-get (cdr entry) :node-id) objects))
+               (ranges (mapcar (lambda (mount)
+                                 (cons (plist-get mount :start)
+                                       (plist-get mount :end)))
+                               (tp-object-mounts object))))
+          ;; Local and full publication can use different role tags, but
+          ;; every owner must cover the same complete published coordinates.
+          (push (cons (car entry)
+                      (sort ranges (lambda (a b)
+                                     (if (= (car a) (car b))
+                                         (< (cdr a) (cdr b))
+                                       (< (car a) (car b))))))
+                mounts))))
+    (list text mounts)))
+
+(defun ebox-commit-test--assert-allocated-output (buffer input)
+  "Compare BUFFER with an independent full render of canonical INPUT."
+  (with-temp-buffer
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer (current-buffer) input)
+          (let ((actual (ebox-commit-test--allocated-single-output buffer))
+                (expected (ebox-commit-test--allocated-single-output (current-buffer))))
+            (should (equal-including-properties (car actual) (car expected)))
+            (should (equal (cadr actual) (cadr expected)))))
+      (when (ebox-surface-buffer-mounted-p (current-buffer))
+        (ebox-unmount-buffer (current-buffer))))))
+
+(defun ebox-commit-test--assert-allocated-single-fresh
+    (buffer content color &optional sibling-content)
+  "Compare BUFFER with a new full render of CONTENT, COLOR and SIBLING-CONTENT."
+  (ebox-commit-test--assert-allocated-output
+   buffer (ebox-commit-test--allocated-single-root content color nil sibling-content)))
+
+(defun ebox-commit-test--allocated-single-round-trip (paint-p)
+  "One longer/shorter row promotes its allocated owner, with disjoint paint."
+    (ert-info ((format "allocated single with disjoint paint: %S" paint-p))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-commit-test--allocated-single-root "short" "#123456"))
+        (let* ((state (ebox--buffer-render-state (current-buffer)))
+               (owner-id
+                (cl-loop for node being the hash-values of (plist-get state :node-table)
+                         when (eq (ebox-tree-node-author-key
+                                   (plist-get state :source-index) node)
+                                  'selection-panel)
+                         return (plist-get node :node-id)))
+               (paint-id (plist-get (ebox--host-ref-node
+                                    (current-buffer) 'paint) :node-id))
+               (scroll-id (car (plist-get state :scroll-region-ids)))
+               (scroll (gethash scroll-id ebox--scroll-global-state))
+               (raw (plist-get scroll :content-lines))
+               (rendered (plist-get scroll :rendered-content-lines))
+               (region-count (hash-table-count ebox--region-box-table)))
+          (should (integerp owner-id))
+          (dolist (step '(("a longer row" "#654321") ("short" "#123456")))
+            (let* ((content (car step))
+                   (color (if paint-p (cadr step) "#123456"))
+                   (result
+                    (ebox-commit-test--count-root-renders
+                     (lambda ()
+                       (ebox-commit
+                        (current-buffer)
+                        (ebox-commit-test--allocated-single-candidate
+                         (current-buffer) content (and paint-p color))))))
+                   (report (car result)))
+              (should (zerop (cdr result)))
+              (should (eq (plist-get report :projection-kind)
+                          (if paint-p 'mixed-owner-reflow 'owner-scoped)))
+              (should (equal (plist-get report :owner-ids)
+                             (if paint-p (list owner-id paint-id) (list owner-id))))
+              (should-not (plist-get report :tp-full-root))
+              (should-not (plist-get report :tp-scope-fallback))
+              (ebox-commit-test--assert-allocated-single-fresh
+               (current-buffer) content color)
+              (let ((next-scroll (gethash scroll-id ebox--scroll-global-state)))
+                (should (eq raw (plist-get next-scroll :content-lines)))
+                (should (eq rendered (plist-get next-scroll :rendered-content-lines)))
+                (should (eq (plist-get next-scroll :box)
+                            (gethash scroll-id ebox--region-box-table)))
+                (should (= region-count (hash-table-count ebox--region-box-table))))
+              (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+              (should (string-match-p "line-c" (buffer-string)))
+              (should (string-match-p (regexp-quote content) (buffer-string)))
+              (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+              (ebox-commit-test--assert-allocated-single-fresh
+               (current-buffer) content color)))))))
+
+(ert-deftest ebox-commit-allocated-single-round-trip-retains-disjoint-scroll ()
+  "One content change retains its disjoint scroll through both directions."
+  (ebox-commit-test--allocated-single-round-trip nil))
+
+(ert-deftest ebox-commit-allocated-single-mixed-round-trip-retains-disjoint-scroll ()
+  "One content change and sibling paint retain scroll in both directions."
+  (ebox-commit-test--allocated-single-round-trip t))
+
+(defun ebox-commit-test--allocated-single-rollback (paint-p)
+  "Rejected allocated-owner publication restores mounts, scroll and revision."
+    (ert-info ((format "allocated single rollback with paint: %S" paint-p))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-commit-test--allocated-single-root "short" "#123456"))
+        (let* ((before (ebox--buffer-render-state (current-buffer)))
+               (surface ebox-surface--buffer-surface)
+               (revision (tp-surface-revision surface))
+               (report (tp-surface-report surface))
+               (output (ebox-commit-test--allocated-single-output (current-buffer)))
+               (scroll-id (car (plist-get before :scroll-region-ids)))
+               (scroll (gethash scroll-id ebox--scroll-global-state))
+               (box (gethash scroll-id ebox--region-box-table))
+               (color (if paint-p "#654321" "#123456"))
+               (failures 0)
+               (attempt
+                (ebox-commit-test--count-root-renders
+                 (lambda ()
+                   (let ((tp--surface-publication-step-function
+                          (lambda (step target)
+                            (when (eq step 'client-state)
+                              (should (eq target surface))
+                              (cl-incf failures)
+                              (should (= (tp-surface-revision surface) (1+ revision)))
+                              (should-not (eq before (tp-surface-client-state surface)))
+                              (error "Reject allocated single publication")))))
+                     (should-error
+                      (ebox-commit
+                       (current-buffer)
+                       (ebox-commit-test--allocated-single-candidate
+                        (current-buffer) "a longer row" (and paint-p color)))))))))
+          (should (= failures 1))
+          (should (equal (car attempt) '(error "Reject allocated single publication")))
+          (should (eq before (ebox--buffer-render-state (current-buffer))))
+          (should (eq before (tp-surface-client-state surface)))
+          (should (= revision (tp-surface-revision surface)))
+          (should (equal report (tp-surface-report surface)))
+          (should (equal-including-properties
+                   output (ebox-commit-test--allocated-single-output (current-buffer))))
+          (should (eq scroll (gethash scroll-id ebox--scroll-global-state)))
+          (should (eq box (gethash scroll-id ebox--region-box-table)))
+          (should (= 1 (ebox--scroll-region-by scroll-id 1)))
+          (should (= -1 (ebox--scroll-region-by scroll-id -1)))
+          (let* ((retry-revision (tp-surface-revision surface))
+                 (retry
+                 (ebox-commit-test--count-root-renders
+                  (lambda ()
+                    (ebox-commit
+                     (current-buffer)
+                     (ebox-commit-test--allocated-single-candidate
+                      (current-buffer) "a longer row" (and paint-p color)))))))
+            (should (zerop (cdr attempt)))
+            (should (zerop (cdr retry)))
+            (should (= (tp-surface-revision surface) (1+ retry-revision)))
+            (should-not (plist-get (car retry) :tp-full-root))
+            (ebox-commit-test--assert-allocated-single-fresh
+             (current-buffer) "a longer row" color))))))
+
+(ert-deftest ebox-commit-allocated-single-publication-rollback-and-fresh-retry ()
+  "One allocated content change rolls back and accepts a fresh retry."
+  (ebox-commit-test--allocated-single-rollback nil))
+
+(ert-deftest ebox-commit-allocated-single-mixed-rollback-and-fresh-retry ()
+  "An allocated content and paint transaction rolls back and retries."
+  (ebox-commit-test--allocated-single-rollback t))
+
+(ert-deftest ebox-commit-allocated-single-unsafe-boundaries-fall-back ()
+  "Changed extent and owner-scroll overlap retain fallback."
+  (dolist (boundary '(extent scroll))
+    (ert-info ((format "allocated single unsafe boundary: %S" boundary))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-commit-test--allocated-single-root "short" "#123456" boundary))
+        (let* ((content (if (eq boundary 'extent)
+                            (mapconcat #'identity (make-list 30 "long row") "\n")
+                          "a longer row"))
+               (result
+                (ebox-commit-test--count-root-renders
+                 (lambda ()
+                   (ebox-commit
+                    (current-buffer)
+                    (ebox-commit-test--allocated-single-candidate
+                     (current-buffer) content))))))
+          (should (= (cdr result) 1))
+          (should-not (memq (plist-get (car result) :projection-kind)
+                            '(span-patch owner-scoped mixed-owner-reflow)))
+          (should (string-match-p "long" (buffer-string))))))))
+
+(ert-deftest ebox-commit-allocated-single-retains-anonymous-enclosing-paint ()
+  "Unchanged paint on an anonymous ancestor permits allocated publication."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-commit-test--allocated-single-root "short" "#123456" 'enclosing-paint))
+    (dolist (content '("a longer row" "short"))
+      (let ((result
+             (ebox-commit-test--count-root-renders
+              (lambda ()
+                (ebox-commit
+                 (current-buffer)
+                 (ebox-commit-test--allocated-single-candidate
+                  (current-buffer) content))))))
+        (ebox-commit-test--assert-allocated-output
+         (current-buffer)
+         (ebox-commit-test--allocated-single-root content "#123456" 'enclosing-paint))
+        (should (zerop (cdr result)))
+        (should (eq (plist-get (car result) :projection-kind) 'owner-scoped))
+        (should-not (plist-get (car result) :tp-full-root))
+        (should-not (plist-get (car result) :tp-scope-fallback))))))
+
+(ert-deftest ebox-commit-allocated-single-keeps-successful-leaf-proof ()
+  "An existing narrow single-leaf proof stays local without owner promotion."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-commit-test--scroll-sibling-root "old"))
+    (let* ((leaf-id (plist-get (ebox--host-ref-node (current-buffer) 'label) :node-id))
+           (result
+            (ebox-commit-test--count-root-renders
+             (lambda ()
+               (ebox-commit-test--replace-scroll-sibling-label
+                (current-buffer) "new")))))
+      (should (zerop (cdr result)))
+      (should (equal (plist-get (car result) :owner-ids) (list leaf-id)))
+      (should-not (plist-get (car result) :tp-full-root))
+      (should (string-match-p "new" (buffer-string))))))
+
+(ert-deftest ebox-commit-grouped-allocation-retains-ancestor-ownership ()
+  "An existing multiple-descendant allocation preserves every ancestor mount."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-commit-test--allocated-single-root "short" "#123456"))
+    (let ((result
+           (ebox-commit-test--count-root-renders
+            (lambda ()
+              (ebox-commit
+               (current-buffer)
+               (ebox-commit-test--fixed-basis-selection-candidate
+                (current-buffer) "a longer row" "other"))))))
+      (should (zerop (cdr result)))
+      (should (eq (plist-get (car result) :projection-kind) 'owner-scoped))
+      (ebox-commit-test--assert-allocated-single-fresh
+       (current-buffer) "a longer row" "#123456" "other"))))
+
+(defun ebox-commit-test--padded-grouped-allocation-root
+    (first second color &optional owner-sizing)
+  "Return FIRST and SECOND in a padded panel beside COLOR and scroll.
+OWNER-SIZING adds asymmetric margins, padding and borders to the inner Column."
+  (ebox-test-column :width '(900)
+    (ebox-test-flex :width '(900) :height 24
+      :flex-flow '(row nowrap) :align-items 'stretch
+      (ebox-test-box :key 'peer :width 'stretch :min-width 0 :min-height 24
+        :flex-grow 0 :flex-shrink 0 :flex-basis '(561)
+        (ebox-test-text "peer"))
+      (ebox-test-column :key 'panel :source-identity 'panel
+        :width 'stretch :min-width 0 :min-height 24
+        :box-sizing 'border-box :padding '(0 (15))
+        :flex-grow 0 :flex-shrink 0 :flex-basis '(339)
+        :bgcolor "#EEEEEE"
+        (apply #'ebox-test-column
+               (append
+                (list :key 'rows :source-identity 'rows :min-width 0
+                      (ebox-test-text first :key 'row-1 :source-identity 'row-1)
+                      (ebox-test-text second :key 'row-2 :source-identity 'row-2))
+                (and owner-sizing
+                     (list :box-sizing owner-sizing
+                           :margin-left '(2) :margin-right '(4)
+                           :padding-left '(3) :padding-right '(5)
+                           :border-left '(1 solid "#223344")
+                           :border-right '(2 solid "#445566")))))))
+    (ebox-test-box :key 'paint :source-identity 'paint :color color
+      (ebox-test-text "paint"))
+    (ebox-commit-test--scroll-sibling-root "untouched")))
+
+(defun ebox-commit-test--padded-grouped-allocation-candidate
+    (buffer first second color)
+  "Return BUFFER candidate replacing both nested rows and sibling COLOR."
+  (let ((candidate (ebox-candidate-begin buffer)))
+    (cl-loop for identity in '(row-1 row-2) for content in (list first second)
+             do (ebox-candidate-replace-host-ref
+                 candidate identity
+                 (ebox-test-text content :key identity :source-identity identity)))
+    (ebox-candidate-replace-host-ref
+     candidate 'paint
+     (ebox-test-box :key 'paint :source-identity 'paint :color color
+       (ebox-test-text "paint")))
+    candidate))
+
+(defun ebox-commit-test--padded-grouped-allocation-round-trip (&optional owner-sizing)
+  "Check grouped width and repeated edits with optional OWNER-SIZING."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-commit-test--padded-grouped-allocation-root
+      "short" "small" "#123456" owner-sizing))
+    (let ((owner-id (plist-get (ebox--host-ref-node (current-buffer) 'rows) :node-id))
+          (grouped-proof (symbol-function 'ebox-incremental--grouped-owner-span-proof)))
+      ;; Equal-extent edits coalesce their successful narrow proofs at the
+      ;; inner Column.  Length changes promote the containing fixed-basis
+      ;; panel under the existing scroll guard; both owners must stay local.
+      (dolist (step '(("other" "later" "#654321")
+                      ("a longer first row" "a longer second row" "#123456")
+                      ("short" "small" "#654321")))
+        (let ((candidate (apply #'ebox-commit-test--padded-grouped-allocation-candidate
+                                (current-buffer) step))
+              proof result)
+          (cl-letf (((symbol-function 'ebox-incremental--grouped-owner-span-proof)
+                     (lambda (&rest arguments)
+                       (let ((value (apply grouped-proof arguments)))
+                         (when value (setq proof value))
+                         value))))
+            (setq result (ebox-commit-test--count-root-renders
+                          (lambda () (ebox-commit (current-buffer) candidate)))))
+          (ebox-commit-test--assert-allocated-output
+           (current-buffer)
+           (apply #'ebox-commit-test--padded-grouped-allocation-root
+                  (append step (list owner-sizing))))
+          (when (equal (car step) "other")
+            (should (equal (plist-get proof :owner-ids) (list owner-id)))
+            (let* ((owner-proof (car (plist-get proof :owner-proofs)))
+                   (snapshot (plist-get owner-proof :snapshot))
+                   (owner-width
+                    (plist-get (plist-get snapshot :external-footprint-signature)
+                               :max-line-pixel-width))
+                   (capacity (plist-get owner-proof :allocated-width)))
+              (message "Padded grouped Column: sizing=%S owner-width=%S ancestor-capacity=%S root-renders=%S"
+                       owner-sizing owner-width capacity (cdr result))
+              (should (= owner-width 309))
+              (should (= capacity 339))))
+          (should (zerop (cdr result)))
+          (should (eq (plist-get (car result) :projection-kind) 'mixed-owner-reflow))
+          (should-not (plist-get (car result) :tp-full-root)))))))
+
+(ert-deftest ebox-commit-grouped-padded-panel-renders-own-column-width ()
+  "A grouped Column uses its own published width inside a padded Flex item."
+  (ebox-commit-test--padded-grouped-allocation-round-trip))
+
+(ert-deftest ebox-commit-grouped-padded-panel-preserves-owner-box-model ()
+  "Asymmetric margins, padding and borders preserve both owner box models."
+  (dolist (sizing '(content-box border-box))
+    (ert-info ((format "padded grouped owner sizing: %S" sizing))
+      (ebox-commit-test--padded-grouped-allocation-round-trip sizing))))
+
+(ert-deftest ebox-commit-grouped-padded-panel-rolls-back-and-retries ()
+  "Rejected nested owner publication restores mounts and both box models."
+  (dolist (sizing '(content-box border-box))
+    (ert-info ((format "padded grouped rollback sizing: %S" sizing))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-commit-test--padded-grouped-allocation-root
+          "short" "small" "#123456" sizing))
+        (let* ((before (ebox--buffer-render-state (current-buffer)))
+               (surface ebox-surface--buffer-surface)
+               (revision (tp-surface-revision surface))
+               (report (tp-surface-report surface))
+               (output (ebox-commit-test--allocated-single-output (current-buffer)))
+               (owner-id (plist-get (ebox--host-ref-node (current-buffer) 'rows) :node-id))
+               (paint-id (plist-get (ebox--host-ref-node (current-buffer) 'paint) :node-id))
+               (scroll-id (car (plist-get before :scroll-region-ids)))
+               (scroll (gethash scroll-id ebox--scroll-global-state))
+               (failures 0)
+               (rejected
+                (ebox-commit-test--count-root-renders
+                 (lambda ()
+                   (let ((tp--surface-publication-step-function
+                          (lambda (step target)
+                            (when (eq step 'client-state)
+                              (should (eq target surface))
+                              (cl-incf failures)
+                              (should (= (tp-surface-revision surface) (1+ revision)))
+                              (should-not (eq before (tp-surface-client-state surface)))
+                              (error "Reject padded grouped publication")))))
+                     (should-error
+                      (ebox-commit
+                       (current-buffer)
+                       (ebox-commit-test--padded-grouped-allocation-candidate
+                        (current-buffer) "other" "later" "#654321"))))))))
+          (should (= failures 1))
+          (should (equal (car rejected) '(error "Reject padded grouped publication")))
+          (should (zerop (cdr rejected)))
+          (should (eq before (ebox--buffer-render-state (current-buffer))))
+          (should (eq before (tp-surface-client-state surface)))
+          (should (= revision (tp-surface-revision surface)))
+          (should (equal report (tp-surface-report surface)))
+          (should (eq scroll (gethash scroll-id ebox--scroll-global-state)))
+          (should (equal-including-properties
+                   output (ebox-commit-test--allocated-single-output (current-buffer))))
+          (ebox-commit-test--assert-allocated-output
+           (current-buffer)
+           (ebox-commit-test--padded-grouped-allocation-root
+            "short" "small" "#123456" sizing))
+          (let ((retry
+                 (ebox-commit-test--count-root-renders
+                  (lambda ()
+                    (ebox-commit
+                     (current-buffer)
+                     (ebox-commit-test--padded-grouped-allocation-candidate
+                      (current-buffer) "other" "later" "#654321"))))))
+            (should (zerop (cdr retry)))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should (equal (plist-get (car retry) :owner-ids) (list owner-id paint-id)))
+            (should (eq (plist-get (car retry) :projection-kind) 'mixed-owner-reflow))
+            (should-not (plist-get (car retry) :tp-full-root))
+            (let ((next-scroll (gethash scroll-id ebox--scroll-global-state)))
+              (should (eq (plist-get scroll :content-lines)
+                          (plist-get next-scroll :content-lines)))
+              (should (eq (plist-get scroll :rendered-content-lines)
+                          (plist-get next-scroll :rendered-content-lines)))
+              (should (eq (plist-get next-scroll :box)
+                          (gethash scroll-id ebox--region-box-table))))
+            (ebox-commit-test--assert-allocated-output
+             (current-buffer)
+             (ebox-commit-test--padded-grouped-allocation-root
+              "other" "later" "#654321" sizing))))))))
+
+(ert-deftest ebox-commit-allocated-owner-retains-enclosing-properties ()
+  "Resized text retains caller faces and the baseline for later paint edits."
+  (let ((callback (lambda () 'allocated-action))
+        (payload (make-hash-table :test #'eq))
+        (keymap (make-sparse-keymap))
+        (face '(:weight bold)))
+    (define-key keymap (kbd "RET") callback)
+    (cl-labels
+        ((text (content)
+           (propertize content 'face face 'action callback))
+         (parent (content color)
+           (apply #'ebox-test-box
+                  (append
+                   (list :key 'enclosing :source-identity 'enclosing
+                         :surface-properties
+                         (list 'help-echo callback 'custom payload 'keymap keymap)
+                         (ebox-commit-test--fixed-basis-selection-root
+                          (text content) "stable"))
+                   (and color (list :bgcolor color)))))
+         (root (content color)
+           (ebox-test-column :width '(900)
+             (ebox-test-box :bgcolor "#FFFDF8" (parent content color))
+             (ebox-commit-test--scroll-sibling-root "untouched")))
+         (assert-content (content background)
+           (save-excursion
+             (goto-char (point-min))
+             (search-forward content)
+             (let ((position (- (point) (length content))))
+               (dotimes (offset (length content))
+                 (let ((at (+ position offset)))
+                   (should (eq callback (get-text-property at 'help-echo)))
+                   (should (eq callback (get-text-property at 'action)))
+                   (should (eq payload (get-text-property at 'custom)))
+                   (should (eq callback
+                               (lookup-key (get-text-property at 'keymap) (kbd "RET"))))
+                   (should (eq 'bold (ebox-commit-test--face-value
+                                      (get-text-property at 'face) :weight)))
+                   (should (equal background
+                                  (ebox-commit-test--face-value
+                                   (get-text-property at 'face) :background)))))))))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (root "short" "#EEEEEE"))
+        (dolist (content '("a longer row" "short"))
+          (let ((result
+                 (ebox-commit-test--count-root-renders
+                  (lambda ()
+                    (ebox-commit
+                     (current-buffer)
+                     (ebox-commit-test--allocated-single-candidate
+                      (current-buffer) (text content)))))))
+            (ebox-commit-test--assert-allocated-output
+             (current-buffer) (root content "#EEEEEE"))
+            (assert-content content "#EEEEEE")
+            (should (zerop (cdr result)))
+            (should (eq (plist-get (car result) :projection-kind) 'owner-scoped))))
+        (let ((previous "#EEEEEE"))
+          (dolist (color '("#667788" nil))
+            (let ((candidate (ebox-candidate-begin (current-buffer))))
+              (should (ebox-candidate-patch-host-paint
+                       candidate 'enclosing
+                       (parent "short" previous) (parent "short" color)))
+              (let ((result (ebox-commit-test--count-root-renders
+                             (lambda () (ebox-commit (current-buffer) candidate)))))
+                (ebox-commit-test--assert-allocated-output
+                 (current-buffer) (root "short" color))
+                (assert-content "short" (or color "#FFFDF8"))
+                (should (zerop (cdr result)))
+                (should (eq (plist-get (car result) :projection-kind) 'paint))))
+            (setq previous color)))))))
+
+(ert-deftest ebox-commit-allocated-owner-property-changes-render-current-values ()
+  "Opaque payload and caller display changes cannot retain stale properties."
+  (dolist (change '(callback keymap hash caller-display noncanonical-display))
+    (ert-info ((format "allocated owner changed property: %S" change))
+      (let* ((make-callback (lambda ()
+                              (let ((value (vector t))) (lambda () value))))
+             (callback (funcall make-callback))
+             (other-callback (funcall make-callback))
+             (property (pcase change
+                         ('callback 'action) ('keymap 'keymap) ('hash 'custom)
+                         (_ 'display)))
+             (old-value (pcase change
+                          ('callback callback)
+                          ('keymap (let ((map (make-sparse-keymap)))
+                                     (define-key map (kbd "RET") callback) map))
+                          ('hash (make-hash-table :test #'eq))
+                          ('caller-display '(space :width (8)))
+                          (_ '(raise 0))))
+             (new-value (pcase change
+                          ('callback other-callback)
+                          ('keymap (let ((map (make-sparse-keymap)))
+                                     (define-key map (kbd "RET") other-callback) map))
+                          ('hash (make-hash-table :test #'eq))
+                          ('caller-display '(space :width (12)))
+                          (_ '(raise 1))))
+             (old (propertize "short" property old-value))
+             (new (propertize "a longer row" property new-value)))
+        (when (memq change '(callback keymap))
+          (should (equal old-value new-value))
+          (should-not (eq old-value new-value)))
+        (with-temp-buffer
+          (ebox-render-to-buffer
+           (current-buffer)
+           (ebox-commit-test--allocated-single-root old "#123456" 'enclosing-paint))
+          (let ((result
+                 (ebox-commit-test--count-root-renders
+                  (lambda ()
+                    (ebox-commit
+                     (current-buffer)
+                     (ebox-commit-test--allocated-single-candidate (current-buffer) new))))))
+            (ebox-commit-test--assert-allocated-output
+             (current-buffer)
+             (ebox-commit-test--allocated-single-root new "#123456" 'enclosing-paint))
+            (save-excursion
+              (goto-char (point-min))
+              (search-forward "a longer row")
+              (let ((actual (get-text-property (1- (point)) property)))
+                (pcase change
+                  ((or 'callback 'hash) (should (eq new-value actual)))
+                  ('keymap (should (eq other-callback (lookup-key actual (kbd "RET")))))
+                  (_ (should (equal new-value actual))))))
+            (should (> (cdr result) 0))))))))
+
+(ert-deftest ebox-commit-allocated-owner-interior-property-boundary-declines ()
+  "A published property boundary inside resized content declines transport."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-commit-test--allocated-single-root "short" "#123456" 'enclosing-paint))
+    (save-excursion
+      (goto-char (point-min))
+      (search-forward "short")
+      (let ((inhibit-read-only t))
+        (put-text-property (- (point) 3) (- (point) 1) 'external-boundary 'published)))
+    (let ((transport (symbol-function 'ebox-surface--retained-slot-owner-text))
+          (declines 0)
+          result)
+      (cl-letf (((symbol-function 'ebox-surface--retained-slot-owner-text)
+                 (lambda (&rest arguments)
+                   (let ((value (apply transport arguments)))
+                     (unless value (cl-incf declines))
+                     value))))
+        (setq result
+              (ebox-commit-test--count-root-renders
+               (lambda ()
+                 (ebox-commit
+                  (current-buffer)
+                  (ebox-commit-test--allocated-single-candidate
+                   (current-buffer) "a longer row"))))))
+      (should (> declines 0))
+      (should (> (cdr result) 0))
+      (ebox-commit-test--assert-allocated-output
+       (current-buffer)
+       (ebox-commit-test--allocated-single-root
+        "a longer row" "#123456" 'enclosing-paint)))))
+
+(ert-deftest ebox-commit-allocated-owner-enclosing-properties-rollback-and-retry ()
+  "Late rejection restores enclosing properties, mounts and opaque identities."
+  (let ((callback (lambda () 'allocated-action))
+        (payload (make-hash-table :test #'eq))
+        (keymap (make-sparse-keymap)))
+    (define-key keymap (kbd "RET") callback)
+    (cl-labels
+        ((text (content) (propertize content 'face '(:weight bold) 'action callback))
+         (root (content)
+           (ebox-test-box :bgcolor "#FFFDF8"
+             (ebox-test-box :bgcolor "#EEEEEE"
+               :surface-properties
+               (list 'help-echo callback 'custom payload 'keymap keymap)
+               (ebox-commit-test--allocated-single-root (text content) "#123456")))))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (root "short"))
+        (let* ((before (ebox--buffer-render-state (current-buffer)))
+               (surface ebox-surface--buffer-surface)
+               (revision (tp-surface-revision surface))
+               (report (tp-surface-report surface))
+               (output (ebox-commit-test--allocated-single-output (current-buffer)))
+               (failures 0)
+               (attempt
+                (ebox-commit-test--count-root-renders
+                 (lambda ()
+                   (let ((tp--surface-publication-step-function
+                          (lambda (step target)
+                            (when (eq step 'client-state)
+                              (should (eq target surface))
+                              (cl-incf failures)
+                              (should (= (tp-surface-revision surface) (1+ revision)))
+                              (should-not (eq before (tp-surface-client-state surface)))
+                              (error "Reject allocated enclosing properties")))))
+                     (should-error
+                      (ebox-commit
+                       (current-buffer)
+                       (ebox-commit-test--allocated-single-candidate
+                        (current-buffer) (text "a longer row")))))))))
+          (should (= failures 1))
+          (should (equal (car attempt) '(error "Reject allocated enclosing properties")))
+          (should (zerop (cdr attempt)))
+          (should (eq before (ebox--buffer-render-state (current-buffer))))
+          (should (eq before (tp-surface-client-state surface)))
+          (should (= revision (tp-surface-revision surface)))
+          (should (equal report (tp-surface-report surface)))
+          (should (equal-including-properties
+                   output (ebox-commit-test--allocated-single-output (current-buffer))))
+          (ebox-commit-test--assert-allocated-output (current-buffer) (root "short"))
+          (let ((retry
+                 (ebox-commit-test--count-root-renders
+                  (lambda ()
+                    (ebox-commit
+                     (current-buffer)
+                     (ebox-commit-test--allocated-single-candidate
+                      (current-buffer) (text "a longer row")))))))
+            (should (zerop (cdr retry)))
+            (should (= (tp-surface-revision surface) (1+ revision)))
+            (should (eq (plist-get (car retry) :projection-kind) 'owner-scoped))
+            (should-not (plist-get (car retry) :tp-full-root))
+            (ebox-commit-test--assert-allocated-output (current-buffer) (root "a longer row"))
+            (save-excursion
+              (goto-char (point-min))
+              (search-forward "a longer row")
+              (should (eq callback (get-text-property (1- (point)) 'action)))
+              (should (eq callback (get-text-property (1- (point)) 'help-echo)))
+              (should (eq payload (get-text-property (1- (point)) 'custom)))
+              (should (eq callback
+                          (lookup-key (get-text-property (1- (point)) 'keymap)
+                                      (kbd "RET")))))))))))
+
 (ert-deftest ebox-commit-grouped-owners-retain-disjoint-scroll ()
   "A stable slot groups two text edits, with optional paint, beside scroll."
   (dolist (paint-p '(nil t))

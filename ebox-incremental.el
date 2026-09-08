@@ -8217,15 +8217,17 @@ because it could address a run whose topology the closure just replaced."
     owner))
 
 (defun ebox-incremental--fixed-basis-flex-local-op
-  (buffer render-dirty-set)
+  (buffer render-dirty-set &optional allow-single-p)
   "Return one tentative Flex-item op for related geometry RENDER-DIRTY-SET.
 
 Multiple descendant content changes can share a fixed-basis, zero-minimum Flex
 item without changing its main-axis allocation.  This planner only selects the
 shared owner; grouped proof verifies topology and the retained ancestor slot,
 then Surface performs the one actual candidate render and complete footprint,
-role, overflow, and outside-complement validation."
-  (when (and (> (length render-dirty-set) 1)
+role, overflow, and outside-complement validation.  ALLOW-SINGLE-P also selects
+an owner for one descendant after its narrower projection proof has failed."
+  (when (and (or (> (length render-dirty-set) 1)
+                 (and allow-single-p (= (length render-dirty-set) 1)))
              (cl-every
               (lambda (entry)
                 (and (eq (plist-get entry :dirty-kind) 'geometry)
@@ -9615,7 +9617,17 @@ or a retained content-slot certificate.  The surface still renders the whole
 candidate owner into its published slot and verifies exact footprint, overflow,
 role, and outside-complement compatibility before publication."
   (when (and (= (length owner-plan) 1)
-             (> (length (plist-get prepared :dirty-set)) 1))
+             (or (> (length (plist-get prepared :dirty-set)) 1)
+                 ;; A single leaf may need its allocator's filler to change.
+                 ;; Only a proper, content-independent Flex ancestor closes
+                 ;; that envelope; the ordinary leaf proof stays stricter.
+                 (and (= (length (plist-get prepared :dirty-set)) 1)
+                      (not (equal
+                            (plist-get (car owner-plan) :owner-id)
+                            (plist-get (car (plist-get prepared :dirty-set))
+                                       :node-id)))
+                      (ebox--flex-item-fixed-basis-content-allocation-stable-p
+                       buffer (plist-get (car owner-plan) :owner-id)))))
     (let* ((operation (car owner-plan))
            (owner-id (plist-get operation :owner-id))
            (dirty-set (plist-get prepared :dirty-set))
@@ -9767,6 +9779,7 @@ role, and outside-complement compatibility before publication."
                               dirty-set))
                         :variable-content-max-width allocated-width
                         :role-owned-lines-p t
+                        :retain-external-owner-suffix-p t
                         :ancestor-slot-signature ancestor-slot-signature
                         :layout-snapshot-detail-generation
                         (plist-get old-state
@@ -9863,7 +9876,16 @@ role, and outside-complement compatibility before publication."
                       (ebox-incremental--grouped-owner-span-proof
                        buffer old-state prepared candidate-state owner-plan)
                       (ebox-incremental--range-span-proof
-                       buffer old-state prepared candidate-state owner-plan))))
+                       buffer old-state prepared candidate-state owner-plan)
+                      ;; Preserve a successful narrow proof.  Only its miss
+                      ;; justifies trying the complete allocated Flex owner.
+                      (when-let* ((operation
+                                   (and (= (length (plist-get prepared :dirty-set)) 1)
+                                        (ebox-incremental--fixed-basis-flex-local-op
+                                         buffer (plist-get prepared :dirty-set) t))))
+                        (ebox-incremental--grouped-owner-span-proof
+                         buffer old-state prepared candidate-state
+                         (list operation))))))
         (unless (plist-get proof :owner-ids)
           (setq proof
                 (plist-put proof :owner-ids

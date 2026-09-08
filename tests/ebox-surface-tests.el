@@ -276,11 +276,19 @@
               (should (= revision (tp-surface-revision surface)))
               ;; The dependency range authorizes the filler, not unrelated
               ;; output elsewhere in the complete candidate.
-              (let ((render (symbol-function 'ebox-surface--render-candidate)))
-                (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+              (let ((render (symbol-function 'ebox-surface--render-candidate))
+                    (injections 0))
+                ;; Keep the strict full-output dependency-scope check in its
+                ;; ordinary lane.  Grouped proofs can render locally and
+                ;; explicitly permit a root retry after a scope mismatch.
+                (cl-letf (((symbol-function 'ebox-incremental--grouped-owner-span-proof)
+                           (lambda (&rest _arguments) nil))
+                          ((symbol-function 'ebox-surface--render-candidate)
                            (lambda (candidate)
                              (let* ((output (funcall render candidate))
                                     (start (string-match "outside" output)))
+                               (should start)
+                               (cl-incf injections)
                                (put-text-property start (1+ start)
                                                   'help-echo "unrelated" output)
                                output))))
@@ -288,7 +296,8 @@
                    (ebox-commit
                     (current-buffer)
                     (ebox-surface-test--filler-root "next" kind))
-                   :type 'tp-scope-mismatch)))
+                   :type 'tp-scope-mismatch))
+                (should (= injections 1)))
               (should (equal-including-properties before (buffer-string)))
               (should (eq state (tp-surface-client-state surface)))
               (should (= revision (tp-surface-revision surface))))))))))

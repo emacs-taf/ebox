@@ -3630,9 +3630,152 @@ Compare resolved paint and surface properties, preserving opaque identities."
                             new '(bt bb) t)))))))))
     same-p))
 
+(defun ebox-surface--owner-slot-render-node
+    (buffer state owner-id snapshot allocated-width variable-content-p
+            role-owned-lines-p changed-keys)
+  "Return STATE's OWNER-ID rendered in its proven slot, or at natural size."
+  (let* ((node (gethash owner-id (plist-get state :node-table)))
+         (parent-id (gethash owner-id (plist-get state :parent-table)))
+         (parent (and parent-id (gethash parent-id (plist-get state :node-table)))))
+    (cond
+     ((and role-owned-lines-p parent
+           (eq (ebox-tree-display-inner parent) 'flex))
+      (when (fboundp 'ebox--flex-item-slot-sized-node)
+        (let ((ebox-incremental--buffer-render-state-override (cons buffer state)))
+          (ebox--flex-item-slot-sized-node buffer owner-id snapshot changed-keys))))
+     ((and node role-owned-lines-p)
+      ;; The ancestor certificate proves a stable allocation, but its
+      ;; capacity can include chrome outside this owner's published spans.
+      ;; Recreate this owner's margin-box extent with the normal box model.
+      (when-let* ((width (plist-get
+                         (plist-get snapshot :external-footprint-signature)
+                         :max-line-pixel-width))
+                  ((numberp width)))
+        (ebox--flex-copy-node-for-size node 'row width nil nil)))
+     ((and node allocated-width variable-content-p)
+      (plist-put (copy-sequence node) :width allocated-width))
+     (t node))))
+
+(defun ebox-surface--retained-slot-owner-text
+    (buffer previous-state spans old-lines new-lines local old-values new-values)
+  "Transport unchanged published properties across proven slot property runs.
+Direct content runs may change length.  Only renderer-owned blank fillers may
+change their display width.  Every other local property and the order of runs
+must match, and a resized run cannot hide an external property boundary.
+Return nil on a proof miss.  The caller still validates the final footprint."
+  (catch 'slot-property-miss
+    (unless (= (length spans) (length old-lines) (length new-lines))
+      (throw 'slot-property-miss nil))
+    (let ((fragments (ebox-surface--materialized-fragment-ledger previous-state))
+          (origin (with-current-buffer buffer (point-min)))
+          result)
+      (cl-labels
+          ((baseline-for
+            (start end published-properties)
+            (while (and fragments (<= (plist-get (car fragments) :end) start))
+              (setq fragments (cdr fragments)))
+            (let ((remaining fragments) (position start) seen baseline)
+              (while (< position end)
+                (let ((fragment (car remaining)))
+                  (unless (and fragment
+                               (<= (plist-get fragment :start) position)
+                               (< position (plist-get fragment :end)))
+                    (throw 'slot-property-miss nil))
+                  (let ((value
+                         (cond
+                          ((plist-get fragment :face-baseline-known-p)
+                           (plist-get fragment :face-baseline))
+                          ((null (ebox-surface--face-contributions
+                                  previous-state (plist-get fragment :paint-role-ids)))
+                           (plist-get published-properties 'face))
+                          (t (throw 'slot-property-miss nil)))))
+                    (when (and seen
+                               (not (ebox-surface--retained-property-value-equal-p
+                                     baseline value)))
+                      (throw 'slot-property-miss nil))
+                    (setq baseline value seen t))
+                  (setq position (min end (plist-get fragment :end))
+                        remaining (cdr remaining))))
+              baseline))
+           (pixel-filler-p
+            (line start end properties values)
+            (let ((display (plist-get properties 'display)))
+              (and (= (- end start) 1) (= (aref line start) ?\s)
+                   (null (plist-get properties 'ebox-content))
+                   (cl-some (lambda (id) (gethash id local))
+                            (plist-get properties 'ebox-content-owners))
+                   (ebox--render-owned-text-value-p 'display display values)
+                   (pcase display
+                     (`(space :width (,width)) (and (numberp width) (>= width 0))))))))
+        (with-current-buffer buffer
+          (cl-loop
+           for span in spans for old in old-lines for new in new-lines
+           do
+           (let* ((published (buffer-substring (car span) (cdr span)))
+                  (old-length (length old)) (new-length (length new))
+                  (old-position 0) (new-position 0)
+                  (line (substring-no-properties new)))
+             (unless (equal (substring-no-properties old)
+                            (substring-no-properties published))
+               (throw 'slot-property-miss nil))
+             (while (and (< old-position old-length) (< new-position new-length))
+               (let* ((old-end (next-property-change old-position old old-length))
+                      (new-end (next-property-change new-position new new-length))
+                      (old-props (text-properties-at old-position old))
+                      (new-props (text-properties-at new-position new))
+                      (published-props (text-properties-at old-position published))
+                      (old-display (plist-get old-props 'display))
+                      (new-display (plist-get new-props 'display))
+                      (display-changed-p
+                       (not (ebox-surface--retained-property-value-equal-p
+                             old-display new-display))))
+                 (unless (= old-end (next-property-change old-position published old-end))
+                   (throw 'slot-property-miss nil))
+                 (when display-changed-p
+                   (unless (and (pixel-filler-p old old-position old-end old-props old-values)
+                                (pixel-filler-p new new-position new-end new-props new-values)
+                                (ebox-surface--retained-property-value-equal-p
+                                 old-display (plist-get published-props 'display)))
+                     (throw 'slot-property-miss nil))
+                   (setq old-props (copy-sequence old-props)
+                         new-props (copy-sequence new-props))
+                   (cl-remf old-props 'display)
+                   (cl-remf new-props 'display))
+                 (unless (and
+                          (ebox-surface--retained-property-value-equal-p old-props new-props)
+                          (or (equal (substring-no-properties old old-position old-end)
+                                     (substring-no-properties new new-position new-end))
+                              (and (null old-display) (null new-display)
+                                   (gethash (plist-get old-props 'ebox-content) local)
+                                   (not (string-match-p "[\n\r]"
+                                                        (substring old old-position old-end)))
+                                   (not (string-match-p "[\n\r]"
+                                                        (substring new new-position new-end))))))
+                   (throw 'slot-property-miss nil))
+                 (set-text-properties new-position new-end published-props line)
+                 (when display-changed-p
+                   (put-text-property new-position new-end 'display new-display line))
+                 ;; Changed extents rebuild their fragment ledger.  Carry the
+                 ;; proven caller baseline to that parser instead of reusing
+                 ;; old fragment coordinates or peeling a composed face.
+                 (put-text-property
+                  new-position new-end ebox--paint-origin-property
+                  (ebox--paint-origin-create
+                   :baseline (copy-tree
+                              (baseline-for (+ (- (car span) origin) old-position)
+                                            (+ (- (car span) origin) old-end)
+                                            published-props)))
+                  line)
+                 (setq old-position old-end new-position new-end)))
+             (unless (and (= old-position old-length) (= new-position new-length))
+               (throw 'slot-property-miss nil))
+             (push line result)))))
+      (mapconcat #'identity (nreverse result) "\n"))))
+
 (defun ebox-surface--retained-owner-text
     (buffer previous-state state owner-id spans replacement allocated-width
-            variable-content-p variable-content-max-width)
+            variable-content-p variable-content-max-width
+            &optional role-owned-lines-p changed-keys snapshot)
   "Return REPLACEMENT text with proven unchanged published properties.
 Only direct content characters may change.  An isolated old owner render must
 match the published text and the new render's complete property topology.
@@ -3642,12 +3785,13 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                             (plist-get previous-state :node-table)))
          (new-node (gethash owner-id (plist-get state :node-table)))
          (regions (ebox--node-all-region-ids old-node))
-         (root (ebox-surface--candidate-root old-node t))
-         (root (if (and variable-content-p allocated-width)
-                   (plist-put root :width allocated-width)
-                 root))
+         (render-node
+          (ebox-surface--owner-slot-render-node
+           buffer previous-state owner-id snapshot allocated-width
+           variable-content-p role-owned-lines-p changed-keys))
+         (root (and render-node (ebox-surface--candidate-root render-node t)))
          (probe
-          (ebox--render-state-install-index
+          (and root (ebox--render-state-install-index
            (ebox--new-buffer-render-state root)
            (ebox--runtime-index
             root t
@@ -3658,8 +3802,8 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                          (parent (gethash parent-id (plist-get previous-state
                                                                :node-table))))
                (ebox-tree-display-inner parent))
-             (plist-get previous-state :source-index) t)))))
-    (when (and replacement
+             (plist-get previous-state :source-index) t))))))
+    (when (and probe replacement
                (equal regions (ebox--node-all-region-ids new-node))
                (cl-every
                 (lambda (region)
@@ -3669,9 +3813,23 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                          (old (gethash old-id (plist-get previous-state :node-table)))
                          (new (gethash new-id (plist-get state :node-table))))
                     (and (equal old-id new-id)
-                         (ebox-surface--retained-property-value-equal-p
-                          (ebox-tree-node-source-identity old)
-                          (ebox-tree-node-source-identity new)))))
+                         (if role-owned-lines-p
+                             ;; The canonical candidate may replace an
+                             ;; anonymous source handle while retaining its
+                             ;; runtime slot.  This mode rebuilds fragment
+                             ;; metadata; verify that slot's full identity
+                             ;; topology instead of retaining the old handle.
+                             (and (eq (plist-get old :ebox-type)
+                                      (plist-get new :ebox-type))
+                                  (equal (gethash old-id (plist-get previous-state :parent-table))
+                                         (gethash new-id (plist-get state :parent-table)))
+                                  (equal (ebox-tree-node-author-key
+                                          (plist-get previous-state :source-index) old)
+                                         (ebox-tree-node-author-key
+                                          (plist-get state :source-index) new)))
+                           (ebox-surface--retained-property-value-equal-p
+                            (ebox-tree-node-source-identity old)
+                            (ebox-tree-node-source-identity new))))))
                 regions)
                (cl-every
                 (lambda (key)
@@ -3683,9 +3841,16 @@ Proof mismatches return nil; unexpected rendering errors propagate."
         (setq probe (plist-put probe key (plist-get previous-state key))))
       (let* ((ebox--box-content-render-cache (make-hash-table :test #'eq))
              (old-rendered (ebox-surface--render-candidate-node probe root))
-             (old-shaped (ebox-surface--span-patch-lines
-                          buffer spans old-rendered variable-content-p
-                          variable-content-max-width))
+             (old-rendered
+              (if role-owned-lines-p
+                  (ebox-buffer--rendered-owned-lines old-rendered regions (length spans))
+                old-rendered))
+             (old-shaped
+              (and old-rendered
+                   (ebox-surface--span-patch-lines
+                    buffer spans old-rendered variable-content-p
+                    variable-content-max-width
+                    (and role-owned-lines-p (ebox--region-id-set regions)))))
              (old-lines (and old-shaped (ebox-string-lines old-shaped)))
              (new-lines (ebox-string-lines replacement))
              (local (ebox--region-id-set regions))
@@ -3693,7 +3858,13 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                          (= (length spans) (length old-lines))
                          (= (length spans) (length new-lines))))
              result)
-        (with-current-buffer buffer
+        (if role-owned-lines-p
+            (and valid
+                 (ebox-surface--retained-slot-owner-text
+                  buffer previous-state spans old-lines new-lines local
+                  (plist-get probe :render-owned-text-values)
+                  (plist-get state :render-owned-text-values)))
+          (with-current-buffer buffer
           (cl-loop for span in spans
                    for old in old-lines for new in new-lines
                    while valid
@@ -3732,7 +3903,7 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                               line)
                              (setq position end)))
                          (push line result))))))
-        (and valid (mapconcat #'identity (nreverse result) "\n"))))))
+          (and valid (mapconcat #'identity (nreverse result) "\n")))))))
 
 (defun ebox-surface--owner-patch-candidate
     (buffer state owner-id allocated-width
@@ -3745,34 +3916,11 @@ Proof mismatches return nil; unexpected rendering errors propagate."
           (and owner-id (ebox--ensure-layout-snapshot-details buffer owner-id)))
          (spans (and old-snapshot (plist-get old-snapshot :buffer-spans)))
          (node (and owner-id (gethash owner-id (plist-get state :node-table))))
-         (parent-id (and owner-id
-                         (gethash owner-id (plist-get state :parent-table))))
-         (parent (and parent-id
-                      (gethash parent-id (plist-get state :node-table))))
-         (slot-sized-render-p
-          (and role-owned-lines-p parent
-               (eq (ebox-tree-display-inner parent) 'flex)))
          (render-node
-          (if slot-sized-render-p
-              ;; The planner proved this fixed-basis owner in its published
-              ;; Flex slot.  Recreate that exact candidate-state witness for
-              ;; publication; a natural render can have fewer owned lines and
-              ;; would spuriously widen the TP scope to the root.
-              (and (fboundp 'ebox--flex-item-slot-sized-node)
-                   (let ((ebox-incremental--buffer-render-state-override
-                          (cons buffer state)))
-                     (ebox--flex-item-slot-sized-node
-                      buffer owner-id old-snapshot changed-keys)))
-            ;; Grouped owners and variable content have a proven retained
-            ;; allocation.  Rendering there does not grant permission for
-            ;; the final footprint to vary.
-            ;; Ungrouped typography changes render at their natural size so
-            ;; the final footprint check observes any intrinsic-width change
-            ;; instead of hiding it behind the old allocation.
-            (if (and node allocated-width
-                     (or variable-content-p role-owned-lines-p))
-                (plist-put (copy-sequence node) :width allocated-width)
-              node)))
+          (and owner-id
+               (ebox-surface--owner-slot-render-node
+                buffer state owner-id old-snapshot allocated-width
+                variable-content-p role-owned-lines-p changed-keys)))
          (retain-properties-p
           (and (memq (plist-get state :projection-kind)
                      '(span-patch owner-scoped mixed-owner-reflow))
@@ -3783,7 +3931,7 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                ;; must also survive its geometry replacement.
                (or (not retain-properties-p)
                    (and previous-state
-                        (not (or role-owned-lines-p allocation-closure-p))
+                        (not allocation-closure-p)
                         (ebox-surface--unchanged-enclosing-effects-p
                          previous-state state owner-id))))
       (let* ((rendered
@@ -3842,7 +3990,8 @@ Proof mismatches return nil; unexpected rendering errors propagate."
               (if retain-properties-p
                   (ebox-surface--retained-owner-text
                    buffer previous-state state owner-id spans replacement
-                   allocated-width variable-content-p variable-content-max-width)
+                   allocated-width variable-content-p variable-content-max-width
+                   role-owned-lines-p changed-keys old-snapshot)
                 replacement))
              (details
               (and replacement
@@ -3853,7 +4002,8 @@ Proof mismatches return nil; unexpected rendering errors propagate."
         (and details
              (list :owner-id owner-id :snapshot old-snapshot
                    :old-spans spans :details details
-                   :retained-properties-p retain-properties-p))))))
+                   :retained-properties-p
+                   (and retain-properties-p (not role-owned-lines-p))))))))
 
 (defun ebox-surface--range-patch-candidate (buffer state proof)
   "Return PROOF's exact equal-line Range replacement candidate, or nil."
