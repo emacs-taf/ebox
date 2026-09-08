@@ -355,8 +355,8 @@
             (should-not (plist-member empty-record :sequence))
             (should (= (plist-get empty-resolved :rank) 1))
             (should (= (plist-get items-resolved :rank) 1))
-            (should (= (hash-table-count (plist-get state :node-table))
-                       (hash-table-count (plist-get direct-state :node-table))))
+            (should (= (ebox-runtime-index-size (plist-get state :node-table))
+                       (ebox-runtime-index-size (plist-get direct-state :node-table))))
             (should (= (hash-table-count (plist-get state :region-id-set))
                        (hash-table-count
                         (plist-get direct-state :region-id-set))))
@@ -482,7 +482,9 @@
                    (node-id
                     (gethash ref
                              (ebox-child-range-test--host-ref-table state)))
-                   (node (gethash node-id (plist-get state :node-table))))
+                   (node
+                    (ebox-runtime-index-get
+                     node-id (plist-get state :node-table))))
               (should node-id)
               (should (equal
                        (ebox-child-range-test--node-key
@@ -668,7 +670,7 @@
             (ebox-commit buffer candidate))
           (let* ((state (ebox--buffer-render-state buffer))
                  (record (gethash 'items (plist-get state :range-ref-table)))
-                 (parent (gethash (plist-get record :parent-node-id)
+                 (parent (ebox-runtime-index-get (plist-get record :parent-node-id)
                                   (plist-get state :node-table)))
                  (segment
                   (ebox-child-range--lookup-ref
@@ -742,7 +744,7 @@
             (ebox-commit buffer candidate))
           (let* ((state (ebox--buffer-render-state buffer))
                  (record (gethash 'items (plist-get state :range-ref-table)))
-                 (parent (gethash (plist-get record :parent-node-id)
+                 (parent (ebox-runtime-index-get (plist-get record :parent-node-id)
                                   (plist-get state :node-table)))
                  (segment
                   (ebox-child-range--lookup-ref
@@ -879,7 +881,7 @@
                   (parents (plist-get (ebox--buffer-render-state (current-buffer))
                                       :parent-table))
                   result)
-              (while (setq node-id (gethash node-id parents))
+              (while (setq node-id (ebox-runtime-index-get node-id parents))
                 (push node-id result))
               result)))
       (dolist (expanded '(t nil t))
@@ -2073,7 +2075,7 @@
                                   node-id
                                   (plist-get state
                                              :surface-node-object-table))))
-                    (should (eq node (gethash node-id
+                    (should (eq node (ebox-runtime-index-get node-id
                                               (plist-get state :node-table))))
                     (should object)
                     (should (eq object (plist-get node :surface-object))))))))
@@ -2166,7 +2168,9 @@
                    (current-id
                     (gethash 'child
                              (ebox-child-range-test--host-ref-table state)))
-                   (node (gethash current-id (plist-get state :node-table))))
+                   (node
+                    (ebox-runtime-index-get
+                     current-id (plist-get state :node-table))))
               (when node-id (should (equal node-id current-id)))
               (setq node-id current-id)
               (should (plist-get node :ebox-sequence-location))))

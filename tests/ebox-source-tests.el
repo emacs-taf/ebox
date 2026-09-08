@@ -455,7 +455,7 @@
                              (ebox-source-record-classes
                               (ebox-source-index-record
                                old-index old-handle))))
-              (maphash
+              (ebox-runtime-index-map
                (lambda (_node-id node)
                  (when (ebox-node-kind node)
                    (should (ebox-source-index-record
@@ -504,7 +504,7 @@
                    (eq node-subjects
                        (ebox-source-table-base next-node-subjects)))
                   (let* ((next-node
-                          (gethash old-id
+                          (ebox-runtime-index-get old-id
                                    (plist-get (ebox--buffer-render-state buffer)
                                               :node-table)))
                          (next-handle (ebox-node-source-handle next-node)))

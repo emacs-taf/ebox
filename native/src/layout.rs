@@ -6,6 +6,50 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+#[path = "source_topology.rs"]
+mod source_topology;
+use source_topology::{LocalStep, SourceTopology, TopologyBuilder};
+
+#[path = "atom_plan.rs"]
+mod atom_plan;
+use atom_plan::AtomPlan;
+pub(crate) use atom_plan::AtomPlanWork;
+
+pub(crate) fn reset_atom_plan_work() {
+    atom_plan::reset_work();
+}
+
+pub(crate) fn atom_plan_work() -> AtomPlanWork {
+    atom_plan::work()
+}
+
+#[path = "line_plan.rs"]
+mod line_plan;
+pub(crate) use line_plan::LinePlanWork;
+use line_plan::{BoxProjectionSlot, FrameSpec, LineOp, LinePlan, PlanChange, ProjectionState};
+
+pub(crate) fn reset_line_plan_work() {
+    line_plan::reset_work();
+}
+
+pub(crate) fn line_plan_work() -> LinePlanWork {
+    line_plan::work()
+}
+
+#[path = "composition.rs"]
+mod composition;
+#[path = "evaluation.rs"]
+mod evaluation;
+pub(crate) use evaluation::{EvalWork, RetainedFrame};
+use evaluation::{Phase, RenderScope};
+
+pub(crate) fn reset_eval_work() {
+    evaluation::reset_work();
+}
+pub(crate) fn eval_work() -> EvalWork {
+    evaluation::work()
+}
+
 fn deserialize_arc_vec<'de, D, T>(deserializer: D) -> Result<Arc<Vec<T>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -123,6 +167,173 @@ struct LocalSlotPatch {
     local: JsonMap<String, JsonValue>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalField {
+    RegionId,
+    Content,
+    ContentRegionId,
+    ContentTypographyStyle,
+    ContentForegroundStyle,
+    ContentSurfaceTemplateId,
+    ContentWidthExact,
+    ContentMinWidth,
+    Width,
+    MinWidth,
+    MaxWidth,
+    Height,
+    MinHeight,
+    MaxHeight,
+    BoxSizing,
+    PaddingLeft,
+    PaddingRight,
+    PaddingTop,
+    PaddingBottom,
+    MarginLeft,
+    MarginRight,
+    MarginTop,
+    MarginBottom,
+    BorderLeft,
+    BorderRight,
+    TypographyStyle,
+    ForegroundStyle,
+    BackgroundStyle,
+    BorderLeftStyle,
+    BorderRightStyle,
+    BorderTopStyle,
+    BorderBottomStyle,
+    SurfaceTemplateId,
+    TextAlign,
+    VerticalAlign,
+    Overflow,
+    WrapMode,
+    ScrollOffset,
+    Direction,
+    Wrap,
+    Justify,
+    AlignItems,
+    AlignContent,
+    RowGap,
+    ColumnGap,
+}
+
+#[derive(Debug)]
+struct SlotChange {
+    slot: u8,
+    fields: Vec<LocalField>,
+}
+
+#[derive(Debug)]
+struct OwnerChange {
+    node_id: u64,
+    expected_revision: u64,
+    target_revision: u64,
+    slots: Vec<SlotChange>,
+}
+
+/// Transient source facts for one exact pair of documents, never retained in a
+/// document or confirmed baseline. The current renderer does not cache by these facts.
+#[derive(Debug)]
+pub(crate) struct SourceChanges {
+    base: Arc<RetainedDocument>,
+    target: Arc<RetainedDocument>,
+    owners: Vec<OwnerChange>,
+    styles: std::ops::Range<u32>,
+    property_templates: std::ops::Range<u32>,
+}
+
+impl SourceChanges {
+    pub(crate) fn applies_to(
+        &self,
+        base: &Arc<RetainedDocument>,
+        target: &Arc<RetainedDocument>,
+    ) -> bool {
+        Arc::ptr_eq(&self.base, base) && Arc::ptr_eq(&self.target, target)
+    }
+
+    pub(crate) fn visit_changed_slots(
+        &self,
+        mut visit: impl FnMut(u64, u64, u64, u8, &[LocalField]),
+    ) {
+        for owner in &self.owners {
+            for slot in &owner.slots {
+                visit(
+                    owner.node_id,
+                    owner.expected_revision,
+                    owner.target_revision,
+                    slot.slot,
+                    &slot.fields,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn registry_ranges(&self) -> (std::ops::Range<u32>, std::ops::Range<u32>) {
+        (self.styles.clone(), self.property_templates.clone())
+    }
+}
+
+/// Counts concrete comparisons/copies at delta preparation and emitted source
+/// changes at input integration. These are not layout-cache or topology counters.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct SourceChangeWork {
+    pub(crate) fields_compared: u64,
+    pub(crate) size_nodes_compared: u64,
+    pub(crate) text_lines_compared: u64,
+    pub(crate) text_clusters_compared: u64,
+    pub(crate) text_bytes_compared: u64,
+    pub(crate) local_nodes_copied: u64,
+    pub(crate) owners_changed: u64,
+    pub(crate) slots_changed: u64,
+    pub(crate) fields_changed: u64,
+    pub(crate) styles_appended: u64,
+    pub(crate) property_templates_added: u64,
+}
+
+impl SourceChangeWork {
+    pub(crate) fn accumulate(&mut self, other: Self) {
+        self.fields_compared += other.fields_compared;
+        self.size_nodes_compared += other.size_nodes_compared;
+        self.text_lines_compared += other.text_lines_compared;
+        self.text_clusters_compared += other.text_clusters_compared;
+        self.text_bytes_compared += other.text_bytes_compared;
+        self.local_nodes_copied += other.local_nodes_copied;
+        self.owners_changed += other.owners_changed;
+        self.slots_changed += other.slots_changed;
+        self.fields_changed += other.fields_changed;
+        self.styles_appended += other.styles_appended;
+        self.property_templates_added += other.property_templates_added;
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct DeltaStats {
+    pub(crate) entries_parsed: u64,
+    pub(crate) trie_path_nodes_copied: u64,
+    pub(crate) source_work: SourceChangeWork,
+}
+
+#[derive(Debug)]
+pub(crate) struct AppliedDelta {
+    pub(crate) document: Arc<RetainedDocument>,
+    pub(crate) changes: SourceChanges,
+    pub(crate) stats: DeltaStats,
+}
+
+struct PatchedOwner {
+    node: Arc<LayoutNode>,
+    slot_work: [Arc<LocalWorkSummary>; 2],
+    work_delta: LocalWorkDelta,
+    slots: Vec<SlotChange>,
+}
+
+struct PatchedLocal<'a> {
+    node: Option<LayoutNode>,
+    // Names come from the same dispatch as the typed identifiers, for the
+    // existing local-work summary; no second field classification is needed.
+    fields: Vec<(LocalField, &'a str)>,
+}
+
 #[derive(Debug)]
 struct RetainedEntry {
     revision: u64,
@@ -131,7 +342,18 @@ struct RetainedEntry {
 }
 
 #[derive(Debug, Clone, Default)]
-struct LocalWorkSummary(BTreeMap<&'static str, usize>);
+struct LocalWorkSummary(BTreeMap<&'static str, LocalFieldWork>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocalFieldWork {
+    units: usize,
+    viewport_heights: usize,
+}
+
+struct LocalWorkDelta {
+    units: isize,
+    viewport_heights: i128,
+}
 
 #[derive(Debug)]
 struct RadixNode {
@@ -196,10 +418,12 @@ fn radix_insert(
 pub(crate) struct RetainedDocument {
     root_id: u64,
     entries: Arc<RadixNode>,
+    topology: Arc<SourceTopology>,
     styles: Arc<StyleRadixNode>,
     style_count: u32,
     property_template_count: u32,
     work_units: usize,
+    context_viewport_heights: usize,
 }
 
 #[derive(Debug)]
@@ -314,83 +538,112 @@ fn visit_layout_children(node: &LayoutNode, mut visit: impl FnMut(&LayoutNode)) 
 impl RetainedDocument {
     pub(crate) fn bootstrap(document: LayoutDocument) -> Result<(Arc<Self>, u64), String> {
         let (node_count, work_units) = document.validate_metrics()?;
-        fn install_owner(
-            mut node: LayoutNode,
-            entries: &mut Arc<RadixNode>,
-            seen: &mut HashSet<u64>,
-            count: &mut u64,
-        ) -> Result<u64, String> {
-            fn localize(
-                node: &mut LayoutNode,
-                owner_id: u64,
-                entries: &mut Arc<RadixNode>,
-                seen: &mut HashSet<u64>,
-                count: &mut u64,
-            ) -> Result<(), String> {
-                fn localize_child(
-                    child: LayoutNode,
-                    owner_id: u64,
-                    entries: &mut Arc<RadixNode>,
-                    seen: &mut HashSet<u64>,
-                    count: &mut u64,
-                ) -> Result<LayoutNode, String> {
-                    if child.node_id().is_some() {
-                        let installed = install_owner(child, entries, seen, count)?;
-                        return Ok(LayoutNode::NodeRef { node_id: installed });
-                    }
-                    let mut child = child;
-                    localize(&mut child, owner_id, entries, seen, count)?;
-                    Ok(child)
-                }
 
-                match node {
-                    LayoutNode::Box { child, .. } => {
-                        if let Some(old) = child.take() {
-                            let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
-                            *child = Some(Arc::new(localize_child(
-                                old, owner_id, entries, seen, count,
-                            )?));
-                        }
-                    }
-                    LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
-                        let old = std::mem::take(children);
-                        let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
-                        let mut localized = Vec::with_capacity(old.len());
-                        for child in old {
-                            localized.push(localize_child(child, owner_id, entries, seen, count)?);
-                        }
-                        *children = Arc::new(localized);
-                    }
-                    LayoutNode::Flex { items, .. } => {
-                        let old = std::mem::take(items);
-                        let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
-                        let mut localized = Vec::with_capacity(old.len());
-                        for mut item in old {
-                            item.node = localize_child(item.node, owner_id, entries, seen, count)?;
-                            localized.push(item);
-                        }
-                        *items = Arc::new(localized);
-                    }
-                    LayoutNode::Text { .. } => {}
-                    LayoutNode::NodeRef { .. } => {
-                        return Err(
-                            "Native retained bootstrap received a node reference".to_owned()
-                        );
-                    }
-                }
-                Ok(())
+        struct BootstrapState {
+            entries: Arc<RadixNode>,
+            seen: HashSet<u64>,
+            owner_count: u64,
+            context_viewport_heights: usize,
+            topology: TopologyBuilder,
+        }
+
+        fn localize_child(
+            mut child: LayoutNode,
+            owner_id: u64,
+            path: &mut Vec<LocalStep>,
+            slot: LocalStep,
+            state: &mut BootstrapState,
+        ) -> Result<LayoutNode, String> {
+            if child.node_id().is_some() {
+                let installed = install_owner(child, state)?;
+                state.topology.add_use(owner_id, path, slot, installed)?;
+                return Ok(LayoutNode::NodeRef { node_id: installed });
             }
+            path.push(slot);
+            let result = localize(&mut child, owner_id, path, state);
+            path.pop();
+            result?;
+            Ok(child)
+        }
 
+        fn localize(
+            node: &mut LayoutNode,
+            owner_id: u64,
+            path: &mut Vec<LocalStep>,
+            state: &mut BootstrapState,
+        ) -> Result<(), String> {
+            // This is the existing one-time traversal, including anonymous nodes.
+            visit_context_height_fields(node, |_, size| {
+                state.context_viewport_heights = state
+                    .context_viewport_heights
+                    .checked_add(context_size_occurrences(size)?)
+                    .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
+                Ok(())
+            })?;
+            let column = matches!(node, LayoutNode::Column { .. });
+            match node {
+                LayoutNode::Box { child, .. } => {
+                    if let Some(old) = child.take() {
+                        let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                        *child = Some(Arc::new(localize_child(
+                            old,
+                            owner_id,
+                            path,
+                            LocalStep::BoxChild,
+                            state,
+                        )?));
+                    }
+                }
+                LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+                    let old = std::mem::take(children);
+                    let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                    let mut localized = Vec::with_capacity(old.len());
+                    for (index, child) in old.into_iter().enumerate() {
+                        let slot = if column {
+                            LocalStep::ColumnChild(index)
+                        } else {
+                            LocalStep::RowChild(index)
+                        };
+                        localized.push(localize_child(child, owner_id, path, slot, state)?);
+                    }
+                    *children = Arc::new(localized);
+                }
+                LayoutNode::Flex { items, .. } => {
+                    let old = std::mem::take(items);
+                    let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
+                    let mut localized = Vec::with_capacity(old.len());
+                    for (index, mut item) in old.into_iter().enumerate() {
+                        item.node = localize_child(
+                            item.node,
+                            owner_id,
+                            path,
+                            LocalStep::FlexItem(index),
+                            state,
+                        )?;
+                        localized.push(item);
+                    }
+                    *items = Arc::new(localized);
+                }
+                LayoutNode::Text { .. } => {}
+                LayoutNode::NodeRef { .. } => {
+                    return Err("Native retained bootstrap received a node reference".to_owned());
+                }
+            }
+            Ok(())
+        }
+
+        fn install_owner(mut node: LayoutNode, state: &mut BootstrapState) -> Result<u64, String> {
             let node_id = node.node_id().ok_or_else(|| {
                 "Native retained document owner is missing its node id".to_owned()
             })?;
             let revision = node.node_revision().ok_or_else(|| {
                 "Native retained document node is missing its revision".to_owned()
             })?;
-            if node_id == 0 || !seen.insert(node_id) {
+            if node_id == 0 || !state.seen.insert(node_id) {
                 return Err("Native retained document has invalid duplicate node id".to_owned());
             }
-            localize(&mut node, node_id, entries, seen, count)?;
+            // Each owner starts a fresh local address; paths never cross NodeRefs.
+            localize(&mut node, node_id, &mut Vec::new(), state)?;
             let slot_one = match &node {
                 LayoutNode::Box {
                     child: Some(child), ..
@@ -402,17 +655,21 @@ impl RetainedDocument {
                 slot_work: [Arc::new(local_work_summary(&node)?), Arc::new(slot_one)],
                 node: Arc::new(node),
             });
-            let (updated, _) = radix_insert(entries, node_id, entry);
-            *entries = updated;
-            *count += 1;
+            let (updated, _) = radix_insert(&state.entries, node_id, entry);
+            state.entries = updated;
+            state.owner_count += 1;
             Ok(node_id)
         }
 
-        let mut entries = Arc::new(RadixNode::default());
-        let mut seen = HashSet::new();
-        let mut owner_count = 0;
-        let root_id = install_owner(document.root, &mut entries, &mut seen, &mut owner_count)?;
-        debug_assert!(usize::try_from(owner_count).is_ok_and(|count| count <= node_count));
+        let mut state = BootstrapState {
+            entries: Arc::new(RadixNode::default()),
+            seen: HashSet::new(),
+            owner_count: 0,
+            context_viewport_heights: 0,
+            topology: TopologyBuilder::default(),
+        };
+        let root_id = install_owner(document.root, &mut state)?;
+        debug_assert!(usize::try_from(state.owner_count).is_ok_and(|count| count <= node_count));
         let mut styles = Arc::new(StyleRadixNode::default());
         if document.styles.len() != document.style_count as usize {
             return Err("Native retained style table count mismatch".to_owned());
@@ -421,20 +678,29 @@ impl RetainedDocument {
             let (updated, _) = style_insert(&styles, index as u64, Arc::new(style));
             styles = updated;
         }
+        let topology = state.topology.finish(root_id);
+        debug_assert!(topology.incoming_uses(root_id).is_empty());
+        debug_assert_eq!(
+            topology.build_work().occurrences_written,
+            state.owner_count - 1
+        );
         Ok((
             Arc::new(Self {
                 root_id,
-                entries,
+                entries: state.entries,
+                topology,
                 styles,
                 style_count: document.style_count,
                 property_template_count: document.property_template_count,
                 work_units,
+                context_viewport_heights: state.context_viewport_heights,
             }),
             node_count as u64,
         ))
     }
 
     fn effective_node(&self, node_id: u64) -> Option<&LayoutNode> {
+        debug_assert_eq!(self.root_id, self.topology.root_owner());
         radix_lookup(&self.entries, node_id).map(|entry| entry.node.as_ref())
     }
 
@@ -461,9 +727,9 @@ impl RetainedDocument {
     }
 
     pub(crate) fn apply_delta(
-        &self,
+        self: &Arc<Self>,
         delta: DocumentDelta,
-    ) -> Result<(Arc<Self>, u64, u64), String> {
+    ) -> Result<AppliedDelta, String> {
         if delta.style_base_count != self.style_count
             || delta.property_template_base_count != self.property_template_count
             || delta.property_template_target_count < delta.property_template_base_count
@@ -483,7 +749,10 @@ impl RetainedDocument {
         }
         let mut seen = HashSet::with_capacity(delta.entries.len());
         let mut prepared = Vec::with_capacity(delta.entries.len());
+        let mut owners = Vec::new();
+        let mut stats = DeltaStats::default();
         let mut work_delta_total = 0_i128;
+        let mut context_delta_total = 0_i128;
         for update in delta.entries {
             if !seen.insert(update.node_id) {
                 return Err("Native retained delta contains a duplicate node id".to_owned());
@@ -495,35 +764,34 @@ impl RetainedDocument {
             {
                 return Err("Native retained delta node revision mismatch".to_owned());
             }
-            let node = if update.slot_patches.is_empty() {
-                Arc::clone(&old.node)
-            } else {
-                let (patched, slot_work, work_delta) = patch_owner_slots(
-                    &old.node,
-                    &old.slot_work,
-                    &update.slot_patches,
-                    target_style_count,
-                    delta.property_template_target_count,
-                )?;
-                work_delta_total = work_delta_total
-                    .checked_add(work_delta as i128)
-                    .ok_or_else(|| "Native layout work estimate overflowed".to_owned())?;
-                prepared.push((
-                    update.node_id,
-                    Arc::new(RetainedEntry {
-                        revision: update.target_revision,
-                        node: Arc::new(patched),
-                        slot_work,
-                    }),
-                ));
-                continue;
-            };
+            let patched = patch_owner_slots(
+                &old.node,
+                &old.slot_work,
+                &update.slot_patches,
+                target_style_count,
+                delta.property_template_target_count,
+                &mut stats.source_work,
+            )?;
+            work_delta_total = work_delta_total
+                .checked_add(patched.work_delta.units as i128)
+                .ok_or_else(|| "Native layout work estimate overflowed".to_owned())?;
+            context_delta_total = context_delta_total
+                .checked_add(patched.work_delta.viewport_heights)
+                .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
+            if !patched.slots.is_empty() {
+                owners.push(OwnerChange {
+                    node_id: update.node_id,
+                    expected_revision: update.expected_revision,
+                    target_revision: update.target_revision,
+                    slots: patched.slots,
+                });
+            }
             prepared.push((
                 update.node_id,
                 Arc::new(RetainedEntry {
                     revision: update.target_revision,
-                    node,
-                    slot_work: old.slot_work.clone(),
+                    node: patched.node,
+                    slot_work: patched.slot_work,
                 }),
             ));
         }
@@ -545,6 +813,10 @@ impl RetainedDocument {
         if work_units > MAX_LAYOUT_WORK_UNITS {
             return Err("Native layout exceeds the work-unit limit".to_owned());
         }
+        let context_viewport_heights = (self.context_viewport_heights as i128)
+            .checked_add(context_delta_total)
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
         let parsed = prepared.len() as u64;
         let mut entries = Arc::clone(&self.entries);
         let mut copied = 0;
@@ -560,47 +832,75 @@ impl RetainedDocument {
             styles = updated;
             copied += count;
         }
-        Ok((
-            Arc::new(Self {
-                root_id: self.root_id,
-                entries,
-                styles,
-                style_count: target_style_count,
-                property_template_count: delta.property_template_target_count,
-                work_units,
-            }),
-            parsed,
-            copied,
-        ))
+        let document = Arc::new(Self {
+            root_id: self.root_id,
+            topology: Arc::clone(&self.topology),
+            entries,
+            styles,
+            style_count: target_style_count,
+            property_template_count: delta.property_template_target_count,
+            work_units,
+            context_viewport_heights,
+        });
+        stats.entries_parsed = parsed;
+        stats.trie_path_nodes_copied = copied;
+        let changes = SourceChanges {
+            base: Arc::clone(self),
+            target: Arc::clone(&document),
+            owners,
+            styles: self.style_count..target_style_count,
+            property_templates: self.property_template_count..document.property_template_count,
+        };
+        Ok(AppliedDelta {
+            document,
+            changes,
+            stats,
+        })
     }
 }
 
 fn patch_owner_slots(
-    base: &LayoutNode,
+    base: &Arc<LayoutNode>,
     base_work: &[Arc<LocalWorkSummary>; 2],
     patches: &[LocalSlotPatch],
     style_count: u32,
     property_template_count: u32,
-) -> Result<(LayoutNode, [Arc<LocalWorkSummary>; 2], isize), String> {
-    let mut result = base.clone();
+    source_work: &mut SourceChangeWork,
+) -> Result<PatchedOwner, String> {
+    let mut result = Arc::clone(base);
     let mut slot_work = base_work.clone();
     let mut work_delta = 0_isize;
+    let mut context_delta = 0_i128;
     let mut seen = [false; 2];
+    let mut slots = Vec::new();
     for patch in patches {
         let index = patch.slot as usize;
         if index >= seen.len() || std::mem::replace(&mut seen[index], true) {
             return Err("Native retained delta has an invalid duplicate slot".to_owned());
         }
         if patch.slot == 0 {
-            let old_work = slot_work[0].changed_work(&patch.local);
-            result = patch_local_node(&result, &patch.local)?;
-            validate_changed_fields(&result, &patch.local, style_count, property_template_count)?;
-            let updated = slot_work[0].updated(&result, &patch.local)?;
-            let new_work = updated.changed_work(&patch.local);
+            let patched = patch_local_node(&result, &patch.local, source_work)?;
+            validate_changed_fields(
+                patched.node.as_ref().unwrap_or(&result),
+                &patch.local,
+                style_count,
+                property_template_count,
+            )?;
+            let Some(node) = patched.node else { continue };
+            let old_work = slot_work[0].changed_work(&patched.fields);
+            let updated = slot_work[0].updated(&node, &patched.fields)?;
+            context_delta += updated.changed_context_occurrences(&patched.fields)
+                - slot_work[0].changed_context_occurrences(&patched.fields);
+            let new_work = updated.changed_work(&patched.fields);
             work_delta += new_work as isize - old_work as isize;
-            slot_work[0] = Arc::new(updated);
+            slot_work[0] = updated;
+            result = Arc::new(node);
+            slots.push(SlotChange {
+                slot: 0,
+                fields: patched.fields.into_iter().map(|(field, _)| field).collect(),
+            });
         } else {
-            let LayoutNode::Box { child, .. } = &mut result else {
+            let LayoutNode::Box { child, .. } = result.as_ref() else {
                 return Err("Native retained delta slot one requires a box owner".to_owned());
             };
             let old_child = child
@@ -609,35 +909,83 @@ fn patch_owner_slots(
             if old_child.node_id().is_some() {
                 return Err("Native retained delta slot one must be anonymous".to_owned());
             }
-            let old_work = slot_work[1].changed_work(&patch.local);
-            let new_child = patch_local_node(old_child, &patch.local)?;
+            let patched = patch_local_node(old_child, &patch.local, source_work)?;
             validate_changed_fields(
-                &new_child,
+                patched.node.as_ref().unwrap_or(old_child),
                 &patch.local,
                 style_count,
                 property_template_count,
             )?;
-            let updated = slot_work[1].updated(&new_child, &patch.local)?;
-            let new_work = updated.changed_work(&patch.local);
+            let Some(new_child) = patched.node else {
+                continue;
+            };
+            let old_work = slot_work[1].changed_work(&patched.fields);
+            let updated = slot_work[1].updated(&new_child, &patched.fields)?;
+            context_delta += updated.changed_context_occurrences(&patched.fields)
+                - slot_work[1].changed_context_occurrences(&patched.fields);
+            let new_work = updated.changed_work(&patched.fields);
             work_delta += new_work as isize - old_work as isize;
-            slot_work[1] = Arc::new(updated);
+            slot_work[1] = updated;
+            if Arc::strong_count(&result) > 1 {
+                source_work.local_nodes_copied += 1;
+            }
+            let LayoutNode::Box { child, .. } = Arc::make_mut(&mut result) else {
+                unreachable!()
+            };
             *child = Some(Arc::new(new_child));
+            slots.push(SlotChange {
+                slot: 1,
+                fields: patched.fields.into_iter().map(|(field, _)| field).collect(),
+            });
         }
     }
-    Ok((result, slot_work, work_delta))
+    Ok(PatchedOwner {
+        node: result,
+        slot_work,
+        work_delta: LocalWorkDelta {
+            units: work_delta,
+            viewport_heights: context_delta,
+        },
+        slots,
+    })
 }
 
-fn patch_local_node(
+fn patch_local_node<'a>(
     base: &LayoutNode,
-    fields: &JsonMap<String, JsonValue>,
-) -> Result<LayoutNode, String> {
+    fields: &'a JsonMap<String, JsonValue>,
+    source_work: &mut SourceChangeWork,
+) -> Result<PatchedLocal<'a>, String> {
     fn parsed<T: serde::de::DeserializeOwned>(value: &JsonValue) -> Result<T, String> {
         serde_json::from_value(value.clone())
             .map_err(|error| format!("Invalid native retained local field: {error}"))
     }
-    let mut output = base.clone();
+    let mut output = None;
+    let mut changed_fields = Vec::new();
     for (name, value) in fields {
-        match &mut output {
+        macro_rules! assign {
+            ($variant:ident, $field:ident, $id:ident, $same:ident, $parsed:expr) => {{
+                let next = $parsed;
+                source_work.fields_compared += 1;
+                if !$same($field, &next, source_work) {
+                    let node = output.get_or_insert_with(|| {
+                        source_work.local_nodes_copied += 1;
+                        base.clone()
+                    });
+                    let LayoutNode::$variant { $field, .. } = node else {
+                        unreachable!()
+                    };
+                    *$field = next;
+                    changed_fields.push((LocalField::$id, name.as_str()));
+                }
+            }};
+            ($variant:ident, $field:ident, $id:ident) => {
+                assign!($variant, $field, $id, same_scalar_source, parsed(value)?)
+            };
+            ($variant:ident, $field:ident, $id:ident, $same:ident) => {
+                assign!($variant, $field, $id, $same, parsed(value)?)
+            };
+        }
+        match output.as_ref().unwrap_or(base) {
             LayoutNode::Box {
                 region_id,
                 content,
@@ -679,44 +1027,56 @@ fn patch_local_node(
                 scroll_offset,
                 ..
             } => match name.as_str() {
-                "region-id" => *region_id = parsed(value)?,
-                "content" => *content = parsed::<Option<MeasuredText>>(value)?.map(Arc::new),
-                "content-region-id" => *content_region_id = parsed(value)?,
-                "content-typography-style" => *content_typography_style = parsed(value)?,
-                "content-foreground-style" => *content_foreground_style = parsed(value)?,
-                "content-surface-template-id" => *content_surface_template_id = parsed(value)?,
-                "content-width-exact" => *content_width_exact = parsed(value)?,
-                "content-min-width" => *content_min_width = parsed(value)?,
-                "width" => *width = parsed(value)?,
-                "min-width" => *min_width = parsed(value)?,
-                "max-width" => *max_width = parsed(value)?,
-                "height" => *height = parsed(value)?,
-                "min-height" => *min_height = parsed(value)?,
-                "max-height" => *max_height = parsed(value)?,
-                "box-sizing" => *box_sizing = parsed(value)?,
-                "padding-left" => *padding_left = parsed(value)?,
-                "padding-right" => *padding_right = parsed(value)?,
-                "padding-top" => *padding_top = parsed(value)?,
-                "padding-bottom" => *padding_bottom = parsed(value)?,
-                "margin-left" => *margin_left = parsed(value)?,
-                "margin-right" => *margin_right = parsed(value)?,
-                "margin-top" => *margin_top = parsed(value)?,
-                "margin-bottom" => *margin_bottom = parsed(value)?,
-                "border-left" => *border_left = parsed(value)?,
-                "border-right" => *border_right = parsed(value)?,
-                "typography-style" => *typography_style = parsed(value)?,
-                "foreground-style" => *foreground_style = parsed(value)?,
-                "background-style" => *background_style = parsed(value)?,
-                "border-left-style" => *border_left_style = parsed(value)?,
-                "border-right-style" => *border_right_style = parsed(value)?,
-                "border-top-style" => *border_top_style = parsed(value)?,
-                "border-bottom-style" => *border_bottom_style = parsed(value)?,
-                "surface-template-id" => *surface_template_id = parsed(value)?,
-                "text-align" => *text_align = parsed(value)?,
-                "vertical-align" => *vertical_align = parsed(value)?,
-                "overflow" => *overflow = parsed(value)?,
-                "wrap-mode" => *wrap_mode = parsed(value)?,
-                "scroll-offset" => *scroll_offset = parsed(value)?,
+                "region-id" => assign!(Box, region_id, RegionId),
+                "content" => assign!(
+                    Box,
+                    content,
+                    Content,
+                    same_optional_content_source,
+                    parsed::<Option<MeasuredText>>(value)?.map(Arc::new)
+                ),
+                "content-region-id" => assign!(Box, content_region_id, ContentRegionId),
+                "content-typography-style" => {
+                    assign!(Box, content_typography_style, ContentTypographyStyle)
+                }
+                "content-foreground-style" => {
+                    assign!(Box, content_foreground_style, ContentForegroundStyle)
+                }
+                "content-surface-template-id" => {
+                    assign!(Box, content_surface_template_id, ContentSurfaceTemplateId)
+                }
+                "content-width-exact" => assign!(Box, content_width_exact, ContentWidthExact),
+                "content-min-width" => assign!(Box, content_min_width, ContentMinWidth),
+                "width" => assign!(Box, width, Width, same_size_source),
+                "min-width" => assign!(Box, min_width, MinWidth, same_size_source),
+                "max-width" => assign!(Box, max_width, MaxWidth, same_size_source),
+                "height" => assign!(Box, height, Height, same_size_source),
+                "min-height" => assign!(Box, min_height, MinHeight, same_size_source),
+                "max-height" => assign!(Box, max_height, MaxHeight, same_size_source),
+                "box-sizing" => assign!(Box, box_sizing, BoxSizing),
+                "padding-left" => assign!(Box, padding_left, PaddingLeft),
+                "padding-right" => assign!(Box, padding_right, PaddingRight),
+                "padding-top" => assign!(Box, padding_top, PaddingTop),
+                "padding-bottom" => assign!(Box, padding_bottom, PaddingBottom),
+                "margin-left" => assign!(Box, margin_left, MarginLeft),
+                "margin-right" => assign!(Box, margin_right, MarginRight),
+                "margin-top" => assign!(Box, margin_top, MarginTop),
+                "margin-bottom" => assign!(Box, margin_bottom, MarginBottom),
+                "border-left" => assign!(Box, border_left, BorderLeft),
+                "border-right" => assign!(Box, border_right, BorderRight),
+                "typography-style" => assign!(Box, typography_style, TypographyStyle),
+                "foreground-style" => assign!(Box, foreground_style, ForegroundStyle),
+                "background-style" => assign!(Box, background_style, BackgroundStyle),
+                "border-left-style" => assign!(Box, border_left_style, BorderLeftStyle),
+                "border-right-style" => assign!(Box, border_right_style, BorderRightStyle),
+                "border-top-style" => assign!(Box, border_top_style, BorderTopStyle),
+                "border-bottom-style" => assign!(Box, border_bottom_style, BorderBottomStyle),
+                "surface-template-id" => assign!(Box, surface_template_id, SurfaceTemplateId),
+                "text-align" => assign!(Box, text_align, TextAlign),
+                "vertical-align" => assign!(Box, vertical_align, VerticalAlign),
+                "overflow" => assign!(Box, overflow, Overflow),
+                "wrap-mode" => assign!(Box, wrap_mode, WrapMode),
+                "scroll-offset" => assign!(Box, scroll_offset, ScrollOffset),
                 _ => return Err(format!("Unsupported native retained box field {name}")),
             },
             LayoutNode::Text {
@@ -728,12 +1088,18 @@ fn patch_local_node(
                 wrap_mode,
                 ..
             } => match name.as_str() {
-                "region-id" => *region_id = parsed(value)?,
-                "content" => *content = Arc::new(parsed(value)?),
-                "typography-style" => *typography_style = parsed(value)?,
-                "foreground-style" => *foreground_style = parsed(value)?,
-                "surface-template-id" => *surface_template_id = parsed(value)?,
-                "wrap-mode" => *wrap_mode = parsed(value)?,
+                "region-id" => assign!(Text, region_id, RegionId),
+                "content" => assign!(
+                    Text,
+                    content,
+                    Content,
+                    same_text_source,
+                    Arc::new(parsed(value)?)
+                ),
+                "typography-style" => assign!(Text, typography_style, TypographyStyle),
+                "foreground-style" => assign!(Text, foreground_style, ForegroundStyle),
+                "surface-template-id" => assign!(Text, surface_template_id, SurfaceTemplateId),
+                "wrap-mode" => assign!(Text, wrap_mode, WrapMode),
                 _ => return Err(format!("Unsupported native retained text field {name}")),
             },
             LayoutNode::Flex {
@@ -748,15 +1114,15 @@ fn patch_local_node(
                 column_gap,
                 ..
             } => match name.as_str() {
-                "direction" => *direction = parsed(value)?,
-                "wrap" => *wrap = parsed(value)?,
-                "justify" => *justify = parsed(value)?,
-                "align-items" => *align_items = parsed(value)?,
-                "align-content" => *align_content = parsed(value)?,
-                "width" => *width = parsed(value)?,
-                "height" => *height = parsed(value)?,
-                "row-gap" => *row_gap = parsed(value)?,
-                "column-gap" => *column_gap = parsed(value)?,
+                "direction" => assign!(Flex, direction, Direction),
+                "wrap" => assign!(Flex, wrap, Wrap),
+                "justify" => assign!(Flex, justify, Justify),
+                "align-items" => assign!(Flex, align_items, AlignItems),
+                "align-content" => assign!(Flex, align_content, AlignContent),
+                "width" => assign!(Flex, width, Width, same_size_source),
+                "height" => assign!(Flex, height, Height, same_size_source),
+                "row-gap" => assign!(Flex, row_gap, RowGap),
+                "column-gap" => assign!(Flex, column_gap, ColumnGap),
                 _ => return Err(format!("Unsupported native retained flex field {name}")),
             },
             LayoutNode::Row { .. } | LayoutNode::Column { .. } => {
@@ -767,7 +1133,93 @@ fn patch_local_node(
             }
         }
     }
-    Ok(output)
+    Ok(PatchedLocal {
+        node: output,
+        fields: changed_fields,
+    })
+}
+
+fn same_scalar_source<T: PartialEq>(base: &T, target: &T, _: &mut SourceChangeWork) -> bool {
+    base == target
+}
+
+fn same_size_source(base: &Size, target: &Size, work: &mut SourceChangeWork) -> bool {
+    work.size_nodes_compared += 1;
+    match (base, target) {
+        (Size::Pixels { value: left }, Size::Pixels { value: right })
+        | (Size::Lines { value: left }, Size::Lines { value: right }) => left == right,
+        (Size::FitContent { limit: left }, Size::FitContent { limit: right }) => {
+            match (left, right) {
+                (None, None) => true,
+                (Some(left), Some(right)) => same_size_source(left, right, work),
+                _ => false,
+            }
+        }
+        (Size::Add { values: left }, Size::Add { values: right })
+        | (Size::Subtract { values: left }, Size::Subtract { values: right }) => {
+            left.0.len() == right.0.len()
+                && left
+                    .0
+                    .iter()
+                    .zip(right.0.iter())
+                    .all(|(left, right)| same_size_source(left, right, work))
+        }
+        (Size::Auto, Size::Auto)
+        | (Size::Content, Size::Content)
+        | (Size::None, Size::None)
+        | (Size::Viewport, Size::Viewport)
+        | (Size::ViewportHeight, Size::ViewportHeight)
+        | (Size::MinContent, Size::MinContent)
+        | (Size::MaxContent, Size::MaxContent)
+        | (Size::Stretch, Size::Stretch)
+        | (Size::Contain, Size::Contain) => true,
+        _ => false,
+    }
+}
+
+fn same_optional_content_source(
+    base: &Option<Arc<MeasuredText>>,
+    target: &Option<Arc<MeasuredText>>,
+    work: &mut SourceChangeWork,
+) -> bool {
+    match (base, target) {
+        (None, None) => true,
+        (Some(base), Some(target)) => same_text_source(base, target, work),
+        _ => false,
+    }
+}
+
+fn same_text_source(
+    base: &MeasuredText,
+    target: &MeasuredText,
+    work: &mut SourceChangeWork,
+) -> bool {
+    base.lines.len() == target.lines.len()
+        && base.lines.iter().zip(&target.lines).all(|(left, right)| {
+            work.text_lines_compared += 1;
+            left.clusters.len() == right.clusters.len()
+                && left
+                    .clusters
+                    .iter()
+                    .zip(&right.clusters)
+                    .all(|(left, right)| {
+                        work.text_clusters_compared += 1;
+                        left.width == right.width
+                            && left.cjk == right.cjk
+                            && left.space == right.space
+                            && left.pixel_space == right.pixel_space
+                            && left.source_template_id == right.source_template_id
+                            && left.text.len() == right.text.len()
+                            && left
+                                .text
+                                .bytes()
+                                .zip(right.text.bytes())
+                                .all(|(left, right)| {
+                                    work.text_bytes_compared += 1;
+                                    left == right
+                                })
+                    })
+        })
 }
 
 fn measured_text_work(text: &MeasuredText, property_template_count: u32) -> Result<usize, String> {
@@ -802,6 +1254,28 @@ fn size_work(size: &Size) -> Result<usize, String> {
     let mut work = 0;
     add_vertical_size_work(size, &mut work)?;
     Ok(work)
+}
+
+fn context_size_occurrences(size: &Size) -> Result<usize, String> {
+    let mut count = 0_usize;
+    visit_context_size_occurrences(size, &mut || {
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+fn context_field_occurrences(node: &LayoutNode, name: &str) -> Result<usize, String> {
+    let mut count = 0;
+    visit_context_height_fields(node, |field, size| {
+        if field == name {
+            count = context_size_occurrences(size)?;
+        }
+        Ok(())
+    })?;
+    Ok(count)
 }
 
 fn field_work(node: &LayoutNode, name: &str) -> Result<Option<usize>, String> {
@@ -854,31 +1328,52 @@ fn local_work_summary(node: &LayoutNode) -> Result<LocalWorkSummary, String> {
     let mut values = BTreeMap::new();
     for name in FIELDS {
         if let Some(value) = field_work(node, name)? {
-            values.insert(name, value);
+            values.insert(
+                name,
+                LocalFieldWork {
+                    units: value,
+                    viewport_heights: context_field_occurrences(node, name)?,
+                },
+            );
         }
     }
     Ok(LocalWorkSummary(values))
 }
 
 impl LocalWorkSummary {
-    fn changed_work(&self, fields: &JsonMap<String, JsonValue>) -> usize {
+    fn changed_work(&self, fields: &[(LocalField, &str)]) -> usize {
         fields
-            .keys()
-            .filter_map(|name| self.0.get(name.as_str()))
-            .copied()
+            .iter()
+            .filter_map(|(_, name)| self.0.get(name))
+            .map(|work| work.units)
+            .sum()
+    }
+
+    fn changed_context_occurrences(&self, fields: &[(LocalField, &str)]) -> i128 {
+        fields
+            .iter()
+            .filter_map(|(_, name)| self.0.get(name))
+            .map(|work| work.viewport_heights as i128)
             .sum()
     }
 
     fn updated(
-        &self,
+        self: &Arc<Self>,
         node: &LayoutNode,
-        fields: &JsonMap<String, JsonValue>,
-    ) -> Result<Self, String> {
-        let mut output = self.clone();
-        for name in fields.keys() {
+        fields: &[(LocalField, &str)],
+    ) -> Result<Arc<Self>, String> {
+        let mut output = Arc::clone(self);
+        for (_, name) in fields {
             if let Some(value) = field_work(node, name)? {
-                output.0.insert(
-                    match name.as_str() {
+                let value = LocalFieldWork {
+                    units: value,
+                    viewport_heights: context_field_occurrences(node, name)?,
+                };
+                if output.0.get(name) == Some(&value) {
+                    continue;
+                }
+                Arc::make_mut(&mut output).0.insert(
+                    match *name {
                         "content" => "content",
                         "height" => "height",
                         "min-height" => "min-height",
@@ -1504,23 +1999,27 @@ enum Atom {
 
 #[derive(Debug, Clone, Default)]
 struct Line {
-    atoms: Vec<Atom>,
+    atoms: AtomPlan,
     width: i64,
 }
 
 impl Line {
     fn from_clusters(clusters: &[MeasuredCluster]) -> Self {
-        let mut line = Self::default();
+        let mut atoms = Vec::with_capacity(clusters.len());
         for cluster in clusters {
             let properties = AtomProperties {
                 property_template_ids: cluster.source_template_id.into_iter().collect(),
                 ..AtomProperties::default()
             };
             if cluster.pixel_space {
-                line.push_space_with_properties(cluster.width, properties);
+                if cluster.width > 0 {
+                    atoms.push(Atom::Space {
+                        width: cluster.width,
+                        properties,
+                    });
+                }
             } else {
-                line.width += cluster.width;
-                line.atoms.push(Atom::Text {
+                atoms.push(Atom::Text {
                     text: cluster.text.clone(),
                     width: cluster.width,
                     cjk: cluster.cjk,
@@ -1529,13 +2028,18 @@ impl Line {
                 });
             }
         }
-        line
+        let atoms = AtomPlan::from_owned_atoms(atoms);
+        Self {
+            width: atoms.width(),
+            atoms,
+        }
     }
 
     fn from_atoms(atoms: &[Atom]) -> Self {
+        let atoms = AtomPlan::from_atoms(atoms);
         Self {
-            atoms: atoms.to_vec(),
-            width: atoms.iter().map(Atom::width).sum(),
+            width: atoms.width(),
+            atoms,
         }
     }
 
@@ -1548,7 +2052,7 @@ impl Line {
             return;
         }
         self.width += width;
-        self.atoms.push(Atom::Space { width, properties });
+        self.atoms = self.atoms.push(Atom::Space { width, properties });
     }
 
     fn prepend_space(&mut self, width: i64) {
@@ -1560,12 +2064,12 @@ impl Line {
             return;
         }
         self.width += width;
-        self.atoms.insert(0, Atom::Space { width, properties });
+        self.atoms = self.atoms.prepend(Atom::Space { width, properties });
     }
 
     fn append(&mut self, other: &Self) {
         self.width += other.width;
-        self.atoms.extend(other.atoms.iter().cloned());
+        self.atoms = self.atoms.append(&other.atoms);
     }
 
     fn padded(mut self, target: i64, align: HorizontalAlign) -> Self {
@@ -1593,63 +2097,23 @@ impl Line {
     }
 
     fn whitespace_only(&self) -> bool {
-        self.atoms.iter().all(|atom| match atom {
-            Atom::Space { .. } => true,
-            Atom::Text { text, .. } => text.trim().is_empty(),
-        })
+        self.atoms.whitespace_only()
     }
 
     fn has_noncontent_properties(&self) -> bool {
-        self.atoms.iter().any(|atom| {
-            let properties = atom.properties();
-            !properties.style_ids.is_empty()
-                || !properties.roles.is_empty()
-                || !properties.property_template_ids.is_empty()
-        })
+        self.atoms.has_noncontent_properties()
     }
 
     fn own_content(&mut self, region_id: i64, content_idx: i64) {
-        let has_owner = self
-            .atoms
-            .iter()
-            .any(|atom| atom.properties().owner.is_some() || !atom.properties().owners.is_empty());
-        for atom in &mut self.atoms {
-            let properties = atom.properties_mut();
-            if has_owner {
-                let mut owners = properties.owners.clone();
-                if let Some(owner) = properties.owner {
-                    if !owners.contains(&owner) {
-                        owners.push(owner);
-                    }
-                }
-                if !owners.contains(&region_id) {
-                    owners.push(region_id);
-                }
-                properties.owner = Some(region_id);
-                properties.owners = owners;
-            } else {
-                properties.owner = Some(region_id);
-                properties.owners = vec![region_id];
-            }
-        }
-        let has_content = self
-            .atoms
-            .iter()
-            .any(|atom| atom.properties().content.is_some());
-        if !has_content {
-            for atom in &mut self.atoms {
-                let properties = atom.properties_mut();
-                properties.content = Some(region_id);
-                properties.content_idx = Some(content_idx);
-            }
-        }
+        self.atoms = self.atoms.own_content(region_id, content_idx);
     }
 
     fn collapse_whitespace_content(self, width: i64, region_id: i64) -> Self {
         if !self.whitespace_only() || self.has_noncontent_properties() {
             return self;
         }
-        let first = self.atoms.first().map(Atom::properties);
+        let first_atom = self.atoms.first();
+        let first = first_atom.as_ref().map(Atom::properties);
         let mut properties = AtomProperties {
             content: first
                 .and_then(|properties| properties.content)
@@ -1670,28 +2134,18 @@ impl Line {
 
     fn apply_style(&mut self, style_id: Option<u32>) {
         if let Some(style_id) = style_id {
-            for atom in &mut self.atoms {
-                atom.properties_mut().style_ids.push(style_id);
-            }
+            self.atoms = self.atoms.apply_style(style_id);
         }
     }
 
     fn apply_property_template(&mut self, template_id: Option<u32>) {
         if let Some(template_id) = template_id {
-            for atom in &mut self.atoms {
-                atom.properties_mut()
-                    .property_template_ids
-                    .push(template_id);
-            }
+            self.atoms = self.atoms.apply_template(template_id);
         }
     }
 
     fn apply_role(&mut self, role: RegionRole, region_id: i64) {
-        for atom in &mut self.atoms {
-            atom.properties_mut()
-                .roles
-                .push(RegionRoleEntry { role, region_id });
-        }
+        self.atoms = self.atoms.apply_role(role, region_id);
     }
 }
 
@@ -1736,97 +2190,113 @@ impl Atom {
 
 #[derive(Debug, Clone)]
 struct Rendered {
-    lines: Vec<Line>,
-    breaks: Vec<AtomProperties>,
+    lines: LinePlan,
+    root_scroll: Option<Arc<RootScrollPlan>>,
+    own_scroll_owner: bool,
+    scroll_owners: u8,
+}
+
+#[derive(Debug)]
+pub(crate) struct RootScrollPlan {
+    region_id: i64,
+    full_content: LinePlan,
+    rendered_content: LinePlan,
+    visible_height: i64,
+    effective_offset: i64,
+    text_input: Option<RootTextInput>,
+}
+
+#[derive(Debug)]
+struct RootTextInput {
+    source: Arc<MeasuredText>,
+    width: i64,
+    wrap: WrapMode,
+    region: Option<i64>,
+    styles: [Option<u32>; 3],
+    lines: LinePlan,
 }
 
 impl Rendered {
     fn from_lines(lines: Vec<Line>) -> Self {
-        let breaks = vec![AtomProperties::default(); lines.len().saturating_sub(1)];
-        Self { lines, breaks }
+        Self {
+            lines: LinePlan::from_lines(lines),
+            root_scroll: None,
+            own_scroll_owner: false,
+            scroll_owners: 0,
+        }
+    }
+
+    fn from_line_plan(lines: LinePlan) -> Self {
+        Self {
+            lines,
+            root_scroll: None,
+            own_scroll_owner: false,
+            scroll_owners: 0,
+        }
     }
 
     fn first_width(&self) -> i64 {
-        self.lines.first().map_or(0, |line| line.width)
+        self.lines.first_width()
     }
 
     fn max_width(&self) -> i64 {
-        self.lines.iter().map(|line| line.width).max().unwrap_or(0)
+        self.lines.max_width()
     }
 
     fn min_content_width(&self, wrap_mode: WrapMode) -> i64 {
         if wrap_mode == WrapMode::None {
             return self.max_width();
         }
-        self.lines
-            .iter()
-            .map(|line| {
-                let mut maximum = 0;
-                let mut run = 0;
-                for atom in &line.atoms {
-                    if atom.wrap_space() {
-                        maximum = maximum.max(run);
-                        run = 0;
-                    } else if atom.wrap_cjk() {
-                        maximum = maximum.max(run).max(atom.width());
-                        run = 0;
-                    } else {
-                        run += atom.width();
-                    }
-                }
-                maximum.max(run)
-            })
-            .max()
-            .unwrap_or(0)
+        self.lines.min_content_width()
     }
 
     fn height(&self) -> i64 {
-        self.lines.len() as i64
+        self.lines.height()
     }
 
+    #[cfg(test)]
     fn apply_scroll_window(&mut self, region_id: i64) {
-        for line in &mut self.lines {
-            for atom in &mut line.atoms {
-                atom.properties_mut().scroll_window = Some(region_id);
-            }
-        }
-        for properties in &mut self.breaks {
-            properties.scroll_window = Some(region_id);
-        }
+        self.lines = ProjectionState::new(
+            self.lines.clone(),
+            Arc::from([LineOp::ScrollWindow(region_id)]),
+        )
+        .plan()
+        .clone();
     }
 
     fn into_tape(self, style_count: u32) -> LayoutTape {
-        let last_line = self.lines.len().saturating_sub(1);
-        let mut breaks = self.breaks.into_iter();
+        line_plan::record_materialized(self.lines.len(), self.lines.prefix_chars(self.lines.len()));
         LayoutTape {
             style_count,
             lines: self
                 .lines
-                .into_iter()
-                .enumerate()
-                .map(|(index, line)| TapeLine {
-                    width: line.width,
-                    atoms: line
-                        .atoms
-                        .into_iter()
-                        .map(|atom| match atom {
-                            Atom::Text {
-                                text,
-                                width,
-                                properties,
-                                ..
-                            } => TapeAtom::Text {
-                                text,
-                                width,
-                                properties,
-                            },
-                            Atom::Space { width, properties } => {
-                                TapeAtom::Space { width, properties }
-                            }
-                        })
-                        .collect(),
-                    break_after: (index < last_line)
-                        .then(|| breaks.next().expect("rendered break invariant")),
+                .iter_with_breaks()
+                .map(|(view, break_after)| {
+                    let line = view.materialize();
+                    TapeLine {
+                        width: view.width(),
+                        atoms: line
+                            .atoms
+                            .to_vec()
+                            .into_iter()
+                            .map(|atom| match atom {
+                                Atom::Text {
+                                    text,
+                                    width,
+                                    properties,
+                                    ..
+                                } => TapeAtom::Text {
+                                    text,
+                                    width,
+                                    properties,
+                                },
+                                Atom::Space { width, properties } => {
+                                    TapeAtom::Space { width, properties }
+                                }
+                            })
+                            .collect(),
+                        break_after: break_after.map(|view| view.materialize().into_owned()),
+                    }
                 })
                 .collect(),
         }
@@ -3081,6 +3551,79 @@ struct RootMetadataPayload {
     fragment_count: usize,
 }
 
+fn append_scroll_metadata(
+    payload: &mut Option<RootMetadataPayload>,
+    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
+    styles: &[CompiledStyle],
+    style_count: u32,
+    max_bytes: usize,
+) -> Result<(), String> {
+    let (Some(payload), Some((scroll, base))) = (payload.as_mut(), scroll) else {
+        return Ok(());
+    };
+    let mut effect = format!(
+        " :root-scroll-producer [{} {} {} {} ",
+        scroll.region_id,
+        scroll.full_content.len(),
+        scroll.visible_height,
+        scroll.effective_offset
+    );
+    let inactive = scroll.full_content.len() as i64 <= scroll.visible_height;
+    let reused = !inactive
+        && base.is_some_and(|base| {
+            base.region_id == scroll.region_id
+                && base.full_content.len() as i64 > base.visible_height
+                && base.full_content.ptr_eq(&scroll.full_content)
+                && base.rendered_content.ptr_eq(&scroll.rendered_content)
+        });
+    if inactive {
+        // The receiver needs only geometry to retire its active scroll state.
+        // Keep the complete plans in this frame for a later clipped request.
+        effect.push_str(":inactive :inactive ");
+    } else if reused {
+        effect.push_str(":reuse :reuse ");
+        evaluation::record(EvalWork {
+            scroll_producer_reuses: 1,
+            ..EvalWork::default()
+        });
+    } else {
+        for plan in [&scroll.full_content, &scroll.rendered_content] {
+            evaluation::record(EvalWork {
+                scroll_producer_lines_encoded: plan.len() as u64,
+                scroll_producer_chars_encoded: plan.prefix_chars(plan.len()),
+                ..EvalWork::default()
+            });
+            let tape = Rendered::from_line_plan(plan.clone()).into_tape(style_count);
+            let flat = flatten_layout_tape(tape, true)?;
+            let (text, spaces, properties) = tape_character_encoding_parts(&flat.characters)?;
+            let literal = encode_lisp_literal(
+                &text,
+                &spaces,
+                &properties,
+                styles,
+                flat.characters.len() as u64,
+                max_bytes,
+            )?;
+            // Each nested literal has its own read-circle label namespace.
+            push_lisp_string(&mut effect, &literal);
+            effect.push(' ');
+        }
+    }
+    effect.push_str("])");
+    payload.literal.pop();
+    payload.literal.push_str(&effect);
+    payload.record_count += 1;
+    if payload
+        .literal
+        .len()
+        .saturating_add(payload.fragment_bytes.len())
+        > max_bytes
+    {
+        return Err("Native scroll producer exceeds its byte limit".to_owned());
+    }
+    Ok(())
+}
+
 fn metadata_role_symbol(kind: u8) -> Option<&'static str> {
     match kind {
         METADATA_ROLE_CONTENT => Some("content"),
@@ -3545,6 +4088,7 @@ fn build_emacs_commit_batch(
     complete: bool,
     root_metadata: bool,
     max_bytes: usize,
+    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
 ) -> Result<EmacsCommitBatch, String> {
     let core = tape_commit_batch(&old.characters, &target.characters);
     let publication_edits = coalesce_publication_edits(&core.semantic_edits);
@@ -3569,6 +4113,13 @@ fn build_emacs_commit_batch(
         &target_property_spans,
         complete,
         root_metadata,
+        payload_limit,
+    )?;
+    append_scroll_metadata(
+        &mut metadata_payload,
+        scroll,
+        compiled_styles,
+        target.style_count,
         payload_limit,
     )?;
     let old_fragments = if metadata_payload.is_some() {
@@ -3651,6 +4202,7 @@ fn build_emacs_commit_batch(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn encode_layout_patch_tape(
     old_tape: LayoutTape,
     target_tape: LayoutTape,
@@ -3658,6 +4210,26 @@ pub(crate) fn encode_layout_patch_tape(
     identity: TapeIdentity,
     root_metadata: bool,
     max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    encode_layout_patch_tape_with_scroll(
+        old_tape,
+        target_tape,
+        styles,
+        identity,
+        root_metadata,
+        max_bytes,
+        None,
+    )
+}
+
+pub(crate) fn encode_layout_patch_tape_with_scroll(
+    old_tape: LayoutTape,
+    target_tape: LayoutTape,
+    styles: &[StyleTemplate],
+    identity: TapeIdentity,
+    root_metadata: bool,
+    max_bytes: usize,
+    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
 ) -> Result<Vec<u8>, String> {
     let old = flatten_layout_tape(old_tape, identity.complete)?;
     let target = flatten_layout_tape(target_tape, identity.complete)?;
@@ -3675,6 +4247,7 @@ pub(crate) fn encode_layout_patch_tape(
         identity.complete,
         root_metadata,
         max_bytes,
+        scroll.filter(|_| identity.complete),
     )?;
     let patch_count = count_u32(batch.publication_edits.len(), "patches")?;
     let coordinate_patch_count =
@@ -3738,12 +4311,24 @@ pub(crate) fn encode_layout_patch_tape(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn encode_layout_tape(
     tape: LayoutTape,
     styles: &[StyleTemplate],
     identity: TapeIdentity,
     root_metadata: bool,
     max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    encode_layout_tape_with_scroll(tape, styles, identity, root_metadata, max_bytes, None)
+}
+
+pub(crate) fn encode_layout_tape_with_scroll(
+    tape: LayoutTape,
+    styles: &[StyleTemplate],
+    identity: TapeIdentity,
+    root_metadata: bool,
+    max_bytes: usize,
+    scroll: Option<&RootScrollPlan>,
 ) -> Result<Vec<u8>, String> {
     if tape.lines.is_empty() {
         return Err("Native layout tape has no lines".to_owned());
@@ -3853,12 +4438,21 @@ pub(crate) fn encode_layout_tape(
         .checked_sub(TAPE_HEADER_LEN)
         .and_then(|remaining| remaining.checked_sub(fixed_body_bytes))
         .ok_or_else(|| "Native layout tape exceeds its byte limit".to_owned())?;
-    let metadata_payload = root_metadata_payload(
+    let mut metadata_payload = root_metadata_payload(
         &text,
         &spaces,
         &property_spans,
         identity.complete,
         root_metadata,
+        metadata_limit,
+    )?;
+    append_scroll_metadata(
+        &mut metadata_payload,
+        scroll
+            .filter(|_| identity.complete)
+            .map(|scroll| (scroll, None)),
+        &compiled_styles,
+        tape.style_count,
         metadata_limit,
     )?;
     let metadata_bytes = metadata_payload
@@ -4027,51 +4621,19 @@ impl LayoutDocument {
 
 impl RetainedDocument {
     pub(crate) fn validate_context(&self, context: LayoutContext) -> Result<(), String> {
-        fn add_retained_context_work(
-            node: &LayoutNode,
-            document: &RetainedDocument,
-            context: LayoutContext,
-            work_units: &mut usize,
-        ) -> Result<(), String> {
-            let node = document.resolve(node)?;
-            match node {
-                LayoutNode::NodeRef { .. } => unreachable!("resolver returned a node reference"),
-                LayoutNode::Text { .. } => {}
-                LayoutNode::Box {
-                    child,
-                    height,
-                    min_height,
-                    max_height,
-                    ..
-                } => {
-                    for size in [height, min_height, max_height] {
-                        add_context_size_work(size, context, work_units)?;
-                    }
-                    if let Some(child) = child {
-                        add_retained_context_work(child, document, context, work_units)?;
-                    }
-                }
-                LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
-                    for child in children.iter() {
-                        add_retained_context_work(child, document, context, work_units)?;
-                    }
-                }
-                LayoutNode::Flex { height, items, .. } => {
-                    add_context_size_work(height, context, work_units)?;
-                    for item in items.iter() {
-                        add_retained_context_work(&item.node, document, context, work_units)?;
-                    }
-                }
-            }
+        // Bootstrap establishes the root/reference invariant and deltas cannot
+        // change topology. The full traversal adds the same nonnegative amount
+        // for every occurrence, stopping at the work limit before a later add
+        // could overflow. Division preserves that error without multiplying.
+        if self.context_viewport_heights == 0 {
+            return Ok(());
+        }
+        let height = usize::try_from(context.viewport_height).unwrap_or(usize::MAX);
+        if height > MAX_LAYOUT_WORK_UNITS / self.context_viewport_heights {
+            Err("Native layout exceeds the work-unit limit".to_owned())
+        } else {
             Ok(())
         }
-
-        let root = self
-            .effective_node(self.root_id)
-            .ok_or_else(|| "Native retained document lost its root".to_owned())?;
-        RESOLVER_LOOKUP_COUNT.with(|count| count.set(count.get().saturating_add(1)));
-        let mut work_units = 0;
-        add_retained_context_work(root, self, context, &mut work_units)
     }
 
     pub(crate) fn layout_tape(
@@ -4145,22 +4707,17 @@ fn add_vertical_size_work(size: &Size, work_units: &mut usize) -> Result<(), Str
     }
 }
 
-fn add_context_size_work(
+fn visit_context_size_occurrences(
     size: &Size,
-    context: LayoutContext,
-    work_units: &mut usize,
+    visit: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
+    // Validation work adds every operand, including subtraction operands.
     match size {
-        Size::ViewportHeight => add_work_units(
-            work_units,
-            usize::try_from(context.viewport_height).unwrap_or(usize::MAX),
-        ),
-        Size::FitContent { limit: Some(limit) } => {
-            add_context_size_work(limit, context, work_units)
-        }
+        Size::ViewportHeight => visit(),
+        Size::FitContent { limit: Some(limit) } => visit_context_size_occurrences(limit, visit),
         Size::Add { values } | Size::Subtract { values } => {
             for value in &values.0 {
-                add_context_size_work(value, context, work_units)?;
+                visit_context_size_occurrences(value, visit)?;
             }
             Ok(())
         }
@@ -4168,26 +4725,58 @@ fn add_context_size_work(
     }
 }
 
-fn add_context_work(
-    node: &LayoutNode,
+fn add_context_size_work(
+    size: &Size,
     context: LayoutContext,
     work_units: &mut usize,
 ) -> Result<(), String> {
+    visit_context_size_occurrences(size, &mut || {
+        add_work_units(
+            work_units,
+            usize::try_from(context.viewport_height).unwrap_or(usize::MAX),
+        )
+    })
+}
+
+fn visit_context_height_fields(
+    node: &LayoutNode,
+    mut visit: impl FnMut(&'static str, &Size) -> Result<(), String>,
+) -> Result<(), String> {
     match node {
-        LayoutNode::NodeRef { .. } => {
-            return Err("Native full layout cannot contain a node reference".to_owned());
-        }
-        LayoutNode::Text { .. } => {}
         LayoutNode::Box {
-            child,
             height,
             min_height,
             max_height,
             ..
         } => {
-            for size in [height, min_height, max_height] {
-                add_context_size_work(size, context, work_units)?;
+            for (name, size) in [
+                ("height", height),
+                ("min-height", min_height),
+                ("max-height", max_height),
+            ] {
+                visit(name, size)?;
             }
+        }
+        LayoutNode::Flex { height, .. } => visit("height", height)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn add_context_work(
+    node: &LayoutNode,
+    context: LayoutContext,
+    work_units: &mut usize,
+) -> Result<(), String> {
+    visit_context_height_fields(node, |_, size| {
+        add_context_size_work(size, context, work_units)
+    })?;
+    match node {
+        LayoutNode::NodeRef { .. } => {
+            return Err("Native full layout cannot contain a node reference".to_owned());
+        }
+        LayoutNode::Text { .. } => {}
+        LayoutNode::Box { child, .. } => {
             if let Some(child) = child {
                 add_context_work(child, context, work_units)?;
             }
@@ -4197,8 +4786,7 @@ fn add_context_work(
                 add_context_work(child, context, work_units)?;
             }
         }
-        LayoutNode::Flex { height, items, .. } => {
-            add_context_size_work(height, context, work_units)?;
+        LayoutNode::Flex { items, .. } => {
             for item in items.iter() {
                 add_context_work(&item.node, context, work_units)?;
             }
@@ -4949,10 +5537,12 @@ fn wrap_rendered_line(line: &Line, max_width: i64, mode: WrapMode) -> Vec<Line> 
         return vec![Line::default()];
     }
     if mode == WrapMode::None || line.width <= max_width {
-        return vec![line.clone()];
+        return vec![line_plan::clone_line(line)];
     }
 
-    let atoms = &line.atoms;
+    // Wrapping inspects the actual atom boundaries. Composition and decoration
+    // preserve the plan; only this geometry-dependent operation materializes it.
+    let atoms = line.atoms.to_vec();
     let count = atoms.len();
     let mut ranges = Vec::new();
     let mut line_start = 0;
@@ -5033,34 +5623,21 @@ fn wrap_rendered(rendered: Rendered, max_width: i64, mode: WrapMode) -> Rendered
     if mode == WrapMode::None {
         return rendered;
     }
-    let original_breaks = rendered.breaks;
-    let mut lines = Vec::new();
-    let mut breaks = Vec::new();
-    for (line_index, line) in rendered.lines.into_iter().enumerate() {
-        for (piece_index, piece) in wrap_rendered_line(&line, max_width, mode)
-            .into_iter()
-            .enumerate()
-        {
-            if !lines.is_empty() {
-                breaks.push(if piece_index == 0 {
-                    original_breaks[line_index - 1].clone()
-                } else {
-                    AtomProperties::default()
-                });
-            }
-            lines.push(piece);
-        }
+    let mut lines = LinePlan::default();
+    let mut joining_break = AtomProperties::default();
+    for (line, break_after) in rendered.lines.iter_with_breaks() {
+        let pieces = LinePlan::from_lines(wrap_rendered_line(&line.materialize(), max_width, mode));
+        lines = lines.concat_with_break(&pieces, joining_break);
+        joining_break = break_after
+            .map(|view| view.materialize().into_owned())
+            .unwrap_or_default();
     }
-    Rendered { lines, breaks }
+    Rendered::from_line_plan(lines)
 }
 
-fn vertical_align(
-    mut lines: Vec<Line>,
-    height: usize,
-    align: VerticalAlign,
-    width: i64,
-) -> Vec<Line> {
-    lines.truncate(height);
+#[cfg(test)]
+fn vertical_align(lines: LinePlan, height: usize, align: VerticalAlign, width: i64) -> LinePlan {
+    let lines = lines.slice(0..lines.len().min(height));
     if lines.len() >= height {
         return lines;
     }
@@ -5070,11 +5647,11 @@ fn vertical_align(
         VerticalAlign::Bottom => rest,
         VerticalAlign::Center => rest / 2,
     };
-    let mut output = Vec::with_capacity(height);
-    output.extend((0..top).map(|_| Line::blank(width)));
-    output.append(&mut lines);
-    output.extend((0..(rest - top)).map(|_| Line::blank(width)));
-    output
+    LinePlan::from_lines((0..top).map(|_| Line::blank(width)))
+        .concat(&lines)
+        .concat(&LinePlan::from_lines(
+            (0..(rest - top)).map(|_| Line::blank(width)),
+        ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5092,6 +5669,7 @@ enum FlexMode {
 #[derive(Debug, Clone)]
 struct FlexRuntimeItem<'a> {
     source: &'a LayoutNode,
+    scope: RenderScope<'a>,
     grow: f64,
     shrink: f64,
     align_self: FlexAlign,
@@ -5202,7 +5780,7 @@ fn box_vertical_side(node: &LayoutNode) -> Option<i64> {
 
 fn box_content_intrinsics(
     node: &LayoutNode,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<Option<(i64, i64)>, String> {
     let LayoutNode::Box {
@@ -5225,7 +5803,10 @@ fn box_content_intrinsics(
         // current inline viewport.  Treating that width as unknown makes
         // responsive descendants collapse to their narrow intrinsic form and
         // produces a different automatic minimum from the visible renderer.
-        let rendered = render_node(child, resolver, context, true)?;
+        let rendered = scope
+            .child(LocalStep::BoxChild, child)
+            .phase(Phase::ContentIntrinsic)
+            .render(context, true, None)?;
         Ok(Some((
             content_min_width.unwrap_or_else(|| rendered.min_content_width(*wrap_mode)),
             rendered.max_width(),
@@ -5239,7 +5820,7 @@ fn flex_box_resolve_width(
     node: &LayoutNode,
     size: &Size,
     fallback: Option<i64>,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<Option<i64>, String> {
     let LayoutNode::Box {
@@ -5254,7 +5835,7 @@ fn flex_box_resolve_width(
         return Ok(fallback);
     };
     let (min_content, max_content) =
-        box_content_intrinsics(node, resolver, context)?.unwrap_or((0, 0));
+        box_content_intrinsics(node, scope, context)?.unwrap_or((0, 0));
     let side = box_horizontal_side(node).unwrap_or(0);
     let stretch = context
         .viewport_width_known
@@ -5303,7 +5884,7 @@ fn flex_min_main(
     source: &LayoutNode,
     rendered: &Rendered,
     axis: FlexAxis,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<i64, String> {
     let LayoutNode::Box {
@@ -5322,17 +5903,27 @@ fn flex_min_main(
     Ok(match axis {
         FlexAxis::Row => {
             let side = box_horizontal_side(source).unwrap_or(0);
-            let declared =
-                flex_box_resolve_width(source, min_width, Some(0), resolver, context)?.unwrap_or(0);
+            let declared = flex_box_resolve_width(
+                source,
+                min_width,
+                Some(0),
+                &scope.phase(Phase::FlexMinWidth),
+                context,
+            )?
+            .unwrap_or(0);
             if *wrap_mode == WrapMode::None {
                 rendered.max_width().max(side + declared)
             } else {
                 let content_min = match content_min_width {
                     Some(content_min_width) => *content_min_width,
                     None => {
-                        box_content_intrinsics(source, resolver, context)?
-                            .unwrap_or((0, 0))
-                            .0
+                        box_content_intrinsics(
+                            source,
+                            &scope.phase(Phase::FlexAutoMinContent),
+                            context,
+                        )?
+                        .unwrap_or((0, 0))
+                        .0
                     }
                 };
                 side + declared.max(content_min)
@@ -5350,7 +5941,7 @@ fn flex_min_main(
 fn flex_max_main(
     source: &LayoutNode,
     axis: FlexAxis,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<Option<i64>, String> {
     let LayoutNode::Box {
@@ -5362,8 +5953,14 @@ fn flex_max_main(
         return Ok(None);
     };
     Ok(match axis {
-        FlexAxis::Row => flex_box_resolve_width(source, max_width, None, resolver, context)?
-            .map(|value| value + box_horizontal_side(source).unwrap_or(0)),
+        FlexAxis::Row => flex_box_resolve_width(
+            source,
+            max_width,
+            None,
+            &scope.phase(Phase::FlexMaxWidth),
+            context,
+        )?
+        .map(|value| value + box_horizontal_side(source).unwrap_or(0)),
         FlexAxis::Column => flex_box_resolve_height(source, max_height, None, context)
             .map(|value| value + box_vertical_side(source).unwrap_or(0)),
     })
@@ -5390,7 +5987,7 @@ fn flex_basis_main(
     rendered: &Rendered,
     axis: FlexAxis,
     basis: &Size,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
 ) -> Result<i64, String> {
     let rendered_main = match axis {
@@ -5403,15 +6000,24 @@ fn flex_basis_main(
     if matches!(basis, Size::Content) {
         if axis == FlexAxis::Row && matches!(source, LayoutNode::Box { .. }) {
             let (_, content_max) =
-                box_content_intrinsics(source, resolver, context)?.unwrap_or((0, 0));
+                box_content_intrinsics(source, &scope.phase(Phase::FlexBasisContent), context)?
+                    .unwrap_or((0, 0));
             return Ok(box_horizontal_side(source).unwrap_or(0) + content_max);
         }
         return Ok(rendered_main);
     }
     if axis == FlexAxis::Row && matches!(source, LayoutNode::Box { .. }) {
-        let (_, content_max) = box_content_intrinsics(source, resolver, context)?.unwrap_or((0, 0));
-        let content = flex_box_resolve_width(source, basis, Some(content_max), resolver, context)?
-            .unwrap_or(content_max);
+        let (_, content_max) =
+            box_content_intrinsics(source, &scope.phase(Phase::FlexBasisContent), context)?
+                .unwrap_or((0, 0));
+        let content = flex_box_resolve_width(
+            source,
+            basis,
+            Some(content_max),
+            &scope.phase(Phase::FlexBasisWidth),
+            context,
+        )?
+        .unwrap_or(content_max);
         return Ok(box_horizontal_side(source).unwrap_or(0) + content);
     }
     Ok(match axis {
@@ -5444,13 +6050,11 @@ fn measure_flex_item<'a>(
     item: &'a FlexItem,
     axis: FlexAxis,
     inline_viewport: Option<i64>,
-    resolver: Option<&'a RetainedDocument>,
+    scope: RenderScope<'a>,
     context: LayoutContext,
 ) -> Result<FlexRuntimeItem<'a>, String> {
-    let source = match resolver {
-        Some(resolver) => resolver.resolve(&item.node)?,
-        None => &item.node,
-    };
+    let scope = scope.resolve()?;
+    let source = scope.view.node;
     let uses_inline_viewport = flex_item_uses_inline_viewport(source);
     let measurement_context = LayoutContext {
         viewport_width: if uses_inline_viewport {
@@ -5462,13 +6066,17 @@ fn measure_flex_item<'a>(
         viewport_height: context.viewport_height,
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
-    let rendered = render_node(source, resolver, measurement_context, uses_inline_viewport)?;
-    let min_main = flex_min_main(source, &rendered, axis, resolver, context)?;
-    let max_main = flex_max_main(source, axis, resolver, context)?;
-    let base = flex_basis_main(source, &rendered, axis, &item.basis, resolver, context)?.max(0);
+    let rendered =
+        scope
+            .phase(Phase::FlexMeasure)
+            .render(measurement_context, uses_inline_viewport, None)?;
+    let min_main = flex_min_main(source, &rendered, axis, &scope, context)?;
+    let max_main = flex_max_main(source, axis, &scope, context)?;
+    let base = flex_basis_main(source, &rendered, axis, &item.basis, &scope, context)?.max(0);
     let hypothetical = flex_clamp_main(base, min_main, max_main);
     Ok(FlexRuntimeItem {
         source,
+        scope,
         grow: item.grow,
         shrink: item.shrink,
         align_self: item.align_self,
@@ -5745,7 +6353,7 @@ fn flex_resolved_align(item: &FlexRuntimeItem<'_>, container: FlexAlign) -> Flex
 }
 
 fn pad_rendered_width(mut rendered: Rendered, width: i64, align: FlexAlign) -> Rendered {
-    for line in &mut rendered.lines {
+    rendered.lines = rendered.lines.map_lines(|_, mut line| {
         let extra = (width - line.width).max(0);
         let left = match align {
             FlexAlign::FlexEnd | FlexAlign::End | FlexAlign::Right | FlexAlign::SelfEnd => extra,
@@ -5754,7 +6362,8 @@ fn pad_rendered_width(mut rendered: Rendered, width: i64, align: FlexAlign) -> R
         };
         line.prepend_space(left);
         line.push_space(extra - left);
-    }
+        line
+    });
     rendered
 }
 
@@ -5812,7 +6421,7 @@ fn render_flex_sized_entry(
     main: i64,
     cross: Option<i64>,
     container_align: FlexAlign,
-    resolver: Option<&RetainedDocument>,
+    phase: Phase,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<FlexSizedEntry, String> {
@@ -5835,13 +6444,10 @@ fn render_flex_sized_entry(
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let override_size = box_override_for_flex(item.source, axis, main, cross, stretch);
-    let mut rendered = render_node_with_override(
-        item.source,
-        resolver,
-        render_context,
-        intrinsic,
-        override_size,
-    )?;
+    let mut rendered = item
+        .scope
+        .phase(phase)
+        .render(render_context, intrinsic, override_size)?;
     match axis {
         FlexAxis::Row => {
             rendered = pad_rendered_width(rendered, main, FlexAlign::FlexStart);
@@ -5881,38 +6487,40 @@ fn concat_horizontal_sized(parts: Vec<(Rendered, i64)>, target_height: i64) -> R
         .max()
         .unwrap_or(1)
         .max(target_height);
-    let mut lines = Vec::with_capacity(height as usize);
-    for index in 0..height as usize {
+    let mut parts = parts
+        .iter()
+        .map(|(rendered, width)| (rendered.lines.iter(), *width))
+        .collect::<Vec<_>>();
+    let lines = LinePlan::from_lines((0..height as usize).map(|_| {
         let mut line = Line::default();
-        for (rendered, width) in &parts {
-            if let Some(part) = rendered.lines.get(index) {
-                line.append(part);
+        for (lines, width) in &mut parts {
+            if let Some(part) = lines.next() {
+                line.append(&part.materialize());
             } else {
                 line.push_space(*width);
             }
         }
-        lines.push(line);
-    }
-    Rendered::from_lines(lines)
+        line
+    }));
+    Rendered::from_line_plan(lines)
 }
 
 fn stack_vertical(parts: Vec<Rendered>) -> Rendered {
-    let mut lines = Vec::new();
-    let mut breaks = Vec::new();
-    for mut part in parts {
-        if part.lines.is_empty() {
-            continue;
+    fn join_parts(parts: &[Rendered]) -> LinePlan {
+        match parts {
+            [] => LinePlan::default(),
+            [part] => part.lines.clone(),
+            _ => {
+                let middle = parts.len() / 2;
+                join_parts(&parts[..middle]).concat(&join_parts(&parts[middle..]))
+            }
         }
-        if !lines.is_empty() {
-            breaks.push(AtomProperties::default());
-        }
-        lines.append(&mut part.lines);
-        breaks.append(&mut part.breaks);
     }
+    let mut lines = join_parts(&parts);
     if lines.is_empty() {
-        lines.push(Line::default());
+        lines = LinePlan::from_lines([Line::default()]);
     }
-    Rendered { lines, breaks }
+    Rendered::from_line_plan(lines)
 }
 
 fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
@@ -5920,25 +6528,9 @@ fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
     let height = usize::try_from(height.max(0)).unwrap_or(0);
     let end = start.saturating_add(height).min(rendered.lines.len());
     if start >= end {
-        return Rendered {
-            lines: Vec::new(),
-            breaks: Vec::new(),
-        };
+        return Rendered::from_line_plan(LinePlan::default());
     }
-    let line_count = end - start;
-    let lines = rendered
-        .lines
-        .into_iter()
-        .skip(start)
-        .take(line_count)
-        .collect::<Vec<_>>();
-    let breaks = rendered
-        .breaks
-        .into_iter()
-        .skip(start)
-        .take(line_count.saturating_sub(1))
-        .collect::<Vec<_>>();
-    Rendered { lines, breaks }
+    Rendered::from_line_plan(rendered.lines.slice(start..end))
 }
 
 fn exact_rendered_height(
@@ -5946,6 +6538,7 @@ fn exact_rendered_height(
     resolver: Option<&RetainedDocument>,
     context: LayoutContext,
 ) -> Option<i64> {
+    evaluation::record_height_query();
     let node = resolver
         .and_then(|value| value.resolve(node).ok())
         .unwrap_or(node);
@@ -5996,19 +6589,25 @@ fn exact_rendered_height(
 }
 
 fn render_node_window(
-    node: &LayoutNode,
-    resolver: Option<&RetainedDocument>,
+    scope: &RenderScope<'_>,
     context: LayoutContext,
     intrinsic: bool,
     start: i64,
     height: i64,
 ) -> Option<Result<Rendered, String>> {
-    let node = resolver
-        .and_then(|value| value.resolve(node).ok())
-        .unwrap_or(node);
+    let scope = match scope.resolve() {
+        Ok(scope) => scope,
+        Err(error) => return Some(Err(error)),
+    };
+    let node = scope.view.node;
+    let resolver = scope.resolver;
     let total_height = exact_rendered_height(node, resolver, context)?;
     if start <= 0 && height >= total_height {
-        return Some(render_node(node, resolver, context, intrinsic));
+        return Some(
+            scope
+                .phase(Phase::WindowFull)
+                .render(context, intrinsic, None),
+        );
     }
     match node {
         LayoutNode::Column { children, .. }
@@ -6017,32 +6616,32 @@ fn render_node_window(
                 && context.viewport_width_known =>
         {
             Some(render_column_window(
-                children, resolver, context, start, height,
+                children, &scope, context, start, height,
             ))
         }
         _ => Some(
-            render_node(node, resolver, context, intrinsic)
+            scope
+                .phase(Phase::WindowFallback)
+                .render(context, intrinsic, None)
                 .map(|rendered| slice_rendered(rendered, start, height)),
         ),
     }
 }
 
-fn render_column_window(
-    children: &[LayoutNode],
-    resolver: Option<&RetainedDocument>,
+fn render_column_window<'a>(
+    children: &'a [LayoutNode],
+    scope: &RenderScope<'a>,
     context: LayoutContext,
     start: i64,
     height: i64,
 ) -> Result<Rendered, String> {
-    let mut leaves = Vec::new();
-    collect_column_leaves(children, &mut leaves);
     let end = start.saturating_add(height).max(start);
     let target = context.viewport_width.max(0);
     let mut offset = 0_i64;
     let mut parts = Vec::new();
 
-    for child in leaves {
-        let child_height = exact_rendered_height(child, resolver, context)
+    for child in column_leaves(scope, children) {
+        let child_height = exact_rendered_height(child.view.node, child.resolver, context)
             .ok_or_else(|| "Native layout column window has an unbounded child".to_owned())?;
         let child_end = offset.saturating_add(child_height);
         if child_end <= start {
@@ -6056,29 +6655,34 @@ fn render_column_window(
         let child_start = start.saturating_sub(offset);
         let child_window_height = (child_end.min(end) - (offset + child_start)).max(0);
         let mut rendered = if child_start == 0 && child_window_height >= child_height {
-            render_node(child, resolver, context, false)?
+            child
+                .phase(Phase::WindowChildFull)
+                .render(context, false, None)?
         } else {
             render_node_window(
-                child,
-                resolver,
+                &child.phase(Phase::WindowChildPartial),
                 context,
                 false,
                 child_start,
                 child_window_height,
             )
             .unwrap_or_else(|| {
-                render_node(child, resolver, context, false)
+                child
+                    .phase(Phase::WindowFallback)
+                    .render(context, false, None)
                     .map(|rendered| slice_rendered(rendered, child_start, child_window_height))
             })?
         };
 
         let extra = (target - rendered.first_width()).max(0);
-        for line in &mut rendered.lines {
-            line.push_space(extra);
-        }
         if extra > 0 {
-            rendered.breaks =
-                vec![AtomProperties::default(); rendered.lines.len().saturating_sub(1)];
+            rendered.lines = rendered
+                .lines
+                .map_lines(|_, mut line| {
+                    line.push_space(extra);
+                    line
+                })
+                .clear_breaks();
         }
         if !rendered.lines.is_empty() {
             parts.push(rendered);
@@ -6093,7 +6697,6 @@ fn flex_line_cross(
     line: &[FlexRuntimeItem<'_>],
     axis: FlexAxis,
     container_align: FlexAlign,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<i64, String> {
@@ -6106,7 +6709,7 @@ fn flex_line_cross(
                 item.target,
                 None,
                 container_align,
-                resolver,
+                Phase::FlexCrossProbe,
                 context,
                 intrinsic,
             )?
@@ -6163,7 +6766,6 @@ fn render_flex_row_line(
     main_gap: i64,
     justify: FlexAlign,
     align: FlexAlign,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6178,7 +6780,7 @@ fn render_flex_row_line(
             item.target,
             Some(line_cross),
             align,
-            resolver,
+            Phase::FlexFinal,
             context,
             intrinsic,
         )?;
@@ -6201,7 +6803,6 @@ fn render_flex_column_line(
     main_gap: i64,
     justify: FlexAlign,
     align: FlexAlign,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6223,7 +6824,7 @@ fn render_flex_column_line(
                 item.target,
                 Some(line_cross),
                 align,
-                resolver,
+                Phase::FlexFinal,
                 context,
                 intrinsic,
             )?
@@ -6250,7 +6851,6 @@ fn render_flex_row(
     align: FlexAlign,
     align_content: FlexAlign,
     single_line: bool,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6269,7 +6869,7 @@ fn render_flex_row(
     } else {
         lines
             .iter()
-            .map(|line| flex_line_cross(line, FlexAxis::Row, align, resolver, context, intrinsic))
+            .map(|line| flex_line_cross(line, FlexAxis::Row, align, context, intrinsic))
             .collect::<Result<Vec<_>, _>>()?
     };
     let cross_layout =
@@ -6295,7 +6895,6 @@ fn render_flex_row(
             main_gap,
             justify,
             align,
-            resolver,
             context,
             intrinsic,
         )?);
@@ -6326,7 +6925,6 @@ fn render_flex_column(
     align: FlexAlign,
     align_content: FlexAlign,
     single_line: bool,
-    resolver: Option<&RetainedDocument>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6338,9 +6936,7 @@ fn render_flex_column(
     } else {
         lines
             .iter()
-            .map(|line| {
-                flex_line_cross(line, FlexAxis::Column, align, resolver, context, intrinsic)
-            })
+            .map(|line| flex_line_cross(line, FlexAxis::Column, align, context, intrinsic))
             .collect::<Result<Vec<_>, _>>()?
     };
     let cross_layout =
@@ -6356,7 +6952,7 @@ fn render_flex_column(
         .enumerate()
     {
         let rendered = render_flex_column_line(
-            line, line_cross, main_size, main_gap, justify, align, resolver, context, intrinsic,
+            line, line_cross, main_size, main_gap, justify, align, context, intrinsic,
         )?;
         parts.push((rendered, line_cross));
         if index + 1 < line_count {
@@ -6374,7 +6970,7 @@ fn render_flex_column(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_flex(
+fn render_flex<'a>(
     direction: FlexDirection,
     wrap: FlexWrap,
     justify: FlexAlign,
@@ -6384,8 +6980,8 @@ fn render_flex(
     height: &Size,
     row_gap: i64,
     column_gap: i64,
-    source_items: &[FlexItem],
-    resolver: Option<&RetainedDocument>,
+    source_items: &'a [FlexItem],
+    scope: &RenderScope<'a>,
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
@@ -6406,7 +7002,7 @@ fn render_flex(
                 &source_items[index],
                 axis,
                 inline_viewport,
-                resolver,
+                scope.child(LocalStep::FlexItem(index), &source_items[index].node),
                 context,
             )
         })
@@ -6434,7 +7030,6 @@ fn render_flex(
             align_items,
             align_content,
             single_line,
-            resolver,
             context,
             intrinsic,
         ),
@@ -6448,20 +7043,20 @@ fn render_flex(
             align_items,
             align_content,
             single_line,
-            resolver,
             context,
             intrinsic,
         ),
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct BoxOverride {
     content_width: Option<i64>,
     content_height: Option<i64>,
     declared_width: Option<i64>,
 }
 
+#[cfg(test)]
 fn render_node(
     node: &LayoutNode,
     resolver: Option<&RetainedDocument>,
@@ -6478,10 +7073,58 @@ fn render_node_with_override(
     intrinsic: bool,
     size_override: Option<BoxOverride>,
 ) -> Result<Rendered, String> {
-    let node = match resolver {
-        Some(resolver) => resolver.resolve(node)?,
-        None => node,
+    RenderScope::uncached(node, resolver).render(context, intrinsic, size_override)
+}
+
+fn project_box_lines(
+    scope: &RenderScope<'_>,
+    slot: BoxProjectionSlot,
+    input: LinePlan,
+    change: &mut Option<PlanChange>,
+    ops: Vec<LineOp>,
+) -> LinePlan {
+    let ops: Arc<[LineOp]> = ops.into();
+    let state = if let Some(previous) = scope.previous_projection(slot) {
+        let update = previous.update(input, change.as_ref(), ops);
+        *change = Some(update.change);
+        update.state
+    } else {
+        *change = None;
+        ProjectionState::new(input, ops)
     };
+    let lines = state.plan().clone();
+    scope.store_projection(slot, state);
+    lines
+}
+
+fn frame_box_lines(
+    scope: &RenderScope<'_>,
+    slot: BoxProjectionSlot,
+    input: LinePlan,
+    change: &mut Option<PlanChange>,
+    frame: FrameSpec,
+) -> LinePlan {
+    let state = if let Some(previous) = scope.previous_projection(slot) {
+        let update = previous.update_frame(input, change.as_ref(), frame);
+        *change = Some(update.change);
+        update.state
+    } else {
+        *change = None;
+        ProjectionState::new_frame(input, frame)
+    };
+    let lines = state.plan().clone();
+    scope.store_projection(slot, state);
+    lines
+}
+
+fn render_node_body(
+    scope: &RenderScope<'_>,
+    context: LayoutContext,
+    intrinsic: bool,
+    size_override: Option<BoxOverride>,
+) -> Result<Rendered, String> {
+    let node = scope.view.node;
+    let resolver = scope.resolver;
     #[cfg(test)]
     TEST_RENDER_NODE_COUNT.with(|count| {
         if let Some(value) = count.get() {
@@ -6609,6 +7252,10 @@ fn render_node_with_override(
                 }
             };
             let simple_scroll_window = *overflow == Overflow::Scroll
+                // Only a requested complete producer needs effects from every
+                // child, including offscreen owners. Ordinary retained layout
+                // keeps the existing window shortcut.
+                && !scope.complete_scroll_effects_requested()
                 && child.is_some()
                 && definite_content_width.is_some()
                 && definite_content_height.is_some()
@@ -6630,7 +7277,9 @@ fn render_node_with_override(
                 && *vertical == VerticalAlign::Top;
             let mut windowed_child_start = None;
             let mut windowed_child_height = None;
+            let mut child_change = None;
             let mut child_rendered = if let Some(child) = child {
+                let child_scope = scope.child(LocalStep::BoxChild, child);
                 let child_context = LayoutContext {
                     viewport_width: if intrinsic_child {
                         0
@@ -6654,8 +7303,7 @@ fn render_node_with_override(
                         windowed_child_height = Some(total_height);
                         Some(
                             render_node_window(
-                                child,
-                                resolver,
+                                &child_scope,
                                 child_context,
                                 intrinsic || intrinsic_child,
                                 start,
@@ -6664,20 +7312,22 @@ fn render_node_with_override(
                             .expect("exact height checked above")?,
                         )
                     } else {
-                        Some(render_node(
-                            child,
-                            resolver,
+                        let evaluated = child_scope.render_with_change(
                             child_context,
                             intrinsic || intrinsic_child,
-                        )?)
+                            None,
+                        )?;
+                        child_change = evaluated.change;
+                        Some(evaluated.rendered)
                     }
                 } else {
-                    Some(render_node(
-                        child,
-                        resolver,
+                    let evaluated = child_scope.render_with_change(
                         child_context,
                         intrinsic || intrinsic_child,
-                    )?)
+                        None,
+                    )?;
+                    child_change = evaluated.change;
+                    Some(evaluated.rendered)
                 }
             } else {
                 None
@@ -6770,21 +7420,52 @@ fn render_node_with_override(
                 && border_top_style.is_none()
                 && border_bottom_style.is_none()
                 && child_rendered.as_ref().is_some_and(|rendered| {
-                    rendered
-                        .lines
-                        .iter()
-                        .all(|line| !line.atoms.is_empty() && line.width == content_width)
+                    rendered.lines.all_nonempty() && rendered.lines.uniform_width(content_width)
                 });
             if transparent_preformatted {
                 let mut rendered = child_rendered.take().expect("validated child");
-                for (index, line) in rendered.lines.iter_mut().enumerate() {
-                    line.own_content(*region_id, index as i64);
-                    line.apply_property_template(*surface_template_id);
+                rendered.root_scroll = None;
+                rendered.own_scroll_owner = false;
+                let mut ops = vec![LineOp::OwnContent {
+                    region: *region_id,
+                    start: 0,
+                }];
+                ops.extend(surface_template_id.map(LineOp::Template));
+                rendered.lines = project_box_lines(
+                    scope,
+                    BoxProjectionSlot::TransparentContent,
+                    rendered.lines,
+                    &mut child_change,
+                    ops,
+                );
+                if let Some(change) = child_change {
+                    scope.publish_change(change);
                 }
                 return Ok(rendered);
             }
 
-            let mut formatted = if let Some(text) = content {
+            let previous_scroll = scope.previous_root_scroll();
+            let text_styles = [
+                *content_typography_style,
+                *content_foreground_style,
+                *content_surface_template_id,
+            ];
+            let reusable_text = previous_scroll
+                .as_ref()
+                .and_then(|scroll| scroll.text_input.as_ref())
+                .filter(|input| {
+                    content
+                        .as_ref()
+                        .is_some_and(|text| Arc::ptr_eq(text, &input.source))
+                        && input.width == content_width
+                        && input.wrap == *wrap_mode
+                        && input.region == *content_region_id
+                        && input.styles == text_styles
+                });
+            let mut formatted = if let Some(input) = reusable_text {
+                child_change = Some(PlanChange::same(&input.lines));
+                input.lines.clone()
+            } else if let Some(text) = content {
                 let mut content_lines = measured_lines(text, content_width, *wrap_mode);
                 if let Some(content_region_id) = content_region_id {
                     for (index, line) in content_lines.iter_mut().enumerate() {
@@ -6794,34 +7475,48 @@ fn render_node_with_override(
                         line.apply_property_template(*content_surface_template_id);
                     }
                 }
-                content_lines
-                    .into_iter()
-                    .map(|line| line.padded(content_width, *text_align))
-                    .collect::<Vec<_>>()
+                LinePlan::from_lines(content_lines)
             } else {
                 let rendered = child_rendered.expect("validated child");
-                let uniform_width = rendered
-                    .lines
-                    .iter()
-                    .all(|line| line.width == content_width);
-                let preserve_exact_width = *content_width_exact && *wrap_mode == WrapMode::None;
+                let uniform_width = rendered.lines.uniform_width(content_width);
                 let rendered = if *wrap_mode != WrapMode::None && !uniform_width {
+                    child_change = None;
                     wrap_rendered(rendered, content_width, *wrap_mode)
                 } else {
                     rendered
                 };
-                rendered
-                    .lines
-                    .into_iter()
-                    .map(|line| {
-                        if preserve_exact_width {
-                            line
-                        } else {
-                            line.padded(content_width, *text_align)
-                        }
-                    })
-                    .collect::<Vec<_>>()
+                rendered.lines
             };
+            let text_input = if scope.root_scroll_requested() {
+                content.as_ref().map(|text| RootTextInput {
+                    source: Arc::clone(text),
+                    width: content_width,
+                    wrap: *wrap_mode,
+                    region: *content_region_id,
+                    styles: text_styles,
+                    lines: formatted.clone(),
+                })
+            } else {
+                None
+            };
+            // Ordinary Box formatting historically rebuilds default breaks;
+            // the transparent preformatted branch above preserves child breaks.
+            let mut change = child_change;
+            let mut pad_ops = Vec::new();
+            if content.is_some() || !(*content_width_exact && *wrap_mode == WrapMode::None) {
+                pad_ops.push(LineOp::PadTo {
+                    width: content_width,
+                    align: *text_align,
+                });
+            }
+            pad_ops.push(LineOp::ClearBreaks);
+            formatted = project_box_lines(
+                scope,
+                BoxProjectionSlot::ContentPad,
+                formatted,
+                &mut change,
+                pad_ops,
+            );
             let text_height = windowed_child_height.unwrap_or(formatted.len() as i64);
             let minimum_height = resolve_height(
                 min_height,
@@ -6873,11 +7568,63 @@ fn render_node_with_override(
                 && border_bottom_style.is_none()
                 && *vertical == VerticalAlign::Top;
 
+            let root_scroll = if scope.root_scroll_requested()
+                && *overflow == Overflow::Scroll
+                && *padding_left == 0
+                && *padding_right == 0
+                && *padding_top == 0
+                && *padding_bottom == 0
+                && *margin_left == 0
+                && *margin_right == 0
+                && *margin_top == 0
+                && *margin_bottom == 0
+                && *border_left == 0
+                && *border_right == 0
+                && border_top_style.is_none()
+                && border_bottom_style.is_none()
+                && surface_template_id.is_none()
+                && *vertical == VerticalAlign::Top
+            {
+                let full_content = formatted.clone();
+                let mut ops = vec![LineOp::OwnContent {
+                    region: *region_id,
+                    start: 0,
+                }];
+                ops.extend(
+                    [*typography_style, *foreground_style, *background_style]
+                        .into_iter()
+                        .flatten()
+                        .map(LineOp::Style),
+                );
+                let rendered_content = project_box_lines(
+                    scope,
+                    BoxProjectionSlot::ScrollContent,
+                    full_content.clone(),
+                    &mut change.clone(),
+                    ops,
+                );
+                Some(Arc::new(RootScrollPlan {
+                    region_id: *region_id,
+                    full_content,
+                    rendered_content,
+                    visible_height: content_height,
+                    effective_offset: (*scroll_offset)
+                        .max(0)
+                        .min((text_height - content_height).max(0)),
+                    text_input,
+                }))
+            } else {
+                None
+            };
+
             let mut content_index_start = 0_i64;
-            let mut overflow_lines = Vec::new();
+            let mut overflow_lines = LinePlan::default();
             if let Some(start) = windowed_child_start {
                 content_index_start = start;
             } else if formatted.len() > content_height as usize {
+                // Clipping changes operation origins. Until the exact old/new window
+                // anchors are available, the next stage takes its counted fallback.
+                change = None;
                 match overflow {
                     Overflow::Scroll => {
                         let max_offset = formatted.len() - content_height as usize;
@@ -6885,122 +7632,219 @@ fn render_node_with_override(
                         if simple_scroll_rendered {
                             content_index_start = start as i64;
                         }
-                        formatted = formatted[start..start + content_height as usize].to_vec();
+                        formatted = formatted.slice(start..start + content_height as usize);
                     }
                     Overflow::Hidden => {
-                        formatted.truncate(content_height as usize);
+                        formatted = formatted.slice(0..content_height as usize);
                     }
                     Overflow::Visible => {
-                        overflow_lines = formatted.split_off(content_height as usize);
+                        overflow_lines = formatted.slice(content_height as usize..formatted.len());
+                        formatted = formatted.slice(0..content_height as usize);
                     }
                 }
             }
-            for (index, line) in formatted.iter_mut().enumerate() {
-                line.own_content(*region_id, content_index_start + index as i64);
+            formatted = project_box_lines(
+                scope,
+                BoxProjectionSlot::ContentOwn,
+                formatted,
+                &mut change,
+                vec![LineOp::OwnContent {
+                    region: *region_id,
+                    start: content_index_start,
+                }],
+            );
+            if formatted.len() > content_height as usize {
+                change = None;
+                formatted = formatted.slice(0..content_height as usize);
             }
-            let mut lines =
-                vertical_align(formatted, content_height as usize, *vertical, content_width)
+            let remaining = content_height as usize - formatted.len();
+            let top = match vertical {
+                VerticalAlign::Top => 0,
+                VerticalAlign::Bottom => remaining,
+                VerticalAlign::Center => remaining / 2,
+            };
+            let lines = frame_box_lines(
+                scope,
+                BoxProjectionSlot::VerticalFrame,
+                formatted,
+                &mut change,
+                FrameSpec {
+                    prefix: top,
+                    suffix: remaining - top,
+                    width: content_width,
+                    prefix_properties: Arc::new(AtomProperties::default()),
+                    suffix_properties: Arc::new(AtomProperties::default()),
+                },
+            );
+            let collapse_ops = if simple_scroll_rendered {
+                Vec::new()
+            } else {
+                vec![LineOp::CollapseWhitespace {
+                    width: content_width,
+                    region: *region_id,
+                }]
+            };
+            let lines = project_box_lines(
+                scope,
+                BoxProjectionSlot::ContentCollapse,
+                lines,
+                &mut change,
+                collapse_ops,
+            );
+
+            let mut padded = frame_box_lines(
+                scope,
+                BoxProjectionSlot::PaddingFrame,
+                lines,
+                &mut change,
+                FrameSpec {
+                    prefix: *padding_top as usize,
+                    suffix: *padding_bottom as usize,
+                    width: content_width,
+                    prefix_properties: region_properties(RegionRole::PaddingTop, *region_id, None)
+                        .into(),
+                    suffix_properties: region_properties(
+                        RegionRole::PaddingBottom,
+                        *region_id,
+                        None,
+                    )
+                    .into(),
+                },
+            );
+            let mut edge_ops = vec![LineOp::EdgeSpaces {
+                left: *padding_left,
+                left_properties: region_properties(RegionRole::PaddingLeft, *region_id, None)
+                    .into(),
+                right: *padding_right,
+                right_properties: region_properties(RegionRole::PaddingRight, *region_id, None)
+                    .into(),
+            }];
+            edge_ops.extend(
+                [*typography_style, *foreground_style, *background_style]
                     .into_iter()
-                    .map(|line| {
-                        if simple_scroll_rendered {
-                            line
-                        } else {
-                            line.collapse_whitespace_content(content_width, *region_id)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-
-            let mut padded =
-                Vec::with_capacity(lines.len() + *padding_top as usize + *padding_bottom as usize);
-            padded.extend((0..*padding_top).map(|_| {
-                Line::blank_with_properties(
-                    content_width,
-                    region_properties(RegionRole::PaddingTop, *region_id, None),
+                    .flatten()
+                    .map(LineOp::Style),
+            );
+            edge_ops.push(LineOp::EdgeSpaces {
+                left: *border_left,
+                left_properties: region_properties(
+                    RegionRole::BorderLeft,
+                    *region_id,
+                    *border_left_style,
                 )
-            }));
-            padded.append(&mut lines);
-            padded.extend((0..*padding_bottom).map(|_| {
-                Line::blank_with_properties(
-                    content_width,
-                    region_properties(RegionRole::PaddingBottom, *region_id, None),
+                .into(),
+                right: *border_right,
+                right_properties: region_properties(
+                    RegionRole::BorderRight,
+                    *region_id,
+                    *border_right_style,
                 )
+                .into(),
+            });
+            padded = project_box_lines(
+                scope,
+                BoxProjectionSlot::PaddingEdges,
+                padded,
+                &mut change,
+                edge_ops,
+            );
+            let mut boundary_ops = Vec::new();
+            boundary_ops.extend(border_top_style.map(|style| LineOp::FirstStyleRole {
+                style,
+                region: *region_id,
             }));
-
-            for line in &mut padded {
-                line.prepend_space_with_properties(
-                    *padding_left,
-                    region_properties(RegionRole::PaddingLeft, *region_id, None),
-                );
-                line.push_space_with_properties(
-                    *padding_right,
-                    region_properties(RegionRole::PaddingRight, *region_id, None),
-                );
-                line.apply_style(*typography_style);
-                line.apply_style(*foreground_style);
-                line.apply_style(*background_style);
-                line.prepend_space_with_properties(
-                    *border_left,
-                    region_properties(RegionRole::BorderLeft, *region_id, *border_left_style),
-                );
-                line.push_space_with_properties(
-                    *border_right,
-                    region_properties(RegionRole::BorderRight, *region_id, *border_right_style),
-                );
-            }
-            if border_top_style.is_some() {
-                if let Some(first) = padded.first_mut() {
-                    first.apply_style(*border_top_style);
-                    first.apply_role(RegionRole::BorderTop, *region_id);
-                }
-            }
-            if border_bottom_style.is_some() {
-                if let Some(last) = padded.last_mut() {
-                    last.apply_style(*border_bottom_style);
-                    last.apply_role(RegionRole::BorderBottom, *region_id);
-                }
-            }
-            for line in &mut padded {
-                line.apply_property_template(*surface_template_id);
-            }
-            for line in &mut padded {
-                line.prepend_space_with_properties(
-                    *margin_left,
-                    region_properties(RegionRole::MarginLeft, *region_id, None),
-                );
-                line.push_space_with_properties(
-                    *margin_right,
-                    region_properties(RegionRole::MarginRight, *region_id, None),
-                );
-            }
+            boundary_ops.extend(border_bottom_style.map(|style| LineOp::LastStyleRole {
+                style,
+                region: *region_id,
+            }));
+            padded = project_box_lines(
+                scope,
+                BoxProjectionSlot::BoundaryBorders,
+                padded,
+                &mut change,
+                boundary_ops,
+            );
+            padded = project_box_lines(
+                scope,
+                BoxProjectionSlot::SurfaceTemplate,
+                padded,
+                &mut change,
+                surface_template_id
+                    .map(LineOp::Template)
+                    .into_iter()
+                    .collect(),
+            );
+            padded = project_box_lines(
+                scope,
+                BoxProjectionSlot::MarginEdges,
+                padded,
+                &mut change,
+                vec![LineOp::EdgeSpaces {
+                    left: *margin_left,
+                    left_properties: region_properties(RegionRole::MarginLeft, *region_id, None)
+                        .into(),
+                    right: *margin_right,
+                    right_properties: region_properties(RegionRole::MarginRight, *region_id, None)
+                        .into(),
+                }],
+            );
             let total_width = content_width + side_width;
-            let mut output =
-                Vec::with_capacity(padded.len() + *margin_top as usize + *margin_bottom as usize);
-            output.extend((0..*margin_top).map(|_| {
-                Line::blank_with_properties(
-                    total_width,
-                    region_properties(RegionRole::MarginTop, *region_id, None),
-                )
-            }));
-            output.append(&mut padded);
-            output.extend((0..*margin_bottom).map(|_| {
-                Line::blank_with_properties(
-                    total_width,
-                    region_properties(RegionRole::MarginBottom, *region_id, None),
-                )
-            }));
-            let mut rendered = Rendered::from_lines(output);
+            let output = frame_box_lines(
+                scope,
+                BoxProjectionSlot::MarginFrame,
+                padded,
+                &mut change,
+                FrameSpec {
+                    prefix: *margin_top as usize,
+                    suffix: *margin_bottom as usize,
+                    width: total_width,
+                    prefix_properties: region_properties(RegionRole::MarginTop, *region_id, None)
+                        .into(),
+                    suffix_properties: region_properties(
+                        RegionRole::MarginBottom,
+                        *region_id,
+                        None,
+                    )
+                    .into(),
+                },
+            );
+            let mut rendered = Rendered::from_line_plan(output);
             if !overflow_lines.is_empty() {
                 let left_space = margin_left + border_left + padding_left;
                 let right_space = padding_right + border_right + margin_right;
-                for line in &mut overflow_lines {
-                    line.apply_style(*foreground_style);
-                    line.prepend_space(left_space);
-                    line.push_space(right_space);
-                }
-                rendered = stack_vertical(vec![rendered, Rendered::from_lines(overflow_lines)]);
+                let mut ops = foreground_style
+                    .map(LineOp::Style)
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                ops.push(LineOp::EdgeSpaces {
+                    left: left_space,
+                    left_properties: Arc::new(AtomProperties::default()),
+                    right: right_space,
+                    right_properties: Arc::new(AtomProperties::default()),
+                });
+                overflow_lines = project_box_lines(
+                    scope,
+                    BoxProjectionSlot::OverflowEdges,
+                    overflow_lines,
+                    &mut None,
+                    ops,
+                );
+                rendered = stack_vertical(vec![rendered, Rendered::from_line_plan(overflow_lines)]);
+                change = None;
             }
             if *overflow == Overflow::Scroll && text_height > content_height {
-                rendered.apply_scroll_window(*region_id);
+                rendered.own_scroll_owner = true;
+                rendered.lines = project_box_lines(
+                    scope,
+                    BoxProjectionSlot::ScrollWindow,
+                    rendered.lines,
+                    &mut change,
+                    vec![LineOp::ScrollWindow(*region_id)],
+                );
+            }
+            rendered.root_scroll = root_scroll;
+            if let Some(change) = change {
+                scope.publish_change(change);
             }
             Ok(rendered)
         }
@@ -7030,33 +7874,30 @@ fn render_node_with_override(
             };
             let rendered = children
                 .iter()
-                .map(|child| render_node(child, resolver, child_context, intrinsic))
+                .enumerate()
+                .map(|(index, child)| {
+                    scope.child(LocalStep::RowChild(index), child).render(
+                        child_context,
+                        intrinsic,
+                        None,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            let height = rendered
-                .iter()
-                .map(|item| item.lines.len())
-                .max()
-                .unwrap_or(1);
-            let mut lines = Vec::with_capacity(height);
-            for index in 0..height {
-                let mut line = Line::default();
-                for item in &rendered {
-                    if let Some(child_line) = item.lines.get(index) {
-                        line.append(child_line);
-                    } else {
-                        line.push_space(item.first_width());
-                    }
-                }
-                lines.push(line);
-            }
-            Ok(Rendered::from_lines(lines))
+            let parts = rendered
+                .into_iter()
+                .map(|rendered| {
+                    let width = rendered.first_width();
+                    (rendered, width)
+                })
+                .collect();
+            Ok(concat_horizontal_sized(parts, 0))
         }
         LayoutNode::Column { children, .. } => {
-            let mut leaves = Vec::new();
-            collect_column_leaves(children, &mut leaves);
-            let rendered = leaves
-                .into_iter()
-                .map(|child| render_node(child, resolver, context, intrinsic))
+            if scope.is_retained() {
+                return composition::render_column(scope, children, context, intrinsic);
+            }
+            let rendered = column_leaves(scope, children)
+                .map(|child| child.render(context, intrinsic, None))
                 .collect::<Result<Vec<_>, _>>()?;
             let maximum = rendered
                 .iter()
@@ -7074,12 +7915,14 @@ fn render_node_with_override(
             let mut parts = Vec::with_capacity(rendered.len());
             for mut item in rendered {
                 let extra = (target - item.first_width()).max(0);
-                for line in &mut item.lines {
-                    line.push_space(extra);
-                }
                 if extra > 0 {
-                    item.breaks =
-                        vec![AtomProperties::default(); item.lines.len().saturating_sub(1)];
+                    item.lines = item
+                        .lines
+                        .map_lines(|_, mut line| {
+                            line.push_space(extra);
+                            line
+                        })
+                        .clear_breaks();
                 }
                 parts.push(item);
             }
@@ -7108,26 +7951,130 @@ fn render_node_with_override(
             *row_gap,
             *column_gap,
             items,
-            resolver,
+            scope,
             context,
             intrinsic,
         ),
     }
 }
 
-fn collect_column_leaves<'a>(children: &'a [LayoutNode], output: &mut Vec<&'a LayoutNode>) {
-    for child in children {
-        if let LayoutNode::Column { children, .. } = child {
-            collect_column_leaves(children, output);
-        } else {
-            output.push(child);
+// Flatten only literal Columns. In particular, a retained NodeRef remains a
+// child evaluation boundary even when it resolves to an identified Column.
+fn column_leaves<'a>(
+    scope: &RenderScope<'a>,
+    children: &'a [LayoutNode],
+) -> impl Iterator<Item = RenderScope<'a>> {
+    let mut stack = vec![(scope.clone(), children.iter().enumerate())];
+    std::iter::from_fn(move || loop {
+        let (scope, children) = stack.last_mut()?;
+        match children.next() {
+            Some((index, child @ LayoutNode::Column { children, .. })) => {
+                let child_scope = scope.child(LocalStep::ColumnChild(index), child);
+                stack.push((child_scope, children.iter().enumerate()));
+            }
+            Some((index, child)) => return Some(scope.child(LocalStep::ColumnChild(index), child)),
+            None => {
+                stack.pop();
+            }
         }
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    include!("composition_tests.rs");
+
+    include!("source_topology_tests.rs");
+
+    #[test]
+    fn line_composition_preserves_mixed_ownership_and_decoration_order() {
+        let mut child = Line::from_clusters(&[cluster("x", 2, Some(7))]);
+        child.own_content(11, 3);
+        child.apply_style(Some(2));
+        let original = Rendered::from_lines(vec![child.clone()]).into_tape(10);
+        let mut parent = Line::blank(4);
+        parent.append(&child);
+        parent.own_content(22, 9);
+        parent.apply_style(Some(5));
+        parent.apply_property_template(Some(8));
+        parent.apply_role(RegionRole::BorderTop, 22);
+        parent.push_space(6);
+        let tape = Rendered::from_lines(vec![parent]).into_tape(10);
+        assert_eq!(tape.lines[0].width, 12);
+        let TapeAtom::Space {
+            properties: left, ..
+        } = &tape.lines[0].atoms[0]
+        else {
+            panic!()
+        };
+        assert_eq!(left.owner, Some(22));
+        assert_eq!(left.owners, vec![22]);
+        assert_eq!(
+            left.content, None,
+            "a sibling's content prevents assigning padding content"
+        );
+        assert_eq!(left.style_ids, vec![5]);
+        let TapeAtom::Text {
+            properties: text, ..
+        } = &tape.lines[0].atoms[1]
+        else {
+            panic!()
+        };
+        assert_eq!(text.owner, Some(22));
+        assert_eq!(text.owners, vec![11, 22]);
+        assert_eq!(text.content, Some(11));
+        assert_eq!(text.content_idx, Some(3));
+        assert_eq!(text.style_ids, vec![2, 5]);
+        assert_eq!(text.property_template_ids, vec![7, 8]);
+        assert_eq!(
+            text.roles,
+            vec![RegionRoleEntry {
+                role: RegionRole::BorderTop,
+                region_id: 22
+            }]
+        );
+        let TapeAtom::Space {
+            properties: right, ..
+        } = &tape.lines[0].atoms[2]
+        else {
+            panic!()
+        };
+        assert_eq!(
+            right,
+            &AtomProperties::default(),
+            "later padding stays outside prior decorations"
+        );
+        assert_eq!(
+            Rendered::from_lines(vec![child]).into_tape(10),
+            original,
+            "composing a parent must preserve its reusable child"
+        );
+    }
+
+    #[test]
+    fn line_whitespace_collapse_preserves_property_boundaries() {
+        let mut plain = Line::blank(5);
+        plain.own_content(10, 4);
+        let collapsed =
+            Rendered::from_lines(vec![plain.collapse_whitespace_content(7, 20)]).into_tape(0);
+        let TapeAtom::Space { width, properties } = &collapsed.lines[0].atoms[0] else {
+            panic!()
+        };
+        assert_eq!(*width, 7);
+        assert_eq!(properties.content, Some(10));
+        assert_eq!(properties.content_idx, Some(4));
+        assert_eq!(properties.owner, Some(20));
+        assert!(properties.owners.is_empty());
+        let mut styled = Line::blank(5);
+        styled.apply_property_template(Some(3));
+        let before = Rendered::from_lines(vec![styled.clone()]).into_tape(0);
+        assert_eq!(
+            Rendered::from_lines(vec![styled.collapse_whitespace_content(7, 20)]).into_tape(0),
+            before
+        );
+    }
 
     fn counted_layout_tape(
         document: &LayoutDocument,
@@ -7154,7 +8101,11 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    fn cluster(text: &str, width: i64, source_template_id: Option<u32>) -> MeasuredCluster {
+    pub(super) fn cluster(
+        text: &str,
+        width: i64,
+        source_template_id: Option<u32>,
+    ) -> MeasuredCluster {
         MeasuredCluster {
             text: text.to_owned(),
             width,
@@ -7165,7 +8116,7 @@ mod tests {
         }
     }
 
-    fn measured_text(lines: Vec<Vec<MeasuredCluster>>) -> MeasuredText {
+    pub(super) fn measured_text(lines: Vec<Vec<MeasuredCluster>>) -> MeasuredText {
         MeasuredText {
             lines: lines
                 .into_iter()
@@ -7237,7 +8188,7 @@ mod tests {
         node
     }
 
-    fn child_box(
+    pub(super) fn child_box(
         region_id: i64,
         child: LayoutNode,
         surface_template_id: Option<u32>,
@@ -7287,7 +8238,7 @@ mod tests {
         }
     }
 
-    fn identified(mut node: LayoutNode, node_id: u64, revision: u64) -> LayoutNode {
+    pub(super) fn identified(mut node: LayoutNode, node_id: u64, revision: u64) -> LayoutNode {
         match &mut node {
             LayoutNode::Box {
                 node_id: id,
@@ -7322,7 +8273,7 @@ mod tests {
         node
     }
 
-    fn retained_document(root: LayoutNode) -> LayoutDocument {
+    pub(super) fn retained_document(root: LayoutNode) -> LayoutDocument {
         LayoutDocument {
             version: LAYOUT_VERSION,
             space_width: 1,
@@ -7384,7 +8335,7 @@ mod tests {
         }
     }
 
-    fn test_context() -> LayoutContext {
+    pub(super) fn test_context() -> LayoutContext {
         LayoutContext {
             viewport_width: 80,
             viewport_width_known: true,
@@ -7544,14 +8495,14 @@ mod tests {
             }),
         )
         .expect("typed column render");
-        assert_eq!(rendered.lines[0].width, 100);
+        assert_eq!(rendered.lines.get(0).unwrap().width(), 100);
         assert!(
             matches!(
-                rendered.lines[0].atoms.first(),
+                rendered.lines.get(0).unwrap().materialize().atoms.first(),
                 Some(Atom::Space { width: 45, .. })
             ),
             "{:?}",
-            rendered.lines[0].atoms
+            rendered.lines.get(0).unwrap().materialize().atoms
         );
     }
 
@@ -7617,6 +8568,7 @@ mod tests {
             .iter()
             .map(|line| {
                 line.atoms
+                    .to_vec()
                     .iter()
                     .map(|atom| match atom {
                         Atom::Text { text, .. } => text.as_str(),
@@ -8042,21 +8994,39 @@ mod tests {
     #[test]
     fn vertical_stack_and_scroll_preserve_break_metadata() {
         let mut first = Rendered::from_lines(vec![Line::blank(1), Line::blank(1)]);
-        first.breaks[0].owner = Some(11);
+        first.lines = first.lines.with_break(
+            0,
+            AtomProperties {
+                owner: Some(11),
+                ..AtomProperties::default()
+            },
+        );
         let second = Rendered::from_lines(vec![Line::blank(1)]);
         let mut stacked = stack_vertical(vec![first, second]);
 
-        assert_eq!(stacked.breaks.len(), 2);
-        assert_eq!(stacked.breaks[0].owner, Some(11));
-        assert_eq!(stacked.breaks[1], AtomProperties::default());
+        assert_eq!(stacked.lines.len() - 1, 2);
+        assert_eq!(
+            stacked.lines.break_after(0).unwrap().materialize().owner,
+            Some(11)
+        );
+        assert_eq!(
+            stacked
+                .lines
+                .break_after(1)
+                .map(|view| view.materialize().into_owned()),
+            Some(AtomProperties::default())
+        );
 
         stacked.apply_scroll_window(9);
         assert!(stacked
-            .breaks
-            .iter()
-            .all(|properties| { properties.scroll_window == Some(9) }));
+            .lines
+            .iter_with_breaks()
+            .filter_map(|(_, properties)| properties)
+            .all(|properties| { properties.materialize().scroll_window == Some(9) }));
         assert!(stacked.lines.iter().all(|line| {
-            line.atoms
+            line.materialize()
+                .atoms
+                .to_vec()
                 .iter()
                 .all(|atom| atom.properties().scroll_window == Some(9))
         }));
@@ -8068,6 +9038,236 @@ mod tests {
             Some(9)
         );
         assert!(tape.lines[2].break_after.is_none());
+    }
+
+    #[test]
+    fn line_sequence_oracle_wrap_slice_and_join_keep_distinct_breaks() {
+        let source = Rendered {
+            root_scroll: None,
+            own_scroll_owner: false,
+            scroll_owners: 0,
+            lines: LinePlan::from_lines([
+                Line::from_clusters(&[cluster("a", 2, None), cluster("b", 2, None)]),
+                Line::from_clusters(&[cluster("c", 2, None), cluster("d", 2, None)]),
+            ])
+            .with_break(
+                0,
+                AtomProperties {
+                    owner: Some(17),
+                    scroll_window: Some(9),
+                    ..AtomProperties::default()
+                },
+            ),
+        };
+        let wrapped = wrap_rendered(source, 2, WrapMode::Char);
+        let tape = wrapped.clone().into_tape(0);
+        assert_eq!(tape.lines.len(), 4);
+        assert_eq!(tape.lines[0].break_after, Some(AtomProperties::default()));
+        assert_eq!(tape.lines[1].break_after.as_ref().unwrap().owner, Some(17));
+        assert_eq!(tape.lines[2].break_after, Some(AtomProperties::default()));
+        let middle = slice_rendered(wrapped, 1, 2);
+        assert_eq!(
+            middle.clone().into_tape(0).lines,
+            tape.lines[1..3]
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, mut line)| {
+                    if index == 1 {
+                        line.break_after = None;
+                    }
+                    line
+                })
+                .collect::<Vec<_>>()
+        );
+        let joined =
+            stack_vertical(vec![middle, Rendered::from_lines(vec![Line::blank(1)])]).into_tape(0);
+        assert_eq!(
+            joined.lines[0].break_after.as_ref().unwrap().owner,
+            Some(17)
+        );
+        assert_eq!(joined.lines[1].break_after, Some(AtomProperties::default()));
+    }
+
+    pub(super) fn nonuniform_text(region_id: i64, widths: &[i64]) -> LayoutNode {
+        LayoutNode::Text {
+            node_id: None,
+            node_revision: None,
+            region_id,
+            content: Arc::new(measured_text(
+                widths
+                    .iter()
+                    .map(|width| vec![cluster("x", *width, None)])
+                    .collect(),
+            )),
+            typography_style: None,
+            foreground_style: None,
+            surface_template_id: None,
+            wrap_mode: WrapMode::None,
+        }
+    }
+
+    #[test]
+    fn line_sequence_oracle_column_uses_first_width_and_constant_child_extra() {
+        let column = LayoutNode::Column {
+            node_id: None,
+            node_revision: None,
+            children: Arc::new(vec![
+                nonuniform_text(1, &[2, 9]),
+                nonuniform_text(2, &[5, 1]),
+            ]),
+        };
+        let tape = render_node(&column, None, test_context(), true)
+            .unwrap()
+            .into_tape(0);
+        assert_eq!(
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [5, 12, 5, 1]
+        );
+        let tape = render_node(
+            &column,
+            None,
+            LayoutContext {
+                viewport_width: 3,
+                ..test_context()
+            },
+            false,
+        )
+        .unwrap()
+        .into_tape(0);
+        assert_eq!(
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [3, 10, 5, 1]
+        );
+    }
+
+    #[test]
+    fn line_sequence_oracle_column_flattens_literal_columns_but_not_node_refs() {
+        let inner = identified(
+            LayoutNode::Column {
+                node_id: None,
+                node_revision: None,
+                children: Arc::new(vec![nonuniform_text(1, &[2]), nonuniform_text(2, &[5])]),
+            },
+            2,
+            1,
+        );
+        let root = identified(
+            LayoutNode::Column {
+                node_id: None,
+                node_revision: None,
+                children: Arc::new(vec![inner, nonuniform_text(3, &[8])]),
+            },
+            1,
+            1,
+        );
+        let document = retained_document(root);
+        let (retained, _) = RetainedDocument::bootstrap(document.clone()).unwrap();
+        let full = render_node(&document.root, None, test_context(), true)
+            .unwrap()
+            .into_tape(0);
+        let referenced = render_node(
+            &LayoutNode::NodeRef {
+                node_id: retained.root_id,
+            },
+            Some(&retained),
+            test_context(),
+            true,
+        )
+        .unwrap()
+        .into_tape(0);
+        assert_eq!(
+            full.lines
+                .iter()
+                .map(|line| line.atoms.len())
+                .collect::<Vec<_>>(),
+            [2, 2, 1]
+        );
+        assert_eq!(
+            referenced
+                .lines
+                .iter()
+                .map(|line| line.atoms.len())
+                .collect::<Vec<_>>(),
+            [3, 2, 1]
+        );
+        assert_eq!(
+            full.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [8, 8, 8]
+        );
+        assert_eq!(
+            referenced
+                .lines
+                .iter()
+                .map(|line| line.width)
+                .collect::<Vec<_>>(),
+            [8, 8, 8]
+        );
+    }
+
+    #[test]
+    fn line_sequence_oracle_column_only_positive_extra_clears_scroll_breaks() {
+        let mut scrolled = child_box(11, nonuniform_text(12, &[2, 2, 2]), None);
+        let LayoutNode::Box { height, .. } = &mut scrolled else {
+            unreachable!()
+        };
+        *height = Size::Lines { value: 2 };
+        let column = LayoutNode::Column {
+            node_id: None,
+            node_revision: None,
+            children: Arc::new(vec![scrolled]),
+        };
+        for (width, expected_scroll) in [(1, Some(11)), (2, Some(11)), (3, None)] {
+            let tape = render_node(
+                &column,
+                None,
+                LayoutContext {
+                    viewport_width: width,
+                    ..test_context()
+                },
+                false,
+            )
+            .unwrap()
+            .into_tape(0);
+            assert_eq!(
+                tape.lines[0].break_after.as_ref().unwrap().scroll_window,
+                expected_scroll
+            );
+        }
+    }
+
+    #[test]
+    fn line_sequence_oracle_horizontal_missing_lines_use_first_width() {
+        let row = LayoutNode::Row {
+            node_id: None,
+            node_revision: None,
+            children: Arc::new(vec![
+                nonuniform_text(1, &[2, 9]),
+                nonuniform_text(2, &[5, 1, 3]),
+            ]),
+        };
+        let tape = render_node(&row, None, test_context(), true)
+            .unwrap()
+            .into_tape(0);
+        assert_eq!(
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [7, 10, 5]
+        );
+        let parts = vec![
+            (
+                Rendered::from_lines(vec![Line::blank(2), Line::blank(9)]),
+                4,
+            ),
+            (
+                Rendered::from_lines(vec![Line::blank(5), Line::blank(1), Line::blank(3)]),
+                6,
+            ),
+        ];
+        let tape = concat_horizontal_sized(parts, 4).into_tape(0);
+        assert_eq!(
+            tape.lines.iter().map(|line| line.width).collect::<Vec<_>>(),
+            [7, 10, 7, 10]
+        );
     }
 
     #[test]
@@ -8089,7 +9289,7 @@ mod tests {
             Line::blank_with_properties(8, properties.clone()),
             Line::blank_with_properties(8, properties.clone()),
         ]);
-        rendered.breaks[0] = properties;
+        rendered.lines = rendered.lines.with_break(0, properties);
         let tape = rendered.into_tape(3);
         let styles = vec![
             StyleTemplate {
@@ -8825,6 +10025,953 @@ mod tests {
         assert!(fragment_style_delta(&old, &changed).is_none());
     }
 
+    // Reconstruct the full document so its original context traversal remains an
+    // independent oracle for summaries, including after retained local patches.
+    fn retained_context_full_document(document: &RetainedDocument) -> LayoutDocument {
+        fn expand(node: &LayoutNode, document: &RetainedDocument) -> LayoutNode {
+            let mut node = document.resolve(node).unwrap().clone();
+            match &mut node {
+                LayoutNode::Box { child, .. } => {
+                    *child = child
+                        .as_deref()
+                        .map(|child| Arc::new(expand(child, document)));
+                }
+                LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+                    *children =
+                        Arc::new(children.iter().map(|node| expand(node, document)).collect());
+                }
+                LayoutNode::Flex { items, .. } => {
+                    *items = Arc::new(
+                        items
+                            .iter()
+                            .map(|item| {
+                                let mut item = item.clone();
+                                item.node = expand(&item.node, document);
+                                item
+                            })
+                            .collect(),
+                    );
+                }
+                LayoutNode::Text { .. } => {}
+                LayoutNode::NodeRef { .. } => unreachable!(),
+            }
+            node
+        }
+        retained_document(expand(
+            &LayoutNode::NodeRef {
+                node_id: document.root_id,
+            },
+            document,
+        ))
+    }
+
+    fn assert_retained_context_oracle(document: &RetainedDocument, occurrences: usize) {
+        assert_eq!(document.context_viewport_heights, occurrences);
+        let full = retained_context_full_document(document);
+        let boundary = MAX_LAYOUT_WORK_UNITS / occurrences.max(1);
+        for height in [
+            i64::MIN,
+            -1,
+            0,
+            1,
+            boundary as i64,
+            boundary as i64 + 1,
+            MAX_LAYOUT_WORK_UNITS as i64,
+            MAX_LAYOUT_WORK_UNITS as i64 + 1,
+            MAX_LAYOUT_DIMENSION,
+            i64::MAX,
+        ] {
+            let context = LayoutContext {
+                viewport_height: height,
+                ..test_context()
+            };
+            let expected = full.validate_context(context);
+            assert_eq!(
+                document.validate_context(context),
+                expected,
+                "height {height}"
+            );
+            let accepted = occurrences == 0 || height >= 0 && height <= boundary as i64;
+            assert_eq!(
+                expected.is_ok(),
+                accepted,
+                "{occurrences} occurrences at height {height}"
+            );
+            if !accepted {
+                assert_eq!(
+                    expected.unwrap_err(),
+                    "Native layout exceeds the work-unit limit"
+                );
+            }
+        }
+    }
+
+    pub(super) fn context_test_delta(entries: Vec<JsonValue>) -> DocumentDelta {
+        serde_json::from_value(serde_json::json!({
+            "style-base-count": 0,
+            "styles-append": [],
+            "property-template-base-count": 0,
+            "property-template-target-count": 0,
+            "entries": entries
+        }))
+        .unwrap()
+    }
+
+    fn context_test_flex(height: Size, nodes: Vec<LayoutNode>) -> LayoutNode {
+        LayoutNode::Flex {
+            node_id: None,
+            node_revision: None,
+            direction: FlexDirection::Column,
+            wrap: FlexWrap::Nowrap,
+            justify: FlexAlign::FlexStart,
+            align_items: FlexAlign::Stretch,
+            align_content: FlexAlign::Stretch,
+            width: Size::ViewportHeight,
+            height,
+            row_gap: 0,
+            column_gap: 0,
+            items: Arc::new(
+                nodes
+                    .into_iter()
+                    .map(|node| FlexItem {
+                        node,
+                        order: 0,
+                        grow: 0.0,
+                        shrink: 0.0,
+                        basis: Size::ViewportHeight,
+                        align_self: FlexAlign::Stretch,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn retained_context_bootstrap_counts_deep_anonymous_and_nested_expressions() {
+        let mut leaf = text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None);
+        let LayoutNode::Box {
+            height,
+            min_height,
+            max_height,
+            ..
+        } = &mut leaf
+        else {
+            unreachable!();
+        };
+        *height = serde_json::from_value(serde_json::json!({
+            "kind": "subtract", "values": [
+                {"kind": "viewport-height"},
+                {"kind": "fit-content", "limit": {
+                    "kind": "add", "values": [
+                        {"kind": "viewport-height"}, {"kind": "viewport-height"},
+                        {"kind": "viewport"}, {"kind": "lines", "value": 2}
+                    ]
+                }}
+            ]
+        }))
+        .unwrap();
+        *min_height = Size::ViewportHeight;
+        *max_height = Size::FitContent {
+            limit: Some(Box::new(Size::ViewportHeight)),
+        };
+        let mut anonymous = context_test_flex(Size::ViewportHeight, vec![identified(leaf, 2, 1)]);
+        for index in 0..48 {
+            let mut wrapper = child_box(index + 3, anonymous, None);
+            let LayoutNode::Box { height, .. } = &mut wrapper else {
+                unreachable!()
+            };
+            *height = Size::ViewportHeight;
+            anonymous = LayoutNode::Row {
+                node_id: None,
+                node_revision: None,
+                children: Arc::new(vec![wrapper]),
+            };
+        }
+        let root = identified(child_box(1, anonymous, None), 1, 1);
+        let full = retained_document(root);
+        let (retained, parsed) = RetainedDocument::bootstrap(full.clone()).unwrap();
+        assert_eq!(parsed, 99);
+        assert_retained_context_oracle(&retained, 54);
+        for height in [0, 1, 4629, 4630, -1, i64::MAX] {
+            let context = LayoutContext {
+                viewport_height: height,
+                ..test_context()
+            };
+            assert_eq!(
+                retained.validate_context(context),
+                full.validate_context(context)
+            );
+        }
+    }
+
+    #[test]
+    fn retained_context_ignores_widths_and_preserves_zero_occurrence_errors() {
+        let mut leaf = text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None);
+        let LayoutNode::Box {
+            width,
+            min_width,
+            max_width,
+            height,
+            ..
+        } = &mut leaf
+        else {
+            unreachable!();
+        };
+        *width = Size::ViewportHeight;
+        *min_width = Size::ViewportHeight;
+        *max_width = Size::ViewportHeight;
+        *height = Size::FitContent { limit: None };
+        let root = identified(
+            child_box(1, context_test_flex(Size::Auto, vec![leaf]), None),
+            1,
+            1,
+        );
+        let (retained, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        assert_retained_context_oracle(&retained, 0);
+    }
+
+    #[test]
+    fn retained_context_slot_orders_revision_only_forks_and_invalid_cas_match_oracle() {
+        let leaf = identified(
+            text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            2,
+            1,
+        );
+        let root = identified(
+            child_box(1, context_test_flex(Size::ViewportHeight, vec![leaf]), None),
+            1,
+            7,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let slot_zero = serde_json::json!({"slot": 0, "local": {
+            "height": {"kind": "viewport-height"},
+            "min-height": {"kind": "viewport-height"},
+            "max-height": {"kind": "fit-content", "limit": {"kind": "viewport-height"}},
+            "padding-left": 2
+        }});
+        let slot_one = serde_json::json!({"slot": 1, "local": {
+            "height": {"kind": "subtract", "values": [
+                {"kind": "viewport-height"}, {"kind": "viewport-height"}
+            ]},
+            "width": {"kind": "viewport-height"}
+        }});
+        let update = |patches: Vec<JsonValue>| {
+            serde_json::json!({
+                "node-id": 1, "expected-revision": 7, "target-revision": 8,
+                "slot-patches": patches
+            })
+        };
+        let forward = base
+            .apply_delta(context_test_delta(vec![update(vec![
+                slot_zero.clone(),
+                slot_one.clone(),
+            ])]))
+            .unwrap()
+            .document;
+        let reverse = base
+            .apply_delta(context_test_delta(vec![update(vec![slot_one, slot_zero])]))
+            .unwrap()
+            .document;
+        assert_retained_context_oracle(&base, 1);
+        assert_retained_context_oracle(&forward, 5);
+        assert_retained_context_oracle(&reverse, 5);
+
+        let revision =
+            serde_json::json!({"node-id": 1, "expected-revision": 8, "target-revision": 9});
+        let no_op = forward
+            .apply_delta(context_test_delta(vec![revision]))
+            .unwrap()
+            .document;
+        assert_retained_context_oracle(&no_op, 5);
+        assert!(Arc::ptr_eq(
+            &radix_lookup(&forward.entries, 1).unwrap().node,
+            &radix_lookup(&no_op.entries, 1).unwrap().node
+        ));
+
+        let remove = update(vec![
+            serde_json::json!({"slot": 1, "local": {"height": {"kind": "auto"}}}),
+        ]);
+        let other_fork = base
+            .apply_delta(context_test_delta(vec![remove]))
+            .unwrap()
+            .document;
+        assert_retained_context_oracle(&other_fork, 0);
+        assert_retained_context_oracle(&base, 1);
+        assert_retained_context_oracle(&forward, 5);
+
+        for (expected_revision, target_revision) in [(6, 8), (7, 7), (7, 6)] {
+            let invalid = serde_json::json!({
+                "node-id": 1, "expected-revision": expected_revision, "target-revision": target_revision,
+                "slot-patches": [{"slot": 1, "local": {"height": {"kind": "auto"}}}]
+            });
+            assert_eq!(
+                base.apply_delta(context_test_delta(vec![invalid]))
+                    .unwrap_err(),
+                "Native retained delta node revision mismatch"
+            );
+            assert_retained_context_oracle(&base, 1);
+        }
+    }
+
+    #[test]
+    fn retained_context_large_occurrence_count_accepts_zero_height() {
+        let mut root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            1,
+        );
+        let LayoutNode::Box { height, .. } = &mut root else {
+            unreachable!()
+        };
+        *height = Size::Add {
+            values: Box::new(SizeValues(
+                vec![Size::ViewportHeight; MAX_LAYOUT_WORK_UNITS + 1].into_boxed_slice(),
+            )),
+        };
+        let (retained, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        assert_retained_context_oracle(&retained, MAX_LAYOUT_WORK_UNITS + 1);
+    }
+
+    #[test]
+    fn retained_context_flex_owner_and_anonymous_box_batch_updates_are_atomic() {
+        let mut anonymous = text_box(3, measured_text(vec![vec![cluster("x", 1, None)]]), None);
+        let LayoutNode::Box {
+            height,
+            min_height,
+            max_height,
+            ..
+        } = &mut anonymous
+        else {
+            unreachable!()
+        };
+        *height = Size::ViewportHeight;
+        *min_height = Size::ViewportHeight;
+        *max_height = Size::ViewportHeight;
+        let owner = identified(child_box(2, anonymous, None), 2, 1);
+        let root = identified(context_test_flex(Size::ViewportHeight, vec![owner]), 1, 1);
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let flex_update = serde_json::json!({
+            "node-id": 1, "expected-revision": 1, "target-revision": 2,
+            "slot-patches": [{"slot": 0, "local": {"height": {"kind": "add", "values": [
+                {"kind": "viewport-height"}, {"kind": "viewport-height"}
+            ]}}}]
+        });
+        let box_update = serde_json::json!({
+            "node-id": 2, "expected-revision": 1, "target-revision": 2,
+            "slot-patches": [{"slot": 1, "local": {
+                "height": {"kind": "auto"},
+                "min-height": {"kind": "lines", "value": 2},
+                "max-height": {"kind": "subtract", "values": [
+                    {"kind": "viewport-height"}, {"kind": "viewport-height"}
+                ]}
+            }}]
+        });
+        let flex_only = base
+            .apply_delta(context_test_delta(vec![flex_update.clone()]))
+            .unwrap()
+            .document;
+        let box_only = base
+            .apply_delta(context_test_delta(vec![box_update.clone()]))
+            .unwrap()
+            .document;
+        let forward = base
+            .apply_delta(context_test_delta(vec![
+                flex_update.clone(),
+                box_update.clone(),
+            ]))
+            .unwrap()
+            .document;
+        let reverse = base
+            .apply_delta(context_test_delta(vec![box_update, flex_update.clone()]))
+            .unwrap()
+            .document;
+        assert_retained_context_oracle(&base, 4);
+        assert_retained_context_oracle(&flex_only, 5);
+        assert_retained_context_oracle(&box_only, 3);
+        assert_retained_context_oracle(&forward, 4);
+        assert_retained_context_oracle(&reverse, 4);
+        let removed = forward
+            .apply_delta(context_test_delta(vec![
+                serde_json::json!({"node-id": 1, "expected-revision": 2, "target-revision": 3,
+                "slot-patches": [{"slot": 0, "local": {"height": {"kind": "auto"}}}]}),
+                serde_json::json!({"node-id": 2, "expected-revision": 2, "target-revision": 3,
+                "slot-patches": [{"slot": 1, "local": {"max-height": {"kind": "none"}}}]}),
+            ]))
+            .unwrap()
+            .document;
+        assert_retained_context_oracle(&removed, 0);
+        assert_retained_context_oracle(&forward, 4);
+
+        // A later CAS/field failure must discard the first entry's prepared summary.
+        for invalid in [
+            serde_json::json!({"node-id": 2, "expected-revision": 0, "target-revision": 2}),
+            serde_json::json!({"node-id": 2, "expected-revision": 1, "target-revision": 2,
+                "slot-patches": [{"slot": 1, "local": {"height": {"kind": "lines", "value": -1}}}]}),
+        ] {
+            assert!(base
+                .apply_delta(context_test_delta(vec![flex_update.clone(), invalid]))
+                .is_err());
+            assert_retained_context_oracle(&base, 4);
+            assert_eq!(radix_lookup(&base.entries, 1).unwrap().revision, 1);
+        }
+    }
+
+    #[test]
+    fn retained_context_validation_performs_zero_resolver_lookups() {
+        let nodes = (2..514)
+            .map(|id| {
+                identified(
+                    text_box(id, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+                    id as u64,
+                    1,
+                )
+            })
+            .collect();
+        let root = identified(
+            child_box(1, context_test_flex(Size::ViewportHeight, nodes), None),
+            1,
+            1,
+        );
+        let (retained, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        reset_resolver_lookups();
+        retained.validate_context(test_context()).unwrap();
+        assert_eq!(
+            resolver_lookups(),
+            0,
+            "retained context validation traversed the document"
+        );
+    }
+
+    fn source_test_entry(
+        node_id: u64,
+        expected: u64,
+        target: u64,
+        patches: Vec<JsonValue>,
+    ) -> JsonValue {
+        serde_json::json!({"node-id": node_id, "expected-revision": expected,
+            "target-revision": target, "slot-patches": patches})
+    }
+
+    fn source_test_content(text: &str) -> JsonValue {
+        serde_json::json!({"lines": [{"clusters": [{"text": text, "width": text.len(), "cjk": false, "space": false}]}]})
+    }
+
+    fn source_test_base() -> Arc<RetainedDocument> {
+        RetainedDocument::bootstrap(retained_document(identified(
+            text_box(1, measured_text(vec![vec![cluster("abc", 3, None)]]), None),
+            1,
+            7,
+        )))
+        .unwrap()
+        .0
+    }
+
+    fn source_test_seeds(changes: &SourceChanges) -> Vec<(u64, u64, u64, u8, Vec<LocalField>)> {
+        let mut seeds = Vec::new();
+        changes.visit_changed_slots(|owner, expected, target, slot, fields| {
+            seeds.push((owner, expected, target, slot, fields.to_vec()));
+        });
+        seeds
+    }
+
+    #[test]
+    fn retained_source_noops_preserve_body_summary_identity_and_advance_cas() {
+        let base = source_test_base();
+        let old = radix_lookup(&base.entries, 1).unwrap();
+        for (patches, compared) in [
+            (vec![], 0),
+            (vec![serde_json::json!({"slot": 0, "local": {}})], 0),
+            (
+                vec![serde_json::json!({"slot": 0, "local": {"padding-left": 0}})],
+                1,
+            ),
+            (
+                vec![
+                    serde_json::json!({"slot": 0, "local": {"content": source_test_content("abc")}}),
+                ],
+                1,
+            ),
+        ] {
+            let applied = base
+                .apply_delta(context_test_delta(vec![source_test_entry(
+                    1, 7, 8, patches,
+                )]))
+                .unwrap();
+            let target = radix_lookup(&applied.document.entries, 1).unwrap();
+            assert!(Arc::ptr_eq(&old.node, &target.node));
+            for slot in 0..2 {
+                assert!(Arc::ptr_eq(&old.slot_work[slot], &target.slot_work[slot]));
+            }
+            assert_eq!(target.revision, 8);
+            assert_eq!(old.revision, 7);
+            assert!(source_test_seeds(&applied.changes).is_empty());
+            assert!(applied.changes.applies_to(&base, &applied.document));
+            assert_eq!(applied.stats.source_work.fields_compared, compared);
+            assert_eq!(applied.stats.source_work.local_nodes_copied, 0);
+            assert!(applied
+                .document
+                .apply_delta(context_test_delta(vec![source_test_entry(1, 7, 9, vec![])]))
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn retained_source_mixed_content_compares_payload_and_preserves_equal_arc() {
+        let base = source_test_base();
+        let old = radix_lookup(&base.entries, 1).unwrap();
+        let applied = base.apply_delta(context_test_delta(vec![source_test_entry(1, 7, 8, vec![
+            serde_json::json!({"slot": 0, "local": {"padding-left": 2, "content": source_test_content("abc")}})
+        ])])).unwrap();
+        let target = radix_lookup(&applied.document.entries, 1).unwrap();
+        let LayoutNode::Box {
+            content: Some(old_content),
+            ..
+        } = old.node.as_ref()
+        else {
+            unreachable!()
+        };
+        let LayoutNode::Box {
+            content: Some(target_content),
+            ..
+        } = target.node.as_ref()
+        else {
+            unreachable!()
+        };
+        assert!(Arc::ptr_eq(old_content, target_content));
+        assert!(Arc::ptr_eq(&old.slot_work[0], &target.slot_work[0]));
+        assert_eq!(
+            source_test_seeds(&applied.changes),
+            vec![(1, 7, 8, 0, vec![LocalField::PaddingLeft])]
+        );
+        let work = applied.stats.source_work;
+        assert_eq!(
+            (
+                work.fields_compared,
+                work.text_lines_compared,
+                work.text_clusters_compared,
+                work.text_bytes_compared,
+                work.local_nodes_copied
+            ),
+            (2, 1, 1, 3, 1)
+        );
+
+        let different = base.apply_delta(context_test_delta(vec![source_test_entry(1, 7, 8, vec![
+            serde_json::json!({"slot": 0, "local": {"content": source_test_content("axc")}})
+        ])])).unwrap();
+        assert_eq!(
+            different.stats.source_work.text_bytes_compared, 2,
+            "byte comparison must stop at the actual mismatch"
+        );
+        assert_eq!(
+            source_test_seeds(&different.changes),
+            vec![(1, 7, 8, 0, vec![LocalField::Content])]
+        );
+    }
+
+    #[test]
+    fn retained_source_text_payload_compares_every_cluster_field() {
+        let root = identified(nonuniform_text(1, &[1]), 1, 7);
+        let mut full = retained_document(root);
+        full.property_template_count = 1;
+        let (base, _) = RetainedDocument::bootstrap(full).unwrap();
+        let original_content = source_test_content("x");
+        for (field, value) in [
+            ("text", serde_json::json!("y")),
+            ("width", serde_json::json!(2)),
+            ("cjk", serde_json::json!(true)),
+            ("space", serde_json::json!(true)),
+            ("pixel-space", serde_json::json!(true)),
+            ("source-template-id", serde_json::json!(0)),
+        ] {
+            let mut content = original_content.clone();
+            content["lines"][0]["clusters"][0][field] = value;
+            let mut delta = context_test_delta(vec![source_test_entry(
+                1,
+                7,
+                8,
+                vec![serde_json::json!({"slot": 0, "local": {"content": content}})],
+            )]);
+            delta.property_template_base_count = 1;
+            delta.property_template_target_count = 1;
+            let applied = base.apply_delta(delta).unwrap();
+            assert_eq!(
+                source_test_seeds(&applied.changes),
+                vec![(1, 7, 8, 0, vec![LocalField::Content])],
+                "{field}"
+            );
+        }
+        let mut delta = context_test_delta(vec![source_test_entry(
+            1,
+            7,
+            8,
+            vec![serde_json::json!({"slot": 0, "local": {"content": original_content}})],
+        )]);
+        delta.property_template_base_count = 1;
+        delta.property_template_target_count = 1;
+        let equal = base.apply_delta(delta).unwrap();
+        assert!(Arc::ptr_eq(
+            &radix_lookup(&base.entries, 1).unwrap().node,
+            &radix_lookup(&equal.document.entries, 1).unwrap().node
+        ));
+        assert!(equal.changes.owners.is_empty());
+    }
+
+    #[test]
+    fn retained_source_slot_seeds_are_exact_in_both_orders_and_slot_one_only() {
+        let leaf = identified(
+            text_box(2, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            2,
+            1,
+        );
+        let root = identified(
+            child_box(1, context_test_flex(Size::Auto, vec![leaf]), None),
+            1,
+            7,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let old = radix_lookup(&base.entries, 1).unwrap();
+        let LayoutNode::Box {
+            child: Some(old_child),
+            ..
+        } = old.node.as_ref()
+        else {
+            unreachable!()
+        };
+        let LayoutNode::Flex {
+            items: old_items, ..
+        } = old_child.as_ref()
+        else {
+            unreachable!()
+        };
+        let slot_zero = serde_json::json!({"slot": 0, "local": {"padding-left": 1, "height": {"kind": "auto"}}});
+        let slot_one = serde_json::json!({"slot": 1, "local": {"height": {"kind": "lines", "value": 1}, "width": {"kind": "viewport-height"}}});
+        for patches in [
+            vec![slot_zero.clone()],
+            vec![slot_one.clone()],
+            vec![slot_zero.clone(), slot_one.clone()],
+            vec![slot_one.clone(), slot_zero.clone()],
+        ] {
+            let expected: Vec<_> = patches
+                .iter()
+                .map(|patch| {
+                    let slot = patch["slot"].as_u64().unwrap() as u8;
+                    (
+                        1,
+                        7,
+                        8,
+                        slot,
+                        vec![if slot == 0 {
+                            LocalField::PaddingLeft
+                        } else {
+                            LocalField::Height
+                        }],
+                    )
+                })
+                .collect();
+            let applied = base
+                .apply_delta(context_test_delta(vec![source_test_entry(
+                    1, 7, 8, patches,
+                )]))
+                .unwrap();
+            assert_eq!(source_test_seeds(&applied.changes), expected);
+            let target = radix_lookup(&applied.document.entries, 1).unwrap();
+            let LayoutNode::Box {
+                child: Some(target_child),
+                ..
+            } = target.node.as_ref()
+            else {
+                unreachable!()
+            };
+            let LayoutNode::Flex {
+                items: target_items,
+                ..
+            } = target_child.as_ref()
+            else {
+                unreachable!()
+            };
+            assert!(Arc::ptr_eq(old_items, target_items));
+            if expected.iter().all(|seed| seed.3 == 0) {
+                assert!(Arc::ptr_eq(old_child, target_child));
+            }
+            if expected.iter().all(|seed| seed.3 == 1) {
+                assert!(Arc::ptr_eq(&old.slot_work[0], &target.slot_work[0]));
+            }
+            assert!(Arc::ptr_eq(
+                &radix_lookup(&base.entries, 2).unwrap().node,
+                &radix_lookup(&applied.document.entries, 2).unwrap().node
+            ));
+        }
+    }
+
+    #[test]
+    fn retained_source_size_expression_identity_is_independent_of_resolved_geometry() {
+        let mut root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            7,
+        );
+        let LayoutNode::Box { height, .. } = &mut root else {
+            unreachable!()
+        };
+        *height = Size::Lines { value: 10 };
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let expression = serde_json::json!({"kind": "add", "values": [{"kind": "lines", "value": 4}, {"kind": "lines", "value": 6}]});
+        let applied = base
+            .apply_delta(context_test_delta(vec![source_test_entry(
+                1,
+                7,
+                8,
+                vec![serde_json::json!({"slot": 0, "local": {"height": expression}})],
+            )]))
+            .unwrap();
+        assert_eq!(
+            source_test_seeds(&applied.changes),
+            vec![(1, 7, 8, 0, vec![LocalField::Height])]
+        );
+        assert_eq!(
+            base.layout_tape(test_context(), None).unwrap(),
+            applied.document.layout_tape(test_context(), None).unwrap()
+        );
+        assert_eq!(applied.stats.source_work.size_nodes_compared, 1);
+        let equal = applied
+            .document
+            .apply_delta(context_test_delta(vec![source_test_entry(
+                1,
+                8,
+                9,
+                vec![serde_json::json!({"slot": 0, "local": {"height": expression}})],
+            )]))
+            .unwrap();
+        assert_eq!(equal.stats.source_work.size_nodes_compared, 3);
+        assert_eq!(equal.stats.source_work.local_nodes_copied, 0);
+        assert!(equal.changes.owners.is_empty());
+    }
+
+    #[test]
+    fn retained_source_registry_only_updates_and_forks_bind_exact_document_identity() {
+        let base = source_test_base();
+        let mut delta = context_test_delta(vec![]);
+        delta.styles_append = vec![serde_json::from_value(
+            serde_json::json!({"mode": "add", "face": {"foreground": "red"}}),
+        )
+        .unwrap()];
+        delta.property_template_target_count = 2;
+        let registry = base.apply_delta(delta).unwrap();
+        assert_eq!(registry.changes.registry_ranges(), (0..1, 0..2));
+        assert!(registry.changes.owners.is_empty());
+        assert_eq!(registry.stats.entries_parsed, 0);
+        assert!(Arc::ptr_eq(&base.entries, &registry.document.entries));
+        assert_eq!(base.style_count, 0);
+
+        let entry = source_test_entry(
+            1,
+            7,
+            8,
+            vec![serde_json::json!({"slot": 0, "local": {"padding-left": 2}})],
+        );
+        let left = base
+            .apply_delta(context_test_delta(vec![entry.clone()]))
+            .unwrap();
+        let right = base.apply_delta(context_test_delta(vec![entry])).unwrap();
+        assert!(left.changes.applies_to(&base, &left.document));
+        assert!(!left.changes.applies_to(&base, &right.document));
+        assert!(!left.changes.applies_to(&right.document, &left.document));
+        assert_eq!(
+            source_test_seeds(&left.changes),
+            source_test_seeds(&right.changes)
+        );
+    }
+
+    #[test]
+    fn retained_source_transient_changes_do_not_retain_document_history() {
+        let base = source_test_base();
+        let weak_base = Arc::downgrade(&base);
+        let applied = base
+            .apply_delta(context_test_delta(vec![source_test_entry(1, 7, 8, vec![])]))
+            .unwrap();
+        let AppliedDelta {
+            document: target,
+            changes,
+            ..
+        } = applied;
+        drop(base);
+        assert!(
+            weak_base.upgrade().is_some(),
+            "the transient descriptor owns its exact base"
+        );
+        drop(changes);
+        assert!(
+            weak_base.upgrade().is_none(),
+            "a target document must not retain its historical base"
+        );
+        let weak_target = Arc::downgrade(&target);
+        let next = target
+            .apply_delta(context_test_delta(vec![source_test_entry(1, 8, 9, vec![])]))
+            .unwrap();
+        drop(target);
+        let AppliedDelta {
+            document: next,
+            changes,
+            ..
+        } = next;
+        drop(changes);
+        assert!(weak_target.upgrade().is_none());
+        assert_eq!(radix_lookup(&next.entries, 1).unwrap().revision, 9);
+    }
+
+    #[test]
+    fn retained_source_local_comparison_work_does_not_grow_with_owner_count() {
+        for count in [32, 128, 512] {
+            let children = (2..count + 2)
+                .map(|id| {
+                    identified(
+                        text_box(id, measured_text(vec![vec![cluster("abc", 3, None)]]), None),
+                        id as u64,
+                        7,
+                    )
+                })
+                .collect();
+            let root = identified(
+                child_box(1, context_test_flex(Size::Auto, children), None),
+                1,
+                7,
+            );
+            let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+            let applied = base.apply_delta(context_test_delta(vec![source_test_entry(2, 7, 8, vec![serde_json::json!({"slot": 0, "local": {"content": source_test_content("abc"), "padding-left": 2}})])])).unwrap();
+            let work = applied.stats.source_work;
+            assert_eq!(
+                (
+                    work.fields_compared,
+                    work.text_lines_compared,
+                    work.text_clusters_compared,
+                    work.text_bytes_compared,
+                    work.local_nodes_copied
+                ),
+                (2, 1, 1, 3, 1)
+            );
+            assert_eq!(applied.stats.trie_path_nodes_copied, 17);
+            assert!(Arc::ptr_eq(&base.topology, &applied.document.topology));
+        }
+    }
+
+    #[test]
+    fn retained_source_rejection_contract_preserves_parent_and_render() {
+        let root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            7,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root)).unwrap();
+        let before = base.layout_tape(test_context(), None).unwrap();
+        let entry = |id, expected, target, patches: Vec<JsonValue>| {
+            serde_json::json!({
+                "node-id": id, "expected-revision": expected, "target-revision": target,
+                "slot-patches": patches
+            })
+        };
+        let same = serde_json::json!({"slot": 0, "local": {"padding-left": 0}});
+        for (entries, message) in [
+            (
+                vec![entry(1, 6, 8, vec![same.clone()])],
+                "node revision mismatch",
+            ),
+            (
+                vec![entry(1, 7, 7, vec![same.clone()])],
+                "node revision mismatch",
+            ),
+            (vec![entry(99, 7, 8, vec![same.clone()])], "unknown node id"),
+            (
+                vec![entry(1, 7, 8, vec![same.clone()]), entry(1, 7, 9, vec![])],
+                "duplicate node id",
+            ),
+            (
+                vec![entry(1, 7, 8, vec![same.clone(), same.clone()])],
+                "duplicate slot",
+            ),
+            (
+                vec![entry(
+                    1,
+                    7,
+                    8,
+                    vec![
+                        serde_json::json!({"slot": 0, "local": {"padding-left": 0, "unknown-field": 0}}),
+                    ],
+                )],
+                "Unsupported native retained box field",
+            ),
+            (
+                vec![entry(
+                    1,
+                    7,
+                    8,
+                    vec![
+                        serde_json::json!({"slot": 0, "local": {"padding-left": 0, "height": {"kind": "lines", "value": -1}}}),
+                    ],
+                )],
+                "cannot be negative",
+            ),
+            (
+                vec![entry(
+                    1,
+                    7,
+                    8,
+                    vec![
+                        serde_json::json!({"slot": 0, "local": {"padding-left": 0, "content": null}}),
+                    ],
+                )],
+                "exactly one text or child",
+            ),
+            (
+                vec![entry(1, 7, 8, vec![same.clone()]), entry(99, 7, 8, vec![])],
+                "unknown node id",
+            ),
+        ] {
+            let error = base.apply_delta(context_test_delta(entries)).unwrap_err();
+            assert!(error.contains(message), "{error}");
+            assert_eq!(radix_lookup(&base.entries, 1).unwrap().revision, 7);
+            assert_eq!(base.layout_tape(test_context(), None).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn retained_source_equal_and_mixed_fields_preserve_render_contract() {
+        let root = identified(
+            text_box(1, measured_text(vec![vec![cluster("x", 1, None)]]), None),
+            1,
+            7,
+        );
+        let (base, _) = RetainedDocument::bootstrap(retained_document(root.clone())).unwrap();
+        let content = serde_json::json!({"lines": [{"clusters": [{"text": "x", "width": 1, "cjk": false, "space": false}]}]});
+        for local in [
+            serde_json::json!({}),
+            serde_json::json!({"padding-left": 0, "content": content.clone()}),
+            serde_json::json!({"padding-left": 2, "content": content}),
+        ] {
+            let target = base
+                .apply_delta(context_test_delta(vec![serde_json::json!({
+                    "node-id": 1, "expected-revision": 7, "target-revision": 8,
+                    "slot-patches": [{"slot": 0, "local": local}]
+                })]))
+                .unwrap()
+                .document;
+            let mut expected = root.clone();
+            if let LayoutNode::Box { padding_left, .. } = &mut expected {
+                *padding_left = local
+                    .get("padding-left")
+                    .and_then(JsonValue::as_i64)
+                    .unwrap_or(0);
+            }
+            assert_eq!(
+                target.layout_tape(test_context(), None).unwrap(),
+                retained_document(expected)
+                    .layout_tape(test_context(), None)
+                    .unwrap()
+            );
+            assert_eq!(radix_lookup(&target.entries, 1).unwrap().revision, 8);
+        }
+        assert_eq!(radix_lookup(&base.entries, 1).unwrap().revision, 7);
+    }
+
     #[test]
     fn retained_scalar_patch_path_copies_only_radix_and_shares_wide_edges() {
         let children = Arc::new(
@@ -8878,7 +11025,10 @@ mod tests {
             }]
         }))
         .unwrap();
-        let (target, validated, copied) = base.apply_delta(delta).unwrap();
+        let applied = base.apply_delta(delta).unwrap();
+        let target = applied.document;
+        let validated = applied.stats.entries_parsed;
+        let copied = applied.stats.trie_path_nodes_copied;
         assert_eq!(validated, 1);
         assert_eq!(copied, 17);
         let target_root = radix_lookup(&target.entries, 1).unwrap();
@@ -8920,8 +11070,10 @@ mod tests {
             }))
             .unwrap()
         };
-        let (left, _, copied) = base.apply_delta(revision_only(3, 20)).unwrap();
-        let (right, _, _) = base.apply_delta(revision_only(3, 30)).unwrap();
+        let applied = base.apply_delta(revision_only(3, 20)).unwrap();
+        let left = applied.document;
+        let copied = applied.stats.trie_path_nodes_copied;
+        let right = base.apply_delta(revision_only(3, 30)).unwrap().document;
         assert_eq!(copied, 17);
         assert!(Arc::ptr_eq(
             &radix_lookup(&base.entries, 1).unwrap().node,
@@ -9029,11 +11181,11 @@ mod tests {
         let forward = base
             .apply_delta(delta(vec![entry(2, 10), entry(3, high)]))
             .unwrap()
-            .0;
+            .document;
         let reverse = base
             .apply_delta(delta(vec![entry(3, high), entry(2, 10)]))
             .unwrap()
-            .0;
+            .document;
         assert_eq!(forward.work_units, MAX_LAYOUT_WORK_UNITS);
         assert_eq!(reverse.work_units, MAX_LAYOUT_WORK_UNITS);
     }

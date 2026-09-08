@@ -189,19 +189,21 @@
         (should-not (ebox-incremental--owner-disjoint-from-scroll-p
                      (current-buffer) state prepared candidate owner)))
       (plist-put candidate :region-box-table (plist-get state :region-box-table))
-      (let ((parents (copy-hash-table (plist-get state :parent-table))))
-        (puthash scroll-id owner parents)
+      (let ((parents (ebox-incremental--candidate-copy-index-table
+                      state :parent-table 'equal)))
+        (setq parents (ebox-runtime-index-put scroll-id owner parents))
         (plist-put candidate :parent-table parents)
         (should-not (ebox-incremental--owner-disjoint-from-scroll-p
                      (current-buffer) state prepared candidate owner)))
       (plist-put candidate :parent-table (plist-get state :parent-table))
-      (let* ((parents (copy-hash-table (plist-get state :parent-table)))
+      (let* ((parents (ebox-incremental--candidate-copy-index-table
+                       state :parent-table 'equal))
              (overlapping-old-state (copy-sequence state))
              (ebox-incremental--buffer-render-state-override
               (cons (current-buffer) candidate)))
         ;; The caller may already expose candidate ancestry.  Old-state
         ;; ancestry must still reject an owner that used to be inside scroll.
-        (puthash owner scroll-id parents)
+        (setq parents (ebox-runtime-index-put owner scroll-id parents))
         (plist-put overlapping-old-state :parent-table parents)
         (should-not (ebox-incremental--owner-disjoint-from-scroll-p
                      (current-buffer) overlapping-old-state prepared
@@ -838,9 +840,10 @@
 (defun ebox-commit-test--hash-facts (table &optional values)
   "Return sorted TABLE keys, or key/value pairs when VALUES is non-nil."
   (let (facts)
-    (maphash (lambda (key value)
-               (push (if values (cons key value) key) facts))
-             table)
+    (ebox-runtime-index-map
+     (lambda (key value)
+       (push (if values (cons key value) key) facts))
+     table)
     (sort facts
           (lambda (left right)
             (string< (prin1-to-string left)
@@ -1448,7 +1451,7 @@
            new-root new-source-index))
          (new-index (ebox--runtime-index new-root t new-source-index))
          (root-id (plist-get old-root :node-id)))
-    (maphash (lambda (node-id _node)
+    (ebox-runtime-index-map (lambda (node-id _node)
                (puthash node-id (list 'object node-id) old-objects))
              (plist-get old-index :node-table))
     (let* ((old-state (append (list :root-node old-root
@@ -1495,7 +1498,7 @@
            new-root new-source-index))
          (new-index (ebox--runtime-index new-root t new-source-index))
          (root-id (plist-get old-root :node-id)))
-    (maphash (lambda (node-id _node)
+    (ebox-runtime-index-map (lambda (node-id _node)
                (puthash node-id (list 'object node-id) old-objects))
              (plist-get old-index :node-table))
     (let ((old-state (append (list :root-node old-root
@@ -2137,20 +2140,24 @@ remain retained identities."
                                (node-table (plist-get state :node-table))
                                (parent-table (plist-get state :parent-table))
                                (node-id (and region-node-table
-                                             (gethash value region-node-table)))
+                                             (ebox-runtime-index-get
+                                              value region-node-table)))
                                (source-node-id node-id)
                                (root-node-id
                                 (plist-get (plist-get state :root-node)
                                            :node-id))
                                key)
                           (while (and node-id (not key))
-                            (when-let* ((node (gethash node-id node-table)))
+                            (when-let* ((node
+                                        (ebox-runtime-index-get
+                                         node-id node-table)))
                               (setq key
                                     (ebox-tree-node-key
                                      (plist-get state :source-index) node)))
                             (setq node-id
                                   (and (not key)
-                                       (gethash node-id parent-table))))
+                                       (ebox-runtime-index-get
+                                        node-id parent-table))))
                           (or key
                               (and (equal source-node-id root-node-id) 'root)
                               value))
@@ -2828,7 +2835,7 @@ Normalize only buffer-local region identifiers; retain every text property."
                   (or (gethash id regions)
                       (ert-fail (list :unknown-region id)))))
       (walk (plist-get state :root-node) '(root))
-      (maphash (lambda (region node-id)
+      (ebox-runtime-index-map (lambda (region node-id)
                  (puthash region (gethash node-id paths) regions))
                (plist-get state :region-node-table))
       (let ((position 0))
@@ -2887,7 +2894,8 @@ Normalize only buffer-local region identifiers; retain every text property."
          (ebox-commit-test--allocated-single-root "short" "#123456"))
         (let* ((state (ebox--buffer-render-state (current-buffer)))
                (owner-id
-                (cl-loop for node being the hash-values of (plist-get state :node-table)
+                (cl-loop for id in (ebox-runtime-index-keys (plist-get state :node-table))
+                         for node = (ebox-runtime-index-get id (plist-get state :node-table))
                          when (eq (ebox-tree-node-author-key
                                    (plist-get state :source-index) node)
                                   'selection-panel)
@@ -3728,7 +3736,7 @@ When INHERITED-P is non-nil, keep ancestor color across an untouched sibling."
                (regions (make-hash-table :test #'eql)))
            (dolist (entry (nodes state))
              (puthash (plist-get (cdr entry) :node-id) (car entry) paths))
-           (maphash (lambda (region node-id)
+           (ebox-runtime-index-map (lambda (region node-id)
                       (puthash region (gethash node-id paths) regions))
                     (plist-get state :region-node-table))
            regions))
@@ -3862,10 +3870,10 @@ When INHERITED-P is non-nil, keep ancestor color across an untouched sibling."
                               (ebox-source--subject-table-get
                                subjects (ebox-tree-node-source-handle peer)))
                              (parent-id
-                              (gethash (plist-get peer :node-id)
+                              (ebox-runtime-index-get (plist-get peer :node-id)
                                        (plist-get state :parent-table)))
                              (parent
-                              (gethash parent-id (plist-get state :node-table)))
+                              (ebox-runtime-index-get parent-id (plist-get state :node-table)))
                              (parent-subject
                               (ebox-source--subject-table-get
                                subjects (ebox-tree-node-source-handle parent))))
@@ -4651,6 +4659,187 @@ When INHERITED-P is non-nil, keep ancestor color across an untouched sibling."
     (should (eq 'seventeen
                 (ebox-native-reflow--persistent-index-get next 17)))
     (should-not (eq base next))))
+
+(ert-deftest ebox-logical-candidate-path-copies-runtime-indexes-only ()
+  "A local logical commit shares its base and never copies a complete core map."
+  (let* ((input
+          (ebox-test-column
+           (ebox-test-box :key 'message :source-identity 'message
+                          (ebox-test-text "old"))
+           (ebox-test-box :key 'tail (ebox-test-text "tail"))))
+         (buffer
+          (ebox-render-to-buffer
+           (generate-new-buffer-name " *ebox-runtime-index-local*") input))
+         (old-state (ebox--buffer-render-state buffer))
+         (old-nodes (plist-get old-state :node-table))
+         (old-parents (plist-get old-state :parent-table))
+         (old-regions (plist-get old-state :region-node-table))
+         (old-postorder (plist-get old-state :native-node-postorder))
+         (old-message (ebox--host-ref-node buffer 'message))
+         (original-copy (symbol-function 'copy-hash-table))
+         copied-core)
+    (unwind-protect
+        (let ((candidate (ebox-candidate-begin buffer)))
+          (ebox-candidate-replace-host-ref
+           candidate 'message
+           (ebox-test-box :key 'message :source-identity 'message
+                          (ebox-test-text "new")))
+          (cl-letf (((symbol-function 'copy-hash-table)
+                     (lambda (table)
+                       (when (memq table
+                                   (list old-nodes old-parents old-regions))
+                         (setq copied-core t))
+                       (funcall original-copy table))))
+            (ebox-commit buffer candidate))
+          (let* ((state (ebox--buffer-render-state buffer))
+                 (nodes (plist-get state :node-table))
+                 (parents (plist-get state :parent-table))
+                 (regions (plist-get state :region-node-table)))
+            (should-not copied-core)
+            (should (ebox-runtime-index-p nodes))
+            (should (ebox-runtime-index-p parents))
+            (should (ebox-runtime-index-p regions))
+            (should-not (eq nodes old-nodes))
+            (should (eq regions old-regions))
+            (should (eq (plist-get state :native-node-postorder)
+                        old-postorder))
+            (should (eq (plist-get state :native-node-postorder-ids)
+                        old-postorder))
+            (should (eq (ebox-runtime-index-get
+                         (plist-get old-message :node-id) old-nodes)
+                        old-message))
+            (should
+             (cl-every
+              (lambda (node-id)
+                (ebox-runtime-index-get node-id nodes))
+              old-postorder))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-logical-candidate-converts-legacy-native-postorder ()
+  "Legacy and mixed vectors resolve every entry against candidate nodes."
+  (let* ((old-leaf '(:ebox-type text :node-id 1 :content "old"))
+         (old-root (list :ebox-type 'column :node-id 2
+                         :children (list old-leaf)))
+         (new-leaf '(:ebox-type text :node-id 1 :content "new"))
+         (new-root (list :ebox-type 'column :node-id 2
+                         :children (list new-leaf))))
+    (dolist (table (list (ebox-runtime-index-empty)
+                         (make-hash-table :test 'equal)))
+      (setq table (ebox-runtime-index-put 1 new-leaf table)
+            table (ebox-runtime-index-put 2 new-root table))
+      (dolist (legacy (list (vector old-leaf old-root)
+                            (vector 1 old-root)
+                            (vector old-leaf 2)))
+        (let* ((before (copy-sequence legacy))
+               (state (list :native-node-postorder legacy
+                            :native-node-postorder-ids (vector 1 2)))
+               (postorder
+                (ebox-incremental--candidate-retain-native-postorder
+                 state table)))
+          (should (equal postorder [1 2]))
+          (should-not (eq postorder legacy))
+          (should (equal legacy before))
+          (should (eq (ebox-native-reflow--postorder-node
+                       (aref postorder 0) table)
+                      new-leaf))
+          (should (eq (ebox-native-reflow--postorder-node
+                       (aref postorder 1) table)
+                      new-root)))))))
+
+(ert-deftest ebox-logical-candidate-native-postorder-validates-legacy-membership ()
+  "Unmarked retained entries reject missing candidate nodes; empty is valid."
+  (let* ((node '(:ebox-type text :node-id 1 :content "old"))
+         (table (ebox-runtime-index-empty)))
+    (should-error
+     (ebox-incremental--candidate-retain-native-postorder
+      (list :native-node-postorder (vector node)) table)
+     :type 'error)
+    (should (equal
+             (ebox-incremental--candidate-retain-native-postorder
+              (list :native-node-postorder []) table)
+             []))
+    (should-not
+     (ebox-incremental--candidate-retain-native-postorder nil table))))
+
+(ert-deftest ebox-logical-candidate-retains-native-id-postorder-without-lookups ()
+  "Generated ID vectors retain their exact identity without walking nodes."
+  (let* ((input (ebox-test-column (ebox-test-text "retained")))
+         (root (ebox-test-root input))
+         (index (ebox--runtime-index root nil (ebox-test-source-index input)))
+         (postorder (plist-get index :native-node-postorder)))
+    (should (eq postorder (plist-get index :native-node-postorder-ids)))
+    (cl-letf (((symbol-function 'ebox-runtime-index-get)
+               (lambda (&rest _arguments)
+                 (ert-fail "Generated native ID postorder was remapped"))))
+      (should (eq postorder
+                  (ebox-incremental--candidate-retain-native-postorder
+                   index (plist-get index :node-table)))))))
+
+(defun ebox-test--native-topology-full-gate-fixture ()
+  "Return `(BUFFER OLD-STATE CANDIDATE-STATE PREPARED TAIL)' for a paint edit."
+  (let* ((previous-message
+          (ebox-test-box :key 'message :source-identity 'message
+                         :background-color "#111111"
+                         (ebox-test-text "message")))
+         (previous
+          (ebox-test-column
+           previous-message
+           (ebox-test-box :key 'tail :source-identity 'tail
+                          (ebox-test-text "tail"))))
+         (next
+          (ebox-test-box :key 'message :source-identity 'message
+                         :background-color "#222222"
+                         (ebox-test-text "message")))
+         (buffer
+          (ebox-render-to-buffer
+           (generate-new-buffer-name " *ebox-topology-authority*") previous))
+         (old-state (ebox--buffer-render-state buffer))
+         (candidate (ebox-candidate-begin buffer)))
+    (unless (ebox-candidate-patch-host-paint
+             candidate 'message
+             previous-message next)
+      (error "Topology authority fixture paint patch was rejected"))
+    (let* ((prepared
+            (ebox-incremental--prepare-logical-candidate
+             buffer old-state candidate))
+           (candidate-state
+            (ebox-incremental--candidate-state
+             old-state (plist-get prepared :root)
+             (plist-get prepared :index) prepared)))
+      (list buffer old-state candidate-state prepared
+            (ebox--host-ref-node buffer 'tail)))))
+
+(ert-deftest ebox-native-topology-full-gate-rejects-untouched-object-loss ()
+  "The full topology gate rejects a missing untouched surface object."
+  (pcase-let ((`(,buffer ,old-state ,candidate-state ,prepared ,tail)
+               (ebox-test--native-topology-full-gate-fixture)))
+    (unwind-protect
+        (progn
+          (should (ebox-native-commit-topology-stable-p
+                   old-state candidate-state prepared))
+          (remhash (plist-get tail :node-id)
+                   (plist-get old-state :surface-node-object-table))
+          (should-not (ebox-native-commit-topology-stable-p
+                       old-state candidate-state prepared)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
+(ert-deftest ebox-native-topology-full-gate-rejects-untouched-source-key-change ()
+  "The full topology gate rejects an untouched source key change."
+  (pcase-let ((`(,buffer ,old-state ,candidate-state ,prepared ,tail)
+               (ebox-test--native-topology-full-gate-fixture)))
+    (unwind-protect
+        (progn
+          (should (ebox-native-commit-topology-stable-p
+                   old-state candidate-state prepared))
+          (let* ((source-index (plist-get candidate-state :source-index))
+                 (binding
+                  (ebox-source-index-rebind
+                   source-index (ebox-tree-node-source-handle tail)
+                   :key 'tampered-tail)))
+            (plist-put candidate-state :source-index (car binding)))
+          (should-not (ebox-native-commit-topology-stable-p
+                       old-state candidate-state prepared)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-native-session-fork-shares-immutable-compiler-roots ()
   "Forking does not clone the retained fragment map or persistent indexes."

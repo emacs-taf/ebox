@@ -18,6 +18,7 @@
 (require 'ebox-tree)
 (require 'ebox-layout)
 (require 'ebox-incremental)
+(require 'ebox-runtime-index)
 (require 'tp-reactive)
 (require 'tp-surface)
 (require 'tp)
@@ -1644,7 +1645,7 @@ PREVIOUS-STATE's node-object table."
     (context nodes node-root old-objects objects-by-node)
   "Reuse native NODES whose object topology is proven unchanged."
   (tp-object-reuse-subtree context node-root)
-  (maphash
+  (ebox-runtime-index-map
    (lambda (node-id node)
      (let ((object (gethash node-id old-objects)))
        (unless object
@@ -1667,7 +1668,7 @@ PREVIOUS-STATE's node-object table."
          (old-objects (plist-get previous-state :surface-node-object-table))
          (touched (make-hash-table :test 'equal))
          (objects-by-id (make-hash-table :test 'equal)))
-    (unless (and (hash-table-p nodes) (hash-table-p parents)
+    (unless (and (ebox-runtime-index-like-p nodes) (ebox-runtime-index-like-p parents)
                  (hash-table-p old-objects)
                  (or (plist-get state-overrides :native-topology-stable-p)
                      touched-ids))
@@ -1677,7 +1678,7 @@ PREVIOUS-STATE's node-object table."
          context nodes node-root old-objects objects-by-node)
       (tp-object-retain context node-root)
       (dolist (node-id touched-ids) (puthash node-id t touched))
-      (maphash
+      (ebox-runtime-index-map
        (lambda (node-id node)
          (when subject-table
            (when-let* ((subject
@@ -1697,10 +1698,10 @@ PREVIOUS-STATE's node-object table."
              (puthash node-id object objects-by-id))))
        nodes)
       (dolist (node-id touched-ids)
-        (let* ((node (gethash node-id nodes))
-               (parent-id (and node (gethash node-id parents)))
+        (let* ((node (ebox-runtime-index-get node-id nodes))
+               (parent-id (and node (ebox-runtime-index-get node-id parents)))
                (old-object (and node (gethash node-id old-objects)))
-               (parent-node (and parent-id (gethash parent-id nodes)))
+               (parent-node (and parent-id (ebox-runtime-index-get parent-id nodes)))
                (position
                 (if parent-node
                     (or (cl-position
@@ -2283,7 +2284,7 @@ RETAINED-OWNED-RANGES witnesses unchanged ownership when it is that snapshot."
                 (progn
                   (setq object (and objects (gethash node-id objects)))
                   (or (not object) (not (tp-object-mounted-p object)))))
-      (setq node-id (and parents (gethash node-id parents))))
+      (setq node-id (and parents (ebox-runtime-index-get node-id parents))))
     (unless (and object (tp-object-live-p object)
                  (tp-object-mounted-p object))
       (error "Ebox scoped owner has no mounted TP object"))
@@ -2728,19 +2729,19 @@ source-handle-to-subject table when the requested local preparation completed."
                   (when (gethash node-id visiting)
                     (error "Ebox candidate style parent cycle at %S" node-id))
                   (puthash node-id t visiting)
-                  (let* ((node (gethash node-id new-nodes))
-                         (old-node (gethash node-id old-nodes))
-                         (parent-id (gethash node-id parents))
+                  (let* ((node (ebox-runtime-index-get node-id new-nodes))
+                         (old-node (ebox-runtime-index-get node-id old-nodes))
+                         (parent-id (ebox-runtime-index-get node-id parents))
                          (parent-style (and parent-id (resolve parent-id)))
                          (parent-subject
                           (and parent-id (gethash parent-id subjects-by-id)))
                          (old-parent-id
                           (and old-node
-                               (gethash node-id
+                               (ebox-runtime-index-get node-id
                                         (plist-get old-state :parent-table))))
                          (old-parent
                           (and old-parent-id
-                               (gethash old-parent-id old-nodes)))
+                               (ebox-runtime-index-get old-parent-id old-nodes)))
                          (old-parent-style
                           (and old-parent
                                (plist-get old-parent :ebox-computed-style)))
@@ -2805,7 +2806,7 @@ source-handle-to-subject table when the requested local preparation completed."
                         (ebox-surface--project-font
                          node style
                          (and parent-id
-                              (plist-get (gethash parent-id new-nodes)
+                              (plist-get (ebox-runtime-index-get parent-id new-nodes)
                                          :ebox-font-fact))
                          snapshot)
                         (cond
@@ -2827,7 +2828,7 @@ source-handle-to-subject table when the requested local preparation completed."
                     (puthash node-id style resolved)
                     style))))))
           (dolist (node-id node-ids)
-            (when (gethash node-id new-nodes)
+            (when (ebox-runtime-index-get node-id new-nodes)
               (resolve node-id))))
         subjects-by-handle))))
 
@@ -2942,7 +2943,7 @@ dependencies, or any malformed index conservatively preserves root planning."
                signature)))))
     (and (hash-table-p objects)
          (hash-table-p style-states)
-         (hash-table-p candidate-nodes)
+         (ebox-runtime-index-like-p candidate-nodes)
          dirty-set
          (cl-every
           (lambda (entry)
@@ -2952,7 +2953,8 @@ dependencies, or any malformed index conservatively preserves root planning."
                      (object (and node-id (gethash node-id objects)))
                      (style-state (and object (gethash object style-states)))
                      (candidate-node (and node-id
-                                          (gethash node-id candidate-nodes)))
+                                          (ebox-runtime-index-get
+                                           node-id candidate-nodes)))
                      (subject (and style-state
                                    (plist-get style-state :subject)))
                      (candidate-declarations
@@ -3061,7 +3063,7 @@ dependencies, or any malformed index conservatively preserves root planning."
 (defun ebox-surface--region-object-table (state node-objects)
   "Return region-to-object table from candidate STATE and NODE-OBJECTS."
   (let ((table (make-hash-table :test 'equal)))
-    (maphash
+    (ebox-runtime-index-map
      (lambda (region-id node-id)
        (let ((object (gethash node-id node-objects)))
          (unless object
@@ -3179,7 +3181,7 @@ available during planning; replacements here belong only to the candidate."
     (when (hash-table-p snapshots)
       (maphash
        (lambda (node-id snapshot)
-         (let* ((node (gethash node-id nodes))
+         (let* ((node (ebox-runtime-index-get node-id nodes))
                 (fresh (and node (ebox--node-layout-snapshot nil node nil))))
            (unless (and fresh
                         (cl-every
@@ -3268,8 +3270,9 @@ available during planning; replacements here belong only to the candidate."
                      (ebox--render-layout node)))))
           (unless (plist-get state :native-render-p)
             (ebox--record-render-output-provenance rendered))
-          (ebox-surface--restore-scroll-metadata
-           scroll-table scroll-metadata)
+          (unless (plist-get state :native-render-p)
+            (ebox-surface--restore-scroll-metadata
+             scroll-table scroll-metadata))
           (plist-put state :scroll-state-table scroll-table)
           (plist-put state :scroll-region-ids
                      (ebox-surface--hash-keys scroll-table))
@@ -3281,10 +3284,10 @@ available during planning; replacements here belong only to the candidate."
   "Attach retained TP objects to candidate nodes in STATE."
   (let ((nodes (plist-get state :node-table))
         (objects (plist-get state :surface-node-object-table)))
-    (when (and (hash-table-p nodes) (hash-table-p objects))
+    (when (and (ebox-runtime-index-like-p nodes) (hash-table-p objects))
       (maphash
        (lambda (node-id object)
-         (when-let* ((node (gethash node-id nodes)))
+         (when-let* ((node (ebox-runtime-index-get node-id nodes)))
            (plist-put node :surface-object object)))
        objects))
     state))
@@ -3300,7 +3303,7 @@ available during planning; replacements here belong only to the candidate."
          (objects (plist-get state :surface-node-object-table))
          (style-states (plist-get state :style-binding-states)))
     (dolist (owner-id owner-ids)
-      (when-let* ((node (and nodes (gethash owner-id nodes)))
+      (when-let* ((node (and nodes (ebox-runtime-index-get owner-id nodes)))
                   (object (and objects (gethash owner-id objects)))
                   (style-state (and style-states
                                     (gethash object style-states)))
@@ -3559,8 +3562,8 @@ properties.  Its local renderer cannot prove equivalence for such an owner."
         (nodes (plist-get state :node-table))
         (node-id owner-id)
         needed)
-    (while (and (not needed) (setq node-id (gethash node-id parents)))
-      (when-let* ((box (ebox-fragment-style-source-node (gethash node-id nodes))))
+    (while (and (not needed) (setq node-id (ebox-runtime-index-get node-id parents)))
+      (when-let* ((box (ebox-fragment-style-source-node (ebox-runtime-index-get node-id nodes))))
         (setq needed
               (or (ebox-get box :surface-properties)
                   (ebox-surface--region-face-contributions box '(bt bb) t)))))
@@ -3606,14 +3609,14 @@ Render-created paint origins compare their captured baselines instead."
 Compare resolved paint and surface properties, preserving opaque identities."
   (let ((old-id owner-id) (new-id owner-id) (same-p t))
     (while (and same-p old-id new-id)
-      (setq old-id (gethash old-id (plist-get previous-state :parent-table))
-            new-id (gethash new-id (plist-get state :parent-table))
+      (setq old-id (ebox-runtime-index-get old-id (plist-get previous-state :parent-table))
+            new-id (ebox-runtime-index-get new-id (plist-get state :parent-table))
             same-p (equal old-id new-id))
       (when (and same-p old-id)
         (let ((old (ebox-fragment-style-source-node
-                    (gethash old-id (plist-get previous-state :node-table))))
+                    (ebox-runtime-index-get old-id (plist-get previous-state :node-table))))
               (new (ebox-fragment-style-source-node
-                    (gethash new-id (plist-get state :node-table)))))
+                    (ebox-runtime-index-get new-id (plist-get state :node-table)))))
           (setq same-p
                 (and (eq (null old) (null new))
                      (or (null old)
@@ -3634,9 +3637,9 @@ Compare resolved paint and surface properties, preserving opaque identities."
     (buffer state owner-id snapshot allocated-width variable-content-p
             role-owned-lines-p changed-keys)
   "Return STATE's OWNER-ID rendered in its proven slot, or at natural size."
-  (let* ((node (gethash owner-id (plist-get state :node-table)))
-         (parent-id (gethash owner-id (plist-get state :parent-table)))
-         (parent (and parent-id (gethash parent-id (plist-get state :node-table)))))
+  (let* ((node (ebox-runtime-index-get owner-id (plist-get state :node-table)))
+         (parent-id (ebox-runtime-index-get owner-id (plist-get state :parent-table)))
+         (parent (and parent-id (ebox-runtime-index-get parent-id (plist-get state :node-table)))))
     (cond
      ((and role-owned-lines-p parent
            (eq (ebox-tree-display-inner parent) 'flex))
@@ -3781,9 +3784,9 @@ Only direct content characters may change.  An isolated old owner render must
 match the published text and the new render's complete property topology.
 Existing strict geometry validation still applies to the returned string.
 Proof mismatches return nil; unexpected rendering errors propagate."
-  (let* ((old-node (gethash owner-id
+  (let* ((old-node (ebox-runtime-index-get owner-id
                             (plist-get previous-state :node-table)))
-         (new-node (gethash owner-id (plist-get state :node-table)))
+         (new-node (ebox-runtime-index-get owner-id (plist-get state :node-table)))
          (regions (ebox--node-all-region-ids old-node))
          (render-node
           (ebox-surface--owner-slot-render-node
@@ -3797,9 +3800,9 @@ Proof mismatches return nil; unexpected rendering errors propagate."
             root t
             (ebox-tree-source-index
              root t
-             (when-let* ((parent-id (gethash owner-id (plist-get previous-state
+             (when-let* ((parent-id (ebox-runtime-index-get owner-id (plist-get previous-state
                                                                  :parent-table)))
-                         (parent (gethash parent-id (plist-get previous-state
+                         (parent (ebox-runtime-index-get parent-id (plist-get previous-state
                                                                :node-table))))
                (ebox-tree-display-inner parent))
              (plist-get previous-state :source-index) t))))))
@@ -3807,11 +3810,11 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                (equal regions (ebox--node-all-region-ids new-node))
                (cl-every
                 (lambda (region)
-                  (let* ((old-id (gethash region (plist-get previous-state
+                  (let* ((old-id (ebox-runtime-index-get region (plist-get previous-state
                                                             :region-node-table)))
-                         (new-id (gethash region (plist-get state :region-node-table)))
-                         (old (gethash old-id (plist-get previous-state :node-table)))
-                         (new (gethash new-id (plist-get state :node-table))))
+                         (new-id (ebox-runtime-index-get region (plist-get state :region-node-table)))
+                         (old (ebox-runtime-index-get old-id (plist-get previous-state :node-table)))
+                         (new (ebox-runtime-index-get new-id (plist-get state :node-table))))
                     (and (equal old-id new-id)
                          (if role-owned-lines-p
                              ;; The canonical candidate may replace an
@@ -3821,8 +3824,8 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                              ;; topology instead of retaining the old handle.
                              (and (eq (plist-get old :ebox-type)
                                       (plist-get new :ebox-type))
-                                  (equal (gethash old-id (plist-get previous-state :parent-table))
-                                         (gethash new-id (plist-get state :parent-table)))
+                                  (equal (ebox-runtime-index-get old-id (plist-get previous-state :parent-table))
+                                         (ebox-runtime-index-get new-id (plist-get state :parent-table)))
                                   (equal (ebox-tree-node-author-key
                                           (plist-get previous-state :source-index) old)
                                          (ebox-tree-node-author-key
@@ -3915,7 +3918,7 @@ Proof mismatches return nil; unexpected rendering errors propagate."
          (old-snapshot
           (and owner-id (ebox--ensure-layout-snapshot-details buffer owner-id)))
          (spans (and old-snapshot (plist-get old-snapshot :buffer-spans)))
-         (node (and owner-id (gethash owner-id (plist-get state :node-table))))
+         (node (and owner-id (ebox-runtime-index-get owner-id (plist-get state :node-table))))
          (render-node
           (and owner-id
                (ebox-surface--owner-slot-render-node
@@ -4010,7 +4013,7 @@ Proof mismatches return nil; unexpected rendering errors propagate."
   (let* ((owner-id (plist-get proof :owner-id))
          (old-snapshot (plist-get proof :snapshot))
          (spans (plist-get old-snapshot :buffer-spans))
-         (node (gethash owner-id (plist-get state :node-table)))
+         (node (ebox-runtime-index-get owner-id (plist-get state :node-table)))
          (render-node
           (if (and node (numberp (plist-get proof :allocated-width)))
               (plist-put (copy-sequence node)
@@ -4251,7 +4254,7 @@ untouched."
          (snapshot (and proof (plist-get proof :snapshot)))
          (old-spans (and proof (plist-get proof :old-spans)))
          (node (and owner-id
-                    (gethash owner-id (plist-get state :node-table))))
+                    (ebox-runtime-index-get owner-id (plist-get state :node-table))))
          (allocated-width (and proof
                                (plist-get proof :allocated-width))))
     (when (and proof snapshot old-spans node
@@ -4262,16 +4265,16 @@ untouched."
              (parent-table (plist-get state :parent-table))
              (ancestor-owner-ids
               (let ((walk (and parent-table
-                               (gethash owner-id parent-table)))
+                               (ebox-runtime-index-get owner-id parent-table)))
                     owners)
                 (while walk
                   (when-let* ((ancestor
-                               (gethash walk (plist-get state :node-table)))
+                               (ebox-runtime-index-get walk (plist-get state :node-table)))
                               (region-id
                                (ebox-surface--node-editable-region-id
                                 ancestor)))
                     (setq owners (append owners (list region-id))))
-                  (setq walk (gethash walk parent-table)))
+                  (setq walk (ebox-runtime-index-get walk parent-table)))
                 owners))
              (rendered
               (ebox--maplines
@@ -4657,11 +4660,11 @@ box with wrapper chrome falls back to the retained wrapper renderer."
          (nodes (plist-get state :node-table)))
     (and (plist-get state :runtime-index-prepared-p)
          root-id
-         (hash-table-p nodes)
-         (eq root (gethash root-id nodes))
-         (hash-table-p (plist-get state :parent-table))
+         (ebox-runtime-index-like-p nodes)
+         (eq root (ebox-runtime-index-get root-id nodes))
+         (ebox-runtime-index-like-p (plist-get state :parent-table))
          (hash-table-p (plist-get state :region-id-set))
-         (hash-table-p (plist-get state :region-node-table))
+         (ebox-runtime-index-like-p (plist-get state :region-node-table))
          (hash-table-p (plist-get state :region-box-count-table))
          (hash-table-p (plist-get state :region-box-table))
          (hash-table-p
@@ -4767,7 +4770,7 @@ Each owner appears at most once for one rendered fragment."
         owners)
     (dolist (region-id (delete-dups (mapcar #'cdr role-ids)))
       (let ((object (gethash region-id region-objects))
-            (node-id (gethash region-id region-node-table)))
+            (node-id (ebox-runtime-index-get region-id region-node-table)))
         (unless (and object node-id)
           (error "Ebox output references unknown region %S" region-id))
         (unless (gethash object attached)
@@ -4775,7 +4778,7 @@ Each owner appears at most once for one rendered fragment."
                       (ebox-surface--region-role-tags region-id role-ids))
                 owners)
           (puthash object t attached))
-        (setq node-id (gethash node-id parent-table))
+        (setq node-id (ebox-runtime-index-get node-id parent-table))
         (while node-id
           (let ((ancestor (gethash node-id node-objects)))
             (unless ancestor
@@ -4783,7 +4786,7 @@ Each owner appears at most once for one rendered fragment."
             (unless (gethash ancestor attached)
               (push (list ancestor (list :ebox/descendant-output t)) owners)
               (puthash ancestor t attached)))
-          (setq node-id (gethash node-id parent-table)))))
+          (setq node-id (ebox-runtime-index-get node-id parent-table)))))
     (nreverse owners)))
 
 (defun ebox-surface--line-layout-dependencies (fragments rendered)
@@ -5148,7 +5151,7 @@ Adjacent ranges merge only when both their owner and opaque tags match."
              (let ((attached (make-hash-table :test #'eq)))
                (dolist (owner owners) (puthash (car owner) t attached))
                (dolist (region-id layout-region-ids)
-                 (let ((node-id (gethash region-id
+                 (let ((node-id (ebox-runtime-index-get region-id
                                          (plist-get state :region-node-table))))
                    (while node-id
                      (let ((object (gethash node-id node-objects)))
@@ -5159,7 +5162,7 @@ Adjacent ranges merge only when both their owner and opaque tags match."
                          (push (list object '(:ebox/layout-output t)) owners)
                          (puthash object t attached)))
                      (setq node-id
-                           (gethash node-id (plist-get state :parent-table))))))))
+                           (ebox-runtime-index-get node-id (plist-get state :parent-table))))))))
            (puthash cache-key owners owner-cache))
          (dolist (owner owners)
            (let* ((object (nth 0 owner))
@@ -5288,7 +5291,7 @@ all descendant ranges remain unchanged."
   (let* ((proof (plist-get state :formatting-context-reflow-proof))
          (owner-id (plist-get proof :owner-id))
          (owner (and owner-id (gethash owner-id node-objects)))
-         (node (and owner-id (gethash owner-id (plist-get state :node-table))))
+         (node (and owner-id (ebox-runtime-index-get owner-id (plist-get state :node-table))))
          (region-id (and node (plist-get node :region-id)))
          (block-start
           (max 0
@@ -5494,7 +5497,7 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
       (let ((key node-id)
             (parents (plist-get state :parent-table))
             (depth 0))
-        (while (setq node-id (and node-id (gethash node-id parents)))
+        (while (setq node-id (and node-id (ebox-runtime-index-get node-id parents)))
           (cl-incf depth))
         (when ebox-surface--paint-node-depth-cache
           (puthash key depth ebox-surface--paint-node-depth-cache))
@@ -5511,14 +5514,16 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
       (let ((region-nodes (plist-get state :region-node-table))
             (parents (plist-get state :parent-table)) deepest deepest-depth)
         (dolist (entry role-ids)
-          (when-let* ((node-id (gethash (cdr entry) region-nodes)))
+          (when-let* ((node-id
+                       (ebox-runtime-index-get
+                        (cdr entry) region-nodes)))
             (let ((depth (ebox-surface--node-depth state node-id)))
               (when (or (null deepest-depth) (> depth deepest-depth))
                 (setq deepest node-id deepest-depth depth)))))
         (let (chain)
           (while deepest
             (push deepest chain)
-            (setq deepest (gethash deepest parents)))
+            (setq deepest (ebox-runtime-index-get deepest parents)))
           (setq chain (nreverse chain))
           (when ebox-surface--paint-node-chain-cache
             (puthash role-ids chain ebox-surface--paint-node-chain-cache))
@@ -5580,7 +5585,7 @@ ANCESTOR-P means BOX wraps a more specific rendered surface."
   (let ((nodes (plist-get state :node-table)) result first)
     (setq first t)
     (dolist (node-id (ebox-surface--paint-node-chain state role-ids))
-      (when-let* ((node (gethash node-id nodes))
+      (when-let* ((node (ebox-runtime-index-get node-id nodes))
                   (box (ebox-fragment-style-source-node node)))
         (let* ((region-id (plist-get box :region-id))
                (roles
@@ -5768,7 +5773,7 @@ relative face contributions and performs the final merge during prepare."
   "Return FRAGMENTS with horizontal border roles updated from STATE."
   (let ((nodes (plist-get state :node-table)))
     (dolist (dirty dirty-set fragments)
-      (when-let* ((node (gethash (plist-get dirty :node-id) nodes))
+      (when-let* ((node (ebox-runtime-index-get (plist-get dirty :node-id) nodes))
                   (box (ebox-fragment-style-source-node node))
                   (region-id (plist-get box :region-id)))
         (dolist (entry '(((:border-top-width :border-top-style)
@@ -5849,7 +5854,7 @@ OLD-TEXT is a defensive snapshot of the published TP content."
     (when (hash-table-p snapshots)
       (dolist (dirty dirty-set)
         (when-let* ((node-id (plist-get dirty :node-id))
-                    (node (gethash node-id nodes))
+                    (node (ebox-runtime-index-get node-id nodes))
                     (snapshot (gethash node-id snapshots)))
           (plist-put snapshot :style-signature
                      (ebox-fragment-node-style-signature node)))))

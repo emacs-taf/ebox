@@ -156,7 +156,8 @@
   (should (commandp 'ebox-byte-compile))
   (should
    (equal ebox--compile-sources
-          '("ebox-cache.el" "ebox-source.el" "ebox-state-contract.el"
+          '("ebox-cache.el" "ebox-source.el" "ebox-runtime-index.el"
+            "ebox-state-contract.el"
             "ebox-font.el" "ebox-style.el"
             "ebox-layout-config.el"
             "ebox-node-factory.el"

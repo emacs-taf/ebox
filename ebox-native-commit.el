@@ -11,6 +11,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ebox-runtime-index)
 
 (declare-function ebox-native-reflow-layout-ready-p "ebox-native-reflow" ())
 (declare-function ebox-native-reflow-execute-sync
@@ -33,6 +34,10 @@
                   "ebox-native-reflow" (frame))
 (declare-function ebox--literal-root-pixel-width "ebox" (box))
 (declare-function ebox-get "ebox" (box key))
+(declare-function ebox-put "ebox" (box key value))
+(declare-function ebox--scroll-set-state "ebox" (region-id state))
+(declare-function ebox--scroll-clear-state "ebox" (region-id))
+(defvar ebox--scroll-global-state)
 (declare-function ebox-style-cascade-active-p "ebox-style" ())
 (declare-function ebox-style-property "ebox-style" (name))
 (declare-function ebox-tree-node-key "ebox-tree" (source-index node))
@@ -45,7 +50,7 @@
                   "ebox-incremental" (node))
 
 (defun ebox-native-commit-topology-stable-p
-    (old-state candidate-state prepared)
+  (old-state candidate-state prepared)
   "Return non-nil when PREPARED preserves OLD-STATE's object topology."
   (let ((old-nodes (plist-get old-state :node-table))
         (new-nodes (plist-get candidate-state :node-table))
@@ -62,22 +67,22 @@
                      (lambda (entry)
                        (eq (plist-get entry :dirty-kind) 'structure))
                      (plist-get prepared :dirty-set)))
-               (hash-table-p old-nodes) (hash-table-p new-nodes)
-               (hash-table-p old-parents) (hash-table-p new-parents)
-               (hash-table-p old-regions) (hash-table-p new-regions)
+               (ebox-runtime-index-like-p old-nodes) (ebox-runtime-index-like-p new-nodes)
+               (ebox-runtime-index-like-p old-parents) (ebox-runtime-index-like-p new-parents)
+               (ebox-runtime-index-like-p old-regions) (ebox-runtime-index-like-p new-regions)
                (hash-table-p old-objects)
-               (= (hash-table-count old-nodes)
-                  (hash-table-count new-nodes))
-               (= (hash-table-count old-regions)
-                  (hash-table-count new-regions))))
+               (= (ebox-runtime-index-size old-nodes)
+                  (ebox-runtime-index-size new-nodes))
+               (= (ebox-runtime-index-size old-regions)
+                  (ebox-runtime-index-size new-regions))))
     (when stable
-      (maphash
+      (ebox-runtime-index-map
        (lambda (node-id node)
-         (let ((old-node (gethash node-id old-nodes missing)))
+         (let ((old-node (ebox-runtime-index-get node-id old-nodes missing)))
            (unless (and (not (eq old-node missing))
                         (gethash node-id old-objects)
-                        (equal (gethash node-id old-parents missing)
-                               (gethash node-id new-parents missing))
+                        (equal (ebox-runtime-index-get node-id old-parents missing)
+                               (ebox-runtime-index-get node-id new-parents missing))
                         (eq (plist-get old-node :ebox-type)
                             (plist-get node :ebox-type))
                         (equal
@@ -88,9 +93,9 @@
              (setq stable nil))))
        new-nodes))
     (when stable
-      (maphash
+      (ebox-runtime-index-map
        (lambda (region-id node-id)
-         (unless (equal (gethash region-id old-regions missing) node-id)
+         (unless (equal (ebox-runtime-index-get region-id old-regions missing) node-id)
            (setq stable nil)))
        new-regions))
     stable))
@@ -105,7 +110,7 @@
         (while (and node-id (not (gethash node-id seen)))
           (puthash node-id t seen)
           (push node-id result)
-          (setq node-id (and parents (gethash node-id parents))))))
+          (setq node-id (and parents (ebox-runtime-index-get node-id parents))))))
     (nreverse result)))
 
 (defun ebox-native-commit-inherited-dirty-node-ids (prepared)
@@ -123,8 +128,8 @@
   "Return NODE-ID to `(PARENT-ID . POSITION)' table for STATE."
   (let ((nodes (plist-get state :node-table))
         (table (make-hash-table :test 'equal)))
-    (when (hash-table-p nodes)
-      (maphash
+    (when (ebox-runtime-index-like-p nodes)
+      (ebox-runtime-index-map
        (lambda (parent-id node)
          (cl-loop for child in (ebox-tree--children-raw node)
                   for position from 0
@@ -166,22 +171,22 @@ type, key, parent, and sibling position are identical."
                  (plist-get old-state :source-index) old-root)
                 (ebox-tree-node-key
                  (plist-get candidate-state :source-index) new-root))
-               (hash-table-p old-nodes) (hash-table-p new-nodes)
+               (ebox-runtime-index-like-p old-nodes) (ebox-runtime-index-like-p new-nodes)
                (hash-table-p old-objects)))
          result)
     (dolist (node-id (plist-get prepared :touched-node-ids))
-      (if (gethash node-id new-nodes)
+      (if (ebox-runtime-index-get node-id new-nodes)
           (puthash node-id t requested)
         (setq valid nil)))
     (dolist (node-id (plist-get prepared :removed-node-ids))
-      (if (and (gethash node-id old-nodes)
-               (not (gethash node-id new-nodes)))
+      (if (and (ebox-runtime-index-get node-id old-nodes)
+               (not (ebox-runtime-index-get node-id new-nodes)))
           (puthash node-id t removed)
         (setq valid nil)))
     (when valid
-      (maphash
+      (ebox-runtime-index-map
        (lambda (node-id _node)
-         (when (and (not (gethash node-id new-nodes))
+         (when (and (not (ebox-runtime-index-get node-id new-nodes))
                     (not (gethash node-id removed)))
            (setq valid nil)))
        old-nodes))
@@ -189,7 +194,7 @@ type, key, parent, and sibling position are identical."
       (cl-labels
           ((visit (node)
              (let* ((node-id (plist-get node :node-id))
-                    (old-node (gethash node-id old-nodes missing))
+                    (old-node (ebox-runtime-index-get node-id old-nodes missing))
                     (old-object (gethash node-id old-objects))
                     (position (gethash node-id new-positions))
                     (parent-id (car-safe position))
@@ -229,12 +234,12 @@ type, key, parent, and sibling position are identical."
     (setq stable
           (and (plist-get old-state :viewport-dependent-node-ids-ready)
                (plist-member old-state :viewport-dependent-node-id-axes)
-               (hash-table-p old-nodes)
-               (hash-table-p new-nodes)))
+               (ebox-runtime-index-like-p old-nodes)
+               (ebox-runtime-index-like-p new-nodes)))
     (dolist (entry (plist-get prepared :dirty-set) stable)
       (let* ((node-id (plist-get entry :node-id))
-             (old (and stable (gethash node-id old-nodes)))
-             (new (and stable (gethash node-id new-nodes))))
+             (old (and stable (ebox-runtime-index-get node-id old-nodes)))
+             (new (and stable (ebox-runtime-index-get node-id new-nodes))))
         (unless (and old new
                      (eq (ebox--node-direct-viewport-width-dependent-p old)
                          (ebox--node-direct-viewport-width-dependent-p new))
@@ -398,39 +403,111 @@ new session with the same bounded configuration used by retained frames."
 
 (defun ebox-native-commit--region-box (state region-id)
   "Resolve REGION-ID's candidate box directly from STATE indexes."
-  (when-let* ((node-id (gethash region-id
+  (when-let* ((node-id (ebox-runtime-index-get region-id
                                 (plist-get state :region-node-table)))
-              (node (gethash node-id (plist-get state :node-table))))
+              (node (ebox-runtime-index-get node-id (plist-get state :node-table))))
     (pcase (plist-get node :ebox-type)
       ('box node)
       ('flex (plist-get node :box)))))
+
+(defun ebox-native-commit-root-scroll-continuation-p (state)
+  "Return non-nil for STATE's confirmed complete sole-root scroll producer."
+  (let ((producer (plist-get state :native-root-scroll-producer))
+        (box (ebox-native-commit--root-box (plist-get state :root-node))))
+    (and (vectorp producer) (= (length producer) 6) box
+         (equal (aref producer 0) (plist-get box :region-id))
+         (plist-get state :native-sync-session)
+         (plist-get state :native-sync-confirmed-p))))
 
 (defun ebox-native-commit--region-index-safe-p (state)
   "Return non-nil when STATE has an unambiguous, non-scrolling region index."
   (let ((counts (plist-get state :region-box-count-table))
         (scroll (plist-get state :scroll-state-table))
+        (root-scroll (ebox-native-commit-root-scroll-continuation-p state))
+        (root-region (plist-get (ebox-native-commit--root-box
+                                (plist-get state :root-node)) :region-id))
         safe)
     (setq safe
           (and (hash-table-p counts)
                (or (null scroll)
                    (and (hash-table-p scroll)
-                        (zerop (hash-table-count scroll))))))
+                        (or (zerop (hash-table-count scroll))
+                            (and root-scroll (= (hash-table-count scroll) 1)
+                                 (gethash root-region scroll)))))))
     (when safe
       (maphash
        (lambda (region-id count)
          (let ((box (ebox-native-commit--region-box state region-id)))
            (unless (and (= count 1) box
-                        (zerop (or (ebox-get box :scroll-offset) 0)))
+                        (or (zerop (or (ebox-get box :scroll-offset) 0))
+                            (and root-scroll (equal region-id root-region))))
              (setq safe nil))))
        counts))
     safe))
+
+(defun ebox-native-commit--install-root-scroll-producer (state producer)
+  "Install complete PRODUCER in STATE's isolated candidate scroll table."
+  (let* ((box (ebox-native-commit--root-box (plist-get state :root-node)))
+         (region (plist-get box :region-id))
+         (previous (plist-get state :native-root-scroll-producer))
+         (previous-scroll (gethash region ebox--scroll-global-state)))
+    (unless (and box (vectorp producer) (= (length producer) 6)
+                 (equal region (aref producer 0)))
+      (error "Native scroll producer does not own the actual root"))
+    (when (or (eq (aref producer 4) :reuse) (eq (aref producer 5) :reuse))
+      (unless (and (eq (aref producer 4) :reuse) (eq (aref producer 5) :reuse)
+                   (eq (plist-get state :native-frame-kind) 'patch)
+                   (ebox-native-commit-root-scroll-continuation-p state)
+                   (= (aref producer 1) (aref previous 1))
+                   (> (aref previous 1) (aref previous 2))
+                   (listp (aref previous 4)) (listp (aref previous 5)))
+        (error "Native scroll producer reuse has no confirmed complete base"))
+      (setq producer (copy-sequence producer))
+      (aset producer 4 (aref previous 4))
+      (aset producer 5 (aref previous 5)))
+    (unless (= (or (ebox-get box :scroll-offset) 0) (aref producer 3))
+      ;; Viewport candidates may share their unchanged root. Clamp only a new
+      ;; root spine, and compile that normalized offset on the next native job.
+      (let* ((root (copy-sequence (plist-get state :root-node)))
+             (root-id (plist-get root :node-id))
+             (nodes (plist-get state :node-table)))
+        (if (eq (plist-get root :ebox-type) 'flex)
+            (progn (setq box (copy-sequence (plist-get root :box)))
+                   (plist-put root :box box))
+          (setq box root))
+        (ebox-put box :scroll-offset (aref producer 3))
+        (plist-put state :root-node root)
+        (plist-put state :node-table
+                   (ebox-runtime-index-put root-id root
+                    (if (hash-table-p nodes) (copy-hash-table nodes) nodes)))
+        (let ((regions (copy-hash-table (plist-get state :region-box-table))))
+          (puthash region box regions)
+          (plist-put state :region-box-table regions))
+        (plist-put state :native-root-scroll-offset-dirty t)))
+    (plist-put state :native-root-scroll-producer producer)
+    (if (> (aref producer 1) (aref producer 2))
+        (if (and previous-scroll
+                 (eq (plist-get previous-scroll :content-lines) (aref producer 4))
+                 (eq (plist-get previous-scroll :rendered-content-lines) (aref producer 5)))
+            (let ((scroll-state (copy-sequence previous-scroll)))
+              (plist-put scroll-state :scroll-offset (aref producer 3))
+              (plist-put scroll-state :content-height (aref producer 2))
+              (plist-put scroll-state :box box)
+              (puthash region scroll-state ebox--scroll-global-state))
+          (ebox--scroll-set-state
+           region (list :scroll-offset (aref producer 3)
+                      :content-height (aref producer 2)
+                      :content-lines (aref producer 4)
+                      :rendered-content-lines (aref producer 5)
+                        :content-lines-complete-p t :box box)))
+      (ebox--scroll-clear-state region))))
 
 (defun ebox-native-commit--runtime-types-supported-p (state)
   "Return non-nil when STATE contains only executable native node types."
   (let ((nodes (plist-get state :node-table))
         (supported t))
-    (when (hash-table-p nodes)
-      (maphash
+    (when (ebox-runtime-index-like-p nodes)
+      (ebox-runtime-index-map
        (lambda (_node-id node)
          (unless (memq (plist-get node :ebox-type)
                        '(box concat stack flex))
@@ -481,6 +558,7 @@ new session with the same bounded configuration used by retained frames."
              ;; base while font/display changes invalidate it.
              (sxhash-equal (plist-get state :display-signature))
              :complete t
+             :root-scroll-producer t
              :root-metadata nil)
        (when (and (plist-get state :native-sync-confirmed-p)
                   (plist-get state :native-topology-stable-p))
@@ -620,6 +698,8 @@ publication transaction can still roll back."
 
 (defconst ebox-native-commit--failed-render-state-keys
   '(:native-sync-session
+    :native-root-scroll-producer
+    :native-root-scroll-offset-dirty
     :native-sync-pending
     :native-sync-confirmed-p
     :native-render-p
@@ -672,16 +752,29 @@ projection so the caller may publish its existing Elisp fallback truthfully."
              (ebox-native-commit--runtime-types-supported-p state)
              (ebox-native-commit--region-index-safe-p state))
     (when-let* ((frame-spec (ebox-native-commit--frame-spec state node)))
+      (when (plist-get state :native-root-scroll-offset-dirty)
+        (let ((root-id (plist-get node :node-id)))
+          (plist-put state :native-touched-node-ids
+                     (cons root-id (remove root-id (plist-get state :native-touched-node-ids))))
+          (plist-put state :native-local-dirty-entries
+                     (cons (list :node-id root-id :dirty-kind 'geometry
+                                 :changed-keys '(:scroll-offset))
+                           (plist-get state :native-local-dirty-entries))))
+        (cl-remf state :native-root-scroll-offset-dirty))
       (condition-case err
           (let* ((frame (ebox-native-commit--retained-frame
                          state node frame-spec))
-                 (effects (plist-get frame :effect-tape))
-                 (rendered (plist-get frame :rendered))
-                 (fragment-template
-                  (and (not (plist-get effects :scroll-window-p))
+                  (effects (plist-get frame :effect-tape))
+                  (rendered (plist-get frame :rendered))
+                  (producer (plist-get effects :root-scroll-producer))
+                  (fragment-template
+                   (and (or (not (plist-get effects :scroll-window-p)) producer)
                        (plist-get effects :fragment-span-template))))
             (if (and (stringp rendered) (vectorp fragment-template))
                 (progn
+                  (if producer
+                      (ebox-native-commit--install-root-scroll-producer state producer)
+                    (cl-remf state :native-root-scroll-producer))
                   (ebox-native-commit--install-region-boxes state)
                   (plist-put state :render-owned-text-values
                              (make-hash-table :test #'eq))

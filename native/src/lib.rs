@@ -1,8 +1,10 @@
 mod layout;
+pub mod sequence;
 
 use layout::{
     encode_error_tape, DocumentDelta, LayoutContext, LayoutDocument, LayoutTape, RetainedDocument,
-    TapeIdentity, TapeOutputOptions, MAX_LAYOUT_DIMENSION, MIN_TAPE_BYTES,
+    RetainedFrame, SourceChanges, TapeIdentity, TapeOutputOptions, MAX_LAYOUT_DIMENSION,
+    MIN_TAPE_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -370,6 +372,8 @@ struct ControlFrame {
     #[serde(default = "default_true")]
     root_metadata: bool,
     #[serde(default)]
+    root_scroll_producer: bool,
+    #[serde(default)]
     delay_ms: u64,
 }
 
@@ -378,6 +382,7 @@ enum JobPayload {
     Echo(Vec<u8>),
     Layout {
         document: LayoutSource,
+        source_changes: Option<SourceChanges>,
         context: LayoutContext,
         root_width: i64,
         root_width_override: bool,
@@ -388,6 +393,7 @@ enum JobPayload {
         context_hash: i64,
         complete: bool,
         root_metadata: bool,
+        root_scroll_producer: bool,
         document_base_revision: u64,
         document_target_revision: u64,
         validation_resolver_lookups: u64,
@@ -425,6 +431,33 @@ impl LayoutSource {
             Self::Retained(document) => document.styles(),
         }
     }
+
+    fn render_target(
+        &self,
+        context: LayoutContext,
+        root_width: Option<i64>,
+        previous: Option<&RetainedFrame>,
+        changes: Option<&SourceChanges>,
+        root_scroll_producer: bool,
+    ) -> Result<(LayoutTape, Option<Arc<RetainedFrame>>), String> {
+        match self {
+            Self::Full(document) => {
+                if changes.is_some() {
+                    return Err("Native source changes require a retained document".to_owned());
+                }
+                Ok((document.layout_tape(context, root_width)?, None))
+            }
+            Self::Retained(document) => {
+                let frame = if root_scroll_producer {
+                    document
+                        .render_frame_with_root_scroll(previous, changes, context, root_width)?
+                } else {
+                    document.render_frame(previous, changes, context, root_width)?
+                };
+                Ok((frame.materialize_tape(), Some(frame)))
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -443,6 +476,7 @@ struct ConfirmedBaseline {
     document: LayoutSource,
     document_revision: u64,
     tape: LayoutTape,
+    retained_frame: Option<Arc<RetainedFrame>>,
     styles: Vec<layout::StyleTemplate>,
 }
 
@@ -452,6 +486,7 @@ struct PendingBaseline {
     document: LayoutSource,
     document_revision: u64,
     tape: LayoutTape,
+    retained_frame: Option<Arc<RetainedFrame>>,
     styles: Vec<layout::StyleTemplate>,
 }
 
@@ -468,6 +503,9 @@ struct RenderedJob {
     base_renders: u64,
     target_renders: u64,
     resolver_lookups: u64,
+    atom_plan_work: layout::AtomPlanWork,
+    line_plan_work: layout::LinePlanWork,
+    eval_work: layout::EvalWork,
 }
 
 #[derive(Default)]
@@ -481,6 +519,7 @@ struct DocumentInputStats {
     delta_entries_parsed: u64,
     delta_entries_validated: u64,
     trie_path_nodes_copied: u64,
+    source_change_work: layout::SourceChangeWork,
 }
 
 #[derive(Debug)]
@@ -520,6 +559,10 @@ struct RuntimeState {
     document_delta_entries_validated: u64,
     document_trie_path_nodes_copied: u64,
     document_resolver_lookups: u64,
+    source_change_work: layout::SourceChangeWork,
+    atom_plan_work: layout::AtomPlanWork,
+    line_plan_work: layout::LinePlanWork,
+    eval_work: layout::EvalWork,
     confirmed_baseline: Option<Arc<ConfirmedBaseline>>,
 }
 
@@ -542,6 +585,23 @@ struct Shared {
     readiness_channel: Mutex<Option<ReadinessChannel>>,
     job_available: Condvar,
     result_available: Condvar,
+}
+
+impl Shared {
+    fn request_stop(&self) {
+        // Both worker condition variables inspect `alive` under this mutex.
+        // Publish shutdown under the same lock so notification cannot fall
+        // between a worker's predicate check and its atomic unlock-and-wait.
+        {
+            let _state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            self.alive.store(false, Ordering::Release);
+        }
+        self.job_available.notify_all();
+        self.result_available.notify_all();
+    }
 }
 
 #[derive(Debug)]
@@ -580,6 +640,10 @@ struct SessionStats {
     document_delta_entries_validated: u64,
     document_trie_path_nodes_copied: u64,
     document_resolver_lookups: u64,
+    source_change_work: layout::SourceChangeWork,
+    atom_plan_work: layout::AtomPlanWork,
+    line_plan_work: layout::LinePlanWork,
+    eval_work: layout::EvalWork,
     pending_baselines: usize,
     confirmed_baseline: bool,
     confirmed_baseline_bytes: usize,
@@ -652,6 +716,10 @@ impl Session {
                 document_delta_entries_validated: 0,
                 document_trie_path_nodes_copied: 0,
                 document_resolver_lookups: 0,
+                source_change_work: layout::SourceChangeWork::default(),
+                atom_plan_work: layout::AtomPlanWork::default(),
+                line_plan_work: layout::LinePlanWork::default(),
+                eval_work: layout::EvalWork::default(),
                 confirmed_baseline,
             }),
             readiness_channel: Mutex::new(None),
@@ -667,8 +735,7 @@ impl Session {
             match spawn {
                 Ok(handle) => handles.push(handle),
                 Err(error) => {
-                    shared.alive.store(false, Ordering::Release);
-                    shared.job_available.notify_all();
+                    shared.request_stop();
                     for handle in handles {
                         let _ = handle.join();
                     }
@@ -778,6 +845,7 @@ impl Session {
                     frame,
                     document_base_revision,
                     document_target_revision,
+                    None,
                 )?
             } else {
                 let payload = frame
@@ -926,6 +994,7 @@ impl Session {
             .unwrap_or_else(|poison| poison.into_inner())
             .confirmed_baseline
             .clone();
+        let mut source_changes = None;
         let (document, input_stats) = match (batch.document, batch.document_delta) {
             (Some(_), Some(_)) => {
                 return Err(
@@ -994,14 +1063,39 @@ impl Session {
                             .to_owned(),
                     );
                 };
-                let (document, parsed, copied) = document.apply_delta(delta)?;
+                let applied = document.apply_delta(delta)?;
+                if !applied.changes.applies_to(document, &applied.document) {
+                    return Err(
+                        "Native retained source changes document identity mismatch".to_owned()
+                    );
+                }
+                // Account for exact input work, then carry these facts only for
+                // this render job. Documents and baselines never store the
+                // descriptor's references to both versions.
+                let mut source_change_work = applied.stats.source_work;
+                let mut previous_owner = None;
+                applied
+                    .changes
+                    .visit_changed_slots(|owner, _, _, _, fields| {
+                        if previous_owner != Some(owner) {
+                            source_change_work.owners_changed += 1;
+                            previous_owner = Some(owner);
+                        }
+                        source_change_work.slots_changed += 1;
+                        source_change_work.fields_changed += fields.len() as u64;
+                    });
+                let (styles, property_templates) = applied.changes.registry_ranges();
+                source_change_work.styles_appended = styles.len() as u64;
+                source_change_work.property_templates_added = property_templates.len() as u64;
+                source_changes = Some(applied.changes);
                 (
-                    LayoutSource::Retained(document),
+                    LayoutSource::Retained(applied.document),
                     DocumentInputStats {
                         delta_input_bytes: payload.len() as u64,
-                        delta_entries_parsed: parsed,
-                        delta_entries_validated: parsed,
-                        trie_path_nodes_copied: copied,
+                        delta_entries_parsed: applied.stats.entries_parsed,
+                        delta_entries_validated: applied.stats.entries_parsed,
+                        trie_path_nodes_copied: applied.stats.trie_path_nodes_copied,
+                        source_change_work,
                         ..DocumentInputStats::default()
                     },
                 )
@@ -1051,6 +1145,7 @@ impl Session {
             frame,
             document_base_revision,
             document_target_revision,
+            source_changes,
         )?;
         let output = render_layout_payload(
             prepared.payload,
@@ -1077,6 +1172,9 @@ impl Session {
         state.base_renders += output.base_renders;
         state.target_renders += output.target_renders;
         state.document_resolver_lookups += output.resolver_lookups;
+        state.atom_plan_work.accumulate(output.atom_plan_work);
+        state.line_plan_work.accumulate(output.line_plan_work);
+        state.eval_work.accumulate(output.eval_work);
         state.document_parses += input_stats.parses;
         state.document_validations += input_stats.validations;
         state.document_reuses += input_stats.reuses;
@@ -1086,6 +1184,9 @@ impl Session {
         state.document_delta_entries_parsed += input_stats.delta_entries_parsed;
         state.document_delta_entries_validated += input_stats.delta_entries_validated;
         state.document_trie_path_nodes_copied += input_stats.trie_path_nodes_copied;
+        state
+            .source_change_work
+            .accumulate(input_stats.source_change_work);
         state.pending_baselines.clear();
         if let Some(pending) = output.pending {
             state
@@ -1118,6 +1219,7 @@ impl Session {
             document: pending.document,
             document_revision: pending.document_revision,
             tape: pending.tape,
+            retained_frame: pending.retained_frame,
             styles: pending.styles,
         }));
         Ok(true)
@@ -1195,6 +1297,8 @@ impl Session {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let pending_baselines = state.pending_baselines.len();
+        // Compatibility field: the shallow tape container only, not retained
+        // plan allocations, shared heap memory or a cache memory bound.
         let confirmed_baseline_bytes = state
             .confirmed_baseline
             .as_ref()
@@ -1225,6 +1329,10 @@ impl Session {
             document_delta_entries_validated: state.document_delta_entries_validated,
             document_trie_path_nodes_copied: state.document_trie_path_nodes_copied,
             document_resolver_lookups: state.document_resolver_lookups,
+            source_change_work: state.source_change_work,
+            atom_plan_work: state.atom_plan_work,
+            line_plan_work: state.line_plan_work,
+            eval_work: state.eval_work,
             pending_baselines,
             confirmed_baseline: state.confirmed_baseline.is_some(),
             confirmed_baseline_bytes,
@@ -1239,9 +1347,7 @@ impl Session {
 
     fn stop(&self, join: bool) {
         self.detach_readiness_channel();
-        self.shared.alive.store(false, Ordering::Release);
-        self.shared.job_available.notify_all();
-        self.shared.result_available.notify_all();
+        self.shared.request_stop();
         if let Some(handles) = self
             .workers
             .lock()
@@ -1330,8 +1436,12 @@ fn prepare_layout_job(
     frame: ControlFrame,
     document_base_revision: u64,
     document_target_revision: u64,
+    source_changes: Option<SourceChanges>,
 ) -> Result<PreparedJob, String> {
     layout::reset_resolver_lookups();
+    if frame.root_scroll_producer && !frame.complete {
+        return Err("Native root scroll producer requires complete properties".to_owned());
+    }
     if frame.payload.is_some() {
         return Err(format!(
             "Native layout frame {} cannot contain an echo payload",
@@ -1403,6 +1513,7 @@ fn prepare_layout_job(
         delay_ms: frame.delay_ms,
         payload: JobPayload::Layout {
             document: document.clone(),
+            source_changes,
             context,
             root_width,
             root_width_override: frame.root_width_override,
@@ -1413,6 +1524,7 @@ fn prepare_layout_job(
             context_hash: frame.context_hash,
             complete: frame.complete,
             root_metadata: frame.root_metadata,
+            root_scroll_producer: frame.root_scroll_producer,
             document_base_revision,
             document_target_revision,
             validation_resolver_lookups: layout::resolver_lookups(),
@@ -1437,9 +1549,13 @@ fn render_layout_payload(
             base_renders: 0,
             target_renders: 0,
             resolver_lookups: 0,
+            atom_plan_work: layout::AtomPlanWork::default(),
+            line_plan_work: layout::LinePlanWork::default(),
+            eval_work: layout::EvalWork::default(),
         },
         JobPayload::Layout {
             document,
+            source_changes,
             context,
             root_width,
             root_width_override,
@@ -1450,6 +1566,7 @@ fn render_layout_payload(
             context_hash,
             complete,
             root_metadata,
+            root_scroll_producer,
             document_base_revision,
             document_target_revision,
             validation_resolver_lookups,
@@ -1487,6 +1604,7 @@ fn render_layout_payload(
                     Vec<u8>,
                     LayoutTape,
                     Vec<layout::StyleTemplate>,
+                    Option<Arc<RetainedFrame>>,
                     bool,
                     u64,
                     u64,
@@ -1494,8 +1612,22 @@ fn render_layout_payload(
                 String,
             >;
             layout::reset_resolver_lookups();
+            layout::reset_atom_plan_work();
+            layout::reset_line_plan_work();
+            layout::reset_eval_work();
             let result = catch_unwind(AssertUnwindSafe(|| -> LayoutRenderOutcome {
                 let target_styles = document.styles()?;
+                let render_target = || {
+                    document.render_target(
+                        context,
+                        root_width_override.then_some(root_width),
+                        confirmed_baseline
+                            .as_ref()
+                            .and_then(|baseline| baseline.retained_frame.as_deref()),
+                        source_changes.as_ref(),
+                        root_scroll_producer,
+                    )
+                };
                 if let Some(base_context) = base_context {
                     let base_identity = BaselineIdentity {
                         context: base_context,
@@ -1519,16 +1651,18 @@ fn render_layout_payload(
                         })
                         .cloned();
                     if require_confirmed_patch_base && base_hit.is_none() {
-                        let target = document
-                            .layout_tape(context, root_width_override.then_some(root_width))?;
-                        let bytes = layout::encode_layout_tape(
+                        let (target, retained_frame) = render_target()?;
+                        let bytes = layout::encode_layout_tape_with_scroll(
                             target.clone(),
                             &target_styles,
                             identity,
                             output.root_metadata,
                             output.max_bytes,
+                            retained_frame
+                                .as_ref()
+                                .and_then(|frame| frame.root_scroll()),
                         )?;
-                        return Ok((bytes, target, target_styles, false, 0, 1));
+                        return Ok((bytes, target, target_styles, retained_frame, false, 0, 1));
                     }
                     let (old, baseline_hit, base_renders) = if let Some(baseline) = base_hit {
                         (baseline.tape.clone(), true, 0)
@@ -1542,49 +1676,84 @@ fn render_layout_payload(
                             1,
                         )
                     };
-                    let target =
-                        document.layout_tape(context, root_width_override.then_some(root_width))?;
-                    let bytes = layout::encode_layout_patch_tape(
+                    let (target, retained_frame) = render_target()?;
+                    let bytes = layout::encode_layout_patch_tape_with_scroll(
                         old,
                         target.clone(),
                         &target_styles,
                         identity,
                         output.root_metadata,
                         output.max_bytes,
+                        retained_frame
+                            .as_ref()
+                            .and_then(|frame| frame.root_scroll())
+                            .map(|scroll| {
+                                (
+                                    scroll,
+                                    confirmed_baseline
+                                        .as_ref()
+                                        .filter(|_| baseline_hit)
+                                        .and_then(|base| base.retained_frame.as_ref())
+                                        .and_then(|frame| frame.root_scroll()),
+                                )
+                            }),
                     )?;
-                    Ok((bytes, target, target_styles, baseline_hit, base_renders, 1))
+                    Ok((
+                        bytes,
+                        target,
+                        target_styles,
+                        retained_frame,
+                        baseline_hit,
+                        base_renders,
+                        1,
+                    ))
                 } else {
-                    let target =
-                        document.layout_tape(context, root_width_override.then_some(root_width))?;
-                    let bytes = layout::encode_layout_tape(
+                    let (target, retained_frame) = render_target()?;
+                    let bytes = layout::encode_layout_tape_with_scroll(
                         target.clone(),
                         &target_styles,
                         identity,
                         output.root_metadata,
                         output.max_bytes,
+                        retained_frame
+                            .as_ref()
+                            .and_then(|frame| frame.root_scroll()),
                     )?;
-                    Ok((bytes, target, target_styles, false, 0, 1))
+                    Ok((bytes, target, target_styles, retained_frame, false, 0, 1))
                 }
             }));
             let resolver_lookups =
                 validation_resolver_lookups.saturating_add(layout::resolver_lookups());
+            let atom_plan_work = layout::atom_plan_work();
+            let line_plan_work = layout::line_plan_work();
+            let eval_work = layout::eval_work();
             match result {
-                Ok(Ok((bytes, tape, styles, baseline_hit, base_renders, target_renders))) => {
-                    RenderedJob {
-                        bytes,
-                        pending: Some(PendingBaseline {
-                            confirmed_identity: pending_identity,
-                            document: document.clone(),
-                            document_revision: document_target_revision,
-                            tape,
-                            styles,
-                        }),
-                        baseline_hit,
-                        base_renders,
-                        target_renders,
-                        resolver_lookups,
-                    }
-                }
+                Ok(Ok((
+                    bytes,
+                    tape,
+                    styles,
+                    retained_frame,
+                    baseline_hit,
+                    base_renders,
+                    target_renders,
+                ))) => RenderedJob {
+                    bytes,
+                    pending: Some(PendingBaseline {
+                        confirmed_identity: pending_identity,
+                        document: document.clone(),
+                        document_revision: document_target_revision,
+                        tape,
+                        retained_frame,
+                        styles,
+                    }),
+                    baseline_hit,
+                    base_renders,
+                    target_renders,
+                    resolver_lookups,
+                    atom_plan_work,
+                    line_plan_work,
+                    eval_work,
+                },
                 Ok(Err(error)) => RenderedJob {
                     bytes: encode_error_tape(identity, &error, max_result_bytes),
                     pending: None,
@@ -1592,6 +1761,9 @@ fn render_layout_payload(
                     base_renders: 0,
                     target_renders: 0,
                     resolver_lookups,
+                    atom_plan_work,
+                    line_plan_work,
+                    eval_work,
                 },
                 Err(_) => RenderedJob {
                     bytes: encode_error_tape(identity, "native layout panicked", max_result_bytes),
@@ -1600,6 +1772,9 @@ fn render_layout_payload(
                     base_renders: 0,
                     target_renders: 0,
                     resolver_lookups,
+                    atom_plan_work,
+                    line_plan_work,
+                    eval_work,
                 },
             }
         }
@@ -1635,7 +1810,7 @@ fn render_proof(payload: &[u8]) -> Result<Vec<u8>, String> {
         return Err("Native proof render cannot contain delay-ms".to_owned());
     }
     let document = LayoutSource::Full(Arc::new(document));
-    let prepared = prepare_layout_job(&document, frame, 0, 1)?;
+    let prepared = prepare_layout_job(&document, frame, 0, 1, None)?;
     let output = render_layout_payload(
         prepared.payload,
         SYNC_RENDER_SESSION_ID,
@@ -1749,6 +1924,9 @@ fn worker_loop(shared: Arc<Shared>) {
         state.base_renders += output.base_renders;
         state.target_renders += output.target_renders;
         state.document_resolver_lookups += output.resolver_lookups;
+        state.atom_plan_work.accumulate(output.atom_plan_work);
+        state.line_plan_work.accumulate(output.line_plan_work);
+        state.eval_work.accumulate(output.eval_work);
         state.results.insert(
             (job.generation, job.key),
             ResultEntry {
@@ -2345,6 +2523,69 @@ mod tests {
     }
 
     #[test]
+    fn stopping_serializes_with_a_worker_holding_the_wait_predicate_lock() {
+        let session = Arc::new(Session::new(1, 1, 1, 4).unwrap());
+        let guard = session.shared.state.lock().unwrap();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let stopping = Arc::clone(&session);
+        let stopper = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            stopping.stop(false);
+            completed_tx.send(()).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // A worker holds this mutex between checking the predicate and
+        // entering Condvar::wait. Shutdown must not publish/notify in that gap.
+        let completed_while_locked = completed_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        drop(guard);
+        if !completed_while_locked {
+            completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        stopper.join().unwrap();
+        assert!(
+            !completed_while_locked,
+            "shutdown raced ahead of the worker wait predicate lock"
+        );
+    }
+
+    #[test]
+    fn stopping_joins_a_worker_blocked_on_result_capacity() {
+        let session = Arc::new(Session::new(1, 2, 1, 8).unwrap());
+        session
+            .submit(
+                1,
+                &batch(r#"[{"key":1,"payload":"a"},{"key":2,"payload":"b"}]"#),
+            )
+            .unwrap();
+        wait_until(|| {
+            let stats = session.stats();
+            stats.completed_jobs == 1 && stats.queued_jobs == 0
+        });
+        let stopping = Arc::clone(&session);
+        let (completed_tx, completed_rx) = std::sync::mpsc::channel();
+        let stopper = thread::spawn(move || {
+            stopping.stop(true);
+            completed_tx.send(()).unwrap();
+        });
+        let completed_without_rescue = completed_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        if !completed_without_rescue {
+            // Preserve the failure, but release a stranded waiter before the
+            // assertion so a broken notification does not hang the test suite.
+            session.shared.job_available.notify_all();
+            session.shared.result_available.notify_all();
+            completed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        stopper.join().unwrap();
+        assert!(
+            completed_without_rescue,
+            "shutdown left a capacity waiter asleep"
+        );
+    }
+
+    #[test]
     fn malformed_and_over_capacity_batches_are_rejected() {
         let session = Session::new(1, 1, 1, 4).unwrap();
         assert!(session.submit(1, b"not-json").is_err());
@@ -2431,6 +2672,149 @@ mod tests {
         assert_eq!(final_stats.base_renders, 2);
         assert_eq!(final_stats.target_renders, 3);
         session.stop(true);
+    }
+
+    #[test]
+    fn retained_layout_reuse_does_not_bypass_wire_base_proof() {
+        let session = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = identified_proof_layout_payload(
+            r#"[{"key":1,"viewport-width":80,"viewport-height":10,"root-width":80,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        session.render_sync(1, &first).unwrap();
+        assert!(session.confirm(1, 1, 1).unwrap());
+        let before = session.stats();
+        // The source and layout request still match, but receiver context
+        // identity does not: a layout hit must still publish a full tape.
+        let second = retained_layout_payload(
+            1,
+            r#"[{"key":2,"viewport-width":80,"viewport-height":10,"root-width":80,"patch":true,"base-viewport-width":80,"base-viewport-height":10,"base-root-width":80,"runtime-revision":1,"context-hash":78}]"#,
+        );
+        let tape = session.render_sync(2, &second).unwrap();
+        let after = session.stats();
+        assert_ne!(u16::from_le_bytes(tape[6..8].try_into().unwrap()) & 1, 0);
+        assert!(!tape_patch_p(&tape));
+        assert_eq!(after.baseline_hits, before.baseline_hits);
+        assert_eq!(after.base_renders, before.base_renders);
+        assert_eq!(after.eval_work.hits - before.eval_work.hits, 1);
+        assert_eq!(after.eval_work.body_runs, before.eval_work.body_runs);
+        assert!(session.confirm(2, 2, 2).unwrap());
+        session.stop(true);
+    }
+
+    #[test]
+    fn retained_frame_failures_preserve_the_confirmed_fork_and_allow_retry() {
+        // Failed encoding or confirmation must not promote source/output or
+        // retain the rejected candidate's evaluation tree.
+        let parent = Session::new(1, 4, 4, 2048).unwrap();
+        let first = identified_proof_layout_payload(
+            r#"[{"key":1,"viewport-width":80,"viewport-height":10,"root-width":80,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        let first_tape = parent.render_sync(1, &first).unwrap();
+        assert_ne!(
+            u16::from_le_bytes(first_tape[6..8].try_into().unwrap()) & 1,
+            0
+        );
+        assert!(parent.confirm(1, 1, 1).unwrap());
+        let child = parent.fork_confirmed().unwrap();
+        let original = parent
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .confirmed_baseline
+            .clone()
+            .unwrap();
+        let original_frame = original.retained_frame.as_ref().unwrap();
+        let delta = |key, text: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "document-base-revision": 1, "document-target-revision": 2,
+                "document-delta": {
+                    "style-base-count": 0, "styles-append": [],
+                    "property-template-base-count": 0, "property-template-target-count": 0,
+                    "entries": [{"node-id": 1, "expected-revision": 7, "target-revision": 8,
+                        "slot-patches": [{"slot": 0, "local": {
+                            "content": {"lines": [{"clusters": [{"text": text, "width": 8,
+                                "cjk": false, "space": false}]}]}
+                        }}]}]
+                },
+                "frames": [{"key": key, "viewport-width": 80, "viewport-height": 10,
+                    "root-width": 80, "patch": true, "base-viewport-width": 80,
+                    "base-viewport-height": 10, "base-root-width": 80,
+                    "runtime-revision": 1, "context-hash": 77}]
+            }))
+            .unwrap()
+        };
+        let oversized = child.render_sync(1, &delta(2, &"x".repeat(4096))).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(oversized[6..8].try_into().unwrap()) & 1,
+            0
+        );
+        assert_eq!(child.stats().pending_baselines, 0);
+        assert!(!child.confirm(1, 2, 2).unwrap());
+        let before = child
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .confirmed_baseline
+            .clone()
+            .unwrap();
+        assert!(Arc::ptr_eq(&original, &before));
+
+        let retry = child.render_sync(2, &delta(3, "y")).unwrap();
+        assert_ne!(u16::from_le_bytes(retry[6..8].try_into().unwrap()) & 1, 0);
+        assert_eq!(child.stats().pending_baselines, 1);
+        let rejected_frame = {
+            let state = child.shared.state.lock().unwrap();
+            let candidate = state.pending_baselines.get(&(2, 3)).unwrap();
+            let frame = candidate.retained_frame.as_ref().unwrap();
+            assert!(!Arc::ptr_eq(original_frame, frame));
+            Arc::downgrade(frame)
+        };
+        assert!(child.confirm(2, 3, 99).is_err());
+        assert_eq!(child.stats().pending_baselines, 0);
+        assert!(rejected_frame.upgrade().is_none());
+        let after = child
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .confirmed_baseline
+            .clone()
+            .unwrap();
+        assert!(Arc::ptr_eq(&original, &after));
+
+        let retry = child.render_sync(3, &delta(4, "z")).unwrap();
+        assert_ne!(u16::from_le_bytes(retry[6..8].try_into().unwrap()) & 1, 0);
+        assert!(child.confirm(3, 4, 2).unwrap());
+        let confirmed = child
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .confirmed_baseline
+            .clone()
+            .unwrap();
+        assert!(!Arc::ptr_eq(&original, &confirmed));
+        assert!(!Arc::ptr_eq(
+            original_frame,
+            confirmed.retained_frame.as_ref().unwrap()
+        ));
+        assert_eq!(confirmed.document_revision, 2);
+        assert_eq!(original.document_revision, 1);
+        assert!(Arc::ptr_eq(
+            &original,
+            parent
+                .shared
+                .state
+                .lock()
+                .unwrap()
+                .confirmed_baseline
+                .as_ref()
+                .unwrap()
+        ));
+        parent.stop(true);
+        child.stop(true);
     }
 
     #[test]
@@ -2573,9 +2957,17 @@ mod tests {
         assert_eq!(stats.document_delta_entries_validated, 1);
         assert_eq!(stats.document_trie_path_nodes_copied, 17);
         assert_eq!(stats.document_delta_input_bytes, delta.len() as u64);
-        assert!(
-            stats.document_resolver_lookups >= 3,
-            "target/base validation and target render lookups must all remain visible"
+        assert_eq!(stats.source_change_work.fields_compared, 1);
+        assert_eq!(stats.source_change_work.text_lines_compared, 1);
+        assert_eq!(stats.source_change_work.text_clusters_compared, 1);
+        assert_eq!(stats.source_change_work.text_bytes_compared, 1);
+        assert_eq!(stats.source_change_work.local_nodes_copied, 1);
+        assert_eq!(stats.source_change_work.owners_changed, 1);
+        assert_eq!(stats.source_change_work.slots_changed, 1);
+        assert_eq!(stats.source_change_work.fields_changed, 1);
+        assert_eq!(
+            stats.document_resolver_lookups, stats.target_renders,
+            "each single-owner render resolves its root; retained context validation resolves no nodes"
         );
         assert!(session.confirm(2, 2, 2).unwrap());
 
@@ -2587,6 +2979,60 @@ mod tests {
         assert!(!child.render_sync(1, &retained).unwrap().is_empty());
         session.stop(true);
         child.stop(true);
+    }
+
+    #[test]
+    fn retained_source_input_counts_noops_and_registries_without_publishing_failed_work() {
+        let session = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let first = identified_proof_layout_payload(
+            r#"[{"key":1,"viewport-width":80,"viewport-height":10,"root-width":80,"runtime-revision":0,"context-hash":77}]"#,
+        );
+        session.render_sync(1, &first).unwrap();
+        assert!(session.confirm(1, 1, 1).unwrap());
+        let document: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        let content = document["document"]["root"]["content"].clone();
+        let payload = |padding| {
+            serde_json::to_vec(&serde_json::json!({
+            "version": 1, "document-base-revision": 1, "document-target-revision": 2,
+            "document-delta": {
+                "style-base-count": 0, "styles-append": [{"mode": "add", "face": {"foreground": "red"}}],
+                "property-template-base-count": 0, "property-template-target-count": 2,
+                "entries": [{"node-id": 1, "expected-revision": 7, "target-revision": 8,
+                    "slot-patches": [{"slot": 0, "local": {"content": content, "padding-left": padding}}]}]
+            },
+            "frames": [{"key": 2, "viewport-width": 80, "viewport-height": 10,
+                "root-width": 80, "runtime-revision": 1, "context-hash": 77}]
+        })).unwrap()
+        };
+        let before = session.stats().source_change_work;
+        assert!(session.render_sync(2, &payload(-1)).is_err());
+        assert_eq!(session.stats().source_change_work, before);
+        session.render_sync(3, &payload(0)).unwrap();
+        let work = session.stats().source_change_work;
+        assert_eq!(
+            (
+                work.fields_compared,
+                work.text_lines_compared,
+                work.text_clusters_compared,
+                work.text_bytes_compared
+            ),
+            (2, 1, 1, 1)
+        );
+        assert_eq!(
+            (
+                work.local_nodes_copied,
+                work.owners_changed,
+                work.slots_changed,
+                work.fields_changed
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            (work.styles_appended, work.property_templates_added),
+            (1, 2)
+        );
+        assert!(session.confirm(3, 2, 2).unwrap());
+        session.stop(true);
     }
 
     #[test]
@@ -2657,6 +3103,30 @@ mod tests {
         parent.stop(true);
         child.stop(true);
         retry.stop(true);
+    }
+
+    #[test]
+    fn cancellation_releases_retained_candidate_frame() {
+        let session = Session::new(1, 4, 4, 64 * 1024).unwrap();
+        let payload = identified_proof_layout_payload(
+            r#"[{"key":1,"viewport-width":80,"viewport-height":10,"runtime-revision":0}]"#,
+        );
+        session.render_sync(1, &payload).unwrap();
+        let cancelled_frame = {
+            let state = session.shared.state.lock().unwrap();
+            Arc::downgrade(
+                state.pending_baselines[&(1, 1)]
+                    .retained_frame
+                    .as_ref()
+                    .unwrap(),
+            )
+        };
+        session.cancel(1);
+        assert!(cancelled_frame.upgrade().is_none());
+        assert_eq!(session.stats().pending_baselines, 0);
+        assert!(!session.stats().confirmed_baseline);
+        assert!(!session.confirm(1, 1, 1).unwrap());
+        session.stop(true);
     }
 
     #[test]

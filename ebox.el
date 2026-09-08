@@ -23,7 +23,8 @@
   "Directory containing the active Ebox Lisp sources.")
 
 (defconst ebox--compile-sources
-  '("ebox-cache.el" "ebox-source.el" "ebox-state-contract.el"
+  '("ebox-cache.el" "ebox-source.el" "ebox-runtime-index.el"
+    "ebox-state-contract.el"
     "ebox-font.el" "ebox-style.el"
     "ebox-layout-config.el"
     "ebox-node-factory.el"
@@ -44,6 +45,7 @@
 (require 'subr-x)
 (require 'ebox-cache)
 (require 'ebox-source)
+(require 'ebox-runtime-index)
 (require 'ebox-state-contract)
 (require 'ebox-font)
 (require 'ebox-style)
@@ -1158,7 +1160,7 @@ remain transaction-local."
   (let* ((template-box (plist-get template :box))
          (node-id (and template-box (ebox--ensure-node-id template-box)))
          (node-table (ebox--buffer-node-table (current-buffer))))
-    (or (and node-table node-id (gethash node-id node-table))
+    (or (and node-table node-id (ebox-runtime-index-get node-id node-table))
         (plist-get (ebox--scroll-get-state region-id) :box)
         (gethash region-id ebox--region-box-table))))
 
@@ -1181,7 +1183,7 @@ remain transaction-local."
                         (or (ebox-get effective-box :scroll-offset) 0))
                  (or portable
                      (null node-table)
-                     (eq box (gethash node-id node-table)))
+                     (eq box (ebox-runtime-index-get node-id node-table)))
                  (or (null live-state)
                      (eq effective-box (plist-get live-state :box)))
                  (not (plist-get live-state :lazy-scroll-prefix-dirty))
@@ -1916,14 +1918,34 @@ uses their rendered descendants."
     (cl-loop for line in lines
              for line-index from 0
              do
-             (dolist (region-id (ebox--scroll-line-region-ids line))
-               (when-let* ((span (ebox--scroll-line-region-span
-                                 line (ebox--region-id-set
-                                       (list region-id)))))
-                 (puthash region-id
-                          (cons (cons line-index span)
-                                (gethash region-id index))
-                          index))))
+             (let ((spans (make-hash-table :test 'equal))
+                   (pos 0)
+                   (limit (length line)))
+               ;; Aggregate all owners during the same property-run scan.
+               ;; A foreign direct content owner invalidates that region's
+               ;; entire hull, exactly as the single-region query does.
+               (while (< pos limit)
+                 (let ((next (ebox--string-next-region-property-change
+                              line pos limit))
+                       (roles (ebox--string-region-role-ids-at line pos)))
+                   (dolist (id (ebox--string-region-ids-at line pos))
+                     (let ((span (gethash id spans)))
+                       (unless (eq span 'incompatible)
+                         (cond
+                          ((cl-some (lambda (role)
+                                      (and (eq (car role) 'content)
+                                           (not (equal (cdr role) id))))
+                                    roles)
+                           (puthash id 'incompatible spans))
+                          (span (setcdr span next))
+                          (t (puthash id (cons pos next) spans))))))
+                   (setq pos (max next (1+ pos)))))
+               (maphash
+                (lambda (id span)
+                  (unless (eq span 'incompatible)
+                    (puthash id (cons (cons line-index span)
+                                      (gethash id index)) index)))
+                spans)))
     (maphash (lambda (region-id spans)
                (puthash region-id (nreverse spans) index))
              index)
@@ -2485,7 +2507,8 @@ publishes the prepared rendered-body entry plus its derived root templates."
         (puthash
          buffer
          (run-with-idle-timer
-          (max 0 ebox-runtime-idle-reflow-cache-prewarm-delay)
+          (ebox--idle-continuation-delay
+           ebox-runtime-idle-reflow-cache-prewarm-delay)
           nil #'ebox--run-root-width-cache-prewarm
           buffer state revision region-id source-width target-width)
          ebox--reflow-cache-prewarm-timers)))))
@@ -2527,7 +2550,8 @@ predictions are skipped."
           (puthash
            buffer
            (run-with-idle-timer
-            (max 0 ebox-runtime-idle-reflow-cache-prewarm-delay)
+            (ebox--idle-continuation-delay
+             ebox-runtime-idle-reflow-cache-prewarm-delay)
             nil #'ebox--run-reflow-cache-prewarm
             buffer state revision viewport-width target-width viewport-height)
            ebox--reflow-cache-prewarm-timers))))))
@@ -2958,7 +2982,9 @@ Scroll routing uses semantic ancestry rather than mount span length because
 nested owners may render equal-sized clipped spans."
   (let* ((state (ebox--buffer-render-state (current-buffer)))
          (region-nodes (plist-get state :region-node-table))
-         (node-id (and region-nodes (gethash region-id region-nodes))))
+         (node-id
+          (and region-nodes
+               (ebox-runtime-index-get region-id region-nodes))))
     (if node-id (ebox-surface--node-depth state node-id) -1)))
 
 (defun ebox--scroll-region-ids-at-pos (pos)
@@ -3190,7 +3216,9 @@ inside the old prefix, so a line-slide never mixes two layout versions."
               (setq value
                     (plist-put
                      value :retained-scroll-content-p
-                     (and scroll-patch-fast-p root-id owner-id
+                     (and (eq (plist-get commit-input :projection-kind)
+                              'scroll-patch)
+                          scroll-patch-fast-p root-id owner-id
                           (= root-id owner-id))))
               (if (plist-get transition :native-materialize-p)
                   (plist-put value :native-scroll-materialize-p t)
@@ -4113,7 +4141,7 @@ cannot be changed through the unpublished batch root."
                  entries)
     (let ((parents (ebox--buffer-parent-table buffer)) ancestors)
       (dolist (node-id node-ids)
-        (while (setq node-id (gethash node-id parents))
+        (while (setq node-id (ebox-runtime-index-get node-id parents))
           (push node-id ancestors)))
       (delete-dups ancestors))))
 
@@ -4125,7 +4153,7 @@ cannot be changed through the unpublished batch root."
     (let ((parents (ebox--buffer-parent-table buffer)))
       (delete-dups
        (delq nil
-             (mapcar (lambda (node-id) (gethash node-id parents))
+             (mapcar (lambda (node-id) (ebox-runtime-index-get node-id parents))
                      node-ids))))))
 
 (defun ebox--publish-scoped-region-candidate

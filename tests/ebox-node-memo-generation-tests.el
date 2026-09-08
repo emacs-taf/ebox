@@ -32,7 +32,7 @@
 (defun ebox-node-memo-test--counts (state)
   "Return total/current/stale key counts for the node memos in STATE."
   (let ((current (make-hash-table :test 'eq)))
-    (maphash (lambda (_ node) (puthash node t current))
+    (ebox-runtime-index-map (lambda (_ node) (puthash node t current))
              (plist-get state :node-table))
     (mapcar
      (lambda (key)
@@ -82,7 +82,7 @@
                  (initial-text (with-current-buffer buffer (buffer-string)))
                  (objects (copy-hash-table
                            (plist-get initial-state :surface-node-object-table)))
-                 (node-count (hash-table-count (plist-get initial-state :node-table))))
+                 (node-count (ebox-runtime-index-size (plist-get initial-state :node-table))))
             (should (ebox-host-ref-position buffer host))
             (push (cons 0 (ebox-node-memo-test--counts initial-state)) history)
             ;; A later cache hit may legitimately leave a node memo empty;
@@ -97,7 +97,7 @@
                 (let ((state (ebox--buffer-render-state buffer)))
                   (should (eq (plist-get (ebox-buffer-update-report buffer) :viewport-axes)
                               axes))
-                  (should (= node-count (hash-table-count (plist-get state :node-table))))
+                  (should (= node-count (ebox-runtime-index-size (plist-get state :node-table))))
                   (should (ebox-host-ref-position buffer host))
                   (maphash
                    (lambda (id object)
@@ -210,7 +210,7 @@
                  (lambda (id _)
                    (let ((box (gethash id regions)))
                      (should box)
-                     (should (eq box (gethash (plist-get box :node-id) nodes)))))
+                     (should (eq box (ebox-runtime-index-get (plist-get box :node-id) nodes)))))
                  ids))))
           (should cache-hits))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))

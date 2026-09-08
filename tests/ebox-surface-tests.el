@@ -967,7 +967,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 (defun ebox-surface-test--object-by-key (state key)
   "Return the candidate surface object for Ebox node KEY in STATE."
   (let (object)
-    (maphash
+    (ebox-runtime-index-map
      (lambda (_node-id node)
        (when (equal (plist-get node :key) key)
         (setq object (plist-get node :surface-object))))
@@ -977,7 +977,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
 (defun ebox-surface-test--node-by-key (state key)
   "Return the runtime Ebox node for KEY in STATE."
   (let (match)
-    (maphash
+    (ebox-runtime-index-map
      (lambda (_node-id node)
        (when (equal (plist-get node :key) key)
          (setq match node)))
@@ -1383,7 +1383,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
          (nodes (plist-get state :node-table))
          (parents (plist-get state :parent-table))
          (checked 0))
-    (maphash
+    (ebox-runtime-index-map
      (lambda (id node)
        (when (member (plist-get node :ebox-text-value) '("Header" "Footer"))
          (cl-incf checked)
@@ -1394,7 +1394,8 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
          (should (eq (ecss-subject-parent
                       (ebox-tree-node-subject source-index node))
                      (ebox-tree-node-subject
-                      source-index (gethash (gethash id parents) nodes))))))
+                      source-index (ebox-runtime-index-get
+                                    (ebox-runtime-index-get id parents) nodes))))))
      nodes)
     (should (= checked 2))))
 
@@ -2072,6 +2073,230 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
         (should (ebox-native-reflow-session-released-p
                  committed-session))))))
 
+(ert-deftest ebox-native-scroll-window-retains-viewport-continuity ()
+  "Clipping and scrolling preserve native frames, including failed commits."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (require 'ebox-native-commit)
+  (ebox-surface-test--reset-render-state)
+  (let ((buffer (generate-new-buffer " *ebox-native-scroll-continuity*"))
+        (oracle (generate-new-buffer " *ebox-scroll-continuity-oracle*"))
+        (ebox-viewport-width 120)
+        (ebox-viewport-height 3)
+        (ebox-native-buffer-scroll nil)
+        (ebox-runtime-idle-prewarm nil)
+        (ebox-runtime-idle-reflow-cache-prewarm nil)
+        (keymap (make-sparse-keymap))
+        (original-frame (symbol-function 'ebox-native-commit--retained-frame))
+        (original-send
+         (symbol-function 'ebox-native--module-render-session-frame))
+        (original-layout (symbol-function 'ebox--render-layout))
+        (original-fork (symbol-function 'ebox-native-reflow-fork-session))
+        (original-confirm (symbol-function 'ebox-native-reflow-confirm-native-frame))
+        frames controls ordinary-renders identities previous-session
+        committed-session)
+    (define-key keymap [mouse-1] #'ignore)
+    (unwind-protect
+        (cl-labels
+            ((fixture
+              ()
+              (ebox-test-box
+               :key 'scroll-root :source-identity 'scroll-root :id "scroll"
+               :width '(viewport) :height '(viewport-height) :overflow 'scroll
+               (ebox-test-text
+                (mapconcat
+                 (lambda (label)
+                   (propertize label 'keymap keymap 'mouse-face 'highlight
+                               'help-echo (concat "line-" label)
+                               'face '(:weight bold)))
+                 '("A" "B" "C") "\n")
+                :key 'scroll-text :source-identity 'scroll-text)))
+             (contents
+              (target)
+              (with-current-buffer target
+                (buffer-substring (point-min) (point-max))))
+             (advance
+              (target step)
+              (pcase step
+                ('mount (ebox-render-to-buffer target (fixture)))
+                ((or 'shrink 'reshrink)
+                 (ebox-rerender-buffer-with-context target 120 1))
+                ('scroll
+                 (let* ((state (ebox--buffer-render-state target))
+                        (region (plist-get (plist-get state :root-node)
+                                           :region-id)))
+                   (with-current-buffer target
+                     (should (= (ebox--scroll-region-by region 1 1) 1)))))
+                ('grow (ebox-rerender-buffer-with-context target 120 3))))
+             (reject-advance
+              (step failure)
+              (let* ((surface (with-current-buffer buffer ebox-surface--buffer-surface))
+                     (state (tp-surface-client-state surface))
+                     (root (plist-get state :root-node))
+                     (region (plist-get root :region-id))
+                     (offset (or (ebox-get root :scroll-offset) 0))
+                     (producer (plist-get state :native-root-scroll-producer))
+                     (scroll (gethash region (plist-get state :scroll-state-table)))
+                     (scroll-offset (plist-get scroll :scroll-offset))
+                     (scroll-height (plist-get scroll :content-height))
+                     (session (plist-get state :native-sync-session))
+                     (generation (ebox-native-reflow-session-generation session))
+                     (revision (tp-surface-revision surface))
+                     (before (contents buffer))
+                     candidate)
+                (cl-letf
+                    (((symbol-function 'ebox-native-reflow-fork-session)
+                      (lambda (&rest args)
+                        (setq candidate (apply original-fork args))))
+                     ((symbol-function 'ebox-native-reflow-confirm-native-frame)
+                      (lambda (&rest args)
+                        (if (eq failure 'confirm)
+                            (error "Reject clipped native confirmation")
+                          (apply original-confirm args))))
+                     (tp--surface-publication-step-function
+                      (lambda (part _surface)
+                        (when (and (eq failure 'publication) (eq part 'client-state))
+                          (error "Reject clipped native publication")))))
+                  (should-error (advance buffer step)))
+                (should candidate)
+                (should (ebox-native-reflow-session-released-p candidate))
+                (should-not (ebox-native-reflow-session-released-p session))
+                (should (= (ebox-native-reflow-session-generation session) generation))
+                (should (= (tp-surface-revision surface) revision))
+                (should (eq (tp-surface-client-state surface) state))
+                (should (eq (plist-get state :root-node) root))
+                (should (= (or (ebox-get root :scroll-offset) 0) offset))
+                (should (eq (plist-get state :native-root-scroll-producer) producer))
+                (should (eq (gethash region (plist-get state :scroll-state-table)) scroll))
+                (should (equal (plist-get scroll :scroll-offset) scroll-offset))
+                (should (equal (plist-get scroll :content-height) scroll-height))
+                (should (equal-including-properties (contents buffer) before)))))
+          (dolist (case '((mount 3 0 "A\nB\nC" nil)
+                          (shrink 1 0 "A" t)
+                          (scroll 1 1 "B" t)
+                          (grow 3 0 "A\nB\nC" nil)
+                          (reshrink 1 0 "A" t)))
+            (pcase-let ((`(,step ,height ,offset ,labels ,window-p) case))
+              ;; Use an independent ordinary surface, including its real scroll
+              ;; transition, so oracle rendering cannot mutate the native state.
+              (ebox-surface-test--with-elisp-backend (advance oracle step))
+              (when (memq step '(shrink grow))
+                (reject-advance step 'publication)
+                (reject-advance step 'confirm))
+              (setq frames nil controls nil ordinary-renders 0)
+              (cl-letf
+                  (((symbol-function 'ebox-native-commit--retained-frame)
+                    (lambda (&rest args)
+                      (let ((frame (apply original-frame args)))
+                        (push frame frames)
+                        frame)))
+                   ((symbol-function 'ebox-native--module-render-session-frame)
+                    (lambda (handle generation control)
+                      (push (json-parse-string control :object-type 'plist
+                                               :array-type 'array)
+                            controls)
+                      (funcall original-send handle generation control)))
+                   ((symbol-function 'ebox--render-layout)
+                    (lambda (&rest args)
+                      (cl-incf ordinary-renders)
+                      (apply original-layout args))))
+                (advance buffer step))
+              (let* ((state (ebox--buffer-render-state buffer))
+                     (root (plist-get state :root-node))
+                     (region (plist-get root :region-id))
+                     (session (plist-get state :native-sync-session))
+                     (effects (plist-get (car frames) :effect-tape))
+                     (scroll-state (gethash region
+                                            (plist-get state :scroll-state-table)))
+                     (actual (contents buffer))
+                     current-identities)
+                (ert-info ((format "Native scroll continuity step %S" step))
+                  (message "Native scroll %S: calls=%S frames=%S window=%S projection=%S fallback=%S"
+                           step (length controls) (length frames)
+                           (plist-get effects :scroll-window-p)
+                           (plist-get state :projection-kind)
+                           (plist-get state :native-render-fallback))
+                  ;; Observe the actual module result before asserting native
+                  ;; publication: the H1 regression must reach the marked frame.
+                  (should (= (length controls) 1))
+                  (should (eq (plist-get (aref (plist-get (car controls) :frames) 0)
+                                         :root-scroll-producer) t))
+                  (should (= (length frames) 1))
+                  (should (stringp (plist-get (car frames) :rendered)))
+                  (should (vectorp (plist-get effects :fragment-span-template)))
+                  (should (eq (plist-get effects :scroll-window-p) window-p))
+                  (should (eq (plist-get state :projection-kind) 'native-frame))
+                  (should (= ordinary-renders 0))
+                  (should-not (plist-get state :native-render-fallback))
+                  (should session)
+                  (setq committed-session session)
+                  (should-not (ebox-native-reflow-session-released-p session))
+                  (should (plist-get state :native-sync-confirmed-p))
+                  (should-not (plist-get state :native-sync-pending))
+                  (let ((work (plist-get (ebox-native-reflow-stats session) :eval-work))
+                        (producer (plist-get state :native-root-scroll-producer)))
+                    (should (= (plist-get work :scroll-producer-reuses)
+                               (if (eq step 'scroll) 1 0)))
+                    (should (= (plist-get work :scroll-producer-lines-encoded)
+                               (if (memq step '(shrink reshrink)) 6 0)))
+                    (unless window-p
+                      (should (eq (aref producer 4) :inactive))
+                      (should (eq (aref producer 5) :inactive))))
+                  (when previous-session
+                    (should-not (eq session previous-session))
+                    (should (ebox-native-reflow-session-released-p previous-session))
+                    (should-not (plist-get (car controls) :document)))
+                  (setq previous-session session)
+                  (ebox-surface-test--walk-runtime
+                   root
+                   (lambda (node)
+                     (push (list (plist-get node :node-id)
+                                 (plist-get node :region-id)
+                                 (plist-get node :surface-object))
+                           current-identities)))
+                  (if identities
+                      (cl-mapc
+                       (lambda (old new)
+                         (should (equal (seq-take old 2) (seq-take new 2)))
+                         (should (eq (nth 2 old) (nth 2 new))))
+                       identities current-identities)
+                    (setq identities current-identities))
+                  (should (= (length current-identities) 2))
+                  (should (= (plist-get state :viewport-height) height))
+                  (should (equal (replace-regexp-in-string
+                                  "[[:blank:]]" "" actual) labels))
+                  (should
+                   (equal-including-properties
+                    (ebox-surface-test--canonical-region-properties actual)
+                    (ebox-surface-test--canonical-region-properties
+                     (contents oracle))))
+                  (with-current-buffer buffer
+                    (goto-char (point-min))
+                    (while (re-search-forward "[ABC]" nil t)
+                      (let* ((position (match-beginning 0))
+                             (label (match-string-no-properties 0))
+                             (index (- (aref label 0) ?A)))
+                        (should (equal (get-text-property position 'keymap) keymap))
+                        (should (equal (get-text-property position 'help-echo)
+                                       (concat "line-" label)))
+                        (should (= (get-text-property position 'ebox-content-idx)
+                                   index))
+                        (should (equal (get-text-property position 'ebox-scroll-window)
+                                       (and window-p region))))))
+                  (if window-p
+                      (progn
+                        (should scroll-state)
+                        (should (= (plist-get scroll-state :scroll-offset) offset))
+                        (should (= (plist-get scroll-state :content-height) height))
+                        (should (plist-get scroll-state :content-lines-complete-p))
+                        (should (= (length (plist-get scroll-state
+                                                     :rendered-content-lines)) 3)))
+                    (should-not scroll-state)
+                    (should (= (or (plist-get root :scroll-offset) 0) 0))))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (when (buffer-live-p oracle) (kill-buffer oracle))
+      (when committed-session
+        (should (ebox-native-reflow-session-released-p committed-session))))))
+
 (ert-deftest ebox-native-full-frame-bootstraps-from-ordinary-surface ()
   "Native bootstrap falls back truthfully and remains retryable."
   (skip-unless (ebox-native-reflow-layout-ready-p))
@@ -2651,7 +2876,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                  (style-states (plist-get state :style-binding-states))
                  (source-index (plist-get state :source-index))
                  text-id text-node)
-            (maphash
+            (ebox-runtime-index-map
              (lambda (node-id node)
                (when (and (eq (plist-get node :ebox-kind) 'text)
                           (equal (plist-get node :content) "Inherited"))
@@ -2659,13 +2884,14 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
              nodes)
             (should text-id)
             (let* ((parent-id
-                    (gethash text-id (plist-get state :parent-table)))
+                    (ebox-runtime-index-get
+                     text-id (plist-get state :parent-table)))
                    (object (gethash text-id objects))
                    (parent-object (gethash parent-id objects))
                    (style-state (gethash object style-states))
                    (parent-state (gethash parent-object style-states))
                    (candidate-node (copy-sequence text-node))
-                   (candidate-nodes (copy-hash-table nodes))
+                   (candidate-nodes nodes)
                    (candidate-state (copy-sequence state)))
               (should style-state)
               (should parent-state)
@@ -2678,7 +2904,9 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
                       (ecss-subject-id (plist-get style-state :subject))))
               (should (ebox-surface--static-style-state-p style-state))
               (plist-put candidate-node :ebox-candidate-computed-style-p t)
-              (puthash text-id candidate-node candidate-nodes)
+              (setq candidate-nodes
+                    (ebox-runtime-index-put
+                     text-id candidate-node candidate-nodes))
               (plist-put candidate-state :node-table candidate-nodes)
               (let ((ebox-incremental--allocated-slot-proof-cache
                      (make-hash-table :test 'equal)))
@@ -3833,7 +4061,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
               (maphash
                (lambda (id node)
                  (should (eq node
-                             (gethash (gethash id
+                             (ebox-runtime-index-get (ebox-runtime-index-get id
                                                (plist-get state
                                                           :region-node-table))
                                       (plist-get state :node-table)))))
