@@ -805,8 +805,6 @@ The result is nil when SOURCE cannot use the persistent measurement cache;
 
 (defun ebox--flex-render-cache-signature (node)
   "Return NODE's flex cache signature after stabilizing runtime identity."
-  (ebox--runtime-node-ids node)
-  (ebox--node-all-region-ids node)
   (ebox--render-cache-node-signature node))
 
 (defun ebox--flex-cached-measurement (source props axis &optional probe)

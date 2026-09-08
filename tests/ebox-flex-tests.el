@@ -1325,6 +1325,84 @@ entry before final allocation, providing the original rerendering reference."
     (should (= signature-calls 1))
     (should (= lookup-calls 1))))
 
+(ert-deftest ebox-flex-signature-prepares-identities-once-before-memoization ()
+  "Cold and warm signatures stabilize nested identities through one owner."
+  (let (observed)
+    (dolist (region-memo-p '(nil t))
+      (let* ((root
+              (ebox-test-root
+               (ebox-test-flex :width '(120)
+                 (ebox-test-box :width '(40) (ebox-test-text "left"))
+                 (ebox-test-column
+                  (ebox-test-text "right")
+                  (ebox-test-box (ebox-test-text "nested"))))))
+             (ebox--render-cache-signature-cache (make-hash-table :test 'eq))
+             (ebox--node-region-ids-cache
+              (and region-memo-p (make-hash-table :test 'eq)))
+             (runtime-ids (symbol-function 'ebox--runtime-node-ids))
+             (region-ids (symbol-function 'ebox--node-all-region-ids))
+             (body-signature (symbol-function 'ebox--render-cache-node-body-signature))
+             (runtime-calls 0) (region-calls 0) (body-calls 0)
+             nodes identity-snapshots signatures memoized-body)
+        (cl-labels ((walk (node)
+                      (push node nodes)
+                      (mapc #'walk (ebox-tree-node-children node))))
+          (walk root))
+        (dolist (node nodes)
+          (should-not (plist-get node :node-id))
+          (should-not (plist-get node :region-id)))
+        (cl-letf
+            (((symbol-function 'ebox--runtime-node-ids)
+              (lambda (node)
+                ;; Recursive child entries are real work, not extra root probes.
+                (when (eq node root) (cl-incf runtime-calls))
+                (funcall runtime-ids node)))
+             ((symbol-function 'ebox--node-all-region-ids)
+              (lambda (node)
+                (when (eq node root) (cl-incf region-calls))
+                (funcall region-ids node)))
+             ((symbol-function 'ebox--render-cache-node-body-signature)
+              (lambda (node)
+                (when (eq node root)
+                  (cl-incf body-calls)
+                  ;; Inspect before the real memoizing helper can read or write
+                  ;; its cache; the first cached body must include every id.
+                  (push
+                   (mapcar
+                    (lambda (child)
+                      (should (integerp (plist-get child :node-id)))
+                      (when (eq (plist-get child :ebox-type) 'box)
+                        (should (integerp (plist-get child :region-id))))
+                      (list (plist-get child :node-id)
+                            (plist-get child :region-id)))
+                    nodes)
+                   identity-snapshots))
+                (funcall body-signature node))))
+          (dolist (phase '(cold warm))
+            (setq runtime-calls 0 region-calls 0 body-calls 0)
+            (when (eq phase 'warm)
+              (should (eq memoized-body
+                          (gethash root ebox--render-cache-signature-cache))))
+            (push (ebox--flex-render-cache-signature root) signatures)
+            (push (list region-memo-p phase runtime-calls region-calls body-calls)
+                  observed)
+            (if (eq phase 'cold)
+                (setq memoized-body
+                      (gethash root ebox--render-cache-signature-cache))
+              (should (eq memoized-body
+                          (gethash root ebox--render-cache-signature-cache))))))
+        (should memoized-body)
+        (should (equal (car signatures) (cadr signatures)))
+        (should (equal (car signatures) (ebox--render-cache-node-signature root)))
+        (should (equal (car identity-snapshots) (cadr identity-snapshots)))
+        (when region-memo-p
+          (should (gethash root ebox--node-region-ids-cache)))))
+    (setq observed (nreverse observed))
+    (message "Flex signature root entries (region-memo phase runtime region body): %S"
+             observed)
+    (should (equal observed '((nil cold 1 1 1) (nil warm 1 1 1)
+                             (t cold 1 1 1) (t warm 1 1 1))))))
+
 (ert-deftest ebox-flex-reuses-direct-column-natural-measurement ()
   "A direct Column's nil-viewport natural size should survive parent resize."
   (let* ((source-input
