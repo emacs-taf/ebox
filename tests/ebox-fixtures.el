@@ -109,14 +109,94 @@ author identity; opaque source handles remain internal to SourceBuilder."
 (defun ebox-test--declarations (tag props)
   "Return canonical TAG declarations from evaluated fixture PROPS."
   (ebox-style-compile-form
-   tag (ebox-test--without props ebox-test--non-style-fields)))
+   tag (ebox-test--without (ebox-test--explicit-sizes tag props)
+                          ebox-test--non-style-fields)))
+
+(defun ebox-test--explicit-length (value axis &optional track)
+  "Express fixture VALUE in explicit units for AXIS.
+Fixture numbers are historical cell measurements; singleton lists are pixel
+measurements, except for vertical Grid TRACK values, which are line counts.
+This adapter belongs only to old backend characterization fixtures.  Public
+DSL and style tests call the production API directly and reject these forms."
+  (cond
+   ((numberp value) (list axis value))
+   ((memq value '(viewport viewport-height))
+    (list (if (eq value 'viewport) 'vw 'vh) 100))
+   ((and (consp value) (null (cdr value)))
+    (if (numberp (car value))
+        (list (if (and track (eq axis 'lh)) 'lh 'px) (car value))
+      (if (memq (car value) '(viewport viewport-height))
+          (ebox-test--explicit-length (car value) axis)
+        value)))
+   ((and track (consp value) (memq (car value) '(minmax repeat)))
+    (cons (car value)
+          (cl-loop for part in (cdr value) for index from 0
+                   collect (if (and (eq (car value) 'repeat) (= index 0))
+                               part
+                             (ebox-test--explicit-length part axis t)))))
+   (t value)))
+
+(defun ebox-test--explicit-sizes (tag props)
+  "Convert old backend fixture PROPS to explicit sizes for TAG."
+  (cl-loop
+   for (property value) on props by #'cddr
+   for name = (symbol-name property)
+   append
+   (list
+    property
+    (cond
+     ((memq property '(:padding :margin :gap :padding-inline :padding-block
+                       :margin-inline :margin-block :border-width))
+      (if (ebox-size-value-p value t) value
+        (let* ((axes (cond ((eq property :border-width) '(px px px px))
+                           ((string-suffix-p "-inline" name) '(ch ch))
+                           ((string-suffix-p "-block" name) '(lh lh))
+                           ((eq property :gap) '(lh ch))
+                           (t '(lh ch lh ch))))
+               (parts (if (listp value) value (list value))))
+          (when (and (= (length parts) 1)
+                     (not (eq (car axes) (cadr axes))))
+            (setq parts (list (car parts) (car parts))))
+          (cl-loop for part in parts for axis in axes
+                   collect (ebox-test--explicit-length part axis)))))
+     ((memq property '(:border :border-top :border-right :border-bottom
+                       :border-left))
+      (if (and (listp value) (> (length value) 1)
+               (numberp (car value)))
+          (cons (list 'px (car value)) (cdr value))
+        (ebox-test--explicit-length value 'px)))
+     ((memq property '(:grid-template-columns :grid-template-rows
+                       :grid-auto-columns :grid-auto-rows))
+      (let ((axis (if (string-suffix-p "rows" name) 'lh 'ch)))
+        (if (and (listp value)
+                 (not (memq (car value)
+                            '(px % vw vh ch lh calc min max clamp fr minmax repeat))))
+            (mapcar (lambda (part) (ebox-test--explicit-length part axis t)) value)
+          (ebox-test--explicit-length value axis t))))
+     ((eq property :flex)
+      (if (and (listp value) (= (length value) 3))
+          (list (car value) (cadr value)
+                (ebox-test--explicit-length (nth 2 value) 'ch))
+        value))
+     ((or (memq property '(:width :height :min-width :min-height :max-width
+                           :max-height :flex-basis :row-gap :column-gap :item-gap))
+          (string-match-p "\\`:\\(?:padding\\|margin\\)-" name)
+          (string-match-p "\\`:\\(?:border-.*-width\\)\\'" name))
+      (ebox-test--explicit-length
+       value (cond ((string-prefix-p ":border-" name) 'px)
+                   ((eq property :item-gap) (if (eq tag 'column) 'lh 'px))
+                   ((string-match-p "height\\|top\\|bottom\\|block\\|row-gap" name) 'lh)
+                   (t 'ch))
+       (eq property :row-gap)))
+     (t value)))))
 
 (defun ebox-test--layout (tag props declarations)
   "Return TAG LayoutConfig from PROPS and DECLARATIONS."
   (ebox-layout-config-for-form
    tag
    (if (memq tag '(row column))
-       (ebox-test--keep props '(:item-gap :cross-align))
+       (ebox-test--keep (ebox-test--explicit-sizes tag props)
+                        '(:item-gap :cross-align))
      (ebox-style-declaration-properties
       declarations
       (lambda (property)

@@ -164,7 +164,7 @@ ebox_module_version(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   (void) nargs;
   (void) args;
   (void) data;
-  static const char version[] = "12:7:12";
+  static const char version[] = "13:7:12";
   return env->make_string(env, version, (ptrdiff_t) (sizeof version - 1));
 }
 

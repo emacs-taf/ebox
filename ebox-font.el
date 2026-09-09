@@ -108,7 +108,8 @@
          (info
           (and name
                (ignore-errors
-                 (font-info name (and window (window-frame window)))))))
+                 (font-info name (and window (window-frame window))))))
+         (zero-width (string-pixel-width (propertize "0" 'face face))))
     (list
      :identity
      (if font
@@ -124,6 +125,7 @@
      :metrics
      (if info
          (list :pixel-size (aref info 2)
+               :zero-width zero-width
                :height (aref info 3)
                :baseline-offset (aref info 4)
                :max-width (aref info 7)
@@ -132,6 +134,7 @@
                :space-width (aref info 10)
                :average-width (aref info 11))
        (list :probe-width (string-pixel-width probe)
+             :zero-width zero-width
              :space-width
              (string-pixel-width (propertize " " 'face face)))))))
 

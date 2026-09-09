@@ -14,6 +14,7 @@
 (require 'ebox-measure)
 (require 'ebox-fragment)
 (require 'ebox-render-context)
+(require 'ebox-size)
 (require 'ebox-buffer-backend)
 (require 'ebox-runtime-index)
 
@@ -95,15 +96,20 @@ must not stretch their own outer width to that containing block.")
 
 (defvar ebox--inline-auto-width-intrinsic-p nil
   "Non-nil while a horizontal layout sizes auto-width children intrinsically.
-The ambient viewport remains available to explicit `viewport' and `stretch'
-widths, but an omitted or `auto' width must not consume the whole horizontal
-containing block merely because the row itself is being rendered in it.")
+Explicit viewport units keep their root reference; `stretch' fills the
+containing block.  An omitted or `auto' width must not consume the whole
+horizontal containing block merely because the row is rendered in it.")
 
 (defvar ebox--box-content-render-cache nil
-  "Dynamic render-pass cache for rendered lazy child content.")
+  "Dynamic render-pass cache for lazy content and empty-content widths.")
+
+(defvar ebox--box-content-empty-width nil
+  "Inline extent returned by the current empty content materialization.
+The content cache saves this fact with its node and render context because
+empty strings cannot carry distinct geometry through string identity.")
 
 (defvar ebox--box-content-cache-purpose nil
-  "Dynamic discriminator for distinct box content materializations.")
+  "Intrinsic probe depth, or nil for ordinary content materialization.")
 
 (defvar ebox--containing-wrap-mode nil
   "Box-owned soft-wrap policy inherited by canonical Text descendants.")
@@ -111,6 +117,10 @@ containing block merely because the row itself is being rendered in it.")
 (defvar ebox--rendered-uniform-width-table
   (make-hash-table :test 'eq :weakness 'key)
   "Weak map from rendered strings to their proven uniform pixel width.")
+
+(defvar ebox--rendered-intrinsic-size-table
+  (make-hash-table :test 'eq :weakness 'key)
+  "Weak map from rendered strings to intrinsic extents excluding overflow.")
 
 (defvar ebox--transparent-preformatted-box-fast-path-disabled nil
   "Non-nil disables transparent preformatted box reuse for diagnostics.")
@@ -123,9 +133,30 @@ containing block merely because the row itself is being rendered in it.")
 
 (defun ebox--record-rendered-uniform-width (rendered pixel-width)
   "Record that every line of RENDERED is exactly PIXEL-WIDTH wide."
-  (when (and (stringp rendered) (numberp pixel-width))
+  (when (and (stringp rendered) (not (string-empty-p rendered))
+             (numberp pixel-width))
     (puthash rendered pixel-width ebox--rendered-uniform-width-table))
   rendered)
+
+(defun ebox--record-rendered-intrinsic-size (rendered width height)
+  "Record RENDERED's definite intrinsic WIDTH pixels and HEIGHT lines.
+Nil on either axis leaves its ordinary string measurement in force.  Layout
+uses this fact when cyclic percentage gaps produce ink outside the intrinsic
+container.  The weak string association keeps candidate facts out of source
+nodes and remains valid when rendered content is reused from a cache.  Empty
+content instead returns WIDTH through `ebox--box-content-empty-width'."
+  (when (stringp rendered)
+    (if (string-empty-p rendered)
+        (setq ebox--box-content-empty-width width)
+      (when (or (numberp width) (numberp height))
+        (puthash rendered (list :width width :height height)
+                 ebox--rendered-intrinsic-size-table))))
+  rendered)
+
+(defun ebox--rendered-intrinsic-size (rendered axis)
+  "Return RENDERED's recorded intrinsic AXIS extent, or nil."
+  (unless (or (null rendered) (string-empty-p rendered))
+    (plist-get (gethash rendered ebox--rendered-intrinsic-size-table) axis)))
 
 (defun ebox--preformatted-content-lines-fit-p (lines pixel-width)
   "Return non-nil when LINES fit the exact content PIXEL-WIDTH.
@@ -175,8 +206,8 @@ replaces them with its full-width filler line."
 (defun ebox--apply-surface-properties (rendered properties)
   "Apply text-property PROPERTIES to RENDERED's character surface.
 
-Newlines are excluded.  For each property independently, an existing non-nil
-value on an inner rendered surface wins over the enclosing box's value."
+Newlines are excluded.  Inner values win independently; explicit nil also
+blocks enclosing values for Ebox's fixed native interaction properties."
   (when properties
     (unless (and (proper-list-p properties)
                  (zerop (% (length properties) 2)))
@@ -194,22 +225,12 @@ value on an inner rendered surface wins over the enclosing box's value."
               (tail properties))
           (while tail
             (let ((property (pop tail))
-                  (value (pop tail))
-                  (position line-start))
-              ;; A nil text-property value denotes absence.  Skipping it also
-              ;; prevents an enclosing surface from deleting an inner value.
-              (when value
-                (while (< position line-end)
-                  (let ((next (or (next-single-property-change
-                                   position property rendered line-end)
-                                  line-end)))
-                    (unless (get-text-property position property rendered)
-                      (add-text-properties
-                       position next (list property value) rendered))
-                    (setq position (max next (1+ position))))))))
+                  (value (pop tail)))
+              (ebox-interaction--fill-property
+               rendered line-start line-end property value)))
           (setq line-start
                 (if (< line-end limit) (1+ line-end) limit))))))
-  rendered)
+  (ebox-interaction--refresh-hover! rendered 0 (length rendered)))
 
 (defun ebox--render-transparent-preformatted-box (box)
   "Render BOX by owning proven exact preformatted child content directly.
@@ -228,9 +249,10 @@ the generic box pipeline."
                  (memq layout-kind '(row column flex grid)))
              (eq (ebox-get box :text-align) 'left)
              (eq (ebox-get box :vertical-align) 'top)
-             (null (ebox-get box :height))
-             (equal (or (ebox-get box :min-height) 0) 0)
-             (null (ebox-get box :max-height))
+             (memq (ebox-get box :height) '(nil auto))
+             (zerop (ebox--resolve-size-content-height
+                     box (ebox-get box :min-height) 0))
+             (memq (ebox-get box :max-height) '(nil none))
              (eq (ebox-get box :overflow) 'scroll)
              (equal (ebox-get box :padding-left-pixel) 0)
              (equal (ebox-get box :padding-right-pixel) 0)
@@ -261,7 +283,7 @@ the generic box pipeline."
           (ebox--finish-preformatted-content-ownership!
            rendered region-id)
           (ebox--apply-surface-properties
-           rendered (ebox-get box :surface-properties))
+           rendered (ebox-interaction--node-surface-properties box))
           (puthash region-id box ebox--region-box-table)
           (unless ebox--intrinsic-layout-measurement
             (ebox--scroll-clear-state region-id))
@@ -277,8 +299,9 @@ and its formatted content exactly fills the used height."
              (not (plist-member box :children))
              (stringp (ebox-get box :content))
              (eq (ebox-get box :vertical-align) 'top)
-             (equal (or (ebox-get box :min-height) 0) 0)
-             (null (ebox-get box :max-height))
+             (zerop (ebox--resolve-size-content-height
+                     box (ebox-get box :min-height) 0))
+             (memq (ebox-get box :max-height) '(nil none))
              (equal (or (ebox-get box :scroll-offset) 0) 0)
              (equal (ebox-get box :margin-left-pixel) 0)
              (equal (ebox-get box :margin-right-pixel) 0)
@@ -294,7 +317,7 @@ and its formatted content exactly fills the used height."
                         (ebox--format-content-string box content)))
            (lines (ebox-string-lines formatted))
            (text-height (length lines))
-           (content-height (ebox--content-height box text-height))
+           (content-height (ebox--content-height box text-height formatted))
            (content-pixel (ebox--content-pixel box))
            (lines-fit-p
             (ebox--preformatted-content-lines-fit-p lines content-pixel))
@@ -315,7 +338,7 @@ and its formatted content exactly fills the used height."
                      underfilled-simple-scroll-p))
         (let* ((region-id (or ebox--render-region-id
                               (ebox--ensure-region-id box)))
-               (padding-line-filler (ebox-pixel-space content-pixel))
+               (padding-line-filler (ebox--pixel-blank content-pixel 1))
                (rendered
                 (if underfilled-simple-scroll-p
                     (ebox-lines-join
@@ -329,7 +352,7 @@ and its formatted content exactly fills the used height."
                     box lines 0 region-id padding-line-filler t t)))))
           (when underfilled-simple-scroll-p
             (ebox--apply-surface-properties
-             rendered (ebox-get box :surface-properties)))
+             rendered (ebox-interaction--node-surface-properties box)))
           (puthash region-id box ebox--region-box-table)
           (unless ebox--intrinsic-layout-measurement
             (ebox--scroll-clear-state region-id))
@@ -795,6 +818,73 @@ When WRAP-MODE is `kp', use Knuth-Plass algorithm via ekp package."
 ;;; Render: Box Rendering Logic
 ;;; ============================================================
 
+(defun ebox--size-font-fact (box)
+  "Return the effective font fact for BOX or the current layout node."
+  (or (plist-get box :ebox-font-fact) ebox--css-font-fact))
+
+(defun ebox--size-line-height (&optional box)
+  "Return BOX's normal computed line height in pixels.
+The buffer backend places vertical geometry on whole text lines.  The font
+projection supplies its normal line height; the display default is used when
+the node has no font override."
+  (let* ((fact (ebox--size-font-fact box))
+         (metrics (and fact (ebox-font-fact-measurement-metrics fact)))
+         (height (plist-get metrics :height)))
+    (max 1 (or height (frame-char-height)))))
+
+(defun ebox--size-character-width (&optional box)
+  "Return the advance width of digit zero in BOX's effective font."
+  (let* ((fact (ebox--size-font-fact box))
+         (metrics (and fact (ebox-font-fact-measurement-metrics fact)))
+         (face (and fact (ebox-font-measurement-face fact)))
+         (probe (if face (propertize "0" 'face face) "0")))
+    (max 1 (or (plist-get metrics :zero-width)
+               (ebox--string-pixel-width probe)))))
+
+(cl-defun ebox--size-pixels
+    (value &optional box axis (percent-base nil percent-base-supplied-p))
+  "Resolve canonical size VALUE to pixels for BOX along AXIS.
+AXIS is `width' (the default) or `height'.  PERCENT-BASE, when supplied,
+overrides the containing block basis, including nil for an indefinite axis.
+Return nil for an unresolved percentage or unavailable viewport dimension.
+Numbers here are private engine pixel values, never public author syntax."
+  (if (numberp value)
+      value
+    (let ((dependencies (ebox-size-dependencies value)))
+      (ebox-size-resolve
+       value
+       (list :percent-base
+           (if percent-base-supplied-p percent-base
+             (if (eq axis 'height) ebox--css-containing-height
+               (ebox--viewport-pixel-width nil)))
+           :viewport-width
+           (if ebox--css-size-context-active-p ebox--css-viewport-width
+             ebox-viewport-width)
+           :viewport-height
+           (if ebox--css-size-context-active-p ebox--css-viewport-height
+             (and (numberp ebox-viewport-height)
+                  (* ebox-viewport-height (frame-char-height))))
+             :ch (and (memq 'ch dependencies)
+                      (ebox--size-character-width box))
+             :lh (and (memq 'lh dependencies)
+                      (ebox--size-line-height box)))))))
+
+(defun ebox--edge-used-value (box property value)
+  "Resolve derived edge PROPERTY's canonical VALUE in BOX's context.
+CSS padding and margin percentages use containing block width on both axes.
+Vertical engine fields store fractional line counts until final rendering."
+  (if (or (numberp value) (not (consp value)))
+      value
+    (let ((pixels (or (ebox--size-pixels value box 'width) 0)))
+      (when (and (< pixels 0)
+                 (string-prefix-p ":margin-" (symbol-name property)))
+        (error "ebox: negative margins require overlapping layout, which this buffer backend does not support: %S"
+               value))
+      (setq pixels (max 0 pixels))
+      (if (string-suffix-p "-height" (symbol-name property))
+          (/ pixels (float (ebox--size-line-height box)))
+        pixels))))
+
 (defun ebox--side-pixel (box &optional side)
   "Calculate side pixel width (padding + border + margin).
 SIDE can be `left', `right', or nil (both)."
@@ -831,34 +921,27 @@ SIDE can be `left', `right', or nil (both)."
   (when value
     (if (eq (ebox-get box :box-sizing) 'border-box)
         (max 0 (- value
-                  (+ (floor (ebox-get box :padding-top-height))
-                     (floor (ebox-get box :padding-bottom-height)))))
+                  (+ (ebox-get box :padding-top-height)
+                     (ebox-get box :padding-bottom-height))))
       value)))
 
 (defun ebox--viewport-pixel-width (&optional default)
   "Return the current viewport width in pixels, or DEFAULT."
   (if (and (numberp ebox-viewport-width)
-           (> ebox-viewport-width 0))
-      (floor ebox-viewport-width)
+           (>= ebox-viewport-width 0))
+      ebox-viewport-width
     default))
 
 (defun ebox--viewport-size-value-p (value)
-  "Return non-nil when VALUE is a viewport-relative size marker."
-  (or (eq value 'viewport)
-      (and (consp value) (eq (car value) 'viewport))))
+  "Return non-nil when canonical VALUE depends on viewport width."
+  (and (ebox-size-value-p value)
+       (memq 'viewport-width (ebox-size-dependencies value))))
 
 (defun ebox--horizontal-size-pixels (value &optional default)
-  "Return VALUE as pixels using Ebox horizontal size units.
-DEFAULT is returned when VALUE is nil or not a supported horizontal size.
-In addition to normal Ebox units, `(viewport)' resolves to
-`ebox-viewport-width'."
-  (cond
-   ((null value) default)
-   ((ebox--viewport-size-value-p value)
-    (ebox--viewport-pixel-width default))
-   ((and (consp value) (numberp (car value))) (car value))
-   ((numberp value) (* value (ebox--space-pixel-width)))
-   (t default)))
+  "Return canonical VALUE as horizontal pixels, or DEFAULT if unresolved."
+  (if (or (numberp value) (ebox-size-value-p value))
+      (or (ebox--size-pixels value) default)
+    default))
 
 (defun ebox--nonnegative-horizontal-size-pixels (value &optional default)
   "Return VALUE as non-negative horizontal pixels.
@@ -877,49 +960,35 @@ Signal an error when VALUE resolves to a negative width-like size."
 
 (defun ebox--viewport-height-size-value-p (value)
   "Return non-nil when vertical size VALUE depends on viewport height."
-  (or (eq value 'viewport-height)
-      (and (consp value)
-           (or (eq (car value) 'viewport-height)
-               (and (memq (car value) '(+ -))
-                    (cl-some #'ebox--viewport-height-size-value-p
-                             (cdr value)))))))
+  (and (ebox-size-value-p value)
+       (memq 'viewport-height (ebox-size-dependencies value))))
 
-(defun ebox--resolve-height-expression-lines (value)
+(defun ebox--resolve-height-expression-lines (value &optional box)
   "Resolve vertical size expression VALUE to raw outer height lines.
-Return nil when VALUE depends on an unavailable viewport height."
-  (cond
-   ((numberp value) value)
-   ((eq value 'viewport-height)
-    (ebox--viewport-height-lines nil))
-   ((and (consp value)
-         (eq (car value) 'viewport-height))
-    (ebox--viewport-height-lines nil))
-   ((and (consp value)
-         (memq (car value) '(+ -)))
-    (let ((values
-           (mapcar #'ebox--resolve-height-expression-lines
-                   (cdr value))))
-      (when (cl-every #'numberp values)
-        (pcase (car value)
-          ('+ (apply #'+ values))
-          ('- (if (= (length values) 1)
-                  (- (car values))
-                (apply #'- values)))))))
-   (t
-    (error "ebox: unsupported height value after expansion: %S" value))))
+Return nil for an indefinite percentage or unavailable viewport height.
+BOX supplies the effective font.  Numbers are private engine line counts."
+  (if (numberp value) value
+    (when-let* ((pixels (ebox--size-pixels value box 'height)))
+      (/ pixels (float (ebox--size-line-height box))))))
 
-(defun ebox--resolve-size-content-height (box value fallback)
+(defun ebox--resolve-size-content-height (box value fallback &optional intrinsic)
   "Resolve vertical size VALUE to BOX content height lines.
-FALLBACK is used for nil, auto, or unavailable viewport-height values."
+FALLBACK is used for auto and indefinite lengths.  INTRINSIC is the natural
+content height after inline layout; normal horizontal writing gives the same
+block-axis min-content and max-content contribution."
   (cond
-   ((null value) fallback)
-   ((eq value 'auto) fallback)
-   ((or (numberp value)
-        (eq value 'viewport-height)
-        (and (consp value)
-             (or (eq (car value) 'viewport-height)
-                 (memq (car value) '(+ -)))))
-    (if-let* ((height (ebox--resolve-height-expression-lines value)))
+   ((memq value '(nil auto)) fallback)
+   ((eq value 'none) nil)
+   ((memq value '(min-content max-content fit-content))
+    (or intrinsic fallback))
+   ((eq value 'stretch)
+    (if (numberp ebox--css-containing-height)
+        (max 0 (- (/ ebox--css-containing-height
+                     (float (ebox--size-line-height box)))
+                  (ebox--side-height box)))
+      fallback))
+   ((or (numberp value) (ebox-size-value-p value))
+    (if-let* ((height (ebox--resolve-height-expression-lines value box)))
         (ebox--box-sizing-content-height box (max 0 height))
       fallback))
    (t
@@ -938,6 +1007,8 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
   "Return the current render context for lazy box content caching."
   (list ebox-viewport-width
         ebox-viewport-height
+        ebox--css-viewport-width ebox--css-viewport-height
+        ebox--css-containing-height ebox--css-font-fact
         ebox--intrinsic-layout-measurement
         ebox--inline-auto-width-intrinsic-p
         ebox--containing-wrap-mode
@@ -945,19 +1016,27 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
         ebox--render-region-id))
 
 (defun ebox--render-box-content-cached (box renderer)
-  "Return BOX content from RENDERER, reusing the render-pass cache."
-  (if (null ebox--box-content-render-cache)
-      (funcall renderer)
-    (let* ((context (ebox--box-content-cache-context))
-           (entries (gethash box ebox--box-content-render-cache))
-           (cached (assoc context entries)))
-      (if cached
-          (cdr cached)
-        (let ((rendered (funcall renderer)))
-          (puthash box
-                   (cons (cons context rendered) entries)
-                   ebox--box-content-render-cache)
-          rendered)))))
+  "Return BOX content from RENDERER, reusing the render-pass cache.
+Return its empty inline extent through `ebox--box-content-empty-width'."
+  (let* ((context (and ebox--box-content-render-cache
+                       (ebox--box-content-cache-context)))
+         (entries (and ebox--box-content-render-cache
+                       (gethash box ebox--box-content-render-cache)))
+         (cached (assoc context entries))
+         (result
+          (if cached
+              (cdr cached)
+            (let* ((ebox--box-content-empty-width nil)
+                   (rendered (or (funcall renderer) ""))
+                   (result (cons rendered
+                                 (and (string-empty-p rendered)
+                                      ebox--box-content-empty-width))))
+              (when ebox--box-content-render-cache
+                (puthash box (cons (cons context result) entries)
+                         ebox--box-content-render-cache))
+              result))))
+    (setq ebox--box-content-empty-width (cdr result))
+    (car result)))
 
 (defun ebox--record-box-content-width-exact (box content composite-p)
   "Record exact width for BOX CONTENT when COMPOSITE-P is non-nil."
@@ -1052,22 +1131,38 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
         (wrap-mode (ebox-get box :wrap-mode))
         (soft-wrap-p (not (memq wrap-mode '(nil none kp))))
         (line-width 0)
-        pending-empty-line
+        (max-width 0)
+        pending-empty-line line-has-empty-box
         line-parts segments)
     (cl-labels
         ((flush-line
           ()
           (when line-parts
-            (push (apply #'ebox--lines-concat-horizontal
-                         (nreverse line-parts))
-                  segments)
-            (setq line-parts nil line-width 0)))
+            (let ((parts (nreverse line-parts)))
+              (when line-has-empty-box
+                (let ((height (apply #'max
+                                     (mapcar (lambda (part)
+                                               (if (consp part) 0
+                                                 (ebox-string-height part)))
+                                             parts))))
+                  (setq parts (mapcar (lambda (part)
+                                        (if (consp part)
+                                            (ebox--pixel-blank (cdr part) height)
+                                          part))
+                                      parts))))
+              (push (apply #'ebox--lines-concat-horizontal parts) segments))
+            (setq max-width (max max-width line-width))
+            (setq line-parts nil line-width 0 line-has-empty-box nil)))
          (append-atomic
           (rendered width)
           (when (and soft-wrap-p content-width line-parts
                      (> (+ line-width width) content-width))
             (flush-line))
-          (push rendered line-parts)
+          (if (string-empty-p rendered)
+              (progn
+                (setq line-has-empty-box t)
+                (push (cons rendered width) line-parts))
+            (push rendered line-parts))
           (setq line-width (+ line-width width)
                 pending-empty-line nil))
          (append-word
@@ -1101,7 +1196,7 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
           ()
           (if line-parts
               (flush-line)
-            (push "" segments))
+            (push (ebox-lines-join '("")) segments))
           (setq pending-empty-line t))
          (append-unit
           (unit)
@@ -1133,31 +1228,45 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
                             (plist-get unit :width)))))
          (render-child
           (child)
-          (let ((inline-p (eq (ebox-tree-display-outer child) 'inline))
-                (rendered
+          (let* ((inline-p (eq (ebox-tree-display-outer child) 'inline))
+                 (rendered
                  (let ((ebox--inline-auto-width-intrinsic-p
                         (eq (ebox-tree-display-outer child) 'inline)))
-                   (ebox--render-with-cache child))))
+                   (ebox--render-with-cache child)))
+                 (width
+                  (if (and (string-empty-p rendered)
+                           (eq (plist-get child :ebox-kind) 'box))
+                      (let ((ebox--inline-auto-width-intrinsic-p inline-p))
+                        (ebox--total-pixel child))
+                    (when (or (not inline-p)
+                              (eq (plist-get child :ebox-kind) 'box))
+                      (ebox--string-max-pixel-width rendered)))))
             (if (not inline-p)
                 (progn
                   (flush-line)
-                  (setq pending-empty-line nil)
+                  (setq pending-empty-line nil
+                        max-width (max max-width width))
                   (push rendered segments))
-              (if (eq (plist-get child :ebox-kind) 'text)
-                  (dolist (unit (ebox--normal-text-units rendered wrap-mode))
-                    (append-unit unit))
-                (append-unit
-                 (list :kind 'box :rendered rendered
-                       :width (ebox--string-max-pixel-width rendered))))))))
+              (unless (and (string-empty-p rendered) (zerop (or width 0)))
+                (if (eq (plist-get child :ebox-kind) 'text)
+                    (dolist (unit (ebox--normal-text-units rendered wrap-mode))
+                      (append-unit unit))
+                  (append-unit
+                   (list :kind 'box :rendered rendered
+                         :width width))))))))
       (ebox--call-with-box-content-context
        box (lambda () (dolist (child children) (render-child child))))
       (when pending-empty-line
-        (push "" segments)
+        (push (ebox-lines-join '("")) segments)
         (setq pending-empty-line nil))
       (flush-line))
-    (if segments
-        (apply #'ebox--lines-stack-vertical (nreverse segments))
-      ""))))
+    (let ((rendered
+           (or (and segments
+                    (apply #'ebox--lines-stack-vertical (nreverse segments)))
+               "")))
+      (when (string-empty-p rendered)
+        (setq ebox--box-content-empty-width max-width))
+      rendered))))
 
 (defun ebox--render-box-layout-children (box)
   "Render canonical BOX children through its typed LayoutConfig."
@@ -1178,12 +1287,15 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
                         (ebox-layout-config-props
                          (plist-get box :ebox-layout-config))))))
                ('column
-                (ebox--call-with-box-content-context
-                 box (lambda ()
-                       (ebox--render-column-children
-                        children
-                        (ebox-layout-config-props
-                         (plist-get box :ebox-layout-config))))))
+                (let ((content-viewport
+                       (ebox--wrapper-content-viewport-pixel box)))
+                  (ebox--call-with-box-content-context
+                   box (lambda ()
+                         (ebox--render-column-children
+                          children
+                          (ebox-layout-config-props
+                           (plist-get box :ebox-layout-config))
+                          content-viewport)))))
                ('flex
                 (ebox--render-flex-box-children
                  box
@@ -1226,19 +1338,22 @@ FALLBACK is used for nil, auto, or unavailable viewport-height values."
 (defun ebox--intrinsic-box-content (box)
   "Return BOX content materialized independently of its used width.
 
-A typed Normal Box performs soft wrapping while composing its children.  Its
+A typed Normal or Column Box soft-wraps text while composing its children.  Its
 intrinsic widths must therefore measure a separate unwrapped materialization,
 not the content previously composed for the final viewport.  Cache that
 materialization on the source BOX for the current render pass, while applying
 probe-only properties to a shallow copy so the canonical node remains
 unchanged."
-  (if (and (eq (ebox--box-layout-kind box) 'normal)
+  (if (and (memq (ebox--box-layout-kind box) '(normal column))
            (or (plist-member box :children)
                (plist-get box :ebox-child-sequence)))
       (let ((ebox-viewport-width nil)
             (ebox--intrinsic-layout-measurement t)
             (ebox--inline-auto-width-intrinsic-p t)
-            (ebox--box-content-cache-purpose 'intrinsic-width))
+            ;; A child's used content rendered during an ancestor's probe
+            ;; must not reuse that child's separate unwrapped materialization.
+            (ebox--box-content-cache-purpose
+             (1+ (or ebox--box-content-cache-purpose 0))))
         (ebox--render-box-content-cached
          box
          (lambda ()
@@ -1254,11 +1369,14 @@ unchanged."
 
 (defun ebox--content-max-pixel (box)
   "Return BOX's max-content width in content pixels."
-  (let* ((content (ebox--intrinsic-box-content box))
-         (lines (ebox-string-lines content)))
-    (if lines
-        (apply #'max (mapcar #'ebox--string-pixel-width lines))
-      0)))
+  (let* ((ebox--box-content-empty-width nil)
+         (content (ebox--intrinsic-box-content box)))
+    (or (and (string-empty-p content) ebox--box-content-empty-width)
+        (ebox--rendered-intrinsic-size content :width)
+        (let ((lines (ebox-string-lines content)))
+          (if lines
+              (apply #'max (mapcar #'ebox--string-pixel-width lines))
+            0)))))
 
 (defun ebox--line-min-content-pixel (line)
   "Return LINE's min-content width in content pixels."
@@ -1302,11 +1420,15 @@ unchanged."
   (let ((wrap-mode (ebox-get box :wrap-mode)))
     (if (ebox-style-no-soft-wrap-p wrap-mode)
         (ebox--content-max-pixel box)
-      (let ((lines (ebox-string-lines (ebox--intrinsic-box-content box)))
-            (max-width 0))
-        (dolist (line lines max-width)
-          (setq max-width
-                (max max-width (ebox--line-min-content-pixel line))))))))
+      (let* ((ebox--box-content-empty-width nil)
+             (content (ebox--intrinsic-box-content box)))
+        (or (and (string-empty-p content) ebox--box-content-empty-width)
+            (ebox--rendered-intrinsic-size content :width)
+            (let ((lines (ebox-string-lines content))
+                  (max-width 0))
+              (dolist (line lines max-width)
+                (setq max-width
+                      (max max-width (ebox--line-min-content-pixel line))))))))))
 
 (defun ebox--stretch-content-pixel (box)
   "Return BOX's stretch-fit content width, or nil without a viewport."
@@ -1329,65 +1451,75 @@ LIMIT is already resolved to content pixels, or nil for stretch-fit."
 Return nil for intrinsic sizes such as min-content and max-content."
   (cond
    ((null value) nil)
-   ((ebox--viewport-size-value-p value)
-    (when-let* ((viewport (ebox--viewport-pixel-width nil)))
-      (ebox--box-sizing-content-pixel box viewport)))
-   ((numberp value)
-    (ebox--box-sizing-content-pixel box value))
-   ((memq value '(stretch contain fit-content))
+   ((or (numberp value) (ebox-size-value-p value))
+    (when-let* ((pixels (ebox--size-pixels value box 'width)))
+      (ebox--box-sizing-content-pixel box (max 0 pixels))))
+   ((memq value '(stretch fit-content))
     (ebox--stretch-content-pixel box))
-   ((and (consp value) (eq (car value) 'fit-content))
-    (let ((limit (cadr value)))
-      (cond
-       ((ebox--viewport-size-value-p limit)
-        (when-let* ((viewport (ebox--viewport-pixel-width nil)))
-          (ebox--box-sizing-content-pixel box viewport)))
-       ((numberp limit)
-        (ebox--box-sizing-content-pixel box limit))
-       (t nil))))
    (t nil)))
 
 (defun ebox--wrapper-content-viewport-pixel (props)
   "Return PROPS' content viewport for rendering preformatted child layouts.
 PROPS are already engine-normalized; do not pass them back through public
-property parsers."
-  (let* ((width-value (ebox-get props :width))
-         (min-width (ebox--definite-content-size-pixel
-                     props (ebox-get props :min-width)))
-         (max-width (ebox--definite-content-size-pixel
-                     props (ebox-get props :max-width)))
-         (preferred-width
-          (or (ebox--definite-content-size-pixel props width-value)
-              (and (not ebox--inline-auto-width-intrinsic-p)
-                   (or (null width-value)
-                       (eq width-value 'auto)
-                       (eq width-value 'fit-content))
-                   (ebox--stretch-content-pixel props))
-              max-width)))
-    (when preferred-width
-      (max (or min-width 0)
-           (min (or max-width 999999999)
-                (max 0 preferred-width))))))
+property parsers.  Normal and Column text flow uses its final intrinsic bounds;
+the separate unwrapped measurement keeps that resolution non-recursive."
+  (if (and (memq (ebox--box-layout-kind props) '(normal column))
+           (cl-some (lambda (property)
+                      (memq (ebox-get props property)
+                            '(min-content max-content fit-content)))
+                    '(:width :min-width :max-width)))
+      (ebox--content-pixel props)
+    (let* ((width-value (ebox-get props :width))
+           (min-width (ebox--definite-content-size-pixel
+                       props (ebox-get props :min-width)))
+           (max-width (ebox--definite-content-size-pixel
+                       props (ebox-get props :max-width)))
+           (preferred-width
+            (or (ebox--definite-content-size-pixel props width-value)
+                (and (not ebox--inline-auto-width-intrinsic-p)
+                     (or (null width-value)
+                         (eq width-value 'auto)
+                         (eq width-value 'fit-content))
+                     (ebox--stretch-content-pixel props))
+                max-width)))
+      (when preferred-width
+        (max (or min-width 0)
+             (min (or max-width 999999999)
+                  (max 0 preferred-width)))))))
 
 (defun ebox--call-with-box-content-context (props function)
   "Call FUNCTION in the content viewport established by box PROPS."
   (let ((content-viewport (ebox--wrapper-content-viewport-pixel props))
+        (content-height
+         (when-let* ((preferred
+                      (ebox--resolve-size-content-height
+                       props (ebox-get props :height) nil)))
+           (max (ebox--resolve-size-content-height
+                 props (ebox-get props :min-height) 0)
+                (min (or (ebox--resolve-size-content-height
+                          props (ebox-get props :max-height) nil)
+                         preferred)
+                     preferred))))
         (ebox--containing-wrap-mode (ebox-get props :wrap-mode)))
-    (cond
-     ((eq (ebox-get props :width) 'max-content)
-      (let ((ebox-viewport-width nil)
-            (ebox--intrinsic-layout-measurement t)
-            (ebox--inline-auto-width-intrinsic-p nil))
-        (funcall function)))
-     (content-viewport
-      (let ((ebox-viewport-width content-viewport)
-            (ebox--inline-auto-width-intrinsic-p nil))
-        (funcall function)))
-     (t (funcall function)))))
+    (let ((ebox--css-containing-height
+           (and content-height
+                (* content-height (ebox--size-line-height props)))))
+      (cond
+       ((and (eq (ebox-get props :width) 'max-content)
+             (not (memq (ebox--box-layout-kind props) '(normal column))))
+        (let ((ebox-viewport-width nil)
+              (ebox--intrinsic-layout-measurement t)
+              (ebox--inline-auto-width-intrinsic-p nil))
+          (funcall function)))
+       (content-viewport
+        (let ((ebox-viewport-width content-viewport)
+              (ebox--inline-auto-width-intrinsic-p nil))
+          (funcall function)))
+       (t (funcall function))))))
 
 (defun ebox--render-node-as-box-content (node props)
   "Render NODE as preformatted content for a box with PROPS.
-When PROPS establish a content-box viewport, nested auto and `(viewport)'
+When PROPS establish a content-box viewport, nested auto and percentage
 widths resolve against that inner content box instead of the outer caller
 viewport.  A max-content wrapper instead measures the composite NODE without
 an inherited viewport."
@@ -1422,12 +1554,10 @@ an inherited viewport."
 FALLBACK is used for nil and auto values."
   (cond
    ((null value) fallback)
-   ((eq value 'viewport)
-    (if-let* ((viewport (ebox--viewport-pixel-width nil)))
-        (ebox--box-sizing-content-pixel box viewport)
+   ((or (numberp value) (ebox-size-value-p value))
+    (if-let* ((pixels (ebox--size-pixels value box 'width)))
+        (ebox--box-sizing-content-pixel box (max 0 pixels))
       fallback))
-   ((numberp value)
-    (ebox--box-sizing-content-pixel box value))
    ((eq value 'auto) fallback)
    ((eq value 'none) nil)
    ((eq value 'min-content)
@@ -1436,11 +1566,8 @@ FALLBACK is used for nil and auto values."
     (ebox--content-max-pixel box))
    ((eq value 'fit-content)
     (ebox--fit-content-pixel box nil))
-   ((memq value '(stretch contain))
+   ((eq value 'stretch)
     (or (ebox--stretch-content-pixel box) fallback))
-   ((and (consp value) (eq (car value) 'fit-content))
-    (ebox--fit-content-pixel
-     box (ebox--resolve-size-content-pixel box (cadr value) nil)))
    (t
     (error "ebox: unsupported width value after expansion: %S" value))))
 
@@ -1457,8 +1584,7 @@ FALLBACK is used for nil and auto values."
             (or (and (not ebox--inline-auto-width-intrinsic-p)
                      (ebox--stretch-content-pixel box))
                 (ebox--content-max-pixel box)))
-           ((or (eq width-value 'viewport)
-                (memq width-value '(stretch contain)))
+           ((eq width-value 'stretch)
             (or (ebox--resolve-size-content-pixel box width-value nil)
                 (ebox--content-max-pixel box)))
            (t
@@ -1469,19 +1595,38 @@ FALLBACK is used for nil and auto values."
                      box (ebox-get box :max-width) nil)))
     (max (or min-width 0)
          (min (or max-width 999999999)
-              (max 0 preferred-width)))))
+              (max 0 (or preferred-width
+                         (ebox--content-max-pixel box)))))))
 
-(defun ebox--content-height (box text-height)
-  "Calculate content height, respecting box-sizing."
-  (let* ((min-height (ebox--resolve-size-content-height
-                      box (ebox-get box :min-height) 0))
+(defun ebox--content-height (box text-height &optional rendered)
+  "Calculate BOX content height from TEXT-HEIGHT, respecting box-sizing.
+RENDERED supplies an intrinsic extent when its visible overflow must not
+contribute to the containing block's automatic height."
+  (let* ((text-height (or (ebox--rendered-intrinsic-size rendered :height)
+                          text-height))
+         (min-height (ebox--resolve-size-content-height
+                      box (ebox-get box :min-height) 0 text-height))
          (max-height (ebox--resolve-size-content-height
-                      box (ebox-get box :max-height) nil))
+                      box (ebox-get box :max-height) nil text-height))
          (fixed-height (ebox--resolve-size-content-height
-                        box (ebox-get box :height) nil))
+                        box (ebox-get box :height) nil text-height))
          (raw-height (or fixed-height text-height)))
-    (max 1 min-height
-         (min (or max-height 999999999) raw-height))))
+    ;; The buffer renderer consumes complete text lines.  Preserve fractional
+    ;; lengths through constraint arithmetic and quantize once at this boundary.
+    (max 0 (floor (max min-height
+                       (min (or max-height 999999999) raw-height))))))
+
+(defun ebox--border-carrier-height (box content-height)
+  "Return extra lines needed to paint BOX's border at CONTENT-HEIGHT.
+Horizontal borders share existing content or padding lines.  With neither,
+one carrier line preserves their paint without inventing a content line."
+  (if (and (zerop (+ content-height
+                    (floor (ebox-get box :padding-top-height))
+                    (floor (ebox-get box :padding-bottom-height))))
+           (or (> (ebox-get box :border-top-pixel) 0)
+               (> (ebox-get box :border-bottom-pixel) 0)))
+      1
+    0))
 
 (defun ebox--format-content-string (box content)
   "Format BOX CONTENT (wrap and justify) returning a string."
@@ -1507,7 +1652,10 @@ FALLBACK is used for nil and auto values."
         ;; kp mode distributes inner gaps, but Ebox still owns the box geometry.
         ;; Pad ragged lines (notably the last line) back to the content width
         ;; while preserving the requested alignment for those lines.
-        (ebox--lines-justify wrapped-content pixel-width align)))))
+        (ebox--record-rendered-intrinsic-size
+         (ebox--lines-justify wrapped-content pixel-width align)
+         (ebox--rendered-intrinsic-size content :width)
+         (ebox--rendered-intrinsic-size content :height))))))
 
 (defun ebox--format-content (box)
   "Format BOX content (wrap and justify) returning a string."
@@ -1521,8 +1669,11 @@ FALLBACK is used for nil and auto values."
 (defun ebox--total-height (box)
   "Get the total height of the BOX in lines."
   (let* ((formatted-content (ebox--format-content box))
-         (text-height (ebox-string-height formatted-content)))
-    (+ (ebox--content-height box text-height) (ebox--side-height box))))
+         (text-height (ebox-string-height formatted-content))
+         (content-height (ebox--content-height box text-height formatted-content)))
+    (+ content-height
+       (ebox--border-carrier-height box content-height)
+       (ebox--side-height box))))
 
 (defun ebox--node-p (x)
   "Return non-nil if X is an ebox layout node."
@@ -1553,7 +1704,8 @@ Internal implementation of `ebox-render' for box nodes."
          (content-pixel (ebox--content-pixel box))
          (content-height (or (plist-get scroll-window-result
                                         :content-height)
-                             (ebox--content-height box text-height)))
+                             (ebox--content-height
+                              box text-height formatted-content)))
 
          ;; overflow
          (overflow (ebox-get box :overflow))
@@ -1580,7 +1732,7 @@ Internal implementation of `ebox-render' for box nodes."
          (color (and (ebox-style--text-paint-owner-p box)
                      (ebox-get box :color)))
          (bgcolor (ebox-get box :bgcolor))
-         (padding-line-filler (ebox-pixel-space content-pixel))
+         (padding-line-filler (ebox--pixel-blank content-pixel 1))
 
          (scroll-offset (or (ebox-get box :scroll-offset) 0))
 
@@ -1695,9 +1847,7 @@ Internal implementation of `ebox-render' for box nodes."
     ;; 1. Vertical Alignment of content within the box height.  Reused scroll
     ;; lines already fill a top-aligned, chrome-free viewport.
     (unless simple-scroll-rendered-lines
-      ;; The former join treated no decorated lines as one empty string line.
-      ;; Keep that string-adapter convention outside the list pad/clip core.
-      (let ((lines (or result (list ""))))
+      (let ((lines result))
         (setq result
               (ebox--pad-lines-vertical
                lines content-height
@@ -1727,9 +1877,7 @@ Internal implementation of `ebox-render' for box nodes."
                                    'ebox-content-idx 0
                                    'ebox-content-owner region-id)))
                  line))
-             ;; Splitting the former empty aligned string yielded one line,
-             ;; even when alignment clipped all content at height zero.
-             (or result (list "")))))
+             result)))
 
     ;; Scroll state describes formatted content, independently of chrome.
     (puthash region-id box ebox--region-box-table)
@@ -1763,7 +1911,8 @@ Internal implementation of `ebox-render' for box nodes."
     ;; full-height padding/border strips and splitting the result again.
     (if simple-scroll-rendered-lines
         ;; The existing scroll path has already completed chrome and paint.
-        (ebox--apply-surface-properties result (ebox-get box :surface-properties))
+        (ebox--apply-surface-properties
+         result (ebox-interaction--node-surface-properties box))
       (setq result
             (ebox-lines-join
              (ebox--window-render-flat-wrapper-chunk-lines
@@ -1817,7 +1966,7 @@ Internal implementation of `ebox-render' for box nodes."
                    (concat overflow-left-pad line overflow-right-pad)))
                overflow-lines
                "\n")))
-        (setq result (concat result "\n" overflow-text))))
+        (setq result (ebox--lines-stack-vertical result overflow-text))))
     (when (and (eq overflow 'scroll)
                (> text-height content-height))
       (add-text-properties 0 (length result)
@@ -1828,7 +1977,13 @@ Internal implementation of `ebox-render' for box nodes."
     ;; the same blanks and all metadata properties survive verbatim.
     (when (eq (ebox-get box :visibility) 'hidden)
       (setq result (ebox--apply-hidden-visibility result)))
-        result)))
+    (ebox--record-rendered-intrinsic-size
+     result
+     (and (ebox--rendered-intrinsic-size formatted-content :width)
+          (+ content-pixel (ebox--side-pixel box)))
+     (and (ebox--rendered-intrinsic-size formatted-content :height)
+          (+ content-height (ebox--border-carrier-height box content-height)
+             (ebox--side-height box)))))))
 
 (defvar ebox--surface-materialization-active nil
   "Non-nil while an Ebox TP producer is running raw layout.")
@@ -1848,8 +2003,8 @@ Internal implementation of `ebox-render' for box nodes."
             styled))
          (surfaced
           (ebox--apply-surface-properties
-           painted (ebox-get node :surface-properties)))
-         (fallback (ebox-pixel-space 0))
+           painted (ebox-interaction--node-surface-properties node)))
+         (fallback (ebox--pixel-blank 0 1))
          (rendered
           (ebox-lines-join
            (cl-loop for line in (ebox-string-lines surfaced)
@@ -1870,7 +2025,23 @@ NODE can be:
   - a flex node created by `ebox-flex'
 This function owns spatial layout only; it never creates a live TP surface."
   (ebox--with-validated-display-cache
-    (let ((ebox--box-content-render-cache
+    (let* ((ebox--css-viewport-width
+            (if ebox--css-size-context-active-p ebox--css-viewport-width
+              ebox-viewport-width))
+           (ebox--css-viewport-height
+            (if ebox--css-size-context-active-p ebox--css-viewport-height
+              (and (numberp ebox-viewport-height)
+                   (* ebox-viewport-height (frame-char-height)))))
+           (ebox--css-containing-height
+            (if ebox--css-size-context-active-p ebox--css-containing-height
+              ebox--css-viewport-height))
+           (ebox--css-size-context-active-p t)
+           (ebox--css-font-fact
+            (or (plist-get node :ebox-font-fact) ebox--css-font-fact))
+           (ebox--css-viewport-dependent-subtree-cache
+            (or ebox--css-viewport-dependent-subtree-cache
+                (make-hash-table :test 'eq)))
+           (ebox--box-content-render-cache
            (or ebox--box-content-render-cache
                (make-hash-table :test 'eq))))
       (when (listp node)
@@ -1912,7 +2083,7 @@ region/node identities and render side tables for this one materialization."
           (ebox--render-cache-scroll-state-region-ids nil)
           (ebox--render-cache-scroll-state-restorable-p nil)
           (ebox--render-cache-scroll-state-retained-cost-cache nil))
-      (ebox--render-layout candidate))))
+      (ebox--quantize-pixel-spaces (ebox--render-layout candidate)))))
 
 (defun ebox--render-node (node &optional base-source-index)
   "Render private layout NODE with optional BASE-SOURCE-INDEX.
@@ -2019,36 +2190,60 @@ Auto-width children are rendered at intrinsic inline size while explicit
 viewport/definite widths keep their containing-block semantics.  Shorter
 children are padded with blank lines so all reach the same height before
 horizontal concatenation."
-  (let* ((gap (or (plist-get config :item-gap) 0))
+  (let* ((gap (max 0 (or (ebox--size-pixels
+                          (or (plist-get config :item-gap) '(px 0))
+                          nil 'width)
+                         0)))
          (cross-align (or (plist-get config :cross-align) 'stretch))
          (vertical-align (pcase cross-align
                            ('center 'center)
                            ('end 'bottom)
                            (_ 'top)))
-         (rendered
+         (rendered-items
           (mapcar (lambda (child)
                     ;; A row owns the horizontal concatenation.  Its auto
                     ;; width children must therefore measure intrinsically;
                     ;; explicit viewport/stretch widths still resolve against
                     ;; the ambient containing block.
                     (let ((ebox--inline-auto-width-intrinsic-p t))
-                      (ebox--render-with-cache child)))
+                      (let ((rendered (ebox--render-with-cache child)))
+                        (cons rendered
+                              (when (and (string-empty-p rendered)
+                                         (eq (plist-get child :ebox-kind) 'box))
+                                (ebox--total-pixel child))))))
                   children))
-         (max-h (if rendered
-                    (apply #'max (mapcar #'ebox-string-height rendered))
+         (max-h (if rendered-items
+                    (apply #'max (mapcar (lambda (item)
+                                          (ebox-string-height (car item)))
+                                        rendered-items))
                   0))
          pieces)
-    (cl-loop for string in rendered
-             for tail on rendered
-             do (push (ebox--lines-align-vertical
-                       string max-h vertical-align)
-                      pieces)
+    (cl-loop for item in rendered-items
+             for tail on rendered-items
+             do (let ((string (car item)) (empty-width (cdr item)))
+                  (when (or (not (string-empty-p string))
+                            (and empty-width (> empty-width 0)))
+                    (push (if empty-width
+                              (ebox--pixel-blank empty-width max-h)
+                            (ebox--lines-align-vertical
+                             string max-h vertical-align))
+                          pieces)))
              unless (null (cdr tail))
              do (when (> gap 0)
                   (push (ebox--pixel-blank gap max-h) pieces)))
-    (if pieces
-        (apply #'ebox--lines-concat-horizontal (nreverse pieces))
-      "")))
+    (let ((rendered
+           (if pieces
+               (or (apply #'ebox--lines-concat-horizontal (nreverse pieces)) "")
+             "")))
+      (when (string-empty-p rendered)
+        (setq ebox--box-content-empty-width
+              (+ (apply #'+ (mapcar (lambda (item)
+                                     (or (cdr item)
+                                         (ebox--string-max-pixel-width
+                                          (car item))))
+                                   rendered-items))
+                 (* gap (max 0 (1- (length rendered-items)))))))
+      rendered)))
 
 (defun ebox--render-concat (node)
   "Render a legacy concat NODE to a string."
@@ -2484,7 +2679,7 @@ last cached leaf instead of walking the stack from the beginning."
       (let* ((full (ebox--format-content box))
              (lines (ebox-string-lines full)))
         (list :content-lines lines
-              :content-height (ebox--content-height box (length lines))
+              :content-height (ebox--content-height box (length lines) full)
               :box box)))))
 
 (defun ebox--scroll-window-producer-spec
@@ -2767,16 +2962,20 @@ last cached leaf instead of walking the stack from the beginning."
        (when-let* ((config (plist-get node :ebox-layout-config)))
          (and (eq (ebox-layout-config-kind config) 'column)
               (let ((props (ebox-layout-config-props config)))
-                (and (zerop (or (plist-get props :item-gap) 0))
+                (and (zerop (or (ebox--size-pixels
+                                 (or (plist-get props :item-gap) '(lh 0))
+                                 node 'height)
+                                0))
                      (eq (or (plist-get props :cross-align) 'stretch)
                          'stretch)))))))
 
 (defun ebox--scroll-window-transparent-column-p (node)
   "Return non-nil when NODE's Column Box adds no visible wrapper chrome."
   (and (ebox--scroll-window-canonical-column-p node)
-       (null (ebox-get node :height))
-       (zerop (or (ebox-get node :min-height) 0))
-       (null (ebox-get node :max-height))
+       (memq (ebox-get node :height) '(nil auto))
+       (zerop (ebox--resolve-size-content-height
+               node (ebox-get node :min-height) 0))
+       (memq (ebox-get node :max-height) '(nil none))
        (cl-every
         (lambda (property) (zerop (or (ebox-get node property) 0)))
         '(:padding-left-pixel :padding-right-pixel
@@ -2883,10 +3082,10 @@ are always resolved from BOX so no closure can retain a replaced runtime."
 (defun ebox--scroll-window-wrapper-supported-p (box)
   "Return non-nil when BOX can wrap an incomplete lazy scroll prefix."
   (or (null box)
-      (and (null (ebox-get box :height))
-           (or (null (ebox-get box :min-height))
-               (equal (ebox-get box :min-height) 0))
-           (null (ebox-get box :max-height))
+      (and (memq (ebox-get box :height) '(nil auto))
+           (zerop (ebox--resolve-size-content-height
+                   box (ebox-get box :min-height) 0))
+           (memq (ebox-get box :max-height) '(nil none))
            (ebox-style-no-soft-wrap-p (ebox-get box :wrap-mode))
            (eq (ebox-get box :text-align) 'left)
            (eq (ebox-get box :vertical-align) 'top))))
@@ -3062,6 +3261,15 @@ and a window chunk share the same chrome compositor."
                (concat border-left-line padding-left-line line
                        padding-right-line border-right-line))))
            (lines (nconc top-lines wrapped-lines bottom-lines)))
+      (when (and (null lines) (or border-top-p border-bottom-p))
+        (setq lines
+              (list (concat border-left-line padding-left-line
+                            (if (or color bgcolor)
+                                (ebox--propertize-colors
+                                 padding-line-filler color bgcolor)
+                              padding-line-filler)
+                            padding-right-line
+                            border-right-line))))
       (when (and border-top-p lines)
         (setcar lines
                 (propertize
@@ -3074,7 +3282,7 @@ and a window chunk share the same chrome compositor."
                    (ebox--propertize-underline
                     (car tail) border-bottom-color)
                    'ebox-bb region-id))))
-      (when-let* ((properties (ebox-get box :surface-properties)))
+      (when-let* ((properties (ebox-interaction--node-surface-properties box)))
         (setq lines
               (mapcar (lambda (line)
                         (ebox--apply-surface-properties line properties))
@@ -3092,7 +3300,7 @@ only used for incomplete lazy prefixes."
       content-lines
     (let* ((region-id (ebox--ensure-region-id box))
            (content-pixel (ebox--content-pixel box))
-           (padding-line-filler (ebox-pixel-space content-pixel))
+           (padding-line-filler (ebox--pixel-blank content-pixel 1))
            (padding-left (ebox-get box :padding-left-pixel))
            (padding-right (ebox-get box :padding-right-pixel))
            (padding-top (if include-top
@@ -3199,7 +3407,7 @@ only used for incomplete lazy prefixes."
                      'ebox-bt region-id))
               (setq result (ebox-lines-join lines))))
           (ebox--apply-surface-properties
-           result (ebox-get box :surface-properties))
+           result (ebox-interaction--node-surface-properties box))
           (when (or (> margin-left 0) (> margin-right 0))
             (let* ((box-height (ebox-string-height result))
                    (ml-str (when (> margin-left 0)
@@ -3449,26 +3657,33 @@ only used for incomplete lazy prefixes."
                  formatted-lines
                (seq-take formatted-lines target-lines))))))))))
 
-(defun ebox--render-column-children (children &optional config)
+(defun ebox--render-column-children (children &optional config content-viewport)
   "Render flat column CHILDREN with optional typed Column CONFIG.
+CONTENT-VIEWPORT is the owning Box's resolved content width, when definite.
 
 Stack leaves are rendered independently.  When a containing-block viewport is
 bound, narrower rows are padded to that available width, while wider definite
 children keep their own width and overflow only on their own rows.  During
 intrinsic measurement, descendants still receive the containing block but the
-stack itself uses its natural max child width.  A stack used as an intrinsic
+stack itself uses its natural max child width unless CONTENT-VIEWPORT retains
+an independently sized owning Box.  A stack used as an intrinsic
 inline child follows the same natural-width rule and does not consume the
 ambient horizontal viewport."
-  (let* ((gap (or (plist-get config :item-gap) 0))
+  (let* ((gap (max 0 (floor (/ (or (ebox--size-pixels
+                                   (or (plist-get config :item-gap) '(lh 0))
+                                   nil 'height)
+                                  0)
+                               (float (ebox--size-line-height))))))
          (cross-align (or (plist-get config :cross-align) 'stretch))
          (horizontal-align (pcase cross-align
                              ('center 'center)
                              ('end 'right)
                              (_ 'left)))
          (content-width
-          (and (not ebox--intrinsic-layout-measurement)
-               (not ebox--inline-auto-width-intrinsic-p)
-               (ebox--viewport-pixel-width nil)))
+          (or content-viewport
+              (and (not ebox--intrinsic-layout-measurement)
+                   (not ebox--inline-auto-width-intrinsic-p)
+                   (ebox--viewport-pixel-width nil))))
          (rendered-items
           (mapcar (lambda (leaf)
                     (let* ((rendered (ebox--render-with-cache leaf))
@@ -3479,17 +3694,24 @@ ambient horizontal viewport."
                            (rendered
                             (if (and content-width (> content-width 0)
                                      (ebox-style-soft-wrap-p wrap-mode))
-                                (ebox--wrap-text
-                                 rendered content-width wrap-mode)
+                                (ebox--lines-justify
+                                 (ebox--wrap-text
+                                  rendered content-width wrap-mode)
+                                 content-width horizontal-align)
                               rendered)))
                       (cons rendered
-                            (ebox--string-max-pixel-width rendered))))
+                            (if (and (string-empty-p rendered)
+                                     (eq (plist-get leaf :ebox-kind) 'box))
+                                (let ((ebox--inline-auto-width-intrinsic-p t))
+                                  (ebox--total-pixel leaf))
+                              (ebox--string-max-pixel-width rendered)))))
                   children))
          (max-w (if rendered-items
                     (apply #'max (mapcar #'cdr rendered-items))
                   0))
-         (target-w (if (or ebox--intrinsic-layout-measurement
-                         ebox--inline-auto-width-intrinsic-p)
+         (target-w (if (and (null content-viewport)
+                           (or ebox--intrinsic-layout-measurement
+                               ebox--inline-auto-width-intrinsic-p))
                        max-w
                      (or content-width max-w))))
     (let (pieces)
@@ -3507,8 +3729,10 @@ ambient horizontal viewport."
                     (push (ebox--pixel-blank target-w gap) pieces)))
       (let ((rendered
              (if pieces
-                 (apply #'ebox--lines-stack-vertical (nreverse pieces))
+                 (or (apply #'ebox--lines-stack-vertical (nreverse pieces)) "")
                "")))
+      (when (string-empty-p rendered)
+        (setq ebox--box-content-empty-width (max target-w max-w)))
       ;; When no child overflows the containing block, stack padding proves
       ;; every output line already has the exact target width.  A wrapping box
       ;; can then preserve this preformatted content without measuring every

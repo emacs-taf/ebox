@@ -13,19 +13,21 @@
 (defun ebox-node-memo-test--input (map)
   "Build an ordinary responsive Flex/Grid tree with nested scroll and MAP."
   (ebox-build
-   `(column :width (viewport)
+   `(column :width (vw 100)
       (text "Header")
-      (column :id "body" :width stretch :height (viewport-height)
-              :overflow scroll :padding (0 (2))
+      (column :id "body" :width stretch :height (vh 100)
+              :overflow scroll :padding ((lh 0) (px 2))
         ,@(cl-loop
            for index below 6
            collect
            `(flex :width stretch :align-items stretch
-              (box :flex-grow 1 :flex-basis (40) :wrap-mode char
+              ;; Visible overflow exercises content-based automatic minima,
+              ;; populating the intrinsic-width memo this fixture audits.
+              (box :flex-grow 1 :flex-basis (px 40) :wrap-mode char :overflow visible
                 (text ,(propertize
                         (format "Open %02d %s" index (make-string 48 ?x))
                         'keymap map 'mouse-face 'highlight 'help-echo "Open row")))
-              (grid :width (40) :grid-template-columns ((fr 1))
+              (grid :width (px 40) :grid-template-columns ((fr 1))
                 (text "Tag")))))
       (text "Footer"))))
 
@@ -169,13 +171,13 @@
          (ebox-runtime-idle-reflow-cache-prewarm nil)
          (input
           (ebox-build
-           `(column :width (viewport)
-              (box :id "fixed" :width (80) (box (text "Cached child")))
+           `(column :width (vw 100)
+              (box :id "fixed" :width (px 80) (box (text "Cached child")))
               (flex :width stretch
-                (box :flex-grow 1 :flex-basis (40) (text "Allocated")))
-              (column :width stretch :height 2 :overflow scroll
+                (box :flex-grow 1 :flex-basis (px 40) (text "Allocated")))
+              (column :width stretch :height (lh 2) :overflow scroll
                 ,@(cl-loop for index below 64 collect
-                           `(box :height 1 (text ,(format "Row %02d" index))))))))
+                           `(box :height (lh 1) (text ,(format "Row %02d" index))))))))
          (probe (symbol-function 'ebox--render-cache-probe))
          fixed-node-id cache-hits)
     (unwind-protect
@@ -302,6 +304,9 @@
                      (lambda (window)
                        (if (eq change 'display) '(ebox-node-memo-display changed)
                          (funcall display window))))
+                    ((symbol-function 'ebox-incremental--layout-owner-plan)
+                     (lambda (&rest _)
+                       (ert-fail "Changed context must not probe old local geometry")))
                     ((symbol-function 'ebox-surface--render-candidate)
                      (lambda (state)
                        (push t seen)

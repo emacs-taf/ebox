@@ -51,6 +51,7 @@
     (:id region-generation-indexes
      :storage (:region-id-set :region-node-table :region-box-count-table
                :region-box-table :layout-snapshots
+               :fractional-pixel-output-p
                :render-owned-text-values ebox--render-owned-text-values)
      :current-contract candidate-state-plus-global-projection
      :target-contract immutable-generation-value
@@ -221,6 +222,17 @@
      :rollback discard
      :rebuild-proof resolve-font-fact-again
      :cleanup ebox-font-clear-cache)
+    (:id native-hover-face-cache
+     :storage (ebox-interaction--hover-face-cache)
+     :current-contract weakly-shared-native-hover-faces
+     :target-contract discardable-derived-values
+     :category disposable-cache
+     :owner ebox-interaction
+     :mutation-api weak-cache-fill
+     :generation-binding hover-owner-and-computed-paint
+     :rollback discard-unreferenced-candidates
+     :rebuild-proof reproject-owner-native-hover-face
+     :cleanup garbage-collect-unreferenced-faces)
     (:id derived-caches
      :storage (ebox--box-content-render-cache ebox--char-width-cache
                ebox--display-signature-cache ebox--face-height-width-cache
@@ -239,13 +251,15 @@
                ebox--render-root-cache-table-table
                ebox--render-string-max-pixel-width-cache
                ebox--render-string-pixel-width-cache
-               ebox--rendered-uniform-width-table ebox--runtime-ancestor-cache
+               ebox--rendered-uniform-width-table ebox--rendered-intrinsic-size-table
+               ebox--runtime-ancestor-cache
                ebox--scroll-window-cached-state ebox--space-pixel-cache
                ebox--string-pixel-width-cache
                ebox--string-pixel-width-cache-ring
                ebox--viewport-dependent-node-ids-cache
                ebox--viewport-dependent-subtree-cache
                ebox--viewport-height-dependent-subtree-cache
+               ebox--css-viewport-dependent-subtree-cache
                ebox--window-line-prewarmer-table
                ebox--window-line-renderer-table
                ebox-cache--buffer-report-table ebox-cache--registry
@@ -284,6 +298,9 @@ rather than relying on an implicit default.")
   '((:symbol ebox--defer-scroll-content-index
      :reason dynamic-boolean-or-index-mode
      :evidence value-is-never-a-container)
+    (:symbol ebox--box-content-empty-width
+     :reason dynamic-scalar-result
+     :evidence numeric-inline-extent-returned-with-one-content-materialization)
     (:symbol ebox--string-pixel-width-cache-ring-index
      :reason numeric-eviction-cursor
      :evidence value-is-an-integer-ring-position)
@@ -296,6 +313,9 @@ rather than relying on an implicit default.")
     (:symbol ebox-native-reflow--compile-style-index
      :reason dynamically-bound-compile-local-scratch
      :evidence let-bound-per-compile-and-published-only-through-session-root)
+    (:symbol ebox-native-reflow--compile-size-node
+     :reason dynamically-bound-compile-local-scratch
+     :evidence owning-node-font-context-for-one-native-size-projection)
     (:symbol ebox--render-source-generations
      :reason dynamically-bound-render-proof-input
      :evidence let-bound-to-candidate-and-prior-generations-for-one-plan)

@@ -30,25 +30,25 @@
   "Return the fixed layout used by visual verification."
   (ebox-build
    '(column :id dashboard
-     (box :id title :box-sizing border-box :width 74
-          :padding (0 1) :border "#4A90D9"
+     (box :id title :box-sizing border-box :width (ch 74)
+          :padding ((lh 0) (ch 1)) :border "#4A90D9"
           :color "#EAF6FF" :bgcolor "#203040"
           "Ebox Visual Check")
      (row :id cards
-          (box :id hidden :box-sizing border-box :width 24 :height 3
-               :padding (1 1) :border "#27AE60"
+          (box :id hidden :box-sizing border-box :width (ch 24) :height (lh 3)
+               :padding ((lh 1) (ch 1)) :border "#27AE60"
                :color "#F0FFF4" :bgcolor "#17351F" :overflow hidden
                "Hidden: visible line\nHIDDEN-CLIPPED-LINE")
-          (box :id scroll :box-sizing border-box :width 24 :height 3
-               :padding (1 1) :border "#E67E22"
+          (box :id scroll :box-sizing border-box :width (ch 24) :height (lh 3)
+               :padding ((lh 1) (ch 1)) :border "#E67E22"
                :color "#FFF4E6" :bgcolor "#3A2410" :overflow scroll
                "Scroll: first\nSCROLL-SECOND\nSCROLL-THIRD")
-          (box :id sized :box-sizing border-box :width 26 :max-height 3
-               :padding (1 1) :border "#9B59B6"
+          (box :id sized :box-sizing border-box :width (ch 26) :max-height (lh 3)
+               :padding ((lh 1) (ch 1)) :border "#9B59B6"
                :color "#F8EEFF" :bgcolor "#2F1B3A" :overflow hidden
                "border-box max-height\nline 2\nSIZED-CLIPPED"))
-     (box :id footer :box-sizing border-box :width 74
-          :padding (0 1) :border "#7F8C8D"
+     (box :id footer :box-sizing border-box :width (ch 74)
+          :padding ((lh 0) (ch 1)) :border "#7F8C8D"
           :color "#F8F9F9" :bgcolor "#2C3E50"
           "Checks: text properties + display specs + GUI screenshot"))))
 

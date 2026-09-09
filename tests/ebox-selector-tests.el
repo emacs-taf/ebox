@@ -21,22 +21,22 @@
 (defun ebox-selector-test--width-unit-form (width)
   "Return a layout whose root WIDTH constrains nested auto layout."
   `(column :id root :width ,width
-    (box :padding (0 (12)) :border "#111111"
+    (box :padding ((lh 0) (px 12)) :border "#111111"
          "Header text wraps when the root is narrow")
-    (flex :flex-flow (row wrap) :column-gap (12)
-          :padding (0 (12)) :border "#D97757"
+    (flex :flex-flow (row wrap) :column-gap (px 12)
+          :padding ((lh 0) (px 12)) :border "#D97757"
           (column
-           (box :width (220) :border "#D97757" "row")
-           (flex :width (220) :height 4 :border "#D97757"
-                 (box :width (42) "A")
-                 (box :width (42) "B")
-                 (box :width (42) "C")))
+           (box :width (px 220) :border "#D97757" "row")
+           (flex :width (px 220) :height (lh 4) :border "#D97757"
+                 (box :width (px 42) "A")
+                 (box :width (px 42) "B")
+                 (box :width (px 42) "C")))
           (column
-           (box :width (220) :border "#D97757" "row-reverse")
-           (flex :width (220) :height 4 :border "#D97757"
-                 (box :width (42) "A")
-                 (box :width (42) "B")
-                 (box :width (42) "C"))))))
+           (box :width (px 220) :border "#D97757" "row-reverse")
+           (flex :width (px 220) :height (lh 4) :border "#D97757"
+                 (box :width (px 42) "A")
+                 (box :width (px 42) "B")
+                 (box :width (px 42) "C"))))))
 
 (defun ebox-selector-test--rendered-widths (rendered)
   "Return pixel widths for RENDERED lines."
@@ -351,7 +351,7 @@
                         (generate-new-buffer-name " *ebox-selector-test*")
                         node))
           (let ((result (ebox-selector-update-buffer
-                         buffer "#card" :padding '(1 2) :bgcolor "#fef3c7")))
+                         buffer "#card" :padding '((lh 1) (ch 2)) :bgcolor "#fef3c7")))
             (should (= (plist-get result :matched) 1))
             (should (= (plist-get result :updated) 1)))
           (let* ((match (car (ebox-selector-query-buffer buffer "#card")))
@@ -363,18 +363,21 @@
 (ert-deftest ebox-selector-width-unit-change-invalidates-render-cache ()
   "Changing width units should not reuse stale containing-block output."
   (ebox-selector-test--reset-runtime-state)
-  (let (buffer live-widths direct-widths)
-    (cl-letf (((symbol-function 'ebox--space-pixel-width)
-               (lambda () 7)))
+  (let (buffer char-widths live-widths direct-widths)
+    (cl-letf (((symbol-function 'ebox--size-character-width)
+               (lambda (&optional _box) 7)))
       (unwind-protect
           (let ((ebox-viewport-width 1200))
             (setq buffer
                   (ebox-render-to-buffer
                    (generate-new-buffer-name " *ebox-selector-test*")
                    (ebox-build
-                    (ebox-selector-test--width-unit-form '(550)))))
-            (ebox-selector-update-buffer buffer "#root" :width 300)
-            (ebox-selector-update-buffer buffer "#root" :width '(300))
+                    (ebox-selector-test--width-unit-form '(px 550)))))
+            (ebox-selector-update-buffer buffer "#root" :width '(ch 300))
+            (setq char-widths
+                  (with-current-buffer buffer
+                    (ebox-selector-test--rendered-widths (buffer-string))))
+            (ebox-selector-update-buffer buffer "#root" :width '(px 300))
             (with-current-buffer buffer
               (setq live-widths
                     (ebox-selector-test--rendered-widths
@@ -383,7 +386,8 @@
                   (ebox-selector-test--rendered-widths
                    (ebox-render
                     (ebox-build
-                     (ebox-selector-test--width-unit-form '(300))))))
+                     (ebox-selector-test--width-unit-form '(px 300))))))
+            (should-not (equal char-widths live-widths))
             (should (equal live-widths direct-widths)))
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer))))))

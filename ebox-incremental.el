@@ -15,6 +15,7 @@
 (require 'ebox-render-context)
 (require 'ebox-patch-plan)
 (require 'ebox-runtime-index)
+(require 'ebox-size)
 
 (defvar ebox-region-types)
 (declare-function ebox--scroll-state-region-ids-containing-node-ids
@@ -472,10 +473,46 @@ the short runway that makes immediate post-resize smooth scrolling cheap."
 (defvar ebox--render-cache-allow-viewport-dependent nil
   "Non-nil allows caching viewport-dependent nodes for the current context.")
 
+(defvar ebox--css-viewport-dependent-subtree-cache nil
+  "Render-local memo table for explicit CSS viewport dependencies.")
+(defvar ebox--size-dependency-properties)
+
+(defun ebox--css-viewport-dependent-subtree-p (node)
+  "Return non-nil when NODE's subtree explicitly uses vw or vh.
+A fixed containing block cannot isolate these units from the root viewport."
+  (cl-labels
+      ((value-p (value)
+         (when (consp value)
+           (if (ebox-size-value-p value t)
+               (let ((deps (ebox-size-dependencies value)))
+                 (or (memq 'viewport-width deps) (memq 'viewport-height deps)))
+             (cl-some #'value-p value))))
+       (props-p (props)
+         (cl-some (lambda (property) (value-p (plist-get props property)))
+                  ebox--size-dependency-properties))
+       (compute ()
+         (let ((config (plist-get node :ebox-layout-config)))
+           (or (props-p node)
+               (props-p (plist-get node :props))
+               (props-p (plist-get node :raw-props))
+               (and config (props-p (ebox-layout-config-props config)))
+               (cl-some #'ebox--css-viewport-dependent-subtree-p
+                        (ebox--node-children node))))))
+    (when (listp node)
+      (if (not ebox--css-viewport-dependent-subtree-cache)
+          (compute)
+        (let* ((missing (make-symbol "missing"))
+               (cached (gethash node ebox--css-viewport-dependent-subtree-cache
+                                missing)))
+          (if (eq cached missing)
+              (puthash node (compute) ebox--css-viewport-dependent-subtree-cache)
+            cached))))))
+
 (defun ebox--render-cache-contained-viewport-node-p (node)
   "Return non-nil when NODE bounds descendant viewport-dependent layout."
   (and (eq (and (listp node) (plist-get node :ebox-type)) 'box)
-       (ebox--span-patch-definite-size-value-p (ebox-get node :width))))
+       (ebox--span-patch-definite-size-value-p (ebox-get node :width))
+       (not (ebox--css-viewport-dependent-subtree-p node))))
 
 (defun ebox--render-cacheable-node-p (node)
   "Return non-nil when NODE can reuse rendered output in the current context."
@@ -555,6 +592,8 @@ Kept as a narrow predicate for callers that need box-only sizing semantics."
     (ebox--runtime-node-ids node)
     (ebox--node-all-region-ids node))
   (list (ebox--current-display-signature)
+        (when (ebox--css-viewport-dependent-subtree-p node)
+          (list ebox--css-viewport-width ebox--css-viewport-height))
         (when (and (ebox--viewport-dependent-subtree-p node)
                    (not (ebox--render-cache-contained-viewport-node-p
                          node)))
@@ -1728,14 +1767,11 @@ Defaults to the current buffer."
     role-ids))
 
 (defun ebox--next-region-property-change (pos limit)
-  "Return the next ebox region property change after POS, capped at LIMIT."
-  (let ((next limit))
-    (dolist (entry ebox-region-types)
-      (let ((change (next-single-property-change
-                     pos (cdr entry) nil limit)))
-        (when (< change next)
-          (setq next change))))
-    next))
+  "Return the next possible region boundary after POS, capped at LIMIT.
+An unrelated property may split a region run; ownership indexes merge those
+adjacent ranges.  One native interval lookup avoids searching the same string
+separately for every role property."
+  (or (next-property-change pos nil limit) limit))
 
 (defun ebox--index-add-region-line-range
     (region-lines region-id line-number start end)
@@ -2602,11 +2638,27 @@ checks pays one walk per distinct node instead of one walk per pair."
         (append (nreverse survivors) (list candidate))))))
 
 (defun ebox--span-patch-definite-size-value-p (value)
-  "Return non-nil when VALUE is definite enough for local span planning."
-  (and value
-       (not (memq value '(auto min-content max-content fit-content
-                          stretch contain viewport)))
-       (not (ebox--viewport-dependent-size-value-p value))))
+  "Return non-nil when VALUE has no external layout-size dependency.
+Private used numbers and fixed CSS expressions admit local footprint proofs.
+Keywords, percentages, and viewport units still require containing-layout
+evidence rather than a value resolved in the current ambient viewport."
+  (or (numberp value)
+      (and (ebox-size-value-p value)
+           (not (cl-intersection
+                 '(percent viewport-width viewport-height)
+                 (ebox-size-dependencies value))))))
+
+(defun ebox--span-patch-used-size (node value axis)
+  "Return fixed VALUE in NODE's used units on AXIS, or nil without proof.
+Horizontal geometry uses pixels and vertical geometry uses text lines."
+  (when (ebox--span-patch-definite-size-value-p value)
+    (if (numberp value)
+        value
+      (when-let* ((pixels (ebox--size-pixels
+                          value node (if (eq axis 'vertical) 'height 'width))))
+        (if (eq axis 'vertical)
+            (/ (max 0 pixels) (float (ebox--size-line-height node)))
+          (max 0 pixels))))))
 
 (defun ebox--dirty-entry-local-span-keys-p (entry)
   "Return non-nil when ENTRY changed only local span candidate keys.
@@ -2625,7 +2677,8 @@ keeps the change local to the owner's own rendered spans."
 
 (defun ebox--border-box-inline-content-fits-p (style-node)
   "Return non-nil when STYLE-NODE's inline chrome fits its fixed width."
-  (let ((width (ebox-get style-node :width)))
+  (let ((width (ebox--span-patch-used-size
+                style-node (ebox-get style-node :width) 'horizontal)))
     (and (numberp width)
          (>= width
              (+ (ebox-get style-node :padding-left-pixel)
@@ -2635,7 +2688,8 @@ keeps the change local to the owner's own rendered spans."
 
 (defun ebox--border-box-block-content-fits-p (style-node)
   "Return non-nil when STYLE-NODE's block padding leaves one content line."
-  (let ((height (ebox-get style-node :height)))
+  (let ((height (ebox--span-patch-used-size
+                 style-node (ebox-get style-node :height) 'vertical)))
     (and (numberp height)
          (>= height
              (+ 1
@@ -2704,7 +2758,8 @@ outer width and height are definite and still contain their inner chrome."
     '(internal-fragment external-footprint-proof))
    ((and (eq (ebox-get style-node :box-sizing) 'border-box)
          (memq key ebox--span-patch-border-box-block-keys)
-         (numberp (ebox-get style-node :height)))
+         (ebox--span-patch-definite-size-value-p
+          (ebox-get style-node :height)))
     '(internal-fragment external-footprint-proof))
    ((eq key :overflow)
     '(clipping external-footprint))
@@ -2966,19 +3021,27 @@ patched."
     (let ((min-width (ebox-get style-node :min-width))
           (max-width (ebox-get style-node :max-width))
           (min-height (ebox-get style-node :min-height))
-          (max-height (ebox-get style-node :max-height)))
+          (max-height (ebox-get style-node :max-height))
+          (auto-min-independent
+           (let* ((parent-id (ebox--runtime-parent-id buffer node-id))
+                  (parent (and parent-id
+                               (ebox--buffer-runtime-node buffer parent-id))))
+             (not (memq (and parent (ebox--display-inner parent)) '(flex grid))))))
       (and (ebox--definite-containment-inline-size-value-p
             (ebox-get style-node :width))
            (or (null min-width)
+               (and auto-min-independent (eq min-width 'auto))
                (ebox--definite-containment-inline-size-value-p min-width))
            (or (null max-width)
                (eq max-width 'none)
                (ebox--definite-containment-inline-size-value-p max-width))
-           (numberp (ebox-get style-node :height))
-           (or (null min-height) (numberp min-height))
+           (ebox--span-patch-definite-size-value-p (ebox-get style-node :height))
+           (or (null min-height)
+               (and auto-min-independent (eq min-height 'auto))
+               (ebox--span-patch-definite-size-value-p min-height))
            (or (null max-height)
                (eq max-height 'none)
-               (numberp max-height))
+               (ebox--span-patch-definite-size-value-p max-height))
            (not (eq (ebox-get style-node :overflow) 'visible))
            (not (ebox--node-visible-overflow-p node))))))
 
@@ -3012,7 +3075,8 @@ patched."
        (if (eq axis 'row)
            (ebox--span-patch-definite-size-value-p
             (ebox-get style-node :width))
-         (numberp (ebox-get style-node :height)))))
+         (ebox--span-patch-definite-size-value-p
+          (ebox-get style-node :height)))))
 
 (defun ebox--flex-border-box-main-internal-key-p (key axis)
   "Return non-nil when KEY can be internal to a fixed border-box main size."
@@ -3138,13 +3202,14 @@ A definite basis owns the item's base size.  An explicit zero main-axis
 minimum removes the content-minimum clamp, so grow/shrink allocation depends
 only on the stable container and sibling flex inputs.  Cross-axis compatibility
 is still verified by the existing rendered slot-footprint proof."
-  (let* ((basis-value (plist-get item-props :flex-basis))
-         (basis (and (not (memq basis-value
-                                '(nil auto min-content max-content
-                                  fit-content stretch contain viewport)))
-                     (ebox--flex-main-value axis basis-value nil)))
-        (minimum (ebox-get style-node
-                           (if (eq axis 'row) :min-width :min-height))))
+  (let* ((size-axis (if (eq axis 'row) 'horizontal 'vertical))
+         (basis (ebox--span-patch-used-size
+                 style-node (plist-get item-props :flex-basis) size-axis))
+         (minimum
+          (ebox--span-patch-used-size
+           style-node
+           (ebox-get style-node (if (eq axis 'row) :min-width :min-height))
+           size-axis)))
     (and (numberp basis) (>= basis 0)
          (numberp minimum) (= minimum 0))))
 
@@ -3558,6 +3623,23 @@ running expensive span and snapshot checks."
               buffer entry
               ebox-incremental--candidate-state-for-slot-proof))
         source-node-id)
+       ((and ebox-incremental--candidate-state-for-slot-proof
+             (not (equal source-node-id node-id))
+             (eq dirty-kind 'geometry)
+             (memq :content (plist-get entry :changed-keys))
+             (cl-some
+              (lambda (signature)
+                (let ((content (plist-get signature :content)))
+                  (and (stringp content) (string-match-p "\n" content))))
+              (list (plist-get entry :old-signature)
+                    (plist-get entry :new-signature)))
+             ;; Canonical Text owns the content identity; its Box owns the
+             ;; allocated slot.  Ask the same slot proof about that owner
+             ;; before promoting a text-length change to the parent layout.
+             (ebox-incremental--content-slot-stable-p
+              buffer (plist-put (copy-sequence entry) :node-id node-id)
+              ebox-incremental--candidate-state-for-slot-proof))
+        node-id)
        ((and (ebox--dirty-entry-span-patch-candidate-p buffer entry)
              (not (ebox--impact-vector-requires-parent-promotion-p
                    impact-vector))
@@ -3731,20 +3813,57 @@ cannot cover an old unowned visible-overflow suffix."
 When NIL-DEPENDENT is non-nil, nil is treated as viewport-dependent auto width."
   (or (and nil-dependent (null value))
       (and nil-dependent (eq value 'auto))
-      (memq value '(stretch contain fit-content viewport))
-      (and (consp value)
-           (or (eq (car value) 'viewport)
-               (and (eq (car value) 'fit-content)
-                    (ebox--viewport-dependent-size-value-p (cadr value)))))))
+      (memq value '(stretch fit-content))
+      (ebox--size-data-viewport-dependent-p value 'viewport-width)))
+
+(defun ebox--size-data-viewport-dependent-p (value axis)
+  "Return non-nil when size VALUE depends on viewport AXIS.
+Descend through track and shorthand lists as well as size expressions.
+Percentages conservatively depend on both axes: the containing block may
+itself obtain either dimension through an aspect or cross-axis constraint."
+  (when (consp value)
+    (if (ebox-size-value-p value t)
+        (let ((dependencies (ebox-size-dependencies value)))
+          (or (memq axis dependencies) (memq 'percent dependencies)))
+      (cl-some (lambda (item)
+                 (ebox--size-data-viewport-dependent-p item axis))
+               value))))
+
+(defconst ebox--size-dependency-properties
+  '(:width :height :min-width :min-height :max-width :max-height
+    :padding :padding-top :padding-right :padding-bottom :padding-left
+    :margin :margin-top :margin-right :margin-bottom :margin-left
+    :padding-left-pixel :padding-right-pixel
+    :padding-top-height :padding-bottom-height
+    :margin-left-pixel :margin-right-pixel
+    :margin-top-height :margin-bottom-height
+    :border-left-pixel :border-right-pixel :border-top-pixel :border-bottom-pixel
+    :border-top-width :border-right-width :border-bottom-width :border-left-width
+    :flex-basis :gap :row-gap :column-gap :item-gap
+    :grid-template-columns :grid-template-rows :grid-auto-columns :grid-auto-rows)
+  "Own-node size fields inspected for retained viewport dependencies.")
+
+(defun ebox--size-props-viewport-dependent-p (props axis)
+  "Return non-nil when size fields in PROPS depend on viewport AXIS."
+  (cl-some (lambda (property)
+             (ebox--size-data-viewport-dependent-p
+              (plist-get props property) axis))
+           ebox--size-dependency-properties))
+
+(defun ebox--node-size-viewport-dependent-p (node axis)
+  "Inspect NODE's own size declarations and layout config for AXIS."
+  (let ((config (plist-get node :ebox-layout-config)))
+    (or (ebox--size-props-viewport-dependent-p node axis)
+        (ebox--size-props-viewport-dependent-p (plist-get node :props) axis)
+        (ebox--size-props-viewport-dependent-p (plist-get node :raw-props) axis)
+        (and config
+             (ebox--size-props-viewport-dependent-p
+              (ebox-layout-config-props config) axis)))))
 
 (defun ebox--viewport-dependent-height-value-p (value)
   "Return non-nil when vertical size VALUE depends on viewport height."
-  (or (eq value 'viewport-height)
-      (and (consp value)
-           (or (eq (car value) 'viewport-height)
-               (and (memq (car value) '(+ -))
-                    (cl-some #'ebox--viewport-dependent-height-value-p
-                             (cdr value)))))))
+  (or (eq value 'stretch)
+      (ebox--size-data-viewport-dependent-p value 'viewport-height)))
 
 (defun ebox--viewport-dependent-height-props-p (props)
   "Return non-nil when PROPS has a viewport-height size constraint."
@@ -3758,14 +3877,15 @@ When NIL-DEPENDENT is non-nil, nil is treated as viewport-dependent auto width."
   "Return non-nil when NODE's own vertical size uses viewport height."
   (when (and (listp node)
              (not (stringp node)))
-    (pcase (plist-get node :ebox-type)
+    (or (ebox--node-size-viewport-dependent-p node 'viewport-height)
+        (pcase (plist-get node :ebox-type)
       ('box
        (ebox--viewport-dependent-height-props-p node))
       ('flex
        (or (ebox--viewport-dependent-height-props-p
             (plist-get node :props))
            (ebox--viewport-dependent-height-props-p
-            (plist-get node :raw-props)))))))
+            (plist-get node :raw-props))))))))
 
 (defun ebox--flex-participation-viewport-dependent-p (node)
   "Return non-nil when NODE's flex item metadata depends on viewport context."
@@ -3777,7 +3897,8 @@ When NIL-DEPENDENT is non-nil, nil is treated as viewport-dependent auto width."
   "Return non-nil when NODE's own layout depends on viewport width."
   (when (listp node)
     (and (not (eq (plist-get node :ebox-kind) 'text))
-         (or (ebox--flex-participation-viewport-dependent-p node)
+         (or (ebox--node-size-viewport-dependent-p node 'viewport-width)
+             (ebox--flex-participation-viewport-dependent-p node)
              (cond
               ((eq (plist-get node :ebox-kind) 'box)
                (or (ebox--viewport-dependent-size-value-p
@@ -4613,7 +4734,8 @@ Only the region owner and its ancestor path are copied; untouched runtime
 subtrees remain shared with the published root.  Return nil when the retained
 index cannot identify a directly replaceable region owner, leaving callers to
 use their ordinary isolated-copy path.  ISOLATE-OWNER-SUBTREE-P additionally
-copies the owner's descendants before mutation while retaining their ids."
+copies the owner's descendants before mutation while retaining their ids.
+Text regions use the same path-copy contract as Box regions."
   (let* ((state (ebox--buffer-render-state buffer))
          (root (plist-get state :root-node))
          (node-table (plist-get state :node-table))
@@ -5623,7 +5745,10 @@ style consumers; the Style Adapter computes their values exactly once later."
                 (plist-put next :ebox-source-handle
                            (plist-get patch :ebox-source-handle))
                 (dolist (key changed-keys)
-                  (plist-put next key (copy-tree (plist-get patch key))))
+                  (plist-put next key
+                             (if (eq key :surface-properties)
+                                 (tp-property-value-copy (plist-get patch key))
+                               (copy-tree (plist-get patch key)))))
                 (dolist (key '(:ebox-style-overrides))
                   (when (plist-member patch key)
                     (plist-put
@@ -6785,8 +6910,10 @@ Each immutable source record is resolved once for this node pair."
                     (new-entry (plist-member new key)))
                 (unless (and (eq (not (null old-entry))
                                  (not (null new-entry)))
-                             (equal-including-properties
-                              (cadr old-entry) (cadr new-entry)))
+                             (funcall (if (eq key :surface-properties)
+                                          #'ebox-interaction-surface-equal-p
+                                        #'equal-including-properties)
+                                      (cadr old-entry) (cadr new-entry)))
                   (push key changed))))))))
     (setq changed (nreverse changed))
     (unless (eq old-record new-record)
@@ -7172,9 +7299,16 @@ certificate."
                 (plist-get local-preparation :dirty-set)
               (ebox-incremental--declarative-dirty-set
                old-state candidate-root candidate-index)))
+           (axis-node-ids
+            (unless (ebox-style-cascade-active-p)
+              (cl-loop for entry in source-dirty-set
+                       when (cl-intersection
+                             (plist-get entry :changed-keys)
+                             '(:flex :flex-basis :flex-direction :flex-flow))
+                       collect (plist-get entry :node-id))))
            (dirty-set source-dirty-set)
            (current-display-signature (ebox--current-display-signature)))
-      (when (or local-preparation prepare-all-styles-p)
+      (when (or local-preparation prepare-all-styles-p axis-node-ids)
         ;; Participation depends on the final parent relation and, when the
         ;; local Style Adapter succeeded, on computed values.  Validate that
         ;; final contract once here; Surface consumes the resulting
@@ -7182,8 +7316,9 @@ certificate."
         (ebox-tree-validate-indexed-participation
          (plist-get candidate-index :node-table)
          (plist-get candidate-index :parent-table)
-         (or (plist-get local-preparation :participation-node-ids)
-             style-node-ids)
+         (append (or (plist-get local-preparation :participation-node-ids)
+                     style-node-ids)
+                 axis-node-ids)
          (if styles-prepared-p 'computed 'author)
          candidate-source-index))
       (when styles-prepared-p
@@ -7621,9 +7756,10 @@ line count; its outside siblings are shifted by the one scoped replacement."
                              old-node)
                             (ebox-incremental--layout-slot-style-signature
                              new-node))
-                     (numberp (ebox-get old-node :width))
-                     (= (ebox-get old-node :width)
-                        (ebox-get new-node :width))
+                     (ebox--span-patch-definite-size-value-p
+                      (ebox-get old-node :width))
+                     (equal (ebox-get old-node :width)
+                            (ebox-get new-node :width))
                      (eq (ebox-tree-display-inner parent) 'column)
                      (eq (ebox-tree-display-inner parent-new) 'column)
                      ancestors-stable-p
@@ -7645,7 +7781,9 @@ line count; its outside siblings are shifted by the one scoped replacement."
                         :old-spans spans
                         :old-block-span block-span
                         :region-ids (plist-get snapshot :region-ids)
-                        :allocated-width (ebox-get old-node :width)
+                        :allocated-width
+                        (ebox--span-patch-used-size
+                         old-node (ebox-get old-node :width) 'horizontal)
                         :layout-snapshot-detail-generation
                         (plist-get old-state
                                    :layout-snapshot-detail-generation))))
@@ -7673,7 +7811,9 @@ their disjoint span or allocation proofs.  Larger dirty sets keep coalescing."
                        (plist-get (plist-get left :old-signature) :width))
                       (right-width
                        (plist-get (plist-get right :old-signature) :width)))
-                  (and (numberp left-width) (not (numberp right-width)))))))
+                  (and (ebox--span-patch-definite-size-value-p left-width)
+                       (not (ebox--span-patch-definite-size-value-p
+                             right-width)))))))
       (when valid
         (let* ((local-prepared (plist-put (copy-sequence geometry-prepared)
                                           :dirty-set (list dirty)))
@@ -7695,9 +7835,9 @@ their disjoint span or allocation proofs.  Larger dirty sets keep coalescing."
                   ;; closure anyway, so do that before constructing the more
                   ;; expensive span-footprint proof that usually rejects it.
                   (or (eq (plist-get (car plan) :op) 'owner-rerender)
-                      (not (and (numberp old-width)
-                                (numberp new-width)
-                                (= old-width new-width))))))
+                      (not (and (ebox--span-patch-definite-size-value-p old-width)
+                                (ebox--span-patch-definite-size-value-p new-width)
+                                (equal old-width new-width))))))
                (early-allocation-proof
                 (and allocation-first-p
                      (ebox-incremental--allocation-closure-proof
@@ -8620,7 +8760,7 @@ the surface is allowed to reuse retained TP objects."
     (buffer node spans)
   "Return non-nil when path-copied NODE keeps the published line count."
   (and (eq (plist-get node :ebox-type) 'box)
-       (numberp (ebox-get node :width))
+       (ebox--span-patch-definite-size-value-p (ebox-get node :width))
        (null (ebox-tree-node-children node))
        (= (length spans)
           (with-current-buffer buffer
@@ -8887,16 +9027,15 @@ candidate's unrendered caches."
 
 (defun ebox-incremental--stable-grid-track-p (track)
   "Return non-nil when TRACK is fixed or a positive fractional track."
-  (or (numberp track)
-      (and (consp track) (null (cdr track)) (numberp (car track)))
+  (or (ebox--span-patch-definite-size-value-p track)
       (and (proper-list-p track)
            (memq (plist-get track :kind) '(fixed fr))
            (let ((value (if (eq (plist-get track :kind) 'fixed)
                             (plist-get track :size)
                           (plist-get track :factor))))
-             (and (numberp value) (>= value 0)
-                  (or (eq (plist-get track :kind) 'fixed)
-                      (> value 0)))))
+             (if (eq (plist-get track :kind) 'fixed)
+                 (ebox--span-patch-definite-size-value-p value)
+               (and (numberp value) (> value 0)))))
       (and (symbolp track)
            (string-match-p
             "\\`[0-9]+\\(?:\\.[0-9]+\\)?fr\\'" (symbol-name track)))
@@ -8905,14 +9044,13 @@ candidate's unrendered caches."
            (null (cddr track)))))
 
 (defun ebox-incremental--fixed-grid-track-p (track)
-  "Return non-nil when TRACK has a definite numeric size.
+  "Return non-nil when TRACK has a definite fixed size.
 The fast variable-content proof deliberately excludes fractional tracks; their
 allocation remains on the full ancestor-slot proof path."
-  (or (numberp track)
-      (and (consp track) (null (cdr track)) (numberp (car track)))
+  (or (ebox--span-patch-definite-size-value-p track)
       (and (proper-list-p track)
            (eq (plist-get track :kind) 'fixed)
-           (numberp (plist-get track :size)))))
+           (ebox--span-patch-definite-size-value-p (plist-get track :size)))))
 
 (defun ebox-incremental--compute-allocated-parent-slot-stable-p
     (buffer entry candidate-state)
@@ -8957,7 +9095,8 @@ complete published ancestor slot chain remains identical."
            (new-content (plist-get (plist-get entry :new-signature) :content)))
       (and old-state old-node new-node old-grid new-grid
          (memq :content (plist-get entry :changed-keys))
-         (or (and (numberp (ebox-get old-node :height))
+         (or (and (ebox--span-patch-definite-size-value-p
+                   (ebox-get old-node :height))
                   (equal (ebox-get old-node :height)
                          (ebox-get new-node :height)))
              (and (equal (plist-get
@@ -8977,12 +9116,14 @@ complete published ancestor slot chain remains identical."
 
 (defun ebox-incremental--compute-content-slot-stable
     (buffer entry candidate-state)
-  "Return strict evidence that a one-line auto-width owner is local.
+  "Return strict evidence that an auto-width content owner is local.
 The owner may have no declared width when its nearest unchanged formatting
 context has a stable allocated slot.  A column parent is safe when its own
 layout facts and child topology are unchanged; a row parent is accepted only
 for the final child, so changing that child's intrinsic width cannot shift a
-following sibling.  The surface footprint validator remains the final gate."
+following sibling.  Multiline content additionally requires a definite,
+unchanged height in a normal Column slot.  The surface footprint validator
+remains the final gate."
   (let* ((old-state (ebox-incremental--proof-base-state buffer))
          (node-id (plist-get entry :node-id))
          (old-node (and node-id
@@ -9028,18 +9169,24 @@ following sibling.  The surface footprint validator remains the final gate."
                   (not (ebox-get old-node :flex-shrink))))
          (memq :content (plist-get entry :changed-keys))
          (stringp old-content) (stringp new-content)
-         (not (string-match-p "\n" old-content))
-         (not (string-match-p "\n" new-content))
          snapshot
-         (equal (plist-get
-                 (plist-get snapshot :external-footprint-signature)
-                 :block-lines)
-                1)
+         (or (and (not (string-match-p "\n" old-content))
+                  (not (string-match-p "\n" new-content))
+                  (equal (plist-get
+                          (plist-get snapshot :external-footprint-signature)
+                          :block-lines)
+                         1))
+             (and (ebox--span-patch-definite-size-value-p
+                   (ebox-get old-node :height))
+                  (equal (ebox-get old-node :height)
+                         (ebox-get new-node :height))
+                  (ebox-incremental--owner-slot-stable-p
+                   buffer old-state candidate-state node-id)))
          ancestor-signature)))
 
 (defun ebox-incremental--content-slot-stable-p
     (buffer entry candidate-state)
-  "Return cached one-line content-slot evidence for ENTRY."
+  "Return cached content-slot evidence for ENTRY."
   (if (not ebox-incremental--allocated-slot-proof-cache)
       (ebox-incremental--compute-content-slot-stable
        buffer entry candidate-state)
@@ -9148,7 +9295,7 @@ style, and the published ancestor slot chain remain mandatory."
          (ebox-incremental--node-child-ids-equal-p old-parent new-parent)
          (equal (ebox-incremental--layout-slot-style-signature old-parent)
                 (ebox-incremental--layout-slot-style-signature new-parent))
-         (numberp (ebox-get old-node :width))
+         (ebox--span-patch-definite-size-value-p (ebox-get old-node :width))
          (equal (ebox-get old-node :width) (ebox-get new-node :width))
          (not (ebox-get old-node :flex-grow))
          (not (ebox-get old-node :flex-shrink))
@@ -9552,6 +9699,12 @@ metadata; this predicate only authorizes the local attempt."
                  spans
                  (or local-typography-p
                      (not path-copied-p)
+                     ;; A copied owner subtree has the same mutation
+                     ;; isolation as the ordinary full-copy candidate.
+                     ;; Its shared siblings are outside this render, and
+                     ;; the final slot footprint still proves geometry.
+                     (not (ebox-incremental--candidate-shares-published-node-p
+                           old-state new-node))
                      (ebox-incremental--path-span-line-count-stable-p
                      buffer new-node spans)
                      content-slot-evidence
@@ -10077,6 +10230,9 @@ role, and outside-complement compatibility before publication."
                       :geometry-proof))))
         (certificate-proofs
          (and certificate-proof
+              ;; Cache coordinates must never become buffer allocation
+              ;; certificates.  Visible snapshots are installed separately.
+              (not (plist-get certificate-proof :scroll-content-proof))
               (ebox-incremental--owner-proof-list certificate-proof)))
         (overrides
          (append
@@ -10232,6 +10388,7 @@ role, and outside-complement compatibility before publication."
                       (ebox-incremental--owner-proof-list
                        (plist-get (plist-get prepared :mixed-owner-proof)
                                   :geometry-proof))))
+             :scroll-content-proof (plist-get span-proof :scroll-content-proof)
              :formatting-context-reflow-proof
              (and (or (eq projection-kind 'formatting-context-reflow)
                       (and (eq projection-kind 'mixed-owner-reflow)
@@ -10502,6 +10659,66 @@ role, and outside-complement compatibility before publication."
     (setq base (plist-put base (pop overrides) (pop overrides))))
   base)
 
+(defun ebox-incremental--scroll-content-span-proof
+    (buffer old-state prepared candidate-state)
+  "Prove one content owner in a retained root scroll's content coordinates.
+The visible buffer may contain only part of the scroll content.  Its cached
+lines are a separate coordinate space, so run the ordinary owner and footprint
+proofs there rather than treating invisible owners as zero-sized.  Nested
+scrolls, non-content changes and uncached/partial owners retain their ordinary
+fallback.  The surface must still validate the complete cached replacement and
+the visible replacement independently before publishing either one."
+  (let* ((regions (plist-get old-state :scroll-region-ids))
+         (region (and (= (length regions) 1) (car regions)))
+         (scroll (and region (gethash region ebox--scroll-global-state)))
+         (next-scroll (and region (gethash region
+                                          (plist-get prepared :scroll-state-table))))
+         (root (plist-get old-state :root-node))
+         (dirty-set (plist-get prepared :dirty-set))
+         (lines (plist-get scroll :content-lines)))
+    (when (and region scroll next-scroll lines
+               (eq (plist-get scroll :buffer) buffer)
+               (eq (plist-get scroll :box) root)
+               (eq (plist-get next-scroll :box)
+                   (plist-get candidate-state :root-node))
+               (= (hash-table-count (plist-get prepared :scroll-state-table)) 1)
+               (= (length dirty-set) 1)
+               (equal (plist-get (car dirty-set) :changed-keys) '(:content))
+               (not (plist-get (car dirty-set) :children))
+               (not (plist-get scroll :lazy-scroll-prefix-dirty))
+               (equal (plist-get scroll :scroll-offset)
+                      (plist-get next-scroll :scroll-offset)))
+      (with-temp-buffer
+        (insert (ebox-lines-join lines))
+        (let* ((base (copy-sequence old-state))
+               (candidate (copy-sequence candidate-state))
+               (input (copy-sequence prepared))
+               (ebox-incremental--allocated-slot-proof-cache
+                (make-hash-table :test 'equal)))
+          (dolist (state (list base candidate))
+            (plist-put state :surface nil)
+            (plist-put state :scroll-region-ids nil)
+            (plist-put state :scroll-state-table (make-hash-table :test 'equal))
+            (plist-put state :layout-snapshots (make-hash-table :test 'equal)))
+          (plist-put input :scroll-state-table (make-hash-table :test 'equal))
+          (let* ((ebox-incremental--buffer-render-state-override
+                  (cons (current-buffer) base))
+                 (ebox-incremental--candidate-base-state
+                  (cons (current-buffer) base))
+                 (ebox-incremental--candidate-state-for-slot-proof candidate)
+                 (ebox--region-line-index (ebox--build-region-line-index))
+                 (ebox--region-line-index-buffer (current-buffer))
+                 (plan (ebox-incremental--layout-owner-plan
+                        (current-buffer) base candidate dirty-set))
+                 (proof (ebox-incremental--span-patch-projection-proof
+                         (current-buffer) base input candidate plan)))
+            (when proof
+              (plist-put proof :scroll-content-proof
+                         (list :region-id region :lines lines :owner-plan plan
+                               :snapshots (plist-get base :layout-snapshots)
+                               :line-index ebox--region-line-index))
+              proof)))))))
+
 (defun ebox-incremental--prepare-scoped-candidate
     (buffer old-state next-root isolated-candidate-p
             &optional skip-span-proof-p scroll-transaction-p)
@@ -10601,9 +10818,11 @@ whether NEXT-ROOT shares untouched published nodes."
            buffer old-state prepared candidate-state owner-plan))
          (span-proof
           (unless (or paint-p mixed-proof skip-span-proof-p)
-            (ebox-incremental--span-patch-projection-proof
-             buffer old-state prepared candidate-state owner-plan
-             path-copied-p)))
+            (or (ebox-incremental--span-patch-projection-proof
+                 buffer old-state prepared candidate-state owner-plan
+                 path-copied-p)
+                (ebox-incremental--scroll-content-span-proof
+                 buffer old-state prepared candidate-state))))
          (projection-kind
          (cond
            (mixed-proof 'mixed-owner-reflow)
@@ -10614,6 +10833,10 @@ whether NEXT-ROOT shares untouched published nodes."
                  (not (plist-get span-proof :variable-content-p)))
             'owner-scoped)
            (span-proof 'span-patch))))
+    (when-let* ((scroll-proof (plist-get span-proof :scroll-content-proof)))
+      (setq owner-plan (plist-get scroll-proof :owner-plan)
+            scope-node-ids (mapcar (lambda (op) (plist-get op :owner-id))
+                                  owner-plan)))
     (setq prepared (plist-put prepared :scroll-patch-fast-p
                               skip-span-proof-p))
     (when mixed-proof
@@ -11018,8 +11241,14 @@ fresh regardless of whether any stable producers exist."
                     (plist-get old-state :region-box-table)))
         (plist-put candidate-state :scroll-state-table candidate-scroll-table)
         (setq owner-plan
-              (ebox-incremental--layout-owner-plan
-               buffer old-state candidate-state dirty-set)
+              (if (or display-changed (not style-context-stable-p))
+                  ;; Old overflow and intrinsic-size facts cannot prove a
+                  ;; local owner after the display or cascade changed.
+                  ;; Recompute through the complete canonical root instead
+                  ;; of measuring a detached subtree against stale ancestry.
+                  (ebox-incremental--root-owner-plan buffer dirty-set)
+                (ebox-incremental--layout-owner-plan
+                 buffer old-state candidate-state dirty-set))
               report
               (ebox-incremental--plist-overlay
                (ebox-incremental--layout-owner-report

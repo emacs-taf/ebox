@@ -33,10 +33,10 @@ field-based child syntax.
 (ebox-render-to-buffer
  "*Ebox Example*"
  (ebox-build
-  '(column :padding (1 2)
-           :border (1 solid "#8A93A6")
+  '(column :padding ((lh 1) (ch 2))
+           :border ((px 1) solid "#8A93A6")
            (text :color "#263244" "Hello Ebox")
-           (row :item-gap 1
+           (row :item-gap (ch 1)
                 (box "Left")
                 (box "Right")))))
 ```
@@ -64,6 +64,40 @@ frameworks must not access private canonical fields or dynamic context.
 Flex and Grid participation properties belong directly to a child `box`. They
 do not require a wrapper node.
 
+Box geometry uses `(unit number)`: `px`, `%`, `vw`, `vh`, `ch`, and `lh`.
+For example, `:width (ch 80)` and `:height (calc (- (vh 100) (lh 1)))` mean an
+80-zero-glyph width and a viewport height minus one line height. `calc`, `min`,
+`max`, and `clamp` compose lengths at layout time. Size keywords such as `auto`
+and bare `fit-content` stay symbols. Old bare lengths, singleton pixel lists,
+and viewport keywords are rejected. Units are checked against the property axis
+at construction, including every branch of a size function. See the [shared
+unit-constraint table](docs/user/ebox-user-guide.en.md#size-unit-constraints)
+for the allowed combinations, keyword defaults, percentage references, and
+vertical line quantization. An empty Box has zero automatic content height;
+use `(box :height (lh 1))` to reserve a blank line.
+
+## Native interaction
+
+Text and every Box form accept four explicit node capabilities: `:help-echo`
+for a string or native help function, `:pointer` for a native pointer shape,
+`:hover-style` for restricted color and text-decoration paint, and `:keymap`
+for a native Emacs keymap. Box help, pointer, and keymap cover its content,
+padding, and border; they exclude that Box's margin and structural newlines.
+Hover shares the declaring node's paint across text and padding, excluding
+physical left/right borders. Nested explicit
+values override enclosing capabilities; explicit `nil` clears one capability.
+
+Use `ebox-help-create` to adapt a zero-argument business function to native help
+with the hovered buffer as its context. Use `ebox-keymap-create` to bind
+ordinary zero-argument callbacks to activation
+keys or custom keys; it supplies the clicked window's buffer for mouse commands.
+Use `ebox-region-update` with a semantic ID in the current mounted buffer or
+an explicit region handle to replace or clear these capabilities.
+Native keymaps support independent Ebox interactions; application state,
+focus navigation, and command behavior remain the author's responsibility.
+See the [interaction guide](docs/user/ebox-user-guide.en.md#native-node-interaction)
+and the Playground's [interaction lab](../ebox-playground/README.md#native-interaction-lab).
+
 ## Render and update
 
 - `ebox-render` returns propertized text without publishing a live buffer.
@@ -80,8 +114,8 @@ value may be mounted in multiple buffers without sharing live ownership.
 Snapshots traverse exported data and TP's latest retained diagnostic report
 only when requested; ordinary updates do not create them.
 Their canonical input remains usable after later updates or unmounting. Mutable
-node data is detached, while immutable source facts and opaque capabilities
-(callbacks, keymaps, records) retain identity. The display environment and
+node data and interaction keymaps are detached, while immutable source facts
+and opaque capabilities (callbacks, records) retain identity. The display environment and
 external capabilities are not frozen. Querying during a TP transaction or
 after unmounting signals an error. Compare both mount ID and revision when
 identifying a committed generation; remounting can restart revision numbers.
@@ -108,6 +142,7 @@ exact Elisp fallback. Ebox never builds it while loading.
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make c1b-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make native-rust-tests

@@ -27,6 +27,7 @@
 (declare-function ebox--next-runtime-node-id "ebox" ())
 (declare-function ebox--string-region-ids "ebox" (string))
 (declare-function ebox--box-visible-overflow-p "ebox" (box))
+(declare-function ebox--flex-validate-item-bases "ebox-flex" (props children))
 
 (defconst ebox--default-display '(block flow)
   "Default CSS-like display for a plain Ebox box.")
@@ -735,6 +736,10 @@ handles, reused node objects, and cycles without consulting node metadata."
                   keys)))
         (_ (error "Ebox participation requires a Flex or Grid parent: %S"
                   keys)))))
+  (when (and (or (eq source 'computed) (not (ebox-style-cascade-active-p)))
+             (eq (ebox-tree-layout-kind node) 'flex))
+    (ebox--flex-validate-item-bases
+     (ebox-tree-layout-props node) (ebox-tree-layout-children node)))
   node)
 
 (defun ebox-tree--indexed-parent-context
@@ -748,7 +753,15 @@ handles, reused node objects, and cycles without consulting node metadata."
     (node-table parent-table node-ids &optional source source-index)
   "Validate NODE-IDS in indexed final tree using AUTHOR or COMPUTED SOURCE."
   (setq source (or source 'author))
-  (dolist (node-id (delete-dups (copy-sequence node-ids)))
+  (dolist (node-id
+           (delete-dups
+            (append (copy-sequence node-ids)
+                    (when (or (eq source 'computed)
+                              (not (ebox-style-cascade-active-p)))
+                      (delq nil (mapcar
+                                 (lambda (id)
+                                   (ebox-runtime-index-get id parent-table))
+                                 node-ids))))))
     (when-let* ((node (ebox-runtime-index-get node-id node-table)))
       (ebox-tree--validate-node-parent-participation
        node
@@ -899,7 +912,10 @@ mark every ancestor dirty."
     (while (and equal-p old new)
       (setq equal-p
             (and (eq (car old) (car new))
-                 (equal-including-properties (cadr old) (cadr new))))
+                 (funcall (if (eq (car old) :surface-properties)
+                              #'ebox-interaction-surface-equal-p
+                            #'equal-including-properties)
+                          (cadr old) (cadr new))))
       (setq old (ebox-tree--next-local-source-entry (cddr old))
             new (ebox-tree--next-local-source-entry (cddr new))))
     (and equal-p (null old) (null new))))
@@ -921,8 +937,10 @@ OLD and NEW are source nodes with the same retained runtime identity."
                     (new-entry (plist-member new-signature key)))
                 (unless (and (eq (not (null old-entry))
                                  (not (null new-entry)))
-                             (equal-including-properties
-                              (cadr old-entry) (cadr new-entry)))
+                             (funcall (if (eq key :surface-properties)
+                                          #'ebox-interaction-surface-equal-p
+                                        #'equal-including-properties)
+                                      (cadr old-entry) (cadr new-entry)))
                   (push (if (eq key :ebox-layout-props) :props key)
                         changed))))))))
     (nreverse changed)))

@@ -145,7 +145,11 @@ function."
                        (if outer-field (cdr outer-field) 'block)))
            (style-properties
             (ebox-dsl--without-keys
-             properties ebox-dsl--source-fields))
+             properties (append ebox-dsl--source-fields
+                                ebox-interaction-properties)))
+           (interactions
+            (ebox-interaction-normalize
+             (ebox-dsl--keep-keys properties ebox-interaction-properties)))
            (declarations
             (ebox-dsl--compile-style
              tag style-properties context)))
@@ -158,6 +162,7 @@ function."
         :id (ebox-dsl--source-field properties :id context)
         :class (ebox-dsl--source-field properties :class context)
         :declarations declarations
+        :interactions interactions
         :provenance (list :adapter 'ebox-dsl :tag tag
                           :source-present-p (not (null source))))
        :outer outer
@@ -166,7 +171,7 @@ function."
         tag declarations context)
        :declarations declarations
        :owned-facts
-       (ebox-canonical-facts-from-declarations tag declarations)))))
+       (ebox-canonical-facts-from-declarations tag declarations interactions)))))
 
 (defconst ebox-dsl--tags '(text box row column flex grid)
   "The complete Ebox author tag set.")

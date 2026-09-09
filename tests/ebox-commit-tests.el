@@ -1003,7 +1003,7 @@
           (ebox-render-to-buffer
            buffer
            (ebox-build
-            '(column :width (viewport)
+            '(column :width (vw 100)
               (box :id first :class card "One")
               (box :id second :class card "Two")))
            (list :observer
@@ -1036,7 +1036,7 @@
 
           (let* ((root
                   (ebox-build
-                   '(box :id scroll-root :height 1 :overflow scroll
+                   '(box :id scroll-root :height (lh 1) :overflow scroll
                      "A\nB\nC")))
                  (scroll-id
                   (car
@@ -2383,8 +2383,8 @@ remain retained identities."
           (ebox-render-to-buffer
            (generate-new-buffer-name " *ebox-commit-types*")
            (ebox-build
-            '(flex :key root :width (80)
-                   (box :key child :width (40) "A")))))
+            '(flex :key root :width (px 80)
+                   (box :key child :width (px 40) "A")))))
          (before (gethash buffer ebox--buffer-render-state-table)))
     (unwind-protect
         (progn
@@ -2398,7 +2398,7 @@ remain retained identities."
                       'text (plist-get before :runtime-type-count-table))
                      1))
           (ebox-commit
-           buffer (ebox-build '(box :key root :width (80) "B")))
+           buffer (ebox-build '(box :key root :width (px 80) "B")))
           (let ((after (gethash buffer ebox--buffer-render-state-table)))
             (should-not
              (gethash 'item (plist-get after :runtime-type-count-table)))
@@ -5330,7 +5330,7 @@ When INHERITED-P is non-nil, keep ancestor color across an untouched sibling."
          (parent
           (list :node-id 1 :ebox-type 'box :ebox-kind 'box
                 :ebox-layout-config
-                (ebox-row-layout-create :item-gap 2 :cross-align 'stretch)
+                (ebox-row-layout-create :item-gap '(px 2) :cross-align 'stretch)
                 :children (list owner)))
          (item
           (list :node '(:type "box") :order 0 :grow 0 :shrink 0
@@ -5430,6 +5430,42 @@ When INHERITED-P is non-nil, keep ancestor color across an untouched sibling."
        (plist-member
         (ebox-native-reflow-session-layout-package session)
         :document-delta)))))
+
+(ert-deftest ebox-commit-css-fixed-expressions-retain-local-publication ()
+  "Fixed CSS expressions retain scoped content updates and exact output."
+  (dolist (width '((px 120) (ch 120) (calc (+ (ch 80) (px 40)))))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-test-column :width width :bgcolor "#FFFDF8"
+         (ebox-test-text "before" :key 'label :source-identity 'label)
+         (ebox-test-box :height '(lh 1) (ebox-test-text "untouched"))))
+      (let* ((candidate (ebox-candidate-begin (current-buffer)))
+             (_ (ebox-candidate-replace-host-ref
+                 candidate 'label
+                 (ebox-test-text "after!" :key 'label :source-identity 'label)))
+             (result (ebox-commit-test--count-root-renders
+                      (lambda () (ebox-commit (current-buffer) candidate)))))
+        (should (zerop (cdr result)))
+        (should-not (plist-get (car result) :tp-full-root))
+        (should (string-match-p "after" (buffer-string)))
+        (ebox-commit-test--assert-full-render-equivalent)))))
+
+(ert-deftest ebox-commit-css-proof-requires-independent-size-evidence ()
+  "Contextual units and automatic minimums do not become fixed-slot proofs."
+  (dolist (value '(auto none min-content max-content fit-content stretch
+                   (% 50) (vw 100) (vh 100)
+                   (calc (- (vh 100) (lh 1)))))
+    (should-not (ebox--span-patch-definite-size-value-p value))
+    (should-not (ebox-incremental--fixed-grid-track-p
+                 (list :kind 'fixed :size value))))
+  (dolist (axis '(row column))
+    (let ((node (list :min-width '(px 0) :min-height '(lh 0))))
+      (should (ebox--flex-fixed-basis-content-allocation-stable-p
+               node '(:flex-basis (px 80)) axis))
+      (plist-put node (if (eq axis 'row) :min-width :min-height) 'auto)
+      (should-not (ebox--flex-fixed-basis-content-allocation-stable-p
+                   node '(:flex-basis (px 80)) axis)))))
 
 (provide 'ebox-commit-tests)
 

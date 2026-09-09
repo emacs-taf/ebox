@@ -22,6 +22,8 @@ This is the maintainer entry point for the standalone Ebox repository. It descri
 | `ebox-runtime-index.el` | Compressed persistent radix maps and legacy hash-table adapters. |
 | `ebox-state-contract.el` | Closed retained-state ownership inventory and read-only compatibility-mirror rebuild probes. |
 | `ebox-style.el` | ECSS property schemas, declarations and cascade, shorthand expansion, computed style, colors, borders, and dirty effects. |
+| `ebox-interaction.el` | Native help and keymap adapters with target-buffer context, validation and owned copies of the four explicit node capabilities, restricted hover paint compilation, and native surface-property projection with nested explicit-nil precedence. |
+| `ebox-size.el` | Pure explicit-unit validation, dimensional arithmetic, dependency discovery, and fractional-pixel resolution from injected measurements. |
 | `ebox-tree.el` | Node traversal, logical child access, ECSS subject adaptation, identity, parent paths, keys, and tree snapshots. |
 | `ebox-child-range.el` | Immutable weighted segment trie, sparse persistent key trie, Range replacement, and Gate A metrics. |
 | `ebox-measure.el` | Display-sensitive character/face/pixel measurement and measurement caches. |
@@ -44,6 +46,20 @@ The package intentionally does not include application Components, UI controls, 
 The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/ebox-core-render-tests.el`, `tests/ebox-state-contract-tests.el`, `tests/ebox-layout-boundary-tests.el`, `tests/ebox-patch-plan-tests.el`, `tests/ebox-style-schema-tests.el`, `tests/ebox-spi-tests.el`, `tests/ebox-child-range-tests.el`, `tests/ebox-grid-tests.el`, `tests/ebox-commit-tests.el`, `tests/ebox-surface-tests.el`, `tests/ebox-dsl-tests.el`, `tests/ebox-flex-tests.el`, `tests/ebox-selector-tests.el`, `tests/ebox-package-tests.el`, `tests/ebox-visual-check-tests.el`, `tests/ebox-docs-contract-tests.el`, `tests/ebox-ci-contract-tests.el`, `native/Cargo.toml`, `native/Cargo.lock`, `native/build.rs`, `native/vendor/emacs-30/emacs-module.h`, `native/src/lib.rs`, `native/src/layout.rs`, `native/c/ebox_module.c`, `scripts/ebox-package-lint.el`, `scripts/ebox-visual-check.el`, and `scripts/ebox-performance-evaluator.el`.
 
 Runtime index behavior is covered by `tests/ebox-runtime-index-tests.el`.
+
+Native node capabilities are covered by `tests/ebox-interaction-tests.el` through
+`make interaction-tests`. The interactive reference and its command regressions
+live in the sibling Playground package.
+
+CSS sizing is covered by `tests/ebox-size-tests.el`,
+`tests/ebox-size-style-tests.el`, `tests/ebox-css-layout-tests.el`,
+`tests/ebox-css-flex-grid-tests.el`, `tests/ebox-css-viewport-tests.el`, and
+`tests/ebox-size-native-tests.el`.
+`tests/ebox-zero-height-tests.el` covers empty automatic geometry and explicit
+blank-line sizing through the same `make size-tests` entry point.
+The supported literal migration tool is `scripts/migrate-css-sizes.py`;
+`scripts/test_migrate_css_sizes.py` verifies its source-preserving rewrites and
+ambiguous-input reports.
 
 ## Runtime model
 
@@ -69,6 +85,7 @@ Caller-owned Source Tree
 | Source/Element Tree | `ebox-child-range.el`, `ebox-tree.el`, `ebox-dsl.el` | Published buffer mutation. |
 | State Ownership Contract | `ebox-state-contract.el` | Live publication or mutable authority. |
 | Computed Style | `ebox-style.el` | Layout identity or patch execution. |
+| Length Values | `ebox-size.el` | Window/node reads, property defaults, choosing display boundaries, or arbitrary Lisp evaluation. |
 | Measurement | `ebox-measure.el` | Application state or dirty policy. |
 | Formatting Context | `ebox-layout.el`, `ebox-flex.el`, `ebox-grid.el` | Buffer edits. |
 | Fragment/Snapshot | `ebox-fragment.el`, `ebox-incremental.el` | Source parsing or identity allocation. |
@@ -81,7 +98,9 @@ Caller-owned Source Tree
 ## Invariants
 
 - Public Ebox nodes are data; `ebox--*` names are private.
-- A one-element horizontal list such as `'(420)` denotes pixels; ordinary horizontal numbers denote character columns.
+- Box geometry uses explicit `(unit number)` data with `px`, `%`, `vw`, `vh`, `ch`, or `lh`; `calc`, `min`, `max`, and `clamp` compose values. Bare geometry numbers, singleton pixel lists, viewport/contain keywords, and parameterized `fit-content` are rejected.
+- The [author unit-constraint table](../user/ebox-user-guide.en.md#size-unit-constraints) is authoritative. The schema and construction boundary validate every nested branch against its inline, block, parent-main-axis, or border-paint domain before any display work. Empty automatic content has zero height.
+- Property schemas own allowed keywords and ranges; layout supplies reference measurements. Length arithmetic retains fractions and unresolved dependencies until the appropriate layout/display boundary. Vertical buffer content remains quantized to complete lines.
 - `ebox-render` uses an ephemeral TP surface and does not publish to a buffer; `ebox-render-to-buffer` mounts a retained TP surface; `ebox-display-buffer` displays that same retained-surface path; and `ebox-commit` prepares Ebox semantics and updates the mount through TP. Ebox exposes no parallel public macro that erases a live buffer and evaluates arbitrary body forms.
 - Declarative input remains caller-owned. Live mount/commit assigns identity only on a surface-owned copy, so the same source can back multiple buffers.
 - Logical `:id` values resolve through `ebox-region-resolve` to opaque surface-scoped handles. Handles, not source-tree numeric ids, distinguish the same logical region mounted in different buffers.
@@ -107,6 +126,7 @@ Caller-owned Source Tree
 - `owner-rerender` is broader than `span-patch`, which is broader than `paint-patch`.
 - Buffer coordinates belong to the generation that produced them and must be refreshed after mutation.
 - Grid uses the normal measurement and rendering pipeline. Native reflow may reject an ineligible tree and must fall back to Elisp without changing correctness.
+- Native sizing accepts fixed values and static size arithmetic within the public axis constraints when the resolved geometry is integral in the native representation. Percentage/viewport dependencies, fractional geometry, and vertical intrinsic sizing use the normal Elisp fallback. Accepting these values at the public boundary does not imply native acceleration.
 - A confirmed retained-native frame owns an immutable layout document together
   with its exact document revision. Candidate-session forks share that document.
   A synchronous frame may omit the document only when its base and target
@@ -127,7 +147,7 @@ Caller-owned Source Tree
 
 ## Grid contract
 
-Grid currently covers fixed and pixel tracks, `auto`, fractional tracks, `minmax`, `repeat`, implicit rows and columns, row/column gap, auto-flow, one-based placement, positive spans, item/content alignment, and ordinary buffer rendering and updates. Ebox supports canonical font inputs (`:font-family`, `:font-size`, `:font-weight`, and `:font-style`) plus text-decoration paint; full browser typography is outside the contract. Percentages, absolute positioning, z-index, border radius, shadows, and browser-level bidi are also outside the contract.
+Grid currently covers explicit-unit and percentage tracks, `auto`, fractional tracks, `minmax`, `repeat`, implicit rows and columns, row/column gap, auto-flow, one-based placement, positive spans, item/content alignment, and ordinary buffer rendering and updates. Ebox supports canonical font inputs (`:font-family`, `:font-size`, `:font-weight`, and `:font-style`) plus text-decoration paint; full browser typography is outside the contract. Absolute positioning, z-index, border radius, shadows, and browser-level bidi are also outside the contract.
 
 ## Active examples and tests
 
@@ -139,6 +159,9 @@ The standalone package has no bundled playground fixtures. The migrated `.ebox` 
 make load
 make compile
 make check
+make size-tests
+make size-migration-tests
+make interaction-tests
 make core-tests
 make runtime-index-tests
 make child-range-tests
@@ -171,3 +194,30 @@ make diff-check
 ```
 
 Run focused tests first, then `make check` after changes to shared rendering, Grid, public constructors, or documentation. Native changes require the Rust checks and a native build.
+
+`make size-tests` includes `make size-migration-tests`, so the migration tool's
+Python regression suite also runs through `make check`.
+
+## Migrate literal author sizes
+
+For old Ebox author literals, use the supported source-aware migration tool
+instead of another search-and-replace script. Its positional inputs are explicit
+files or directories; no inputs are inferred from the machine's workspace.
+Start with a dry run:
+
+```sh
+python3 scripts/migrate-css-sizes.py ../ebox-playground/examples
+```
+
+Review the proposed changes and ambiguity reports, then add `--write` for the
+same explicit paths. The tool preserves strings, comments, and formatting and
+does not evaluate Elisp. Dynamic values and removed/ambiguous constructs need
+an intentional source edit. Target author data only: internal measured structs
+can use the same property names with already-resolved numeric engine values.
+This entry point supersedes temporary literal-rewrite probes.
+
+Validate the migration tool with:
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_migrate_css_sizes.py'
+```

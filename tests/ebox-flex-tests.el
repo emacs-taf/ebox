@@ -119,9 +119,9 @@
     (should (equal-including-properties lazy eager))))
 
 (ert-deftest ebox-flex-normalized-gap-keeps-pixels-on-wide-fonts ()
-  "Flex gaps convert character units once and preserve explicit pixel units."
-  (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 7)))
-    (dolist (case '((2 . 14) ((2) . 2)))
+  "Flex gaps use the zero advance and preserve explicit pixel units."
+  (cl-letf (((symbol-function 'ebox--size-character-width) (lambda (&optional _) 7)))
+    (dolist (case '(((ch 2) . 14) ((px 2) . 2)))
       (let* ((layout
               (ebox-test-flex :width '(100) :column-gap (car case)
                 (ebox-test-text "A")
@@ -364,16 +364,16 @@
 (ert-deftest ebox-flex-module-preserves-item-participation ()
   "Extracted flex code should preserve item participation semantics."
   (let* ((node (ebox-build
-                '(flex :width (240)
-                  (box :flex-grow 1 :width (40) "Grow")
-                  (box :width (40) "Fixed"))))
+                '(flex :width (px 240)
+                  (box :flex-grow 1 :width (px 40) "Grow")
+                  (box :width (px 40) "Fixed"))))
          (rendered (ebox-render node)))
     (should (string-match-p "Grow" rendered))
     (should (string-match-p "Fixed" rendered))))
 
 (ert-deftest ebox-flex-measures-direct-text-without-box-geometry ()
   "A canonical Text child should participate as text, not a geometry Box."
-  (let* ((node (ebox-build '(flex :width (120) "Direct text")))
+  (let* ((node (ebox-build '(flex :width (px 120) "Direct text")))
          (rendered (ebox-render node)))
     (should (string-match-p "Direct text"
                             (substring-no-properties rendered)))
@@ -400,7 +400,7 @@
             (should (= (ebox-get (cadr items) :flex-grow) 2)))
           (ebox-style-reset-rules)
           (ebox-region-update (ebox-region-resolve buffer "rule")
-                              :width '(41))
+                              :width '(px 41))
           (let ((items (plist-get (plist-get (ebox--buffer-render-state buffer)
                                                :root-node)
                                  :children)))
@@ -515,7 +515,7 @@
 
 (ert-deftest ebox-flex-definite-basis-does-not-materialize-fallback ()
   "A definite basis must not materialize a subtree for an unused fallback."
-  (dolist (basis '((0) (40) 40))
+  (dolist (basis '((px 0) (px 40) (ch 40)))
     (let* ((input
             (ebox-test-box
              (ebox-test-column
@@ -523,8 +523,7 @@
               (ebox-test-text "second line"))))
            (source (ebox-test-root input))
            (ebox--surface-materialization-active t)
-           (expected (ebox--normalize-horizontal-size-value
-                      basis ebox--preferred-size-keywords))
+           (expected (ebox--size-pixels basis source 'width))
            (original-max (symbol-function 'ebox--content-max-pixel))
            (original-render (symbol-function 'ebox--render-layout))
            (max-calls 0)
@@ -544,7 +543,7 @@
 (ert-deftest ebox-flex-basis-retains-required-intrinsic-fallback ()
   "Viewport-like basis values measure only when their viewport is absent."
   (dolist (viewport '(nil 120))
-    (dolist (basis '(viewport stretch contain))
+    (dolist (basis '((vw 100) stretch))
       (let* ((content "natural content")
              (source (ebox-test-root (ebox-test-box (ebox-test-text content))))
              (ebox--surface-materialization-active t)
@@ -563,14 +562,14 @@
   "Public Flex layout retains complete output when unused probes disappear."
   (let* ((input
           (ebox-build
-           '(flex :width (140) :flex-wrap wrap :gap (1 (4))
-              (box :flex-basis (40) :flex-grow 1 :min-width 0
-                   :wrap-mode word :padding (1 (2))
+           '(flex :width (px 140) :flex-wrap wrap :gap ((lh 1) (px 4))
+              (box :flex-basis (px 40) :flex-grow 1 :min-width (ch 0)
+                   :wrap-mode word :padding ((lh 1) (px 2))
                    :color "#123456" :bgcolor "#ddeeff"
                 (column
                  (text "alpha beta gamma delta epsilon")
                  (text "second line")))
-              (box :flex-basis (20) :min-width 0 :wrap-mode word
+              (box :flex-basis (px 20) :min-width (ch 0) :wrap-mode word
                 (text "peer")))))
          (original-basis (symbol-function 'ebox--flex-basis-main))
          (fast (ebox-render input))
@@ -715,16 +714,16 @@
   "Column flex items should not stretch to the full row before line breaking."
   (let* ((layout
           (ebox-build
-           '(flex :flex-flow (row wrap) :column-gap (12) :width (800)
+           '(flex :flex-flow (row wrap) :column-gap (px 12) :width (px 800)
              (column
-              (box :width (220) "one")
-              (box :width (42) "A"))
+              (box :width (px 220) "one")
+              (box :width (px 42) "A"))
              (column
-              (box :width (220) "two")
-              (box :width (42) "B"))
+              (box :width (px 220) "two")
+              (box :width (px 42) "B"))
              (column
-              (box :width (220) "three")
-              (box :width (42) "C")))))
+              (box :width (px 220) "three")
+              (box :width (px 42) "C")))))
          (lines (ebox-flex-test--plain-lines layout)))
     (should (= (length lines) 2))
     (should (string-match-p "one.*two.*three" (car lines)))
@@ -734,19 +733,19 @@
   "Composite flex items should re-render internals for final item width."
   (let* ((layout
           (ebox-build
-           '(flex :flex-flow (row wrap) :column-gap (12) :width (800)
+           '(flex :flex-flow (row wrap) :column-gap (px 12) :width (px 800)
              (column
-              (box :id "title" :max-width (293)
-                   :padding (0 (10)) :border "#5E7F6A"
+              (box :id "title" :max-width (px 293)
+                   :padding ((lh 0) (px 10)) :border "#5E7F6A"
                    :text-align center "wrap")
-              (flex :id "body" :max-width (293) :padding (0 (8))
+              (flex :id "body" :max-width (px 293) :padding ((lh 0) (px 8))
                     :border-right "#5E7F6A"
                     :border-bottom "#5E7F6A"
                     :border-left "#5E7F6A"
-                    :flex-wrap wrap :column-gap (8)
-                    (box :flex-shrink 0 :width (118) "A 118")
-                    (box :flex-shrink 0 :width (118) "B 118")
-                    (box :flex-shrink 0 :width (118) "C 118"))))))
+                    :flex-wrap wrap :column-gap (px 8)
+                    (box :flex-shrink 0 :width (px 118) "A 118")
+                    (box :flex-shrink 0 :width (px 118) "B 118")
+                    (box :flex-shrink 0 :width (px 118) "C 118"))))))
          (buffer (generate-new-buffer " *ebox-flex-viewport*")))
     (unwind-protect
         (progn
@@ -772,36 +771,36 @@
   (let* ((ebox-viewport-width 500)
          (layout
           (ebox-build
-           '(flex :flex-flow (row wrap) :row-gap 1 :column-gap (12)
-             :padding (0 (12))
+           '(flex :flex-flow (row wrap) :row-gap (lh 1) :column-gap (px 12)
+             :padding ((lh 0) (px 12))
              :border-right "#6F6A95"
              :border-bottom "#6F6A95"
              :border-left "#6F6A95"
              :bgcolor "#FBF9FF"
              (column
-              (box :max-width (440)
-                   :padding (0 (10)) :border "#6F6A95"
+              (box :max-width (px 440)
+                   :padding ((lh 0) (px 10)) :border "#6F6A95"
                    :text-align center ":flex-flow (row wrap)")
-              (flex :max-width (440) :padding (0 (8))
+              (flex :max-width (px 440) :padding ((lh 0) (px 8))
                     :border-right "#6F6A95"
                     :border-bottom "#6F6A95"
                     :border-left "#6F6A95"
-                    :flex-flow (row wrap) :gap (1 (12))
-                    (box :width (170) "A")
-                    (box :width (170) "B")
-                    (box :width (170) "C wraps")))
+                    :flex-flow (row wrap) :gap ((lh 1) (px 12))
+                    (box :width (px 170) "A")
+                    (box :width (px 170) "B")
+                    (box :width (px 170) "C wraps")))
              (column
-              (box :max-width (440)
-                   :padding (0 (10)) :border "#6F6A95"
+              (box :max-width (px 440)
+                   :padding ((lh 0) (px 10)) :border "#6F6A95"
                    :text-align center ":flex-flow (column wrap)")
-              (flex :max-width (440) :padding (0 (8))
+              (flex :max-width (px 440) :padding ((lh 0) (px 8))
                     :border-right "#6F6A95"
                     :border-bottom "#6F6A95"
                     :border-left "#6F6A95"
-                    :flex-flow (column wrap) :gap (1 (12))
-                    (box :width (140) "A")
-                    (box :width (140) "B")
-                    (box :width (140) "C new column"))))))
+                    :flex-flow (column wrap) :gap ((lh 1) (px 12))
+                    (box :width (px 140) "A")
+                    (box :width (px 140) "B")
+                    (box :width (px 140) "C new column"))))))
          (rendered (ebox-flex-test--render layout))
          (line-widths (ebox-flex-test--line-widths layout))
          (border-widths
@@ -996,8 +995,10 @@ entry before final allocation, providing the original rerendering reference."
                             (eq (ebox-node-source-handle box) handle))
                    (push
                     (list :allocation allocation
-                          :width (ebox-get box :width)
-                          :height (ebox-get box :height)
+                          :width (ebox--flex-definite-property
+                                  box 'row (ebox-get box :width))
+                          :height (ebox--flex-definite-property
+                                   box 'column (ebox-get box :height))
                           :constraints
                           (ebox--render-cache-plist-signature box)
                           :context
@@ -1039,9 +1040,9 @@ entry before final allocation, providing the original rerendering reference."
   "An already assigned numeric cross size must not materialize a Box twice."
   (let* ((input
           (ebox-build
-           '(flex :width (120) :flex-wrap wrap
-              (box :flex-basis (40) :flex-grow 1 :min-width 0
-                   :height 2 :wrap-mode word
+           '(flex :width (px 120) :flex-wrap wrap
+              (box :flex-basis (px 40) :flex-grow 1 :min-width (ch 0)
+                   :height (lh 2) :wrap-mode word
                 (text "short")))))
          (observed (ebox-flex-test--observe-sized-box input))
          (calls (plist-get observed :observations))
@@ -1074,17 +1075,17 @@ entry before final allocation, providing the original rerendering reference."
                                 'mouse-face 'highlight))
              (input
               (ebox-build
-               `(flex ,@(if row-p '(:width (140)) '(:height 10))
+               `(flex ,@(if row-p '(:width (px 140)) '(:height (lh 10)))
                       :flex-direction ,axis :flex-wrap wrap
-                  (box :flex-basis ,(if row-p '(40) 2) :flex-grow 1
-                       :min-width 0 :wrap-mode word :overflow hidden
+                  (box :flex-basis ,(if row-p '(px 40) '(lh 2)) :flex-grow 1
+                       :min-width (ch 0) :wrap-mode word :overflow hidden
                        ,@(if row-p
-                             (list :height (if (eq sizing 'border-box) 6 2))
-                           '(:width (60)))
-                       :box-sizing ,sizing :padding (1 (2)) :margin (1 (3))
-                       :border (1 solid "#123456")
+                             (list :height (list 'lh (if (eq sizing 'border-box) 6 2)))
+                           '(:width (px 60)))
+                       :box-sizing ,sizing :padding ((lh 1) (px 2)) :margin ((lh 1) (px 3))
+                       :border ((px 1) solid "#123456")
                        :color "#123456" :bgcolor "#ddeeff"
-                    (column :width ,(if row-p '(100) '(40))
+                    (column :width ,(if row-p '(px 100) '(px 40))
                       (text ,label) (text "second"))))))
              (source (car (ebox-tree-layout-children (ebox-test-root input))))
              (handle (ebox-node-source-handle source))
@@ -1109,22 +1110,22 @@ entry before final allocation, providing the original rerendering reference."
 (ert-deftest ebox-flex-identical-cross-keeps-changing-constraints ()
   "Automatic, relative, clamped, and enlarged cross constraints rerender."
   (dolist (case '(nil
-                  (:height (viewport-height))
-                  (:height 1 :overflow visible)
-                  (:height 2 :peer-height 4)
-                  (:height 4 :max-height 2)
-                  (:height 2 :min-height 3)))
+                  (:height (vh 100))
+                  (:height (lh 1) :overflow visible)
+                  (:height (lh 2) :peer-height 4)
+                  (:height (lh 4) :max-height (lh 2))
+                  (:height (lh 2) :min-height (lh 3))))
     (let* ((ebox-viewport-height 2)
            (peer-height (plist-get case :peer-height))
            (input
             (ebox-build
-             `(flex :width (120) :flex-wrap wrap
-                (box :flex-basis (40) :flex-grow 1 :min-width 0
+             `(flex :width (px 120) :flex-wrap wrap
+                (box :flex-basis (px 40) :flex-grow 1 :min-width (ch 0)
                      :wrap-mode word
                      ,@(ebox--plist-remove-keys case '(:peer-height))
                   (text "A\nB"))
                 ,@(when peer-height
-                    `((box :width (20) :height ,peer-height "peer"))))))
+                    `((box :width (px 20) :height (lh ,peer-height) "peer"))))))
            (observed (ebox-flex-test--observe-sized-box input)))
       (ert-info ((format "Cross constraint: %S" case))
         (should (= (length (plist-get observed :observations)) 2))
@@ -1138,9 +1139,9 @@ entry before final allocation, providing the original rerendering reference."
   (let* ((ebox-viewport-width nil)
          (input
           (ebox-build
-           '(flex :height 4 :flex-direction column :flex-wrap wrap
-              (box :width (60) :flex-basis 2 :flex-grow 1 :overflow hidden
-                (box :width (viewport) (text "responsive"))))))
+           '(flex :height (lh 4) :flex-direction column :flex-wrap wrap
+              (box :width (px 60) :flex-basis (lh 2) :flex-grow 1 :overflow hidden
+                (box :width (vw 100) (text "responsive"))))))
          (observed (ebox-flex-test--observe-sized-box input))
          (calls (plist-get observed :observations)))
     (should (= (length calls) 2))
@@ -1157,9 +1158,9 @@ entry before final allocation, providing the original rerendering reference."
   "A reused fixed-height Box retains the already rendered scroll geometry."
   (let* ((input
           (ebox-build
-           '(flex :width (120) :flex-wrap wrap
-              (box :flex-basis (40) :flex-grow 1 :min-width 0
-                   :height 2 :wrap-mode word :overflow scroll
+           '(flex :width (px 120) :flex-wrap wrap
+              (box :flex-basis (px 40) :flex-grow 1 :min-width (ch 0)
+                   :height (lh 2) :wrap-mode word :overflow scroll
                 (column (text "A") (text "B") (text "C") (text "D"))))))
          (fast (ebox-flex-test--observe-sized-box input))
          (reference (ebox-flex-test--observe-sized-box input t))
@@ -1172,7 +1173,9 @@ entry before final allocation, providing the original rerendering reference."
     (should state)
     (should (= (plist-get state :content-height) 2))
     (should (= (ebox-get (plist-get state :box) :width) 120))
-    (should (= (ebox-get (plist-get state :box) :height) 2))
+    (should (= (ebox--flex-definite-property
+                (plist-get state :box) 'column
+                (ebox-get (plist-get state :box) :height)) 2))
     (dolist (property '(:scroll-offset :content-height
                        :content-lines-complete-p))
       (should (equal (plist-get state property) (plist-get old-state property))))
@@ -1218,14 +1221,14 @@ entry before final allocation, providing the original rerendering reference."
          (ebox-viewport-height 2)
          (layout
           (ebox-build
-           '(flex :width (120)
-              (box :id "root" :width (80) :height (viewport-height)
+           '(flex :width (px 120)
+              (box :id "root" :width (px 80) :height (vh 100)
                    :overflow scroll :flex-grow 1
-                (column :width (80)
-                  (box :height 1 "A")
-                  (box :height 1 "B")
-                  (box :height 1 "C")
-                  (box :height 1 "D"))))))
+                (column :width (px 80)
+                  (box :height (lh 1) "A")
+                  (box :height (lh 1) "B")
+                  (box :height (lh 1) "C")
+                  (box :height (lh 1) "D"))))))
          (buffer (generate-new-buffer " *ebox-flex-scroll-state*")))
     (unwind-protect
         (progn
@@ -1241,8 +1244,9 @@ entry before final allocation, providing the original rerendering reference."
 (ert-deftest ebox-flex-natural-row-padding-keeps-overflow-line-local ()
   "Visible overflow should widen only the line that actually overflows."
   (let* ((viewport-child
-          (ebox-test-box (ebox-test-text "A") :width '(viewport)
+          (ebox-test-box (ebox-test-text "A") :width '(% 100)
                        :box-sizing 'content-box
+                       :overflow 'visible
                        :padding-left '(10) :padding-right '(10)))
          (source
           (ebox-test-column viewport-child
@@ -1485,7 +1489,7 @@ entry before final allocation, providing the original rerendering reference."
 (ert-deftest ebox-flex-column-natural-cache-respects-final-cross-viewport ()
   "Column flex must render composite items in the final cross viewport."
   (let* ((viewport-child
-          (ebox-test-box (ebox-test-text "VP") :width '(viewport)))
+          (ebox-test-box (ebox-test-text "VP") :width '(% 100)))
          (source-input
           (ebox-test-column
            viewport-child
@@ -1497,7 +1501,7 @@ entry before final allocation, providing the original rerendering reference."
           (ebox-test-flex :height 4
                      :flex-direction 'column
                      :align-items 'stretch
-            (ebox-test-flex-item source-input :flex-grow 1 :flex-basis 2)))
+            (ebox-test-flex-item source-input :flex-grow 1 :flex-basis '(lh 2))))
          (rendered (ebox-render layout)))
     (should (ebox-box-node-p source))
     (should (eq (ebox-layout-config-kind (ebox-box-node-layout source))
@@ -1759,6 +1763,7 @@ entry before final allocation, providing the original rerendering reference."
              (ebox-test-box (ebox-test-text "wide no-wrap label")
                           :width '(150)
                           :box-sizing 'border-box
+                          :overflow 'visible :min-width 'auto
                           :wrap-mode 'none)
              :flex 1)
             (ebox-test-box (ebox-test-text "B") :width '(120))))

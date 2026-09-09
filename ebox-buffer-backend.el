@@ -9,10 +9,12 @@
 (define-error 'ebox-surface-capability-error
   "Ebox surface capability violation")
 
+(declare-function ebox-get "ebox" (box property))
+
 (defun ebox-buffer-validate-border-capability (style)
   "Return STYLE when its border can be represented exactly by Emacs text."
   (dolist (side '(top bottom) style)
-    (let ((width (or (plist-get
+    (let ((width (or (ebox-get
                       style (intern (format ":border-%s-pixel" side)))
                      0)))
       (when (> width 1)

@@ -9,6 +9,7 @@
 
 (require 'cl-lib)
 (require 'seq)
+(require 'ebox-size)
 
 (declare-function ebox-flex-layout-config-props-p
                   "ebox-flex" (props))
@@ -28,13 +29,14 @@
   '(start center end stretch)
   "Canonical Row/Column cross-axis alignment values.")
 
-(defun ebox-layout-config--simple-axis-props-p (props)
-  "Return non-nil when PROPS is canonical Row/Column config data."
+(defun ebox-layout-config--simple-axis-props-p (props kind)
+  "Return non-nil when PROPS is canonical Row/Column KIND config data."
   (and (equal (mapcar #'car (seq-partition props 2))
               '(:item-gap :cross-align))
        (let ((gap (plist-get props :item-gap))
              (align (plist-get props :cross-align)))
-         (and (integerp gap) (>= gap 0)
+         (and (ebox-size-value-for-axis-p
+               gap (if (eq kind 'column) 'block 'inline))
               (memq align ebox-layout-config--simple-cross-align-values)))))
 
 (defun ebox-layout-config--simple-axis-create (kind plist)
@@ -51,11 +53,14 @@
   (let ((props
          (list :item-gap (if (plist-member plist :item-gap)
                              (plist-get plist :item-gap)
-                           0)
+                           (if (eq kind 'column) '(lh 0) '(px 0)))
                :cross-align (if (plist-member plist :cross-align)
                                 (plist-get plist :cross-align)
                               'stretch))))
-    (unless (ebox-layout-config--simple-axis-props-p props)
+    (ebox-size-validate-for-axis
+     (plist-get props :item-gap) :item-gap
+     (if (eq kind 'column) 'block 'inline))
+    (unless (ebox-layout-config--simple-axis-props-p props kind)
       (error "Invalid Ebox %S LayoutConfig properties: %S" kind props))
     (ebox-layout-config--create :kind kind :props props)))
 
@@ -69,7 +74,10 @@
           (pcase kind
             ('normal (null props))
             ((or 'row 'column)
-             (ebox-layout-config--simple-axis-props-p props))
+             (ebox-size-validate-for-axis
+              (plist-get props :item-gap) :item-gap
+              (if (eq kind 'column) 'block 'inline))
+             (ebox-layout-config--simple-axis-props-p props kind))
             ('flex
              (and (fboundp 'ebox-flex-layout-config-props-p)
                   (ebox-flex-layout-config-props-p props)))

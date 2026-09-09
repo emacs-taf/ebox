@@ -18,6 +18,8 @@
 (require 'ebox-child-range)
 (require 'ebox-tree)
 
+(declare-function ebox--flex-validate-item-bases "ebox-flex" (props children))
+
 (defun ebox-canonical--validate-plist (plist context)
   "Validate PLIST shape for error CONTEXT and return PLIST."
   (unless (proper-list-p plist)
@@ -321,10 +323,11 @@ and author TAG."
                     (eq (plist-get property :group) 'paint)))))
             nil))))
 
-(defun ebox-canonical-facts-from-declarations (tag declarations)
+(defun ebox-canonical-facts-from-declarations (tag declarations &optional interactions)
   "Return immutable node-owned facts for TAG from DECLARATIONS.
 Source declarations stay behind the source handle; the returned value contains
-only the current canonical-node projection needed before G4c separates paint."
+only the current canonical-node projection needed before G4c separates paint.
+INTERACTIONS is a plist of fixed node capabilities, separate from CSS."
   (let ((predicate
          (if (eq tag 'text)
              #'ebox-canonical--text-engine-property-p
@@ -335,7 +338,12 @@ only the current canonical-node projection needed before G4c separates paint."
                   predicate
                   (if (eq tag 'text) "Ebox Text" "Ebox Box") tag)))
       (ebox-canonical--make-facts
-       :engine-properties engine
+       :engine-properties
+       (append engine
+               (when interactions
+                 (list :surface-properties
+                       (ebox-interaction-surface-properties
+                        (ebox-interaction-normalize interactions)))))
        :style-required-p style-required-p
        :specified-property-ids
        (cl-loop for (id _value) on canonical by #'cddr collect id)))))
@@ -528,6 +536,8 @@ algorithm.  `:source-handle' remains the node's only author source input."
                   '(normal row column flex grid))
       (error "Ebox Box Layout is not implemented: %S"
              (ebox-layout-config-kind layout)))
+    (when (eq (ebox-layout-config-kind layout) 'flex)
+      (ebox--flex-validate-item-bases (ebox-layout-config-props layout) children))
     (when props
       (error "Ebox Box accepts only normalized owned facts"))
     (when (not (ebox-canonical-facts-p facts))

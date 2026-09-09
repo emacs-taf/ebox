@@ -12,8 +12,8 @@
 (defconst ebox--longhand
   '(:content ""
     :box-sizing border-box
-    :width nil :min-width 0 :max-width nil
-    :height nil :min-height 0 :max-height nil
+    :width nil :min-width auto :max-width nil
+    :height nil :min-height auto :max-height nil
     :padding-left-pixel 0 :padding-right-pixel 0
     :padding-top-height 0 :padding-bottom-height 0
     :margin-left-pixel 0 :margin-right-pixel 0
@@ -53,7 +53,7 @@ style projection.")
 (defconst ebox-node-factory--box-longhand
   '(:content ""
     :box-sizing border-box
-    :min-width 0 :min-height 0
+    :min-width auto :min-height auto
     :padding-left-pixel 0 :padding-right-pixel 0
     :padding-top-height 0 :padding-bottom-height 0
     :margin-left-pixel 0 :margin-right-pixel 0

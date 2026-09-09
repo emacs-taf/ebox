@@ -1000,6 +1000,50 @@
           (dolist (key '(:batch :retained :mounts :ids :mount-index :index :snapshot))
             (should (plist-get sample key))))))))
 
+(ert-deftest ebox-child-range-span-followup-retains-proven-mounts ()
+  "A span projection consumes the same exact single-owner authority."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-child-range-test--snapshot-replacement-root))
+    (ebox-commit
+     (current-buffer)
+     (ebox-child-range-test--replace-snapshot-detail (current-buffer) t))
+    (let* ((surface ebox-surface--buffer-surface)
+           (mounts (tp--surface-mounts surface))
+           (mount-index (tp--surface-mount-index surface))
+           (ranges (plist-get (ebox--buffer-render-state (current-buffer))
+                              :surface-owned-ranges))
+           (candidate (ebox-candidate-begin (current-buffer)))
+           observed
+           (observer
+            (lambda (original &rest arguments)
+              (setq observed t)
+              (let* ((state (nth 2 arguments))
+                     (proofs (plist-get state :owner-scoped-proofs)))
+                (should (eq (nth 4 arguments) 'owner-scoped))
+                (should (= (length proofs) 1))
+                (should-not (plist-get (car proofs) :range-splice-p))
+                (should (eq ranges (plist-get state :span-patch-retained-owned-ranges)))
+                (setcar (nthcdr 4 arguments) 'span-patch)
+                (plist-put state :projection-kind 'span-patch)
+                (apply original arguments)))))
+      (ebox-candidate-replace-host-ref
+       candidate 'title
+       (ebox-test-text (propertize "title-2" 'face '(:weight bold))
+                       :key 'title :source-identity 'title))
+      (advice-add 'ebox-surface--projection-result :around observer)
+      (unwind-protect
+          (ebox-commit (current-buffer) candidate)
+        (advice-remove 'ebox-surface--projection-result observer))
+      (should observed)
+      (ebox-child-range-test--assert-full-render-equivalent (current-buffer))
+      (should (plist-get (tp-surface-report surface) :commit-batch))
+      (should (plist-get (tp-surface-report surface) :retained-mount-state))
+      (should (eq mounts (tp--surface-mounts surface)))
+      (should (eq mount-index (tp--surface-mount-index surface)))
+      (should (eq ranges (plist-get (ebox--buffer-render-state (current-buffer))
+                                   :surface-owned-ranges))))))
+
 (ert-deftest ebox-child-range-owner-scoped-followup-rolls-back-and-retries ()
   "A rejected single-owner publication restores the exact prior generation."
   (with-temp-buffer
@@ -1091,8 +1135,11 @@
                       (should (eq witness (plist-get state :previous-surface-owned-ranges))))
                     (pcase miss
                       ('projection
-                       (setcar (nthcdr 4 arguments) 'span-patch)
-                       (plist-put state :projection-kind 'span-patch))
+                       ;; Both owner-scoped and span-patch now consume this
+                       ;; exact ownership proof.  Ordinary projection has no
+                       ;; retained-span authority and must take the fallback.
+                       (setcar (nthcdr 4 arguments) nil)
+                       (plist-put state :projection-kind nil))
                       ('no-proof (plist-put state :owner-scoped-proofs nil))
                       ('multi-owner
                        (plist-put state :owner-scoped-proofs

@@ -32,7 +32,36 @@ Use the functions and properties in `docs/user/ebox-api-reference.en.md`; the fa
 
 ## Layout scope
 
-Ebox supports column- and pixel-based horizontal dimensions, line-based vertical dimensions, padding, margins, pixel borders, colors, overflow, wrapping, row/column/flex formatting, and Grid tracks including fixed, fractional, implicit, gap, placement, span, and alignment behavior. The public typography subset is `:font-family`, CSS-reference-pixel `:font-size`, `:font-weight`, and `:font-style`; `:font-slant` is only an exact parse-time alias of `:font-style`. Emacs faces and text properties belong to the final adapter and are not Ebox author properties. CSS compatibility is intentionally partial: percentages, absolute positioning, z-index, shadows, border radius, full browser typography, and browser-level bidi are outside this package.
+Ebox supports explicit `px`, `%`, `vw`, `vh`, `ch`, and `lh` dimensions, padding, margins, borders, colors, overflow, wrapping, row/column/flex formatting, and Grid tracks including fixed, fractional, implicit, gap, placement, span, and alignment behavior. The public typography subset is `:font-family`, CSS-reference-pixel `:font-size`, `:font-weight`, and `:font-style`; `:font-slant` is only an exact parse-time alias of `:font-style`. Emacs faces and text properties belong to the final adapter and are not Ebox author properties. CSS compatibility is intentionally partial: absolute positioning, z-index, shadows, border radius, full browser typography, and browser-level bidi are outside this package.
+
+## Size composition
+
+`ebox-size.el` owns pure length validation, dependency discovery, and resolution
+to fractional pixels, plus a pure cumulative quantization helper used at the
+display boundaries chosen by layout. Its context contains measured viewport axes, the
+property's percentage reference, zero-glyph advance, and line height. It does
+not read windows or nodes, evaluate arbitrary Lisp, choose property defaults,
+or publish buffers. This keeps unit arithmetic reusable across normal, Flex,
+Grid, spacing, and border geometry.
+
+The author format is `(unit number)` and the composable functions are `calc`,
+`min`, `max`, and `clamp`. Property schemas own allowed units, keywords, and
+range rules. The [shared unit-constraint table](docs/user/ebox-user-guide.en.md#size-unit-constraints)
+is the author contract: inline geometry, block geometry, and border paint have
+distinct unit domains. Validation traverses every function branch and track
+operand; Flex basis uses its parent main axis. Invalid unit combinations fail
+during construction, before layout or display.
+
+Layout supplies containing-block and font measurements and resolves
+intrinsic/automatic sizes. `fit-content` is a bare keyword only. Removed bare
+lengths, singleton pixel lists, viewport keywords, and `contain` have no
+compatibility execution path.
+
+Missing reference measurements defer resolution rather than becoming zero.
+Intermediate arithmetic keeps fractions until the formatting/display boundary.
+The buffer backend materializes block geometry in whole lines, matching the
+restricted block-unit contract. An empty Box contributes zero automatic
+content height; explicit height, padding, or borders supply any reserved extent.
 
 ## Verification rule
 

@@ -24,14 +24,19 @@
 
 (defconst ebox-docs-test--active-files
   '("Makefile" ".github/workflows/ci.yml"
-    "ebox.el" "ebox-cache.el" "ebox-runtime-index.el"
-    "ebox-state-contract.el" "ebox-style.el"
+    "ebox.el" "ebox-cache.el" "ebox-runtime-index.el" "ebox-interaction.el"
+    "ebox-state-contract.el" "ebox-size.el" "ebox-style.el"
     "ebox-child-range.el" "ebox-tree.el"
     "ebox-measure.el" "ebox-fragment.el" "ebox-render-context.el"
     "ebox-layout.el" "ebox-flex.el" "ebox-grid.el"
     "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
     "ebox-surface.el" "ebox-dsl.el" "ebox-spi.el"
     "ebox-selector.el" "ebox-native-reflow.el"
+    "tests/ebox-size-tests.el" "tests/ebox-size-style-tests.el"
+    "tests/ebox-interaction-tests.el"
+    "tests/ebox-size-native-tests.el" "tests/ebox-zero-height-tests.el"
+    "tests/ebox-css-layout-tests.el" "tests/ebox-css-flex-grid-tests.el"
+    "tests/ebox-css-viewport-tests.el"
     "tests/ebox-core-render-tests.el" "tests/ebox-runtime-index-tests.el"
     "tests/ebox-state-contract-tests.el"
     "tests/ebox-layout-boundary-tests.el"
@@ -48,11 +53,13 @@
     "native/vendor/emacs-30/emacs-module.h" "native/src/lib.rs"
     "native/src/layout.rs" "native/c/ebox_module.c"
     "scripts/ebox-package-lint.el" "scripts/ebox-visual-check.el"
-    "scripts/ebox-performance-evaluator.el")
+    "scripts/ebox-performance-evaluator.el"
+    "scripts/migrate-css-sizes.py" "scripts/test_migrate_css_sizes.py")
   "Active Ebox files that the maintainer map must cover.")
 
 (defconst ebox-docs-test--targets
-  '("check" "ci" "load" "compile" "core-tests" "runtime-index-tests"
+  '("check" "ci" "load" "compile" "size-tests" "size-migration-tests"
+    "core-tests" "runtime-index-tests" "interaction-tests"
     "child-range-tests" "grid-tests"
     "ebox-commit-tests" "surface-tests" "visual-check-tests" "package-tests"
     "selector-tests" "dsl-tests" "flex-tests" "state-contract-tests"

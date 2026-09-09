@@ -9,11 +9,12 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'ebox-interaction)
 
 (cl-defstruct (ebox-source-record
                (:constructor ebox-source--make-record))
   "Immutable facts supplied by one author source."
-  key id classes attributes states declarations provenance)
+  key id classes attributes states declarations provenance interactions)
 
 (cl-defstruct (ebox-source-handle
                (:constructor ebox-source--make-handle)
@@ -230,6 +231,11 @@ Functions and records are opaque values and retain identity."
       copy))
    (t value)))
 
+(defun ebox-source-index-interactions (index handle)
+  "Return detached fixed interaction facts for HANDLE in INDEX."
+  (when-let* ((record (ebox-source--index-record index handle)))
+    (tp-property-value-copy (ebox-source-record-interactions record))))
+
 (defun ebox-source-stable-key-p (value)
   "Return non-nil when VALUE is one public stable source key."
   (and value (or (symbolp value) (stringp value) (integerp value))))
@@ -326,7 +332,7 @@ Functions and records are opaque values and retain identity."
 
 (cl-defun ebox-source-builder-bind
     (builder &key identity key id class selector-attributes selector-state
-             declarations provenance)
+             declarations provenance interactions)
   "Bind normalized source facts in BUILDER and return an opaque handle.
 The returned handle contains identity only; all facts are owned by BUILDER
 until `ebox-source-builder-finish' seals them into a source index."
@@ -351,7 +357,8 @@ until `ebox-source-builder-finish' seals them into a source index."
           :attributes (ebox-source--attributes selector-attributes)
           :states (ebox-source--metadata-tokens selector-state)
           :declarations (ebox-source--declarations declarations)
-          :provenance (ebox-source--copy-data provenance))))
+          :provenance (ebox-source--copy-data provenance)
+          :interactions (ebox-interaction-normalize interactions))))
     (ebox-source--builder-add-record builder handle record)))
 
 (defun ebox-source--builder-record (builder handle)
@@ -379,6 +386,7 @@ error because one canonical forest cannot contain the same source twice."
            (selector-attributes nil attributes-p)
            (selector-state nil states-p)
            (declarations nil declarations-p)
+           (interactions nil interactions-p)
            (provenance nil provenance-p))
   "Return `(NEW-INDEX . NEW-HANDLE)' after rebinding HANDLE in INDEX.
 The semantic identity and all omitted immutable facts are retained.  A fresh
@@ -403,6 +411,8 @@ facts on the canonical node."
              :declarations (if declarations-p
                                declarations
                              (ebox-source-record-declarations record))
+             :interactions (if interactions-p interactions
+                             (ebox-source-record-interactions record))
              :provenance
              (if provenance-p provenance
                (ebox-source-record-provenance record))))
@@ -742,7 +752,9 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
         :declarations (ebox-source--copy-data
                        (ebox-source-record-declarations record))
         :provenance (ebox-source--copy-data
-                     (ebox-source-record-provenance record)))))
+                     (ebox-source-record-provenance record))
+        :interactions (tp-property-value-copy
+                       (ebox-source-record-interactions record)))))
 
 (defun ebox-source-index-record (index handle)
   "Return a detached source record for HANDLE in INDEX, or nil."

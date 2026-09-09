@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::evaluation::{record, EvalRecord, EvalWork, RenderScope, RenderedChange};
 use super::line_plan::{ChangeKind, LineOp, LinePlan, LineSplice, PlanChange, ProjectionState};
-use super::{LayoutContext, LayoutNode, Line, LocalStep, Rendered};
+use super::{LayoutContext, LayoutNode, LocalStep, Rendered};
 
 #[derive(Debug, Default)]
 struct ShapeRoute {
@@ -121,6 +121,7 @@ impl ColumnShape {
 struct ColumnSlot {
     record: Option<Arc<EvalRecord>>,
     raw: LinePlan,
+    empty_width: i64,
     normalized: LinePlan,
     projection: Option<Arc<ProjectionState>>,
 }
@@ -128,6 +129,7 @@ struct ColumnSlot {
 impl ColumnSlot {
     fn normalize(
         raw: LinePlan,
+        empty_width: i64,
         child: Option<Arc<EvalRecord>>,
         proof: Option<&PlanChange>,
         target: i64,
@@ -163,6 +165,7 @@ impl ColumnSlot {
             Arc::new(Self {
                 record: child,
                 raw,
+                empty_width,
                 normalized,
                 projection,
             }),
@@ -183,7 +186,11 @@ struct ColumnMeasure {
 
 impl ColumnMeasure {
     fn leaf(slot: &ColumnSlot) -> Self {
-        let first = slot.raw.first_width();
+        let first = if slot.raw.is_empty() {
+            slot.empty_width
+        } else {
+            slot.raw.first_width()
+        };
         let width = slot.raw.max_width();
         Self {
             slots: 1,
@@ -377,6 +384,7 @@ impl ColumnNode {
                 Self::leaf(
                     ColumnSlot::normalize(
                         slot.raw.clone(),
+                        slot.empty_width,
                         slot.record.clone(),
                         Some(&same),
                         target,
@@ -434,7 +442,7 @@ fn output(root: Option<&Arc<ColumnNode>>, previous: Option<&ColumnState>) -> Lin
     }) {
         return previous.lines.clone();
     }
-    LinePlan::from_lines([Line::default()])
+    LinePlan::default()
 }
 
 // A concatenation owns its joining break, including the former last line when
@@ -482,6 +490,7 @@ pub(super) fn render_column<'a>(
                 .slot(index);
             let (slot, change) = ColumnSlot::normalize(
                 result.rendered.lines,
+                result.rendered.empty_width,
                 result.record,
                 result.change.as_ref(),
                 previous.target,
@@ -580,7 +589,15 @@ pub(super) fn render_column<'a>(
                 |RenderedChange {
                      rendered, record, ..
                  }| {
-                    ColumnSlot::normalize(rendered.lines, record, None, target, None).0
+                    ColumnSlot::normalize(
+                        rendered.lines,
+                        rendered.empty_width,
+                        record,
+                        None,
+                        target,
+                        None,
+                    )
+                    .0
                 },
             )
             .collect::<Vec<_>>();
@@ -600,7 +617,11 @@ pub(super) fn render_column<'a>(
             .map_or(0, |root| root.measure().normalized_max(state.target)),
         state.lines.max_width()
     );
-    let rendered = Rendered::from_line_plan(state.lines.clone());
+    let mut rendered = Rendered::from_line_plan(state.lines.clone());
+    rendered.empty_width = state
+        .root
+        .as_ref()
+        .map_or(0, |root| root.measure().max_first);
     scope.store_column(state);
     Ok(rendered)
 }

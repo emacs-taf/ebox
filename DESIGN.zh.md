@@ -32,7 +32,29 @@ Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过
 
 ## 布局范围
 
-Ebox 支持以列或像素表示的横向尺寸、以行表示的纵向尺寸、padding、margin、像素 border、颜色、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。公共 typography 子集是 `:font-family`、以 CSS reference pixel 表示的 `:font-size`、`:font-weight` 和 `:font-style`；`:font-slant` 只是 `:font-style` 的精确 parse-time alias。Emacs face 与文本属性只属于最终 adapter，不是 Ebox 作者属性。CSS 兼容性有意是部分实现：百分比、绝对定位、z-index、阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
+Ebox 支持显式 `px`、`%`、`vw`、`vh`、`ch`、`lh` 尺寸、padding、margin、border、颜色、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。公共 typography 子集是 `:font-family`、以 CSS reference pixel 表示的 `:font-size`、`:font-weight` 和 `:font-style`；`:font-slant` 只是 `:font-style` 的精确 parse-time alias。Emacs face 与文本属性只属于最终 adapter，不是 Ebox 作者属性。CSS 兼容性有意是部分实现：绝对定位、z-index、阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
+
+## 尺寸组合
+
+`ebox-size.el` 负责长度验证、依赖识别、浮点像素换算，并提供累计量化的纯函数，
+供布局在选定的显示边界调用。上下文显式传入视口两轴、
+该属性的百分比参照、`0` 字形前进宽度和行高；模块不读取窗口或节点，不求值任意
+Lisp，不选择属性默认值，也不发布 buffer。Normal、Flex、Grid、间距和边框几何
+由此复用同一套单位运算。
+
+作者格式为 `(单位 数值)`，可组合函数是 `calc`、`min`、`max`、`clamp`。
+property schema 负责允许的单位、关键词和值域。[统一单位约束表](docs/user/ebox-user-guide.zh.md#size-unit-constraints)
+是作者契约：inline 几何、block 几何和边框绘制采用不同单位集合。验证递归遍历
+所有函数分支和轨道参数；Flex basis 使用所在父布局主轴。无效单位组合在构造阶段
+就报错，不延后到布局或显示。
+
+布局负责提供包含块及字体测量，并解析固有/自动尺寸。`fit-content` 只接受裸关键词。
+旧的裸长度、单元素像素列表、视口
+关键词和 `contain` 不保留兼容执行路径。
+
+参照尺寸缺失时延后解析，不当作零；中间运算保留小数，到格式化/显示边界才量化。
+buffer 后端按完整行生成 block 几何，与收窄后的纵向单位契约一致。空 Box 的自动
+内容高度为零；需要占位时由显式高度、padding 或 border 提供对应尺寸。
 
 ## 验证规则
 

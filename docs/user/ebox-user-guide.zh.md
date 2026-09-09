@@ -33,10 +33,10 @@ Ebox 文档由 Text 和 Box 节点组成。author 语法只有七个入口：
 ```elisp
 (defvar ebox-guide-input
   (ebox-build
-   '(column :padding (1 2)
-            :border (1 solid "#8A93A6")
+   '(column :padding ((lh 1) (ch 2))
+            :border ((px 1) solid "#8A93A6")
             (text :color "#263244" "Research notes")
-            (row :item-gap 1
+            (row :item-gap (ch 1)
                  (box :id "status" :background-color "#F4F6FB" "Inbox")
                  (box :background-color "#EEF2FF" "Archive")))))
 ```
@@ -46,6 +46,33 @@ generation 保持为一个整体。普通 author 代码只需把这个值原样�
 不要取出或重新组装其中的内部 node。
 
 需要空矩形区域时，使用只有几何 property、没有子节点的 `box`，不需要额外节点类型。
+
+### 优先利用默认值和继承
+
+默认只写改变预期效果的属性：省略冗余默认值，把共同的文字样式放到已有的共同父节点，
+子节点只写差异。参考示例正在讲解的属性仍然显式写出，即使它恰好采用默认值。
+
+eBox 自动继承 `:color`、`:font-family`、`:font-size`、`:font-weight`、
+`:font-style`、`:text-align`、`:wrap-mode` 和 `:visibility`。几何属性和背景色不继承；
+子节点未绘制背景时，可以透出父节点的背景。例如：
+
+```elisp
+(ebox-build
+ '(column :width (ch 40) :color "#1F2328" :bgcolor "#FAF7F0"
+          (box "Shared text color")
+          (box :color "#B45309" "Local accent")
+          (box :height (lh 1))))
+```
+
+继承不会扩大属性的声明范围。例如 `:text-align` 只能声明在 `box` 上，不能因为它可以继承，
+就把它移到 `row`、`column`、`flex` 或 `grid` 上。
+
+在这个普通 Column 中，分隔框会填满可用宽度，并通过 `:height (lh 1)` 明确保留一行，
+无需重复设置宽度和背景。空 Box 的 `auto` 内容高度为零；需要一行留白时显式设置
+`:height (lh 1)`。padding 和 border 仍可增加各自的外部占用。
+这取决于布局上下文：Row 中 auto 宽度的子项按固有宽度排布，Flex/Grid 也有各自的子项尺寸规则。
+不要把所有 `stretch` 都替换成 `auto`，也不要删除正在覆盖继承样式、样式表或其他简写的值。
+没有其他声明设置对应边距时，可以用 `:padding-inline` 或 `:padding-block` 省去零值轴。
 
 ## 3. 用布局名称直接表达意图
 
@@ -59,9 +86,9 @@ generation 保持为一个整体。普通 author 代码只需把这个值原样�
 
 ```elisp
 (ebox-build
- '(row :item-gap 2 :cross-align center
-       (box :width 12 "Left")
-       (box :width 12 "Right")))
+ '(row :item-gap (ch 2) :cross-align center
+       (box :width (ch 12) "Left")
+       (box :width (ch 12) "Right")))
 ```
 
 ### Flex
@@ -71,9 +98,9 @@ Flex 容器 property 属于 `flex`。participation property 直接属于子 `box
 
 ```elisp
 (ebox-build
- '(flex :width (480)
+ '(flex :width (px 480)
         :flex-flow (row wrap)
-        :gap (1 (12))
+        :gap ((lh 1) (px 12))
         (box :flex (1 1 auto) "Primary")
         (box :flex-grow 2 "Secondary")))
 ```
@@ -85,10 +112,10 @@ placement property 同样直接属于子 `box`。
 
 ```elisp
 (ebox-build
- '(grid :width (640)
-        :grid-template-columns ((200) (fr 1) (fr 1))
-        :grid-template-rows (1 1)
-        :gap (1 (12))
+ '(grid :width (px 640)
+        :grid-template-columns ((px 200) (fr 1) (fr 1))
+        :grid-template-rows ((lh 1) (lh 1))
+        :gap ((lh 1) (px 12))
         (box :grid-column (1 :span 3) "Header")
         (box :grid-column 1 :grid-row 2 "Navigation")
         (box :grid-column 2 :grid-row 2 "Main")
@@ -97,17 +124,108 @@ placement property 同样直接属于子 `box`。
 
 ## 4. 使用几何与绘制 property
 
-普通横向数字表示字符列，`(240)` 这样的单元素 list 表示像素宽度；纵向数字表示
-行数。Text 只接受字体、前景/背景和文本装饰 property；padding、margin、border、
+Box 几何统一使用 `(单位 数值)`。宽高及其最小/最大值、内外边距、gap、边框宽度、
+Flex basis 和 Grid 固定轨道都使用这套格式。Ebox 实现 CSS 尺寸语义的一个子集，
+输入是 Elisp 数据，不接受 `"80ch"` 这样的 CSS 字符串。
+
+| 单位 | 含义 |
+| --- | --- |
+| `(px 240)` | 240 像素。 |
+| `(% 50)` | 该属性所参照的包含块尺寸的 50%。 |
+| `(vw 100)` | 视口宽度的 100%。 |
+| `(vh 100)` | 视口高度的 100%。 |
+| `(ch 80)` | 当前有效字体中字符 `0` 的排版前进宽度的 80 倍。 |
+| `(lh 3)` | 三个有效行高。 |
+
+`ch` 不表示任意字符或汉字的个数。`1vw`、`1vh` 分别表示视口对应轴的 1%。
+显示中的 Ebox 视口是目标窗口的
+可用正文区域，不包含 mode-line 和 header-line；因此 Playground 使用预览窗口。
+
+<a id="size-unit-constraints"></a>
+
+### 按属性限制单位
+
+下表是所有 Ebox 作者入口共同遵循的单位契约。Ebox 当前支持的书写模式中，inline
+表示横向，block 表示纵向。这是针对 Emacs 收窄后的规则，比 CSS 的通用长度模型严格。
+
+| 值的用途 | 允许单位 | 对应属性 |
+| --- | --- | --- |
+| Inline 几何 | `px`、`ch`、`vw`、`%` | `width`、`min-width`、`max-width`；左右和 inline padding/margin；`column-gap`；Row 的 `item-gap`；Grid 列轨道。 |
+| Block 几何 | `lh`、`vh`、`%` | `height`、`min-height`、`max-height`；上下和 block padding/margin；`row-gap`；Column 的 `item-gap`；Grid 行轨道。 |
+| Flex 主轴尺寸 | 所在父 Flex 主轴允许的单位 | `flex-basis` 及 `(grow shrink basis)` 中的 basis；row 方向用 inline 单位，column 方向用 block 单位。 |
+| 边框绘制厚度 | `px`、`ch`、`lh`、`vw`、`vh` | `border-width`、各侧边框宽度、border 简写中的宽度；不接受百分比。 |
+
+`calc`、`min`、`max`、`clamp` 的所有分支以及嵌套的 Grid 轨道函数，都递归遵循
+对应的单位限制。出现不允许的单位时，`ebox-build` 初次构造树就报错；即使计算会
+抵消它，或最终会选中其他分支，也不例外。例如 `:height (px 24)`、`:width (lh 3)`
+和 `:height (min (lh 2) (px 24))` 都不接受。边框厚度是独立的绘制值，因此
+`:border ((px 1) solid "red")` 可以同时设置四个方向的边框。
+
+样式表和动态更新也遵循同一契约：计算样式确定后、布局开始前，重新检查 Flex
+父容器方向与子项 basis。非法更新不会发布到已有 buffer。数字 `:flex 1` 的隐含
+basis 为 `(% 0)`，因此可用于两个主轴；显式 basis 仍按父方向验证。
+
+简写展开到各个方向后逐项验证。单值 `padding`、`margin`、`gap` 会同时用于两轴，
+因此这种共享长度只能使用 `%`；通常直接分开两轴，例如
+`:padding ((lh 1) (ch 2))`、`:gap ((lh 1) (px 12))`。
+只设置一轴时，可以写 `:padding-inline (px 12)` 或 `:padding-block (lh 1)`。
+
+百分比宽度参照包含块宽度；百分比高度需要确定的包含块高度，否则按该属性
+的尺寸不确定规则处理。四个方向的百分比 padding、margin 都参照包含块宽度。
+边框宽度不接受百分比。
+此子集暂不支持负 margin 和 `auto` margin；当前 buffer 后端没有实现外边距重叠
+所需的几何能力。
+
+| 属性 | 关键词 | 默认值 |
+| --- | --- | --- |
+| `width`、`height` | `auto`、`min-content`、`max-content`、`fit-content`、`stretch` | `auto` |
+| `min-width`、`min-height` | `auto`、`min-content`、`max-content`、`fit-content`、`stretch` | `auto` |
+| `max-width`、`max-height` | `none`、`min-content`、`max-content`、`fit-content`、`stretch` | `none` |
+
+普通块级根容器有可用视口时，`auto` 宽度填满可用空间，`auto` 高度由内容决定。
+`min-content`、`max-content` 请求内容固有尺寸；`fit-content` 在这两个固有尺寸之间
+适应可用空间；`stretch` 让 margin box 填满可用空间。`none` 表示不限制最大尺寸。
+自动最小尺寸取决于布局；显式设置横向最小值 `(px 0)` 或纵向最小值 `(lh 0)`，
+可允许 item 缩小到其自动内容最小尺寸以下。没有 padding、border 和显式高度的空
+Box 高度为零；`(box :height (lh 1))` 明确保留一行空白。
+
+四种尺寸函数可以组合单位，不会在布局阶段执行任意 Lisp：
+
+```elisp
+'(column :width (min (% 100) (ch 80))
+         :height (calc (- (vh 100) (lh 1)))
+         (box :width (max (px 120) (% 25)) "侧栏")
+         (box :width (clamp (ch 20) (% 50) (ch 60)) "正文"))
+```
+
+`calc` 接受一个算术表达式；`+`、`-` 组合长度，`*` 将长度乘以标量，`/` 将长度
+除以非零标量。`min`、`max` 从一个或多个允许的长度中选取最小值、最大值；`clamp` 的三个
+参数依次为最小值、首选值、最大值。函数可以嵌套。算术表达式内的裸数字只是标量，
+不会隐式变成 `ch` 或 `lh`。
+
+单位和函数一直保留为数据，到布局阶段才解析，因此视口或包含块变化后会重新计算。
+中间结果保留小数，例如 853 像素视口的 `33vw` 在显示量化前是 281.49 像素。
+当前 buffer 后端按完整行生成 block 几何，小数行目标在这个边界量化。作者接口不
+接受纵向 `px` 长度。
+`:overflow hidden` 当前只裁剪纵向行；buffer 后端尚未实现横向像素裁剪，因此内容
+可能超出已经计算确定的容器宽度。
+
+不再接受几何裸数字、单元素像素列表、`viewport`、`viewport-height`、`contain`，
+以及带参数的 `fit-content`。零长度也需要对应轴允许的单位，例如横向 `(px 0)`、
+纵向 `(lh 0)`。Grid 的 `(fr n)` 仍表示轨道
+份额；Grid 放置索引、Flex grow/shrink 因子仍是无量纲数字。
+
+Text 的样式声明只接受字体、前景/背景和文本装饰 property；此外，Text 还接受下文
+介绍的四种原生节点能力。padding、margin、border、
 尺寸、`:outer`、overflow、可见性和换行策略只属于 Box。Box 上的字体与颜色可以
 作为其 Text 子树的继承来源，但不会让 Text 获得 Box 几何。
 
 ```elisp
 (ebox-build
- '(box :width (420)
-       :padding (1 2)
-       :margin (0 1)
-       :border (1 solid "#8A93A6")
+ '(box :width (px 420)
+       :padding ((lh 1) (ch 2))
+       :margin ((lh 0) (ch 1))
+       :border ((px 1) solid "#8A93A6")
        :color "#263244"
        :background-color "#FFFFFF"
        "A readable panel"))
@@ -115,6 +233,65 @@ placement property 同样直接属于子 `box`。
 
 用 `:outer inline` 或 `:outer block` 表达 Box 如何参与父布局。子布局算法仍由 form
 名称决定。
+
+<a id="native-node-interaction"></a>
+### 原生节点交互
+
+Text 与所有 Box form 都接受 `:help-echo`、`:pointer`、`:hover-style` 和
+`:keymap`。它们是 CSS cascade 之外的显式节点能力。例如，下面的 Box 组合了
+动态帮助、手形指针、悬停绘制，以及供鼠标和键盘激活共用的回调：
+
+```elisp
+(ebox-render-to-buffer
+ "*Ebox Interaction*"
+ (ebox-build
+  `(box :id "action" :padding ((lh 1) (ch 2))
+        :border ((px 1) solid "#5893A3")
+        :help-echo ,(ebox-help-create
+                     (lambda ()
+                       (format-time-string "Help requested at %H:%M:%S")))
+        :pointer hand
+        :hover-style (:color "#FFFFFF" :background-color "#286477"
+                      :text-decoration-line underline)
+        :keymap ,(ebox-keymap-create :activate #'describe-mode)
+        "Click or press RET / SPC here to describe this buffer's mode.")))
+```
+
+`:help-echo` 接受字符串、参数为 `(WINDOW OBJECT POSITION)` 的原生函数或 `nil`。
+推荐通过 `ebox-help-create` 适配返回字符串或 `nil` 的零参数业务函数，由 Ebox 提供
+悬停 buffer 的上下文。Emacs 在请求帮助时调用函数，DSL 构造树时不会调用它。
+`:pointer` 接受 `text`、
+`arrow`、`vdrag`、`modeline`、`hand`、`hdrag`、`nhdrag`、`hourglass` 或 `nil`。
+帮助的显示方式和指针的具体外观由用户的 Emacs 设置及窗口系统决定。
+
+`:hover-style` 接受 `nil`，或仅包含 `:color`、`:background-color`、
+`:text-decoration-line`、`:text-decoration-color`、`:text-decoration-style` 的
+Ebox 绘制 plist。同一渲染行中，一个声明节点覆盖的文字与 padding 共享原生
+`mouse-face`，未指定属性采用该节点的基础样式；被该悬停覆盖的不同色子文本也使用
+同一悬停基础样式。物理左右边框不参与悬停，水平边框线条保持完整；字体度量与几何
+不改变。允许的值见
+[API 参考](ebox-api-reference.zh.md#原生节点能力)。Ebox 将这个 plist 编译为原生
+`mouse-face`，不提供任意原生 property 透传。
+
+Box 的帮助、指针和 keymap 覆盖渲染内容、padding 和 border，不包含该 Box 自身的
+margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 Box 可通过显式值替换
+每项能力；显式 `nil` 阻止外层值覆盖，
+省略属性则保留外层交互范围的覆盖。
+
+`:keymap` 接受原生 Emacs keymap 或 `nil`。推荐使用 `ebox-keymap-create`：
+`:activate` 的回调不带参数，处理 `RET`、`[return]`、`SPC` 和 `[mouse-1]`。
+`:bindings` 接受 alist，按键描述字符串或事件向量对应零参数回调。
+辅助函数让鼠标回调在事件窗口的 buffer 中运行，因此回调可以直接按语义 ID 更新：
+`(ebox-region-update "action" :help-echo "Activated")`。
+
+使用键盘绑定时，先把 point 移到交互范围内。仍可直接传入原生 keymap，其鼠标命令
+需要自行处理事件的目标 buffer。Ebox 使用原生命令分派，不创建应用状态或焦点导航。
+单独设置手形指针不会绑定点击命令。
+
+Playground 的[交互实验室](../../../ebox-playground/README.zh-CN.md#native-interaction-lab)
+把业务函数与状态放在 `interaction-reference.el`，把布局放在
+`interaction-reference.ebox`，展示回调、嵌套覆盖，以及通过公共 region 更新替换或
+清除四种能力。
 
 ## 5. 渲染与发布
 
@@ -133,7 +310,7 @@ retained TP surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
 (ebox-commit
  "*Ebox Guide*"
  (ebox-build
-  '(column :padding (1 2)
+  '(column :padding ((lh 1) (ch 2))
            (text "Updated notes")
            (box :key body "The new input is caller-owned."))))
 ```
@@ -143,13 +320,35 @@ retained TP surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
 
 ## 6. 查询和更新 mounted surface
 
-`:id`、`:class` 与 `:key` 是 author metadata。Selector 使用 ECSS 语义。直接更新
-前，把 `:id` 解析为不透明、surface-scoped 的 handle：
+`:id`、`:class` 与 `:key` 是 author metadata。Selector 使用 ECSS 语义。
+在目标已挂载 buffer 中，可以直接传入语义 `:id`：
+
+```elisp
+(with-current-buffer "*Ebox Guide*"
+  (ebox-region-update "status" :color "#166534"))
+```
+
+需要显式指定 buffer 时，把 `:id` 解析为不透明、surface-scoped 的 handle：
 
 ```elisp
 (let ((handle (ebox-region-resolve "*Ebox Guide*" "status")))
   (ebox-region-update handle :color "#166534"))
 ```
+
+同一 API 可以替换 Text 或 Box region 的原生能力。对上面的交互示例：
+
+```elisp
+(with-current-buffer "*Ebox Interaction*"
+  (ebox-region-update "action" :help-echo "Updated help" :pointer 'arrow
+                      :hover-style '(:background-color "#F6D6AB"))
+  (ebox-region-update "action" :help-echo nil :pointer nil
+                      :hover-style nil :keymap nil))
+```
+
+更新参数是正常求值的 Elisp，因此符号和字面量 plist 需要 quote；它们与已经被 quote
+的 DSL 数据不同。省略的更新属性保持不变，显式 `nil` 清除对应能力并阻止外层值覆盖。
+Ebox 对 keymap 创建快照；发布新绑定时应替换 `:keymap`，而不是修改原 map。
+清除节点 keymap 后，普通 buffer 和全局绑定仍然可用。
 
 `ebox-selector-query-buffer` 按文档顺序返回 mounted buffer 中的匹配；
 `ebox-selector-update-buffer` 对所有可编辑匹配应用一次样式更新。数字 region id
@@ -164,7 +363,7 @@ retained TP surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
 
 ```elisp
 (ebox-build
- '(box :id log :width (420) :height 8 :overflow scroll
+ '(box :id log :width (px 420) :height (lh 8) :overflow scroll
        "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9"))
 ```
 
@@ -177,17 +376,62 @@ retained TP surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
 
 ## 8. 独立 `.ebox` 文件
 
-`.ebox` 文件包含一个不加 quote 的结构 form：
+`.ebox` 文件包含一个普通 Elisp 表达式，其求值结果就是交给 `ebox-build` 的布局
+数据。静态布局对整个列表加 quote：
 
 ```elisp
-(column :padding '(1 2)
-        (text :color "#263244" "Title")
-        (box :width '(240) "Body"))
+'(column :padding ((lh 1) (ch 2))
+         :cross-align center
+         (text :color "#263244" "Title")
+         (box :width (px 240) "Body"))
 ```
 
-同级 `ebox-playground` 会先求值 property 表达式，再调用 `ebox-build`。因此 `.ebox`
-文件中的 list 与 symbol 常量要加 quote，如上所示。直接调用 `ebox-build` 时，则像
-前面的例子一样传入 inert data。
+同级 `ebox-playground` 读取唯一一个表达式，以词法绑定求值，再将得到的数据传给
+`ebox-build`，不再单独求值属性或子节点。这与 `.el` 中 `(ebox-build ...)` 的参数
+表达式完全一致；在 `.ebox` 中只需省略外层的 `ebox-build` 调用。
+
+必要的业务函数与变量放在布局旁边的同名 `.el` 文件中。预览 `notes.ebox` 时，如果
+存在 `notes.el`，Playground 会在每次求值布局前加载它；`C-c C-c`、
+`ebox-playground-open-file` 和文件渲染入口都遵循这个顺序。加载的是指定的 `.el`
+源码，因此保存修改后再次预览即可生效，不使用 `require` 缓存，也不优先选择旧的
+`.elc`。没有配套文件时，独立 `.ebox` 仍可使用；配套文件加载出错时，渲染停止，
+不会继续求值布局。
+
+例如，由 `notes.el` 定义数据与操作：
+
+```elisp
+;;; notes.el --- Notes example behavior -*- lexical-binding: t; -*-
+(defvar notes-body "A long article.")
+
+(defun notes-help ()
+  "Return business help for the article."
+  (format "Article: %s" notes-body))
+
+(defun notes-activate ()
+  "Mark the article in the current Ebox buffer."
+  (ebox-region-update "article" :color "#166534"))
+```
+
+`notes.ebox` 专注表达布局：
+
+```elisp
+`(column :padding ((lh 1) (ch 2))
+         (box :id "article" :width (px 480)
+              :help-echo ,(ebox-help-create #'notes-help)
+              :pointer hand
+              :keymap ,(ebox-keymap-create :activate #'notes-activate)
+              ,notes-body))
+```
+
+反引号保留布局数据，`,` 插入值，`,@` 展开子节点列表。不要仅为了隐藏重复 DSL
+属性列表而添加辅助函数。每次预览先加载配套文件，再求值一次布局；普通 Elisp
+变量定义决定应用状态是初始化、保留还是重置。
+
+旧的属性求值格式需要显式迁移：静态布局在最外层加 quote，去掉内部 list 和 symbol
+属性的 quote；动态布局使用反引号，并在需要求值的位置加逗号。例如，旧的
+`:padding '(1 2)` 改成引用列表内的 `:padding ((lh 1) (ch 2))`；计算像素宽度时，
+在反引号列表内写 `:width (px ,(+ 200 40))`。
+不再自动将裸结构 form 解释为 DSL，也不自动识别旧格式。
 
 ## 9. Typed 集成 API
 
@@ -228,7 +472,7 @@ declarations 投影出的 node-owned facts。最后封存 builder，把 forest �
        (root
         (ebox-box-create
          :layout (ebox-row-layout-create
-                  :item-gap 1 :cross-align 'center)
+                  :item-gap '(ch 1) :cross-align 'center)
          :children (list left right)
          :source-handle root-handle
          :owned-facts
@@ -258,6 +502,7 @@ Rust 模块是可选加速器，Ebox 加载时不会构建它：
 
 ```sh
 make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make dsl-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```

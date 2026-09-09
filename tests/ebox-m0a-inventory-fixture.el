@@ -16,6 +16,9 @@
   '((:storage (:global ebox--defer-scroll-content-index)
      :why dynamic-scalar-not-a-store :owner ebox-layout
      :evidence defvar-is-a-dynamic-boolean-or-index-value)
+    (:storage (:global ebox--box-content-empty-width)
+     :why dynamic-scalar-not-a-store :owner ebox-layout
+     :evidence value-is-a-numeric-inline-extent-or-nil)
     (:storage (:global ebox--string-pixel-width-cache-ring-index)
      :why eviction-cursor-not-a-store :owner ebox-measure
      :evidence defvar-holds-a-numeric-ring-cursor)
@@ -102,7 +105,7 @@
      ((string-match-p "frame-cache\\|key-table" name) 'ebox-native-reflow)
      ((string-match-p "region-line\\|owner-table" name) 'ebox-incremental)
      ((string-match-p "render-output-provenance" name) 'ebox-render-context)
-     ((string-match-p "uniform-width\\|scroll-table" name) 'ebox-layout)
+     ((string-match-p "uniform-width\\|intrinsic-size\\|scroll-table" name) 'ebox-layout)
      ((string-match-p "deferred-render-gc" name) 'ebox-buffer-backend)
      ((string-match-p "window-line\\|box-content\\|region-box\\|scroll-window" name)
       'ebox-layout)
@@ -135,10 +138,12 @@
     ebox--render-output-provenance-table ebox--render-recached-source-node-cache
     ebox--render-string-max-pixel-width-cache
     ebox--render-string-pixel-width-cache ebox--rendered-uniform-width-table
+    ebox--rendered-intrinsic-size-table
     ebox--runtime-ancestor-cache ebox--space-pixel-cache
     ebox--string-pixel-width-cache ebox--viewport-dependent-node-ids-cache
     ebox--viewport-dependent-subtree-cache
     ebox--viewport-height-dependent-subtree-cache
+    ebox--css-viewport-dependent-subtree-cache
     ebox--window-line-prewarmer-table ebox--window-line-renderer-table
     ebox-cache--buffer-report-table ebox-cache--registry
     ebox-canonical--declaration-fact-cache
@@ -513,6 +518,12 @@
      :proposed-category disposable-cache :owner ebox-font :authority ebox
      :lifetime process :rollback not-authoritative :rebuild lazy-measure
      :cleanup ebox-font-clear-cache)
+    (:id process/native-hover-face-cache
+     :storage (:global ebox-interaction--hover-face-cache)
+     :proposed-category disposable-cache :owner ebox-interaction :authority ebox
+     :lifetime live-face-references :rollback discard-unreferenced-candidates
+     :rebuild reproject-owner-native-hover-face
+     :cleanup garbage-collect-unreferenced-faces)
     (:id process/native-source-cluster-cache
      :storage (:global ebox-native-reflow--source-cluster-cache)
      :proposed-category disposable-cache :owner ebox-native-reflow :authority ebox

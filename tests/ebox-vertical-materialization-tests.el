@@ -29,7 +29,7 @@
   (let ((measure (symbol-function 'ebox--string-pixel-width))
         (blank (symbol-function 'ebox--pixel-blank)))
     (dolist (case '(("A\nB" 2) ("A\nB" 1) ("A\nB" 0)
-                    (nil 0) ("A" 1) ("" 1)))
+                    (nil 0) ("A" 1) ("" 0)))
       (let ((expected (apply #'ebox-vertical-test--previous-pad case))
             (measure-count 0) (blank-count 0) actual)
         (cl-letf (((symbol-function 'ebox--string-pixel-width)
@@ -71,7 +71,8 @@
   "Single-line copies avoid actual substring and mapconcat materialization."
   (let ((substring-function (symbol-function 'substring))
         (join-function (symbol-function 'mapconcat)))
-    (dolist (input (list "" (propertize "Open" 'help-echo "kept" 'ebox-content-owner 17)))
+    (dolist (input (list (ebox-lines-join '(""))
+                        (propertize "Open" 'help-echo "kept" 'ebox-content-owner 17)))
       (let ((split-count 0) (join-count 0) actual)
         (cl-letf (((symbol-function 'substring)
                    (lambda (&rest args)

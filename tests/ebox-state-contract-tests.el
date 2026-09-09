@@ -104,6 +104,10 @@
      disposable-cache ebox-font cache-fill-and-evict
      display-capability-signature discard resolve-font-fact-again
      ebox-font-clear-cache)
+    (native-hover-face-cache (ebox-interaction--hover-face-cache)
+     disposable-cache ebox-interaction weak-cache-fill
+     hover-owner-and-computed-paint discard-unreferenced-candidates
+     reproject-owner-native-hover-face garbage-collect-unreferenced-faces)
     (derived-caches
      (ebox--char-width-cache ebox--face-height-width-cache
       ebox--display-signature-cache ebox--render-cache-signature-cache

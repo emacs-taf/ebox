@@ -38,9 +38,9 @@ functions; it does not extract a node or construct a source index.
 
 ```elisp
 (ebox-build
- '(column :padding (1 2)
+ '(column :padding ((lh 1) (ch 2))
           (box :id "status" :color "#166534" "Ready")
-          (row :item-gap 1
+          (row :item-gap (ch 1)
                (box "Left")
                (box "Right"))))
 ```
@@ -71,12 +71,107 @@ another public node or wrapper.
 | Text layout | `:text-align`, `:wrap-mode` (`word`, `char`, `kp`, `none`) |
 | Overflow | `:overflow` (`visible`, `hidden`, `scroll`) |
 
-Ordinary horizontal numbers are character columns; a one-element horizontal
-list is pixels. Vertical numbers are lines. Border widths are the exception:
-they are always nonnegative integer pixels, so use `(1 solid "#687386")`, not
-`((1) solid "#687386")`. `(viewport)` and
-`(viewport-height)` use the current render context. Property validation belongs
-to Ebox and invalid context/value combinations signal an error.
+Geometry values use explicit `(unit number)` lists: `(px 240)`, `(% 50)`,
+`(vw 100)`, `(vh 100)`, `(ch 80)`, and `(lh 3)`. Each property accepts only
+the units in the [shared unit-constraint table](ebox-user-guide.en.md#size-unit-constraints);
+lengths cannot cross from one geometry axis to the other. CSS strings, bare lengths,
+singleton pixel lists, and the old viewport/contain keywords are rejected.
+Zero lengths also require a permitted unit. Border widths use their independent
+paint-thickness rule and reject
+percentages: `:border ((px 1) solid "#687386")`. Dimensionless values such as
+Flex factors and Grid indices remain numbers.
+
+| Properties | Accepted keywords | Default |
+| --- | --- | --- |
+| `width`, `height`, `min-width`, `min-height` | `auto`, `min-content`, `max-content`, `fit-content`, `stretch` | `auto` |
+| `max-width`, `max-height` | `none`, `min-content`, `max-content`, `fit-content`, `stretch` | `none` |
+
+The composable size functions are `calc`, `min`, `max`, and `clamp`, for example
+`(calc (- (vh 100) (lh 1)))` and `(clamp (ch 20) (% 50) (ch 80))`.
+`fit-content` is only a bare keyword; it never accepts parameters.
+Property validation belongs to Ebox; all function branches, expanded shorthands,
+Grid tracks, and Flex bases are checked against their property or parent axis
+when the tree is built. Invalid context/value combinations signal errors
+immediately. See the [geometry section of the user
+guide](ebox-user-guide.en.md#4-use-geometry-and-paint-properties) for percentage
+references, font units, arithmetic rules, and whole-line vertical display
+quantization. This is a CSS semantic subset, not a browser layout engine.
+
+### Native node capabilities
+
+`text`, `box`, `row`, `column`, `flex`, and `grid` accept these four explicit
+node properties. They are separate from CSS declarations and do not participate
+in the stylesheet cascade.
+
+| Property | Accepted value | Native surface property |
+| --- | --- | --- |
+| `:help-echo` | `nil`, a string, or a function called by Emacs with `(WINDOW OBJECT POSITION)` | `help-echo` |
+| `:pointer` | `nil`, `text`, `arrow`, `vdrag`, `modeline`, `hand`, `hdrag`, `nhdrag`, or `hourglass` | `pointer` |
+| `:hover-style` | `nil` or an Ebox paint plist containing only `:color`, `:background-color`, `:text-decoration-line`, `:text-decoration-color`, and `:text-decoration-style` | Compiled `mouse-face` |
+| `:keymap` | `nil` or a native Emacs keymap whose bindings use ordinary interactive commands | `keymap` |
+
+Hover colors use color strings; `:text-decoration-color` also accepts
+`currentColor`. `:text-decoration-line` accepts `none`, `underline`, `overline`,
+`line-through`, or a nonempty list of distinct decoration lines without `none`.
+`:text-decoration-style` accepts `solid`, `double`, `dotted`, `dashed`, or `wavy`.
+Hover styles cannot change font metrics, geometry, spacing, or layout. Ebox compiles
+the restricted paint plist; a raw face or arbitrary native property plist is
+not an author input. There is no `:tps`, `:local-map`, or raw `:mouse-face` input.
+
+Within a rendered line, text and padding covered by the same hover owner
+(the node declaring `:hover-style`) share one native `mouse-face`. Unspecified
+hover attributes use that owner's base style. Child text under that hover
+therefore uses the owner's unspecified attributes even if its normal text color
+differs. An explicit child hover style creates its own hover region; `nil`
+blocks the enclosing hover. Physical left/right borders are excluded from
+hover highlighting, and horizontal border strokes keep their own paint.
+
+A Box's help, pointer, and keymap surface includes rendered content, padding,
+and border, excluding its own margin and structural newlines; hover follows
+the coverage above. Text capabilities apply to its rendered
+text. At each nested position, an explicit child value takes precedence for
+that capability. An explicit `nil` blocks the enclosing value; an omitted
+property leaves enclosing surface coverage in place.
+
+`ebox-help-create` adapts a zero-argument business function into a native
+`(WINDOW OBJECT POSITION)` help callback. The business function returns a string
+or `nil` and runs in the hovered buffer's context. Point and the selected window
+are unchanged. It is not called until Emacs requests help. For example:
+
+```elisp
+(ebox-help-create (lambda () (format "Help for %s" (buffer-name))))
+```
+
+Raw native help functions are also supported. Help functions are retained as
+functions and called by Emacs when help is requested, rather than evaluated
+while building the DSL. Use backquote and
+comma to insert a computed function or keymap value. Pointer and help display
+follow the user's Emacs settings and window system. A pointer shape supplies
+no command binding by itself.
+
+`ebox-keymap-create` is the recommended callback-to-keymap helper:
+
+```elisp
+(ebox-keymap-create
+ :activate (lambda () (message "Activated"))
+ :bindings (list (cons "?" (lambda () (message "Action help")))))
+```
+
+`:activate` accepts a zero-argument function and binds it to `RET`, `[return]`,
+`SPC`, and `[mouse-1]`. `:bindings` accepts an alist from key-description strings
+or event vectors to zero-argument functions. Both options are optional; `nil`
+omits their bindings. Duplicate keys and overlapping key prefixes are errors,
+including overlaps with the activation keys. The helper returns a native Emacs
+keymap; callbacks remain literal until their command is invoked. For mouse
+events, the helper obtains the event window and runs the callback in its buffer.
+It does not select that window or move point. Keyboard callbacks run in the
+current buffer, using native dispatch at point.
+
+Raw native keymaps remain supported. Their mouse commands must obtain the
+target window from the event and operate in that window's buffer themselves.
+These capabilities add no Ebox focus navigation or application state system.
+See the [interaction guide](ebox-user-guide.en.md#native-node-interaction) for
+a runnable example.
 
 ## 2. Evaluated typed construction
 
@@ -118,7 +213,7 @@ one value:
        (root
         (ebox-box-create
          :layout (ebox-row-layout-create
-                  :item-gap 1 :cross-align 'center)
+                  :item-gap '(ch 1) :cross-align 'center)
          :children (list left right)
          :source-handle root-handle
          :owned-facts
@@ -220,7 +315,7 @@ They do not publish by themselves.
 | --- | --- |
 | `ebox-region-ids` | Return current low-level region ids in document order. |
 | `ebox-region-resolve` | Resolve one logical `:id` in a mounted buffer to an opaque surface-scoped handle. |
-| `ebox-region-update` | Apply supported mutable style or scroll properties through one retained transaction. |
+| `ebox-region-update` | Apply supported mutable style, scroll, or native node capability properties through one retained transaction. Accept an opaque region handle or a semantic `:id` in the current mounted buffer. |
 | `ebox-child-range` | Framework integration only: build a nonvisual, addressable child Range descriptor while assembling a typed canonical input. |
 | `ebox-candidate-begin` | Capture the exact current mounted generation in a one-shot candidate. |
 | `ebox-candidate-replace` | Replace one candidate node address from a single-root `CanonicalEboxInput`. |
@@ -234,6 +329,21 @@ They do not publish by themselves.
 Handles and reported positions belong to one live publication generation.
 Resolve them again after their object is removed. A candidate is sealed by
 commit and cannot be reused.
+
+Within a callback for the target mounted buffer, a direct update can use the
+semantic ID: `(ebox-region-update "action" :help-echo "Updated help")`.
+Semantic IDs accept strings, non-`nil` symbols, and integers; an integer author
+`:id` is distinct from Ebox's diagnostic numeric region metadata.
+Use `ebox-region-resolve` with an explicit buffer when addressing another
+mounted buffer, then pass that handle to `ebox-region-update`.
+
+`ebox-region-update` accepts `:help-echo`, `:pointer`, `:hover-style`, and
+`:keymap` on Text and Box regions, with the same validation as construction.
+Passing a new value replaces that capability; passing `nil` clears it and
+blocks an enclosing value. Omitted properties are unchanged. Replace the
+`:keymap` property when publishing new bindings: Ebox snapshots keymaps, so
+later caller-side mutations do not update a mounted surface. Clearing it removes that
+node's keymap; ordinary Emacs buffer and global bindings still apply.
 
 The author DSL has no Range form. Ordinary authors compose direct Text/Box
 children and never call `ebox-child-range`; Range addresses exist only for
@@ -288,6 +398,7 @@ names every entry:
   `ebox-normal-layout-create`, `ebox-row-layout-create`,
   `ebox-column-layout-create`, `ebox-flex-layout-create`,
   `ebox-grid-layout-create`, `ebox-box-create`.
+- Interaction: `ebox-help-create`, `ebox-keymap-create`.
 - Render/publication: `ebox-render`, `ebox-render-to-buffer`,
   `ebox-unmount-buffer`, `ebox-display-buffer`, `ebox-commit`,
   `ebox-buffer-set-observer`,
@@ -317,6 +428,7 @@ names every entry:
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make dsl-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```

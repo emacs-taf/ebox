@@ -11,6 +11,7 @@
 (require 'subr-x)
 (require 'ebox-layout-config)
 (require 'ebox-layout)
+(require 'ebox-size)
 
 (declare-function ebox--flex-fragment-allocation-key
                   "ebox-fragment"
@@ -180,85 +181,63 @@ That text is preformatted and must not be sent through the default wrapper."
 
 (defun ebox--flex-container-content-props (props raw-props wrapper-box)
   "Return flex layout PROPS adjusted to WRAPPER-BOX's content area."
-  (if (null wrapper-box)
-      props
-    (let ((props (copy-sequence props)))
+  (let ((props (copy-sequence props)))
+    (when wrapper-box
       (when (or (plist-member raw-props :width)
                 (and (null (plist-get props :width))
                      (ebox--viewport-pixel-width nil)))
         (when-let* ((content-viewport
                     (ebox--wrapper-content-viewport-pixel wrapper-box)))
-          (plist-put props :width (list content-viewport))))
+          (plist-put props :width (list 'px content-viewport))))
       (when (and (plist-member raw-props :height)
                  (ebox--resolve-size-content-height
                   wrapper-box (ebox-get wrapper-box :height) nil))
-        (plist-put props :height (ebox--content-height wrapper-box 1)))
-      props)))
+        (plist-put props :height (list 'lh (ebox--content-height wrapper-box 0)))))
+    (ebox--layout-used-gaps
+     props (ebox--flex-horizontal-value (plist-get props :width))
+     (ebox--flex-line-value (plist-get props :height)) wrapper-box)))
 
 (defconst ebox--preferred-size-keywords
-  '(auto min-content max-content fit-content stretch contain)
+  '(auto min-content max-content fit-content stretch)
   "Supported CSS preferred-size keywords.")
 
 (defconst ebox--min-size-keywords
-  '(auto min-content max-content fit-content stretch contain)
+  '(auto min-content max-content fit-content stretch)
   "Supported CSS min-size keywords.")
 
 (defconst ebox--max-size-keywords
-  '(none min-content max-content fit-content stretch contain)
+  '(none min-content max-content fit-content stretch)
   "Supported CSS max-size keywords.")
 
 (defun ebox--normalize-horizontal-size-value (value allowed-keywords)
-  "Normalize VALUE as a width-like size.
+  "Validate VALUE as a width-like size without resolving relative units.
 ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
   (cond
    ((null value) nil)
-   ((ebox--viewport-size-value-p value) 'viewport)
-   ((and (consp value)
-         (null (cdr value))
-         (symbolp (car value))
-         (not (eq (car value) 'viewport)))
-    (ebox--normalize-horizontal-size-value (car value) allowed-keywords))
    ((memq value allowed-keywords) value)
-   ((and (consp value) (eq (car value) 'fit-content))
-    (if-let* ((limit (cadr value)))
-        (let ((pixels (if (ebox--viewport-size-value-p limit)
-                          'viewport
-                        (ebox--nonnegative-horizontal-size-pixels limit nil))))
-          (unless pixels
-            (error "ebox: invalid fit-content width limit: %S" limit))
-          (list 'fit-content pixels))
-      (unless (memq 'fit-content allowed-keywords)
-        (error "ebox: fit-content is not valid here"))
-      'fit-content))
-   (t
-    (let ((pixels (ebox--nonnegative-horizontal-size-pixels value nil)))
-      (unless pixels
-        (error "ebox: unsupported width value: %S" value))
-      pixels))))
+   ((ebox-size-value-p value nil t) value)
+   (t (error "ebox: unsupported size %S; use (UNIT NUMBER) or a size keyword"
+             value))))
 
 (defun ebox--flex-horizontal-value (value &optional default)
-  "Return VALUE as pixels using Ebox horizontal units."
+  "Resolve VALUE as horizontal pixels, or return DEFAULT when unresolved."
   (cond
    ((null value) (or default (ebox--viewport-pixel-width nil)))
    ((memq value '(auto stretch))
     (or default (ebox--viewport-pixel-width nil)))
-   (t (ebox--nonnegative-horizontal-size-pixels value default))))
+   ((numberp value) value)
+   (t (or (ebox--size-pixels value nil 'width) default))))
 
 (defun ebox--flex-line-value (value &optional default)
-  "Return VALUE as line count using Ebox vertical units."
+  "Resolve VALUE as whole display lines, using DEFAULT when unresolved."
   (cond
    ((null value) default)
    ((eq value 'auto) default)
-   ((and (consp value) (numberp (car value)))
-    (let ((lines (floor (car value))))
-      (when (< lines 0)
-        (error "ebox: flex line values cannot be negative: %S" value))
-      lines))
-   ((numberp value)
-    (let ((lines (floor value)))
-      (when (< lines 0)
-        (error "ebox: flex line values cannot be negative: %S" value))
-      lines))
+   ((numberp value) (max 0 (floor value)))
+   ((ebox-size-value-p value nil t)
+    (if-let* ((pixels (ebox--size-pixels value nil 'height)))
+        (max 0 (floor (/ pixels (float (ebox--size-line-height nil)))))
+      default))
    (t default)))
 
 (defun ebox--flex-main-value (axis value &optional default)
@@ -276,9 +255,9 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
 (defun ebox--flex-gap-pair (gap)
   "Return (ROW-GAP . COLUMN-GAP) raw values from GAP shorthand."
   (cond
-   ((and (listp gap)
+   ((and (proper-list-p gap)
          (= (length gap) 2)
-         (not (keywordp (car gap))))
+         (not (ebox-size-value-p gap nil t)))
     (cons (nth 0 gap) (nth 1 gap)))
    (t (cons gap gap))))
 
@@ -290,18 +269,45 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
     resolved))
 
 (defun ebox--flex-row-gap-value (value)
-  "Return canonical nonnegative line count for FlexConfig row gap VALUE."
-  (unless (or (null value)
-              (numberp value)
-              (and (consp value)
-                   (numberp (car value))
-                   (null (cdr value))))
-    (error "Ebox FlexConfig :row-gap is invalid: %S" value))
-  (or (ebox--flex-line-value value 0) 0))
+  "Return canonical, unresolved FlexConfig row gap VALUE."
+  (ebox-size-validate-for-axis (or value '(lh 0)) :row-gap 'block))
 
 (defun ebox--flex-column-gap-value (value)
-  "Return canonical nonnegative pixels for FlexConfig column gap VALUE."
-  (or (ebox--nonnegative-horizontal-size-pixels value 0) 0))
+  "Return canonical, unresolved FlexConfig column gap VALUE."
+  (ebox-size-validate-for-axis (or value '(px 0)) :column-gap 'inline))
+
+(defun ebox--layout-used-gap (value axis available &optional box)
+  "Resolve gap VALUE along AXIS against AVAILABLE using BOX font metrics.
+AVAILABLE is pixels for width and display lines for height.  Indefinite
+percentage gaps contribute zero.  Numbers are private, already used values."
+  (if (numberp value)
+      value
+    (let* ((line-height (ebox--size-line-height box))
+           (ebox-viewport-width (if (eq axis 'width) available
+                                  ebox-viewport-width))
+           (ebox--css-containing-height
+            (if (eq axis 'height) (and available (* available line-height))
+              ebox--css-containing-height))
+           (percent-base (if (eq axis 'height)
+                             (and available (* available line-height))
+                           available))
+           (pixels (or (ebox--size-pixels
+                        (or value '(px 0)) box axis (or percent-base 0)) 0)))
+      (max 0 (floor (if (eq axis 'height)
+                       (/ pixels (float line-height))
+                     pixels))))))
+
+(defun ebox--layout-used-gaps (props width height &optional box)
+  "Return a copy of PROPS with used gaps for WIDTH, HEIGHT, and BOX.
+Only the private render configuration contains numeric gap values."
+  (let ((result (copy-sequence props)))
+    (plist-put result :row-gap
+               (ebox--layout-used-gap (plist-get props :row-gap)
+                                      'height height box))
+    (plist-put result :column-gap
+               (ebox--layout-used-gap (plist-get props :column-gap)
+                                      'width width box))
+    result))
 
 (defun ebox--flex-normalize-config-props (props)
   "Normalize FlexConfig PROPS to explicit layout-owned fields."
@@ -400,8 +406,8 @@ ALLOWED-KEYWORDS is the CSS keyword set valid for the property being parsed."
              ebox--flex-align-content-values)
        (let ((row-gap (plist-get props :row-gap))
              (column-gap (plist-get props :column-gap)))
-         (and (integerp row-gap) (>= row-gap 0)
-              (numberp column-gap) (>= column-gap 0)))))
+         (and (ebox-size-value-for-axis-p row-gap 'block)
+              (ebox-size-value-for-axis-p column-gap 'inline)))))
 
 ;;;###autoload
 (defun ebox-flex-layout-create (&rest plist)
@@ -443,7 +449,7 @@ programmatic port and are therefore rejected here."
       (let ((flex (plist-get props :flex)))
         (cond
          ((numberp flex)
-          (setq grow flex shrink 1 basis 0))
+          (setq grow flex shrink 1 basis '(% 0)))
          ((eq flex 'none)
           (setq grow 0 shrink 0 basis 'auto))
          ((eq flex 'auto)
@@ -476,20 +482,40 @@ programmatic port and are therefore rejected here."
   "Return normalized flex item metadata for ITEM."
   (ebox--flex-apply-shorthand (ebox--flex-participation-props item)))
 
+(defun ebox--flex-validate-item-bases (props children)
+  "Validate CHILDREN's flex bases against the parent direction in PROPS."
+  (let ((axis (if (eq (ebox--flex-axis props) 'row) 'inline 'block)))
+    (dolist (child children)
+      (let ((basis (plist-get (ebox--flex-item-props child) :flex-basis)))
+        (unless (memq basis '(auto content min-content max-content fit-content stretch))
+          (ebox-size-validate-for-axis basis :flex-basis axis)))))
+  children)
+
 (defun ebox--flex-string-width (string)
-  "Return max pixel width among STRING lines."
-  (ebox--string-max-pixel-width string))
+  "Return STRING's layout width, excluding separately observed visible ink."
+  (or (ebox--rendered-intrinsic-size string :width)
+      (ebox--string-max-pixel-width string)))
+
+(defun ebox--flex-source-width (source rendered)
+  "Return SOURCE's layout width when RENDERED has no height to carry it."
+  (if (and (ebox--flex-box-source-p source)
+           (zerop (ebox-string-height rendered)))
+      (let ((ebox--inline-auto-width-intrinsic-p t))
+        (ebox--total-pixel source))
+    (ebox--flex-string-width rendered)))
 
 (defun ebox--flex-string-main (string axis)
   "Return STRING main-axis size for AXIS."
   (if (eq axis 'row)
       (ebox--flex-string-width string)
-    (ebox-string-height string)))
+    (or (ebox--rendered-intrinsic-size string :height)
+        (ebox-string-height string))))
 
 (defun ebox--flex-string-cross (string axis)
   "Return STRING cross-axis size for AXIS."
   (if (eq axis 'row)
-      (ebox-string-height string)
+      (or (ebox--rendered-intrinsic-size string :height)
+          (ebox-string-height string))
     (ebox--flex-string-width string)))
 
 (defun ebox--flex-inline-viewport (axis main-size cross-size)
@@ -608,42 +634,41 @@ layout with viewport dependence."
 
 (defun ebox--flex-box-min-main (box rendered axis)
   "Return BOX's minimum renderable main-axis size for AXIS.
-RENDERED is BOX rendered at its natural size.  No-wrap content and
-preformatted wrapper boxes cannot be safely compressed below that rendered
-size; wrapping content may shrink down to its declared minimum and widest
-grapheme."
-  (if (eq axis 'row)
-      (let ((declared-min (or (ebox--resolve-size-content-pixel
-                               box (ebox-get box :min-width) 0)
-                              0)))
-        (if (ebox-style-no-soft-wrap-p (ebox-get box :wrap-mode))
-            ;; CSS's automatic minimum is min-content only when the author
-            ;; leaves `min-width' at its automatic value.  A component that
-            ;; deliberately declares `:min-width 0' must be allowed to
-            ;; shrink even when its own rows remain no-wrap (the surrounding
-            ;; card may then own horizontal overflow).
-            (if (ebox--flex-explicit-min-main-p box axis)
-                (+ (ebox--side-pixel box) declared-min)
-              (max (ebox--flex-string-main rendered axis)
-                   (+ (ebox--side-pixel box) declared-min)))
-          (let ((content-min (ebox--content-min-pixel box)))
-            (when (hash-table-p ebox--flex-content-min-width-table)
-              (puthash box content-min
-                       ebox--flex-content-min-width-table))
-            (+ (ebox--side-pixel box)
-               (max declared-min content-min)))))
-    (+ (ebox--side-height box)
-       (max 1
-            (or (ebox--box-sizing-content-height
-                 box (ebox-get box :min-height))
-                0)))))
+RENDERED is BOX rendered at its natural size.  Automatic minima use content
+only for non-scrollable overflow; explicit minima bypass that constraint."
+  (let* ((horizontal (eq axis 'row))
+         (side (if horizontal (ebox--side-pixel box) (ebox--side-height box)))
+         (minimum (ebox-get box (if horizontal :min-width :min-height)))
+         (declared (if horizontal
+                       (ebox--resolve-size-content-pixel box minimum 0)
+                     (ebox--resolve-size-content-height box minimum 0)))
+         (automatic (and (not (ebox--flex-explicit-min-main-p box axis))
+                         (not (memq (ebox-get box :overflow)
+                                    '(auto scroll hidden))))))
+    (if (not automatic)
+        (+ side (or declared 0))
+      (let* ((content-min
+              (if (and horizontal
+                       (ebox-style-soft-wrap-p (ebox-get box :wrap-mode)))
+                  (ebox--content-min-pixel box)
+                (max 0 (- (ebox--flex-string-main rendered axis) side))))
+             (preferred (ebox-get box (if horizontal :width :height)))
+             (definite (and (or (numberp preferred)
+                                (ebox-size-value-p preferred nil t))
+                            (ebox--flex-box-main-constraint
+                             box axis (if horizontal :width :height))))
+             (maximum (ebox--flex-box-main-constraint
+                       box axis (if horizontal :max-width :max-height))))
+        (when (and horizontal (hash-table-p ebox--flex-content-min-width-table))
+          (puthash box content-min ebox--flex-content-min-width-table))
+        (max side (min (+ side content-min)
+                       (or definite most-positive-fixnum)
+                       (or maximum most-positive-fixnum)))))))
 
 (defun ebox--flex-explicit-min-main-p (box axis)
   "Return non-nil when BOX declares a main-axis minimum explicitly."
-  (plist-get box
-             (if (eq axis 'row)
-                 :ebox-explicit-min-width-p
-               :ebox-explicit-min-height-p)))
+  (not (memq (ebox-get box (if (eq axis 'row) :min-width :min-height))
+             '(nil auto))))
 
 (defun ebox--flex-box-main-constraint (box axis property)
   "Return BOX's total main-axis size constraint from PROPERTY."
@@ -654,8 +679,8 @@ grapheme."
                      box (ebox-get box property) nil)))
           (+ (ebox--side-pixel box) content-size))
       (when-let* ((block-size
-                  (ebox--box-sizing-content-height
-                   box (ebox-get box property))))
+                  (ebox--resolve-size-content-height
+                   box (ebox-get box property) nil)))
         (+ (ebox--side-height box) block-size)))))
 
 (defun ebox--flex-min-main (source rendered axis)
@@ -681,20 +706,26 @@ grapheme."
   "Return SOURCE's flex base size for AXIS from BASIS."
   (cond
    ((eq basis 'auto)
-    (ebox--flex-string-main rendered axis))
+    (if (eq axis 'row)
+        (ebox--flex-source-width source rendered)
+      (ebox--flex-string-main rendered axis)))
    ((eq basis 'content)
     (if (ebox--flex-box-source-p source)
         (ebox--flex-box-content-basis-main source rendered axis)
       (ebox--flex-string-main rendered axis)))
-   ((and (eq axis 'row)
-         (ebox--flex-box-source-p source))
+   ((ebox--flex-box-source-p source)
     (let* ((normalized
             (ebox--normalize-horizontal-size-value
              basis ebox--preferred-size-keywords))
            (content-size
-            (or (ebox--resolve-size-content-pixel source normalized nil)
-                (ebox--content-max-pixel source))))
-      (+ (ebox--side-pixel source) content-size)))
+            (if (eq axis 'row)
+                (or (ebox--resolve-size-content-pixel source normalized nil)
+                    (ebox--content-max-pixel source))
+              (or (ebox--resolve-size-content-height source normalized nil)
+                  (max 0 (- (ebox--flex-string-main rendered axis)
+                            (ebox--side-height source)))))))
+      (+ (if (eq axis 'row) (ebox--side-pixel source)
+           (ebox--side-height source)) content-size)))
    (t
     (ebox--flex-main-value axis basis 0))))
 
@@ -745,17 +776,40 @@ grapheme."
             (if horizontal
                 (ebox--side-pixel box)
               (ebox--side-height box)))))
-    (max (if horizontal 0 1)
-         (- target outer-size))))
+    (max 0 (- target outer-size))))
 
 (defun ebox--flex-copy-put-size (copy property value)
   "Set COPY's layout-computed size PROPERTY to VALUE."
   (plist-put copy property value))
 
+(defun ebox--flex-freeze-containing-sizes (source copy)
+  "Freeze SOURCE's used sizes in COPY before assigning its item viewport.
+Percentage edges and constraints refer to the flex container.  They must not
+be recalculated against the smaller viewport assigned to the item itself."
+  (dolist (property '(:padding-left-pixel :padding-right-pixel
+                      :padding-top-height :padding-bottom-height
+                      :margin-left-pixel :margin-right-pixel
+                      :margin-top-height :margin-bottom-height
+                      :border-left-pixel :border-right-pixel
+                      :border-top-pixel :border-bottom-pixel))
+    (when (consp (plist-get source property))
+      (plist-put copy property (ebox-get source property))))
+  (dolist (property '(:width :min-width :max-width :height :min-height :max-height))
+    (let ((value (plist-get source property)))
+      (when (consp value)
+        (let* ((vertical (memq property '(:height :min-height :max-height)))
+               (pixels (ebox--size-pixels value source (if vertical 'height 'width))))
+          (when pixels
+            (plist-put copy property
+                       (if vertical (/ pixels (float (ebox--size-line-height source)))
+                         pixels)))))))
+  copy)
+
 (defun ebox--flex-copy-node-for-size (node axis main cross stretch)
   "Return NODE or a copy with flex-computed MAIN/CROSS size."
   (if (ebox--flex-box-source-p node)
-      (let ((copy (copy-sequence node)))
+      (let ((copy (ebox--flex-freeze-containing-sizes
+                   node (copy-sequence node))))
         (ebox--ensure-region-id node)
         (plist-put copy :region-id (ebox-get node :region-id))
         (when main
@@ -828,8 +882,12 @@ PROBE reuses the caller's exact measurement cache lookup when supplied."
                              (ebox--flex-render-source-for-measurement
                               source viewport)
                            (ebox--flex-recache-source-boxes source))))
-             (rendered-main (ebox--flex-string-main rendered axis))
-             (rendered-cross (ebox--flex-string-cross rendered axis))
+             (rendered-main (if (eq axis 'row)
+                                (ebox--flex-source-width source rendered)
+                              (ebox--flex-string-main rendered axis)))
+             (rendered-cross (if (eq axis 'column)
+                                 (ebox--flex-source-width source rendered)
+                               (ebox--flex-string-cross rendered axis)))
              (basis (plist-get props :flex-basis))
              (min-main (ebox--flex-min-main source rendered axis))
              (max-main (ebox--flex-max-main source axis))
@@ -853,10 +911,20 @@ PROBE reuses the caller's exact measurement cache lookup when supplied."
 
 (defun ebox--flex-fixed-basis-value-p (basis)
   "Return non-nil when BASIS is a context-free numeric flex size."
-  (or (numberp basis)
-      (and (consp basis)
-           (numberp (car basis))
-           (null (cdr basis)))))
+  (and (ebox-size-value-p basis nil t)
+       (not (cl-intersection (ebox-size-dependencies basis)
+                             '(percent viewport-width viewport-height)))))
+
+(defun ebox--flex-definite-property (box axis value)
+  "Return definite VALUE in AXIS units using BOX font metrics.
+Context-dependent declarations remain outside the render reuse proof."
+  (cond
+   ((numberp value) value)
+   ((ebox--flex-fixed-basis-value-p value)
+    (when-let* ((pixels (ebox--size-pixels value box
+                                         (if (eq axis 'row) 'width 'height))))
+      (if (eq axis 'row) pixels
+        (/ pixels (float (ebox--size-line-height box))))))))
 
 (defun ebox--flex-unrendered-measurement (source props axis)
   "Return SOURCE flex metrics that do not require intrinsic rendering.
@@ -868,9 +936,10 @@ measurement and immediately rendering it again at the computed size."
   (let ((basis (plist-get props :flex-basis)))
     (when (and (ebox--flex-box-source-p source)
                (ebox--flex-fixed-basis-value-p basis)
-               (or (not (eq axis 'row))
-                   (ebox-style-soft-wrap-p
-                    (ebox-get source :wrap-mode))))
+               (if (eq axis 'row)
+                   (ebox-style-soft-wrap-p (ebox-get source :wrap-mode))
+                 (or (ebox--flex-explicit-min-main-p source axis)
+                     (memq (ebox-get source :overflow) '(auto scroll hidden)))))
       (let* ((min-main (ebox--flex-min-main source "" axis))
              (max-main (ebox--flex-max-main source axis))
              (base (ebox--flex-basis-main source "" axis basis))
@@ -892,10 +961,21 @@ metrics, and render intrinsically only when layout semantics require it."
         (ebox--flex-unrendered-measurement source props axis)
         (ebox--flex-measure-source source props axis viewport probe))))
 
+(defun ebox--flex-record-composite-intrinsic-size (rendered parts width height)
+  "Record WIDTH and HEIGHT for empty RENDERED or separate PARTS extents."
+  (if (or (string-empty-p rendered)
+          (cl-some (lambda (part)
+                     (or (ebox--rendered-intrinsic-size part :width)
+                         (ebox--rendered-intrinsic-size part :height)))
+                   parts))
+      (ebox--record-rendered-intrinsic-size rendered width height)
+    rendered))
+
 (defun ebox--flex-pad-width (string width &optional align owner-id)
   "Pad every line of STRING to WIDTH pixels."
   (let ((align (or align 'flex-start)))
-    (ebox--maplines
+    (ebox--flex-record-composite-intrinsic-size
+     (ebox--maplines
      (lambda (line)
        (let* ((line-width (ebox--string-pixel-width line))
               (extra (max 0 (- width line-width)))
@@ -911,7 +991,8 @@ metrics, and render intrinsically only when layout semantics require it."
              (setq right-space
                    (ebox--add-content-owner right-space owner-id)))
            (concat left-space line right-space))))
-     string)))
+      string)
+     (list string) width (ebox--rendered-intrinsic-size string :height))))
 
 (defun ebox--flex-pad-height (string height offset width &optional owner-id)
   "Pad STRING vertically to HEIGHT using blank lines of WIDTH pixels."
@@ -924,10 +1005,12 @@ metrics, and render intrinsically only when layout semantics require it."
          (blank (if owner-id
                     (ebox--add-content-owner blank owner-id)
                   blank)))
-    (ebox-lines-join
-     (append (make-list top blank)
-             lines
-             (make-list bottom blank)))))
+    (ebox--flex-record-composite-intrinsic-size
+     (ebox-lines-join
+      (append (make-list top blank)
+              lines
+              (make-list bottom blank)))
+     (list string) (ebox--rendered-intrinsic-size string :width) height)))
 
 (defun ebox--flex-sized-entry (rendered main cross)
   "Return a sized flex render entry for RENDERED."
@@ -1057,13 +1140,15 @@ Return a sized render entry containing the rendered string and dimensions."
                    (= cross (ebox--flex-sized-entry-cross natural-entry))
                    (or (not stretch)
                        (not source-box-p)
-                       ;; A numeric cross size already equal to the assigned
+                       ;; A definite cross size already equal to the assigned
                        ;; Box property leaves its complete geometry unchanged.
                        ;; Auto/relative sizes and overflow-expanded output
                        ;; still need the final stretched Box render.
                        (let ((declared-cross
-                              (ebox-get source (if (eq axis 'row)
-                                                   :height :width))))
+                              (ebox--flex-definite-property
+                               source (if (eq axis 'row) 'column 'row)
+                               (ebox-get source (if (eq axis 'row)
+                                                    :height :width)))))
                          (and (numberp declared-cross)
                               (= declared-cross
                                  (ebox--flex-box-main-property
@@ -1196,12 +1281,12 @@ Return a sized render entry containing the rendered string and dimensions."
                         (or main (if can-use-measured
                                      render-main
                                    (ebox--flex-string-width rendered)))
-                      (or main (ebox-string-height rendered))))
+                      (or main (ebox--flex-string-main rendered axis))))
                 (or (and fragment-entry (plist-get fragment-entry :cross))
                     (if (eq axis 'row)
                         (or cross (if can-use-measured
                                       render-cross
-                                    (ebox-string-height rendered)))
+                                    (ebox--flex-string-cross rendered axis)))
                       (or cross (if can-use-measured
                                     render-cross
                                   (ebox--flex-string-width rendered))))))))
@@ -1224,12 +1309,18 @@ Return a sized render entry containing the rendered string and dimensions."
    (ebox--flex-render-sized-entry item axis main cross container-align)))
 
 (defun ebox--flex-distribute (amount weights)
-  "Distribute integer AMOUNT across WEIGHTS, preserving total exactly."
-  (let* ((amount (max 0 (floor amount)))
+  "Distribute AMOUNT across WEIGHTS, retaining fractional free space.
+Whole amounts retain the established deterministic remainder order."
+  (let* ((amount (max 0 amount))
          (positive (cl-remove-if-not (lambda (weight) (> weight 0)) weights))
          (total (apply #'+ (or positive '(0)))))
-    (if (or (<= amount 0) (<= total 0))
-        (make-list (length weights) 0)
+    (cond
+     ((or (<= amount 0) (<= total 0)) (make-list (length weights) 0))
+     ((/= amount (floor amount))
+      (mapcar (lambda (weight) (* amount (/ (float (max 0 weight)) total)))
+              weights))
+     (t
+      (setq amount (floor amount))
       (let* ((shares
               (mapcar (lambda (weight)
                         (if (> weight 0)
@@ -1244,7 +1335,7 @@ Return a sized render entry containing the rendered string and dimensions."
                    when (> weight 0)
                    do (cl-incf (car cell))
                    and do (cl-decf remaining)))
-        shares))))
+        shares)))))
 
 (defun ebox--flex-sum (numbers)
   "Return the sum of NUMBERS."
@@ -1472,6 +1563,7 @@ metadata and rendering decisions."
 	                     (t
 	                      (dolist (index (or max-violations active-indices))
 	                        (aset frozen index t)))))))))))))
+    (setq targets (vconcat (ebox-size-quantize (append targets nil))))
     (cl-loop for item in line
              for index from 0
              collect (let ((copy (copy-sequence item)))
@@ -1516,7 +1608,7 @@ metadata and rendering decisions."
              (ebox--flex-render-sized-entry
               item axis (plist-get item :target) nil container-align)))
           line)))
-    (max 1 (apply #'max (or sizes '(1))))))
+    (apply #'max (or sizes '(0)))))
 
 (defun ebox--flex-layout-cross (crosses container-cross cross-gap align single-line)
   "Return plist describing cross-axis line placement."
@@ -1548,7 +1640,8 @@ metadata and rendering decisions."
          (leading (nth 0 spacing))
          (between (nth 1 spacing))
          (trailing (nth 2 spacing))
-         (parts (list (cons (ebox-pixel-space leading) leading))))
+         (parts (when (> leading 0)
+                  (list (cons (ebox--pixel-blank leading line-cross) leading)))))
     (cl-loop for item in line
              for tail on line
              for main = (plist-get item :target)
@@ -1557,11 +1650,14 @@ metadata and rendering decisions."
              do (push (cons (ebox--flex-sized-entry-rendered entry)
                             main)
                       parts)
-             unless (null (cdr tail))
-             do (push (cons (ebox-pixel-space between) between) parts))
+             when (and (cdr tail) (> between 0))
+             do (push (cons (ebox--pixel-blank between line-cross) between) parts))
     (when (> trailing 0)
-      (push (cons (ebox-pixel-space trailing) trailing) parts))
-    (ebox--flex-lines-concat-horizontal-sized (nreverse parts) line-cross)))
+      (push (cons (ebox--pixel-blank trailing line-cross) trailing) parts))
+    (setq parts (nreverse parts))
+    (ebox--flex-record-composite-intrinsic-size
+     (ebox--flex-lines-concat-horizontal-sized parts line-cross)
+     (mapcar #'car parts) target-main line-cross)))
 
 (defun ebox--flex-render-column-line (line line-cross main-size main-gap justify align)
   "Render one column-axis flex LINE."
@@ -1582,8 +1678,11 @@ metadata and rendering decisions."
              unless (null (cdr tail))
              do (when (> between 0)
                   (push (ebox--pixel-blank line-cross between) pieces)))
-    (let ((result (apply #'ebox--lines-stack-vertical (nreverse pieces))))
-      (ebox--flex-pad-height result target-main 0 line-cross))))
+    (setq pieces (nreverse pieces))
+    (let ((result (apply #'ebox--lines-stack-vertical pieces)))
+      (ebox--flex-record-composite-intrinsic-size
+       (ebox--flex-pad-height result target-main 0 line-cross)
+       pieces line-cross target-main))))
 
 (defun ebox--render-flex-row (lines props main-size cross-size main-gap cross-gap)
   "Render flex LINES for a row-axis container."
@@ -1622,9 +1721,14 @@ metadata and rendering decisions."
              do (when (> between 0)
                   (push (ebox--pixel-blank container-main between) pieces)))
     (let ((result (apply #'ebox--lines-stack-vertical (nreverse pieces))))
-      (if cross-size
-          (ebox--flex-pad-height result cross-size 0 container-main)
-        result))))
+      (ebox--flex-record-composite-intrinsic-size
+       (if cross-size
+           (ebox--flex-pad-height result cross-size 0 container-main)
+         result)
+       rendered-lines container-main
+       (or cross-size (+ leading (ebox--flex-sum adjusted-crosses)
+                         (* between (max 0 (1- (length adjusted-crosses))))
+                         (plist-get cross-layout :trailing)))))))
 
 (defun ebox--render-flex-column (lines props main-size cross-size main-gap cross-gap)
   "Render flex LINES for a column-axis container."
@@ -1649,16 +1753,29 @@ metadata and rendering decisions."
                        (ebox--flex-render-column-line
                         line cross main-size main-gap justify align))
                      sized adjusted-crosses))
-         (parts (list (ebox-pixel-space leading))))
+         (height (max (or main-size 0)
+                      (apply #'max (mapcar #'ebox-string-height
+                                          (or rendered-columns '(""))))))
+         (parts (when (> leading 0)
+                  (list (ebox--pixel-blank leading height)))))
     (cl-loop for rendered in rendered-columns
              for tail on rendered-columns
              do (push rendered parts)
-             unless (null (cdr tail))
-             do (push (ebox-pixel-space between) parts))
+             when (and (cdr tail) (> between 0))
+             do (push (ebox--pixel-blank between height) parts))
     (let ((result (apply #'ebox--lines-concat-horizontal (nreverse parts))))
-      (if cross-size
-          (ebox--flex-pad-width result cross-size)
-        result))))
+      (ebox--flex-record-composite-intrinsic-size
+       (if cross-size
+           (ebox--flex-pad-width result cross-size)
+         result)
+       rendered-columns
+       (or cross-size (+ leading (ebox--flex-sum adjusted-crosses)
+                         (* between (max 0 (1- (length adjusted-crosses))))
+                         (plist-get cross-layout :trailing)))
+       (or main-size
+           (apply #'max (mapcar (lambda (column)
+                                  (ebox--flex-string-main column 'column))
+                                (or rendered-columns '("")))))))))
 
 (defun ebox--render-flex-box (node rendered)
   "Render flex NODE's container box around RENDERED, when present."
@@ -1673,12 +1790,19 @@ metadata and rendering decisions."
           (puthash region-id box ebox--region-box-table)))
     rendered))
 
-(defun ebox--render-flex-children (config constraints children)
+(defun ebox--render-flex-children (config constraints children &optional box)
   "Render Flex CONFIG under resolved CONSTRAINTS over flat CHILDREN.
 Width is in pixels and height in lines; nil means unbounded, including an
 intrinsic max-content measurement.  Author units and viewport defaults have
-already been resolved by the Box or legacy adapter."
-  (let* ((props config)
+already been resolved by the Box or legacy adapter.  BOX supplies font metrics."
+  (let* ((constraints
+          (list :width (when-let* ((width (plist-get constraints :width)))
+                         (floor width))
+                :height (when-let* ((height (plist-get constraints :height)))
+                          (floor height))))
+         (props (ebox--layout-used-gaps
+                config (plist-get constraints :width)
+                (plist-get constraints :height) box))
          (axis (ebox--flex-axis props))
          (main-size (if (eq axis 'row)
                         (plist-get constraints :width)
@@ -1689,6 +1813,9 @@ already been resolved by the Box or legacy adapter."
          ;; Nil is an explicit unbounded containing block, not permission for
          ;; a deeper responsive Flex to recover this Box's outer viewport.
          (ebox-viewport-width (plist-get constraints :width))
+         (ebox--css-containing-height
+          (and (plist-get constraints :height)
+               (* (plist-get constraints :height) (ebox--size-line-height box))))
          (inline-viewport (ebox--flex-inline-viewport
                            axis main-size cross-size))
          (items (ebox--flex-collect-items children axis inline-viewport))
@@ -1696,7 +1823,7 @@ already been resolved by the Box or legacy adapter."
                     (nreverse items)
                   items))
          (row-gap (or (ebox--flex-line-value (plist-get props :row-gap) 0) 0))
-         ;; FlexConfig stores the gap in pixels after author-unit expansion.
+         ;; Only this private used configuration contains numeric gaps.
          (column-gap (or (plist-get props :column-gap) 0))
          (main-gap (if (eq axis 'row) column-gap row-gap))
          (cross-gap (if (eq axis 'row) row-gap column-gap))
@@ -1713,8 +1840,9 @@ already been resolved by the Box or legacy adapter."
 (defun ebox--flex-box-constraints (box)
   "Project BOX content dimensions to resolved private FlexConstraints."
   (list :width (ebox--wrapper-content-viewport-pixel box)
-        :height (ebox--resolve-size-content-height
-                 box (ebox-get box :height) nil)))
+        :height (when-let* ((height (ebox--resolve-size-content-height
+                                    box (ebox-get box :height) nil)))
+                  (floor height))))
 
 (defun ebox--flex-legacy-constraints (props)
   "Resolve legacy PROPS' author units and defaults to FlexConstraints."
@@ -1726,7 +1854,7 @@ already been resolved by the Box or legacy adapter."
   (ebox--render-flex-children
    props
    (ebox--flex-box-constraints box)
-   children))
+   children box))
 
 (defun ebox--render-flex (node)
   "Render legacy flex NODE to a propertized string."
@@ -1839,9 +1967,12 @@ assembles already-rendered items."
 (defun ebox--flex-window-props (node)
   "Return NODE's Flex properties with resolved dimensions for lazy rows."
   (if (ebox--flex-window-canonical-node-p node)
-      (append
-       (ebox-layout-config-props (plist-get node :ebox-layout-config))
-       (ebox--flex-box-constraints node))
+      (let ((constraints (ebox--flex-box-constraints node)))
+        (append
+         (ebox--layout-used-gaps
+          (ebox-layout-config-props (plist-get node :ebox-layout-config))
+          (plist-get constraints :width) (plist-get constraints :height) node)
+         constraints))
     (let ((props (ebox--flex-container-content-props
                   (plist-get node :props)
                   (plist-get node :raw-props)
@@ -1852,10 +1983,13 @@ assembles already-rendered items."
 (defun ebox--flex-window-wrapper-supported-p (box)
   "Return non-nil when BOX can safely wrap an incomplete flex prefix."
   (or (null box)
-      (and (null (ebox-get box :height))
-           (or (null (ebox-get box :min-height))
-               (equal (ebox-get box :min-height) 0))
-           (null (ebox-get box :max-height))
+      (and (memq (ebox-get box :height) '(nil auto))
+           (or (memq (ebox-get box :min-height) '(nil auto))
+               (equal (ebox-get box :min-height) 0)
+               (and (ebox-size-value-p (ebox-get box :min-height) nil t)
+                    (equal (ebox--size-pixels
+                            (ebox-get box :min-height) box 'height) 0)))
+           (memq (ebox-get box :max-height) '(nil none))
            (or (ebox-style-no-soft-wrap-p (ebox-get box :wrap-mode))
                (ebox--flex-window-canonical-node-p box))
            (eq (ebox-get box :text-align) 'left)

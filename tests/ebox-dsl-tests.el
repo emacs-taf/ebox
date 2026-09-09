@@ -20,7 +20,8 @@
           (cl-loop for (key value) on plist by #'cddr
                    when (memq key style-keys) append (list key value)))
          (declarations
-          (and style-props (ebox-style-compile-form tag style-props)))
+          (and style-props (ebox-style-compile-form
+                            tag (ebox-test--explicit-sizes tag style-props))))
          (plist
           (cl-loop for (key value) on plist by #'cddr
                    unless (memq key style-keys) append (list key value)))
@@ -115,15 +116,15 @@
   "Approved aliases and shorthands should produce canonical longhands."
   (let ((style (ebox-style-compute
                 (list :bgcolor "#ffffff"
-                      :padding '(1 2)
-                      :margin-left 3
+                      :padding '((lh 1) (ch 2))
+                      :margin-left '(ch 3)
                       :border "#333333"))))
     (should (equal (plist-get style :background-color) "#ffffff"))
-    (should (= (plist-get style :padding-block-start) 1))
-    (should (= (plist-get style :padding-inline-end) 2))
-    (should (= (plist-get style :padding-block-end) 1))
-    (should (= (plist-get style :padding-inline-start) 2))
-    (should (= (plist-get style :margin-left) 3))
+    (should (equal (plist-get style :padding-block-start) '(lh 1)))
+    (should (equal (plist-get style :padding-inline-end) '(ch 2)))
+    (should (equal (plist-get style :padding-block-end) '(lh 1)))
+    (should (equal (plist-get style :padding-inline-start) '(ch 2)))
+    (should (equal (plist-get style :margin-left) '(ch 3)))
     (should (equal (plist-get style :border-color) "#333333"))))
 
 (ert-deftest ebox-style-classifies-incremental-effects ()
@@ -153,10 +154,10 @@
 (ert-deftest ebox-style-unrelated-facts-preserve-typed-layout-config ()
   "Unrelated computed facts must not replace direct typed layout values."
   (dolist (case '((flex
-                   (flex :flex-direction column :column-gap (6) "A"))
+                   (flex :flex-direction column :column-gap (px 6) "A"))
                   (grid
-                   (grid :grid-template-columns ((40) (60))
-                         :column-gap (4) "A"))))
+                   (grid :grid-template-columns ((px 40) (px 60))
+                         :column-gap (px 4) "A"))))
     (let* ((kind (car case))
            (input (ebox-build (cadr case)))
            (node (ebox-dsl-test--root input))
@@ -233,27 +234,27 @@
   "Logical and physical edges conflict locally and cascade across sources."
   (should-error
    (ebox-style-compile-declarations
-    '(:padding-left (4) :padding-inline-start (8)) t)
+    '(:padding-left (px 4) :padding-inline-start (px 8)) t)
    :type 'ecss-invalid-declaration)
-  (let* ((base (ebox-style-compile-declarations '(:padding (0 (8))) t))
+  (let* ((base (ebox-style-compile-declarations '(:padding ((lh 0) (px 8))) t))
          (override
-          (ebox-style-compile-declarations '(:padding-left (24)) t))
+          (ebox-style-compile-declarations '(:padding-left (px 24)) t))
          (style
           (ebox-style-compute-subject
            (ecss-subject-create :type "box")
            (ebox-style-merge-declarations base override))))
     (should (equal (plist-get (ebox-style--box-values style) :padding-left)
-                   '(24))))
+                   '(px 24))))
   (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
-    (ebox-style-add-rule ".card" '(:margin-inline-start (2)))
-    (ebox-style-add-rule "#target" '(:margin-left (6)))
+    (ebox-style-add-rule ".card" '(:margin-inline-start (px 2)))
+    (ebox-style-add-rule "#target" '(:margin-left (px 6)))
     (let ((style
            (ebox-style-compute-subject
             (ecss-subject-create
              :type "box" :id "target" :classes '("card"))
             nil)))
       (should (equal (plist-get (ebox-style--box-values style) :margin-left)
-                     '(6))))))
+                     '(px 6))))))
 
 (ert-deftest ebox-style-rejects-canonical-and-alias-duplicates ()
   "One declaration source should not spell one property twice."
@@ -269,9 +270,9 @@
 (ert-deftest ebox-author-declaration-is-one-atomic-normalization-group ()
   "One author group rejects overlaps while later cascade groups may override."
   (dolist (declarations
-           '((:padding 1 :padding-left 2)
+           '((:padding ((lh 1) (ch 1)) :padding-left (ch 2))
              (:border "red" :border-top none)
-             (:gap 1 :row-gap 2)
+             (:gap ((lh 1) (ch 1)) :row-gap (lh 2))
              (:flex-flow (row wrap) :flex-wrap nowrap)
              (:flex (1 1 auto) :flex-grow 2)
              (:border-top-p t :border-top-style none)))
@@ -281,9 +282,9 @@
   (should
    (equal
     (ebox-style-merge-declarations
-     (ebox-style-compile-declarations '(:gap 1) t)
-     (ebox-style-compile-declarations '(:row-gap 2) t))
-    '(ebox/row-gap 2 ebox/column-gap 1))))
+     (ebox-style-compile-declarations '(:gap ((lh 1) (ch 1))) t)
+     (ebox-style-compile-declarations '(:row-gap (lh 2)) t))
+    '(ebox/row-gap (lh 2) ebox/column-gap (ch 1)))))
 
 (ert-deftest ebox-style-property-registry-rejects-alias-collisions ()
   "An alias should never shadow another canonical property."
@@ -316,24 +317,24 @@
   "The concise border boolean should expand to canonical width and style."
   (should
    (equal (ebox-style-compile-declarations '(:border-top-p t) t)
-          '(ebox/border-top-width 1 ebox/border-top-style solid)))
+          '(ebox/border-top-width (px 1) ebox/border-top-style solid)))
   (should
    (equal (ebox-style-compile-declarations '(:border-top-p nil) t)
-          '(ebox/border-top-width 0 ebox/border-top-style none)))
+          '(ebox/border-top-width (px 0) ebox/border-top-style none)))
   (should (eq (ebox-style-canonical-name :border-top-p) :border-top-p)))
 
-(ert-deftest ebox-border-width-unit-is-always-integer-pixels ()
-  "Border width should not reuse Box edge column/pixel wrapper grammar."
+(ert-deftest ebox-border-width-requires-an-explicit-length ()
+  "Border declarations retain explicit lengths and reject singleton syntax."
   (should
    (equal
-    (ebox-style-compile-declarations '(:border (1 solid "#687386")) t)
-    '(ebox/border-top-width 1 ebox/border-top-style solid
+    (ebox-style-compile-declarations '(:border ((px 1) solid "#687386")) t)
+    '(ebox/border-top-width (px 1) ebox/border-top-style solid
       ebox/border-top-color "#687386"
-      ebox/border-right-width 1 ebox/border-right-style solid
+      ebox/border-right-width (px 1) ebox/border-right-style solid
       ebox/border-right-color "#687386"
-      ebox/border-bottom-width 1 ebox/border-bottom-style solid
+      ebox/border-bottom-width (px 1) ebox/border-bottom-style solid
       ebox/border-bottom-color "#687386"
-      ebox/border-left-width 1 ebox/border-left-style solid
+      ebox/border-left-width (px 1) ebox/border-left-style solid
       ebox/border-left-color "#687386")))
   (should-error
    (ebox-style-compile-declarations
@@ -342,26 +343,31 @@
 
 (ert-deftest ebox-border-engine-projection-keeps-exact-pixels ()
   "Border projection must not reinterpret pixels as character columns."
-  (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 7)))
-    (should
-     (equal
-      (ebox-style--expand-engine-plist
-       '(:border-left-width 1 :border-left-style solid
-         :border-right-width 2 :border-right-style solid
-         :padding-left 1 :margin-right (3)))
-      '(:border-left-pixel 1 :border-left-style solid
-        :border-right-pixel 2 :border-right-style solid
-        :padding-left-pixel 7 :margin-right-pixel 3))))
+  (cl-letf (((symbol-function 'ebox--size-character-width)
+             (lambda (&optional _box) 7)))
+    (let ((projected
+           (ebox-style--expand-engine-plist
+            '(:border-left-width (px 1) :border-left-style solid
+              :border-right-width (px 2) :border-right-style solid
+              :padding-left (ch 1) :margin-right (px 3)))))
+      (should (equal projected
+                     '(:border-left-pixel (px 1) :border-left-style solid
+                       :border-right-pixel (px 2) :border-right-style solid
+                       :padding-left-pixel (ch 1) :margin-right-pixel (px 3))))
+      (should (= (ebox-get projected :border-left-pixel) 1))
+      (should (= (ebox-get projected :border-right-pixel) 2))
+      (should (= (ebox-get projected :padding-left-pixel) 7))
+      (should (= (ebox-get projected :margin-right-pixel) 3))))
   (should
    (equal
     (ebox-style--expand-engine-plist
-     '(:border-left-width 2 :border-left-style none))
+     '(:border-left-width (px 2) :border-left-style none))
     '(:border-left-pixel 0 :border-left-style none)))
   (should
    (equal
     (ebox-style--expand-engine-plist
-     '(:border-top-width 2 :border-top-style solid))
-    '(:border-top-pixel 2 :border-top-style solid))))
+     '(:border-top-width (px 2) :border-top-style solid))
+    '(:border-top-pixel (px 2) :border-top-style solid))))
 
 (ert-deftest ebox-style-declaration-cache-expands-shorthand-once ()
   "A cached declaration should not expand its shorthand again."
@@ -372,15 +378,15 @@
                (lambda (value)
                  (cl-incf calls)
                  (funcall original value))))
-      (ebox-style-compile-declarations '(:padding 1) t)
-      (ebox-style-compile-declarations '(:padding 1) t))
+      (ebox-style-compile-declarations '(:padding ((lh 1) (ch 1))) t)
+      (ebox-style-compile-declarations '(:padding ((lh 1) (ch 1))) t))
     (should (= calls 1))))
 
 (ert-deftest ebox-style-border-present-rejects-owned-longhand-conflicts ()
   "One source should not mix the boolean border shorthand with its outputs."
   (should-error
    (ebox-style-compile-declarations
-    '(:border-top-p t :border-top-width 2) t)
+    '(:border-top-p t :border-top-width (px 2)) t)
    :type 'error)
   (should-error
    (ebox-style-compile-declarations
@@ -388,11 +394,11 @@
    :type 'error)
   (should-error
    (ebox-style-compile-declarations
-    '(:border-top-p t :border-top (2 dashed "red")) t)
+    '(:border-top-p t :border-top ((px 2) dashed "red")) t)
    :type 'error)
   (should-error
    (ebox-style-compile-declarations
-    '(:border-top-p t :border-width 2) t)
+    '(:border-top-p t :border-width (px 2)) t)
    :type 'error)
   (should-error
    (ebox-style-compile-declarations
@@ -400,7 +406,7 @@
    :type 'error)
   (should-error
    (ebox-style-compile-declarations
-    '(:border-bottom-p t :border (1 solid "red")) t)
+    '(:border-bottom-p t :border ((px 1) solid "red")) t)
    :type 'error))
 
 (ert-deftest ebox-canonical-text-constructor-is-renderable-and-typed ()
@@ -457,7 +463,7 @@
 (ert-deftest ebox-render-cache-signature-ignores-derived-layout-proofs ()
   "A render must not invalidate its own canonical node cache key."
   (let* ((node (ebox-dsl-test--root
-                (ebox-build '(box :width '(80) "Stable"))))
+                (ebox-build '(box :width '(px 80) "Stable"))))
          (before
           (let ((ebox--render-cache-signature-cache
                  (make-hash-table :test 'eq)))
@@ -644,7 +650,7 @@
          (right (ebox-dsl-test--root right-input))
          (box-input
           (ebox-dsl-test--box-create
-           :layout (ebox-row-layout-create :item-gap 5 :cross-align 'center)
+           :layout (ebox-row-layout-create :item-gap '(px 5) :cross-align 'center)
            :children (list left-input right-input)
            :source-handle 'row))
          (box (ebox-dsl-test--root box-input)))
@@ -653,7 +659,7 @@
                 'row))
     (should (eq (ebox-layout-config-kind (ebox-box-node-layout box)) 'row))
     (should (equal (ebox-layout-config-props (ebox-box-node-layout box))
-                   '(:item-gap 5 :cross-align center)))
+                   '(:item-gap (px 5) :cross-align center)))
     (should (equal (ebox-box-node-children box) (list left right)))
     (should (eq (ebox-tree-node-children box)
                 (ebox-box-node-children box)))
@@ -678,13 +684,13 @@
          (bottom (ebox-dsl-test--root bottom-input))
          (box-input
           (ebox-dsl-test--box-create
-           :layout (ebox-column-layout-create :item-gap 1 :cross-align 'end)
+           :layout (ebox-column-layout-create :item-gap '(lh 1) :cross-align 'end)
            :children (list top-input bottom-input)))
          (box (ebox-dsl-test--root box-input)))
     (should (ebox-box-node-p box))
     (should (eq (ebox-layout-config-kind (ebox-box-node-layout box)) 'column))
     (should (equal (ebox-layout-config-props (ebox-box-node-layout box))
-                   '(:item-gap 1 :cross-align end)))
+                   '(:item-gap (lh 1) :cross-align end)))
     (should (equal (ebox-box-node-children box) (list top bottom)))
     (should (eq (ebox-tree-node-children box)
                 (ebox-box-node-children box)))
@@ -702,7 +708,11 @@
   "Row/Column configs should distinguish defaults from invalid explicit values."
   (dolist (constructor '(ebox-row-layout-create ebox-column-layout-create))
     (should (equal (ebox-layout-config-props (funcall constructor))
-                   '(:item-gap 0 :cross-align stretch)))
+                   (list :item-gap
+                         (if (eq constructor 'ebox-column-layout-create)
+                             '(lh 0)
+                           '(px 0))
+                         :cross-align 'stretch)))
     (dolist (plist '((:item-gap nil) (:item-gap -1)
                      (:cross-align nil) (:cross-align bogus)
                      (:gap 1) (:item-gap 1 :item-gap 2)))
@@ -722,7 +732,7 @@
      (equal (ebox-layout-config-props layout)
             '(:flex-direction row :flex-wrap nowrap
               :justify-content flex-start :align-items stretch
-              :align-content stretch :row-gap 0 :column-gap 0)))
+              :align-content stretch :row-gap (lh 0) :column-gap (px 0))))
     (should-not (plist-member (ebox-layout-config-props layout) :width))
     (should-not (plist-member (ebox-layout-config-props layout) :height))
     (should (ebox-box-node-p box))
@@ -792,13 +802,13 @@
           :justify-content 'space-between
           :align-items 'center
           :align-content 'end
-          :row-gap '(2)
-          :column-gap '(8))))
+          :row-gap '(lh 2)
+          :column-gap '(px 8))))
     (should
      (equal (ebox-layout-config-props layout)
             '(:flex-direction column-reverse :flex-wrap wrap
               :justify-content space-between :align-items center
-              :align-content end :row-gap 2 :column-gap 8)))
+              :align-content end :row-gap (lh 2) :column-gap (px 8))))
     (should (ebox-flex-layout-config-props-p
              (ebox-layout-config-props layout)))
     (should (ebox-box-node-p
@@ -833,15 +843,16 @@
 (ert-deftest ebox-flex-config-validation-does-not-reparse-canonical-pixels ()
   "Boundary validation should preserve physical pixels under non-unit fonts."
   (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 8)))
-    (let* ((layout (ebox-flex-layout-create :column-gap '(8)))
+    (let* ((layout (ebox-flex-layout-create :column-gap '(px 8)))
            (box (ebox-dsl-test--root
                  (ebox-dsl-test--box-create
                   :layout layout :children nil))))
-      (should (= (plist-get (ebox-layout-config-props layout) :column-gap) 8))
-      (should (= (plist-get
-                  (ebox-layout-config-props (ebox-box-node-layout box))
-                  :column-gap)
-                 8)))))
+      (should (equal (plist-get (ebox-layout-config-props layout) :column-gap)
+                     '(px 8)))
+      (should (equal (plist-get
+                      (ebox-layout-config-props (ebox-box-node-layout box))
+                      :column-gap)
+                     '(px 8))))))
 
 (ert-deftest ebox-canonical-grid-box-uses-one-box-identity-and-child-list ()
   "A GridConfig should select the Box algorithm without a Grid runtime node."
@@ -987,25 +998,25 @@
   "The typed Grid constructor should emit one canonical closed property set."
   (let* ((layout
           (ebox-grid-layout-create
-           :grid-template-columns '((20) (fr 1))
-           :grid-template-rows '(1 auto)
-           :grid-auto-columns '((30))
-           :grid-auto-rows '(2)
+           :grid-template-columns '((px 20) (fr 1))
+           :grid-template-rows '((lh 1) auto)
+           :grid-auto-columns '((px 30))
+           :grid-auto-rows '((lh 2))
            :grid-auto-flow 'column
-           :row-gap '(2) :column-gap '(8)
+           :row-gap '(lh 2) :column-gap '(px 8)
            :justify-items 'center :align-items 'end
            :justify-content 'space-between :align-content 'center))
          (props (ebox-layout-config-props layout)))
     (should (equal (plist-get props :grid-template-columns)
-                   '((:kind fixed :size 20) (:kind fr :factor 1))))
+                   '((:kind fixed :size (px 20)) (:kind fr :factor 1))))
     (should (equal (plist-get props :grid-template-rows)
-                   '((:kind fixed :size 1) (:kind auto :factor 0))))
+                   '((:kind fixed :size (lh 1)) (:kind auto :factor 0))))
     (should (equal (plist-get props :grid-auto-columns)
-                   '(:kind fixed :size 30)))
+                   '(:kind fixed :size (px 30))))
     (should (equal (plist-get props :grid-auto-rows)
-                   '(:kind fixed :size 2)))
-    (should (= (plist-get props :row-gap) 2))
-    (should (= (plist-get props :column-gap) 8))
+                   '(:kind fixed :size (lh 2))))
+    (should (equal (plist-get props :row-gap) '(lh 2)))
+    (should (equal (plist-get props :column-gap) '(px 8)))
     (should (ebox-grid-layout-config-props-p props))
     (should (ebox-box-node-p
              (ebox-dsl-test--root
@@ -1059,14 +1070,14 @@
   (cl-letf (((symbol-function 'ebox--space-pixel-width) (lambda () 8)))
     (let* ((layout
             (ebox-grid-layout-create
-             :grid-template-columns '((20)) :column-gap '(8)))
+             :grid-template-columns '((px 20)) :column-gap '(px 8)))
            (box (ebox-dsl-test--root
                  (ebox-dsl-test--box-create :layout layout :children nil)))
            (props (ebox-layout-config-props (ebox-box-node-layout box))))
-      (should (= (plist-get props :column-gap) 8))
-      (should (= (plist-get (car (plist-get props :grid-template-columns))
-                            :size)
-                 20)))))
+      (should (equal (plist-get props :column-gap) '(px 8)))
+      (should (equal (plist-get (car (plist-get props :grid-template-columns))
+                                :size)
+                     '(px 20))))))
 
 (ert-deftest ebox-grid-config-boundary-rejects-forged-minmax-roles ()
   "Trusted Grid validation should enforce minmax roles after mutation."
@@ -1250,14 +1261,14 @@
   "Layout config belongs to its form; item roles belong to direct child Boxes."
   (let* ((flex
           (ebox-build
-           '(flex :width '(300) :gap '(1 (5))
+           '(flex :width '(px 300) :gap '((lh 1) (px 5))
              (box :flex 1 "A")
              "B")))
          (flex-child (car (ebox-box-node-children
                            (ebox-dsl-test--root flex))))
          (grid
           (ebox-build
-           '(grid :grid-template-columns '((20) (20))
+           '(grid :grid-template-columns '((px 20) (px 20))
              (box :grid-column '(1 :span 2) "Header"))))
          (grid-child (car (ebox-box-node-children
                            (ebox-dsl-test--root grid)))))

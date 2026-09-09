@@ -9,6 +9,9 @@
 
 (require 'cl-lib)
 
+(declare-function ebox-interaction--refresh-hover! "ebox-interaction"
+                  (string start end &optional face))
+
 (define-error 'ebox-layout-context-error
   "Ebox layout context is unavailable")
 
@@ -67,6 +70,16 @@
 
 (defvar ebox-viewport-width nil)
 (defvar ebox-viewport-height nil)
+(defvar ebox--css-viewport-width nil
+  "Root viewport width in pixels, unchanged by nested containing blocks.")
+(defvar ebox--css-viewport-height nil
+  "Root viewport height in pixels, unchanged by nested containing blocks.")
+(defvar ebox--css-containing-height nil
+  "Definite containing block content height in pixels, or nil.")
+(defvar ebox--css-size-context-active-p nil
+  "Non-nil when root CSS viewport dimensions have been captured.")
+(defvar ebox--css-font-fact nil
+  "Effective font projection for the current layout node.")
 (defvar ebox--render-runtime-revision nil)
 (defvar ebox--surface-materialization-active nil)
 (defvar ebox--render-root-parent-kind nil
@@ -76,6 +89,7 @@
 (defvar ebox--viewport-dependent-node-ids-cache nil)
 (defvar ebox--viewport-dependent-subtree-cache nil)
 (defvar ebox--viewport-height-dependent-subtree-cache nil)
+(defvar ebox--css-viewport-dependent-subtree-cache nil)
 (defvar ebox--flex-content-min-width-table nil
   "Render-owned box measurements reusable by native scene compilation.")
 
@@ -152,7 +166,9 @@ the render boundary."
 (defun ebox--add-render-face! (string start end face &optional append)
   "Add Ebox FACE to STRING after capturing its caller baseline."
   (ebox--capture-paint-origins! string start end)
-  (add-face-text-property start end face append string))
+  (add-face-text-property start end face append string)
+  (when (fboundp 'ebox-interaction--refresh-hover!)
+    (ebox-interaction--refresh-hover! string start end)))
 
 (defun ebox--strip-paint-origins! (string)
   "Remove transient caller-face carriers from STRING before it escapes.
@@ -242,6 +258,12 @@ including strings returned from a render-cache hit."
                  (plist-get ,render-state :viewport-width))
                 (ebox-viewport-height
                  (plist-get ,render-state :viewport-height))
+                (ebox--css-viewport-width ebox-viewport-width)
+                (ebox--css-viewport-height
+                 (and (numberp ebox-viewport-height)
+                      (* ebox-viewport-height (frame-char-height))))
+                (ebox--css-containing-height ebox--css-viewport-height)
+                (ebox--css-size-context-active-p t)
                 (ebox--render-runtime-revision
                  (plist-get ,render-state :runtime-revision))
                 (ebox--surface-materialization-active t)
@@ -256,6 +278,9 @@ including strings returned from a render-cache hit."
                      (make-hash-table :test 'eq)))
                 (ebox--viewport-dependent-subtree-cache
                  (or ebox--viewport-dependent-subtree-cache
+                     (make-hash-table :test 'eq)))
+                (ebox--css-viewport-dependent-subtree-cache
+                 (or ebox--css-viewport-dependent-subtree-cache
                      (make-hash-table :test 'eq)))
                 (ebox--viewport-height-dependent-subtree-cache
                  (or ebox--viewport-height-dependent-subtree-cache

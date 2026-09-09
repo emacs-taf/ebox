@@ -1223,9 +1223,6 @@ fn same_text_source(
 }
 
 fn measured_text_work(text: &MeasuredText, property_template_count: u32) -> Result<usize, String> {
-    if text.lines.is_empty() {
-        return Err("Native layout measured text must contain one line".to_owned());
-    }
     let mut work = text.lines.len();
     for line in &text.lines {
         work = work
@@ -2012,12 +2009,10 @@ impl Line {
                 ..AtomProperties::default()
             };
             if cluster.pixel_space {
-                if cluster.width > 0 {
-                    atoms.push(Atom::Space {
-                        width: cluster.width,
-                        properties,
-                    });
-                }
+                atoms.push(Atom::Space {
+                    width: cluster.width,
+                    properties,
+                });
             } else {
                 atoms.push(Atom::Text {
                     text: cluster.text.clone(),
@@ -2085,15 +2080,16 @@ impl Line {
     }
 
     fn blank(width: i64) -> Self {
-        let mut line = Self::default();
-        line.push_space(width);
-        line
+        Self::blank_with_properties(width, AtomProperties::default())
     }
 
     fn blank_with_properties(width: i64, properties: AtomProperties) -> Self {
-        let mut line = Self::default();
-        line.push_space_with_properties(width, properties);
-        line
+        // A requested line has height even at zero width.  Optional horizontal
+        // edge/gap insertion still uses push/prepend_space and skips width zero.
+        Self::from_atoms(&[Atom::Space {
+            width: width.max(0),
+            properties,
+        }])
     }
 
     fn whitespace_only(&self) -> bool {
@@ -2127,9 +2123,7 @@ impl Line {
         if properties.content.is_none() {
             properties.content = Some(region_id);
         }
-        let mut line = Self::default();
-        line.push_space_with_properties(width, properties);
-        line
+        Self::blank_with_properties(width, properties)
     }
 
     fn apply_style(&mut self, style_id: Option<u32>) {
@@ -2191,6 +2185,9 @@ impl Atom {
 #[derive(Debug, Clone)]
 struct Rendered {
     lines: LinePlan,
+    // A zero-height box still has an inline layout extent.  Text lines alone
+    // cannot retain that fact for Row slots, Flex bases, or intrinsic Columns.
+    empty_width: i64,
     root_scroll: Option<Arc<RootScrollPlan>>,
     own_scroll_owner: bool,
     scroll_owners: u8,
@@ -2220,6 +2217,7 @@ impl Rendered {
     fn from_lines(lines: Vec<Line>) -> Self {
         Self {
             lines: LinePlan::from_lines(lines),
+            empty_width: 0,
             root_scroll: None,
             own_scroll_owner: false,
             scroll_owners: 0,
@@ -2229,6 +2227,7 @@ impl Rendered {
     fn from_line_plan(lines: LinePlan) -> Self {
         Self {
             lines,
+            empty_width: 0,
             root_scroll: None,
             own_scroll_owner: false,
             scroll_owners: 0,
@@ -2236,15 +2235,23 @@ impl Rendered {
     }
 
     fn first_width(&self) -> i64 {
-        self.lines.first_width()
+        if self.lines.is_empty() {
+            self.empty_width
+        } else {
+            self.lines.first_width()
+        }
     }
 
     fn max_width(&self) -> i64 {
-        self.lines.max_width()
+        if self.lines.is_empty() {
+            self.empty_width
+        } else {
+            self.lines.max_width()
+        }
     }
 
     fn min_content_width(&self, wrap_mode: WrapMode) -> i64 {
-        if wrap_mode == WrapMode::None {
+        if wrap_mode == WrapMode::None || self.lines.is_empty() {
             return self.max_width();
         }
         self.lines.min_content_width()
@@ -3855,9 +3862,6 @@ fn validate_tape_style_ids(properties: &AtomProperties, style_count: u32) -> Res
 }
 
 fn flatten_layout_tape(tape: LayoutTape, complete: bool) -> Result<FlatLayoutTape, String> {
-    if tape.lines.is_empty() {
-        return Err("Native layout tape has no lines".to_owned());
-    }
     let line_count = tape.lines.len();
     let mut characters = Vec::new();
     for (line_index, line) in tape.lines.into_iter().enumerate() {
@@ -3892,9 +3896,6 @@ fn flatten_layout_tape(tape: LayoutTape, complete: bool) -> Result<FlatLayoutTap
                 TapeAtom::Space { width, properties } => {
                     validate_tape_style_ids(&properties, tape.style_count)?;
                     let width = tape_width(width, "space width")?;
-                    if width == 0 {
-                        return Err("Native layout tape has empty pixel space".to_owned());
-                    }
                     characters.push(TapeCharacter {
                         value: ' ',
                         pixel_width: Some(width),
@@ -4330,9 +4331,6 @@ pub(crate) fn encode_layout_tape_with_scroll(
     max_bytes: usize,
     scroll: Option<&RootScrollPlan>,
 ) -> Result<Vec<u8>, String> {
-    if tape.lines.is_empty() {
-        return Err("Native layout tape has no lines".to_owned());
-    }
     let line_count = count_u32(tape.lines.len(), "lines")?;
     if tape.style_count as usize != styles.len() {
         return Err("Native layout tape style table mismatch".to_owned());
@@ -4386,9 +4384,6 @@ pub(crate) fn encode_layout_tape_with_scroll(
                 }
                 TapeAtom::Space { width, properties } => {
                     let width = tape_width(width, "space width")?;
-                    if width == 0 {
-                        return Err("Native layout tape has empty pixel space".to_owned());
-                    }
                     let start = character_count;
                     text.push(' ');
                     spaces.push(TapeSpaceSpan { start, width });
@@ -4865,9 +4860,6 @@ fn validate_node(
                     );
                 }
             }
-            if content.lines.is_empty() {
-                return Err("Native layout Text must contain one line".to_owned());
-            }
             add_work_units(work_units, content.lines.len())?;
             for line in &content.lines {
                 add_work_units(work_units, line.clusters.len())?;
@@ -5011,9 +5003,6 @@ fn validate_node(
                 }
             }
             if let Some(text) = content {
-                if text.lines.is_empty() {
-                    return Err("Native layout measured text must contain one line".to_owned());
-                }
                 add_work_units(work_units, text.lines.len())?;
                 for line in &text.lines {
                     add_work_units(work_units, line.clusters.len())?;
@@ -5403,7 +5392,7 @@ fn resolve_definite_box_content_height(
     .unwrap_or(i64::MAX);
     let preferred = override_height
         .or_else(|| resolve_height(height, None, context, sizing, padding_top, padding_bottom))?;
-    Some(minimum.max(1).max(preferred.max(1).min(maximum)))
+    Some(minimum.max(0).max(preferred.max(0).min(maximum)))
 }
 
 fn measured_max_width(text: &MeasuredText) -> i64 {
@@ -5442,7 +5431,7 @@ fn measured_min_width(text: &MeasuredText, wrap_mode: WrapMode) -> i64 {
 
 fn wrap_line(clusters: &[MeasuredCluster], max_width: i64, mode: WrapMode) -> Vec<Line> {
     if clusters.is_empty() {
-        return vec![Line::default()];
+        return vec![Line::blank(0)];
     }
     let total: i64 = clusters.iter().map(|cluster| cluster.width).sum();
     if mode == WrapMode::None || total <= max_width {
@@ -5534,7 +5523,7 @@ fn measured_lines(text: &MeasuredText, width: i64, mode: WrapMode) -> Vec<Line> 
 
 fn wrap_rendered_line(line: &Line, max_width: i64, mode: WrapMode) -> Vec<Line> {
     if line.atoms.is_empty() {
-        return vec![Line::default()];
+        return vec![Line::blank(0)];
     }
     if mode == WrapMode::None || line.width <= max_width {
         return vec![line_plan::clone_line(line)];
@@ -5620,7 +5609,7 @@ fn wrap_rendered_line(line: &Line, max_width: i64, mode: WrapMode) -> Vec<Line> 
 }
 
 fn wrap_rendered(rendered: Rendered, max_width: i64, mode: WrapMode) -> Rendered {
-    if mode == WrapMode::None {
+    if mode == WrapMode::None || rendered.lines.is_empty() {
         return rendered;
     }
     let mut lines = LinePlan::default();
@@ -5933,7 +5922,7 @@ fn flex_min_main(
             box_vertical_side(source).unwrap_or(0)
                 + flex_box_resolve_height(source, min_height, Some(0), context)
                     .unwrap_or(0)
-                    .max(1)
+                    .max(0)
         }
     })
 }
@@ -6353,6 +6342,7 @@ fn flex_resolved_align(item: &FlexRuntimeItem<'_>, container: FlexAlign) -> Flex
 }
 
 fn pad_rendered_width(mut rendered: Rendered, width: i64, align: FlexAlign) -> Rendered {
+    rendered.empty_width = rendered.empty_width.max(width);
     rendered.lines = rendered.lines.map_lines(|_, mut line| {
         let extra = (width - line.width).max(0);
         let left = match align {
@@ -6481,11 +6471,12 @@ fn render_flex_sized_entry(
 }
 
 fn concat_horizontal_sized(parts: Vec<(Rendered, i64)>, target_height: i64) -> Rendered {
+    let empty_width = parts.iter().map(|(_, width)| width).sum();
     let height = parts
         .iter()
         .map(|(rendered, _)| rendered.height())
         .max()
-        .unwrap_or(1)
+        .unwrap_or(0)
         .max(target_height);
     let mut parts = parts
         .iter()
@@ -6500,9 +6491,15 @@ fn concat_horizontal_sized(parts: Vec<(Rendered, i64)>, target_height: i64) -> R
                 line.push_space(*width);
             }
         }
-        line
+        if line.atoms.is_empty() {
+            Line::blank(0)
+        } else {
+            line
+        }
     }));
-    Rendered::from_line_plan(lines)
+    let mut rendered = Rendered::from_line_plan(lines);
+    rendered.empty_width = empty_width;
+    rendered
 }
 
 fn stack_vertical(parts: Vec<Rendered>) -> Rendered {
@@ -6516,11 +6513,10 @@ fn stack_vertical(parts: Vec<Rendered>) -> Rendered {
             }
         }
     }
-    let mut lines = join_parts(&parts);
-    if lines.is_empty() {
-        lines = LinePlan::from_lines([Line::default()]);
-    }
-    Rendered::from_line_plan(lines)
+    let lines = join_parts(&parts);
+    let mut rendered = Rendered::from_line_plan(lines);
+    rendered.empty_width = parts.iter().map(Rendered::max_width).max().unwrap_or(0);
+    rendered
 }
 
 fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
@@ -6528,7 +6524,9 @@ fn slice_rendered(rendered: Rendered, start: i64, height: i64) -> Rendered {
     let height = usize::try_from(height.max(0)).unwrap_or(0);
     let end = start.saturating_add(height).min(rendered.lines.len());
     if start >= end {
-        return Rendered::from_line_plan(LinePlan::default());
+        let mut empty = Rendered::from_line_plan(LinePlan::default());
+        empty.empty_width = rendered.max_width();
+        return empty;
     }
     Rendered::from_line_plan(rendered.lines.slice(start..end))
 }
@@ -6575,7 +6573,7 @@ fn exact_rendered_height(
         LayoutNode::Row { children, .. } => children
             .iter()
             .map(|child| exact_rendered_height(child, resolver, context))
-            .try_fold(1_i64, |maximum, height| {
+            .try_fold(0_i64, |maximum, height| {
                 height.map(|height| maximum.max(height))
             }),
         LayoutNode::Column { children, .. } => children
@@ -6772,7 +6770,10 @@ fn render_flex_row_line(
     let line_main = flex_line_main_size(line, main_gap);
     let (leading, between, trailing) =
         flex_spacing(justify, main_size - line_main, line.len(), main_gap);
-    let mut parts = vec![(Rendered::from_lines(vec![Line::blank(leading)]), leading)];
+    let mut parts = Vec::new();
+    if leading > 0 {
+        parts.push((Rendered::from_line_plan(LinePlan::default()), leading));
+    }
     for (index, item) in line.iter().enumerate() {
         let entry = render_flex_sized_entry(
             item,
@@ -6785,12 +6786,12 @@ fn render_flex_row_line(
             intrinsic,
         )?;
         parts.push((entry.rendered, item.target));
-        if index + 1 < line.len() {
-            parts.push((Rendered::from_lines(vec![Line::blank(between)]), between));
+        if index + 1 < line.len() && between > 0 {
+            parts.push((Rendered::from_line_plan(LinePlan::default()), between));
         }
     }
     if trailing > 0 {
-        parts.push((Rendered::from_lines(vec![Line::blank(trailing)]), trailing));
+        parts.push((Rendered::from_line_plan(LinePlan::default()), trailing));
     }
     Ok(concat_horizontal_sized(parts, line_cross))
 }
@@ -6941,10 +6942,13 @@ fn render_flex_column(
     };
     let cross_layout =
         flex_layout_cross(crosses, cross_size, cross_gap, align_content, single_line);
-    let mut parts = vec![(
-        Rendered::from_lines(vec![Line::blank(cross_layout.leading)]),
-        cross_layout.leading,
-    )];
+    let mut parts = Vec::new();
+    if cross_layout.leading > 0 {
+        parts.push((
+            Rendered::from_line_plan(LinePlan::default()),
+            cross_layout.leading,
+        ));
+    }
     let line_count = lines.len();
     for (index, (line, line_cross)) in lines
         .iter()
@@ -6955,14 +6959,14 @@ fn render_flex_column(
             line, line_cross, main_size, main_gap, justify, align, context, intrinsic,
         )?;
         parts.push((rendered, line_cross));
-        if index + 1 < line_count {
+        if index + 1 < line_count && cross_layout.between > 0 {
             parts.push((
-                Rendered::from_lines(vec![Line::blank(cross_layout.between)]),
+                Rendered::from_line_plan(LinePlan::default()),
                 cross_layout.between,
             ));
         }
     }
-    let mut rendered = concat_horizontal_sized(parts, 1);
+    let mut rendered = concat_horizontal_sized(parts, 0);
     if let Some(cross) = cross_size {
         rendered = pad_rendered_width(rendered, cross, FlexAlign::FlexStart);
     }
@@ -7424,6 +7428,7 @@ fn render_node_body(
                 });
             if transparent_preformatted {
                 let mut rendered = child_rendered.take().expect("validated child");
+                rendered.empty_width = content_width;
                 rendered.root_scroll = None;
                 rendered.own_scroll_owner = false;
                 let mut ops = vec![LineOp::OwnContent {
@@ -7550,8 +7555,8 @@ fn render_node_body(
                     .unwrap_or(text_height)
                 });
             let content_height = minimum_height
-                .max(1)
-                .max(preferred_height.max(1).min(maximum_height));
+                .max(0)
+                .max(preferred_height.max(0).min(maximum_height));
             let simple_scroll_rendered = *overflow == Overflow::Scroll
                 && text_height >= content_height
                 && *padding_left == 0
@@ -7711,6 +7716,12 @@ fn render_node_body(
                     .into(),
                 },
             );
+            // Horizontal border paint needs a carrier even when auto content
+            // and block padding have no lines.  Background alone does not.
+            if padded.is_empty() && (border_top_style.is_some() || border_bottom_style.is_some()) {
+                padded = LinePlan::from_lines([Line::blank(content_width)]);
+                change = None;
+            }
             let mut edge_ops = vec![LineOp::EdgeSpaces {
                 left: *padding_left,
                 left_properties: region_properties(RegionRole::PaddingLeft, *region_id, None)
@@ -7809,6 +7820,7 @@ fn render_node_body(
                 },
             );
             let mut rendered = Rendered::from_line_plan(output);
+            rendered.empty_width = total_width;
             if !overflow_lines.is_empty() {
                 let left_space = margin_left + border_left + padding_left;
                 let right_space = padding_right + border_right + margin_right;
@@ -8172,6 +8184,149 @@ mod tests {
             overflow: Overflow::Scroll,
             wrap_mode: WrapMode::None,
             scroll_offset: 0,
+        }
+    }
+
+    #[test]
+    fn empty_auto_box_and_stack_have_zero_height() {
+        let mut root = text_box(1, measured_text(vec![]), None);
+        for (declared, expected) in [
+            (Size::Auto, 0),
+            (Size::Lines { value: 0 }, 0),
+            (Size::Lines { value: 2 }, 2),
+        ] {
+            let LayoutNode::Box { height, .. } = &mut root else {
+                unreachable!()
+            };
+            *height = declared;
+            let document = LayoutDocument {
+                version: LAYOUT_VERSION,
+                space_width: 1,
+                style_count: 0,
+                property_template_count: 0,
+                styles: Vec::new(),
+                root: root.clone(),
+            };
+            document.validate().unwrap();
+            let tape = document.layout_tape(test_context(), None).unwrap();
+            let bytes = encode_layout_tape(tape, &[], complete_identity(), false, 4096)
+                .expect("zero-line frames must serialize successfully");
+            assert_eq!(
+                u32::from_le_bytes(bytes[120..124].try_into().unwrap()) as usize,
+                expected
+            );
+            assert_eq!(
+                document
+                    .layout_tape(test_context(), None)
+                    .unwrap()
+                    .lines
+                    .len(),
+                expected
+            );
+        }
+        assert_eq!(stack_vertical(vec![]).height(), 0);
+        assert_eq!(
+            stack_vertical(vec![Rendered::from_line_plan(LinePlan::default())]).height(),
+            0
+        );
+    }
+
+    #[test]
+    fn zero_width_carriers_preserve_source_properties_and_encode_at_both_boundaries() {
+        let mut source = cluster(" ", 0, Some(0));
+        source.pixel_space = true;
+        let mut line = Line::from_clusters(&[source]);
+        line.own_content(17, 3);
+        line.apply_role(RegionRole::PaddingTop, 17);
+        let rendered = Rendered::from_lines(vec![line]);
+        assert_eq!(rendered.height(), 1);
+        assert_eq!(rendered.max_width(), 0);
+        assert_eq!(rendered.lines.prefix_chars(1), 1);
+        let flat = flatten_layout_tape(rendered.clone().into_tape(0), true).unwrap();
+        assert_eq!(flat.characters.len(), 1);
+        assert_eq!(flat.characters[0].value, ' ');
+        assert_eq!(flat.characters[0].pixel_width, Some(0));
+        assert_eq!(flat.characters[0].properties.content, Some(17));
+        assert_eq!(flat.characters[0].properties.content_idx, Some(3));
+        assert_eq!(flat.characters[0].properties.property_template_ids, vec![0]);
+        let encoded =
+            encode_layout_tape(rendered.into_tape(0), &[], complete_identity(), false, 4096)
+                .unwrap();
+        assert!(literal_from_full_tape(&encoded).contains("(space :width (0))"));
+        let blank =
+            Line::blank_with_properties(0, region_properties(RegionRole::PaddingTop, 17, None));
+        assert_eq!(blank.atoms.char_count(), 1);
+        assert!(blank.atoms.has_noncontent_properties());
+        let mut optional_edges = Line::default();
+        optional_edges.push_space(0);
+        optional_edges.prepend_space(0);
+        assert!(optional_edges.atoms.is_empty());
+    }
+
+    #[test]
+    fn zero_height_inline_extent_survives_row_and_retained_column_composition() {
+        for width in [0, 10] {
+            let mut blank = text_box(11, measured_text(vec![]), None);
+            let LayoutNode::Box {
+                width: declared, ..
+            } = &mut blank
+            else {
+                unreachable!();
+            };
+            *declared = Size::Pixels { value: width };
+            for nested in [false, true] {
+                let empty = if nested {
+                    child_box(
+                        12,
+                        LayoutNode::Column {
+                            node_id: None,
+                            node_revision: None,
+                            children: Arc::new(vec![identified(blank.clone(), 3, 1)]),
+                        },
+                        None,
+                    )
+                } else {
+                    blank.clone()
+                };
+                let root = identified(
+                    LayoutNode::Row {
+                        node_id: None,
+                        node_revision: None,
+                        children: Arc::new(vec![
+                            identified(empty, 2, 1),
+                            identified(
+                                text_box(
+                                    13,
+                                    measured_text(vec![vec![cluster("B", 1, None)]]),
+                                    None,
+                                ),
+                                4,
+                                1,
+                            ),
+                        ]),
+                    },
+                    1,
+                    1,
+                );
+                let source = retained_document(root);
+                let eager = source.layout_tape(test_context(), None).unwrap();
+                let (retained, _) = RetainedDocument::bootstrap(source).unwrap();
+                let frame = retained
+                    .render_frame(None, None, test_context(), None)
+                    .unwrap();
+                assert_eq!(frame.materialize_tape(), eager);
+                assert_eq!(eager.lines.len(), 1);
+                assert_eq!(eager.lines[0].width, width + 1);
+                let prefix: i64 = eager.lines[0]
+                    .atoms
+                    .iter()
+                    .take_while(|atom| !matches!(atom, TapeAtom::Text { text, .. } if text == "B"))
+                    .map(|atom| match atom {
+                        TapeAtom::Text { width, .. } | TapeAtom::Space { width, .. } => *width,
+                    })
+                    .sum();
+                assert_eq!(prefix, width);
+            }
         }
     }
 
@@ -9043,6 +9198,7 @@ mod tests {
     #[test]
     fn line_sequence_oracle_wrap_slice_and_join_keep_distinct_breaks() {
         let source = Rendered {
+            empty_width: 0,
             root_scroll: None,
             own_scroll_owner: false,
             scroll_owners: 0,

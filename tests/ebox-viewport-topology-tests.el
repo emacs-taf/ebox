@@ -11,11 +11,11 @@
 (defun ebox-viewport-topology-test--nested-scroll (map &optional count)
   "Build one ordinary nested scroll owner with interactive MAP content."
   (ebox-build
-   `(column :key root :width (viewport)
+   `(column :key root :width (vw 100)
             (text "Header")
             (column :key body :id "body" :width stretch
-                    :height (viewport-height) :overflow scroll
-                    :padding (0 (2))
+                    :height (vh 100) :overflow scroll
+                    :padding ((lh 0) (px 2))
                     ,@(cl-loop
                        for index below (or count 12)
                        collect
@@ -173,10 +173,10 @@
           (ebox-render-to-buffer
            buffer
            (ebox-build
-            '(column :width (viewport)
-                     (box :id "stable" :width (80) :height 2 :overflow scroll
+            '(column :width (vw 100)
+                     (box :id "stable" :width (px 80) :height (lh 2) :overflow scroll
                           (text "stable zero\nstable one\nstable two"))
-                     (box :id "affected" :width stretch :height (viewport-height)
+                     (box :id "affected" :width stretch :height (vh 100)
                           :overflow scroll :wrap-mode char
                           (text "affected zero\naffected one\naffected two\naffected three\naffected four")))))
           (let* ((state (ebox--buffer-render-state buffer))
@@ -335,7 +335,7 @@
                  (list (ebox-box-create
                         :source-handle handle :source-builder builder
                         :owned-facts (ebox-canonical-facts-from-declarations
-                                      'box '(ebox/width (viewport)))
+                                      'box '(ebox/width (vw 100)))
                         :layout (ebox-column-layout-create)
                         :children (list (apply #'ebox-child-range range-ref children))))
                  (ebox-source-builder-finish builder)))

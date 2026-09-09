@@ -12,6 +12,7 @@
 (require 'tp-style)
 (require 'ebox-source)
 (require 'ebox-layout-config)
+(require 'ebox-size)
 
 (defvar ebox--longhand)
 (declare-function ebox-selector-parse "ebox-selector" (selector))
@@ -21,15 +22,7 @@
                   "ebox-flex" (props))
 (declare-function ebox-grid--normalize-config-props
                   "ebox-grid" (props))
-(declare-function ebox--normalize-horizontal-size-value
-                  "ebox-flex" (value allowed-keywords))
-(declare-function ebox--nonnegative-horizontal-size-pixels
-                  "ebox-layout" (value &optional default))
 (declare-function ecss-stylesheet-create "ecss" ())
-
-(defvar ebox--preferred-size-keywords)
-(defvar ebox--min-size-keywords)
-(defvar ebox--max-size-keywords)
 
 (defun ebox-style--create-stylesheet ()
   "Return one private ECSS stylesheet for Ebox style state."
@@ -80,129 +73,129 @@
     (:name :width :id ebox/width :initial auto
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator horizontal-size
+     :size-axis inline :validator horizontal-size
      :engine-projection (:to :width :conv preferred-size))
-    (:name :min-width :id ebox/min-width :initial 0
+    (:name :min-width :id ebox/min-width :initial auto
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator min-horizontal-size
+     :size-axis inline :validator min-horizontal-size
      :engine-projection (:to :min-width :conv min-size))
     (:name :max-width :id ebox/max-width :initial none
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator max-horizontal-size
+     :size-axis inline :validator max-horizontal-size
      :engine-projection (:to :max-width :conv max-size))
     (:name :height :id ebox/height :initial auto
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator vertical-size)
-    (:name :min-height :id ebox/min-height :initial 0
+     :size-axis block :validator vertical-size)
+    (:name :min-height :id ebox/min-height :initial auto
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator min-vertical-size)
+     :size-axis block :validator min-vertical-size)
     (:name :max-height :id ebox/max-height :initial none
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator max-vertical-size)
-    (:name :padding-top :id ebox/padding-top :initial 0
+     :size-axis block :validator max-vertical-size)
+    (:name :padding-top :id ebox/padding-top :initial (lh 0)
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis block :validator nonnegative-size
      :engine-projection (:to :padding-top-height :conv line))
-    (:name :padding-right :id ebox/padding-right :initial 0
+    (:name :padding-right :id ebox/padding-right :initial (px 0)
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis inline :validator nonnegative-size
      :engine-projection (:to :padding-right-pixel :conv pixel))
-    (:name :padding-bottom :id ebox/padding-bottom :initial 0
+    (:name :padding-bottom :id ebox/padding-bottom :initial (lh 0)
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis block :validator nonnegative-size
      :engine-projection (:to :padding-bottom-height :conv line))
-    (:name :padding-left :id ebox/padding-left :initial 0
+    (:name :padding-left :id ebox/padding-left :initial (px 0)
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis inline :validator nonnegative-size
      :engine-projection (:to :padding-left-pixel :conv pixel))
-    (:name :padding-block-start :id ebox/padding-block-start :initial 0
+    (:name :padding-block-start :id ebox/padding-block-start :initial (lh 0)
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis block :validator nonnegative-size
      :engine-projection (:to :padding-top-height :conv line))
-    (:name :padding-inline-end :id ebox/padding-inline-end :initial 0
+    (:name :padding-inline-end :id ebox/padding-inline-end :initial (px 0)
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis inline :validator nonnegative-size
      :engine-projection (:to :padding-right-pixel :conv pixel))
-    (:name :padding-block-end :id ebox/padding-block-end :initial 0
+    (:name :padding-block-end :id ebox/padding-block-end :initial (lh 0)
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis block :validator nonnegative-size
      :engine-projection (:to :padding-bottom-height :conv line))
-    (:name :padding-inline-start :id ebox/padding-inline-start :initial 0
+    (:name :padding-inline-start :id ebox/padding-inline-start :initial (px 0)
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis inline :validator nonnegative-size
      :engine-projection (:to :padding-left-pixel :conv pixel))
-    (:name :margin-top :id ebox/margin-top :initial 0
+    (:name :margin-top :id ebox/margin-top :initial (lh 0)
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis block :validator nonnegative-size
      :engine-projection (:to :margin-top-height :conv line))
-    (:name :margin-right :id ebox/margin-right :initial 0
+    (:name :margin-right :id ebox/margin-right :initial (px 0)
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis inline :validator nonnegative-size
      :engine-projection (:to :margin-right-pixel :conv pixel))
-    (:name :margin-bottom :id ebox/margin-bottom :initial 0
+    (:name :margin-bottom :id ebox/margin-bottom :initial (lh 0)
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis block :validator nonnegative-size
      :engine-projection (:to :margin-bottom-height :conv line))
-    (:name :margin-left :id ebox/margin-left :initial 0
+    (:name :margin-left :id ebox/margin-left :initial (px 0)
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis inline :validator nonnegative-size
      :engine-projection (:to :margin-left-pixel :conv pixel))
-    (:name :margin-block-start :id ebox/margin-block-start :initial 0
+    (:name :margin-block-start :id ebox/margin-block-start :initial (lh 0)
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis block :validator nonnegative-size
      :engine-projection (:to :margin-top-height :conv line))
-    (:name :margin-inline-end :id ebox/margin-inline-end :initial 0
+    (:name :margin-inline-end :id ebox/margin-inline-end :initial (px 0)
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis inline :validator nonnegative-size
      :engine-projection (:to :margin-right-pixel :conv pixel))
-    (:name :margin-block-end :id ebox/margin-block-end :initial 0
+    (:name :margin-block-end :id ebox/margin-block-end :initial (lh 0)
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis block :validator nonnegative-size
      :engine-projection (:to :margin-bottom-height :conv line))
-    (:name :margin-inline-start :id ebox/margin-inline-start :initial 0
+    (:name :margin-inline-start :id ebox/margin-inline-start :initial (px 0)
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout
-     :validator nonnegative-size
+     :size-axis inline :validator nonnegative-size
      :engine-projection (:to :margin-left-pixel :conv pixel))
     (:name :border-top-width :id ebox/border-top-width
-     :initial 0 :contexts (box row column flex grid)
+     :initial (px 0) :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator border-width
+     :size-axis stroke :validator border-width
      :engine-projection (:to :border-top-pixel :conv border-pixel))
     (:name :border-right-width :id ebox/border-right-width
-     :initial 0 :contexts (box row column flex grid)
+     :initial (px 0) :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator border-width
+     :size-axis stroke :validator border-width
      :engine-projection (:to :border-right-pixel :conv border-pixel))
     (:name :border-bottom-width :id ebox/border-bottom-width
-     :initial 0 :contexts (box row column flex grid)
+     :initial (px 0) :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator border-width
+     :size-axis stroke :validator border-width
      :engine-projection (:to :border-bottom-pixel :conv border-pixel))
     (:name :border-left-width :id ebox/border-left-width
-     :initial 0 :contexts (box row column flex grid)
+     :initial (px 0) :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
-     :validator border-width
+     :size-axis stroke :validator border-width
      :engine-projection (:to :border-left-pixel :conv border-pixel))
     (:name :border-top-style :id ebox/border-top-style :initial none
      :contexts (box row column flex grid) :group structure
@@ -257,9 +250,9 @@
      :validator outer :impacts (structure geometry)
      :projections (structure layout)
      :engine-projection (:to nil))
-    (:name :item-gap :id ebox/item-gap :initial 0 :contexts (row column)
+    (:name :item-gap :id ebox/item-gap :initial (px 0) :contexts (row column)
      :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-integer)
+     :size-axis main :validator nonnegative-size)
     (:name :cross-align :id ebox/cross-align :initial stretch
      :contexts (row column) :group geometry :dirty-kind geometry
      :signature layout :validator cross-align)
@@ -281,12 +274,12 @@
     (:name :justify-items :id ebox/justify-items :initial stretch
      :contexts (grid) :group geometry :dirty-kind geometry :signature layout
      :validator justify-items)
-    (:name :row-gap :id ebox/row-gap :initial 0
+    (:name :row-gap :id ebox/row-gap :initial (lh 0)
      :contexts (flex grid) :group geometry :dirty-kind geometry :signature layout
-     :validator nonnegative-size)
+     :size-axis block :validator nonnegative-size)
     (:name :column-gap :id ebox/column-gap
-     :initial 0 :contexts (flex grid) :group geometry :dirty-kind geometry
-     :signature layout :validator nonnegative-size)
+     :initial (px 0) :contexts (flex grid) :group geometry :dirty-kind geometry
+     :signature layout :size-axis inline :validator nonnegative-size)
     (:name :order :id ebox/order :initial 0 :contexts (item)
      :group geometry :dirty-kind geometry :signature layout :validator order)
     (:name :flex-grow :id ebox/flex-grow :initial 0 :contexts (item)
@@ -297,7 +290,7 @@
      :validator flex-factor)
     (:name :flex-basis :id ebox/flex-basis :initial auto :contexts (item)
      :group geometry :dirty-kind geometry :signature layout
-     :validator horizontal-size)
+     :size-axis length :validator preferred-size)
     (:name :align-self :id ebox/align-self :initial auto :contexts (item)
      :group geometry :dirty-kind geometry :signature layout
      :validator align-self)
@@ -306,16 +299,16 @@
      :validator justify-self)
     (:name :grid-template-columns :id ebox/grid-template-columns :initial nil
      :contexts (grid) :group geometry :dirty-kind geometry :signature layout
-     :validator grid-track-list)
+     :size-grammar tracks :size-axis inline :validator grid-track-list)
     (:name :grid-template-rows :id ebox/grid-template-rows :initial nil
      :contexts (grid) :group geometry :dirty-kind geometry :signature layout
-     :validator grid-track-list)
+     :size-grammar tracks :size-axis block :validator grid-track-list)
     (:name :grid-auto-columns :id ebox/grid-auto-columns :initial auto
      :contexts (grid) :group geometry :dirty-kind geometry :signature layout
-     :validator grid-track)
+     :size-grammar tracks :size-axis inline :validator grid-track)
     (:name :grid-auto-rows :id ebox/grid-auto-rows :initial auto
      :contexts (grid) :group geometry :dirty-kind geometry :signature layout
-     :validator grid-track)
+     :size-grammar tracks :size-axis block :validator grid-track)
     (:name :grid-auto-flow :id ebox/grid-auto-flow :initial row
      :contexts (grid) :group structure :dirty-kind structure :signature layout
      :validator grid-auto-flow)
@@ -575,10 +568,18 @@
   "Return PLIST with KEY set to VALUE."
   (plist-put plist key value))
 
+(defun ebox-style--atomic-size-form-p (value)
+  "Return non-nil when VALUE denotes one size expression before validation.
+Keep malformed unit and function forms intact so their target property reports
+the invalid value and its allowed units instead of a shorthand arity error."
+  (and (consp value)
+       (memq (car value) '(px ch vw lh vh % calc min max clamp))))
+
 (defun ebox-style--split-trbl (value)
   "Split VALUE using CSS TRBL rules into top, right, bottom, left."
   (cond
    ((null value) (list nil nil nil nil))
+   ((ebox-style--atomic-size-form-p value) (make-list 4 value))
    ((atom value) (list value value value value))
    ((and (listp value) (keywordp (car value)))
     (list (plist-get value :top) (plist-get value :right)
@@ -588,23 +589,28 @@
       (1 (list (nth 0 value) (nth 0 value) (nth 0 value) (nth 0 value)))
       (2 (list (nth 0 value) (nth 1 value) (nth 0 value) (nth 1 value)))
       (3 (list (nth 0 value) (nth 1 value) (nth 2 value) (nth 1 value)))
-      (_ (list (nth 0 value) (nth 1 value) (nth 2 value) (nth 3 value)))))
+      (4 (list (nth 0 value) (nth 1 value) (nth 2 value) (nth 3 value)))
+      (_ (error "Ebox four-side shorthand requires one to four values: %S"
+                value))))
    (t (list value value value value))))
 
 (defun ebox-style--split-pair (value)
   "Split VALUE into a start/end pair."
   (cond
    ((null value) (list nil nil))
+   ((ebox-style--atomic-size-form-p value) (list value value))
    ((atom value) (list value value))
-   ((and (listp value) (= 1 (length value)))
-    (list (nth 0 value) (nth 0 value)))
-   ((listp value) (list (nth 0 value) (nth 1 value)))
+   ((listp value)
+    (pcase (length value)
+      (1 (list (nth 0 value) (nth 0 value)))
+      (2 (list (nth 0 value) (nth 1 value)))
+      (_ (error "Ebox pair shorthand requires one or two values: %S" value))))
    (t (list value value))))
 
 (defun ebox-style--wsc-classify (item)
   "Classify border shorthand ITEM as width, style, or color."
   (cond
-   ((numberp item) (cons 'width item))
+   ((ebox-style--atomic-size-form-p item) (cons 'width item))
    ((memq item ebox-style--border-styles) (cons 'style item))
    ((or (stringp item) (tp-paint-slot-p item)) (cons 'color item))
    (t (error "Invalid Ebox border component: %S" item))))
@@ -613,12 +619,13 @@
   "Split VALUE into border width, style, and color."
   (cond
    ((null value) (list nil nil nil))
+   ((ebox-style--atomic-size-form-p value) (list value 'solid nil))
    ((atom value)
     (let ((classified (ebox-style--wsc-classify value)))
       (pcase (car classified)
         ('width (list (cdr classified) nil nil))
-        ('style (list nil (cdr classified) nil))
-        ('color (list 1 'solid (cdr classified))))))
+        ('style (list '(px 1) (cdr classified) nil))
+        ('color (list '(px 1) 'solid (cdr classified))))))
    ((proper-list-p value)
     (let (width style color width-p style-p color-p)
       (dolist (item value)
@@ -633,7 +640,7 @@
             ('color
              (when color-p (error "Duplicate Ebox border color in %S" value))
              (setq color-p t color (cdr classified))))))
-      (list (or width 1) (or style 'solid) color)))
+      (list (or width '(px 1)) (or style 'solid) color)))
    (t (error "Ebox border must be a color or proper component list: %S"
              value))))
 
@@ -730,7 +737,8 @@
   "Return canonical boolean border declarations for SIDE and VALUE."
   (unless (memq value '(nil t))
     (error "Ebox border-%s-p must be boolean: %S" side value))
-  (list (intern (format "ebox/border-%s-width" side)) (if value 1 0)
+  (list (intern (format "ebox/border-%s-width" side))
+        (list 'px (if value 1 0))
         (intern (format "ebox/border-%s-style" side))
         (if value 'solid 'none)))
 
@@ -797,7 +805,7 @@
   (pcase value
     ((and (pred numberp) (guard (>= value 0)))
      (list 'ebox/flex-grow value 'ebox/flex-shrink 1
-           'ebox/flex-basis 0))
+           'ebox/flex-basis '(% 0)))
     ('none '(ebox/flex-grow 0 ebox/flex-shrink 0 ebox/flex-basis auto))
     ('auto '(ebox/flex-grow 1 ebox/flex-shrink 1 ebox/flex-basis auto))
     ('initial '(ebox/flex-grow 0 ebox/flex-shrink 1 ebox/flex-basis auto))
@@ -821,55 +829,50 @@
            (numberp (car value))
            (< (car value) 0))))
 
-(defun ebox-style--nonnegative-real-p (value)
-  "Return non-nil when VALUE is a nonnegative real number."
-  (and (numberp value) (>= value 0)))
-
-(defun ebox-style--pixel-size-p (value)
-  "Return non-nil when VALUE is a one-element nonnegative pixel size."
-  (and (proper-list-p value) (= (length value) 1)
-       (ebox-style--nonnegative-real-p (car value))))
-
 (defun ebox-style--nonnegative-size-p (value)
-  "Return non-nil when VALUE is one canonical edge size."
-  (or (ebox-style--nonnegative-real-p value)
-      (ebox-style--pixel-size-p value)))
+  "Return non-nil when VALUE is a canonical nonnegative length-percentage."
+  (ebox-size-value-p value nil t))
+
+(defconst ebox-style--preferred-size-keywords
+  '(auto min-content max-content fit-content stretch)
+  "CSS preferred and minimum size keywords in the supported subset.")
+
+(defconst ebox-style--maximum-size-keywords
+  '(none min-content max-content fit-content stretch)
+  "CSS maximum size keywords in the supported subset.")
 
 (defun ebox-style--horizontal-size-p (value)
   "Return non-nil when VALUE is a canonical horizontal size."
-  (or (ebox-style--nonnegative-real-p value)
-      (ebox-style--pixel-size-p value)
-      (memq value '(viewport auto min-content max-content
-                    fit-content stretch contain))
-      (equal value '(viewport))
-      (and (proper-list-p value) (= (length value) 2)
-           (eq (car value) 'fit-content)
-           (ebox-style--horizontal-size-p (cadr value)))))
+  (or (memq value ebox-style--preferred-size-keywords)
+      (ebox-size-value-for-axis-p value 'inline)))
+
+(defun ebox-style--preferred-size-p (value)
+  "Return non-nil when VALUE is a size whose parent axis is not known yet."
+  (or (memq value ebox-style--preferred-size-keywords)
+      (ebox-style--nonnegative-size-p value)))
 
 (defun ebox-style--min-horizontal-size-p (value)
   "Return non-nil when VALUE is a canonical minimum horizontal size."
-  (and (not (eq value 'none)) (ebox-style--horizontal-size-p value)))
+  (ebox-style--horizontal-size-p value))
 
 (defun ebox-style--max-horizontal-size-p (value)
   "Return non-nil when VALUE is a canonical maximum horizontal size."
-  (or (eq value 'none) (ebox-style--horizontal-size-p value)))
+  (or (memq value ebox-style--maximum-size-keywords)
+      (ebox-size-value-for-axis-p value 'inline)))
 
 (defun ebox-style--vertical-size-p (value)
   "Return non-nil when VALUE is a canonical vertical size."
-  (or (ebox-style--nonnegative-real-p value)
-      (memq value '(viewport-height auto))
-      (equal value '(viewport-height))))
+  (or (memq value ebox-style--preferred-size-keywords)
+      (ebox-size-value-for-axis-p value 'block)))
 
 (defun ebox-style--min-vertical-size-p (value)
   "Return non-nil when VALUE is a canonical minimum vertical size."
-  (ebox-style--nonnegative-real-p value))
+  (ebox-style--vertical-size-p value))
 
 (defun ebox-style--max-vertical-size-p (value)
   "Return non-nil when VALUE is a canonical maximum vertical size."
-  (or (ebox-style--nonnegative-real-p value)
-      (eq value 'none)
-      (eq value 'viewport-height)
-      (equal value '(viewport-height))))
+  (or (memq value ebox-style--maximum-size-keywords)
+      (ebox-size-value-for-axis-p value 'block)))
 
 (defun ebox-style--nonnegative-number-p (value)
   "Return non-nil when VALUE is nil or a non-negative number."
@@ -927,8 +930,8 @@
   (or (null value) (memq value '(normal italic oblique))))
 
 (defun ebox-style--border-width-p (value)
-  "Return non-nil when VALUE is an exact nonnegative pixel width."
-  (and (integerp value) (>= value 0)))
+  "Return non-nil when VALUE is a nonnegative length without percentages."
+  (ebox-size-value-p value nil nil))
 
 (defun ebox-style--border-style-p (value)
   "Return non-nil when VALUE is a supported canonical border style."
@@ -993,10 +996,8 @@
   (memq value '(row column)))
 
 (defun ebox-style--grid-fixed-track-p (value)
-  "Return non-nil when VALUE is one nonnegative fixed Grid track."
-  (or (ebox-style--nonnegative-real-p value)
-      (and (proper-list-p value) (= (length value) 1)
-           (ebox-style--nonnegative-real-p (car value)))))
+  "Return non-nil when VALUE is a nonnegative Grid track size expression."
+  (ebox-style--nonnegative-size-p value))
 
 (defun ebox-style--grid-fr-track-p (value)
   "Return non-nil when VALUE is one positive fractional Grid track."
@@ -1072,6 +1073,7 @@ generated wrappers that already contain exact line breaks."
 (defun ebox-style--validator (name)
   "Return schema validator named NAME."
   (pcase name
+    ('preferred-size #'ebox-style--preferred-size-p)
     ('horizontal-size #'ebox-style--horizontal-size-p)
     ('min-horizontal-size #'ebox-style--min-horizontal-size-p)
     ('max-horizontal-size #'ebox-style--max-horizontal-size-p)
@@ -1136,14 +1138,49 @@ generated wrappers that already contain exact line breaks."
      (flex-flow . ebox-style--flex-flow-shorthand)
      (flex . ebox-style--flex-shorthand))))
 
+(defun ebox-style--size-axis (property &optional tag)
+  "Return PROPERTY's size domain for author TAG when known."
+  (let ((axis (plist-get property :size-axis)))
+    (if (eq axis 'main)
+        (pcase tag ('row 'inline) ('column 'block) (_ 'length))
+      axis)))
+
+(defun ebox-style--size-value-valid-p (property value &optional tag)
+  "Return non-nil when PROPERTY's VALUE respects TAG's size domain.
+Grid track wrappers are traversed after their structural validator succeeds."
+  (let ((axis (ebox-style--size-axis property tag)))
+    (or (null axis)
+        (if (eq (plist-get property :size-grammar) 'tracks)
+            (cl-labels
+                ((valid-p (entry)
+                   (cond
+                    ((atom entry) t)
+                    ((eq (car entry) 'fr) t)
+                    ((memq (car entry) '(minmax repeat))
+                     (cl-every #'valid-p (cdr entry)))
+                    ((ebox-size-value-p entry)
+                     (ebox-size-value-for-axis-p entry axis))
+                    (t (cl-every #'valid-p entry)))))
+              (valid-p value))
+          (or (symbolp value)
+              (ebox-size-value-for-axis-p value axis))))))
+
+(defun ebox-style--schema-validator (property)
+  "Return PROPERTY's grammar and unit-domain validator."
+  (let ((validator (ebox-style--validator (plist-get property :validator))))
+    (if (plist-get property :size-axis)
+        (lambda (value)
+          (and (funcall validator value)
+               (ebox-style--size-value-valid-p property value)))
+      validator)))
+
 (defun ebox-style--schema-options (property)
   "Return ECSS registration options for PROPERTY metadata."
   (let ((options (list :initial (plist-get property :initial)
                        :inherits (plist-get property :inherits)
                        :normalizer (ebox-style--normalizer
                                     (plist-get property :normalizer))
-                       :validator (ebox-style--validator
-                                   (plist-get property :validator))
+                       :validator (ebox-style--schema-validator property)
                        :equality #'equal)))
     (when-let* ((shorthand (ebox-style--shorthand
                            (plist-get property :shorthand))))
@@ -1392,6 +1429,7 @@ not affect declaration compilation and are intentionally excluded."
 (defun ebox-style--static-invalid-declaration-p (validator value)
   "Return non-nil when VALIDATOR rejects static VALUE."
   (pcase validator
+    ('preferred-size (not (ebox-style--preferred-size-p value)))
     ('nonnegative-number
      (and (numberp value) (< value 0)))
     ('horizontal-size (not (ebox-style--horizontal-size-p value)))
@@ -1437,14 +1475,23 @@ not affect declaration compilation and are intentionally excluded."
     ('wrap-mode
      (not (ebox-style--wrap-mode-p value)))))
 
-(defun ebox-style--validate-declaration-values (declarations)
-  "Return DECLARATIONS after static Ebox-owned value validation."
+(defun ebox-style--validate-declaration-values (declarations &optional tag)
+  "Return DECLARATIONS after static value and author TAG axis validation."
   (cl-loop for (property value) on declarations by #'cddr
            for schema = (ebox-style--property property)
            for validator = (and schema (plist-get schema :validator))
-           when (ebox-style--static-invalid-declaration-p validator value)
-           do (error "ebox: invalid value for %S: %S"
-                     (plist-get schema :name) value))
+           for axis = (ebox-style--size-axis schema tag)
+           when (or (ebox-style--static-invalid-declaration-p validator value)
+                    (not (ebox-style--size-value-valid-p schema value tag)))
+           do (if axis
+                  (signal 'ebox-size-error
+                          (list
+                           (format "Invalid value for %S; allowed units: %S"
+                                   (plist-get schema :name)
+                                   (cdr (assq axis ebox-size-axis-units)))
+                           value))
+                (error "ebox: invalid value for %S: %S"
+                       (plist-get schema :name) value)))
   declarations)
 
 (defconst ebox-style--edge-projection-groups
@@ -1539,7 +1586,7 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
              unless (ebox-style--form-property-allowed-p tag property)
              do (error "Ebox %S does not accept %S"
                        tag (plist-get property :name))))
-  (ebox-style--validate-declaration-values declarations)
+  (ebox-style--validate-declaration-values declarations tag)
   declarations)
 
 (defun ebox-style--validate-author-values (plist)
@@ -2327,31 +2374,12 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
                    entries))))
 
 (defun ebox-style--convert (value converter)
-  "Convert VALUE using Ebox engine CONVERTER."
+  "Project VALUE with CONVERTER without resolving contextual size units.
+Layout owns used pixel/line values.  Computed style and its cached engine
+projection retain expressions so viewport, container, and font changes can
+resolve them again.  Numeric zero remains valid for private generated edges."
   (pcase converter
-    ('pixel (or (ebox--nonnegative-horizontal-size-pixels value nil) 0))
-    ('size-pixel (or (ebox--nonnegative-horizontal-size-pixels value nil) 0))
-    ('border-pixel
-     (unless (ebox-style--border-width-p value)
-       (error "ebox: border width must be a nonnegative integer pixel value: %S"
-              value))
-     value)
-    ('preferred-size
-     (ebox--normalize-horizontal-size-value
-      value ebox--preferred-size-keywords))
-    ('min-size
-     (ebox--normalize-horizontal-size-value
-      value ebox--min-size-keywords))
-    ('max-size
-     (ebox--normalize-horizontal-size-value
-      value ebox--max-size-keywords))
-    ('line
-     (if (numberp value)
-         (progn
-           (when (< value 0)
-             (error "ebox: line values cannot be negative: %S" value))
-           value)
-       0))
+    ((or 'pixel 'size-pixel 'border-pixel 'line) (or value 0))
     ('color (ebox-style--parse-color value))
     (_ value)))
 

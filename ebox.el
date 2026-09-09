@@ -23,9 +23,9 @@
   "Directory containing the active Ebox Lisp sources.")
 
 (defconst ebox--compile-sources
-  '("ebox-cache.el" "ebox-source.el" "ebox-runtime-index.el"
+  '("ebox-cache.el" "ebox-interaction.el" "ebox-source.el" "ebox-runtime-index.el"
     "ebox-state-contract.el"
-    "ebox-font.el" "ebox-style.el"
+    "ebox-font.el" "ebox-size.el" "ebox-style.el"
     "ebox-layout-config.el"
     "ebox-node-factory.el"
     "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
@@ -384,13 +384,13 @@ Set it to nil to inherit the surrounding `gc-cons-percentage'."
 
 (defvar ebox-viewport-width nil
   "Dynamically bound horizontal viewport width in pixels.
-DSL width values may use `(viewport)' to resolve to this value while a
+DSL sizes may use `(vw N)' for N percent of this width while a
 caller, such as the Playground preview, renders against a concrete window.")
 
 (defvar ebox-viewport-height nil
   "Dynamically bound vertical viewport height in lines.
-DSL height values may use `(viewport-height)' to resolve to this value while a
-caller, such as the Playground preview, renders against a concrete window.")
+The render context converts this value to pixels with the frame line metric.
+Block-axis DSL sizes use `(vh N)' for N percent of that pixel height.")
 
 (defvar ebox--region-box-table)
 (defconst ebox-region-types
@@ -433,8 +433,18 @@ caller, such as the Playground preview, renders against a concrete window.")
   (cl-incf ebox--region-id-counter))
 
 (defsubst ebox-get (box property)
-  "Retrieve PROPERTY from BOX."
-  (plist-get box property))
+  "Retrieve PROPERTY from BOX, resolving deferred engine edge lengths."
+  (let ((value (plist-get box property)))
+    (if (and (consp value)
+             (memq property
+                   '(:padding-left-pixel :padding-right-pixel
+                     :margin-left-pixel :margin-right-pixel
+                     :border-left-pixel :border-right-pixel
+                     :border-top-pixel :border-bottom-pixel
+                     :padding-top-height :padding-bottom-height
+                     :margin-top-height :margin-bottom-height)))
+        (ebox--edge-used-value box property value)
+      value)))
 
 (defun ebox-put (box property value)
   "Set private runtime PROPERTY to VALUE in BOX and return BOX.
@@ -492,8 +502,8 @@ completed report.  Nil removes observation without affecting rendering."
   (plist-get node :node-id))
 
 (defsubst ebox-string-lines (string)
-  "Split STRING into a list of lines, preserving text properties."
-  (when string
+  "Split STRING into lines, preserving properties; empty input has no lines."
+  (when (and string (not (string-empty-p string)))
     (let ((start 0)
           (lines nil))
       (while (string-match "\n" string start)
@@ -504,12 +514,18 @@ completed report.  Nil removes observation without affecting rendering."
 
 (defsubst ebox-string-height (string)
   "Return the number of lines in STRING.
-Optimized: Counts newlines directly to avoid list allocation."
-  (1+ (cl-count ?\n string)))
+Empty input has zero lines.  Count newlines without allocating a line list."
+  (if (or (null string) (string-empty-p string))
+      0
+    (1+ (cl-count ?\n string))))
 
 (defsubst ebox-lines-join (lines)
-  "Join a list of LINES into a single string."
-  (string-join lines "\n"))
+  "Join LINES into a string, preserving an explicit empty line's height.
+A single empty line needs a zero-width display carrier to distinguish it from
+no lines.  Multiline strings already preserve their blank lines as newlines."
+  (if (and lines (null (cdr lines)) (equal (car lines) ""))
+      (propertize " " 'display '(space :width (0)))
+    (string-join lines "\n")))
 
 (defun ebox--string-repeat-lines (string count)
   "Repeat a single line STRING for COUNT times."
@@ -526,9 +542,8 @@ Runs that already render as display specs keep their spec and lose
 face color.  Glyph runs are measured with their faces still applied
 and then covered by one pixel-exact display space, so line widths are
 identical in fixed and variable pitch while nothing is drawn.  Buffer
-text and every other text property (region, content, and owner
-metadata, event surfaces) stay untouched, which keeps spans, markers,
-and incremental diffs byte-compatible with the visible rendering."
+text and ownership metadata stay intact.  Native interaction properties are
+explicitly cleared so invisible content cannot retain an active hit surface."
   (ebox--maplines
    (lambda (line)
      (if (string-empty-p line)
@@ -544,7 +559,11 @@ and incremental diffs byte-compatible with the visible rendering."
               (base (/ width length))
               (remainder (- width (* base length))))
          (remove-text-properties
-          0 length '(face nil mouse-face nil) line)
+          0 length '(face nil) line)
+         (add-text-properties
+          0 length '(mouse-face nil ebox--hover-style nil
+                     help-echo nil pointer nil keymap nil) line)
+         (ebox-interaction--fill-property line 0 length 'keymap nil)
          (dotimes (index length)
            (put-text-property
             index (1+ index) 'display
@@ -625,7 +644,8 @@ Empty input has zero lines before padding.  Height zero clips to nil."
   "Pad or clip STRING to HEIGHT lines.
 OFFSET controls content shift: positive (top), negative (bottom).
 PADDING-STRING fills added lines; its default matches STRING's first-line width."
-  (if (and (stringp string) (integerp height) (= height 1)
+  (if (and (stringp string) (not (string-empty-p string))
+           (integerp height) (= height 1)
            (not (string-match-p "\n" string)))
       (copy-sequence string)
     (ebox-lines-join
@@ -664,8 +684,10 @@ ALIGN can be `top', `center', or `bottom'."
        (apply #'cl-mapcar #'concat line-lists)))))
 
 (defun ebox--lines-stack-vertical (&rest strings)
-  "Stack STRINGS vertically."
-  (setq strings (delq nil strings))
+  "Stack nonempty STRINGS vertically, without adding zero-height separators."
+  (setq strings (seq-filter (lambda (string)
+                              (and string (not (string-empty-p string))))
+                            strings))
   (ebox-lines-join strings))
 
 (defsubst ebox-default-foreground ()
@@ -1749,14 +1771,10 @@ object.  Unrelated ownerless and foreign-buffer states remain isolated."
     ids))
 
 (defun ebox--string-next-region-property-change (string pos limit)
-  "Return next ebox region property change in STRING after POS, capped at LIMIT."
-  (let ((next limit))
-    (dolist (entry ebox-region-types)
-      (let ((change (next-single-property-change
-                     pos (cdr entry) string limit)))
-        (when (and change (< change next))
-          (setq next change))))
-    next))
+  "Return the next possible region boundary in STRING after POS, up to LIMIT.
+Finer non-region property boundaries are safe: each caller merges equal owner
+ranges.  Using the native interval cursor avoids one search per role."
+  (or (next-property-change pos string limit) limit))
 
 (defun ebox--string-region-role-ids-compatible-p (role-ids region-set)
   "Return non-nil when ROLE-IDS do not cross foreign direct content owners."
@@ -2382,12 +2400,14 @@ published or mutated.  Return non-nil when the isolated render ran."
       (plist-get owner :box)))))
 
 (defun ebox--literal-root-pixel-width (box)
-  "Return BOX's demo-compatible literal pixel width, or nil."
+  "Return BOX's fixed pixel-only width, or nil.
+Relative and font-dependent widths cannot prove a predicted pixel edit."
   (let ((width (and box (ebox-get box :width))))
     (cond
      ((numberp width) width)
-     ((and (consp width) (null (cdr width)) (numberp (car width)))
-      (car width)))))
+     ((and (consp width) (ebox-size-value-p width)
+           (null (ebox-size-dependencies width)))
+      (ebox-size-resolve width nil)))))
 
 (defun ebox--invalidate-reflow-prewarm-scratch-signatures
     (scratch region-id)
@@ -3831,7 +3851,7 @@ Defaults to the current buffer."
   "Longhand box properties accepted by `ebox-region-update'.")
 
 (defconst ebox--region-update-control-properties
-  '(:content :scroll-offset)
+  (append '(:content :scroll-offset) ebox-interaction-properties)
   "Surface controls accepted by `ebox-region-update' outside style schemas.")
 
 (defun ebox--region-update-style-properties (props)
@@ -3855,13 +3875,15 @@ Defaults to the current buffer."
     (:background-color :bgcolor)
     (_ property)))
 
-(defun ebox--region-update-direct-text-node (box)
-  "Return BOX's sole direct canonical Text child, or nil."
-  (let ((children (and (ebox-box-node-p box)
-                       (ebox-box-node-children box))))
-    (and (= (length children) 1)
-         (ebox-text-node-p (car children))
-         (car children))))
+(defun ebox--region-update-direct-text-node (node)
+  "Return canonical Text NODE itself or NODE's sole direct Text child."
+  (if (ebox-text-node-p node)
+      node
+    (let ((children (and (ebox-box-node-p node)
+                         (ebox-box-node-children node))))
+      (and (= (length children) 1)
+           (ebox-text-node-p (car children))
+           (car children)))))
 
 (defun ebox--region-update-content-value (box)
   "Return the mutable region content represented by canonical BOX."
@@ -3882,6 +3904,10 @@ Defaults to the current buffer."
               ((eq target-key :content)
                (setq content-seen t
                      content-value value))
+              ((eq target-key :surface-properties)
+               (unless (ebox-surface--retained-property-value-equal-p
+                        (ebox-get box target-key) value)
+                 (setq style-changed-p t)))
               ((memq target-key ebox--region-update-longhand-props)
                (when (not (equal (ebox-get box target-key) value))
                  (setq style-changed-p t)))
@@ -3893,7 +3919,7 @@ Defaults to the current buffer."
       (user-error "Ebox content update requires a string"))
     (when (and content-seen
                (not (ebox--region-update-direct-text-node box)))
-      (user-error "Ebox content update requires one direct Text child"))
+      (user-error "Ebox content update requires Text or a Box with one direct Text child"))
     (list :changed-p
           (or (not (equal declarations
                           (ebox-style-node-declarations source-index box)))
@@ -3959,7 +3985,8 @@ cannot be changed through the unpublished batch root."
       (nreverse changed))))
 
 (defun ebox--surface-region-apply-props
-    (root source-index region-id expanded declarations style-declarations)
+    (root source-index region-id expanded declarations style-declarations
+          &optional interactions)
   "Apply DECLARATIONS then EXPANDED fields to REGION-ID in ROOT."
   (let ((box (ebox--root-region-box root region-id))
         (candidate-source-index source-index)
@@ -3970,11 +3997,15 @@ cannot be changed through the unpublished batch root."
            (not (ebox-style-declarations-equal-p
                  declarations
                  (ebox-style-node-declarations source-index box)))))
-      (when declarations-changed
+      (when (or declarations-changed (plist-member expanded :surface-properties))
         (let* ((old-handle (ebox-tree-node-source-handle box))
                (binding
                 (ebox-source-index-rebind
-                 source-index old-handle :declarations declarations)))
+                 source-index old-handle :declarations declarations
+                 :interactions (if (plist-member expanded :surface-properties)
+                                   interactions
+                                 (ebox-source-index-interactions
+                                  source-index old-handle)))))
           (setq candidate-source-index (car binding))
           (plist-put box :ebox-source-handle (cdr binding))))
     (when (plist-member style-declarations 'ebox/outer)
@@ -3991,8 +4022,13 @@ cannot be changed through the unpublished batch root."
     (cl-loop for (key value) on expanded by #'cddr
              for target-key = (ebox--region-update-normalize-property key)
              when (or (eq target-key :content)
+                      (eq target-key :surface-properties)
                       (memq target-key ebox--region-update-longhand-props))
-             when (or (not (equal (if (eq target-key :content)
+             when (or (not (funcall
+                             (if (eq target-key :surface-properties)
+                                 #'ebox-surface--retained-property-value-equal-p
+                               #'equal)
+                             (if (eq target-key :content)
                                       (ebox--region-update-content-value box)
                                     (ebox-get box target-key))
                                   value))
@@ -4001,9 +4037,14 @@ cannot be changed through the unpublished batch root."
              do (if (eq target-key :content)
                     (if-let* ((text
                                (ebox--region-update-direct-text-node box)))
-                        (plist-put text :ebox-text-value value)
+                        (progn
+                          (plist-put text :ebox-text-value value)
+                          ;; Incremental source signatures and retained owner
+                          ;; proofs read the engine content projection.  Keep
+                          ;; it in step with the canonical Text payload.
+                          (plist-put text :content value))
                       (user-error
-                       "Ebox content update requires one direct Text child"))
+                       "Ebox content update requires Text or a Box with one direct Text child"))
                   (plist-put box target-key value))
              and do (push target-key changed-keys)))
     (list :changed-keys (nreverse changed-keys)
@@ -4232,7 +4273,8 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
          (source-index
           (or (ebox-incremental-surface-batch-source-index buffer)
               (plist-get state :source-index)))
-         (published-root (plist-get state :root-node))
+         (published-root (or (ebox-incremental-surface-batch-root buffer)
+                             (plist-get state :root-node)))
          (candidate-box
           (or (ebox--root-region-box published-root region-id)
               (user-error "Ebox region handle no longer resolves to a box")))
@@ -4245,11 +4287,27 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
            (ebox-style-node-declarations
             source-index candidate-box)
            style-declarations))
+         (interaction-delta
+          (ebox-interaction-normalize
+           (cl-loop for (property value) on props by #'cddr
+                    when (memq property ebox-interaction-properties)
+                    append (list property value))))
+         (interactions
+          (when interaction-delta
+            (let ((merged (ebox-source-index-interactions
+                           source-index
+                           (ebox-tree-node-source-handle candidate-box))))
+              (cl-loop for (property value) on interaction-delta by #'cddr
+                       do (setq merged (plist-put merged property value)))
+              merged)))
          (expanded
           (append
            (cl-loop for (property value) on props by #'cddr
-                    when (memq property ebox--region-update-control-properties)
+                    when (memq property '(:content :scroll-offset))
                     append (list property value))
+           (when interaction-delta
+             (list :surface-properties
+                   (ebox-interaction-surface-properties interactions)))
            (ebox-style--expand-engine-delta
             style-declarations declarations
             (plist-get candidate-box :ebox-computed-style))))
@@ -4270,24 +4328,26 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
                (eq (ebox--region-update-normalize-property (car expanded))
                    :scroll-offset))
           (ebox--surface-scroll-to-offset buffer region-id (cadr expanded))
-        (let* ((content-only-p
+        (let* (;; Source-only text changes leave inline declarations and
+               ;; selector subjects unchanged.  Copy the owner path first;
+               ;; the existing slot/style proof decides whether it is safe
+               ;; to retain it.  A widened projection takes a private copy
+               ;; in `ebox-incremental-prepare-scoped-commit' before layout.
+               (content-only-p
                 (and (= (length expanded) 2)
                      (eq (ebox--region-update-normalize-property
                           (car expanded))
                          :content)
                      (stringp (cadr expanded))
-                     (numberp (ebox-get candidate-box :width))
                      (ebox--region-update-direct-text-node candidate-box)
-                     (not (ebox-style-cascade-active-p))
-                     (not (plist-get state :cascade-required-p))
-                     (null (plist-get state :scroll-region-ids))))
+                     (not (ebox-style-cascade-active-p))))
                (candidate-root
                 (ebox--surface-region-candidate-root
                  buffer state region-id content-only-p))
                (applied
                 (ebox--surface-region-apply-props
                  candidate-root source-index
-                 region-id expanded declarations style-declarations))
+                 region-id expanded declarations style-declarations interactions))
                (changed-keys (plist-get applied :changed-keys))
                (candidate-source-index (plist-get applied :source-index))
                (dirty-kind
@@ -4314,19 +4374,24 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
 
 ;;;###autoload
 (defun ebox-region-update (handle &rest props)
-  "Update the box identified by surface-scoped HANDLE with PROPS.
-HANDLE must come from ebox-region-resolve or an Ebox selector result.  PROPS
-accepts mutable content, style, and scroll keywords supported by the target;
-it does not add children or mutate selector metadata.  The update builds an
+  "Update the node identified by HANDLE with PROPS.
+HANDLE is an opaque handle from `ebox-region-resolve' or an Ebox selector,
+or a semantic ID (string, non-nil symbol or integer) in the current buffer.
+PROPS accepts mutable content, style, interaction and scroll keywords;
+`:content' replaces a Text node's string or a Box's sole direct Text child.
+It does not add children or mutate selector metadata.  The update builds an
 isolated candidate, runs the Ebox owner planner, and publishes once through the
 mounted TP surface.  Return nil while queued in an explicit batch; otherwise
 return the committed update report.
 
 Examples:
+  (ebox-region-update \"status\" :content \"Ready\")
   (ebox-region-update (ebox-region-resolve buffer \"status\")
                       :content \"Ready\")
-  (ebox-region-update handle :padding (list 1 2)
+  (ebox-region-update handle :padding \='((lh 1) (ch 2))
                       :border-color \"red\")"
+  (when (ebox-source-semantic-id-p handle)
+    (setq handle (ebox-region-resolve (current-buffer) handle)))
   (unless (ebox-region-handle-p handle)
     (signal (quote wrong-type-argument)
             (list (quote ebox-region-handle-p) handle)))
@@ -4335,8 +4400,11 @@ Examples:
     (let ((execute
            (lambda ()
              (ebox--with-render-gc
-               (ebox--surface-region-update-target
-                buffer region-id handle props)))))
+               (with-current-buffer buffer
+                 (save-restriction
+                   (widen)
+                   (ebox--surface-region-update-target
+                    buffer region-id handle props)))))))
       (if (ebox-incremental-batching-p buffer)
           (funcall execute)
         (ebox-surface-call-with-observation buffer 'region execute)))))
@@ -4742,10 +4810,18 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
                     (commit-input
                      (let ((ebox-incremental--source-base-index
                             source-base-index))
-                       (if (ebox-candidate-p next-root)
-                           (ebox-incremental-consume-candidate buffer next-root)
-                         (ebox-incremental-prepare-root-commit
-                          buffer next-root))))
+                       ;; Slot proofs use absolute mounted coordinates.
+                       ;; Capture them in the same complete buffer view the
+                       ;; surface publisher uses, even when the caller has
+                       ;; narrowed its editor view.
+                       (with-current-buffer buffer
+                         (save-restriction
+                           (widen)
+                           (if (ebox-candidate-p next-root)
+                               (ebox-incremental-consume-candidate
+                                buffer next-root)
+                             (ebox-incremental-prepare-root-commit
+                              buffer next-root))))))
                     (source (plist-get commit-input :root))
                     (callback
                      (or framework-publish
@@ -4795,8 +4871,8 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
 (defun ebox-rerender-buffer-with-context
     (buffer viewport-width &optional viewport-height)
   "Rerender BUFFER's stored runtime tree using VIEWPORT-WIDTH.
-When VIEWPORT-HEIGHT is non-nil, height values using `(viewport-height)' are
-resolved against that line count.
+VIEWPORT-WIDTH is pixels; optional VIEWPORT-HEIGHT is frame lines.
+Viewport units and composed size expressions resolve against this context.
 This preserves node and region identity and routes viewport-dependent changes
 through dirty-set and patch-set execution before falling back to root rerender."
   (let ((execute
@@ -4865,6 +4941,8 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-grid-layout-create
     ebox-host-ref-bounds
     ebox-host-ref-position
+    ebox-help-create
+    ebox-keymap-create
     ebox-native-build
     ebox-native-status
     ebox-region-ids

@@ -16,6 +16,7 @@
 (require 'ebox-measure)
 (require 'ebox-render-context)
 (require 'ebox-runtime-index)
+(require 'ebox-size)
 
 (declare-function ebox-native--module-version "ebox_native_reflow" ())
 (declare-function ebox-native--module-layout-ready-p "ebox_native_reflow" ())
@@ -71,8 +72,9 @@
 (declare-function ebox--flex-item-props "ebox-flex" (item))
 (declare-function ebox--flex-line-value "ebox-flex" (value &optional default))
 (declare-function ebox--content-min-pixel "ebox-layout" (box))
-(declare-function ebox--horizontal-size-pixels
-                  "ebox-layout" (value &optional default))
+(declare-function ebox--size-pixels
+                  "ebox-layout" (value &optional box axis percent-base))
+(declare-function ebox--size-line-height "ebox-layout" (&optional box))
 (declare-function ebox--layout-children "ebox-tree" (node))
 (declare-function ebox-tree-layout-children "ebox-tree" (node))
 (declare-function ebox-tree-node-local-source-signature "ebox-tree" (node))
@@ -96,7 +98,10 @@
 
 (defvar ebox--flex-content-min-width-table)
 
-(defconst ebox-native-reflow-abi-version "12:7:12"
+(defvar ebox-native-reflow--compile-size-node nil
+  "Owning node whose font measurements resolve fixed native size inputs.")
+
+(defconst ebox-native-reflow-abi-version "13:7:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -312,51 +317,104 @@ module while loading the package."
 (defconst ebox-native-reflow--persistent-index-depth 16
   "Fixed number of four-bit branches in a retained native index path.")
 
-(defun ebox-native-reflow--persistent-index-code (key)
-  "Return a stable nonnegative retained-index code for KEY."
+(defun ebox-native-reflow--property-value-hash (value &optional depth)
+  "Hash property VALUE consistently with identity-sensitive equality.
+Bounded DEPTH keeps cyclic data safe; callback environments are never walked."
+  (let ((depth (or depth 8)))
+    (cond
+     ((or (functionp value) (keymapp value)) (sxhash-eq value))
+     ((ebox--paint-origin-p value)
+      (ebox-native-reflow--property-value-hash
+       (ebox--paint-origin-baseline value) depth))
+     ((zerop depth) 0)
+     ((consp value)
+      (logxor (ebox-native-reflow--property-value-hash (car value) (1- depth))
+              (ash (ebox-native-reflow--property-value-hash
+                    (cdr value) (1- depth)) -1)))
+     ((or (stringp value) (numberp value)) (sxhash-equal value))
+     (t (sxhash-eq value)))))
+
+(defun ebox-native-reflow--property-template-equal-p (left right)
+  "Compare template envelopes LEFT and RIGHT and their opaque property values."
+  (and (eq (plist-get left :kind) (plist-get right :kind))
+       (let ((old (plist-get left :properties))
+             (new (plist-get right :properties)))
+         (and (= (length old) (length new))
+              (cl-loop for (property value) on old by #'cddr
+                       for entry = (plist-member new property)
+                       always (and entry
+                                   (ebox-surface--retained-property-value-equal-p
+                                    value (cadr entry))))))))
+
+(defun ebox-native-reflow--property-template-hash (template)
+  "Hash TEMPLATE's envelope separately from its native property values."
+  (let ((hash (sxhash-eq (plist-get template :kind))))
+    (cl-loop for (property value) on (plist-get template :properties) by #'cddr
+             do (setq hash (logxor hash (sxhash-eq property)
+                                  (ebox-native-reflow--property-value-hash value))))
+    hash))
+
+(define-hash-table-test 'ebox-native-property-template
+  #'ebox-native-reflow--property-template-equal-p
+  #'ebox-native-reflow--property-template-hash)
+
+(defun ebox-native-reflow--persistent-index-code (key &optional template-p)
+  "Return a stable nonnegative retained-index code for KEY.
+TEMPLATE-P selects native property equality with opaque callback identities."
   (if (and (integerp key) (>= key 0))
       key
-    (logand (sxhash-equal key) #xffffffffffffffff)))
+    (logand (if template-p (ebox-native-reflow--property-template-hash key)
+              (sxhash-equal key)) #xffffffffffffffff)))
 
-(defun ebox-native-reflow--persistent-index-get (root key &optional missing)
-  "Return KEY's value from persistent ROOT, or MISSING."
+(defun ebox-native-reflow--persistent-index-get (root key &optional missing template-p)
+  "Return KEY's value from persistent ROOT, or MISSING.
+TEMPLATE-P selects the native property-template comparison and hash."
   (let ((node root)
-        (code (ebox-native-reflow--persistent-index-code key))
+        (code (ebox-native-reflow--persistent-index-code key template-p))
         (depth 0))
     (while (and node (< depth ebox-native-reflow--persistent-index-depth))
       (setq node (and (vectorp node)
                       (aref node (logand (ash code (* -4 depth)) 15)))
             depth (1+ depth)))
     (if (= depth ebox-native-reflow--persistent-index-depth)
-        (let ((pair (cl-assoc key node :test #'equal)))
+        (let ((pair (cl-assoc key node :test
+                              (if template-p
+                                  #'ebox-native-reflow--property-template-equal-p
+                                #'equal))))
           (if pair (cdr pair) missing))
       missing)))
 
-(defun ebox-native-reflow--persistent-index-put (root key value &optional depth)
+(defun ebox-native-reflow--persistent-index-put
+    (root key value &optional depth template-p)
   "Return persistent ROOT updated to map KEY to VALUE.
-Only the fixed-depth path for KEY is copied.  DEPTH is for recursion."
+Only the fixed-depth path for KEY is copied.  DEPTH is for recursion.
+TEMPLATE-P selects the native property-template comparison and hash."
   (let ((depth (or depth 0)))
     (if (= depth ebox-native-reflow--persistent-index-depth)
         (cons (cons key value)
-              (cl-remove key root :key #'car :test #'equal))
-      (let* ((code (ebox-native-reflow--persistent-index-code key))
+              (cl-remove key root :key #'car :test
+                         (if template-p
+                             #'ebox-native-reflow--property-template-equal-p
+                           #'equal)))
+      (let* ((code (ebox-native-reflow--persistent-index-code key template-p))
              (branch (logand (ash code (* -4 depth)) 15))
              (copy (if (vectorp root)
                        (copy-sequence root)
                      (make-vector 16 nil))))
         (aset copy branch
               (ebox-native-reflow--persistent-index-put
-               (aref copy branch) key value (1+ depth)))
+               (aref copy branch) key value (1+ depth) template-p))
         copy))))
 
-(defun ebox-native-reflow--persistent-index-from-sequence (sequence)
-  "Return an immutable persistent index for ordered SEQUENCE values."
+(defun ebox-native-reflow--persistent-index-from-sequence (sequence &optional template-p)
+  "Return an immutable persistent index for ordered SEQUENCE values.
+TEMPLATE-P selects the native property-template comparison and hash."
   (let (root)
     (cl-loop for value across (vconcat sequence)
              for id from 0
              do (setq root
                       (ebox-native-reflow--persistent-index-put
-                       root value id)))
+                       root value id nil template-p)))
     root))
 
 (defvar ebox-native-reflow--compile-property-template-ids nil
@@ -1479,10 +1537,22 @@ copied separately; no pending frame or registered Rust document is inherited."
   "Register opaque text PROPERTIES for LABEL and return its native id."
   (when properties
     (ebox-native-reflow--validate-property-template properties label)
+    (when (and (hash-table-p ebox-native-reflow--compile-property-template-ids)
+               (not (eq (hash-table-test
+                         ebox-native-reflow--compile-property-template-ids)
+                        'ebox-native-property-template)))
+      (let ((index (make-hash-table :test 'ebox-native-property-template)))
+        (maphash (lambda (entry id) (puthash entry id index))
+                 ebox-native-reflow--compile-property-template-ids)
+        (setq ebox-native-reflow--compile-property-template-ids index)))
     (let* ((owned-properties
             (cl-loop for (property value) on properties by #'cddr
                      append (list property
-                                  (tp-property-value-copy value))))
+                                  ;; Native maps already belong to the source
+                                  ;; or node snapshot.  Preserve their identity
+                                  ;; so repeated registration can reuse an id.
+                                  (if (keymapp value) value
+                                    (tp-property-value-copy value)))))
            (entry (list :kind (intern label)
                         :properties owned-properties))
            (missing (make-symbol "missing-property-template"))
@@ -1490,7 +1560,7 @@ copied separately; no pending frame or registered Rust document is inherited."
             (if ebox-native-reflow--compile-retained-registry-p
                 (ebox-native-reflow--persistent-index-get
                  ebox-native-reflow--compile-property-template-index
-                 entry missing)
+                 entry missing t)
               (if (hash-table-p
                  ebox-native-reflow--compile-property-template-ids)
                 (gethash
@@ -1498,7 +1568,7 @@ copied separately; no pending frame or registered Rust document is inherited."
                  missing)
               (or (cl-position
                    entry ebox-native-reflow--compile-property-templates
-                   :test #'equal)
+                   :test #'ebox-native-reflow--property-template-equal-p)
                   missing)))))
       (if (not (eq existing missing))
           existing
@@ -1511,7 +1581,7 @@ copied separately; no pending frame or registered Rust document is inherited."
             (setq ebox-native-reflow--compile-property-template-index
                   (ebox-native-reflow--persistent-index-put
                    ebox-native-reflow--compile-property-template-index
-                   entry id)))
+                   entry id nil t)))
           (when (hash-table-p
                  ebox-native-reflow--compile-property-template-ids)
             (puthash
@@ -1535,8 +1605,16 @@ copied separately; no pending frame or registered Rust document is inherited."
              (eq (car properties) 'display))
     (let ((display (cadr properties)))
       (when (and (consp display) (eq (car display) 'space))
-        (ebox--horizontal-size-pixels
-         (plist-get (cdr display) :width) nil)))))
+        (let* ((width (plist-get (cdr display) :width))
+               ;; Emacs display-space syntax is independent of author CSS:
+               ;; a bare number counts character cells, a singleton pixels.
+               (pixels (cond
+                        ((numberp width) (* width (ebox--space-pixel-width)))
+                        ((and (proper-list-p width) (= (length width) 1)
+                              (numberp (car width)))
+                         (car width)))))
+          (and pixels
+               (ebox-native-reflow--exact-size-integer pixels width)))))))
 
 (defun ebox-native-reflow--compile-formatted-clusters (line)
   "Compile LINE while preserving exact pixel display spaces."
@@ -1548,7 +1626,7 @@ copied separately; no pending frame or registered Rust document is inherited."
              (next (or (next-property-change position line) length)))
         (if properties
             (let ((width (ebox-native-reflow--display-space-width properties)))
-              (unless (and width (> width 0)
+              (unless (and width (>= width 0)
                            (string-blank-p
                             (substring-no-properties line position next)))
                 (error "Native reflow unsupported formatted text properties"))
@@ -1625,9 +1703,67 @@ When FORMATTED-P is non-nil, preserve exact display spaces produced by KP."
                (ebox-native-reflow--compile-source-clusters line))))
      (ebox-string-lines text)))))
 
-(defun ebox-native-reflow--compile-size (value axis nil-kind)
-  "Compile normalized size VALUE for AXIS, using NIL-KIND when absent."
+(defun ebox-native-reflow--static-size-p (value)
+  "Return non-nil when VALUE has no context dependency absent from native IR.
+Font measurements are bound to the compiled display/style generation.
+Containing-block and viewport measurements change between retained frames."
+  (or (not (ebox-size-value-p value t))
+      (not (cl-intersection
+            '(percent viewport-width viewport-height)
+            (ebox-size-dependencies value)))))
+
+(defun ebox-native-reflow--require-static-size (value)
+  "Return VALUE or decline native compilation of a contextual size."
+  (unless (ebox-native-reflow--static-size-p value)
+    (error "Native reflow uses Elisp for viewport or percentage size: %S" value))
+  value)
+
+(defun ebox-native-reflow--exact-size-integer (value source)
+  "Return integral VALUE, or decline native compilation of SOURCE."
+  (unless (and (numberp value) (= value (floor value)))
+    (error "Native reflow uses Elisp for fractional geometry: %S" source))
+  (floor value))
+
+(defun ebox-native-reflow--compile-fixed-size (value axis &optional box)
+  "Resolve fixed canonical VALUE for AXIS in BOX's measured font context.
+The native ABI uses integral pixels horizontally and integral text lines
+vertically.  Preserve exact values only; other geometry uses the Elisp path."
+  (ebox-native-reflow--require-static-size value)
+  (let* ((box (or box ebox-native-reflow--compile-size-node))
+         (pixels (ebox--size-pixels
+                  value box (if (eq axis 'vertical) 'height 'width))))
+    (unless (numberp pixels)
+      (error "Native reflow has no measured context for size: %S" value))
+    (ebox-native-reflow--exact-size-integer
+     (if (eq axis 'vertical)
+         (/ (max 0 pixels) (float (ebox--size-line-height box)))
+       (max 0 pixels))
+     value)))
+
+(defun ebox-native-reflow--compile-gap (value axis)
+  "Compile gap VALUE to the native scalar for AXIS."
+  (if (ebox-size-value-p value)
+      (ebox-native-reflow--compile-fixed-size value axis)
+    (or value 0)))
+
+(defun ebox-native-reflow--compile-edge (box property)
+  "Compile BOX's used PROPERTY edge without freezing relative geometry."
+  (let ((source (plist-get box property)))
+    (ebox-native-reflow--require-static-size source)
+    (let ((value (or (ebox-get box property) 0)))
+      (if (ebox-size-value-p source t)
+          (ebox-native-reflow--exact-size-integer value source)
+        (floor value)))))
+
+(defun ebox-native-reflow--compile-size (value axis nil-kind &optional box)
+  "Compile size VALUE for AXIS in BOX, using NIL-KIND when absent."
   (cond
+   ((ebox-size-value-p value)
+    (list :kind (if (eq axis 'horizontal) "pixels" "lines")
+          :value (ebox-native-reflow--compile-fixed-size value axis box)))
+   ((and (eq axis 'vertical)
+         (memq value '(min-content max-content fit-content stretch)))
+    (error "Native reflow uses Elisp for intrinsic or stretch height: %S" value))
    ((null value)
     (if (member nil-kind '("pixels" "lines"))
         (list :kind nil-kind :value 0)
@@ -1723,6 +1859,9 @@ When FORMATTED-P is non-nil, preserve exact display spaces produced by KP."
 (defun ebox-native-reflow--fixed-horizontal-pixels (value)
   "Return VALUE's fixed horizontal pixel count, or nil when responsive."
   (cond
+   ((and (ebox-size-value-p value)
+         (ebox-native-reflow--static-size-p value))
+    (ebox-native-reflow--compile-fixed-size value 'horizontal))
    ((numberp value) (floor value))
    ((and (consp value) (null (cdr value)) (numberp (car value)))
     (floor (car value)))))
@@ -1789,7 +1928,9 @@ Rust still verifies the dynamic equal-width and nonempty-line proof per frame."
 The native IR represents this simple-axis layout as fixed Flex items so
 cross-axis stretch and item gap remain explicit without legacy runtime nodes."
   (let* ((props (ebox-layout-config-props config))
-         (gap (plist-get props :item-gap))
+         (gap (ebox-native-reflow--compile-gap
+               (plist-get props :item-gap)
+               (if (eq kind 'row) 'horizontal 'vertical)))
          (cross-align (plist-get props :cross-align))
          (row-p (eq kind 'row))
          (compiled-children
@@ -1837,7 +1978,8 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
 
 (defun ebox-native-reflow--compile-typed-box-child (box)
   "Compile canonical BOX's typed child layout, or return nil."
-  (let* ((config (plist-get box :ebox-layout-config))
+  (let* ((ebox-native-reflow--compile-size-node box)
+         (config (plist-get box :ebox-layout-config))
          (kind (and config (ebox-layout-config-kind config)))
          (children (ebox-tree-node-children box)))
     (unless config
@@ -1860,6 +2002,8 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
 
 (defun ebox-native-reflow--compile-text-node (node)
   "Compile canonical Text NODE to the lightweight native Text IR."
+  (when (eq (ebox-get node :visibility) 'hidden)
+    (error "Native reflow delegates hidden Text to the Elisp renderer"))
   (let* ((region-id (ebox--ensure-region-id node))
          (content
           (ebox--propertize-typography
@@ -1877,7 +2021,7 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
             (ebox-get node :color))))
          (surface-template-id
           (ebox-native-reflow--register-property-template
-           (ebox-get node :surface-properties) "text surface"))
+           (ebox-interaction--node-surface-properties node) "text surface"))
          (wrap-mode (or (ebox-get node :wrap-mode) 'none)))
     (list :type "text"
           :region-id region-id
@@ -1893,7 +2037,10 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
 (defun ebox-native-reflow--compile-box
     (box &optional child-override child-override-p child-resolved-p)
   "Compile normalized Ebox BOX to strict layout IR."
-  (let* ((typed-box-p (eq (plist-get box :ebox-kind) 'box))
+  (when (eq (ebox-get box :visibility) 'hidden)
+    (error "Native reflow delegates hidden Box to the Elisp renderer"))
+  (let* ((ebox-native-reflow--compile-size-node box)
+         (typed-box-p (eq (plist-get box :ebox-kind) 'box))
          (typed-text-p (eq (plist-get box :ebox-kind) 'text))
          (typed-layout-kind
           (and typed-box-p
@@ -1912,18 +2059,18 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                (eq wrap-mode 'kp)
                (ebox-native-reflow--compile-kp-content box)))
          (region-id (ebox--ensure-region-id box))
-         (padding-left (floor (or (ebox-get box :padding-left-pixel) 0)))
-         (padding-right (floor (or (ebox-get box :padding-right-pixel) 0)))
-         (padding-top (floor (or (ebox-get box :padding-top-height) 0)))
-         (padding-bottom (floor (or (ebox-get box :padding-bottom-height) 0)))
-         (margin-left (floor (or (ebox-get box :margin-left-pixel) 0)))
-         (margin-right (floor (or (ebox-get box :margin-right-pixel) 0)))
-         (margin-top (floor (or (ebox-get box :margin-top-height) 0)))
-         (margin-bottom (floor (or (ebox-get box :margin-bottom-height) 0)))
-         (border-left (floor (or (ebox-get box :border-left-pixel) 0)))
-         (border-right (floor (or (ebox-get box :border-right-pixel) 0)))
-         (border-top (floor (or (ebox-get box :border-top-pixel) 0)))
-         (border-bottom (floor (or (ebox-get box :border-bottom-pixel) 0)))
+         (padding-left (ebox-native-reflow--compile-edge box :padding-left-pixel))
+         (padding-right (ebox-native-reflow--compile-edge box :padding-right-pixel))
+         (padding-top (ebox-native-reflow--compile-edge box :padding-top-height))
+         (padding-bottom (ebox-native-reflow--compile-edge box :padding-bottom-height))
+         (margin-left (ebox-native-reflow--compile-edge box :margin-left-pixel))
+         (margin-right (ebox-native-reflow--compile-edge box :margin-right-pixel))
+         (margin-top (ebox-native-reflow--compile-edge box :margin-top-height))
+         (margin-bottom (ebox-native-reflow--compile-edge box :margin-bottom-height))
+         (border-left (ebox-native-reflow--compile-edge box :border-left-pixel))
+         (border-right (ebox-native-reflow--compile-edge box :border-right-pixel))
+         (border-top (ebox-native-reflow--compile-edge box :border-top-pixel))
+         (border-bottom (ebox-native-reflow--compile-edge box :border-bottom-pixel))
          (_border-capability
           (when (or (> border-top 1) (> border-bottom 1))
             (signal 'ebox-surface-capability-error
@@ -1971,7 +2118,7 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                                   (when color (list :color color)))))))))
          (surface-template-id
           (ebox-native-reflow--register-property-template
-           (ebox-get box :surface-properties) "surface"))
+           (ebox-interaction--node-surface-properties box) "surface"))
          (fused-text-p
           (and typed-box-p
                (eq typed-layout-kind 'normal)
@@ -2080,6 +2227,12 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                    (hash-table-p ebox--flex-content-min-width-table))
               (gethash source ebox--flex-content-min-width-table missing)
             missing)))
+    (let ((minimum (ebox-get source (if (eq axis 'row)
+                                        :min-width :min-height))))
+      (when (and (eq (plist-get source :ebox-kind) 'box)
+                 (not (memq minimum '(nil auto))))
+        (error "Native reflow uses Elisp for an explicit Flex item minimum: %S"
+               minimum)))
     (unless (eq captured-content-min missing)
       (setq content-min-width captured-content-min
             content-min-width-p t))
@@ -2115,7 +2268,7 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
           (ebox-native-reflow--compile-size
            (plist-get props :flex-basis)
            (if (eq axis 'row) 'horizontal 'vertical)
-           "auto")
+           "auto" source)
           :align-self
           (if (eq (plist-get source :ebox-kind) 'text)
               "flex-start"
@@ -2151,9 +2304,10 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
      :height
      (ebox-native-reflow--compile-size
       (plist-get props :height) 'vertical "auto")
-     :row-gap (or (ebox--flex-line-value (plist-get props :row-gap) 0) 0)
+     :row-gap
+     (ebox-native-reflow--compile-gap (plist-get props :row-gap) 'vertical)
      :column-gap
-     (or (plist-get props :column-gap) 0)
+     (ebox-native-reflow--compile-gap (plist-get props :column-gap) 'horizontal)
      :items
      (vconcat
       (mapcar
@@ -2172,20 +2326,33 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
            (ebox-native-reflow--compile-flex-item item axis)))
        items)))))
 
-(defun ebox-native-reflow--compile-flex
-    (node &optional fragments flex-content-min-widths)
-  "Compile normalized legacy flex NODE through the shared Flex IR builder."
+(defun ebox-native-reflow--compile-flex-content-props (node)
+  "Return NODE's native Flex constraints without freezing relative gaps."
   (let* ((wrapper (plist-get node :box))
+         (source (plist-get node :props))
+         (_size-proof
+          (dolist (property '(:width :height :row-gap :column-gap))
+            (ebox-native-reflow--require-static-size
+             (plist-get source property))))
          (props (ebox--flex-container-content-props
-                 (plist-get node :props)
-                 (plist-get node :raw-props)
-                 wrapper)))
+                 source (plist-get node :raw-props) wrapper)))
+    (dolist (property '(:row-gap :column-gap))
+      (when (plist-member source property)
+        (plist-put props property (plist-get source property))))
     (when wrapper
       ;; The surrounding native box supplies its resolved content width to the
       ;; child for each frame.  Do not freeze the compiler's ambient viewport.
       (plist-put props :width nil)
       (when (plist-member (plist-get node :raw-props) :height)
         (plist-put props :height 'viewport-height)))
+    props))
+
+(defun ebox-native-reflow--compile-flex
+    (node &optional fragments flex-content-min-widths)
+  "Compile normalized legacy flex NODE through the shared Flex IR builder."
+  (let* ((wrapper (plist-get node :box))
+         (ebox-native-reflow--compile-size-node (or wrapper node))
+         (props (ebox-native-reflow--compile-flex-content-props node)))
     (let ((inner
            (ebox-native-reflow--compile-flex-inner
             props (ebox-tree-layout-children node)
@@ -2214,12 +2381,39 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
     (_ (error "Native reflow unsupported node type: %S"
               (and (listp node) (plist-get node :ebox-type))))))
 
+(defun ebox-native-reflow--node-static-sizes-p (node)
+  "Return non-nil if NODE's own sizes can survive retained native resize."
+  (let ((config (plist-get node :ebox-layout-config)))
+    (cl-every
+     (lambda (properties)
+       (cl-loop for (property value) on properties by #'cddr
+                always
+                (and
+                 (or (not (memq property '(:height :min-height :max-height)))
+                     (not (memq value
+                                '(min-content max-content fit-content stretch))))
+                 (or (not (memq property
+                                '(:width :min-width :max-width
+                                  :height :min-height :max-height :flex-basis
+                                  :item-gap :row-gap :column-gap
+                                  :padding-top-height :padding-bottom-height
+                                  :padding-left-pixel :padding-right-pixel
+                                  :margin-top-height :margin-bottom-height
+                                  :margin-left-pixel :margin-right-pixel
+                                  :border-top-pixel :border-bottom-pixel
+                                  :border-left-pixel :border-right-pixel)))
+                     (ebox-native-reflow--static-size-p value)))))
+     (list node (plist-get node :props)
+           (and config (ebox-layout-config-props config))))))
+
 (defun ebox-native-reflow--native-node-supported-p (node)
   "Return non-nil when NODE contains only native-supported layout nodes.
 Grid deliberately stays on the ordinary Ebox renderer until the native
 backend has a matching two-dimensional layout contract."
   (cond
    ((or (null node) (stringp node) (not (listp node))) t)
+   ((eq (plist-get node :visibility) 'hidden) nil)
+   ((not (ebox-native-reflow--node-static-sizes-p node)) nil)
    ((plist-get node :ebox-child-sequence) nil)
    ((eq (plist-get node :ebox-type) 'grid) nil)
    ((eq (plist-get node :ebox-type) 'box)
@@ -2251,7 +2445,8 @@ backend has a matching two-dimensional layout contract."
 (defun ebox-native-reflow--compile-typed-scene-child
     (box fragments flex-content-min-widths)
   "Compile typed BOX child layout from already compiled FRAGMENTS."
-  (let* ((config (plist-get box :ebox-layout-config))
+  (let* ((ebox-native-reflow--compile-size-node box)
+         (config (plist-get box :ebox-layout-config))
          (kind (ebox-layout-config-kind config))
          (children (ebox-tree-node-children box)))
     (pcase kind
@@ -2445,7 +2640,7 @@ Otherwise return CANDIDATE with the next document revision."
    :string-pixel-width-cache (make-hash-table :test 'equal)
    :string-max-pixel-width-cache (make-hash-table :test 'eq)
    :property-templates nil
-   :property-template-ids (make-hash-table :test 'equal)))
+   :property-template-ids (make-hash-table :test 'ebox-native-property-template)))
 
 (defun ebox-native-reflow--layout-builder-current-p (builder)
   "Return non-nil when BUILDER still identifies its live render scene."
@@ -2550,7 +2745,7 @@ per call, and no call recursively visits the captured Ebox tree."
            (ebox-native-reflow--compile-property-templates
             (append retained-property-templates nil))
            (ebox-native-reflow--compile-property-template-ids
-            (make-hash-table :test 'equal))
+            (make-hash-table :test 'ebox-native-property-template))
           (ebox-native-reflow--compile-display-signature
            (ebox--current-display-signature))
           (ebox-native-reflow--compile-root-node node))
@@ -2600,6 +2795,9 @@ per call, and no call recursively visits the captured Ebox tree."
          (and wrapper (plist-get wrapper :region-id)))
      (ebox-tree-node-local-source-signature node)
      (and wrapper (ebox-tree-node-local-source-signature wrapper))
+     (plist-get node :ebox-font-fact)
+     (and wrapper (plist-get wrapper :ebox-font-fact))
+     ebox-native-reflow--compile-display-signature
      (and source-index
           (when-let* ((handle (plist-get node :ebox-source-handle)))
             (ebox-source--index-record source-index handle)))
@@ -2614,9 +2812,20 @@ per call, and no call recursively visits the captured Ebox tree."
                   (gethash child flex-content-min-widths)))
            (ebox-native-reflow--retained-layout-children node))))))
 
+(defun ebox-native-reflow--retained-layout-signature-equal-p (old new)
+  "Compare OLD and NEW compiler signatures including native callback identity."
+  (and (equal old new)
+       ;; Positions 3 and 4 contain the node and optional flex-wrapper facts.
+       ;; Keep existing structural comparison for immutable font/source records.
+       (cl-loop for index in '(3 4)
+                always (ebox-interaction-surface-equal-p
+                        (plist-get (nth index old) :surface-properties)
+                        (plist-get (nth index new) :surface-properties)))))
+
 (defun ebox-native-reflow--retained-edge-rule (node)
   "Return NODE's exact child-edge lowering rule, or nil for plain edges."
-  (let ((node-id (plist-get node :node-id)))
+  (let ((node-id (plist-get node :node-id))
+        (ebox-native-reflow--compile-size-node node))
     (cond
      ((and (eq (plist-get node :ebox-type) 'box)
            (eq (plist-get node :ebox-kind) 'box))
@@ -2628,7 +2837,9 @@ per call, and no call recursively visits the captured Ebox tree."
            (list :parent-id node-id :slot 1 :kind 'flex-item
                  :axis (ebox--flex-axis props)))
           ((or 'row 'column)
-           (if (and (equal (plist-get props :item-gap) 0)
+           (if (and (zerop (ebox-native-reflow--compile-gap
+                            (plist-get props :item-gap)
+                            (if (eq kind 'row) 'horizontal 'vertical)))
                     (eq (plist-get props :cross-align) 'stretch))
                (list :parent-id node-id :slot 1 :kind 'direct-axis
                      :axis kind)
@@ -2637,9 +2848,7 @@ per call, and no call recursively visits the captured Ebox tree."
                    (plist-get props :cross-align)))))))
      ((eq (plist-get node :ebox-type) 'flex)
       (let* ((wrapper (plist-get node :box))
-             (props (ebox--flex-container-content-props
-                     (plist-get node :props) (plist-get node :raw-props)
-                     wrapper)))
+             (props (plist-get node :props)))
         (list :parent-id node-id :slot (if wrapper 1 0) :kind 'flex-item
               :axis (ebox--flex-axis props)))))))
 
@@ -2768,7 +2977,7 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                   :property-templates)
                  nil))
                (ebox-native-reflow--compile-property-template-ids
-                (make-hash-table :test 'equal))
+                (make-hash-table :test 'ebox-native-property-template))
                (ebox-native-reflow--compile-display-signature
                 (ebox--current-display-signature))
                (ebox-native-reflow--compile-root-node node)
@@ -2845,7 +3054,8 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                   (if (and cached
                            (not (and inherited-touched-set
                                      (gethash node-id inherited-touched-set)))
-                           (equal signature (plist-get cached :signature)))
+                           (ebox-native-reflow--retained-layout-signature-equal-p
+                            signature (plist-get cached :signature)))
                       (setq fragment (plist-get cached :fragment)
                             entry cached)
                     (setq fragment
@@ -2854,7 +3064,7 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                           fragment (plist-put fragment :node-id node-id)
                           revision (1+ revision)
                           fragment (plist-put fragment :node-revision revision)
-                          entry (list :signature (copy-tree signature)
+                          entry (list :signature signature
                                       :fragment fragment
                                       :revision revision)))
                   (puthash current fragment fragments)
@@ -2898,7 +3108,7 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                   (ebox-native-reflow-session-layout-property-template-index
                    session)
                   (ebox-native-reflow--persistent-index-from-sequence
-                   (plist-get package :property-templates))
+                   (plist-get package :property-templates) t)
                   (ebox-native-reflow-session-layout-edge-index session)
                   (ebox-native-reflow--retained-edge-index
                    postorder new-cache node-table))
@@ -3045,10 +3255,14 @@ RULE identifies the compiler lowering, and RETAINED supplies its stable slot."
     ('box
      (if (eq (plist-get node :ebox-kind) 'text)
          (vector (ebox-native-reflow--compile-text-node node))
-       (let* ((config (and (eq (plist-get node :ebox-kind) 'box)
+       (let* ((ebox-native-reflow--compile-size-node node)
+              (config (and (eq (plist-get node :ebox-kind) 'box)
                            (plist-get node :ebox-layout-config)))
               (kind (and config (ebox-layout-config-kind config)))
-              (old-child (plist-get old-fragment :child))
+              (old-child
+               (let ((child (plist-get old-fragment :child)))
+                 ;; JSON null is an absent edge, not a compiled child.
+                 (unless (eq child :null) child)))
               (fused-p (and (eq kind 'normal)
                             (let ((child (car (ebox-tree-node-children node))))
                               (and child
@@ -3071,13 +3285,8 @@ RULE identifies the compiler lowering, and RETAINED supplies its stable slot."
          (if inner (vector outer inner) (vector outer)))))
     ('flex
      (let* ((wrapper (plist-get node :box))
-            (props (ebox--flex-container-content-props
-                    (plist-get node :props) (plist-get node :raw-props)
-                    wrapper)))
-       (when wrapper
-         (plist-put props :width nil)
-         (when (plist-member (plist-get node :raw-props) :height)
-           (plist-put props :height 'viewport-height)))
+            (ebox-native-reflow--compile-size-node (or wrapper node))
+            (props (ebox-native-reflow--compile-flex-content-props node)))
        (let ((inner (ebox-native-reflow--compile-flex-inner props nil)))
          (if wrapper
              (vector (ebox-native-reflow--compile-box wrapper inner t) inner)
@@ -3593,8 +3802,8 @@ plist supplied by the caller."
         (error "Native reflow tape identity mismatch for %S" field)))
     (if ok-p
         (progn
-          (unless (> line-count 0)
-            (error "Native reflow tape has no lines"))
+          (when (and (zerop line-count) (not (zerop character-count)))
+            (error "Native reflow zero-line tape contains characters"))
           (unless (= style-count (length styles))
             (error "Native reflow tape style table mismatch")))
       (unless (and (zerop style-count) (zerop line-count)
@@ -3683,7 +3892,10 @@ plist supplied by the caller."
         (if (and (eq kind 'source) (null value))
             (ebox-native-reflow--add-absent-nil-source-property
              rendered start end property)
-          (when value
+          (if (not (eq kind 'source))
+              (ebox-interaction--fill-property
+               rendered start end property value)
+            (when value
             (if (and (eq kind 'source) (eq property 'face))
                 (ebox-native-reflow--apply-source-face
                  rendered start end value)
@@ -3694,7 +3906,7 @@ plist supplied by the caller."
                   (unless (get-text-property position property rendered)
                     (add-text-properties
                      position next (list property value) rendered))
-                  (setq position (max next (1+ position))))))))))))
+                  (setq position (max next (1+ position)))))))))))))
 
 (defun ebox-native-reflow--expand-property-templates
     (rendered property-templates)
@@ -3726,7 +3938,7 @@ plist supplied by the caller."
             (ebox-native-reflow--apply-property-template-span
              rendered position next (aref property-templates id))))
         (setq position next)))
-    rendered))
+    (ebox-interaction--refresh-hover! rendered 0 limit)))
 
 (defun ebox-native-reflow--validate-literal-properties
     (rendered styles complete-p &optional property-templates)
@@ -3759,7 +3971,7 @@ plist supplied by the caller."
                             (proper-list-p (nth 2 value))
                             (= (length (nth 2 value)) 1)
                             (integerp (car (nth 2 value)))
-                            (> (car (nth 2 value)) 0))
+                            (>= (car (nth 2 value)) 0))
                  (error "Native reflow tape has an invalid display value")))
               ('ebox-content-idx
                (unless (and complete-p (integerp value) (>= value 0))
@@ -4467,7 +4679,7 @@ HEADER supplies the already validated target identity.  STYLES owns the face
             (error "Native reflow tape literal has trailing or non-string data"))
           (unless (= (length rendered) declared-characters)
             (error "Native reflow tape character count mismatch"))
-          (unless (= (cl-count ?\n rendered) (1- line-count))
+          (unless (= (ebox-string-height rendered) line-count)
             (error "Native reflow tape has invalid line break metadata"))
           (ebox-native-reflow--expand-property-templates
            rendered property-templates)

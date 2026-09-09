@@ -124,16 +124,22 @@ mod composition_regressions {
             .collect::<Vec<_>>();
         lines.push(TapeLine {
             width: 4,
-            atoms: vec![TapeAtom::Space {
-                width: 4,
-                properties: AtomProperties {
-                    content: Some(1),
-                    content_idx: Some(prefix_lines as i64),
-                    owner: Some(1),
-                    owners: vec![1],
-                    ..AtomProperties::default()
+            atoms: vec![
+                TapeAtom::Space {
+                    width: 0,
+                    properties: AtomProperties {
+                        content: Some(20),
+                        content_idx: Some(0),
+                        owner: Some(1),
+                        owners: vec![20, 1],
+                        ..AtomProperties::default()
+                    },
                 },
-            }],
+                TapeAtom::Space {
+                    width: 4,
+                    properties: parent_only.clone(),
+                },
+            ],
             break_after: Some(AtomProperties::default()),
         });
         let mut suffix = owned_line(30, 0);
@@ -146,7 +152,7 @@ mod composition_regressions {
     }
 
     #[test]
-    fn prefix_line_growth_and_shrink_update_only_the_inherited_suffix_content_index() {
+    fn prefix_line_growth_and_shrink_preserve_suffix_carrier_ownership() {
         let mut empty_suffix = nonuniform_text(20, &[0]);
         let LayoutNode::Text { content, .. } = &mut empty_suffix else {
             unreachable!()

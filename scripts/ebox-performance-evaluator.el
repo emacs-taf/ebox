@@ -59,6 +59,13 @@
      tp-surface-mount
      tp-surface-update
      tp-surface-update-scoped
+     tp--prepare-surface
+     tp--publish-buffer-content
+     tp--publish-one-surface
+     tp--capture-property-journals
+     tp--surface-state-snapshots
+     tp--validate-retained-batch-precommit
+     tp--validate-surface-precommit
      ebox-surface--publish-runtime-state))
   "Functions grouped by computation or publication stage.")
 
@@ -299,8 +306,8 @@
            (append
             (list 'box
                   :key (format "cell-%d-%d" row column)
-                  :width '(52)
-                  :padding '(0 1)
+                  :width '(px 52)
+                  :padding '((lh 0) (ch 1))
                   :color "#0F172A"
                   :bgcolor "#F8FAFC")
             (when (and (= row 2) (= column 1)) '(:id target))
@@ -320,8 +327,8 @@
       (push
        (list 'box
              :key (format "resize-item-%d" index)
-             :width '(70)
-             :padding '(0 1)
+             :width '(px 70)
+             :padding '((lh 0) (ch 1))
              :color "#172554"
              :bgcolor "#DBEAFE"
              (format "resize-%02d" index))
@@ -329,10 +336,10 @@
     (ebox-build
      (append (list 'flex
                    :key 'resize-root
-                   :width '(viewport)
+                   :width '(vw 100)
                    :flex-wrap 'wrap
-                   :column-gap '(6)
-                   :row-gap 1)
+                   :column-gap '(px 6)
+                   :row-gap '(lh 1))
              (nreverse items)))))
 
 (defun ebox-performance-evaluator--pure-static ()

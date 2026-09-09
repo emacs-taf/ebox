@@ -1,0 +1,128 @@
+;;; ebox-size-tests.el --- Pure size expression contracts -*- lexical-binding: t; -*-
+
+;;; Code:
+
+(require 'ert)
+(require 'ebox-size)
+
+(ert-deftest ebox-size-explicit-units-resolve-against-their-reference ()
+  (let ((context '(:percent-base 300 :viewport-width 853 :viewport-height 701
+                   :ch 8.5 :lh 19)))
+    (dolist (case '(((px 12.5) . 12.5) ((% 50) . 150.0)
+                    ((vw 33) . 281.49) ((vh 50) . 350.5)
+                    ((ch 80) . 680.0) ((lh 3) . 57)))
+      (should (ebox-size-value-p (car case)))
+      (should (< (abs (- (ebox-size-resolve (car case) context)
+                        (cdr case)))
+                 0.000001)))))
+
+(ert-deftest ebox-size-fractions-survive-until-the-renderer ()
+  (should (= (ebox-size-resolve '(calc (- (vh 50) (lh 1)))
+                               '(:viewport-height 931 :lh 19))
+             446.5))
+  (should (= (ebox-size-resolve '(calc (/ (px 3) 2)) nil) 1.5))
+  (should (= (ebox-size-resolve '(calc (* (/ 1 2) (lh 3))) '(:lh 19))
+             28.5)))
+
+(ert-deftest ebox-size-math-preserves-dimensions-and-css-clamp-precedence ()
+  (let ((context '(:percent-base 300 :ch 8)))
+    (should (= (ebox-size-resolve '(min (% 100) (ch 80)) context) 300))
+    (should (= (ebox-size-resolve '(max (px 320) (% 50)) context) 320))
+    (should (= (ebox-size-resolve '(clamp (ch 20) (% 50) (ch 80)) context)
+               160))
+    ;; CSS gives the minimum precedence when bounds are reversed.
+    (should (= (ebox-size-resolve '(clamp (px 80) (px 40) (px 20)) nil)
+               80))
+    (should (= (ebox-size-resolve '(calc (+ (px 10) (- (px 4)) (px -2)))
+                                 nil)
+               4))
+    (should (= (ebox-size-resolve '(calc (* (px 6) (min 2 3))) nil) 12))))
+
+(ert-deftest ebox-size-missing-reference-defers-but-zero-resolves ()
+  (dolist (unit '(% vw vh ch lh))
+    (should-not (ebox-size-resolve (list unit 3) nil)))
+  (should-not (ebox-size-resolve '(min (px 20) (% 50)) nil))
+  (should-not (ebox-size-resolve '(calc (+ (vh 100) (px 1))) nil))
+  (should (= (ebox-size-resolve '(% 50) '(:percent-base 0)) 0))
+  (should (= (ebox-size-resolve '(calc (+ (vh 100) (px 1)))
+                               '(:viewport-height 0))
+             1)))
+
+(ert-deftest ebox-size-dependencies-are-recursive-distinct-and-stable ()
+  (let ((expression '(clamp (ch 20)
+                           (calc (+ (% 30) (vw 4) (ch 2) (vh 1)))
+                           (max (lh 8) (% 100)))))
+    (should (equal (ebox-size-dependencies expression)
+                   '(ch percent viewport-width viewport-height lh)))
+    (should (equal (ebox-size-dependencies expression)
+                   '(ch percent viewport-width viewport-height lh)))
+    (should-not (ebox-size-dependencies '(calc (+ (px 1) (px 2)))))))
+
+(ert-deftest ebox-size-property-restrictions-apply-to-literals-and-dependencies ()
+  (should-not (ebox-size-value-p '(px -1)))
+  (should (ebox-size-value-p '(lh -1) t))
+  (should (ebox-size-value-p '(calc (- (px 1) (px 2)))))
+  (should (= (ebox-size-resolve '(calc (- (px 1) (px 2))) nil) -1))
+  (should (ebox-size-value-p '(% 50)))
+  (should-not (ebox-size-value-p '(% 50) t nil))
+  (should-not (ebox-size-value-p '(min (px 20) (calc (* 2 (% 10)))) t nil))
+  (should (ebox-size-value-p '(calc (- (vw 100) (px 1))) nil nil)))
+
+(ert-deftest ebox-size-rejects-legacy-values-malformed-functions-and-unit-algebra ()
+  (dolist (value '(0 3 (240) "50%" auto viewport (viewport-height)
+                    (fit-content (ch 80)) (em 2) (px) (px 1 2) (px "2")
+                    (px . 2) (+ (px 1) (px 2))
+                    (calc) (calc (px 1) (px 2)) (min) (max)
+                    (clamp (px 1) (px 2)) (calc (+))
+                    (calc (* (px 1) (px 2))) (calc (/ (px 1) (lh 2)))
+                    (calc (+ (px 1) 1)) (min (px 1) 2)
+                    (calc 2) (calc (/ 2 3))
+                    (calc (/ (% 50) 0)) (calc (/ (px 1) (- 3 3)))
+                    (calc (/ (px 1) 2 3))))
+    (should-not (ebox-size-value-p value t))
+    (should-error (ebox-size-resolve value nil) :type 'ebox-size-error)))
+
+(ert-deftest ebox-size-rejects-nonfinite-input-context-and-overflow ()
+  (dolist (number (list 0.0e+NaN 1.0e+INF -1.0e+INF))
+    (should-not (ebox-size-value-p (list 'px number) t))
+    (should-error (ebox-size-resolve '(ch 1) (list :ch number))
+                  :type 'ebox-size-error))
+  (should-error (ebox-size-resolve '(vh 1) '(:viewport-height -1))
+                :type 'ebox-size-error)
+  (should-not (ebox-size-value-p '(calc (* (px 1.0e+308) 10))))
+  (should-error (ebox-size-resolve '(ch 1.0e+308) '(:ch 100))
+                :type 'ebox-size-error))
+
+(ert-deftest ebox-size-axis-contract-inspects-every-math-operand ()
+  "Property domains constrain every literal, even inside zero-valued math."
+  (dolist (case '((inline (px ch vw %) (lh vh))
+                  (block (lh vh %) (px ch vw))
+                  (stroke (px ch lh vw vh) (%))))
+    (dolist (unit (cadr case))
+      (should (ebox-size-value-for-axis-p (list unit 2) (car case))))
+    (dolist (unit (caddr case))
+      (let ((value (list unit 0)))
+        (dolist (expression
+                 (list value (list 'min value value)
+                       (list 'clamp value value value)
+                       (list 'calc (list '* 0 value))
+                       (list 'calc (list '- value value))))
+          (should (ebox-size-value-p expression))
+          (should-not (ebox-size-value-for-axis-p expression (car case)))
+          (should-error
+           (ebox-size-validate-for-axis expression :example (car case))
+           :type 'ebox-size-error))))))
+
+(ert-deftest ebox-size-axis-errors-describe-property-and-allowed-units ()
+  "Malformed functions and unknown units give the same actionable context."
+  (dolist (value '((px 1) (rh 1) (calc (+ (lh 1) (px 0)))
+                   (clamp (lh 1)) (lh -1) (lh "1")))
+    (let ((message
+           (condition-case condition
+               (progn (ebox-size-validate-for-axis value :height 'block) nil)
+             (ebox-size-error (error-message-string condition)))))
+      (should (string-match-p ":height" message))
+      (should (string-match-p "allowed units: (lh vh %)" message)))))
+
+(provide 'ebox-size-tests)
+;;; ebox-size-tests.el ends here

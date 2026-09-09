@@ -35,9 +35,9 @@ forest 和拥有其 author facts 的 source generation。普通 author 代码只
 
 ```elisp
 (ebox-build
- '(column :padding (1 2)
+ '(column :padding ((lh 1) (ch 2))
           (box :id "status" :color "#166534" "Ready")
-          (row :item-gap 1
+          (row :item-gap (ch 1)
                (box "Left")
                (box "Right"))))
 ```
@@ -67,10 +67,87 @@ participation property 就是普通子 Box property，不会创建另一种公�
 | 文本布局 | `:text-align`、`:wrap-mode`（`word`、`char`、`kp`、`none`） |
 | Overflow | `:overflow`（`visible`、`hidden`、`scroll`） |
 
-普通横向数字表示字符列，单元素横向 list 表示像素；纵向数字表示行数。Border
-width 是例外，始终使用非负整数像素，因此写 `(1 solid "#687386")`，不写
-`((1) solid "#687386")`。`(viewport)` 与 `(viewport-height)` 使用当前 render context。property 验证属于
-Ebox；context/value 组合无效时会直接报错。
+几何值统一使用 `(单位 数值)`：`(px 240)`、`(% 50)`、`(vw 100)`、`(vh 100)`、
+`(ch 80)`、`(lh 3)`。每个属性只接受[统一单位约束表](ebox-user-guide.zh.md#size-unit-constraints)
+规定的单位，不能跨几何轴使用。不接受 CSS 字符串、裸长度、单元素像素列表及旧的
+viewport/contain 关键词；零长度也需要允许的单位。边框宽度采用独立绘制厚度规则，
+不接受百分比，
+例如 `:border ((px 1) solid "#687386")`。Flex 因子、Grid 索引等无量纲值仍是数字。
+
+| 属性 | 接受的关键词 | 默认值 |
+| --- | --- | --- |
+| `width`、`height`、`min-width`、`min-height` | `auto`、`min-content`、`max-content`、`fit-content`、`stretch` | `auto` |
+| `max-width`、`max-height` | `none`、`min-content`、`max-content`、`fit-content`、`stretch` | `none` |
+
+尺寸函数支持 `calc`、`min`、`max`、`clamp`，可以组合使用，例如
+`(calc (- (vh 100) (lh 1)))` 与 `(clamp (ch 20) (% 50) (ch 80))`。
+`fit-content` 只接受裸关键词，不带参数。property 验证属于 Ebox；构造树时就按
+属性或父布局方向，递归检查所有函数分支、展开后的简写、Grid 轨道与 Flex basis。
+context/value 组合无效时会直接报错。百分比参照、字体单位、算术规则及纵向完整行显示量化见
+[用户指南的几何章节](ebox-user-guide.zh.md#4-使用几何与绘制-property)。这是 CSS
+语义的子集，不是完整浏览器布局引擎。
+
+### 原生节点能力
+
+`text`、`box`、`row`、`column`、`flex` 和 `grid` 都接受下面四个显式节点属性。
+这些能力与 CSS declaration 分开，不参与样式表 cascade。
+
+| 属性 | 接受的值 | 原生 surface property |
+| --- | --- | --- |
+| `:help-echo` | `nil`、字符串，或由 Emacs 以 `(WINDOW OBJECT POSITION)` 调用的函数 | `help-echo` |
+| `:pointer` | `nil`、`text`、`arrow`、`vdrag`、`modeline`、`hand`、`hdrag`、`nhdrag` 或 `hourglass` | `pointer` |
+| `:hover-style` | `nil`，或仅包含 `:color`、`:background-color`、`:text-decoration-line`、`:text-decoration-color`、`:text-decoration-style` 的 Ebox 绘制 plist | 编译后的 `mouse-face` |
+| `:keymap` | `nil`，或使用普通交互命令作为绑定的原生 Emacs keymap | `keymap` |
+
+悬停颜色使用颜色字符串，`:text-decoration-color` 还接受 `currentColor`。
+`:text-decoration-line` 接受 `none`、`underline`、`overline`、`line-through`，或不含
+`none`、不重复的非空装饰列表；`:text-decoration-style` 接受 `solid`、`double`、
+`dotted`、`dashed`、`wavy`。悬停样式不能改变字体度量、几何、间距或布局。Ebox 负责
+编译受限绘制 plist；原始 face 或任意原生 property plist 都不是 author 输入。
+不提供 `:tps`、`:local-map` 或原始 `:mouse-face` 输入。
+
+同一渲染行中，由同一个 hover owner（声明 `:hover-style` 的节点）覆盖的文字与
+padding 共享一个原生 `mouse-face`。未指定的悬停属性采用 owner 的基础样式；
+因此，即使子文本的正常颜色不同，被父级悬停覆盖时也会采用 owner 未被覆盖的属性。
+子节点显式声明 hover style 会形成独立悬停区域，`nil` 阻止外层悬停。物理左右边框
+不参与悬停高亮，水平边框线条保留自己的绘制。
+
+Box 的帮助、指针与 keymap 范围包含渲染后的内容、padding 和 border，不包含该 Box
+自身的 margin 及结构性换行符；悬停遵循上述范围。Text 的能力作用于其渲染文本。
+嵌套位置上，子节点显式声明的每项
+能力优先于外层值；显式 `nil` 阻止外层值覆盖，省略属性则保留外层交互范围的覆盖。
+
+`ebox-help-create` 把零参数业务函数适配为原生的 `(WINDOW OBJECT POSITION)`
+帮助回调。业务函数返回字符串或 `nil`，在悬停 buffer 的上下文中运行，不移动 point
+或切换选中窗口，直到 Emacs 请求帮助时才调用。例如：
+
+```elisp
+(ebox-help-create (lambda () (format "Help for %s" (buffer-name))))
+```
+
+仍支持直接传入原生帮助函数。帮助函数保留为函数，由 Emacs 在请求帮助时调用，
+不在构造 DSL 时求值。
+计算得到的函数或 keymap 通过反引号和逗号插入。帮助显示和指针外观遵循用户的
+Emacs 设置及窗口系统；单独设置指针形状不会绑定命令。
+
+推荐使用 `ebox-keymap-create` 将回调转换为 keymap：
+
+```elisp
+(ebox-keymap-create
+ :activate (lambda () (message "Activated"))
+ :bindings (list (cons "?" (lambda () (message "Action help")))))
+```
+
+`:activate` 接收零参数函数，将其绑定到 `RET`、`[return]`、`SPC` 和 `[mouse-1]`。
+`:bindings` 接收 alist，key 是按键描述字符串或事件向量，value 是零参数函数。
+两项都可省略，`nil` 表示不添加相应绑定。重复按键和重叠前缀会报错，包括与激活键
+重叠的绑定。辅助函数返回原生 Emacs keymap；回调保留为函数，直到对应命令触发时才调用。
+鼠标事件会自动从事件取得窗口，并在其 buffer 中运行回调，不选择窗口或移动 point。
+键盘回调在当前 buffer 中运行，由 point 所在位置进行原生分派。
+
+仍支持直接传入原生 keymap；其鼠标命令需要自行从事件取得目标窗口，并在该窗口的
+buffer 中操作。这些能力不引入 Ebox 焦点导航或应用状态系统。
+可运行示例见[交互指南](ebox-user-guide.zh.md#native-node-interaction)。
 
 ## 2. Evaluated typed construction
 
@@ -110,7 +187,7 @@ facts。最后用一个 `CanonicalEboxInput` 同时传递 forest 与封存的 so
        (root
         (ebox-box-create
          :layout (ebox-row-layout-create
-                  :item-gap 1 :cross-align 'center)
+                  :item-gap '(ch 1) :cross-align 'center)
          :children (list left right)
          :source-handle root-handle
          :owned-facts
@@ -203,7 +280,7 @@ observer 为 nil 时，Ebox 不创建 observation context，不取 timestamp/GC 
 | --- | --- |
 | `ebox-region-ids` | 按文档顺序返回当前底层 region id。 |
 | `ebox-region-resolve` | 把 mounted buffer 中一个逻辑 `:id` 解析为不透明、surface-scoped 的 handle。 |
-| `ebox-region-update` | 通过一次 retained transaction 应用支持的可变样式或滚动 property。 |
+| `ebox-region-update` | 通过一次 retained transaction 应用支持的可变样式、滚动或原生节点能力 property；接受不透明 region handle，或当前已挂载 buffer 中的语义 `:id`。 |
 | `ebox-child-range` | 仅供框架集成：在组装 typed canonical input 时构造非视觉、可寻址的 child Range descriptor。 |
 | `ebox-candidate-begin` | 在 one-shot candidate 中捕获当前准确 mounted generation。 |
 | `ebox-candidate-replace` | 用 single-root `CanonicalEboxInput` 替换一个 candidate node address。 |
@@ -216,6 +293,19 @@ observer 为 nil 时，Ebox 不创建 observation context，不取 timestamp/GC 
 
 handle 和位置只属于一个 live publication generation；对象被删除后要重新解析。
 candidate 被 commit 封存后不能复用。
+
+回调在目标已挂载 buffer 中运行时，可以直接用语义 ID 更新，例如
+`(ebox-region-update "action" :help-echo "Updated help")`。
+语义 ID 接受字符串、非 `nil` 符号和整数；author 声明的整数 `:id` 与 Ebox 用于
+诊断的数字 region metadata 不同。
+更新另一个已挂载 buffer 时，使用显式 buffer 调用 `ebox-region-resolve`，再把返回
+的 handle 传给 `ebox-region-update`。
+
+`ebox-region-update` 接受 Text 和 Box region 上的 `:help-echo`、`:pointer`、
+`:hover-style` 和 `:keymap`，验证规则与构造时一致。新值替换对应能力，`nil` 清除
+对应能力并阻止外层值覆盖，省略的属性保持不变。Ebox 对 keymap 创建快照；调用方
+之后直接修改原 map 不会更新已挂载的 surface，应显式替换 `:keymap` 来发布新绑定。
+清除该属性只移除节点 keymap，普通 Emacs buffer 和全局绑定仍然适用。
 
 author DSL 没有 Range form。普通 author 只组合直接嵌套的 Text/Box child，不调用
 `ebox-child-range`；Range address 只服务已经拥有 semantic child range 与 candidate
@@ -265,6 +355,7 @@ native 模块只是加速器，不是正确性依赖。加载包不会构建它�
 - 构造：`ebox-build`、`ebox-text-create`、`ebox-normal-layout-create`、
   `ebox-row-layout-create`、`ebox-column-layout-create`、
   `ebox-flex-layout-create`、`ebox-grid-layout-create`、`ebox-box-create`；
+- 交互：`ebox-help-create`、`ebox-keymap-create`；
 - 渲染/发布：`ebox-render`、`ebox-render-to-buffer`、`ebox-unmount-buffer`、
   `ebox-display-buffer`、`ebox-commit`、`ebox-buffer-set-observer`、`ebox-buffer-update-report`、
   `ebox-rerender-buffer-with-context`、`ebox-viewport-window-width`、
@@ -292,6 +383,7 @@ native 模块只是加速器，不是正确性依赖。加载包不会构建它�
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make dsl-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```

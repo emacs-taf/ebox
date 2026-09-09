@@ -22,6 +22,8 @@
 | `ebox-runtime-index.el` | 压缩持久 radix map 与旧 hash-table adapter。 |
 | `ebox-state-contract.el` | 封闭的 retained-state 所有权清单与只读 compatibility-mirror 重建探针。 |
 | `ebox-style.el` | ECSS property schema、declaration 与 cascade、shorthand 展开、computed style、颜色、border 和 dirty effect。 |
+| `ebox-interaction.el` | 提供目标 buffer 上下文的原生帮助与 keymap 适配、四种显式节点能力的验证与独立复制、受限悬停绘制编译，以及保留嵌套显式 nil 优先级的原生 surface-property 投影。 |
+| `ebox-size.el` | 显式单位的纯验证、量纲运算、依赖识别，以及基于注入测量值的浮点像素换算。 |
 | `ebox-tree.el` | 节点遍历、逻辑子节点访问、ECSS subject 适配、identity、父路径、key 和树 snapshot。 |
 | `ebox-child-range.el` | 不可变 weighted segment trie、稀疏持久 key trie、Range replacement 与 Gate A metrics。 |
 | `ebox-measure.el` | display 敏感的字符、face、像素测量与测量缓存。 |
@@ -44,6 +46,18 @@
 active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-core-render-tests.el`、`tests/ebox-state-contract-tests.el`、`tests/ebox-layout-boundary-tests.el`、`tests/ebox-patch-plan-tests.el`、`tests/ebox-style-schema-tests.el`、`tests/ebox-spi-tests.el`、`tests/ebox-child-range-tests.el`、`tests/ebox-grid-tests.el`、`tests/ebox-commit-tests.el`、`tests/ebox-surface-tests.el`、`tests/ebox-dsl-tests.el`、`tests/ebox-flex-tests.el`、`tests/ebox-selector-tests.el`、`tests/ebox-package-tests.el`、`tests/ebox-visual-check-tests.el`、`tests/ebox-docs-contract-tests.el`、`tests/ebox-ci-contract-tests.el`、`native/Cargo.toml`、`native/Cargo.lock`、`native/build.rs`、`native/vendor/emacs-30/emacs-module.h`、`native/src/lib.rs`、`native/src/layout.rs`、`native/c/ebox_module.c`、`scripts/ebox-package-lint.el`、`scripts/ebox-visual-check.el` 和 `scripts/ebox-performance-evaluator.el`。
 
 Runtime index 行为由 `tests/ebox-runtime-index-tests.el` 覆盖。
+
+原生节点能力由 `tests/ebox-interaction-tests.el` 通过 `make interaction-tests` 覆盖。
+可交互参考示例及其命令回归测试位于同级 Playground 包。
+
+CSS 尺寸由 `tests/ebox-size-tests.el`、`tests/ebox-size-style-tests.el`、
+`tests/ebox-css-layout-tests.el`、`tests/ebox-css-flex-grid-tests.el`、
+`tests/ebox-css-viewport-tests.el` 和 `tests/ebox-size-native-tests.el` 覆盖。
+`tests/ebox-zero-height-tests.el` 通过同一个 `make size-tests` 入口覆盖空的自动几何
+和显式空白行尺寸。
+支持的字面量迁移入口是
+`scripts/migrate-css-sizes.py`；`scripts/test_migrate_css_sizes.py` 验证它保留
+源码格式的重写及歧义报告。
 
 ## 运行时模型
 
@@ -69,6 +83,7 @@ Runtime index 行为由 `tests/ebox-runtime-index-tests.el` 覆盖。
 | Source/Element Tree | `ebox-child-range.el`、`ebox-tree.el`、`ebox-dsl.el` | 已发布 buffer 的变更。 |
 | 状态所有权合同 | `ebox-state-contract.el` | Live 发布或可变 authority。 |
 | Computed Style | `ebox-style.el` | 布局 identity 或 patch 执行。 |
+| 长度值 | `ebox-size.el` | 窗口/节点读取、属性默认值、决定显示量化边界或任意 Lisp 求值。 |
 | Measurement | `ebox-measure.el` | 应用状态或 dirty 策略。 |
 | Formatting Context | `ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` | Buffer 编辑。 |
 | Fragment/Snapshot | `ebox-fragment.el`、`ebox-incremental.el` | Source parsing 或 identity 分配。 |
@@ -81,7 +96,9 @@ Runtime index 行为由 `tests/ebox-runtime-index-tests.el` 覆盖。
 ## 不变量
 
 - 公共 Ebox 节点是数据；`ebox--*` 名称是私有实现。
-- `'(420)` 这样的单元素横向 list 表示像素；普通横向数字表示字符列。
+- Box 几何统一使用 `(单位 数值)`，单位为 `px`、`%`、`vw`、`vh`、`ch`、`lh`，通过 `calc`、`min`、`max`、`clamp` 组合。不接受几何裸数字、单元素像素列表、viewport/contain 关键词和带参数的 `fit-content`。
+- [作者单位约束表](../user/ebox-user-guide.zh.md#size-unit-constraints) 是统一契约。schema 与构造边界在显示之前，按 inline、block、父布局主轴或边框绘制用途，递归验证所有嵌套分支。空的自动内容高度为零。
+- property schema 拥有关键词和值域规则，布局注入参照测量值。长度运算保留小数和未解析依赖，到对应布局/显示边界再处理；纵向 buffer 内容仍按完整行量化。
 - `ebox-render` 使用临时 TP surface，不发布到 buffer；`ebox-render-to-buffer` 挂载 retained TP surface；`ebox-display-buffer` 展示的也是这条 retained-surface 路径；`ebox-commit` 准备 Ebox 语义后通过 TP 更新该 mount。Ebox 不再公开另一套擦除 live buffer 后执行任意 BODY 的宏。
 - 声明式输入始终由调用者拥有。live mount/commit 只在 surface-owned copy 上分配 identity，因此同一 source 可以挂载到多个 buffer。
 - 逻辑 `:id` 通过 `ebox-region-resolve` 解析为不透明、surface-scoped 的 handle；同一逻辑 region 挂载到多个 buffer 时，由 handle 而不是 source-tree 数字 id 区分。
@@ -106,6 +123,7 @@ Runtime index 行为由 `tests/ebox-runtime-index-tests.el` 覆盖。
 - `owner-rerender` 范围大于 `span-patch`，`span-patch` 大于 `paint-patch`。
 - Buffer 坐标属于生成它的 generation，变更后必须重新获取。
 - Grid 使用普通测量与渲染流水线；native reflow 可以拒绝不适合的树并回退到 Elisp，正确性不变。
+- Native 尺寸路径支持公共轴向约束内的固定值和静态尺寸运算，前提是解析后的几何在 native 表示中是整数。百分比/视口依赖、小数几何和纵向固有尺寸使用普通 Elisp fallback；公共入口接受这些值，不代表 native 会加速它们。
 - 已确认的 retained-native frame 持有不可变布局文档及其精确文档 revision；候选
   session 的 fork 共享该文档。同步 frame 只有在文档 base/target revision 相等且
   命中 confirmed 文档、同时 TP runtime revision 命中 confirmed frame 时，才可
@@ -122,7 +140,7 @@ Runtime index 行为由 `tests/ebox-runtime-index-tests.el` 覆盖。
 
 ## Grid 合同
 
-当前 Grid 支持固定和像素轨道、`auto`、分数轨道、`minmax`、`repeat`、隐式行列、行列 gap、auto-flow、从 1 开始的 placement、正整数 span、item/content 对齐，以及普通 buffer 渲染和更新。Ebox 支持规范字体输入（`:font-family`、`:font-size`、`:font-weight`、`:font-style`）与 text-decoration paint；完整浏览器 typography 不在合同内。百分比、绝对定位、z-index、圆角、阴影和浏览器级 bidi 也不在合同内。
+当前 Grid 支持显式单位和百分比轨道、`auto`、分数轨道、`minmax`、`repeat`、隐式行列、行列 gap、auto-flow、从 1 开始的 placement、正整数 span、item/content 对齐，以及普通 buffer 渲染和更新。Ebox 支持规范字体输入（`:font-family`、`:font-size`、`:font-weight`、`:font-style`）与 text-decoration paint；完整浏览器 typography 不在合同内。绝对定位、z-index、圆角、阴影和浏览器级 bidi 也不在合同内。
 
 ## Active 示例与测试
 
@@ -132,6 +150,9 @@ Runtime index 行为由 `tests/ebox-runtime-index-tests.el` 覆盖。
 
 ```sh
 make check
+make size-tests
+make size-migration-tests
+make interaction-tests
 make core-tests
 make runtime-index-tests
 make child-range-tests
@@ -164,3 +185,26 @@ make diff-check
 ```
 
 先运行聚焦测试；修改共享渲染、Grid、公共构造器或文档后运行 `make check`。修改 native 后必须运行 Rust 检查与 native 构建。
+
+`make size-tests` 包含 `make size-migration-tests`，因此迁移工具的 Python 回归
+测试也会通过 `make check` 执行。
+
+## 迁移作者尺寸字面量
+
+旧 Ebox 作者字面量使用已有的源码感知迁移工具，不另写一套搜索替换脚本。
+位置参数明确指定文件或目录，不从当前机器的工作区推测目标。推荐先预览：
+
+```sh
+python3 scripts/migrate-css-sizes.py ../ebox-playground/examples
+```
+
+检查拟修改内容和歧义报告后，对同一批明确路径增加 `--write` 应用。工具保留字符串、
+注释和排版，不执行 Elisp；动态值、已删除或有歧义的结构需要有意修改源码。
+只对作者数据使用工具：内部已测量结构可能用相同属性名存储已经解析的数字引擎值。
+该入口替代临时的字面量重写探针。
+
+迁移工具验证命令：
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_migrate_css_sizes.py'
+```

@@ -81,6 +81,7 @@
   (let* ((buffer (ebox-selector--region-handle-buffer handle))
          (surface (ebox-selector--region-handle-surface handle))
          (object (ebox-selector--region-handle-object handle))
+         (logical-id (ebox-selector--region-handle-logical-id handle))
          (state (and (buffer-live-p buffer)
                      (ebox--buffer-render-state buffer)))
          (region-id
@@ -88,6 +89,12 @@
                (eq surface (plist-get state :surface))
                (tp-surface-live-p surface)
                (tp-object-live-p object)
+               ;; A retained positional object can be reused for a different
+               ;; source node.  A named handle must still name this object.
+               (or (null logical-id)
+                   (assq object
+                         (gethash (ebox-tree-metadata-string logical-id)
+                                  (plist-get state :logical-id-region-table))))
                (gethash object
                         (plist-get state :surface-object-region-table)))))
     (unless region-id

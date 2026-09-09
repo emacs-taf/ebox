@@ -9,6 +9,7 @@
 (require 'cl-lib)
 (require 'ebox-cache)
 (require 'ebox-font)
+(require 'ebox-size)
 
 (declare-function ebox--register-render-owned-text-value
                   "ebox-render-context" (property value))
@@ -79,6 +80,71 @@ of pixel measurements it triggers do not each rebuild the display signature.")
       (cond
        ((numberp width) width)
        ((and (consp width) (numberp (car width))) (car width))))))
+
+(defun ebox--fixed-pixel-space-width (display)
+  "Return DISPLAY's nonnegative fixed pixel width, or nil for other specs.
+Bare space widths use character units; align-to spaces depend on placement."
+  (when (and (consp display) (eq (car display) 'space)
+             (not (plist-member (cdr display) :align-to)))
+    (let ((width (plist-get (cdr display) :width)))
+      (when (and (consp width) (null (cdr width))
+                 (ebox-size--finite-number-p (car width)) (>= (car width) 0))
+        (car width)))))
+
+(defun ebox--fractional-pixel-spaces-p (string)
+  "Return non-nil when STRING has a nonintegral fixed-pixel space glyph."
+  (let ((position 0) (end (length string)))
+    (catch 'fractional
+      (while (< position end)
+        (let* ((next (next-single-property-change position 'display string end))
+               (width (ebox--fixed-pixel-space-width
+                       (get-text-property position 'display string))))
+          (when (and width (/= width (floor width))
+                     (cl-position-if (lambda (char) (/= char ?\n)) string
+                                     :start position :end next))
+            (throw 'fractional t))
+          (setq position next)))
+      nil)))
+
+(defun ebox--quantize-pixel-spaces (string)
+  "Return complete STRING lines with cumulative whole-pixel space extents.
+Keep raw layout strings and their cached geometry private.  Only the final
+output copy changes: equal line boundaries share the same rounding regardless
+of text alignment, blank fill, borders, padding, or sibling segmentation.
+Ordinary glyph advances are whole pixels, so only fixed space extents affect
+the fractional remainder.  Preserve zero-width glyphs and all other properties.
+An already integral STRING is returned unchanged."
+  (if (not (ebox--fractional-pixel-spaces-p string))
+      string
+    (let ((result (copy-sequence string))
+          (start 0)
+          (end (length string)))
+      (while (< start end)
+        (let* ((line-end (or (string-match "\n" string start) end))
+               (position start)
+               positions widths)
+          (while (< position line-end)
+            (let* ((next (next-single-property-change
+                          position 'display string line-end))
+                   (width (ebox--fixed-pixel-space-width
+                           (get-text-property position 'display string))))
+              (when width
+                (cl-loop for index from position below next
+                         do (push index positions) (push width widths)))
+              (setq position next)))
+          (cl-mapc
+           (lambda (index used)
+             (let ((display (get-text-property index 'display string)))
+               (unless (= used (ebox--fixed-pixel-space-width display))
+                 (let ((updated (cons 'space (copy-sequence (cdr display)))))
+                   (setcdr updated (plist-put (cdr updated) :width (list used)))
+                   (put-text-property
+                    index (1+ index) 'display
+                    (ebox--register-render-owned-text-value 'display updated)
+                    result)))))
+           (nreverse positions) (ebox-size-quantize (nreverse widths)))
+          (setq start (1+ line-end))))
+      result)))
 
 (defun ebox--string-with-text-scale (string factor)
   "Return STRING with FACTOR applied as an explicit face height."
@@ -162,7 +228,16 @@ constant across the selected slice."
       (let* ((sample (if (or start end)
                          (substring line (or start 0) (or end (length line)))
                        line))
-             (width (ebox--scaled-string-pixel-width sample factor))
+             (space-width
+              (and (> (length sample) 0)
+                   (ebox--display-space-width
+                    (get-text-property 0 'display sample))))
+             ;; This cache key proves uniform visual properties.  Preserve
+             ;; display-space fractions just as the segmented path does;
+             ;; Emacs's glyph measurement quantizes them before padding.
+             (width (if space-width
+                        (* space-width (length sample))
+                      (ebox--scaled-string-pixel-width sample factor)))
              (index ebox--string-pixel-width-cache-ring-index)
              (evicted (aref ebox--string-pixel-width-cache-ring index)))
         (when ebox--render-string-pixel-width-cache
@@ -357,18 +432,28 @@ Nested uses reuse the outer validation."
   (ebox--space-pixel-width))
 
 (defsubst ebox-pixel-space (pixel-width)
-  "Generate a space string with PIXEL-WIDTH."
+  "Generate a space string with PIXEL-WIDTH.
+Canonicalize whole pixels so equal computed lengths have identical display
+properties.  Preserve a genuine fractional remainder until display."
   (if (or (null pixel-width) (<= pixel-width 0))
       ""
-    (let ((display
+    (let* ((whole-pixels (truncate pixel-width))
+           (pixel-width (if (= pixel-width whole-pixels)
+                            whole-pixels pixel-width))
+           (display
            (ebox--register-render-owned-text-value
             'display `(space :width (,pixel-width)))))
       (propertize " " 'display display))))
 
 (defun ebox--pixel-blank (pixel-width height)
-  "Generate a blank area of PIXEL-WIDTH and HEIGHT lines."
-  (when (and pixel-width height (> pixel-width 0) (> height 0))
-    (ebox--string-repeat-lines (ebox-pixel-space pixel-width) height)))
+  "Generate a blank area of PIXEL-WIDTH and HEIGHT lines.
+A zero pixel width still preserves the requested positive line height."
+  (when (and pixel-width height (>= pixel-width 0) (> height 0))
+    (ebox--string-repeat-lines
+     (if (zerop pixel-width)
+         (ebox-lines-join '(""))
+       (ebox-pixel-space pixel-width))
+     height)))
 
 (defun ebox--pixel-pad (string prefix-pixel &optional suffix-pixel)
   "Pad STRING with pixel spaces on left (PREFIX-PIXEL) and right (SUFFIX-PIXEL)."

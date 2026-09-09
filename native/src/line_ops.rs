@@ -131,10 +131,10 @@ impl LineOp {
             Self::CollapseWhitespace { width, .. } if line.whitespace && !line.noncontent => {
                 line = LineMetric {
                     width: (*width).max(0),
-                    chars: u64::from(*width > 0),
+                    chars: 1,
                     min_content: 0,
-                    nonempty: *width > 0,
-                    whitespace: *width > 0,
+                    nonempty: true,
+                    whitespace: true,
                     noncontent: false,
                 };
             }

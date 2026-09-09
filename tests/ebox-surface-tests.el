@@ -758,7 +758,7 @@
          (ebox-runtime-idle-reflow-cache-prewarm nil)
          (map (make-sparse-keymap))
          (text (propertize "Open" 'keymap map 'help-echo "Open item"))
-         (input (ebox-build `(box :width (viewport) :height (viewport-height)
+         (input (ebox-build `(box :width (vw 100) :height (vh 100)
                               (text ,text)))))
     (define-key map [mouse-1] #'ignore)
     (unwind-protect
@@ -3345,10 +3345,10 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
   "Copy a paint-only Theme delta without rerunning ECSS cascade computation."
   (let* ((subject (ecss-subject-create :type "box"))
          (old-declarations
-          '(ebox/width (100) ebox/color "#252A2E"
+          '(ebox/width (px 100) ebox/color "#252A2E"
             ebox/background-color "#F8F5EE"))
          (new-declarations
-          '(ebox/width (100) ebox/color "#F2EEE4"
+          '(ebox/width (px 100) ebox/color "#F2EEE4"
             ebox/background-color "#1B1F20"))
          (old-style
           (ebox-style-compute-subject subject old-declarations))
@@ -3367,7 +3367,7 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
     (should-not
      (ebox-style--theme-delta-computed
       old-style old-declarations
-      (plist-put (copy-sequence new-declarations) 'ebox/width '(120))))))
+      (plist-put (copy-sequence new-declarations) 'ebox/width '(px 120))))))
 
 (ert-deftest ebox-style-theme-delta-propagates-inherited-color ()
   "Copy a proven inherited Theme color without rerunning ECSS.
@@ -3379,7 +3379,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
           (ebox-style-compute-subject parent '(ebox/color "#111111")))
          (parent-new
           (ebox-style-compute-subject parent '(ebox/color "#222222")))
-         (declarations '(ebox/width (100) ebox/background-color "#eeeeee"))
+         (declarations '(ebox/width (px 100) ebox/background-color "#eeeeee"))
          (style
           (ebox-style-compute-subject child declarations parent-old))
          (delta
@@ -3402,7 +3402,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
           (ebox-style-compute-subject parent '(ebox/color "#111111")))
          (parent-new
           (ebox-style-compute-subject parent '(ebox/color "#222222")))
-         (declarations '(ebox/color "#ffffff" ebox/width (100)))
+         (declarations '(ebox/color "#ffffff" ebox/width (px 100)))
          (style
           (ebox-style-compute-subject child declarations parent-old))
          (delta
@@ -3449,15 +3449,15 @@ changes.  Geometry and non-inherited computed values must remain identical."
   "Equivalent Flex gap aliases must not become geometry dirtiness."
   (let ((old (list :ebox-type 'flex
                    :raw-props '(:width stretch
-                                :row-gap 1 :column-gap (12)
-                                :padding-block-start 0
-                                :padding-inline-end 2
-                                :padding-block-end 0
-                                :padding-inline-start 2
-                                :border-top-width 1
-                                :border-right-width 1
-                                :border-bottom-width 1
-                                :border-left-width 1
+                                :row-gap (lh 1) :column-gap (px 12)
+                                :padding-block-start (lh 0)
+                                :padding-inline-end (ch 2)
+                                :padding-block-end (lh 0)
+                                :padding-inline-start (ch 2)
+                                :border-top-width (px 1)
+                                :border-right-width (px 1)
+                                :border-bottom-width (px 1)
+                                :border-left-width (px 1)
                                 :border-top-style solid
                                 :border-right-style solid
                                 :border-bottom-style solid
@@ -3471,9 +3471,9 @@ changes.  Geometry and non-inherited computed values must remain identical."
                                 :background-color "#F8F5EE")))
         (new (list :ebox-type 'flex
                    :raw-props '(:width stretch
-                                :gap (1 (12))
-                                :padding (0 2)
-                                :border (1 solid "#687386")
+                                :gap ((lh 1) (px 12))
+                                :padding ((lh 0) (ch 2))
+                                :border ((px 1) solid "#687386")
                                 :align-items center
                                 :color "#F2EEE4"
                                 :bgcolor "#1B1F20"))))
@@ -3837,8 +3837,340 @@ changes.  Geometry and non-inherited computed values must remain identical."
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-region-content-update-preserves-canonical-dirty-facts ()
+  "Successive Text updates retain content facts needed by the owner planner."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (let ((buffer (current-buffer)))
+        (ebox-render-to-buffer
+         buffer
+         (ebox-test-column
+          (ebox-test-box :id "counter" :width '(100)
+                        (ebox-test-text "COUNT  00"))
+          (ebox-test-box :id "unchanged" :width '(100)
+                        (ebox-test-text "Still here"))))
+        (let* ((handle (ebox-region-resolve buffer "counter"))
+               (region-id (cdr (ebox-selector--region-target handle)))
+               (original-text
+                (ebox--region-update-direct-text-node
+                 (ebox--root-region-box
+                  (ebox--buffer-root-node buffer) region-id))))
+          (dolist (content '("COUNT  01" "COUNT  02" "COUNT  10"))
+            (let* ((report (ebox-region-update handle :content content))
+                   (text
+                    (ebox--region-update-direct-text-node
+                     (ebox--root-region-box
+                      (ebox--buffer-root-node buffer) region-id))))
+              (should (> (plist-get report :dirty-count) 0))
+              (should-not (eq (plist-get report :strategy) 'no-op))
+              (should (equal (ebox-text-node-value text) content))
+              (should (equal (plist-get text :content) content))
+              (should (string-match-p content (buffer-string)))
+              (should (string-match-p "Still here" (buffer-string)))))
+          (should (equal (ebox-text-node-value original-text) "COUNT  00"))
+          (should (equal (plist-get original-text :content) "COUNT  00")))))))
+
+(ert-deftest ebox-region-content-update-honors-retained-nested-slot ()
+  "A nested auto-width owner keeps its proven slot during a text patch."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (let ((buffer (current-buffer))
+            (full-render (symbol-function 'ebox-surface--render-candidate))
+            (fragments (symbol-function 'ebox-surface--rendered-fragments))
+            (full-renders 0) (full-fragments 0))
+        (ebox-render-to-buffer
+         buffer
+         (ebox-build
+          '(column :width (px 120) :height (lh 20) :color "#273B42"
+             (box :padding ((lh 1) (ch 1)) :border "#5893A3"
+                  :background-color "#FFFFFF"
+               (box :id "counter" :color "#205A6C" :font-weight bold
+                 "COUNT  00")
+               (box "Unchanged sibling")))))
+        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                   (lambda (&rest arguments)
+                     (cl-incf full-renders)
+                     (apply full-render arguments)))
+                  ((symbol-function 'ebox-surface--rendered-fragments)
+                   (lambda (&rest arguments)
+                     (cl-incf full-fragments)
+                     (apply fragments arguments))))
+          (dolist (content '("COUNT  01" "COUNT  02"))
+            (let ((report (ebox-region-update "counter" :content content)))
+              (should (eq (plist-get report :strategy) 'span-patch))
+              (should (string-match-p content (buffer-string))))))
+        (should (= full-renders 0))
+        (should (= full-fragments 0))
+        (should
+         (equal (buffer-substring-no-properties (point-min) (point-max))
+                (substring-no-properties
+                 (ebox-render
+                  (plist-get (ebox-surface-buffer-snapshot buffer) :input)))))))))
+
+(ert-deftest ebox-region-fixed-coordinate-content-retains-surface-plan ()
+  "A plain span proof keeps its unchanged published ownership projection."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(column :width (px 180)
+           (box :id "counter" :width (ch 20) "000000000")
+           (text "Unchanged sibling"))))
+      (let ((ledger (plist-get (ebox--buffer-render-state (current-buffer))
+                               :surface-fragments))
+            (surface-plan (symbol-function 'ebox-surface--surface-plan))
+            (inheritance-scan
+             (symbol-function 'ebox-surface--inline-inheritance-required-p))
+            (inheritance-scans 0)
+            (plans 0))
+        (cl-letf (((symbol-function 'ebox-surface--surface-plan)
+                   (lambda (&rest arguments)
+                     (cl-incf plans)
+                     (apply surface-plan arguments)))
+                  ((symbol-function 'ebox-surface--inline-inheritance-required-p)
+                   (lambda (&rest arguments)
+                     (cl-incf inheritance-scans)
+                     (apply inheritance-scan arguments))))
+          (dolist (content '("000000001" "000000002" "000000010"))
+            (should
+             (eq (plist-get (ebox-region-update "counter" :content content)
+                            :strategy)
+                 'span-patch))
+            (should
+             (eq ledger
+                 (plist-get (ebox--buffer-render-state (current-buffer))
+                            :surface-fragments)))))
+        (should (= plans 0))
+        (should (= inheritance-scans 0)))
+      (should
+       (equal-including-properties
+        (buffer-string)
+        (ebox-surface-test--render-runtime
+         (ebox--buffer-render-state (current-buffer))))))))
+
+(ert-deftest ebox-region-content-retains-viewport-axis-proof ()
+  "Content cannot alter the retained topology's viewport expressions."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(column :width (vw 80)
+           (box :id "counter" :width (ch 20) "000000000")
+           (box :height (vh 20) "Unchanged sibling"))))
+      (let* ((old-state (ebox--buffer-render-state (current-buffer)))
+             (axes (plist-get old-state :viewport-dependent-node-id-axes))
+             (scan (symbol-function 'ebox-surface--context-axes))
+             (scans 0))
+        (cl-letf (((symbol-function 'ebox-surface--context-axes)
+                   (lambda (&rest arguments)
+                     (cl-incf scans)
+                     (apply scan arguments))))
+          (ebox-region-update "counter" :content "000000001"))
+        (should (= scans 0))
+        (should
+         (eq axes (plist-get (ebox--buffer-render-state (current-buffer))
+                             :viewport-dependent-node-id-axes)))))))
+
+(ert-deftest ebox-region-content-path-copy-preserves-inline-inheritance ()
+  "Content-only candidates share untouched nodes even with inherited styles."
+  (ebox-surface-test--with-elisp-backend
+    (dolist (target '((box :id "counter" "000000000")
+                      (box :width (ch 20)
+                        (text :id "counter" "000000000"))
+                      (box :padding ((lh 1) (ch 1)) :border "#5893A3"
+                           :background-color "#FFFFFF"
+                        (box :id "counter" :color "#205A6C" "000000000")
+                        (box "Near sibling"))))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(column :width (px 180) :color "#123456" :font-weight bold
+             ,target
+             (box :id "sibling" "Unchanged sibling"))))
+        (let* ((before (ebox--buffer-render-state (current-buffer)))
+               (sibling-region
+                (cdr (ebox-selector--region-target
+                      (ebox-region-resolve (current-buffer) "sibling"))))
+               (sibling-id (ebox-runtime-index-get
+                            sibling-region
+                            (plist-get before :region-node-table)))
+               (sibling (ebox-runtime-index-get
+                         sibling-id (plist-get before :node-table)))
+               (indexer (symbol-function 'ebox--runtime-index))
+               (root-id (plist-get (plist-get before :root-node) :node-id))
+               (full-indexes 0))
+          (cl-letf (((symbol-function 'ebox--runtime-index)
+                     (lambda (root &rest arguments)
+                       (when (equal root-id (plist-get root :node-id))
+                         (cl-incf full-indexes))
+                       (apply indexer root arguments))))
+            (let ((published (buffer-string)))
+              (cl-letf (((symbol-function 'accept-change-group)
+                         (lambda (_) (error "Reject path-copied content"))))
+                (should-error
+                 (ebox-region-update "counter" :content "000000001")))
+              (should (eq before (ebox--buffer-render-state (current-buffer))))
+              (should (equal-including-properties published (buffer-string))))
+            (dolist (content '("000000001" "000000002"))
+              (should
+               (eq (plist-get (ebox-region-update "counter" :content content)
+                              :strategy)
+                   'span-patch))
+              (should
+               (eq sibling
+                   (ebox-runtime-index-get
+                    sibling-id (plist-get (ebox--buffer-render-state
+                                          (current-buffer))
+                                         :node-table))))))
+          (should (= full-indexes 0))
+          (should
+           (equal-including-properties
+            (buffer-string)
+            (ebox-surface-test--render-runtime
+             (ebox--buffer-render-state (current-buffer))))))))))
+
+(ert-deftest ebox-region-content-after-stylesheet-scope-keeps-fallback ()
+  "Leaving a stylesheet scope cannot reuse its stale local style proof."
+  (ebox-surface-test--with-elisp-backend
+    (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+      (with-temp-buffer
+        (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
+          (ebox-style-add-rule ".tone" '(:color "#EF4444"))
+          (ebox-render-to-buffer
+           (current-buffer)
+           (ebox-build
+            '(column :width (px 180)
+               (box :id "counter" :class tone "000000000")
+               (box :class tone "Unchanged sibling")))))
+        (should (plist-get (ebox--buffer-render-state (current-buffer))
+                           :cascade-active-p))
+        (let ((render (symbol-function 'ebox-surface--render-candidate))
+              (renders 0))
+          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                     (lambda (&rest arguments)
+                       (cl-incf renders)
+                       (apply render arguments))))
+            (ebox-region-update "counter" :content "000000001"))
+          (should (> renders 0)))
+        (should-not (plist-get (ebox--buffer-render-state (current-buffer))
+                               :cascade-active-p))
+        (should
+         (equal-including-properties
+          (buffer-string)
+           (ebox-surface-test--render-runtime
+           (ebox--buffer-render-state (current-buffer)))))))))
+
+(ert-deftest ebox-region-multiline-content-keeps-fixed-column-slot ()
+  "Changed text lengths cannot widen a proven fixed-height Column child."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (let ((buffer (current-buffer))
+            (full-render (symbol-function 'ebox-surface--render-candidate))
+            (fragments (symbol-function 'ebox-surface--rendered-fragments))
+            (surface-plan (symbol-function 'ebox-surface--surface-plan))
+            (full-renders 0) (full-fragments 0) (surface-plans 0))
+        (ebox-render-to-buffer
+         buffer
+         (ebox-build
+          '(column :width (px 180) :height (lh 20) :color "#273B42"
+             (column :padding ((lh 1) (ch 1)) :background-color "#FFFFFF"
+               (box :id "log" :height (lh 4) :padding-inline (ch 1)
+                 "No actions yet.\n—\n—\n—")
+               (box :id "following" "Unchanged sibling")))))
+        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                   (lambda (&rest arguments)
+                     (cl-incf full-renders)
+                     (apply full-render arguments)))
+                  ((symbol-function 'ebox-surface--rendered-fragments)
+                   (lambda (rendered)
+                     (when (>= (length rendered) (buffer-size))
+                       (cl-incf full-fragments))
+                     (funcall fragments rendered)))
+                  ((symbol-function 'ebox-surface--surface-plan)
+                   (lambda (&rest arguments)
+                     (cl-incf surface-plans)
+                     (apply surface-plan arguments))))
+          (dolist (content '("One\n—\n—\n—"
+                             "Longer first line\nSecond\n—\n—"
+                             "One\nTwo\nThree\nFour"))
+            (let ((report (ebox-region-update "log" :content content)))
+              (should (eq (plist-get report :strategy) 'span-patch))
+              (should (string-match-p "Unchanged sibling" (buffer-string))))))
+        (should (= full-renders 0))
+        (should (= full-fragments 0))
+        (should (= surface-plans 0))
+        (should
+         (equal-including-properties
+          (buffer-string)
+          (ebox-surface-test--render-runtime
+           (ebox--buffer-render-state buffer))))))))
+
+(ert-deftest ebox-region-multiline-slot-patch-rolls-back-and-retries ()
+  "A late failure preserves content, ownership, and the next local update."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(column :width (px 180) :color "#123456"
+           (box :id "log" :height (lh 3) :padding-inline (ch 1)
+             "One\nTwo\nThree")
+           (text :id "following" "Following"))))
+      (let ((before (buffer-string))
+            (state (ebox--buffer-render-state (current-buffer)))
+            (revision (ebox-surface-buffer-revision (current-buffer))))
+        (cl-letf (((symbol-function 'accept-change-group)
+                   (lambda (_) (error "Reject multiline publication"))))
+          (should-error
+           (ebox-region-update "log" :content "Longer one\nTwo\nThree")))
+        (should (equal-including-properties before (buffer-string)))
+        (should (eq state (ebox--buffer-render-state (current-buffer))))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (ebox-region-update "log" :content "Longer one\nTwo\nThree")
+        (ebox-region-update "following" :color "#654321")
+        (should
+         (equal-including-properties
+          (buffer-string)
+          (ebox-surface-test--render-runtime
+           (ebox--buffer-render-state (current-buffer)))))))))
+
+(ert-deftest ebox-region-multiline-content-without-fixed-slot-falls-back ()
+  "Natural height and visible overflow keep their geometry fallback."
+  (ebox-surface-test--with-elisp-backend
+    (dolist (style '(nil (:height (lh 2) :overflow visible)))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(column :width (px 120)
+             (box :id "log" ,@style "One")
+             (text "Following"))))
+        (ebox-region-update "log" :content "One\nTwo\nThree\nFour")
+        (should
+         (equal-including-properties
+          (buffer-string)
+          (ebox-surface-test--render-runtime
+           (ebox--buffer-render-state (current-buffer)))))))))
+
+(ert-deftest ebox-region-content-update-ignores-caller-narrowing ()
+  "The local owner proof uses mounted coordinates outside the editor view."
+  (ebox-surface-test--with-elisp-backend
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build '(box :id "target" :width (px 120) "Before")))
+      (goto-char (1+ (point-min)))
+      (narrow-to-region (point) (point-max))
+      (ebox-region-update "target" :content "After!")
+      (save-restriction
+        (widen)
+        (should (string-prefix-p "After!" (buffer-string)))))))
+
 (ert-deftest ebox-region-update-rejects-process-global-region-ids ()
-  "Direct updates should require a surface-scoped region handle."
+  "Numeric targets resolve only as current-buffer semantic IDs, never globals."
   (ebox-surface-test--reset-render-state)
   (let ((buffer (generate-new-buffer " *ebox-handle-only-update*")))
     (unwind-protect
@@ -3849,7 +4181,7 @@ changes.  Geometry and non-inherited computed values must remain identical."
           (let* ((match (car (ebox-selector-query-buffer buffer "#target")))
                  (region-id (plist-get match :region-id)))
             (should-error (ebox-region-update region-id :content "Wrong")
-                          :type 'wrong-type-argument)
+                          :type 'user-error)
             (ebox-region-update (plist-get match :region-handle)
                                 :content "After")
             (should (string-match-p
@@ -4381,6 +4713,120 @@ participant and rollback contract without creating a real frame."
     '(:native-topology-stable-p t
       :native-render-frame (:native-frame t :native-patch nil))
     'paint)))
+
+(ert-deftest ebox-region-scroll-content-keeps-local-owner-and-cache ()
+  "Clipping preserves local owner proofs and later scrolling sees the update."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(column :width (px 240) :height (vh 60)
+                 :padding ((lh 1) (ch 1))
+                 :background-color "#EEEEEE" :color "#123456"
+           (box :id "counter" "COUNT 00")
+           (box "Unchanged sibling")
+           (box :height (lh 5) "Spacer")
+           (box :id "log" :height (lh 4) :padding-inline (ch 1)
+                :background-color "#224466" :color "#FFFFFF"
+             "old\n—\n—\n—")
+           (box "Tail"))))
+      (let* ((before (ebox--buffer-render-state (current-buffer)))
+             (region (car (plist-get before :scroll-region-ids)))
+             (scroll (gethash region ebox--scroll-global-state))
+             (old-lines (copy-tree (plist-get scroll :content-lines)))
+             (plan (symbol-function 'ebox-surface--surface-plan))
+             (plans 0))
+        (should region)
+        (cl-letf (((symbol-function 'ebox-surface--surface-plan)
+                   (lambda (&rest args) (cl-incf plans) (apply plan args))))
+          (dotimes (index 5)
+            (ebox-region-update "counter" :content (format "COUNT %02d" (1+ index)))
+            (ebox-region-update "log" :content (format "event %d\nprevious\n—\n—" index))))
+        (should (= plans 0))
+        (should (equal-including-properties
+                 (ebox-lines-join old-lines)
+                 (ebox-lines-join (plist-get scroll :content-lines))))
+        (should (string-match-p "COUNT 05" (buffer-string)))
+        (should-not (string-match-p "event 4" (buffer-string)))
+        (should (equal-including-properties
+                 (buffer-string)
+                 (ebox-surface-test--render-runtime
+                  (ebox--buffer-render-state (current-buffer)))))
+        (should (ebox--scroll-region-by region 7))
+        (should (string-match-p "event 4" (buffer-string)))
+        (should (equal-including-properties
+                 (buffer-string)
+                 (ebox-surface-test--render-runtime
+                  (ebox--buffer-render-state (current-buffer)))))))))
+
+(ert-deftest ebox-region-scroll-content-failed-publication-keeps-cache ()
+  "A rejected local scroll update leaves cache, producers and runtime intact."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(column :width (px 240) :height (vh 60) :padding ((lh 1) (ch 1))
+           (box :id "counter" "COUNT 00")
+           (box :height (lh 6) "Spacer")
+           (box :id "log" :height (lh 4) "old\n—\n—\n—")
+           (box "Tail"))))
+      (dolist (target '("counter" "log"))
+        (let* ((before (ebox--buffer-render-state (current-buffer)))
+               (region (car (plist-get before :scroll-region-ids)))
+               (scroll (gethash region ebox--scroll-global-state))
+               (lines (copy-tree (plist-get scroll :content-lines)))
+               (text (buffer-string))
+               (content (if (equal target "counter") "COUNT 01" "new\n—\n—\n—")))
+          (cl-letf (((symbol-function 'accept-change-group)
+                     (lambda (_) (error "Reject scroll content"))))
+            (should-error (ebox-region-update target :content content)))
+          (should (eq before (ebox--buffer-render-state (current-buffer))))
+          (should (eq scroll (gethash region ebox--scroll-global-state)))
+          (should (equal-including-properties text (buffer-string)))
+          (should (equal-including-properties
+                   (ebox-lines-join lines) (ebox-lines-join (plist-get scroll :content-lines))))
+          (ebox-region-update target :content content)))
+      (should (equal-including-properties
+               (buffer-string)
+               (ebox-surface-test--render-runtime
+                (ebox--buffer-render-state (current-buffer))))))))
+
+(ert-deftest ebox-region-scroll-content-proof-miss-keeps-fallback ()
+  "A partial viewport owner or changed block height cannot skip fallback."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 12))
+    (dolist (target '((box :id "target" :height (lh 6) "old\nsecond\nthird")
+                      (box :id "target" "old\nsecond\nthird")))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(column :width (px 240) :height (vh 60)
+                   :padding ((lh 1) (ch 1))
+             (box "Header") ,target (box "Tail"))))
+        (let ((plan (symbol-function 'ebox-surface--surface-plan))
+              (plans 0))
+          (cl-letf (((symbol-function 'ebox-surface--surface-plan)
+                     (lambda (&rest args) (cl-incf plans) (apply plan args))))
+            (ebox-region-update "target" :content "new\nsecond\nthird\nfourth"))
+          (should (> plans 0)))
+        (should (equal-including-properties
+                 (buffer-string)
+                 (ebox-surface-test--render-runtime
+                  (ebox--buffer-render-state (current-buffer)))))))))
+
+(ert-deftest ebox-scroll-region-cursors-preserve-owner-hulls ()
+  "Extra paint property boundaries must not change cached region spans."
+  (let* ((line (propertize "abcdef" 'ebox-content 7))
+         (expected '((0 0 . 6))))
+    (put-text-property 1 3 'help-echo "hint" line)
+    (put-text-property 4 5 'face 'bold line)
+    (should (equal expected (gethash 7 (ebox--scroll-build-region-line-span-index (list line)))))
+    (with-temp-buffer
+      (insert line)
+      (let ((ebox--region-line-index (ebox--build-region-line-index)))
+        (should (equal '((1 . 7)) (ebox--region-set-line-spans '(7))))))))
 
 (provide 'ebox-surface-tests)
 

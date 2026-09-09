@@ -143,8 +143,8 @@ the surrounding ephemeral TP surface has its own snapshot value ownership."
 (ert-deftest ebox-box-line-flow-avoids-intermediate-join-and-split ()
   "Ordinary decoration should join only at the existing compositor exit."
   (let* ((input (ebox-build
-                 '(box :width (120) :height 8 :overflow hidden
-                       :padding (1 (3)) :border (1 solid "#112233")
+                 '(box :width (px 120) :height (lh 8) :overflow hidden
+                       :padding ((lh 1) (px 3)) :border ((px 1) solid "#112233")
                        :bgcolor "#ddeeff" (text "alpha\nbeta"))))
          (expected (ebox-box-line-test--reference-render input))
          (observed (ebox-box-line-test--materializations input)))
@@ -168,13 +168,13 @@ the surrounding ephemeral TP surface has its own snapshot value ownership."
           (dolist (overflow '(hidden visible scroll))
             (let* ((child (pcase kind
                             ('box `(box (text ,rich)))
-                            ('grid `(grid :grid-template-columns ((110)) (text ,rich)))
+                            ('grid `(grid :grid-template-columns ((px 110)) (text ,rich)))
                             (_ `(,kind (text ,rich)))))
                    (input
                     (ebox-build
-                     `(box :width (140) :height ,height :overflow ,overflow
-                           :padding (1 (3))
-                           :border (1 solid "#112233") :margin (1 (2))
+                     `(box :width (px 140) :height (lh ,height) :overflow ,overflow
+                           :padding ((lh 1) (px 3))
+                           :border ((px 1) solid "#112233") :margin ((lh 1) (px 2))
                            :color "#123456" :bgcolor "#ddeeff" ,child)))
                    (_alignment
                     (plist-put (car (ebox-canonical-input-roots input))
@@ -212,7 +212,7 @@ the surrounding ephemeral TP surface has its own snapshot value ownership."
   "Complete simple scroll keeps its single join for overflow and underfill."
   (dolist (text '("alpha\nbeta" "alpha\n2\n3\n4\n5\n6\n7\n8\n9"))
     (let* ((input (ebox-build
-                   `(box :width (120) :height 8 :overflow scroll
+                   `(box :width (px 120) :height (lh 8) :overflow scroll
                          :bgcolor "#ddeeff" (text ,text))))
            (expected (ebox-box-line-test--reference-render input))
            (observed (ebox-box-line-test--materializations input)))
@@ -229,7 +229,10 @@ the surrounding ephemeral TP surface has its own snapshot value ownership."
                            'ebox-content-owner 18 'ebox-content-owners '(18 17)))
          (blank (propertize " " 'display '(space :width (7))
                             'ebox-content-owner 19)))
-    (dolist (lines (list nil (list "") (list rich) (list rich "" blank)))
+    ;; Use the explicit one-line string representation for string/list parity.
+    ;; A raw empty list entry is covered separately below.
+    (dolist (lines (list nil (list (ebox-lines-join '("")))
+                        (list rich) (list rich "" blank)))
       (dolist (height '(0 1 3 5))
         (dolist (align '(top center bottom))
           (let* ((spine (cl-loop for tail on lines
@@ -257,44 +260,49 @@ the surrounding ephemeral TP surface has its own snapshot value ownership."
               (should (eq (car (nth 0 record)) (nth 1 record)))
               (should (eq (cdr (nth 0 record)) (nth 2 record)))
               (should (equal-including-properties (nth 1 record) (nth 3 record)))))))))
-  ;; The list primitive does not own either legacy string-adapter bridge.
+  (let* ((empty-line "")
+         (lines (list empty-line))
+         (padded (ebox--pad-lines-vertical lines 3)))
+    (should (eq (ebox--pad-lines-vertical lines 1) lines))
+    (should (eq (car padded) empty-line))
+    (should (equal lines '("")))
+    (should (= (ebox-string-height (ebox-lines-join padded)) 3)))
   (should-not (ebox--pad-lines-vertical nil 0))
   (should-not (ebox--pad-lines-vertical (list "A") 0)))
 
-(ert-deftest ebox-box-line-flow-retains-empty-string-adapter-bridges ()
-  "Empty formatted content and zero used height retain the former blank line."
+(ert-deftest ebox-box-line-flow-empty-content-retains-only-declared-chrome ()
+  "Empty content and zero used height preserve only the declared chrome."
   (dolist (formatted '(nil "" "A\nB"))
     (dolist (height '(0 1 3))
       (let* ((input (ebox-build
-                     '(box :width (40) :height 3 :overflow hidden :padding (1 (2))
-                           :border (1 solid "#112233") (text "unused"))))
+                     '(box :width (px 40) :height (lh 3) :overflow hidden :padding ((lh 1) (px 2))
+                           :border ((px 1) solid "#112233") (text "unused"))))
              (root (car (ebox-canonical-input-roots input)))
              (handle (ebox-node-source-handle root))
              (format-function (symbol-function 'ebox--format-content))
              (height-function (symbol-function 'ebox--content-height)))
-        ;; Isolate the decoration boundary, including a zero used content
-        ;; height; the ordinary public height resolver clamps to at least one.
+        ;; Isolate the decoration boundary, including zero used content height.
         (cl-letf (((symbol-function 'ebox--format-content)
                    (lambda (box)
                      (if (eq (ebox-node-source-handle box) handle)
                          formatted
                        (funcall format-function box))))
                   ((symbol-function 'ebox--content-height)
-                   (lambda (box natural)
+                   (lambda (box natural &optional rendered)
                      (if (eq (ebox-node-source-handle box) handle)
                          height
-                       (funcall height-function box natural)))))
+                       (funcall height-function box natural rendered)))))
           (let ((actual (ebox-box-line-test--reference-render input t))
                 (expected (ebox-box-line-test--reference-render input)))
             (should (equal-including-properties actual expected))
             (when (= height 0)
-              (should (= (ebox-string-height actual) 3)))))))))
+              (should (= (ebox-string-height actual) 2)))))))))
 
 (ert-deftest ebox-box-line-flow-zero-width-default-padding-is-a-line ()
   "Zero-width default blanks remain empty string lines at the list boundary."
-  (dolist (padding '(0 (1 (2))))
+  (dolist (padding '(((lh 0) (px 0)) ((lh 1) (px 2))))
     (let* ((input (ebox-build
-                   `(box :width (0) :height 3 :overflow hidden
+                   `(box :width (px 0) :height (lh 3) :overflow hidden
                          :padding ,padding (text ""))))
            (actual (ebox-box-line-test--reference-render input t))
            (expected (ebox-box-line-test--reference-render input)))
@@ -308,8 +316,8 @@ the surrounding ephemeral TP surface has its own snapshot value ownership."
          (text (mapconcat (lambda (index) (format "Open %02d" index))
                           (number-sequence 0 9) "\n"))
          (input (ebox-build
-                 `(box :width (120) :height 4 :overflow scroll
-                       :padding (0 (2)) :border (1 solid "#112233")
+                 `(box :width (px 120) :height (lh 4) :overflow scroll
+                       :padding ((lh 0) (px 2)) :border ((px 1) solid "#112233")
                        (text ,(propertize text 'keymap map 'help-echo "action")))))
          (ebox-runtime-idle-prewarm nil)
          (ebox-runtime-idle-reflow-cache-prewarm nil))

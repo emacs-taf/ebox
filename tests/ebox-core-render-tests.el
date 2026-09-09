@@ -192,9 +192,9 @@
          (ebox-render-to-buffer
           (generate-new-buffer-name " *ebox-typed-flex-lookahead*")
           (ebox-build
-           '(flex :width (240) :flex-flow (row wrap)
-             (box :width (100) "A")
-             (box :width (100) "B"))))))
+           '(flex :width (px 240) :flex-flow (row wrap)
+             (box :width (px 100) "A")
+             (box :width (px 100) "B"))))))
     (unwind-protect
         (should (zerop
                  (ebox--root-reflow-scroll-lookahead-lines-for-buffer
@@ -391,20 +391,20 @@
 
 (defconst ebox-test--region-update-geometry-cases
   '((:box-sizing content-box :box-sizing content-box owner-rerender)
-    (:width (120) :width 120 owner-rerender)
-    (:min-width (100) :min-width 100 owner-rerender)
-    (:max-width (140) :max-width 140 owner-rerender)
-    (:height 3 :height 3 owner-rerender)
-    (:min-height 3 :min-height 3 owner-rerender)
-    (:max-height 1 :max-height 1 owner-rerender)
-    (:padding-left (9) :padding-left-pixel 9 span-patch)
-    (:padding-right (10) :padding-right-pixel 10 span-patch)
-    (:padding-top 1 :padding-top-height 1 span-patch)
-    (:padding-bottom 1 :padding-bottom-height 1 span-patch)
-    (:margin-left (7) :margin-left-pixel 7 owner-rerender)
-    (:margin-right (8) :margin-right-pixel 8 owner-rerender)
-    (:margin-top 1 :margin-top-height 1 owner-rerender)
-    (:margin-bottom 1 :margin-bottom-height 1 owner-rerender)
+    (:width (px 120) :width (px 120) owner-rerender)
+    (:min-width (px 100) :min-width (px 100) owner-rerender)
+    (:max-width (px 140) :max-width (px 140) owner-rerender)
+    (:height (lh 3) :height (lh 3) owner-rerender)
+    (:min-height (lh 3) :min-height (lh 3) owner-rerender)
+    (:max-height (lh 1) :max-height (lh 1) owner-rerender)
+    (:padding-left (px 9) :padding-left-pixel 9 span-patch)
+    (:padding-right (px 10) :padding-right-pixel 10 span-patch)
+    (:padding-top (lh 1) :padding-top-height 1 span-patch)
+    (:padding-bottom (lh 1) :padding-bottom-height 1 span-patch)
+    (:margin-left (px 7) :margin-left-pixel 7 owner-rerender)
+    (:margin-right (px 8) :margin-right-pixel 8 owner-rerender)
+    (:margin-top (lh 1) :margin-top-height 1 owner-rerender)
+    (:margin-bottom (lh 1) :margin-bottom-height 1 owner-rerender)
     (:border-top-p t :border-top-pixel 1 span-patch)
     (:text-align center :text-align center span-patch)
     (:overflow hidden :overflow hidden owner-rerender)
@@ -538,7 +538,7 @@
   (let* ((style
           (ecss-compute-style
            ebox-style-schemas (ecss-subject-create :type "box")
-           :declarations (ebox-style-compile-declarations '(:width (120)) t)
+           :declarations (ebox-style-compile-declarations '(:width (px 120)) t)
            :provenance t))
          (fact (ecss-computed-style-property-fact style 'ebox/width)))
     (should (eq 'ebox/width (ecss-computed-property-fact-property fact)))
@@ -581,7 +581,7 @@
           (ebox-style-compute-subject
            (ecss-subject-create :type "box")
            (ebox-style-compile-declarations
-            '(:width (120) :padding (1 (8)) :bgcolor "#1E293B"))))
+            '(:width (px 120) :padding ((lh 1) (px 8)) :bgcolor "#1E293B"))))
          (original-values (symbol-function 'ecss-computed-style-values))
          (original-active
           (symbol-function 'ecss-computed-style-active-properties))
@@ -623,7 +623,7 @@
           (ebox-style-compute-subject
            (ecss-subject-create :type "flex")
            (ebox-style-compile-declarations
-            '(:width (120) :flex-direction row :color "#F8FAFC"))))
+            '(:width (px 120) :flex-direction row :color "#F8FAFC"))))
          (node (list :ebox-type 'flex :raw-props nil :props nil))
          (original-values (symbol-function 'ecss-computed-style-values))
          (original-active
@@ -669,7 +669,7 @@
   (ebox-test--reset-runtime-state)
   (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
     (ebox-style-add-rule
-     "flex" '(:flex-direction column :width (96))
+     "flex" '(:flex-direction column :width (px 96))
      :layer 'layout)
     (let ((rendered
            (substring-no-properties
@@ -711,7 +711,7 @@
   (ebox-test--reset-runtime-state)
   (let ((ebox-style-stylesheet (ecss-stylesheet-create)))
     (ebox-style-add-rule
-     "grid" '(:grid-template-columns ((40) (40)) :column-gap (4))
+     "grid" '(:grid-template-columns ((px 40) (px 40)) :column-gap (px 4))
      :layer 'layout)
     (ebox-style-add-rule ".placed" '(:grid-column 2) :layer 'layout)
     (ebox-test--with-rendered-buffer
@@ -724,10 +724,10 @@
              (placed (car (ebox-tree-layout-children root))))
         (should (eq (ebox-layout-config-kind config) 'grid))
         (should (equal (plist-get props :grid-template-columns)
-                       '((:kind fixed :size 40)
-                         (:kind fixed :size 40))))
+                       '((:kind fixed :size (px 40))
+                         (:kind fixed :size (px 40)))))
         (should (equal (plist-get props :column-gap)
-                       4))
+                       '(px 4)))
         (should (= (plist-get placed :grid-column) 2))))))
 
 (ert-deftest ebox-font-cascade-inherits-overrides-and-precedes-measurement ()
@@ -977,7 +977,7 @@
           (let ((old-handle (ebox-region-resolve primary-buffer "old")))
             (kill-buffer primary-buffer)
             (setq primary-buffer nil)
-            (should-error (ebox-test--region-update old-handle :width '(140))
+            (should-error (ebox-test--region-update old-handle :width '(px 140))
                           :type 'user-error))
           (setq secondary-buffer
                 (ebox-render-to-buffer
@@ -2066,8 +2066,8 @@
 (ert-deftest ebox-buffer-backend-does-not-map-layout-only-properties ()
   "Layout-only properties should not produce text properties directly."
   (let* ((style (ebox-style-compute
-                 (list :width '(120)
-                       :padding '(1 2))))
+                 (list :width '(px 120)
+                       :padding '((lh 1) (ch 2)))))
          (props (ebox-buffer-paint-text-properties style 'content)))
     (should-not (memq :width props))
     (should-not (memq :padding-inline-start props))))
@@ -2268,7 +2268,7 @@
              (child-id (ebox-test--selector-region-id buffer "#child")))
         (ebox-incremental-begin-batch buffer)
         (ebox-test--region-update parent-id :color "red")
-        (ebox-test--region-update child-id :width '(80))
+        (ebox-test--region-update child-id :width '(px 80))
         (ebox-incremental-flush buffer))
       (goto-char (point-min))
       (search-forward "Child")
@@ -2340,7 +2340,7 @@
           (dolist (target order)
             (ebox-test--region-update
              (if (eq target 'target-a) target-a-id target-b-id)
-             :width '(210) :min-width '(150) :max-width '(260)))
+             :width '(px 210) :min-width '(px 150) :max-width '(px 260)))
           (ebox-incremental-flush buffer))
         (let ((report (ebox-test--buffer-update-report)))
           (should (ebox-test--buffer-visually-matches-runtime-render-p))
@@ -2362,9 +2362,9 @@
             (pcase operation
               ('geometry
                (ebox-test--region-update target-a-id
-                                   :width '(210)
-                                   :min-width '(150)
-                                   :max-width '(260)))
+                                   :width '(px 210)
+                                   :min-width '(px 150)
+                                   :max-width '(px 260)))
               ('paint
                (ebox-test--region-update target-b-id :color "blue"))))
           (ebox-incremental-flush buffer))
@@ -2709,7 +2709,7 @@
          (layout (ebox-test-row left right))
          (left-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update left-id :width '(120))
+      (ebox-test--region-update left-id :width '(px 120))
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :constraint-source) 'region))
         (should (eq (plist-get report :constraint-owner-type) 'box))
@@ -2735,7 +2735,7 @@
 		(ebox-test-box (ebox-test-text "third") :width '(viewport)))))
          (root-id (car (ebox-region-ids layout))))
     (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update root-id :width '(160))
+      (ebox-test--region-update root-id :width '(px 160))
       (let ((widths
              (mapcar #'ebox--string-pixel-width
                      (ebox-string-lines (buffer-string)))))
@@ -2753,7 +2753,7 @@
          (left-id (nth 1 ids)))
     (ebox-test--with-rendered-buffer node
       (let ((root-node-id (ebox--buffer-root-node-id (current-buffer))))
-        (ebox-test--region-update left-id :width '(120))
+        (ebox-test--region-update left-id :width '(px 120))
         (let ((report (ebox-test--buffer-update-report)))
           (should (equal (plist-get report :owner-ids)
                          (list root-node-id)))
@@ -3574,7 +3574,7 @@
                    (lambda (&rest args)
                      (cl-incf index-build-count)
                      (apply original args))))
-          (ebox-test--region-update region-id :padding (list 1 '(18) 1 '(18))))
+          (ebox-test--region-update region-id :padding '((lh 1) (px 18) (lh 1) (px 18))))
         (let ((report (ebox-test--buffer-update-report)))
           (should (eq (plist-get report :strategy) 'owner-rerender))
           (should (equal (plist-get report :owner-ids) (list root-id)))
@@ -3884,7 +3884,7 @@
          (box-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (ebox-rerender-buffer-with-context (current-buffer) 260)
-      (ebox-test--region-update box-id :width '(viewport))
+      (ebox-test--region-update box-id :width '(vw 100))
       (ebox-rerender-buffer-with-context (current-buffer) 200)
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :constraint-source) 'viewport))
@@ -4011,8 +4011,8 @@
       (when (and buffer (buffer-live-p buffer))
         (kill-buffer buffer)))))
 
-(ert-deftest ebox-viewport-dependencies-keep-only-vertical-axis-under-fixed-width ()
-  "Fixed width should retain vertical dependencies without exposing width-only ones."
+(ert-deftest ebox-viewport-dependencies-retain-explicit-units-under-fixed-width ()
+  "Fixed parent width does not contain explicit vw or vh dependencies."
   (ebox-test--reset-runtime-state)
   (let* ((width-only
           (ebox-test-box (ebox-test-text "Width") :width '(viewport)))
@@ -4046,8 +4046,7 @@
                     (ebox-viewport-height 12))
                 (ebox--runtime-node-ids node)
                 (ebox--viewport-dependent-node-ids node))))
-    (should-not (member (plist-get (ebox-test-root width-only) :node-id)
-                        ids))
+    (should (member (plist-get (ebox-test-root width-only) :node-id) ids))
     (dolist (vertical-node (append ordinary-height-nodes flex-height-nodes))
       (should (member (plist-get (ebox-test-root vertical-node) :node-id)
                       ids)))))
@@ -4073,7 +4072,7 @@
          (box-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (ebox-rerender-buffer-with-context (current-buffer) 320)
-      (ebox-test--region-update box-id :width '(viewport))
+      (ebox-test--region-update box-id :width '(vw 100))
       (let* ((state (ebox--buffer-render-state (current-buffer)))
              (axes (plist-get state :viewport-dependent-node-id-axes))
              (owner-id
@@ -4470,7 +4469,7 @@
                    (list (ebox-pixel-space 80)
                          (ebox-pixel-space 80))))
          (box-input
-          (ebox-test-box (ebox-test-text content) :width 80 :wrap-mode 'none))
+          (ebox-test-box (ebox-test-text content) :width '(px 80) :wrap-mode 'none))
          (box (ebox-test-root box-input))
          (ebox--render-source-index (ebox-test-source-index box-input))
          (measure-count 0)
@@ -4743,8 +4742,8 @@ line compositor's complete property output, including empty lines and chrome."
   "One Box should not flatten full-height strips for padding and borders."
   (let* ((input
           (ebox-build
-           '(box :width (120) :height 8 :overflow hidden
-                 :padding (1 (3)) :border (1 solid "#112233")
+           '(box :width (px 120) :height (lh 8) :overflow hidden
+                 :padding ((lh 1) (px 3)) :border ((px 1) solid "#112233")
                  :bgcolor "#ddeeff"
               (text "alpha\nbeta"))))
          (observed (ebox-test--box-full-height-joins input 6))
@@ -4761,7 +4760,7 @@ line compositor's complete property output, including empty lines and chrome."
   (dolist (text '("alpha\nbeta" "1\n2\n3\n4\n5\n6\n7\n8\n9"))
     (let* ((input
             (ebox-build
-             `(box :width (120) :height 8 :overflow scroll :bgcolor "#ddeeff"
+             `(box :width (px 120) :height (lh 8) :overflow scroll :bgcolor "#ddeeff"
                 (text ,text))))
            (observed (ebox-test--box-full-height-joins input 8)))
       (should (= (ebox-string-height (plist-get observed :rendered)) 8))
@@ -5138,7 +5137,7 @@ line compositor's complete property output, including empty lines and chrome."
          (ids (ebox-region-ids layout))
          (left-id (nth 1 ids)))
     (ebox-test--with-rendered-buffer layout
-      (ebox-test--region-update left-id :width '(120))
+      (ebox-test--region-update left-id :width '(px 120))
       (let ((plain (buffer-substring-no-properties (point-min) (point-max))))
         (should (string-match-p "Top" plain))
         (should (string-match-p "L" plain))
@@ -5240,7 +5239,7 @@ line compositor's complete property output, including empty lines and chrome."
       (let ((full-rerenders
              (ebox-test--count-full-surface-updates
                (ebox-test--region-update
-                left-id :border-bottom '(1 solid "blue")))))
+                left-id :border-bottom '((px 1) solid "blue")))))
         (should (= full-rerenders 0)))
       (let ((report (ebox-test--buffer-update-report)))
         (should (memq (plist-get report :strategy)
@@ -5290,7 +5289,7 @@ line compositor's complete property output, including empty lines and chrome."
           (goto-char (1+ (point-min)))
           (narrow-to-region (point) (point-max))
           (ebox-test--region-update
-           left-id :border-bottom '(1 solid "blue")))
+           left-id :border-bottom '((px 1) solid "blue")))
         (should (equal old-metadata
                        (plist-get old-state :surface-fragments)))
         (should (cl-every (lambda (fragment)
@@ -5301,7 +5300,7 @@ line compositor's complete property output, including empty lines and chrome."
   "Removing top/bottom border surfaces must not corrupt other border faces."
   (ebox-test--reset-runtime-state)
   (dolist (case '(((:border-top-p nil) bt (bb bl br))
-                  ((:border-bottom-width 0) bb (bt bl br))))
+                  ((:border-bottom-width (px 0)) bb (bt bl br))))
     (let* ((update (nth 0 case))
            (removed-role (nth 1 case))
            (kept-roles (nth 2 case))
@@ -5345,7 +5344,7 @@ line compositor's complete property output, including empty lines and chrome."
         (progn
           (should-error
            (ebox-selector-update-buffer
-            buffer "#root" :border-top '(2 solid "#D97757")))
+            buffer "#root" :border-top '((px 2) solid "#D97757")))
           (should (eq state (ebox--buffer-render-state buffer)))
           (should (equal-including-properties
                    text (with-current-buffer buffer (buffer-string)))))
@@ -5384,7 +5383,7 @@ line compositor's complete property output, including empty lines and chrome."
          buffer)
     (unwind-protect
         (progn
-          (should (eq (ebox-get (ebox-test-root node) :width) 'viewport))
+          (should (equal (ebox-get (ebox-test-root node) :width) '(vw 100)))
           (let ((ebox-viewport-width 240))
             (setq buffer
                   (ebox-render-to-buffer
@@ -5470,7 +5469,7 @@ line compositor's complete property output, including empty lines and chrome."
          (target-id (plist-get target :region-id)))
     (ebox-test--with-rendered-buffer layout
       (let ((root-id (ebox--buffer-root-node-id (current-buffer))))
-        (ebox-test--region-update target-id :width '(190))
+        (ebox-test--region-update target-id :width '(px 190))
         (let ((report (ebox-test--buffer-update-report)))
           (should-not (plist-get report :full-rerender))
           (should-not (member root-id (plist-get report :owner-ids)))
@@ -5537,7 +5536,7 @@ line compositor's complete property output, including empty lines and chrome."
          (owner-region-id (car (ebox-region-ids owner))))
     (ebox-test--with-rendered-buffer layout
       (let ((root-node-id (ebox--buffer-root-node-id (current-buffer))))
-        (ebox-test--region-update owner-region-id :width '(320))
+        (ebox-test--region-update owner-region-id :width '(px 320))
         (let ((report (ebox-test--buffer-update-report)))
           (should (equal (plist-get report :owner-ids)
                          (list root-node-id)))
@@ -5586,9 +5585,9 @@ line compositor's complete property output, including empty lines and chrome."
          (target-id (plist-get target :region-id)))
     (ebox-test--with-rendered-buffer layout
       (ebox-test--region-update target-id
-                                :width '(210)
-                                :min-width '(150)
-                                :max-width '(260))
+                                :width '(px 210)
+                                :min-width '(px 150)
+                                :max-width '(px 260))
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :strategy) 'owner-rerender))
         (should-not (plist-get report :root-rerender))
@@ -5643,9 +5642,9 @@ line compositor's complete property output, including empty lines and chrome."
                           (ebox-test--runtime-root (current-buffer)))))
               :node-id)))
         (ebox-test--region-update region-id
-                            :width '(210)
-                            :min-width '(150)
-                            :max-width '(260))
+                            :width '(px 210)
+                            :min-width '(px 150)
+                            :max-width '(px 260))
         (let ((report (ebox-test--buffer-update-report)))
           (should-not (plist-get report :tp-full-root))
           (should (> (plist-get report :tp-scope-count) 0))
@@ -6048,8 +6047,8 @@ line compositor's complete property output, including empty lines and chrome."
                                                        "#height"))
             (root-id (ebox--buffer-root-node-id (current-buffer))))
         (ebox-test--region-update region-id
-                            :height 4 :min-height 3 :max-height 6
-                            :padding-top 1 :padding-bottom 1)
+                            :height '(lh 4) :min-height '(lh 3) :max-height '(lh 6)
+                            :padding-top '(lh 1) :padding-bottom '(lh 1))
         (let ((report (ebox-test--buffer-update-report)))
           (should (memq (plist-get report :strategy)
                         '(span-patch owner-rerender)))
@@ -6068,8 +6067,8 @@ line compositor's complete property output, including empty lines and chrome."
                                                        "#height"))
             (root-id (ebox--buffer-root-node-id (current-buffer))))
         (ebox-test--region-update region-id
-                            :height 4 :min-height 3 :max-height 6
-                            :padding-top 1 :padding-bottom 1)
+                            :height '(lh 4) :min-height '(lh 3) :max-height '(lh 6)
+                            :padding-top '(lh 1) :padding-bottom '(lh 1))
         (let ((report (ebox-test--buffer-update-report)))
           (should (eq (plist-get report :strategy) 'owner-rerender))
           (should (equal (plist-get report :owner-ids) (list root-id)))
@@ -6088,10 +6087,10 @@ line compositor's complete property output, including empty lines and chrome."
                                                        "#margin"))
             (root-id (ebox--buffer-root-node-id (current-buffer))))
         (ebox-test--region-update height-id
-                            :height 4 :min-height 3 :max-height 6
-                            :padding-top 1 :padding-bottom 1)
+                            :height '(lh 4) :min-height '(lh 3) :max-height '(lh 6)
+                            :padding-top '(lh 1) :padding-bottom '(lh 1))
         (ebox-test--region-update region-id
-                            :margin-inline '((8) (8)))
+                            :margin-inline '((px 8) (px 8)))
         (let ((report (ebox-test--buffer-update-report)))
           (should (eq (plist-get report :strategy) 'span-patch))
           (should (eq (plist-get report :owner-type) 'box))
@@ -6120,7 +6119,7 @@ line compositor's complete property output, including empty lines and chrome."
     (ebox-test--with-rendered-buffer layout
       (let ((region-id (ebox-test--selector-region-id (current-buffer)
                                                        "#padding")))
-        (ebox-test--region-update region-id :padding-left (list 24))
+        (ebox-test--region-update region-id :padding-left '(px 24))
         (let ((report (ebox-test--buffer-update-report)))
           (should (eq (plist-get report :strategy) 'span-patch))
           (should (member 'internal-fragment
@@ -6158,7 +6157,7 @@ line compositor's complete property output, including empty lines and chrome."
         (should
          (ebox--dirty-entry-border-box-internal-span-p
           (current-buffer) mixed-entry))
-        (ebox-test--region-update region-id :padding '(2 (20) 0 (8)))
+        (ebox-test--region-update region-id :padding '((lh 2) (px 20) (lh 0) (px 8)))
         (let ((report (ebox-test--buffer-update-report)))
           (should (eq (plist-get report :strategy) 'span-patch))
           (should (equal (plist-get report :patch-ops) '(span-patch)))
@@ -6535,7 +6534,7 @@ line compositor's complete property output, including empty lines and chrome."
              (region-id (plist-get handle :region-id))
              (node-id (plist-get handle :node-id)))
         (ebox-test--region-update region-id
-                                  :margin-inline '((8) (8)))
+                                  :margin-inline '((px 8) (px 8)))
         (let* ((report (ebox-test--buffer-update-report))
                (snapshot (ebox--ensure-layout-snapshot-spans
                           (current-buffer) node-id))
@@ -6574,7 +6573,7 @@ line compositor's complete property output, including empty lines and chrome."
       (let* ((match (car (ebox-selector-query-buffer
                           (current-buffer) "#target")))
              (region-id (plist-get match :region-id)))
-        (ebox-test--region-update region-id :width '(250))
+        (ebox-test--region-update region-id :width '(px 250))
         (let* ((patched (buffer-string))
                (full
                 (ebox--with-buffer-render-context (current-buffer)
@@ -6696,7 +6695,7 @@ line compositor's complete property output, including empty lines and chrome."
       (let ((box (gethash region-id (ebox--buffer-region-box-table
                                      (current-buffer)))))
         (should (= (ebox-get box :border-left-pixel) 2)))
-      (ebox-test--region-update region-id :border-left-width 3)
+      (ebox-test--region-update region-id :border-left-width '(px 3))
       (let ((box (gethash region-id (ebox--buffer-region-box-table
                                      (current-buffer)))))
         (should (= (ebox-get box :border-left-pixel) 3)))
@@ -6718,13 +6717,13 @@ line compositor's complete property output, including empty lines and chrome."
     (unwind-protect
         (progn
           (ebox-selector-update-buffer
-           buffer "#axis" :outer 'block :item-gap 3)
+           buffer "#axis" :outer 'block :item-gap '(px 3))
           (let* ((root (plist-get (ebox--buffer-render-state buffer)
                                   :root-node))
                  (props (ebox-layout-config-props
                          (ebox-box-node-layout root))))
             (should (equal (plist-get root :display) '(block row)))
-            (should (= (plist-get props :item-gap) 3))
+            (should (equal (plist-get props :item-gap) '(px 3)))
             (should (with-current-buffer buffer
                       (ebox-test--buffer-propertized-matches-runtime-render-p)))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
@@ -6736,7 +6735,7 @@ line compositor's complete property output, including empty lines and chrome."
                            :box-sizing 'border-box))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
-      (ebox-test--region-update region-id :padding-left '(8))
+      (ebox-test--region-update region-id :padding-left '(px 8))
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :strategy) 'span-patch))
         (should (equal (plist-get report :patch-ops) '(span-patch)))
@@ -6749,7 +6748,7 @@ line compositor's complete property output, including empty lines and chrome."
                            :box-sizing 'content-box))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
-      (ebox-test--region-update region-id :padding-left '(8))
+      (ebox-test--region-update region-id :padding-left '(px 8))
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :strategy) 'owner-rerender))
         (should (equal (plist-get report :patch-ops) '(owner-rerender)))
@@ -6764,7 +6763,7 @@ line compositor's complete property output, including empty lines and chrome."
                            :wrap-mode 'char))
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
-      (ebox-test--region-update region-id :padding-left '(100))
+      (ebox-test--region-update region-id :padding-left '(px 100))
       (let ((report (ebox-test--buffer-update-report)))
         (should (memq (plist-get report :strategy)
                       '(span-patch owner-rerender)))
@@ -6818,8 +6817,9 @@ line compositor's complete property output, including empty lines and chrome."
               (should (eq (gethash region-id ebox--region-box-table)
                           runtime-box))
               (should-not (eq runtime-box box))
-              (should (equal (ebox-get runtime-box engine-property)
-                             expected)))
+              (let ((actual (ebox-get runtime-box engine-property)))
+                (should (if (numberp expected) (= actual expected)
+                          (equal actual expected)))))
             (let ((report (ebox-test--buffer-update-report)))
               (should (eq (plist-get report :strategy) 'paint-patch))
               (should (equal (plist-get report :patch-ops)
@@ -6851,8 +6851,9 @@ line compositor's complete property output, including empty lines and chrome."
               (should (eq (gethash region-id ebox--region-box-table)
                           runtime-box))
               (should-not (eq runtime-box box))
-              (should (equal (ebox-get runtime-box engine-property)
-                             expected)))
+              (let ((actual (ebox-get runtime-box engine-property)))
+                (should (if (numberp expected) (= actual expected)
+                          (equal actual expected)))))
             (let ((report (ebox-test--buffer-update-report)))
               (should (memq (plist-get report :strategy)
                             '(paint-patch span-patch owner-rerender)))
@@ -6930,9 +6931,9 @@ line compositor's complete property output, including empty lines and chrome."
          (region-id (car (ebox-region-ids box))))
     (ebox-test--with-rendered-buffer box
       (ebox-test--region-update region-id
-                          :padding '(1 2)
-                          :border '(1 "#abcdef")
-                          :margin-inline 3)
+                          :padding '((lh 1) (ch 2))
+                          :border '((px 1) "#abcdef")
+                          :margin-inline '(ch 3))
       (let ((runtime-box
              (gethash region-id (ebox--buffer-region-box-table
                                  (current-buffer)))))
@@ -6955,9 +6956,9 @@ line compositor's complete property output, including empty lines and chrome."
       (let ((full-rerenders
              (ebox-test--count-full-surface-updates
                (ebox-test--region-update region-id
-                                   :padding '(1 2)
-                                   :border '(1 "#abcdef")
-                                   :margin-inline 3))))
+                                   :padding '((lh 1) (ch 2))
+                                   :border '((px 1) "#abcdef")
+                                   :margin-inline '(ch 3)))))
         (should (= full-rerenders 0)))
       (let ((runtime-box
              (gethash region-id (ebox--buffer-region-box-table
@@ -9587,7 +9588,7 @@ line compositor's complete property output, including empty lines and chrome."
       (substring-no-properties
        (ebox-render
         (ebox-build
-         '(column :width (viewport) :height (viewport-height)
+         '(column :width (vw 100) :height (vh 100)
            "Viewport"))))))))
 
 (ert-deftest ebox-lazy-scroll-idle-prefetch-covers-visible-window ()
@@ -10761,7 +10762,7 @@ line compositor's complete property output, including empty lines and chrome."
         (should (> (- (length (plist-get state :content-lines))
                       (plist-get state :content-height))
                    1)))
-      (ebox-test--region-update target-id :width '(280))
+      (ebox-test--region-update target-id :width '(px 280))
       (let ((report (ebox-test--buffer-update-report))
             (state (ebox-scroll-state root-id)))
         (should (eq (plist-get report :strategy) 'span-patch))
@@ -10977,7 +10978,7 @@ line compositor's complete property output, including empty lines and chrome."
           (with-current-buffer buffer
             (setq root-id (ebox-test--selector-region-id buffer "#root"))
             (ebox-selector-update-buffer buffer "#metric-01"
-                                         :padding-left (list 8)
+                                         :padding-left '(px 8)
                                          :color "#B91C1C")
             (let* ((report (ebox-test--buffer-update-report))
                    (state (ebox--scroll-get-state root-id)))
@@ -11093,7 +11094,7 @@ line compositor's complete property output, including empty lines and chrome."
           (with-current-buffer buffer
             (setq target-id (ebox-test--selector-region-id buffer "#row-30"))
             (should target-id)
-            (ebox-selector-update-buffer buffer "#row-30" :width '(180))
+            (ebox-selector-update-buffer buffer "#row-30" :width '(px 180))
             (let ((report (ebox-test--buffer-update-report)))
               (should (eq (plist-get report :strategy) 'span-patch))
               (should (plist-get report :lazy-scroll-deferred-patch)))))
@@ -11737,7 +11738,7 @@ explicit visible-window handoff may admit its full-content publication."
                  (ebox-test--selector-region-id buffer "#target")))
             (ebox-incremental-begin-batch buffer)
             (with-current-buffer buffer
-              (ebox-test--region-update target-id :padding-left 9)))
+              (ebox-test--region-update target-id :padding-left '(ch 9))))
           (should (= (ebox-incremental-pending-count buffer) 1))
           (should-not (gethash buffer ebox--runtime-prewarm-jobs))
           (should-not (gethash buffer ebox--runtime-prewarm-timers)))
@@ -11797,7 +11798,7 @@ explicit visible-window handoff may admit its full-content publication."
                  (ebox-test-box :width '(210)
 	       (ebox-test-column
 		(ebox-test-box :id "width-only" :width '(viewport))
-		(ebox-test-box :id "height-only" :height
+		(ebox-test-box :id "height-only" :width '(px 20) :height
 			       '(viewport-height))
 		(ebox-test-flex :id "flex-height" :height
 				'(viewport-height)
@@ -11830,7 +11831,7 @@ explicit visible-window handoff may admit its full-content publication."
             (pcase-let ((`(,width-ids . ,height-ids)
                          (plist-get state
                                     :viewport-dependent-node-id-axes)))
-              (should-not (member width-only-node-id width-ids))
+              (should (member width-only-node-id width-ids))
               (should-not (member width-only-node-id height-ids))
               (should-not (member height-only-node-id width-ids))
               (should (member height-only-node-id height-ids)))
@@ -12098,7 +12099,7 @@ explicit visible-window handoff may admit its full-content publication."
       (setq target-id
             (ebox-test--selector-region-id (current-buffer) "#target"))
       (should (ebox--scroll-region-by root-id 2 48))
-      (ebox-test--region-update target-id :padding-left (list 12))
+      (ebox-test--region-update target-id :padding-left '(px 12))
       (let ((report (ebox-test--buffer-update-report)))
         (should (eq (plist-get report :strategy) 'span-patch))
         (should (eq (plist-get report :tp-render-scope) 'objects))
@@ -13052,7 +13053,7 @@ explicit visible-window handoff may admit its full-content publication."
       (should (= measurements 1)))))
 
 (ert-deftest ebox-fit-content-width-clamps-between-min-and-max-content ()
-  "fit-content() should clamp by min-content and max-content."
+  "The fit-content keyword clamps available width by intrinsic widths."
   (ebox-test--reset-runtime-state)
   (let* ((content "aa widest")
          (min-content (ebox--string-pixel-width "widest"))
@@ -13060,19 +13061,14 @@ explicit visible-window handoff may admit its full-content publication."
          (between (+ min-content (/ (- max-content min-content) 2))))
     (should (< min-content between))
     (should (< between max-content))
-    (should (= (ebox-test--input-content-pixel
-                (ebox-test-box (ebox-test-text content)
-                               :width (list 'fit-content (list between))))
-               between))
-    (should (= (ebox-test--input-content-pixel
-                (ebox-test-box (ebox-test-text content)
-                               :width (list 'fit-content (list 1))))
-               min-content))
-    (should (= (ebox-test--input-content-pixel
-                (ebox-test-box (ebox-test-text content)
-                               :width (list 'fit-content
-                                            (list (+ max-content 50)))))
-               max-content))))
+    (dolist (case (list (cons between between)
+                       (cons 1 min-content)
+                       (cons (+ max-content 50) max-content)))
+      (let ((ebox-viewport-width (car case)))
+        (should (= (ebox-test--input-content-pixel
+                    (ebox-test-box (ebox-test-text content)
+                                   :width 'fit-content))
+                   (cdr case)))))))
 
 (ert-deftest ebox-fit-content-keyword-uses-stretch-when-viewport-is-definite ()
   "The fit-content keyword should clamp stretch between intrinsic sizes."
@@ -13092,7 +13088,8 @@ explicit visible-window handoff may admit its full-content publication."
   (let* ((content "aa widest")
          (min-content (ebox--string-pixel-width "widest"))
          (max-content (ebox--string-pixel-width content))
-         (between (+ min-content (/ (- max-content min-content) 2))))
+         (between (+ min-content (/ (- max-content min-content) 2)))
+         (ebox-viewport-width between))
     (should (= (ebox-test--input-content-pixel
                 (ebox-test-box (ebox-test-text content)
                                :width '(1)
@@ -13106,21 +13103,20 @@ explicit visible-window handoff may admit its full-content publication."
     (should (= (ebox-test--input-content-pixel
                 (ebox-test-box (ebox-test-text content)
                                :width '(1)
-                               :min-width (list 'fit-content
-                                                (list between))))
+                               :min-width 'fit-content))
                between))
     (should (= (ebox-test--input-content-pixel
                 (ebox-test-box (ebox-test-text content)
                                :width (list (+ max-content 50))
-                               :max-width (list 'fit-content
-                                                (list between))))
+                               :max-width 'fit-content))
                between))))
 
-(ert-deftest ebox-stretch-and-contain-width-fill-viewport-margin-box ()
-  "stretch and contain should resolve against the current viewport."
+(ert-deftest ebox-stretch-width-fills-viewport-margin-box ()
+  "Stretch fills available space and the removed contain alias is rejected."
   (ebox-test--reset-runtime-state)
   (let ((ebox-viewport-width 240))
-    (dolist (keyword '(stretch contain))
+    (should-error (ebox-build '(box :width contain "x")))
+    (dolist (keyword '(stretch))
       (let ((box (ebox-test-box (ebox-test-text "x")
                               :width keyword
                               :padding-inline '(20)
@@ -13207,13 +13203,13 @@ explicit visible-window handoff may admit its full-content publication."
       (should-error
        (ebox-test--region-update region-id
                            :bgcolor "#222222"
-                           :padding-left -1)
+                           :padding-left '(ch -1))
        :type 'error)
       (should (equal (ebox-style-node-specified-value box :bgcolor)
                      "#111111"))
-      (should (= (ebox-style-node-specified-value
-                  box :padding-left)
-                 2)))))
+      (should (equal (ebox-style-node-specified-value
+                      box :padding-left)
+                     '(ch 2))))))
 
 (ert-deftest ebox-region-update-no-op-skips-rollback-snapshot ()
   "A legal no-op should return before discovering rollback scope."
@@ -13845,15 +13841,15 @@ face patch must match that exactly (issue014)."
       (case
        '(((box :key root "Before")
           (box :key root "After") "After")
-         ((flex :key root :width (240)
-                (box :key item :width (80) "Item"))
-          (flex :key root :width (240)
-                (box :key item :width (120) "Item")) "Item")
+         ((flex :key root :width (px 240)
+                (box :key item :width (px 80) "Item"))
+          (flex :key root :width (px 240)
+                (box :key item :width (px 120) "Item")) "Item")
          ((column :key root (box :key first "A"))
           (column :key root
                   (box :key first "A") (box :key second "B")) "B")
-         ((box :key root :height 1 :overflow visible "A\nB")
-          (box :key root :height 1 :overflow hidden "A\nB") "A")))
+         ((box :key root :height (lh 1) :overflow visible "A\nB")
+          (box :key root :height (lh 1) :overflow hidden "A\nB") "A")))
     (let ((buffer (generate-new-buffer " *ebox-typed-fresh-equality*")))
       (unwind-protect
           (progn
@@ -13873,16 +13869,16 @@ face patch must match that exactly (issue014)."
          (before
           (ebox-build
            '(column :key root
-             (box :key target :id target :width (52) :padding (0 1)
+             (box :key target :id target :width (px 52) :padding ((lh 0) (ch 1))
                   :color "#0F172A" :bgcolor "#F8FAFC" "Before")
-             (box :key peer :id peer :width (52) :padding (0 1)
+             (box :key peer :id peer :width (px 52) :padding ((lh 0) (ch 1))
                   :color "#0F172A" :bgcolor "#F8FAFC" "Peer"))))
          (after
           (ebox-build
            '(column :key root
-             (box :key target :id target :width (52) :padding (0 1)
+             (box :key target :id target :width (px 52) :padding ((lh 0) (ch 1))
                   :color "#0F172A" :bgcolor "#F8FAFC" "UPDATED\ndetail")
-             (box :key peer :id peer :width (52) :padding (0 1)
+             (box :key peer :id peer :width (px 52) :padding ((lh 0) (ch 1))
                   :color "#0F172A" :bgcolor "#F8FAFC" "Peer")))))
     (unwind-protect
         (progn
@@ -13969,7 +13965,7 @@ face patch must match that exactly (issue014)."
           (ebox-render-to-buffer
            buffer
            (ebox-build
-            '(column :id scroller :width (viewport) :height 3
+            '(column :id scroller :width (vw 100) :height (lh 3)
               :overflow scroll
               (box "A") (box "B") (box "C") (box "D") (box "E"))))
           (with-current-buffer buffer
@@ -13985,16 +13981,16 @@ face patch must match that exactly (issue014)."
 
 (ert-deftest ebox-typed-local-updates-keep-publication-scoped ()
   "Paint and geometry updates keep an unrelated keyed peer outside full-root work."
-  (dolist (update '((:background-color "#DBEAFE") (:width (120))))
+  (dolist (update '((:background-color "#DBEAFE") (:width (px 120))))
     (let ((buffer (generate-new-buffer " *ebox-typed-scoped-update*")))
       (unwind-protect
           (progn
             (ebox-render-to-buffer
              buffer
              (ebox-build
-              '(row :width (260)
-                (box :id target :width (100) "Target")
-                (box :id peer :width (100) "Peer"))))
+              '(row :width (px 260)
+                (box :id target :width (px 100) "Target")
+                (box :id peer :width (px 100) "Peer"))))
             (let* ((target (ebox-region-resolve buffer "target"))
                    (peer (car (ebox-selector-query-buffer buffer "#peer")))
                    (peer-node-id (plist-get peer :node-id)))

@@ -215,9 +215,10 @@
           :margin-block-start 6 :margin-inline-end (7)
           :margin-block-end 8 :margin-inline-start (9))))
     (should
-     (equal (ebox-style--expand-engine-plist (copy-tree fixture))
+     (equal (ebox-style--expand-engine-plist
+             (ebox-test--explicit-sizes 'box fixture))
             (ebox-style-schema-test--legacy-expand-plist
-             (copy-tree fixture))))))
+             (ebox-test--explicit-sizes 'box fixture))))))
 
 (ert-deftest ebox-style-schema-malformed-projections-fail-fast ()
   "Ambiguous, missing, or cyclic projection declarations are rejected."

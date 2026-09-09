@@ -37,10 +37,10 @@ child-layout algorithm, not a different kind of visual object.
 ```elisp
 (defvar ebox-guide-input
   (ebox-build
-   '(column :padding (1 2)
-            :border (1 solid "#8A93A6")
+   '(column :padding ((lh 1) (ch 2))
+            :border ((px 1) solid "#8A93A6")
             (text :color "#263244" "Research notes")
-            (row :item-gap 1
+            (row :item-gap (ch 1)
                  (box :id "status" :background-color "#F4F6FB" "Inbox")
                  (box :background-color "#EEF2FF" "Archive")))))
 ```
@@ -52,6 +52,41 @@ reassemble its internal nodes.
 
 Use `box` with geometry but no child when an empty rectangular area is needed.
 No extra node type is necessary.
+
+### Prefer defaults and inheritance
+
+Write only what changes the intended result. Omit redundant default values,
+place shared text styles on an existing common parent, and keep only child
+overrides. Reference panels still spell out the property they teach, even
+when its value is the default.
+
+Ebox inherits `:color`, `:font-family`, `:font-size`, `:font-weight`,
+`:font-style`, `:text-align`, `:wrap-mode`, and `:visibility`. Geometry and
+background colors do not inherit; an unpainted child can show its parent's
+background. For example:
+
+```elisp
+(ebox-build
+ '(column :width (ch 40) :color "#1F2328" :bgcolor "#FAF7F0"
+          (box "Shared text color")
+          (box :color "#B45309" "Local accent")
+          (box :height (lh 1))))
+```
+
+Inheritance does not expand where a property may be authored. For example,
+`:text-align` is declared on `box`; it cannot be moved onto a `row`, `column`,
+`flex`, or `grid` merely because its value can inherit.
+
+In this ordinary Column, the separator fills the available width and explicitly
+reserves one line with `:height (lh 1)`. No width or repeated background is needed.
+An otherwise empty Box with `auto` height has zero content height; use
+`:height (lh 1)` when one blank line is intended. Padding and borders can still
+add their own outer extent.
+This is context-dependent: an auto-width child in a Row uses intrinsic width,
+and Flex/Grid have their own item sizing rules. Do not replace `stretch` with
+`auto` everywhere, or remove a default-looking value that overrides inherited
+styles, a stylesheet, or another shorthand. Zero sides can often be omitted
+with `:padding-inline` or `:padding-block` when no other declaration sets them.
 
 ## 3. Choose the layout that states the intent
 
@@ -66,9 +101,9 @@ ordinary Text or Box nodes.
 
 ```elisp
 (ebox-build
- '(row :item-gap 2 :cross-align center
-       (box :width 12 "Left")
-       (box :width 12 "Right")))
+ '(row :item-gap (ch 2) :cross-align center
+       (box :width (ch 12) "Left")
+       (box :width (ch 12) "Right")))
 ```
 
 ### Flex
@@ -78,9 +113,9 @@ directly to a child `box` because they describe the parent-child relationship.
 
 ```elisp
 (ebox-build
- '(flex :width (480)
+ '(flex :width (px 480)
         :flex-flow (row wrap)
-        :gap (1 (12))
+        :gap ((lh 1) (px 12))
         (box :flex (1 1 auto) "Primary")
         (box :flex-grow 2 "Secondary")))
 ```
@@ -93,10 +128,10 @@ child `box`.
 
 ```elisp
 (ebox-build
- '(grid :width (640)
-        :grid-template-columns ((200) (fr 1) (fr 1))
-        :grid-template-rows (1 1)
-        :gap (1 (12))
+ '(grid :width (px 640)
+        :grid-template-columns ((px 200) (fr 1) (fr 1))
+        :grid-template-rows ((lh 1) (lh 1))
+        :gap ((lh 1) (px 12))
         (box :grid-column (1 :span 3) "Header")
         (box :grid-column 1 :grid-row 2 "Navigation")
         (box :grid-column 2 :grid-row 2 "Main")
@@ -105,19 +140,126 @@ child `box`.
 
 ## 4. Use geometry and paint properties
 
-Horizontal numbers are character columns; a one-element list such as `(240)`
-is a pixel width. Vertical numbers are lines. Text accepts only font,
-foreground/background, and text-decoration properties. Padding, margin,
+Box geometry uses explicit `(unit number)` values. The same syntax applies to
+width, height, their minimum/maximum bounds, padding, margins, gaps, borders,
+Flex basis, and fixed Grid tracks. Ebox implements a CSS sizing subset with an
+Elisp data representation, not CSS strings such as `"80ch"`.
+
+| Unit | Meaning |
+| --- | --- |
+| `(px 240)` | 240 pixels. |
+| `(% 50)` | 50% of the property's containing-block reference size. |
+| `(vw 100)` | 100% of the viewport width. |
+| `(vh 100)` | 100% of the viewport height. |
+| `(ch 80)` | 80 times the effective font's advance width for `0`. |
+| `(lh 3)` | Three effective line heights. |
+
+`ch` does not count arbitrary characters or CJK glyphs.
+`1vw` and `1vh` each mean 1% of the corresponding viewport axis. A displayed
+Ebox viewport is the target window's usable body area, excluding its mode line
+and header line; a Playground preview therefore uses the preview window.
+
+<a id="size-unit-constraints"></a>
+
+### Unit constraints by property
+
+The following table is the unit contract for all Ebox author entry points.
+Inline means horizontal and block means vertical in Ebox's supported writing
+mode. These axis restrictions deliberately narrow CSS's general length model.
+
+| Value context | Allowed units | Properties |
+| --- | --- | --- |
+| Inline geometry | `px`, `ch`, `vw`, `%` | `width`, `min-width`, `max-width`; left/right and inline padding/margin; `column-gap`; Row `item-gap`; Grid column tracks. |
+| Block geometry | `lh`, `vh`, `%` | `height`, `min-height`, `max-height`; top/bottom and block padding/margin; `row-gap`; Column `item-gap`; Grid row tracks. |
+| Flex main size | The parent Flex's main-axis units | `flex-basis` and the basis in `(grow shrink basis)`; row directions use inline units, column directions use block units. |
+| Border paint thickness | `px`, `ch`, `lh`, `vw`, `vh` | `border-width`, each side's border width, and the width component of border shorthands; percentages are forbidden. |
+
+The same restrictions apply recursively to every branch of `calc`, `min`,
+`max`, and `clamp`, and to nested Grid track functions. A disallowed unit is
+an error when `ebox-build` constructs the tree, even if arithmetic would
+cancel it or another branch would win. For example, `:height (px 24)`,
+`:width (lh 3)`, and `:height (min (lh 2) (px 24))` are rejected.
+Border thickness is a separate paint value, so `:border ((px 1) solid "red")`
+is valid on all four sides.
+
+Stylesheets and dynamic updates follow the same contract: after computed styles
+are known and before layout, Ebox rechecks the parent Flex direction and child
+basis. Invalid updates do not publish to an existing buffer. Numeric `:flex 1`
+uses an implicit `(% 0)` basis, valid on either main axis; explicit bases still
+follow the parent direction.
+
+Shorthands are checked after expansion onto their sides or axes. A one-value
+`padding`, `margin`, or `gap` must therefore be valid on both axes: use `%`
+for such a shared length, or spell out the two axes, for example
+`:padding ((lh 1) (ch 2))` and `:gap ((lh 1) (px 12))`.
+Use `:padding-inline (px 12)` or `:padding-block (lh 1)` to set only one axis.
+
+Percent widths refer to containing-block width; percent heights require a
+definite containing-block height and otherwise follow the property's
+indefinite-size rule. Percentage padding and margins on every side refer to
+containing-block width. Border widths do not accept percentages.
+Negative margins and `auto` margins are outside this subset; the current
+buffer backend does not implement overlapping margin geometry.
+
+| Property | Keywords | Default |
+| --- | --- | --- |
+| `width`, `height` | `auto`, `min-content`, `max-content`, `fit-content`, `stretch` | `auto` |
+| `min-width`, `min-height` | `auto`, `min-content`, `max-content`, `fit-content`, `stretch` | `auto` |
+| `max-width`, `max-height` | `none`, `min-content`, `max-content`, `fit-content`, `stretch` | `none` |
+
+For a normal block root with an available viewport, `auto` width fills the
+available space and `auto` height follows content. `min-content` and
+`max-content` request intrinsic sizes. `fit-content` fits available space
+between those intrinsic bounds; `stretch` fills available space with the
+margin box. `none` removes a maximum-size constraint. Automatic minimums
+depend on layout; an explicit `(px 0)` minimum allows an item to shrink below
+its automatic content minimum on the inline axis. Use `(lh 0)` for the block
+minimum. An empty Box with no padding, border, or explicit height has zero
+height; `(box :height (lh 1))` explicitly reserves one blank line.
+
+The four size functions compose units without evaluating Lisp during layout:
+
+```elisp
+'(column :width (min (% 100) (ch 80))
+         :height (calc (- (vh 100) (lh 1)))
+         (box :width (max (px 120) (% 25)) "Sidebar")
+         (box :width (clamp (ch 20) (% 50) (ch 60)) "Body"))
+```
+
+`calc` accepts one arithmetic expression; `+` and `-` combine lengths, `*`
+multiplies a length by a scalar, and `/` divides it by a nonzero scalar.
+`min` and `max` choose from one or more permitted lengths. `clamp` takes
+minimum, preferred, and maximum lengths. Functions may nest. Bare numbers inside math
+are scalars, never implicit `ch` or `lh` lengths.
+
+Units and functions remain data until layout, so viewport and containing-block
+changes are resolved again. Floating-point intermediate results are preserved:
+`33vw` of an 853-pixel viewport is 281.49 pixels before display quantization.
+The buffer backend materializes block geometry in whole lines; fractional
+line targets are quantized at that boundary. Vertical `px` lengths are not
+part of the author contract. `:overflow hidden` currently clips vertical lines; horizontal
+overflow is not pixel-clipped by the buffer backend, so content can extend
+beyond the computed width.
+
+Bare geometry numbers, one-element pixel lists, `viewport`, `viewport-height`,
+`contain`, and parameterized `fit-content` are rejected. Even zero needs an
+axis-appropriate unit: `(px 0)` inline or `(lh 0)` block. Grid `(fr n)` remains a track fraction; Grid placement and
+Flex growth/shrink factors remain dimensionless numbers.
+
+Text style declarations accept only font, foreground/background, and
+text-decoration properties. Text also accepts the four native node capabilities
+described below.
+Padding, margin,
 border, size, `:outer`, overflow, visibility, and wrapping policy belong only
 to Box. Font and color on Box may feed inherited Text facts, but never give
 Text Box geometry.
 
 ```elisp
 (ebox-build
- '(box :width (420)
-       :padding (1 2)
-       :margin (0 1)
-       :border (1 solid "#8A93A6")
+ '(box :width (px 420)
+       :padding ((lh 1) (ch 2))
+       :margin ((lh 0) (ch 1))
+       :border ((px 1) solid "#8A93A6")
        :color "#263244"
        :background-color "#FFFFFF"
        "A readable panel"))
@@ -125,6 +267,74 @@ Text Box geometry.
 
 Use `:outer inline` or `:outer block` to state how a Box participates in its
 parent. The child-layout algorithm still comes from the form name.
+
+<a id="native-node-interaction"></a>
+### Native node interaction
+
+Text and every Box form accept `:help-echo`, `:pointer`, `:hover-style`, and
+`:keymap`. These are explicit node capabilities outside the CSS cascade.
+For example, render a Box with dynamic help, a hand pointer, hover paint, and
+one callback for both mouse and keyboard activation:
+
+```elisp
+(ebox-render-to-buffer
+ "*Ebox Interaction*"
+ (ebox-build
+  `(box :id "action" :padding ((lh 1) (ch 2))
+        :border ((px 1) solid "#5893A3")
+        :help-echo ,(ebox-help-create
+                     (lambda ()
+                       (format-time-string "Help requested at %H:%M:%S")))
+        :pointer hand
+        :hover-style (:color "#FFFFFF" :background-color "#286477"
+                      :text-decoration-line underline)
+        :keymap ,(ebox-keymap-create :activate #'describe-mode)
+        "Click or press RET / SPC here to describe this buffer's mode.")))
+```
+
+`:help-echo` accepts a string, a native function with arguments
+`(WINDOW OBJECT POSITION)`, or `nil`. Prefer `ebox-help-create` to adapt a
+zero-argument business function returning a string or `nil`; Ebox supplies the
+hovered buffer's context. Emacs calls the function when requesting help; the DSL
+does not call it while building the tree. `:pointer` accepts
+`text`, `arrow`, `vdrag`, `modeline`, `hand`, `hdrag`, `nhdrag`, `hourglass`,
+or `nil`. Help display and exact pointer appearance depend on the user's Emacs
+settings and window system.
+
+`:hover-style` accepts `nil` or an Ebox paint plist containing only `:color`,
+`:background-color`, `:text-decoration-line`, `:text-decoration-color`, and
+`:text-decoration-style`. Within a rendered line, one declaring node's text
+and padding share a native `mouse-face`, with unspecified attributes taken from
+that node's base style. Differently colored child text covered by this hover
+uses the same hover base. Physical left/right borders are excluded from hover;
+horizontal border strokes remain intact. Font metrics and geometry do not change.
+The [API reference](ebox-api-reference.en.md#native-node-capabilities)
+defines the accepted values. Ebox compiles this plist to native `mouse-face`;
+there is no arbitrary native-property passthrough.
+
+Box help, pointer, and keymap cover its rendered content, padding, and border,
+excluding that Box's margin and structural newlines; hover follows the rule
+above. A nested Text or Box can replace
+each capability with an explicit value. Explicit `nil` blocks an enclosing
+value; an omitted property leaves the enclosing surface coverage in place.
+
+`:keymap` accepts a native Emacs keymap or `nil`. Prefer `ebox-keymap-create`:
+its `:activate` callback takes no arguments and handles `RET`, `[return]`, `SPC`,
+and `[mouse-1]`. Use `:bindings` for an alist of key-description strings or event
+vectors paired with zero-argument callbacks. The helper uses the event window's
+buffer for mouse callbacks, so a callback can directly update a semantic ID
+with `(ebox-region-update "action" :help-echo "Activated")`.
+
+Move point into the surface to use keyboard bindings. Raw native keymaps are
+also accepted; their mouse commands must handle the event's target buffer
+themselves. Ebox uses native command dispatch; it does not create application
+state or focus navigation. A hand pointer alone does not bind a click command.
+
+The Playground's [interaction lab](../../../ebox-playground/README.md#native-interaction-lab)
+keeps its business functions and state in `interaction-reference.el`, with its
+layout in `interaction-reference.ebox`. It demonstrates callbacks, nested
+overrides, and replacing or removing all four capabilities through public
+region updates.
 
 ## 5. Render and publish
 
@@ -144,7 +354,7 @@ Build a fresh canonical input and use `ebox-commit` for an atomic update:
 (ebox-commit
  "*Ebox Guide*"
  (ebox-build
-  '(column :padding (1 2)
+  '(column :padding ((lh 1) (ch 2))
            (text "Updated notes")
            (box :key body "The new input is caller-owned."))))
 ```
@@ -156,12 +366,39 @@ the last successful update report.
 ## 6. Query and update a mounted surface
 
 `:id`, `:class`, and `:key` are author metadata. Selectors use ECSS semantics.
-Resolve an `:id` to an opaque, surface-scoped handle before a direct update:
+In the target mounted buffer, pass the semantic `:id` directly:
+
+```elisp
+(with-current-buffer "*Ebox Guide*"
+  (ebox-region-update "status" :color "#166534"))
+```
+
+For an explicit buffer address, resolve an `:id` to an opaque, surface-scoped
+handle:
 
 ```elisp
 (let ((handle (ebox-region-resolve "*Ebox Guide*" "status")))
   (ebox-region-update handle :color "#166534"))
 ```
+
+The same API replaces native capabilities on Text or Box regions. For the
+interaction example above:
+
+```elisp
+(with-current-buffer "*Ebox Interaction*"
+  (ebox-region-update "action" :help-echo "Updated help" :pointer 'arrow
+                      :hover-style '(:background-color "#F6D6AB"))
+  (ebox-region-update "action" :help-echo nil :pointer nil
+                      :hover-style nil :keymap nil))
+```
+
+Update arguments are evaluated Elisp, so literal symbols and plists need
+quotes, unlike properties inside already quoted DSL data. Omitted update
+properties stay unchanged. Explicit `nil` clears that capability and blocks
+an enclosing value.
+Ebox snapshots keymaps; replace `:keymap` to publish new bindings instead of
+mutating the original map. Clearing a node keymap leaves ordinary buffer and
+global bindings available.
 
 `ebox-selector-query-buffer` returns document-ordered matches from a mounted
 buffer. `ebox-selector-update-buffer` applies one style update to all editable
@@ -179,7 +416,7 @@ not select an unrelated scroll box elsewhere on the page.
 
 ```elisp
 (ebox-build
- '(box :id log :width (420) :height 8 :overflow scroll
+ '(box :id log :width (px 420) :height (lh 8) :overflow scroll
        "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9"))
 ```
 
@@ -193,18 +430,71 @@ explicit viewport with:
 
 ## 8. Standalone `.ebox` files
 
-A `.ebox` file contains one unquoted structural form:
+A `.ebox` file contains one ordinary Elisp expression whose value is the layout
+data passed to `ebox-build`. Quote the whole list for a static layout:
 
 ```elisp
-(column :padding '(1 2)
-        (text :color "#263244" "Title")
-        (box :width '(240) "Body"))
+'(column :padding ((lh 1) (ch 2))
+         :cross-align center
+         (text :color "#263244" "Title")
+         (box :width (px 240) "Body"))
 ```
 
-The sibling `ebox-playground` evaluates property expressions before calling
-`ebox-build`. Quote list and symbol constants in a `.ebox` file, as shown
-above. When calling `ebox-build` directly, pass inert data as in the earlier
-examples.
+The sibling `ebox-playground` reads exactly one expression, evaluates it with
+lexical bindings, and passes the resulting data to `ebox-build`. It does not
+evaluate individual properties or children. The expression is exactly what you
+would write as the argument to `(ebox-build ...)` in an `.el` file; omit that
+outer call in `.ebox`.
+
+Put necessary business functions and variables in a same-basename `.el` file
+beside the layout. For `notes.ebox`, the Playground loads `notes.el` when it
+exists, before evaluating the layout on every preview. This applies to
+`C-c C-c`, `ebox-playground-open-file`, and file render entry points. It loads
+the exact `.el` source, so saving changes is enough for the next preview;
+there is no `require` cache or preference for a stale `.elc`. If the companion
+is absent, the standalone `.ebox` still works. Companion load errors stop the
+render before the layout is evaluated.
+
+For example, `notes.el` owns the data and action:
+
+```elisp
+;;; notes.el --- Notes example behavior -*- lexical-binding: t; -*-
+(defvar notes-body "A long article.")
+
+(defun notes-help ()
+  "Return business help for the article."
+  (format "Article: %s" notes-body))
+
+(defun notes-activate ()
+  "Mark the article in the current Ebox buffer."
+  (ebox-region-update "article" :color "#166534"))
+```
+
+`notes.ebox` stays focused on the layout:
+
+```elisp
+`(column :padding ((lh 1) (ch 2))
+         (box :id "article" :width (px 480)
+              :help-echo ,(ebox-help-create #'notes-help)
+              :pointer hand
+              :keymap ,(ebox-keymap-create :activate #'notes-activate)
+              ,notes-body))
+```
+
+Backquote keeps layout data literal, `,` inserts a value, and `,@` inserts a
+list of children. Avoid helpers whose only purpose is hiding repeated DSL
+property lists. Each preview loads the companion and then evaluates the layout
+once; ordinary Elisp variable definitions determine whether application state
+is initialized, retained, or reset.
+
+Migration from the old property-evaluation format is explicit: add a quote to
+the whole static layout and remove the quotes around its list and symbol
+properties. For dynamic layouts, use backquote and commas at the values to
+evaluate. For example, old `:padding '(1 2)` becomes
+`:padding ((lh 1) (ch 2))` inside a quoted layout, and a computed pixel width
+becomes `:width (px ,(+ 200 40))` inside a backquoted layout. Bare structural forms
+are no longer interpreted as DSL automatically; there is no legacy-format
+auto-detection.
 
 ## 9. Typed integration API
 
@@ -246,7 +536,7 @@ the forest and source index together as one `CanonicalEboxInput`.
        (root
         (ebox-box-create
          :layout (ebox-row-layout-create
-                  :item-gap 1 :cross-align 'center)
+                  :item-gap '(ch 1) :cross-align 'center)
          :children (list left right)
          :source-handle root-handle
          :owned-facts
@@ -277,6 +567,7 @@ From the repository root:
 
 ```sh
 make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make dsl-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```

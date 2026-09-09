@@ -55,7 +55,7 @@
             (ebox-render-to-buffer
              buffer
              (ebox-build
-              '(box :width (viewport)
+              '(box :width (vw 100)
                     (text :font-size 16 :font-style italic "A"))))
             (let* ((state-a (ebox--buffer-render-state buffer))
                    (node-a

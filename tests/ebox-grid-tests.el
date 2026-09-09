@@ -109,6 +109,144 @@
                       entry-left rendered 100 '(:justify-items stretch))))
       (should (= calls 1)))))
 
+(defun ebox-grid-test--background-widths (rendered color)
+  "Return the width painted COLOR on each line of RENDERED."
+  (mapcar
+   (lambda (line)
+     (let ((start 0) (width 0))
+       (while (< start (length line))
+         (let ((end (next-single-property-change
+                     start 'face line (length line))))
+           (when (equal (plist-get (get-text-property start 'face line)
+                                  :background)
+                        color)
+             (cl-incf width (ebox--string-pixel-width
+                             (substring line start end))))
+           (setq start end)))
+       width))
+   (ebox-string-lines rendered)))
+
+(ert-deftest ebox-grid-block-alignment-stretches-the-item-background ()
+  "Default and explicit stretch paint the item; other alignments position it."
+  (dolist (case '((nil (40 40 40)) (normal (40 40 40))
+                  (stretch (40 40 40)) (start (40 0 0))
+                  (center (0 40 0)) (end (0 0 40))
+                  (flex-start (40 0 0)) (flex-end (0 0 40))))
+    (dolist (height '(nil auto))
+      (let* ((form `(grid :width (px 40)
+                         :grid-template-columns ((fr 1))
+                         :grid-template-rows ((lh 3))
+                         ,@(when (car case) (list :align-items (car case)))
+                    (box :bgcolor "#ddeeff"
+                         ,@(when height (list :height height)) "A")))
+             (rendered (ebox-render (ebox-build form))))
+        (ert-info ((format "Grid alignment %S, height %S" (car case) height))
+          (should (equal (ebox-grid-test--background-widths rendered "#ddeeff")
+                         (cadr case))))))))
+
+(ert-deftest ebox-grid-stretch-preserves-height-constraints-and-edges ()
+  "Track stretch respects explicit heights, min/max constraints and margins."
+  (dolist (case '((nil (40 40 40 40 40))
+                  ((:height (lh 1)) (40 0 0 0 0))
+                  ((:height (% 40)) (40 40 0 0 0))
+                  ((:height min-content) (40 0 0 0 0))
+                  ((:height max-content) (40 0 0 0 0))
+                  ((:height fit-content) (40 0 0 0 0))
+                  ((:min-height (lh 2)) (40 40 40 40 40))
+                  ((:max-height (lh 2)) (40 40 0 0 0))
+                  ((:min-height (lh 3) :max-height (lh 2)) (40 40 40 0 0))
+                  ((:margin ((lh 1) (px 0))) (0 40 40 40 0))
+                  ((:padding ((lh 1) (px 0))) (40 40 40 40 40))
+                  ((:box-sizing border-box :padding ((lh 1) (px 0)))
+                   (40 40 40 40 40))))
+    (let* ((rendered
+            (ebox-render
+             (ebox-build
+              `(grid :width (px 40) :grid-template-columns ((fr 1))
+                     :grid-template-rows ((lh 5))
+                 (box :bgcolor "#ddeeff" ,@(car case) "A"))))))
+      (ert-info ((format "Grid item properties %S" (car case)))
+        (should (equal (ebox-grid-test--background-widths rendered "#ddeeff")
+                       (cadr case)))))))
+
+(ert-deftest ebox-grid-align-self-overrides-container-block-alignment ()
+  "The child's align-self controls both used height and vertical position."
+  (dolist (case '((start stretch (40 40 40))
+                  (start normal (40 40 40))
+                  (stretch start (40 0 0))
+                  (stretch center (0 40 0))
+                  (stretch end (0 0 40))
+                  (end auto (0 0 40))))
+    (let ((rendered
+           (ebox-render
+            (ebox-build
+             `(grid :width (px 40) :grid-template-columns ((fr 1))
+                    :grid-template-rows ((lh 3)) :align-items ,(nth 0 case)
+                (box :bgcolor "#ddeeff" :align-self ,(nth 1 case) "A"))))))
+      (should (equal (ebox-grid-test--background-widths rendered "#ddeeff")
+                     (nth 2 case))))))
+
+(ert-deftest ebox-grid-stretched-height-preserves-inline-alignment ()
+  "Stretching the block axis must preserve a naturally sized inline axis."
+  (dolist (justify '(start center end))
+    (let* ((rendered
+            (ebox-render
+             (ebox-build
+              `(grid :width (px 40) :grid-template-columns ((fr 1))
+                     :grid-template-rows ((lh 3)) :justify-items ,justify
+                 (box :bgcolor "#ddeeff" "A")))))
+           (width (ebox--string-pixel-width "A"))
+           (offset (pcase justify ('center (/ (- 40 width) 2))
+                          ('end (- 40 width)) (_ 0)))
+           (first (car (ebox-string-lines rendered))))
+      (should (equal (ebox-grid-test--background-widths rendered "#ddeeff")
+                     (make-list 3 width)))
+      (should (= (ebox--string-pixel-width
+                  (substring first 0 (string-match "A" first)))
+                 offset)))))
+
+(ert-deftest ebox-grid-stretch-paints-composites-across-row-spans ()
+  "Nested layouts stretch across the full row span including intervening gaps."
+  (dolist (kind '(box column row flex grid))
+    (let ((rendered
+           (ebox-render
+            (ebox-build
+             `(grid :width (px 40) :grid-template-columns ((fr 1))
+                    :grid-template-rows ((lh 2) (lh 2)) :row-gap (lh 1)
+                (,kind :grid-row (1 :span 2) :bgcolor "#ddeeff"
+                       (box "A")))))))
+      (ert-info ((format "Stretched Grid item layout %S" kind))
+        (should (equal (ebox-grid-test--background-widths rendered "#ddeeff")
+                       '(40 40 40 40 40)))))))
+
+(ert-deftest ebox-grid-stretched-item-commits-preserve-source-geometry ()
+  "Retained updates recompute stretch without retaining its temporary Box copy."
+  (with-temp-buffer
+    (dolist (case '((40 3 stretch) (60 5 stretch)
+                    (60 5 start) (40 3 stretch)))
+      (let ((input
+             (ebox-build
+              `(grid :key root :width (px ,(nth 0 case))
+                     :grid-template-columns ((fr 1))
+                     :grid-template-rows ((lh ,(nth 1 case)))
+                     :align-items ,(nth 2 case)
+                 (box :key item :bgcolor "#ddeeff" "A")))))
+        (if (ebox--buffer-render-state (current-buffer))
+            (ebox-commit (current-buffer) input)
+          (ebox-render-to-buffer (current-buffer) input))
+        (let* ((state (ebox--buffer-render-state (current-buffer)))
+               (child (car (ebox-tree-node-children
+                            (plist-get state :root-node))))
+               (actual (buffer-string))
+               (fresh (ebox-render input)))
+          (should (memq (ebox-get child :height) '(nil auto)))
+          (should (eq child (gethash (ebox-get child :region-id)
+                                     (plist-get state :region-box-table))))
+          (should (equal (ebox-grid-test--background-widths actual "#ddeeff")
+                         (ebox-grid-test--background-widths fresh "#ddeeff")))
+          (should (equal (substring-no-properties actual)
+                         (substring-no-properties fresh))))))))
+
 (ert-deftest ebox-grid-renders-assigned-cell-width-once ()
   "Final Grid assembly must reuse the width-sized cell's complete output."
   (let* ((cell-region 91001)
@@ -155,7 +293,7 @@
 (ert-deftest ebox-grid-definite-stretched-cells-skip-unused-intrinsic-output ()
   "Definite fixed/fr columns need only the stretched cell's final output."
   (dolist (width '(80 120))
-    (dolist (cell-width '(nil auto stretch contain))
+    (dolist (cell-width '(nil auto stretch))
       (let* ((cell-region 91002)
              (input
               (ebox-test-grid
@@ -485,8 +623,9 @@
       (let* ((leading-zero-p (zerop (car rows)))
              (input
               (ebox-build
-               `(grid :width (40) :grid-template-columns ((40))
-                      :grid-template-rows ,rows :row-gap ,gap
+               `(grid :width (px 40) :grid-template-columns ((px 40))
+                      :grid-template-rows ,(mapcar (lambda (n) (list 'lh n)) rows)
+                      :row-gap (lh ,gap)
                  (text ,(if leading-zero-p "hidden" "visible"))
                  (text ,(if leading-zero-p "visible" "hidden")))))
              (rendered (ebox-render input))
@@ -621,7 +760,7 @@
   "The public Ebox DSL should compile a grid node."
   (let* ((input
           (ebox-build
-           '(grid :grid-template-columns ((20) (20))
+           '(grid :grid-template-columns ((px 20) (px 20))
               (box "A")
               (box "B"))))
          (node (ebox-test-root input)))
@@ -634,7 +773,7 @@
   "The Ebox DSL should preserve direct child Box placement metadata."
   (let* ((input
           (ebox-build
-           '(grid :grid-template-columns ((20) (20))
+           '(grid :grid-template-columns ((px 20) (px 20))
               (box :grid-column (1 :span 2) "Header"))))
          (node (ebox-test-root input)))
     (should (string-match-p "Header" (ebox-grid-test--plain input)))
