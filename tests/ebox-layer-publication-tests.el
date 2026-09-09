@@ -42,6 +42,27 @@
             (plist-get (ebox-surface-buffer-snapshot (current-buffer))
                        :input))))))
 
+(ert-deftest ebox-layer-publication-updates-every-placement-property ()
+  "Each layer declaration reaches the mounted runtime through a region update."
+  (dolist (properties '((:position relative) (:left (ch 2)) (:top (lh 1))
+                        (:z-index -1) (:layer root) (:anchor "lower")
+                        (:placement top-end)))
+    (ert-info ((format "Update %S" properties))
+      (ebox-layer-publication-test--with-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-layer-publication-test--input nil t))
+        (let* ((handle (ebox-region-resolve (current-buffer) "upper"))
+               (region-id (cdr (ebox-selector--region-target handle)))
+               (revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (apply #'ebox-region-update handle properties))
+          (should (> (ebox-surface-buffer-revision (current-buffer)) revision))
+          (should (equal (plist-get
+                          (ebox--buffer-region-render-owner-node
+                           (current-buffer) region-id)
+                          (car properties))
+                         (cadr properties)))
+          (ebox-layer-publication-test--assert-fresh-render))))))
+
 (ert-deftest ebox-layer-publication-hidden-updates-reveal-current-input ()
   "Hidden content and paint updates survive without painting over upper text."
   (ebox-layer-publication-test--with-buffer

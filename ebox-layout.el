@@ -1570,8 +1570,10 @@ the separate unwrapped measurement keeps that resolution non-recursive."
       (cond
        ((and (eq (ebox-get props :width) 'max-content)
              (not (memq (ebox--box-layout-kind props) '(normal column))))
+        ;; This is an unbounded *visible* formatting context, not necessarily
+        ;; an intrinsic-size probe.  Preserve the caller's measurement mode;
+        ;; suppressing paint here would discard positioned descendants.
         (let ((ebox-viewport-width nil)
-              (ebox--intrinsic-layout-measurement t)
               (ebox--inline-auto-width-intrinsic-p nil))
           (funcall function)))
        (content-viewport

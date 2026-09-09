@@ -24,6 +24,7 @@
 (require 'tp)
 
 (defvar ebox-region-types)
+(declare-function ebox--runtime-node-ids "ebox" (node))
 (defvar ebox--region-id-counter)
 (defvar ebox--runtime-node-id-counter)
 (defvar ebox--region-box-table)

@@ -3854,6 +3854,8 @@ Defaults to the current buffer."
     :text-align :vertical-align
     :overflow :wrap-mode
      :scroll-offset :visibility)
+   (cl-loop for (property _value) on ebox-style--box-runtime-defaults by #'cddr
+            collect property)
    ebox-style--item-projection-properties)
   "Longhand box properties accepted by `ebox-region-update'.")
 

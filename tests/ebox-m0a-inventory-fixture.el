@@ -25,6 +25,9 @@
     (:storage (:state-key :content-index)
      :why address-scalar-not-a-store :owner ebox-surface
      :evidence plist-key-holds-a-numeric-content-address)
+    (:storage (:state-key :z-index)
+     :why paint-order-scalar-not-a-store :owner ebox-layer
+     :evidence style-schema-requires-an-integer-used-only-for-layer-ordering)
     (:storage (:state-key :max-jobs)
      :why native-limit-not-a-store :owner ebox-native-reflow
      :evidence plist-key-holds-a-numeric-capacity)

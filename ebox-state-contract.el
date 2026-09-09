@@ -301,6 +301,9 @@ rather than relying on an implicit default.")
     (:symbol ebox--box-content-empty-width
      :reason dynamic-scalar-result
      :evidence numeric-inline-extent-returned-with-one-content-materialization)
+    (:symbol ebox-layer--portals
+     :reason dynamically-bound-render-collection
+     :evidence let-bound-per-spatial-root-and-discarded-with-the-candidate-render)
     (:symbol ebox--string-pixel-width-cache-ring-index
      :reason numeric-eviction-cursor
      :evidence value-is-an-integer-ring-position)

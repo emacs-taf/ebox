@@ -18,6 +18,8 @@
 (require 'ebox-runtime-index)
 (require 'ebox-size)
 
+(defvar ebox-incremental--render-portals-p)
+
 (declare-function ebox-string-height "ebox" (string))
 (declare-function ebox-surface--retained-property-value-equal-p
                   "ebox-surface" (left right))

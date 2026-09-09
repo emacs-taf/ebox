@@ -9,6 +9,10 @@
 
 (require 'cl-lib)
 
+(defvar ebox-layer--active-p)
+(defvar ebox-incremental--render-portals-p)
+(defvar ebox--render-source-index)
+
 (declare-function ebox-interaction--refresh-hover! "ebox-interaction"
                   (string start end &optional face))
 
@@ -266,6 +270,16 @@ including strings returned from a render-cache hit."
                 (ebox--css-size-context-active-p t)
                 (ebox--render-runtime-revision
                  (plist-get ,render-state :runtime-revision))
+                (ebox--render-source-index
+                 (plist-get ,render-state :source-index))
+                (ebox-layer--active-p
+                 (if (plist-member ,render-state :layered-p)
+                     (plist-get ,render-state :layered-p)
+                   'unknown))
+                (ebox-incremental--render-portals-p
+                 (if (plist-member ,render-state :root-portals-p)
+                     (plist-get ,render-state :root-portals-p)
+                   'unknown))
                 (ebox--surface-materialization-active t)
                 (ebox--render-cache-table
                  (plist-get ,render-state :render-cache))

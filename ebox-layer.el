@@ -190,7 +190,7 @@ the fact once for its spatial root.")
     (car matches)))
 
 (defun ebox-layer--absolute-origin (node host bounds width height layer-width layer-height)
-  "Resolve NODE's origin in HOST's BASE, or nil for an invisible anchor.
+  "Resolve NODE's origin in HOST, or nil for an invisible anchor.
 BOUNDS is the already resolved anchor rectangle, or nil.
 WIDTH and HEIGHT bound the host; LAYER-WIDTH and LAYER-HEIGHT bound the panel."
   (let ((x (ebox-layer--offset node :left host width))
