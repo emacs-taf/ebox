@@ -14,6 +14,7 @@
 (declare-function ebox--register-render-owned-text-value
                   "ebox-render-context" (property value))
 (declare-function ebox-string-lines "ebox" (string))
+(declare-function ebox-lines-join "ebox" (lines))
 (declare-function ebox--string-repeat-lines "ebox" (string count))
 
 ;; Measurement Cache Model:
@@ -75,11 +76,7 @@ of pixel measurements it triggers do not each rebuild the display signature.")
 
 (defun ebox--display-space-width (display)
   "Return fixed pixel width for DISPLAY space specs, or nil."
-  (when (and (consp display) (eq (car display) 'space))
-    (let ((width (plist-get (cdr display) :width)))
-      (cond
-       ((numberp width) width)
-       ((and (consp width) (numberp (car width))) (car width))))))
+  (ebox--fixed-pixel-space-width display))
 
 (defun ebox--fixed-pixel-space-width (display)
   "Return DISPLAY's nonnegative fixed pixel width, or nil for other specs.
@@ -129,17 +126,17 @@ An already integral STRING is returned unchanged."
                    (width (ebox--fixed-pixel-space-width
                            (get-text-property position 'display string))))
               (when width
-                (cl-loop for index from position below next
-                         do (push index positions) (push width widths)))
+                (push (cons position next) positions)
+                (push width widths))
               (setq position next)))
           (cl-mapc
-           (lambda (index used)
-             (let ((display (get-text-property index 'display string)))
+           (lambda (range used)
+             (let ((display (get-text-property (car range) 'display string)))
                (unless (= used (ebox--fixed-pixel-space-width display))
                  (let ((updated (cons 'space (copy-sequence (cdr display)))))
                    (setcdr updated (plist-put (cdr updated) :width (list used)))
                    (put-text-property
-                    index (1+ index) 'display
+                    (car range) (cdr range) 'display
                     (ebox--register-render-owned-text-value 'display updated)
                     result)))))
            (nreverse positions) (ebox-size-quantize (nreverse widths)))
@@ -236,7 +233,7 @@ constant across the selected slice."
              ;; display-space fractions just as the segmented path does;
              ;; Emacs's glyph measurement quantizes them before padding.
              (width (if space-width
-                        (* space-width (length sample))
+                        space-width
                       (ebox--scaled-string-pixel-width sample factor)))
              (index ebox--string-pixel-width-cache-ring-index)
              (evicted (aref ebox--string-pixel-width-cache-ring index)))
@@ -268,17 +265,21 @@ keep their absolute pixel width."
         (ebox--cached-string-pixel-width line factor cache-key)
       (while (< pos end)
         (let* ((display (get-text-property pos 'display line))
+               (space-width (ebox--display-space-width display))
                (next
-                (cl-loop for property in
-                         '(face display)
-                         minimize (or (next-single-property-change
-                                       pos property line end)
-                                      end)))
-               (space-width (ebox--display-space-width display)))
+                (if (or (stringp display)
+                        (memq (car-safe display) '(space image)))
+                    ;; Emacs replaces an entire EQ display run once.  Face
+                    ;; boundaries inside it do not create additional glyphs.
+                    (next-single-property-change pos 'display line end)
+                  (cl-loop for property in '(face display)
+                           minimize (or (next-single-property-change
+                                         pos property line end)
+                                        end)))))
           (setq total
                 (+ total
                    (if space-width
-                       (* space-width (- next pos))
+                       space-width
                      ;; The segment ends at every visual property change.
                      ;; Build only its property-free cache key on hits; a
                      ;; propertized substring is materialized solely on miss.

@@ -2079,6 +2079,35 @@ impl Line {
         self
     }
 
+    fn clipped(&self, width: i64) -> Self {
+        if self.width <= width {
+            return line_plan::clone_line(self);
+        }
+        let mut kept = Vec::new();
+        let mut remaining = width.max(0);
+        for atom in self.atoms.to_vec() {
+            if atom.width() <= remaining {
+                remaining -= atom.width();
+                kept.push(atom);
+            } else {
+                if remaining > 0 {
+                    // A display space can shrink.  An indivisible glyph is
+                    // omitted and its replacement blank has no hit ownership.
+                    let properties = match atom {
+                        Atom::Space { properties, .. } => properties,
+                        Atom::Text { .. } => AtomProperties::default(),
+                    };
+                    kept.push(Atom::Space {
+                        width: remaining,
+                        properties,
+                    });
+                }
+                break;
+            }
+        }
+        Self::from_atoms(&kept)
+    }
+
     fn blank(width: i64) -> Self {
         Self::blank_with_properties(width, AtomProperties::default())
     }
@@ -7648,6 +7677,13 @@ fn render_node_body(
                     }
                 }
             }
+            if *overflow == Overflow::Hidden && formatted.max_width() > content_width {
+                // Horizontal clipping changes atom positions but not line
+                // origins.  Preserve break properties and let the ordinary
+                // owner projection rebuild the affected local metadata.
+                formatted = formatted.map_lines(|_, line| line.clipped(content_width));
+                change = None;
+            }
             formatted = project_box_lines(
                 scope,
                 BoxProjectionSlot::ContentOwn,
@@ -8737,6 +8773,118 @@ mod tests {
         let character_lines = wrap_line(&clusters, 3, WrapMode::Char);
         assert_eq!(character_lines.len(), 4);
         assert!(character_lines.iter().all(|line| line.width <= 3));
+    }
+
+    #[test]
+    fn hidden_inline_overflow_clips_before_padding_and_borders() {
+        for overflow_value in [Overflow::Hidden, Overflow::Visible, Overflow::Scroll] {
+            let mut root = text_box(
+                1,
+                measured_text(vec!["ABCDEFGHIJ"
+                    .chars()
+                    .map(|ch| cluster(&ch.to_string(), 1, Some(0)))
+                    .collect()]),
+                None,
+            );
+            let LayoutNode::Box {
+                width,
+                overflow,
+                padding_left,
+                padding_right,
+                border_left,
+                border_right,
+                ..
+            } = &mut root
+            else {
+                unreachable!()
+            };
+            *width = Size::Pixels { value: 7 };
+            *overflow = overflow_value;
+            *padding_left = 1;
+            *padding_right = 1;
+            *border_left = 1;
+            *border_right = 1;
+            let document = LayoutDocument {
+                version: LAYOUT_VERSION,
+                space_width: 1,
+                style_count: 0,
+                property_template_count: 1,
+                styles: Vec::new(),
+                root,
+            };
+            let tape = document.layout_tape(test_context(), None).unwrap();
+            assert_eq!(
+                tape.lines[0].width,
+                if overflow_value == Overflow::Hidden {
+                    7
+                } else {
+                    14
+                }
+            );
+            let flat = flatten_layout_tape(tape, true).unwrap();
+            let text = flat
+                .characters
+                .iter()
+                .map(|ch| ch.value)
+                .collect::<String>();
+            assert!(text.contains(if overflow_value == Overflow::Hidden {
+                "ABC"
+            } else {
+                "ABCDEFGHIJ"
+            }));
+            if overflow_value == Overflow::Hidden {
+                assert!(!text.contains('D'));
+            }
+            assert!(flat
+                .characters
+                .first()
+                .unwrap()
+                .properties
+                .roles
+                .iter()
+                .any(|role| role.role == RegionRole::BorderLeft));
+            assert!(flat
+                .characters
+                .last()
+                .unwrap()
+                .properties
+                .roles
+                .iter()
+                .any(|role| role.role == RegionRole::BorderRight));
+        }
+    }
+
+    #[test]
+    fn hidden_inline_overflow_keeps_clusters_and_partial_spaces() {
+        let source =
+            Line::from_clusters(&[cluster("e\u{301}", 2, Some(0)), cluster("👨‍👩‍👧‍👦", 4, Some(1))]);
+        let clipped = source.clipped(3);
+        assert_eq!(clipped.width, 3);
+        let atoms = clipped.atoms.to_vec();
+        assert_eq!(atoms.len(), 2);
+        assert!(matches!(&atoms[0], Atom::Text { text, .. } if text == "e\u{301}"));
+        assert_eq!(atoms[0].properties().property_template_ids, vec![0]);
+        assert!(matches!(&atoms[1], Atom::Space { width: 1, .. }));
+        assert!(atoms[1].properties().property_template_ids.is_empty());
+        let space = Line::blank_with_properties(
+            20,
+            AtomProperties {
+                property_template_ids: vec![0],
+                ..AtomProperties::default()
+            },
+        )
+        .clipped(3);
+        assert_eq!(space.width, 3);
+        assert_eq!(
+            space
+                .atoms
+                .first()
+                .unwrap()
+                .properties()
+                .property_template_ids,
+            vec![0]
+        );
+        assert_eq!(source.clipped(0).width, 0);
     }
 
     #[test]

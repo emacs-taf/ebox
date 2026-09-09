@@ -24,6 +24,8 @@
 (require 'tp)
 
 (defvar ebox-region-types)
+(defvar ebox--region-id-counter)
+(defvar ebox--runtime-node-id-counter)
 (defvar ebox--region-box-table)
 (defvar ebox--scroll-global-state)
 (defvar ebox--paint-origin-property)
@@ -49,16 +51,24 @@
 (defvar ebox-incremental--allocated-slot-proof-cache)
 (defvar ebox-incremental--buffer-render-state-override)
 (declare-function tp-runtime-manifest "tp" ())
+(declare-function ebox--region-ids-visible-in-buffer-p "ebox" (buffer region-ids))
+(declare-function ebox--scroll-line-region-ids "ebox" (line))
+(declare-function ebox--scroll-build-region-line-span-index "ebox" (lines))
 (declare-function tp-transaction-participate-v2 "tp-reactive" (&rest args))
 
 (define-error 'ebox-surface-tp-protocol-error
-  "Incompatible TP transaction protocol")
+  "Ebox requires TP 2.0.0 or newer with structured transactions")
 
 (defun ebox-surface--validate-tp-v2-capability (manifest)
   "Validate MANIFEST as the required public TP v2 participant capability."
-  (let ((api (plist-get manifest :structured-participant-api))
+  (let ((version (plist-get manifest :version))
+        (api (plist-get manifest :structured-participant-api))
         (protocol (plist-get manifest :transaction-protocol)))
-    (unless (and (memq protocol
+    (unless (and (stringp version)
+                 (condition-case nil
+                     (not (version< version "2.0.0"))
+                   (error nil))
+                 (memq protocol
                        '(tp-transaction-protocol-v1+v2
                          tp-transaction-protocol-v2))
                  (eq api 'tp-transaction-participate-v2)

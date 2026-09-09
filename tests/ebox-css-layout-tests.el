@@ -90,9 +90,15 @@
      21)))
 
 (ert-deftest ebox-css-layout-pixel-quantization-preserves-private-input ()
-  "Fractional runs split per glyph; zero widths keep ownership and newlines."
+  "Distinct fractional display glyphs retain ownership and line boundaries."
   (let* ((display '(space :width (0.5) :height 1))
-         (source (propertize "  \n  " 'display display 'ebox-content 17))
+         ;; Each replacement needs its own EQ identity.  One shared display
+         ;; object over several characters represents only one Emacs glyph.
+         (source (mapconcat (lambda (text)
+                              (if (equal text "\n") text
+                                (propertize text 'display (copy-tree display)
+                                            'ebox-content 17)))
+                            '(" " " " "\n" " " " ") ""))
          (before (copy-sequence source))
          (result (ebox--quantize-pixel-spaces source)))
     (should (equal-including-properties source before))

@@ -25,6 +25,214 @@
           (should-not ebox-native-reflow--loaded-module-path))
       (delete-file module))))
 
+(ert-deftest ebox-size-native-rejects-pre-inline-clipping-module-abi ()
+  "An older module cannot silently keep the previous visible inline overflow."
+  (let ((module (make-temp-file "ebox-old-native-clipping-"))
+        (ebox-native-reflow--load-attempted-p nil)
+        (ebox-native-reflow--available-p nil)
+        (ebox-native-reflow--load-error nil)
+        (ebox-native-reflow--loaded-module-path nil)
+        (ebox-native-reflow--loaded-module-hash nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ebox-native-reflow--candidate-paths)
+                   (lambda () (list module)))
+                  ((symbol-function 'module-load) #'ignore)
+                  ((symbol-function 'ebox-native--module-version)
+                   (lambda () "13:7:12")))
+          (should-not (ebox-native-reflow-load))
+          (should (string-match-p "ABI mismatch" ebox-native-reflow--load-error)))
+      (delete-file module))))
+
+(ert-deftest ebox-size-native-inline-clipping-matches-elisp ()
+  "Native clipping retains content properties and Box chrome within its width."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (dolist (text '("ABCDEFGHIJ" "界界界" "ééé" "👨‍👩‍👧‍👦👨‍👩‍👧‍👦"))
+    (dolist (width '(0 3 8 24))
+      (let* ((input (ebox-build
+                     `(box :width (px ,width) :box-sizing content-box
+                           :padding-inline (px 2) :border "red"
+                           :overflow hidden :wrap-mode none
+                           (text :help-echo "clipped text" ,text))))
+             (node (ebox-canonical-input--single-root input "Native clipping"))
+             (normal (let ((ebox--surface-materialization-active t))
+                       (ebox--render-with-cache node)))
+             (frame (ebox-native-reflow-execute-sync
+                     node '(:key 1 :viewport-width 80 :viewport-height 20
+                            :runtime-revision 0 :context-hash 0 :complete t)))
+             (actual (plist-get frame :rendered)))
+        (ert-info ((format "width=%s text=%s" width text))
+          (should (plist-get frame :native-frame))
+          (should (= (ebox-string-pixel-width actual) (+ width 6)))
+          (should (equal-including-properties actual normal)))))))
+
+(ert-deftest ebox-size-native-inline-clipping-retains-update-and-rollback-parity ()
+  "Retained native publication uses the same clip boundary as a fresh render."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (let ((ebox-viewport-width 80)
+        (ebox-viewport-height 20)
+        (ebox-runtime-idle-prewarm nil)
+        (ebox-runtime-idle-reflow-cache-prewarm nil))
+    (cl-labels ((source (text width overflow)
+                  (ebox-build
+                   `(column :key root :width (px 80)
+                            (box :key clip :width (px ,width)
+                                 :overflow ,overflow :wrap-mode none
+                                 :border "red" :padding-inline (px 2)
+                                 (text :key label :help-echo "value" ,text))
+                            (box :key peer "unchanged"))))
+                (assert-fresh ()
+                  (let ((state (ebox--buffer-render-state (current-buffer))))
+                    (should (equal-including-properties
+                             (buffer-string)
+                             (ebox--render-node
+                              (plist-get state :root-node)
+                              (plist-get state :source-index)))))))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (source "ABCDEFGHIJ" 9 'hidden))
+        (dolist (case '(("ZYXWVUT" 9 hidden) ("A" 9 hidden)
+                        ("123456789" 9 visible) ("123456789" 9 hidden)
+                        ("界界界" 11 hidden)))
+          (let ((report (ebox-commit (current-buffer) (apply #'source case))))
+            (should (eq (plist-get report :projection-kind) 'native-frame))
+            (assert-fresh)))
+        (let ((before (buffer-string))
+              (revision (ebox-surface-buffer-revision (current-buffer))))
+          (should-error
+           (ebox-commit (current-buffer) (source "NEWVALUE" 10 'hidden)
+                        (lambda (_report) (error "Reject clipping update"))))
+          (should (equal-including-properties before (buffer-string)))
+          (should (= (ebox-surface-buffer-revision (current-buffer)) revision)))
+        (ebox-commit (current-buffer) (source "NEWVALUE" 10 'hidden))
+        (assert-fresh)
+        (ebox-unmount-buffer (current-buffer))))))
+
+(ert-deftest ebox-size-native-declines-cross-property-graphemes ()
+  "A single native atom cannot encode different properties inside a cluster."
+  (dolist (parts '(("e" "́") ("👨" "‍👩‍👧‍👦") ("🇨" "🇳")))
+    (let* ((base (propertize (car parts) 'help-echo "base"))
+           (mark (propertize (cadr parts) 'help-echo "mark"))
+           (source (concat base mark)))
+      ;; Prime the property-run cache before checking the cross-run boundary.
+      (should (ebox-native-reflow--compile-text base))
+      (dotimes (_ 2)
+        (let ((failure (should-error (ebox-native-reflow--compile-text source))))
+          (should (string-match-p "grapheme" (error-message-string failure)))))
+      (should (ebox-native-reflow--compile-text
+               (concat (propertize (concat (car parts) (cadr parts))
+                                   'help-echo "complete")
+                       (propertize "x" 'help-echo "next")))))))
+
+(ert-deftest ebox-size-native-cross-property-grapheme-fallback-and-rollback ()
+  "Initial render and native-to-Elisp updates preserve complete styled clusters."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (let ((ebox-viewport-width 80)
+        (ebox-viewport-height 20)
+        (ebox-runtime-idle-prewarm nil)
+        (ebox-runtime-idle-reflow-cache-prewarm nil))
+    (dolist (parts '(("e" "́") ("👨" "‍👩‍👧‍👦") ("🇨" "🇳")))
+      (let* ((plain (concat (car parts) (cadr parts)))
+             (styled (concat (propertize (car parts) 'help-echo "base")
+                             (propertize (cadr parts) 'help-echo "mark")))
+             (width (ebox--string-pixel-width plain)))
+        (cl-labels ((source (text)
+                      (ebox-build `(box :key root :width (px ,width)
+                                        :overflow hidden :wrap-mode none
+                                        (text :key label ,(concat text plain)))))
+                    (assert-fresh ()
+                      (let ((state (ebox--buffer-render-state (current-buffer))))
+                        (should (equal (buffer-substring-no-properties
+                                        (point-min) (point-max)) plain))
+                        (should (equal-including-properties
+                                 (buffer-string)
+                                 (ebox--render-node
+                                  (plist-get state :root-node)
+                                  (plist-get state :source-index)))))))
+          (with-temp-buffer
+            (ebox-render-to-buffer (current-buffer) (source styled))
+            (assert-fresh)
+            (should (equal (get-text-property (point-min) 'help-echo) "base"))
+            (should (equal (get-text-property
+                            (+ (point-min) (length (car parts))) 'help-echo)
+                           "mark"))
+            (ebox-unmount-buffer (current-buffer)))
+          (with-temp-buffer
+            (ebox-render-to-buffer (current-buffer) (source plain))
+            (should (eq (plist-get (ebox--buffer-render-state (current-buffer))
+                                  :projection-kind) 'native-frame))
+            (let ((before (buffer-string))
+                  (revision (ebox-surface-buffer-revision (current-buffer))))
+              (should-error
+               (ebox-commit (current-buffer) (source styled)
+                            (lambda (_report) (error "Reject grapheme fallback"))))
+              (should (equal-including-properties before (buffer-string)))
+              (should (= (ebox-surface-buffer-revision (current-buffer)) revision)))
+            (ebox-commit (current-buffer) (source styled))
+            (assert-fresh)
+            (should (equal (get-text-property (point-min) 'help-echo) "base"))
+            (ebox-commit (current-buffer) (source plain))
+            (assert-fresh)
+            (ebox-unmount-buffer (current-buffer))))))))
+
+(ert-deftest ebox-size-native-grouped-display-capability-preserves-pixel-runs ()
+  "Opaque source displays fall back; formatted glue compiles as one atom."
+  (let* ((display '(space :width (15)))
+         (plain (propertize "   " 'display display))
+         (formatted (ebox-native-reflow--compile-text plain t))
+         (clusters (plist-get (aref (plist-get formatted :lines) 0) :clusters)))
+    (should (= (length clusters) 1))
+    (should (= (plist-get (aref clusters 0) :width) 15))
+    (should (eq (plist-get (aref clusters 0) :pixel-space) t))
+    (dolist (text (list plain
+                       (concat (propertize "a" 'display display 'help-echo "first")
+                               (propertize "bc" 'display display 'help-echo "rest"))))
+      (let ((failure (should-error (ebox-native-reflow--compile-text text))))
+        (should (string-match-p "unsafe property display"
+                                (error-message-string failure)))))))
+
+(ert-deftest ebox-size-native-grouped-display-fallback-keeps-suffix-and-rollback ()
+  "Public native-capable mounts preserve one grouped display and its suffix."
+  (skip-unless (ebox-native-reflow-layout-ready-p))
+  (let* ((ebox-viewport-width 80)
+         (ebox-viewport-height 20)
+         (ebox-runtime-idle-prewarm nil)
+         (ebox-runtime-idle-reflow-cache-prewarm nil)
+         (display '(space :width (15)))
+         (grouped (concat (propertize "a" 'display display 'help-echo "first")
+                          (propertize "bc" 'display display 'help-echo "rest")
+                          "suffix")))
+    (cl-labels ((source (text)
+                  (ebox-build `(box :key root :width (px 20) :overflow hidden
+                                    :wrap-mode none (text :key label ,text))))
+                (assert-grouped ()
+                  (should (equal (buffer-substring-no-properties
+                                  (point-min) (point-max)) "abcsuffi"))
+                  (should (= (ebox-string-pixel-width (buffer-string)) 20))
+                  (should (= (string-pixel-width (buffer-string)) 20))
+                  (should (eq (get-text-property (point-min) 'display)
+                              (get-text-property (1+ (point-min)) 'display)))
+                  (should (equal (get-text-property (point-min) 'help-echo) "first"))
+                  (should (equal (get-text-property (1+ (point-min)) 'help-echo) "rest"))))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (source grouped))
+        (assert-grouped)
+        (should-not (eq (plist-get (ebox--buffer-render-state (current-buffer))
+                                  :projection-kind) 'native-frame))
+        (ebox-unmount-buffer (current-buffer)))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (source "plain"))
+        (should (eq (plist-get (ebox--buffer-render-state (current-buffer))
+                              :projection-kind) 'native-frame))
+        (let ((before (buffer-string))
+              (revision (ebox-surface-buffer-revision (current-buffer))))
+          (should-error
+           (ebox-commit (current-buffer) (source grouped)
+                        (lambda (_report) (error "Reject display fallback"))))
+          (should (equal-including-properties before (buffer-string)))
+          (should (= (ebox-surface-buffer-revision (current-buffer)) revision)))
+        (ebox-commit (current-buffer) (source grouped))
+        (assert-grouped)
+        (ebox-unmount-buffer (current-buffer))))))
+
 (ert-deftest ebox-size-native-fixed-units-use-owning-font ()
   "Fixed units and math compile using the source node's measured font."
   (let ((node (list :font-owner t)))

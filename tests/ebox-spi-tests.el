@@ -38,7 +38,7 @@
     (should (ebox-framework-spi-validate-provider first))
     (should-not (eq first second))
     (should (= (ebox-framework-spi-provider-spi-version first) 2))
-    (should (equal ebox-framework-spi-required-tp-version "1.0.1"))
+    (should (equal ebox-framework-spi-required-tp-version "2.0.0"))
     (should (equal ebox-framework-spi-supported-tp-protocols
                    '(tp-transaction-protocol-v1+v2
                      tp-transaction-protocol-v2)))
@@ -120,7 +120,7 @@
                        "etaf-renderer-port" "etaf-spi-bootstrap"))
       (should-not (string-match-p (regexp-quote pattern) source)))
     (should (string-match-p "Version: 3.0.0" facade))
-    (should (string-match-p "(tp \"1.0.1\")" facade))
+    (should (string-match-p "(tp \"2.0.0\")" facade))
     (should (functionp #'ebox-render-to-buffer))
     (should (functionp #'ebox-commit))
     (should (functionp #'ebox-framework-spi-capabilities))))

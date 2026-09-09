@@ -7,24 +7,34 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        emacs: ['29.1', '30.2']
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Check out TP runtime dependency
-        run: git clone --depth 1 https://github.com/Kinneyzhang/tp.git ../tp
+      - name: Install supported Emacs version
+        uses: purcell/setup-emacs@34c6ded44899fd1bf74d2889558befd1750e61a7
+        with:
+          version: ${{ matrix.emacs }}
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y emacs-nox python3
+      - name: Fetch locked TP and ECSS dependencies
+        run: make release-deps RELEASE_DEPS_DIR="$RUNNER_TEMP/ebox-deps"
 
       - name: Run local verification suite
-        run: make ci EMACS=emacs PYTHON=python3
+        run: make ci EMACS=emacs PYTHON=python3 TP_DIR="$RUNNER_TEMP/ebox-deps/tp" ECSS_DIR="$RUNNER_TEMP/ebox-deps/ecss"
+
+      - name: Verify source package installation without optional providers
+        run: make release-check EMACS=emacs RELEASE_DIR="$RUNNER_TEMP/ebox-release" RELEASE_OPTIONS="--dependencies $RUNNER_TEMP/ebox-deps"
+
+      - name: Verify optional Knuth-Plass installation
+        run: make release-check EMACS=emacs RELEASE_DIR="$RUNNER_TEMP/ebox-release-kp" RELEASE_OPTIONS=--with-ekp
 
       - name: Run package-lint
-        run: make package-lint-install EMACS=emacs
+        run: make package-lint-install EMACS=emacs TP_DIR="$RUNNER_TEMP/ebox-deps/tp" ECSS_DIR="$RUNNER_TEMP/ebox-deps/ecss"
 
   native-build:
     strategy:
@@ -61,6 +71,27 @@ jobs:
             Windows) test -f native/target/release/ebox_native_reflow.dll ;;
             *) exit 1 ;;
           esac
+
+      - name: Install Emacs for native integration
+        uses: jcs090218/setup-emacs@54b61ac9c1d7011a54d2b6d66dedbcddf20e2fb9
+        with:
+          version: '30.2'
+
+      - name: Install source packages and execute the native module
+        shell: bash
+        run: |
+          python scripts/ebox-release.py build --directory "$RUNNER_TEMP/ebox-native-release"
+          case "$RUNNER_OS" in
+            Linux) module="$PWD/native/target/release/libebox_native_reflow.so" ;;
+            macOS) module="$PWD/native/target/release/libebox_native_reflow.dylib" ;;
+            Windows) module="$PWD/native/target/release/ebox_native_reflow.dll" ;;
+            *) exit 1 ;;
+          esac
+          python scripts/ebox-release.py verify --directory "$RUNNER_TEMP/ebox-native-release" --emacs emacs --native-module "$module"
+
+      - name: Verify installed source can build its native module
+        if: runner.os == 'Linux'
+        run: make release-native-check EMACS=emacs RELEASE_DIR="$RUNNER_TEMP/ebox-native-release"
 
   native-msrv:
     strategy:

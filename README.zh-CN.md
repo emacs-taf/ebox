@@ -6,9 +6,18 @@ Component、响应式状态、behavior 或生命周期时，使用同级 ETAF �
 
 ## 安装
 
-Ebox 需要 Emacs 29.1 或更高版本、ECSS 0.1.0 或更高版本，以及 TP 1.0.1 或
-更高版本。包管理器应自动安装声明的依赖。使用同级源码 checkout 时，把三个目录
-加入 `load-path` 后加载 Ebox：
+源码仓库为 [geekinney/ebox](https://gitea.gklazycat.heiyu.space/geekinney/ebox)。
+当前 `3.0.0` 更新日志仍标记为未发布；源码 checkout 不代表已经发布的包归档或稳定版本 tag。
+
+| 依赖 | 使用条件 |
+| --- | --- |
+| Emacs 29.1 或更高版本 | 所有 Ebox 使用场景。 |
+| ECSS 0.1.0 或更高版本 | 样式计算和选择器语义；即使不使用样式表也需要。 |
+| TP 2.0.0 或更高版本 | retained 发布、原生属性策略与事务；加载 Ebox 时需要。 |
+| [EKP 1.0.0 或更高版本](https://github.com/Kinneyzhang/emacs-kp) | 可选，仅使用 `:wrap-mode kp` 时需要。 |
+
+ECSS 与 TP 是包声明的必需依赖。EKP 保持可选，普通 `word`、`char`、`none` 换行不需要它。
+使用同级源码 checkout 时，把必需的目录加入 `load-path` 后加载 Ebox：
 
 ```elisp
 (add-to-list 'load-path "/path/to/ecss")
@@ -18,6 +27,48 @@ Ebox 需要 Emacs 29.1 或更高版本、ECSS 0.1.0 或更高版本，以及 TP 
 ```
 
 加载 Ebox 不会创建 buffer，也不会构建 native 模块。
+
+使用 Knuth–Plass 段落排版时，先额外将 EKP 源码目录加入 `load-path`，或安装它的包，
+然后在 Box 上设置 `:wrap-mode kp`：
+
+```elisp
+(add-to-list 'load-path "/path/to/ekp")
+(ebox-render
+ (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
+                   "A paragraph laid out with Knuth–Plass line breaking.")))
+```
+
+Ebox 在使用该换行模式时加载 EKP。EKP 缺失或不兼容时会提示安装或更新；请安装 EKP，
+或显式选择其他换行模式。Ebox 不会静默改用 `word`。EKP 自己的可选加速器与
+Ebox 的可选 Rust 模块是两回事。
+
+### 构建并验证可安装归档
+
+在本仓库中运行：
+
+```sh
+make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0
+```
+
+该入口按 [`release-dependencies.json`](release-dependencies.json) 获取精确的依赖提交，
+构建可重复的 `package.el` 源码归档，在临时干净配置中安装并验证渲染、更新和选择器。
+归档目录与 `manifest.json` 会保留，其中记录校验和、源码提交及工作区是否有修改；
+它不会发布归档或修改你的 Emacs 配置。每次使用新的输出目录，不覆盖已有目录。
+
+需要同时包含并测试可选 KP 排版时，换一个输出目录并加上 `RELEASE_OPTIONS=--with-ekp`。
+归档验证通过后，可以作为本地包归档安装：
+
+```elisp
+(require 'package)
+(add-to-list 'package-archives '("ebox-local" . "/tmp/ebox-release-3.0.0/"))
+(package-refresh-contents)
+(package-install 'ebox)
+;; 可选，仅当归档构建时使用了 --with-ekp：
+;; (package-install 'ekp)
+```
+
+工具输入、清理、离线复用与 native 验证见
+[维护者指南](docs/maintainer/ebox-current-implementation-reference.zh.md#源码包分发)。
 
 ## 第一次渲染
 
@@ -80,7 +131,9 @@ padding 和 border，不包含该 Box 的 margin 和结构性换行符。悬停�
 使用 `ebox-keymap-create` 将普通零参数回调绑定到激活键或自定义按键；鼠标命令会
 自动在被点击窗口的 buffer 中运行。`ebox-region-update` 可以使用当前已挂载 buffer
 中的语义 ID，或显式 region handle，替换或清除节点能力。原生 keymap 可用于
-独立的 Ebox 交互；应用状态、焦点导航和命令行为由作者管理。参见
+独立的 Ebox 交互；可选的 `ebox-next-interaction`、`ebox-previous-interaction` 命令
+在渲染后的 keymap owner 之间移动 point，不添加默认按键绑定。应用状态与命令行为
+由作者管理。参见
 [交互指南](docs/user/ebox-user-guide.zh.md#native-node-interaction)和 Playground 的
 [交互实验室](../ebox-playground/README.zh-CN.md#native-interaction-lab)。
 
@@ -88,6 +141,7 @@ padding 和 border，不包含该 Box 的 margin 和结构性换行符。悬停�
 
 - `ebox-render` 返回带属性文本，不发布 live buffer；
 - `ebox-render-to-buffer` 挂载 retained surface；
+- `ebox-display-buffer` 先完成渲染，再按 Emacs 显示规则与可选 action 显示结果，返回 buffer；
 - `ebox-commit` 原子发布重新构建的 canonical input；
 - `ebox-buffer-update-report` 返回最近一次成功更新报告；
 - `ebox-rerender-buffer-with-context` 应用显式 viewport 变化。
@@ -103,8 +157,8 @@ Ebox 会在分配 runtime identity 前复制 canonical input，因此同一个 b
 卸载后查询会报错。识别提交版本时同时比较 mount ID 与 revision，避免重新挂载后
 revision 从头计数导致混淆。
 
-Ebox 只通过 TP 的公开 structured participant API 注册可回滚状态。TP 1.0.1
-支持 consumer-first 迁移协议；TP 2.0.0 发布最终的 v2-only 协议。structured
+Ebox 只通过 TP 2.0.0 的公开 structured participant API 与最终 v2 协议注册可回滚状态。
+旧的过渡版本不具备本版本要求的原生属性所有权与 hover identity 保证。structured
 participant capability 缺失或格式错误时，Ebox 会停止加载，不会选择兼容 writer。
 
 ## 可选 native 模块
@@ -116,6 +170,25 @@ fallback。Ebox 加载时不会自动构建它。
 (ebox-native-status)
 (ebox-native-build)
 ```
+
+## 显示与文本边界
+
+每个已挂载 buffer 只有一套视口布局。同一个 buffer 同时出现在不同宽度的两个窗口中，
+不会产生两套独立布局。需要各自宽度时，分别挂载到不同 buffer；同一份 canonical input
+可以挂载多次。
+
+纵向几何按完整行生成。文本处理保留常见组合音标、变体选择符、Emoji 修饰符、ZWJ 与
+旗帜序列，但不实现完整 Unicode 字素分段，也不承诺浏览器级字体排版和双向布局。
+可用字体、原生指针和帮助显示由 Emacs 与窗口系统决定；终端输出无法复现全部 GUI
+像素或指针效果。
+
+`:overflow hidden` 将内容限制在盒子测量后的宽度与完整行高度内，保留自身 padding 和
+边框。横向裁剪保留完整的受支持文本簇，用空白补齐剩余像素，不显示半个字形，也不
+添加省略号。`scroll` 仍是纵向滚动。
+
+CI 配置覆盖 Linux 上的 Emacs 29.1、30.2，以及 Linux、macOS、Windows 上使用
+Emacs 30.2 的源码包安装和 native 模块加载、执行。这些任务定义验证矩阵，不代表
+所有平台的 GUI 渲染都已做视觉实测；请查看待安装提交对应的 workflow 结果。
 
 ## 验证
 
@@ -132,3 +205,8 @@ make native-rust-tests
 继续阅读[用户指南](docs/user/ebox-user-guide.zh.md)、[公共 API
 参考](docs/user/ebox-api-reference.zh.md)，以及同级
 [ebox-playground](../ebox-playground/README.md) 示例。
+
+## 许可证
+
+Ebox 自有代码按 GPL-3.0-or-later 分发，详见 [LICENSE](LICENSE)。第三方文件保留各自的
+许可证声明。

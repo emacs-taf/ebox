@@ -23,7 +23,7 @@
   "Public documents that must describe only the canonical author grammar.")
 
 (defconst ebox-docs-test--active-files
-  '("Makefile" ".github/workflows/ci.yml"
+  '("Makefile" ".github/workflows/ci.yml" "LICENSE" "release-dependencies.json"
     "ebox.el" "ebox-cache.el" "ebox-runtime-index.el" "ebox-interaction.el"
     "ebox-state-contract.el" "ebox-size.el" "ebox-style.el"
     "ebox-child-range.el" "ebox-tree.el"
@@ -33,7 +33,7 @@
     "ebox-surface.el" "ebox-dsl.el" "ebox-spi.el"
     "ebox-selector.el" "ebox-native-reflow.el"
     "tests/ebox-size-tests.el" "tests/ebox-size-style-tests.el"
-    "tests/ebox-interaction-tests.el"
+    "tests/ebox-interaction-tests.el" "tests/ebox-display-tests.el"
     "tests/ebox-size-native-tests.el" "tests/ebox-zero-height-tests.el"
     "tests/ebox-css-layout-tests.el" "tests/ebox-css-flex-grid-tests.el"
     "tests/ebox-css-viewport-tests.el"
@@ -54,12 +54,16 @@
     "native/src/layout.rs" "native/c/ebox_module.c"
     "scripts/ebox-package-lint.el" "scripts/ebox-visual-check.el"
     "scripts/ebox-performance-evaluator.el"
+    "scripts/ebox-release.py" "scripts/ebox-release-smoke.el"
+    "scripts/test_ebox_release.py"
     "scripts/migrate-css-sizes.py" "scripts/test_migrate_css_sizes.py")
   "Active Ebox files that the maintainer map must cover.")
 
 (defconst ebox-docs-test--targets
   '("check" "ci" "load" "compile" "size-tests" "size-migration-tests"
-    "core-tests" "runtime-index-tests" "interaction-tests"
+    "core-tests" "runtime-index-tests" "interaction-tests" "display-tests"
+    "release-deps" "release-build" "release-check" "release-tool-tests"
+    "native-integration"
     "child-range-tests" "grid-tests"
     "ebox-commit-tests" "surface-tests" "visual-check-tests" "package-tests"
     "selector-tests" "dsl-tests" "flex-tests" "state-contract-tests"

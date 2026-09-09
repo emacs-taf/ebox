@@ -4526,12 +4526,19 @@
            (ebox--render-source-index (ebox-test-source-index box-input))
            (content (ebox-pixel-space 120))
            (wrap-count 0)
-           (original-wrap (symbol-function 'ebox--wrap-text)))
+           (original-wrap (symbol-function 'ebox--wrap-text))
+           (original-require (symbol-function 'require)))
       (ebox--record-rendered-uniform-width content (nth 2 case))
       (cl-letf (((symbol-function 'ebox--wrap-text)
                  (lambda (&rest arguments)
                    (cl-incf wrap-count)
-                   (apply original-wrap arguments))))
+                   (apply original-wrap arguments)))
+                ((symbol-function 'require)
+                 (lambda (feature &optional filename noerror)
+                   (if (eq feature 'ekp) t
+                     (funcall original-require feature filename noerror))))
+                ((symbol-function 'ekp-pixel-justify)
+                 (lambda (text _width) text)))
         (ebox--format-content-string box content))
       (should (> wrap-count 0)))))
 
@@ -7000,6 +7007,117 @@ line compositor's complete property output, including empty lines and chrome."
         (should (equal (plist-get report :patch-ops)
                        '(paint-patch)))
         (should-not (plist-get report :full-rerender))))))
+
+(ert-deftest ebox-overflow-hidden-clips-inline-content-before-chrome ()
+  "Hidden overflow clips content on both axes without consuming its chrome."
+  (ebox-test--reset-runtime-state)
+  (dolist (chrome '(nil t))
+    (let* ((input
+            (ebox-build
+             `(box :width (ch 3) :height (lh 1) :wrap-mode none
+                   :overflow hidden :box-sizing content-box
+                   ,@(when chrome
+                       '(:padding-inline (px 3) :border ((px 1) solid "red")))
+                   (text :help-echo "visible" "ABCDEFGHIJ\nKLMNOP"))))
+           (rendered (ebox-render input))
+           (start (string-match "ABC" rendered)))
+      (should start)
+      (should-not (string-match-p "[D-Z]" rendered))
+      (should (= (ebox-string-height rendered) 1))
+      (should (= (ebox-string-pixel-width rendered)
+                 (+ (* 3 (ebox--size-character-width)) (if chrome 8 0))))
+      (should (equal (get-text-property start 'help-echo rendered) "visible"))
+      (when chrome
+        (should (get-text-property 0 'ebox-bl rendered))
+        (should (get-text-property (1- (length rendered)) 'ebox-br rendered))))))
+
+(ert-deftest ebox-overflow-hidden-preserves-whole-graphemes ()
+  "A clipped cluster disappears as a whole and never leaves a partial glyph."
+  (ebox-test--reset-runtime-state)
+  (dolist (cluster '("é" "界" "👨‍👩‍👧‍👦" "🇨🇳"))
+    (let* ((width (ebox--string-pixel-width cluster))
+           (input (ebox-build
+                   `(box :width (px ,width) :wrap-mode none :overflow hidden
+                         ,(concat cluster cluster))))
+           (output (ebox-render input)))
+      (should (equal (substring-no-properties output) cluster))
+      (let ((narrow (ebox-render
+                     (ebox-build
+                      `(box :width (px ,(max 0 (1- width)))
+                            :wrap-mode none :overflow hidden ,cluster)))))
+        (should (string-blank-p narrow))
+        (should (= (ebox-string-pixel-width narrow) (max 0 (1- width))))))))
+
+(ert-deftest ebox-overflow-hidden-clips-pixel-spaces-with-source-properties ()
+  "A partial display space preserves only the visible space's properties."
+  (ebox-test--reset-runtime-state)
+  (let* ((space (propertize (ebox-pixel-space 30) 'help-echo "space"))
+         (input (ebox-build
+                 `(box :width (px 10) :wrap-mode none :overflow hidden
+                       (text ,(concat space "invisible")))))
+         (output (ebox-render input)))
+    (should (= (ebox-string-pixel-width output) 10))
+    (should (string-blank-p output))
+    (should (equal (get-text-property 0 'help-echo output) "space"))))
+
+(ert-deftest ebox-overflow-hidden-preserves-grouped-display-space-geometry ()
+  "One shared replacement display is measured once and keeps its suffix."
+  (let* ((display '(space :width (15) :height 2 :ascent 80))
+         (source (concat (propertize "abc" 'display display 'help-echo "glue")
+                         "suffix"))
+         (output (ebox--clip-line source 20))
+         (partial (ebox--clip-line source 10)))
+    (should (= (ebox-string-pixel-width (substring source 0 3)) 15))
+    (should (= (ebox-string-pixel-width output) 20))
+    (should (equal (substring-no-properties output) "abcsuffi"))
+    (should (equal (get-text-property 0 'display output) display))
+    (should (= (length partial) 1))
+    (should (= (ebox-string-pixel-width partial) 10))
+    (should (equal (get-text-property 0 'display partial)
+                   '(space :width (10) :height 2 :ascent 80)))
+    (should (equal (get-text-property 0 'help-echo partial) "glue"))
+    (should (equal (get-text-property 1 'display source) display))))
+
+(ert-deftest ebox-overflow-hidden-inline-updates-match-fresh-output ()
+  "Content growth, shrinking, and overflow reversal use the same clip boundary."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer
+      (ebox-build '(box :id clip :width (ch 3) :overflow hidden :wrap-mode none
+                       (text :id value "ABCDEFGHIJ")))
+    (dolist (value '("ZYXWVUT" "A" "123456789"))
+      (ebox-region-update 'value :content value)
+      (let ((fresh (ebox-render
+                    (ebox-build
+                     `(box :width (ch 3) :overflow hidden :wrap-mode none
+                           ,value)))))
+        (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                       (substring-no-properties fresh)))
+        (should (= (ebox-string-pixel-width (buffer-string))
+                   (ebox-string-pixel-width fresh)))))
+    (ebox-region-update 'clip :overflow 'visible)
+    (should (string-match-p "123456789" (buffer-string)))
+    (ebox-region-update 'clip :overflow 'hidden)
+    (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                   "123"))))
+
+(ert-deftest ebox-overflow-hidden-excludes-clipped-child-hit-properties ()
+  "A clipped child remains in the source without leaving an invisible action."
+  (ebox-test--reset-runtime-state)
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'ignore)
+    (ebox-test--with-rendered-buffer
+        (ebox-build `(box :id clip :width (ch 3) :wrap-mode none :overflow hidden
+                          (text "ABC")
+                          (text :id clipped :keymap ,map :help-echo "hidden" "HIDE")))
+      (should (equal (buffer-substring-no-properties (point-min) (point-max)) "ABC"))
+      (should-not (text-property-not-all (point-min) (point-max) 'keymap nil))
+      (should-not (text-property-not-all (point-min) (point-max) 'help-echo nil))
+      (ebox-region-update 'clipped :content "NEW")
+      (should (equal (buffer-substring-no-properties (point-min) (point-max)) "ABC"))
+      (ebox-region-update 'clip :width '(ch 6))
+      (should (equal (buffer-substring-no-properties (point-min) (point-max)) "ABCNEW"))
+      (should (eq (lookup-key (get-text-property (+ (point-min) 3) 'keymap)
+                             (kbd "RET")) #'ignore)))))
 
 (ert-deftest ebox-overflow-hidden-clips-extra-content-lines ()
   (ebox-test--reset-runtime-state)
@@ -13345,6 +13463,53 @@ explicit visible-window handoff may admit its full-content publication."
                                             'char))
                    (list china usa)))))
 
+(ert-deftest ebox-kp-wrap-mode-requires-functional-ekp ()
+  "Explicit KP requests never silently change to word wrapping."
+  (let ((original-require (symbol-function 'require))
+        (original-fboundp (symbol-function 'fboundp)))
+    (dolist (available '(nil t))
+      (cl-letf (((symbol-function 'require)
+                 (lambda (feature &optional filename noerror)
+                   (if (eq feature 'ekp) available
+                     (funcall original-require feature filename noerror))))
+                ((symbol-function 'fboundp)
+                 (lambda (function)
+                   (and (not (eq function 'ekp-pixel-justify))
+                        (funcall original-fboundp function)))))
+        (let ((failure (should-error (ebox--wrap-text "abc" 100 'kp))))
+          (should (string-match-p "EKP" (error-message-string failure))))))))
+
+(ert-deftest ebox-ordinary-wrap-does-not-load-ekp ()
+  "The optional dependency is required only when KP is requested."
+  (let ((original-require (symbol-function 'require)))
+    (cl-letf (((symbol-function 'require)
+               (lambda (feature &optional filename noerror)
+                 (when (eq feature 'ekp) (ert-fail "Unexpected EKP load"))
+                 (funcall original-require feature filename noerror))))
+      (dolist (mode '(word char none))
+        (should (stringp (ebox--wrap-text "alpha beta" 30 mode)))))))
+
+(ert-deftest ebox-kp-missing-dependency-update-preserves-mounted-output ()
+  "Dependency failure cannot publish a different wrapping algorithm."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer
+      (ebox-build '(box :id paragraph :width (px 100) "alpha beta gamma"))
+    (let ((before (buffer-string))
+          (revision (plist-get (ebox-surface-buffer-snapshot (current-buffer))
+                               :revision))
+          (original-require (symbol-function 'require)))
+      (cl-letf (((symbol-function 'require)
+                 (lambda (feature &optional filename noerror)
+                   (unless (eq feature 'ekp)
+                     (funcall original-require feature filename noerror)))))
+        (should-error (ebox-region-update 'paragraph :wrap-mode 'kp)))
+      (should (equal-including-properties (buffer-string) before))
+      (should (equal (plist-get (ebox-surface-buffer-snapshot (current-buffer))
+                               :revision)
+                     revision))
+      (ebox-region-update 'paragraph :content "still usable")
+      (should (string-match-p "still usable" (buffer-string))))))
+
 (ert-deftest ebox-kp-wrap-mode-invokes-ekp-justification ()
   (ebox-test--reset-runtime-state)
   (let (require-called justify-args)
@@ -13362,6 +13527,30 @@ explicit visible-window handoff may admit its full-content publication."
                                 :wrap-mode 'kp)))
     (should require-called)
     (should (equal justify-args (list "abc" 100)))))
+
+(ert-deftest ebox-kp-real-pixel-budget-and-glue-fit-hidden-content ()
+  "Installed EKP receives content pixels and its real glue survives clipping."
+  (skip-unless (locate-library "ekp"))
+  (require 'ekp)
+  (let* ((width (* 12 (ebox--space-pixel-width)))
+         (original (symbol-function 'ekp-pixel-justify))
+         calls output)
+    (cl-letf (((symbol-function 'ekp-pixel-justify)
+               (lambda (text pixels)
+                 (push pixels calls)
+                 (funcall original text pixels))))
+      (setq output
+            (ebox-render
+             (ebox-build
+              `(box :width (px ,width) :box-sizing content-box
+                    :wrap-mode kp :overflow hidden :padding-inline (px 2)
+                    :border "red"
+                    "alpha beta gamma delta epsilon zeta eta theta")))))
+    (should calls)
+    (should (cl-every (lambda (pixels) (= pixels width)) calls))
+    (should (> (ebox-string-height output) 1))
+    (dolist (line (ebox-string-lines output))
+      (should (= (ebox-string-pixel-width line) (+ width 6))))))
 
 (ert-deftest ebox-kp-wrap-mode-respects-text-align ()
   "KP-wrapped lines should honor the box's horizontal text alignment."

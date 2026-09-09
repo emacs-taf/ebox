@@ -5,7 +5,10 @@
 本文描述独立 Ebox 包当前的公共边界，并把普通 author 路径与框架集成使用的
 evaluated typed API 分开。以 `ebox--` 开头的名称都是私有实现。
 
-Ebox 需要 Emacs 29.1 或更高版本、ECSS 和 TP：
+Ebox 需要 Emacs 29.1 或更高版本、ECSS 0.1.0 或更高版本，以及 TP 2.0.0 或更高版本。
+EKP 1.0.0 或更高版本是 `:wrap-mode kp` 所需的可选依赖；`word`、`char`、`none`
+不加载它。EKP 缺失或不兼容时会给出可操作的错误，不会静默改变换行算法。
+源码加载方式和各项依赖职责见[安装说明](../../README.zh-CN.md#安装)。
 
 ```elisp
 (require 'ebox)
@@ -66,6 +69,11 @@ participation property 就是普通子 Box property，不会创建另一种公�
 | 绘制 | `:color`、`:background-color`、精确 alias `:bgcolor`、border color、`:visibility` |
 | 文本布局 | `:text-align`、`:wrap-mode`（`word`、`char`、`kp`、`none`） |
 | Overflow | `:overflow`（`visible`、`hidden`、`scroll`） |
+
+`hidden` 在组合子节点后约束内容宽度，保留完整的受支持文本簇；容器自身的 padding 与
+border 不在裁剪区域内。被裁掉的子文本同时移除其属性。固定 display space 可以缩短，
+放不下的字形/图像则整体省去，不做像素遮罩。纵向按完整行裁剪。`visible` 允许溢出，
+`scroll` 提供纵向滚动；这些设置不隐含省略号或横向滚动。
 
 几何值统一使用 `(单位 数值)`：`(px 240)`、`(% 50)`、`(vw 100)`、`(vh 100)`、
 `(ch 80)`、`(lh 3)`。每个属性只接受[统一单位约束表](ebox-user-guide.zh.md#size-unit-constraints)
@@ -146,7 +154,16 @@ Emacs 设置及窗口系统；单独设置指针形状不会绑定命令。
 键盘回调在当前 buffer 中运行，由 point 所在位置进行原生分派。
 
 仍支持直接传入原生 keymap；其鼠标命令需要自行从事件取得目标窗口，并在该窗口的
-buffer 中操作。这些能力不引入 Ebox 焦点导航或应用状态系统。
+buffer 中操作。
+
+`ebox-next-interaction` 和 `ebox-previous-interaction` 是可选导航命令，均接受可选整数
+count，默认为一；负数反向，零不移动。每个声明了含命令 keymap 的节点在其首个可访问
+渲染字符处形成一个停靠点，包括继承覆盖；显式子 map 单独形成停靠点。从 owner 内部
+移动时跳过该 owner。导航尊重 narrowing 与不可见文本，忽略普通 buffer、overlay 和
+全局 map，在更新或滚动后使用当前已提交输出。目标不存在时抛出 `user-error`，point
+不动；命令不循环跳转，也不绑定按键。不会求值菜单 enable 表达式或 filter，因此即使
+应用动态禁用了菜单项，已声明命令仍可能保留停靠点。导航只移动 point；Ebox 不提供
+独立的应用状态或焦点管理系统。
 可运行示例见[交互指南](ebox-user-guide.zh.md#native-node-interaction)。
 
 ## 2. Evaluated typed construction
@@ -241,12 +258,19 @@ typed 模块还公开 `ebox-node-kind`、`ebox-text-node-p`、`ebox-box-node-p`�
 | `ebox-render` | 接收 single-root `CanonicalEboxInput`，返回带属性字符串，不发布 live buffer。 |
 | `ebox-render-to-buffer` | 接收 single-root `CanonicalEboxInput`，挂载 retained TP surface，启用 `ebox-buffer-mode` 并返回 buffer；可选 plist 只接受 `:observer FUNCTION`。 |
 | `ebox-unmount-buffer` | 从 live buffer 释放 mounted Ebox/TP surface、observer、retained indexes 与 runtime authority。 |
-| `ebox-display-buffer` | 接收 single-root `CanonicalEboxInput`，走 retained 路径渲染，删除其他 window 后切换到结果。 |
+| `ebox-display-buffer` | `(BUFFER-OR-NAME INPUT &optional ACTION)` 先渲染 single-root `CanonicalEboxInput`，再以 `ACTION` 调用原生 `display-buffer`，返回 buffer。Ebox 不删除其他窗口，也不选中结果窗口。 |
 | `ebox-commit` | 原子发布 single-root `CanonicalEboxInput` 或 `ebox-candidate-begin` 返回的 one-shot logical candidate。 |
 | `ebox-buffer-set-observer` | 给已经 mounted 的 buffer 设置或移除一个 function observer。 |
 | `ebox-buffer-update-report` | 返回最近一次成功更新报告的防御性副本。 |
 | `ebox-rerender-buffer-with-context` | 应用显式 viewport width 与可选 height，同时保留 identity。 |
 | `ebox-viewport-window-width` | 返回 Ebox 对 window 使用的 display-safe 像素宽度。 |
+
+`ebox-display-buffer` 遵循 `display-buffer-alist` 与原生 action 优先级。渲染失败时
+不会调用显示函数。窗口放置由选用的 Emacs display action 决定；调用方提供的 display
+action 报错时，Ebox 不会撤销已经成功发布的 buffer。
+
+每个已挂载 buffer 只有一套视口布局，所有显示它的窗口共享该布局。不同窗口需要独立
+宽度时，使用不同的挂载 buffer。显式视口更新修改的是该 buffer 共享的布局。
 
 `ebox-commit` 接受可选 framework publish/rollback callback。它们加入现有原子发布；
 失败会恢复旧 buffer、surface、runtime state 与最近一次成功报告。
@@ -355,7 +379,8 @@ native 模块只是加速器，不是正确性依赖。加载包不会构建它�
 - 构造：`ebox-build`、`ebox-text-create`、`ebox-normal-layout-create`、
   `ebox-row-layout-create`、`ebox-column-layout-create`、
   `ebox-flex-layout-create`、`ebox-grid-layout-create`、`ebox-box-create`；
-- 交互：`ebox-help-create`、`ebox-keymap-create`；
+- 交互：`ebox-help-create`、`ebox-keymap-create`、
+  `ebox-next-interaction`、`ebox-previous-interaction`；
 - 渲染/发布：`ebox-render`、`ebox-render-to-buffer`、`ebox-unmount-buffer`、
   `ebox-display-buffer`、`ebox-commit`、`ebox-buffer-set-observer`、`ebox-buffer-update-report`、
   `ebox-rerender-buffer-with-context`、`ebox-viewport-window-width`、

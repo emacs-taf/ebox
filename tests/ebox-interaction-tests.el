@@ -958,6 +958,238 @@ The helper keeps face objects out of the caller's ERT assertion temporaries."
             (should (eq (key-binding (kbd "RET")) #'backward-char))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
+(ert-deftest ebox-interaction-navigation-nested-owners-and-boundaries ()
+  "Inherited fragments form one stop while explicit nested maps stay distinct."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build '(column
+                  (text "intro")
+                  (box :keymap (keymap (13 . ignore))
+                       (column (text "parent-one")
+                               (text :keymap nil "blocked")
+                               (text :keymap (keymap (13 . forward-char)) "child")
+                               (text "parent-two")))
+                  (text :keymap (keymap (13 . ignore)) "last"))))
+    (let* ((text (buffer-string))
+           (parent (1+ (ebox-interaction-test--position text "parent-one")))
+           (child (1+ (ebox-interaction-test--position text "child")))
+           (tail (1+ (ebox-interaction-test--position text "parent-two")))
+           (last (1+ (ebox-interaction-test--position text "last"))))
+      (goto-char (point-min))
+      (should (= (ebox-next-interaction) parent))
+      (should (= (ebox-next-interaction) child))
+      (should (= (ebox-next-interaction) last))
+      (should-error (ebox-next-interaction) :type 'user-error)
+      (should (= (point) last))
+      (should (= (ebox-previous-interaction 2) parent))
+      (should-error (ebox-previous-interaction) :type 'user-error)
+      (should (= (point) parent))
+      (should (= (ebox-next-interaction 0) parent))
+      (should (= (ebox-previous-interaction -1) child))
+      (should (= (ebox-next-interaction -1) parent))
+      (goto-char tail)
+      (should (= (ebox-previous-interaction) child))
+      (goto-char tail)
+      (should (= (ebox-next-interaction) last))
+      (goto-char (point-min))
+      (should-error (ebox-next-interaction 4) :type 'user-error)
+      (should (= (point) (point-min)))
+      (should-error (ebox-next-interaction 1.5) :type 'wrong-type-argument))))
+
+(ert-deftest ebox-interaction-navigation-uses-live-mount-and-declared-maps ()
+  "Buffer keymaps, copied rendering and empty or blocked maps are not stops."
+  (with-temp-buffer
+    (insert (ebox-render (ebox-build '(text :keymap (keymap (13 . ignore)) "copy"))))
+    (should-error (ebox-next-interaction) :type 'user-error))
+  (with-temp-buffer
+    (use-local-map (let ((map (make-sparse-keymap)))
+                     (define-key map (kbd "RET") #'ignore) map))
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build '(column (text "intro")
+                         (text :keymap (keymap) "empty")
+                         (text :keymap (keymap (13 . undefined)) "disabled")
+                         (box :visibility hidden :keymap (keymap (13 . ignore)) "hidden")
+                         (box :height (lh 0) :overflow hidden
+                              :keymap (keymap (13 . ignore)) "clipped")
+                         (text :keymap (keymap (13 . ignore)) "active"))))
+    (let* ((text (buffer-string))
+           (active (1+ (ebox-interaction-test--position text "active"))))
+      (goto-char (point-min))
+      (should (= (ebox-next-interaction) active))
+      (should-error (ebox-next-interaction) :type 'user-error)
+      (should-error (ebox-previous-interaction) :type 'user-error))))
+
+(ert-deftest ebox-interaction-navigation-narrowing-and-invisible-text ()
+  "Only accessible visible characters contribute a stop, without widening."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build '(column (text :keymap (keymap (13 . ignore)) "first")
+                         (text :keymap (keymap (13 . forward-char)) "second")
+                         (text :keymap (keymap (13 . backward-char)) "third"))))
+    (let* ((text (buffer-string))
+           (first (1+ (ebox-interaction-test--position text "first")))
+           (second (1+ (ebox-interaction-test--position text "second")))
+           (third (1+ (ebox-interaction-test--position text "third"))))
+      (save-restriction
+        (narrow-to-region (+ first 2) third)
+        (goto-char (point-max))
+        (should (= (ebox-previous-interaction) second))
+        (should (= (ebox-previous-interaction) (point-min)))
+        (should-error (ebox-previous-interaction) :type 'user-error)
+        (should (= (point-min) (+ first 2))))
+      (let ((overlay (make-overlay second (+ second 6))))
+        (unwind-protect
+            (progn
+              (overlay-put overlay 'invisible t)
+              (goto-char first)
+              (should (= (ebox-next-interaction) third))
+              (move-overlay overlay second (+ second 2))
+              (goto-char first)
+              (should (= (ebox-next-interaction) (+ second 2))))
+          (delete-overlay overlay))))))
+
+(ert-deftest ebox-interaction-navigation-padding-and-native-overrides ()
+  "Nested padding resolves to its own box; foreign maps do not create stops."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build '(column (text "intro")
+                         (row :keymap (keymap (13 . ignore))
+                              (box :padding-left (ch 2)
+                                   :keymap (keymap (13 . forward-char)) "child")
+                              (text "parent"))
+                         (text "ordinary"))))
+    (let* ((text (buffer-string))
+           (child (1+ (ebox-interaction-test--position text "child")))
+           (parent (1+ (ebox-interaction-test--position text "parent")))
+           (ordinary (1+ (ebox-interaction-test--position text "ordinary"))))
+      (goto-char (point-min))
+      (let ((padding (ebox-next-interaction)))
+        (should (< padding child))
+        (should (eq (key-binding (kbd "RET")) #'forward-char))
+        (should (= (ebox-next-interaction) parent)))
+      (let ((inhibit-read-only t))
+        (put-text-property ordinary (+ ordinary 8) 'keymap '(keymap (13 . ignore))))
+      (should-error (ebox-next-interaction) :type 'user-error)
+      (let ((overlay (make-overlay ordinary (+ ordinary 8))))
+        (unwind-protect
+            (progn
+              (overlay-put overlay 'keymap '(keymap (13 . forward-char)))
+              (should-error (ebox-next-interaction) :type 'user-error))
+          (delete-overlay overlay))))))
+
+(ert-deftest ebox-interaction-navigation-follows-updates-and-scroll ()
+  "Updated, removed and newly visible actions are read from the publication."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build '(column
+                  (text "intro")
+                  (text :id "first" :keymap (keymap (13 . ignore)) "first")
+                  (box :id "scroll" :height (lh 1) :width (ch 20) :overflow scroll
+                       (column
+                        (text :keymap (keymap (13 . forward-char)) "second")
+                        (text :keymap (keymap (13 . backward-char)) "third"))))))
+    (goto-char (point-min))
+    (ebox-next-interaction)
+    (should (looking-at "first"))
+    (ebox-region-update (ebox-region-resolve (current-buffer) "first") :keymap nil)
+    (goto-char (point-min))
+    (ebox-next-interaction)
+    (should (looking-at "second"))
+    (ebox-region-update (ebox-region-resolve (current-buffer) "scroll") :scroll-offset 1)
+    (goto-char (point-min))
+    (ebox-next-interaction)
+    (should (looking-at "third"))
+    (ebox-region-update (ebox-region-resolve (current-buffer) "first")
+                        :keymap '(keymap (13 . ignore)) :content "restored")
+    (goto-char (point-min))
+    (ebox-next-interaction)
+    (should (looking-at "restored"))
+    (should-error
+     (ebox-commit (current-buffer) (ebox-build '(text "rejected"))
+                  (lambda (_report) (error "Reject navigation change"))))
+    (goto-char (point-min))
+    (ebox-next-interaction)
+    (should (looking-at "restored"))
+    (ebox-commit (current-buffer) (ebox-build '(text "no interactions")))
+    (should-error (ebox-next-interaction) :type 'user-error)))
+
+(ert-deftest ebox-interaction-navigation-keymap-prefixes-parents-and-menus ()
+  "Inspect native binding graphs without executing dynamic menu predicates."
+  (let* ((map (make-sparse-keymap))
+         (prefix (make-sparse-keymap))
+         (parent (make-sparse-keymap))
+         (calls 0))
+    (define-key prefix "r" map)
+    (define-key map "p" prefix)
+    (should-not (ebox-interaction--navigable-keymap-p map))
+    (define-key parent (kbd "RET") #'ignore)
+    (set-keymap-parent map parent)
+    (should (ebox-interaction--navigable-keymap-p map))
+    (define-key map (kbd "RET") #'undefined)
+    (should-not (ebox-interaction--navigable-keymap-p map))
+    (define-key map (kbd "RET") nil)
+    (should-not (lookup-key map (kbd "RET")))
+    (should-not (ebox-interaction--navigable-keymap-p map))
+    (keymap-unset map "RET" t)
+    (should (ebox-interaction--navigable-keymap-p map))
+    (set-keymap-parent map nil)
+    (define-key map [menu-bar item]
+      (list 'menu-item "Action" #'ignore
+            :enable '(progn (cl-incf calls) nil)
+            :filter (lambda (definition) (cl-incf calls) definition)))
+    (should (ebox-interaction--navigable-keymap-p map))
+    (should (= calls 0)))
+  (let ((full (make-keymap)) (parent (make-sparse-keymap)))
+    (define-key parent (kbd "RET") #'ignore)
+    (set-keymap-parent full parent)
+    (set-char-table-range (nth 1 full) t #'undefined)
+    (should-not (ebox-interaction--navigable-keymap-p full))
+    (define-key full (kbd "RET") nil)
+    (should-not (lookup-key full (kbd "RET")))
+    (should-not (ebox-interaction--navigable-keymap-p full))
+    (define-key full (kbd "RET") #'ignore)
+    (should (ebox-interaction--navigable-keymap-p full))))
+
+(ert-deftest ebox-interaction-navigation-inherits-effective-prefix-bindings ()
+  "Native prefix inheritance remains navigable without losing child blocking."
+  (let ((map (make-sparse-keymap))
+        (parent (make-sparse-keymap))
+        (prefix (make-sparse-keymap))
+        (calls 0))
+    (define-key parent "pr" #'ignore)
+    (define-key map "p" prefix)
+    (set-keymap-parent map parent)
+    (should (eq (lookup-key map "pr") #'ignore))
+    (should (ebox-interaction--navigable-keymap-p map))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build (list 'column '(text "intro") (list 'text :keymap map "action"))))
+      (goto-char (point-min))
+      (ebox-next-interaction)
+      (should (looking-at "action"))
+      (should (eq (key-binding "pr") #'ignore)))
+    (define-key prefix "r" #'undefined)
+    (should (eq (lookup-key map "pr") #'undefined))
+    (should-not (ebox-interaction--navigable-keymap-p map))
+    (keymap-unset prefix "r" t)
+    (define-key parent "pr"
+      (list 'menu-item "Inherited" #'ignore
+            :filter (lambda (definition) (cl-incf calls) definition)))
+    (should (ebox-interaction--navigable-keymap-p map))
+    (should (= calls 0))
+    (should (eq (car (lookup-key parent "p")) 'keymap))
+    ;; Inspection must retain the original menu wrapper and callback.
+    (should (eq (car (cdr (assq ?r (cdr (lookup-key parent "p"))))) 'menu-item))
+    (define-key map "p" #'undefined)
+    (should-not (ebox-interaction--navigable-keymap-p map))
+    (should (= calls 0))))
+
 (provide 'ebox-interaction-tests)
 
 ;;; ebox-interaction-tests.el ends here

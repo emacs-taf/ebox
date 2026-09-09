@@ -1,8 +1,13 @@
 EMACS ?= emacs
 CARGO ?= cargo
+PYTHON ?= python3
 TP_DIR ?= ../tp
 ECSS_DIR ?= ../ecss
 LOAD_EXTRA ?=
+RELEASE_DIR ?= /tmp/ebox-release
+RELEASE_DEPS_DIR ?= /tmp/ebox-release-deps
+RELEASE_OPTIONS ?=
+NATIVE_MODULE ?=
 
 EMACS_BATCH = $(EMACS) -Q --batch -L . -L $(ECSS_DIR) -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
 EMACS_TEST = $(EMACS_BATCH) -L tests -l tests/ebox-fixtures.el
@@ -14,6 +19,7 @@ NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
 .PHONY: node-memo-generation-tests
 .PHONY: interaction-tests
+.PHONY: display-tests release-deps release-build release-check release-tool-tests native-integration release-native-check
 
 all: check
 
@@ -21,6 +27,29 @@ interaction-tests:
 	$(EMACS_TEST) -l tests/ebox-interaction-tests.el -f ert-run-tests-batch-and-exit
 
 test: interaction-tests
+
+display-tests:
+	$(EMACS_TEST) -l tests/ebox-display-tests.el -f ert-run-tests-batch-and-exit
+
+test: display-tests release-tool-tests
+
+release-deps:
+	$(PYTHON) scripts/ebox-release.py deps --directory "$(RELEASE_DEPS_DIR)" $(RELEASE_OPTIONS)
+
+release-build:
+	$(PYTHON) scripts/ebox-release.py build --directory "$(RELEASE_DIR)" $(RELEASE_OPTIONS)
+
+release-check: release-build
+	$(PYTHON) scripts/ebox-release.py verify --directory "$(RELEASE_DIR)" --emacs "$(EMACS)"
+
+native-integration:
+	$(PYTHON) scripts/ebox-release.py verify --directory "$(RELEASE_DIR)" --emacs "$(EMACS)" --native-module "$(NATIVE_MODULE)"
+
+release-native-check:
+	$(PYTHON) scripts/ebox-release.py verify --directory "$(RELEASE_DIR)" --emacs "$(EMACS)" --build-native
+
+release-tool-tests:
+	$(PYTHON) -m unittest discover -s scripts -p 'test_ebox_release.py'
 
 check: ci
 

@@ -47,6 +47,13 @@ active 合同还覆盖 `Makefile`、`.github/workflows/ci.yml`、`tests/ebox-cor
 
 Runtime index 行为由 `tests/ebox-runtime-index-tests.el` 覆盖。
 
+`tests/ebox-display-tests.el` 覆盖先渲染后显示、可选原生 display action，以及无关窗口
+和选中状态的保持。`make display-tests` 不操作用户的 GUI 实例。
+
+源码分发边界包括 `LICENSE`、`release-dependencies.json`、`scripts/ebox-release.py`、
+`scripts/ebox-release-smoke.el` 和 `scripts/test_ebox_release.py`。第一个工具负责固定
+依赖获取、可重复归档及隔离安装；Lisp smoke 在安装结果内部运行，不加载同级 checkout。
+
 原生节点能力由 `tests/ebox-interaction-tests.el` 通过 `make interaction-tests` 覆盖。
 可交互参考示例及其命令回归测试位于同级 Playground 包。
 
@@ -111,7 +118,7 @@ CSS 尺寸由 `tests/ebox-size-tests.el`、`tests/ebox-size-style-tests.el`、
 - `ebox-incremental.el` 同样不再包含任何 `ebox-surface` symbol 或 publication call。`ebox-surface.el` 只安装一个不可变只读 context port，提供 live client state、region mount、cascade proof 与 inline-style preparation；batch observation 留在更高层的 `ebox.el` orchestrator。
 - `ebox-patch-plan.el` 只消费 tentative operation plist 与不可变 generation parent table，并返回 deterministic plan artifact；所有 live fact 准备仍由 incremental adapter 拥有。E3 默认使用 pure route，同时保留显式 `legacy` 与执行等价检查的 `shadow` route；三条 route 都不能发布。
 - `ebox-style--property-definitions` 同时也是 used-value projection 的唯一真相源。非默认 engine lowering 写在每个 property 的 `:engine-projection` 中；ECSS metadata 暴露派生的 `:engine-targets`，只有非公共 engine 字段可以进入小型 internal exception table。
-- `ebox-framework-spi-capabilities` 返回 fresh immutable SPI v2 provider record，声明 paired initial/update stage+rollback、combined participant order、same-object report、initial observation replay，以及实际接受的 TP protocol。`ebox-framework-spi-required-tp-version` 公开最低 TP 1.0.1 依赖，`ebox-framework-spi-supported-tp-protocols` 列出 consumer-first 与最终 v2 protocol identity。initial TP/Ebox timing 在 publication 期间真实测量，以 defensive snapshot 写入 completed report 后再 replay；不生成虚假的零耗时数据，也不携带 mutate authority。Ebox 不创建 selected port 或 consumer bootstrap。
+- `ebox-framework-spi-capabilities` 返回 fresh immutable SPI v2 provider record，声明 paired initial/update stage+rollback、combined participant order、same-object report、initial observation replay，以及实际接受的 TP protocol。`ebox-framework-spi-required-tp-version` 公开最低 TP 2.0.0 依赖，`ebox-framework-spi-supported-tp-protocols` 列出接受的 structured protocol identity；只满足协议 membership 不等于满足最低包版本。initial TP/Ebox timing 在 publication 期间真实测量，以 defensive snapshot 写入 completed report 后再 replay；不生成虚假的零耗时数据，也不携带 mutate authority。Ebox 不创建 selected port 或 consumer bootstrap。
 - Ebox 始终通过 TP 的公开 `tp-transaction-participate-v2` API 注册可 rollback 的
   runtime mirror。加载的 manifest 必须用 accepted structured protocol 声明该可调用
   API；capability 缺失或格式错误会在加载时 fail closed。
@@ -153,6 +160,12 @@ make check
 make size-tests
 make size-migration-tests
 make interaction-tests
+make display-tests
+make release-tool-tests
+make release-deps
+make release-build
+make release-check
+make native-integration
 make core-tests
 make runtime-index-tests
 make child-range-tests
@@ -188,6 +201,54 @@ make diff-check
 
 `make size-tests` 包含 `make size-migration-tests`，因此迁移工具的 Python 回归
 测试也会通过 `make check` 执行。
+
+## 源码包分发
+
+通过上述 Make 入口使用 `scripts/ebox-release.py`，不另写安装探针。
+`release-dependencies.json` 为必需的 TP、ECSS 与可选 EKP 固定公开 HTTPS URL 和完整
+提交 ID。它是可重复构建的输入，不替代各包声明的最低版本契约。只有指定 `--with-ekp`
+才包含 EKP；普通归档不会把它变成 Ebox 的必需包依赖。
+
+推荐完整验证：
+
+```sh
+make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0
+make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0-kp RELEASE_OPTIONS=--with-ekp
+```
+
+两条命令都获取固定依赖，从当前 Ebox 源码文件构建，排除编译产物和临时文件。输出包括
+可重复的 tar 归档、`archive-contents`，以及记录 SHA-256 校验和、依赖提交、Ebox
+源码提交和工作区修改状态的 manifest。开发验证允许修改过的源码，并明确记录；正式
+发布产物应使用干净的 release checkout。两条命令都不会上传文件或创建 tag。
+
+`release-check` 先构建新目录再验证；检查已有归档而不重建或获取依赖时，使用：
+
+```sh
+python3 scripts/ebox-release.py verify --directory /tmp/ebox-release-3.0.0 --emacs emacs
+```
+
+`verify` 检查归档校验和，用 `emacs -Q --batch` 启动，通过 `package.el` 从本地归档解析
+依赖并安装到临时包目录，检查 autoload、必需包来源、独立加载、渲染/更新/选择器行为，
+以及归档包含 EKP 时的真实 provider。缺少依赖不能从同级 `load-path` 或用户已安装包
+中补齐。普通归档验证不构建或要求 Rust 模块。
+
+复用已获取依赖时，先给 `make release-deps` 指定新的 `RELEASE_DEPS_DIR`，再给
+`release-check` 或 `release-build` 传入 `RELEASE_OPTIONS="--dependencies /path/to/deps"`。
+依赖 checkout 必须位于固定提交且没有修改。KP 变体在获取和构建时均加上 `--with-ekp`。
+`release-build` 只生成归档。
+
+`make native-integration RELEASE_DIR=/path/to/archive EMACS=emacs
+NATIVE_MODULE=/absolute/path/to/module` 验证已有归档，并要求指定模块实际加载、生成
+native frame。它不构建模块；请提供当前系统与架构对应的产物。
+
+已有输出目录会被拒绝，不会覆盖。临时 checkout 与包目录在成功、失败、中断或子进程
+超时后清理，已完成的归档/依赖输出保留在明确指定的路径。非零退出表示验证未成功。
+工具回归使用 `make release-tool-tests`。这个入口替代临时的干净安装探针。
+
+CI 在 Linux 上以 Emacs 29.1 和 30.2 运行 Elisp 套件与干净安装，包括可选 EKP 安装。
+native 任务在 Linux、macOS、Windows 构建和测试，再通过 Emacs 30.2 的干净包安装
+加载并执行刚构建的模块；Rust MSRV 构建/测试单独运行。配置不代表远程任务已经成功：
+需要查看具体提交的结果，不能从 batch 或 Rust 测试推断 GUI 视觉效果一致。
 
 ## 迁移作者尺寸字面量
 

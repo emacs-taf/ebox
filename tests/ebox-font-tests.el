@@ -148,5 +148,44 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-measure-display-replacements-own-one-run ()
+  "A display replacement is one unit even across face and metadata changes."
+  (dolist (display (list '(space :width (15)) "X"))
+    (let ((text (propertize "abc" 'display display)))
+      (should (= (ebox-string-pixel-width text) (string-pixel-width text)))
+      (put-text-property 1 2 'face 'bold text)
+      (put-text-property 2 3 'help-echo "last" text)
+      (should (= (ebox-string-pixel-width text) (string-pixel-width text)))
+      (should (= (ebox-string-pixel-width (concat text "Z"))
+                 (string-pixel-width (concat text "Z")))))))
+
+(ert-deftest ebox-measure-distinguishes-adjacent-display-identities ()
+  "Equal but distinct display values are two replacements, including cache hits."
+  (let* ((one (propertize "ab" 'display (list 'space :width (list 15))))
+         (two (concat (propertize "a" 'display (list 'space :width (list 15)))
+                      (propertize "b" 'display (list 'space :width (list 15))))))
+    (dotimes (_ 2)
+      (should (= (ebox-string-pixel-width one) 15))
+      (should (= (ebox-string-pixel-width two) 30)))))
+
+(ert-deftest ebox-measure-quantizes-display-runs-without-splitting-them ()
+  "Fractional replacements round once per EQ run and retain source properties."
+  (let* ((first (propertize "abc" 'display (list 'space :width (list 3.5))
+                           'help-echo "first"))
+         (second (propertize "de" 'display (list 'space :width (list 3.5))))
+         (source (concat first second))
+         (result (ebox--quantize-pixel-spaces source)))
+    (should (= (ebox-string-pixel-width source) 7))
+    (should (= (ebox-string-pixel-width result) 7))
+    (should (eq (get-text-property 0 'display result)
+                (get-text-property 2 'display result)))
+    (should (eq (get-text-property 3 'display result)
+                (get-text-property 4 'display result)))
+    (should-not (eq (get-text-property 2 'display result)
+                    (get-text-property 3 'display result)))
+    (should (equal (get-text-property 2 'help-echo result) "first"))
+    (should (= (ebox--fixed-pixel-space-width (get-text-property 0 'display source))
+               3.5))))
+
 (provide 'ebox-font-tests)
 ;;; ebox-font-tests.el ends here

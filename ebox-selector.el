@@ -18,6 +18,7 @@
 (declare-function ebox--ensure-region-id "ebox" (box))
 (declare-function ebox--buffer-root-node "ebox-incremental" (buffer))
 (declare-function ebox--buffer-render-state "ebox-incremental" (buffer))
+(declare-function ebox--buffer-source-index "ebox-incremental" (buffer))
 (declare-function ebox--buffer-selector-id-table "ebox-incremental" (buffer))
 (declare-function ebox--buffer-selector-class-table
                   "ebox-incremental" (buffer))

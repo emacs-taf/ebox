@@ -7,10 +7,20 @@ application also needs Components, reactive state, behaviors, or lifecycle.
 
 ## Install
 
-Ebox requires Emacs 29.1 or newer, ECSS 0.1.0 or newer, and TP 1.0.1 or newer.
-A package manager should
-install the declared dependencies. For sibling source checkouts, add the three
-directories to `load-path`, then load Ebox:
+The source repository is [geekinney/ebox](https://gitea.gklazycat.heiyu.space/geekinney/ebox).
+The current `3.0.0` changelog is unreleased; a source checkout is not a published
+package archive or stable release tag.
+
+| Dependency | Required for |
+| --- | --- |
+| Emacs 29.1 or newer | All Ebox use. |
+| ECSS 0.1.0 or newer | Style computation and selector semantics; required even without a stylesheet. |
+| TP 2.0.0 or newer | Retained publication, native property policies, and transactions; required when loading Ebox. |
+| [EKP 1.0.0 or newer](https://github.com/Kinneyzhang/emacs-kp) | Optional; required only when using `:wrap-mode kp`. |
+
+ECSS and TP are declared package dependencies. EKP is deliberately optional:
+ordinary `word`, `char`, and `none` wrapping does not need it. For sibling source
+checkouts, add the required directories to `load-path`, then load Ebox:
 
 ```elisp
 (add-to-list 'load-path "/path/to/ecss")
@@ -20,6 +30,54 @@ directories to `load-path`, then load Ebox:
 ```
 
 Loading Ebox does not create a buffer or build native code.
+
+For Knuth–Plass paragraph layout, also add the EKP source directory to
+`load-path`, or install its package, before rendering a Box with `:wrap-mode kp`:
+
+```elisp
+(add-to-list 'load-path "/path/to/ekp")
+(ebox-render
+ (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
+                   "A paragraph laid out with Knuth–Plass line breaking.")))
+```
+
+Ebox loads EKP when that wrapping mode is used. A missing or incompatible EKP
+signals an installation or update error; install EKP or explicitly choose
+another wrapping mode. Ebox does not silently render using `word`.
+EKP's optional accelerator is separate
+from Ebox's optional Rust module.
+
+### Build and verify an installable archive
+
+From this checkout, run:
+
+```sh
+make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0
+```
+
+This fetches the exact dependency commits in
+[`release-dependencies.json`](release-dependencies.json), builds deterministic
+`package.el` source archives, and installs them into a temporary clean profile
+to exercise rendering, updates, and selectors. It preserves the archive
+directory and `manifest.json`, including checksums and source revision/dirty
+status; it does not publish or change your Emacs profile. Choose a new output
+directory on each run: existing directories are not overwritten.
+
+To include and test optional KP layout, use a different output directory and
+add `RELEASE_OPTIONS=--with-ekp`. Once an archive has passed verification, it can
+be used as a local package archive:
+
+```elisp
+(require 'package)
+(add-to-list 'package-archives '("ebox-local" . "/tmp/ebox-release-3.0.0/"))
+(package-refresh-contents)
+(package-install 'ebox)
+;; Optional, only if the archive was built with --with-ekp:
+;; (package-install 'ekp)
+```
+
+Tool inputs, cleanup, offline reuse, and native verification are documented in
+the [maintainer guide](docs/maintainer/ebox-current-implementation-reference.en.md#source-package-distribution).
 
 ## First render
 
@@ -93,8 +151,10 @@ ordinary zero-argument callbacks to activation
 keys or custom keys; it supplies the clicked window's buffer for mouse commands.
 Use `ebox-region-update` with a semantic ID in the current mounted buffer or
 an explicit region handle to replace or clear these capabilities.
-Native keymaps support independent Ebox interactions; application state,
-focus navigation, and command behavior remain the author's responsibility.
+Native keymaps support independent Ebox interactions. Optional
+`ebox-next-interaction` and `ebox-previous-interaction` commands move point
+between rendered keymap owners without adding default key bindings.
+Application state and command behavior remain the author's responsibility.
 See the [interaction guide](docs/user/ebox-user-guide.en.md#native-node-interaction)
 and the Playground's [interaction lab](../ebox-playground/README.md#native-interaction-lab).
 
@@ -102,6 +162,8 @@ and the Playground's [interaction lab](../ebox-playground/README.md#native-inter
 
 - `ebox-render` returns propertized text without publishing a live buffer.
 - `ebox-render-to-buffer` mounts a retained surface.
+- `ebox-display-buffer` renders successfully first, then displays the buffer
+  using Emacs display rules and an optional action; it returns the buffer.
 - `ebox-commit` atomically publishes a newly built canonical input.
 - `ebox-buffer-update-report` returns the last successful update report.
 - `ebox-rerender-buffer-with-context` applies an explicit viewport change.
@@ -120,11 +182,11 @@ external capabilities are not frozen. Querying during a TP transaction or
 after unmounting signals an error. Compare both mount ID and revision when
 identifying a committed generation; remounting can restart revision numbers.
 
-Ebox registers rollback-capable state only through TP's public structured
-participant API. TP 1.0.1 supports the consumer-first migration protocol;
-TP 2.0.0 publishes the final v2-only protocol. Missing or malformed structured
-participant capability stops Ebox loading instead of selecting a compatibility
-writer.
+Ebox registers rollback-capable state only through TP 2.0.0's public structured
+participant API and final v2 protocol. Older transition builds do not provide
+the native property ownership and hover identity guarantees required by this
+release. Missing or malformed structured participant capability stops Ebox
+loading instead of selecting a compatibility writer.
 
 ## Optional native module
 
@@ -135,6 +197,31 @@ exact Elisp fallback. Ebox never builds it while loading.
 (ebox-native-status)
 (ebox-native-build)
 ```
+
+## Display and text boundaries
+
+Each mounted buffer has one viewport layout. Showing the same buffer in two
+windows of different widths does not create two independent layouts. Use
+separate mounted buffers for independent widths; the same canonical input may
+be mounted more than once.
+
+Vertical geometry is materialized in whole lines. Text handling preserves
+common combining-mark, variation-selector, emoji-modifier, ZWJ, and flag
+sequences; it does not implement complete Unicode grapheme segmentation or a
+browser's typography and bidirectional layout. Font availability and native
+pointer/help display depend on Emacs and the window system. Terminal output
+cannot reproduce every GUI pixel or pointer effect.
+
+`:overflow hidden` limits content to the box's measured width and whole-line
+height, preserving its padding and borders. Horizontal clipping keeps whole
+supported text clusters and fills unused pixels with space; it does not render
+partial glyphs or insert an ellipsis. `scroll` remains vertical scrolling.
+
+The CI configuration covers Emacs 29.1 and 30.2 on Linux, and source-package
+installation plus native-module loading/execution on Linux, macOS, and Windows
+with Emacs 30.2. Those jobs define the verification matrix; they are not a claim
+that every platform's GUI rendering has been visually verified. Consult the
+workflow results for the particular revision being installed.
 
 ## Verification
 
@@ -151,3 +238,8 @@ make native-rust-tests
 See the [user guide](docs/user/ebox-user-guide.en.md), the [public API
 reference](docs/user/ebox-api-reference.en.md), and the sibling
 [ebox-playground](../ebox-playground/README.md) examples.
+
+## License
+
+Ebox-owned code is distributed under GPL-3.0-or-later; see [LICENSE](LICENSE).
+Third-party files retain their own license notices.

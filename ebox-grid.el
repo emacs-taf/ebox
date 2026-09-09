@@ -16,6 +16,8 @@
 (require 'ebox-layout)
 (require 'ebox-flex)
 
+(declare-function ebox--viewport-dependent-subtree-p "ebox-incremental" (node))
+(declare-function ebox--viewport-height-dependent-subtree-p "ebox-incremental" (node))
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--ensure-region-id "ebox" (box))
 (declare-function ebox-box-node-p "ebox-canonical" (node))

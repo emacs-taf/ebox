@@ -30,9 +30,34 @@ Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过
 
 使用 `docs/user/ebox-api-reference.zh.md` 中的函数与 property；门面清单是 `ebox-public-api`。应用和同级包不得调用 `ebox--*` 私有名称。更高层的 Component、响应式、behavior、data 和 control 概念属于 ETAF。
 
+ECSS 与 TP 是必需的包依赖，即使作者没有写选择器或样式表也需要。EKP 是独立的可选
+排版依赖：选择 `:wrap-mode kp` 时需要它的公开段落排版 API。EKP 不可用或不兼容时
+会报错，不会擅自替换换行算法。它的加速器与 Ebox Rust reflow 模块相互独立。
+
+`ebox-display-buffer` 先渲染，再把窗口放置交给原生 `display-buffer`。它接受调用方的
+display action、返回 buffer，不选择独占窗口布局，也不选中结果窗口。一个 buffer
+拥有一套挂载布局与视口；需要独立尺寸的视图应使用不同 buffer，不在同一段文本上
+维护互相竞争的布局。
+
 ## 布局范围
 
-Ebox 支持显式 `px`、`%`、`vw`、`vh`、`ch`、`lh` 尺寸、padding、margin、border、颜色、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。公共 typography 子集是 `:font-family`、以 CSS reference pixel 表示的 `:font-size`、`:font-weight` 和 `:font-style`；`:font-slant` 只是 `:font-style` 的精确 parse-time alias。Emacs face 与文本属性只属于最终 adapter，不是 Ebox 作者属性。CSS 兼容性有意是部分实现：绝对定位、z-index、阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
+Ebox 支持显式 `px`、`%`、`vw`、`vh`、`ch`、`lh` 尺寸、padding、margin、border、颜色、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。公共 typography 子集是 `:font-family`、以 CSS reference pixel 表示的 `:font-size`、`:font-weight` 和 `:font-style`；`:font-slant` 只是 `:font-style` 的精确 parse-time alias。任意 Emacs face 和文本属性 plist 属于最终 adapter，不是 Ebox 作者输入；四种显式原生能力 `:help-echo`、`:pointer`、`:hover-style`、`:keymap` 单独受支持。CSS 兼容性有意是部分实现：绝对定位、z-index、阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
+
+文本簇模型覆盖常见组合音标、变体选择符、Emoji 修饰符、ZWJ 序列和区域指示符配对。
+它的范围小于完整 Unicode 字素分段；字符数量或这个有限的分段模型，都不能保证任意
+字体塑造结果相同。
+
+可选交互导航在当前渲染的 keymap owner 之间移动 point，读取已提交 surface，尊重
+narrowing 与不可见性，不安装按键绑定、焦点注册表或应用状态。action 与状态仍属于
+调用方。
+
+横向 `:overflow hidden` 在内容组合后、自身 padding 和 border 添加前执行。它选取
+测量后能容纳的完整受支持文本簇前缀，再用空白补齐剩余像素。固定 display space 可以
+缩短，字形与图像不做局部位图裁剪；裁掉的子节点属性不会残留在中性填充上。
+算法按 GPL-3.0-or-later 复用了
+[s-pixel](https://github.com/Kinneyzhang/s-pixel/tree/a2a0d6ae6b3bd71c1a70084d0ea37f56463e5fe0)
+的前缀加空白补齐思路，适配 Ebox 的文本簇与属性模型，不增加 `s` 或 `s-pixel` 依赖，
+也不引入层叠或重叠组合。
 
 ## 尺寸组合
 

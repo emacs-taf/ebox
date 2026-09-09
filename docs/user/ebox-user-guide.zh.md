@@ -207,8 +207,16 @@ Box 高度为零；`(box :height (lh 1))` 明确保留一行空白。
 中间结果保留小数，例如 853 像素视口的 `33vw` 在显示量化前是 281.49 像素。
 当前 buffer 后端按完整行生成 block 几何，小数行目标在这个边界量化。作者接口不
 接受纵向 `px` 长度。
-`:overflow hidden` 当前只裁剪纵向行；buffer 后端尚未实现横向像素裁剪，因此内容
-可能超出已经计算确定的容器宽度。
+`:overflow hidden` 裁掉超出的纵向行，并将每行内容限制在测量后的内容宽度内。
+保留放得下的前缀，不拆开受支持的文本簇；放不下的字形或图像整体省去。固定 display
+space 可以缩短到精确的剩余像素宽度，剩余空隙用盒子内容空白补齐，使 padding 和边框
+保持位置。这是按像素宽度截断，不是显示半个字形/图像，也不自动添加省略号。
+被省去的子文本不会在填充空白上留下自己的帮助、hover、指针或 keymap。
+
+例如 `(box :width (ch 3) :wrap-mode none :overflow hidden "ABCDEFGHIJ")` 只保留
+三个 `0` 字形前进宽度内放得下的前缀；使用 `visible` 时，溢出仍可超出计算宽度。
+在哪个容器上设置 `hidden`，就约束哪个容器的内容边界，直接文本和组合后的子节点输出
+都受约束。`scroll` 提供纵向滚动，不增加横向滚动。
 
 不再接受几何裸数字、单元素像素列表、`viewport`、`viewport-height`、`contain`，
 以及带参数的 `fit-content`。零长度也需要对应轴允许的单位，例如横向 `(px 0)`、
@@ -233,6 +241,29 @@ Text 的样式声明只接受字体、前景/背景和文本装饰 property；�
 
 用 `:outer inline` 或 `:outer block` 表达 Box 如何参与父布局。子布局算法仍由 form
 名称决定。
+
+### 换行与可选 EKP 依赖
+
+`:wrap-mode word` 按普通单词换行，并允许 CJK 字符换行；`char` 按 Ebox 支持的常见
+文本簇边界换行；`none` 保留显式换行符，不添加软换行。`kp` 将段落交给独立的
+[EKP 包](https://github.com/Kinneyzhang/emacs-kp)，使用 Knuth–Plass 算法排版。
+换行模式属于 Box，并由其中的文本继承。
+
+使用 `:wrap-mode kp` 前，安装 EKP 1.0.0 或更高版本，或将其源码目录加入 `load-path`。
+它是按需加载的可选依赖，普通 Ebox 布局只需要 ECSS 和 TP。选择 `kp` 而没有兼容的
+EKP 时，会提示安装或更新；请安装 EKP，或显式选择其他换行模式，不会静默改用单词换行。
+EKP 加速器与 Ebox Rust reflow 模块是两个独立的可选模块，启用一个不会安装另一个。
+
+```elisp
+(add-to-list 'load-path "/path/to/ekp")
+(ebox-render
+ (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
+                   "Knuth–Plass considers the paragraph when choosing line breaks.")))
+```
+
+Ebox 的文本簇处理会保留常见组合音标、变体选择符、Emoji 修饰符、ZWJ 序列和区域指示符
+配对，但不实现完整 Unicode 字素分段或浏览器级双向布局。字形塑造和字形是否可用，
+仍取决于 Emacs、所选字体和窗口系统。
 
 <a id="native-node-interaction"></a>
 ### 原生节点交互
@@ -284,9 +315,20 @@ margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 
 辅助函数让鼠标回调在事件窗口的 buffer 中运行，因此回调可以直接按语义 ID 更新：
 `(ebox-region-update "action" :help-echo "Activated")`。
 
-使用键盘绑定时，先把 point 移到交互范围内。仍可直接传入原生 keymap，其鼠标命令
-需要自行处理事件的目标 buffer。Ebox 使用原生命令分派，不创建应用状态或焦点导航。
-单独设置手形指针不会绑定点击命令。
+使用键盘绑定时，先把 point 移到交互范围内。可选命令 `ebox-next-interaction` 与
+`ebox-previous-interaction` 在当前渲染了可用 keymap 的声明节点之间移动。每个 owner
+只有一个停靠点，即使其 map 覆盖 padding 或多行；显式子 map 单独形成停靠点。
+空 map、显式 `nil`、不可见或被裁掉的内容不产生停靠点。导航读取当前已提交 buffer，
+更新后不需要额外刷新。到达边界时报用户错误，不循环跳转，也不移动 point。
+这些命令不会自动添加按键绑定。例如，为启用了 `ebox-buffer-mode` 的 buffer 选择启用：
+
+```elisp
+(keymap-set ebox-scroll-map "TAB" #'ebox-next-interaction)
+(keymap-set ebox-scroll-map "<backtab>" #'ebox-previous-interaction)
+```
+
+仍可直接传入原生 keymap，其鼠标命令需要自行处理事件的目标 buffer。Ebox 使用原生
+命令分派，不创建应用状态或焦点管理系统。单独设置手形指针不会绑定点击命令。
 
 Playground 的[交互实验室](../../../ebox-playground/README.zh-CN.md#native-interaction-lab)
 把业务函数与状态放在 `interaction-reference.el`，把布局放在
@@ -303,6 +345,18 @@ retained TP surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
 (ebox-render ebox-guide-input)
 (ebox-render-to-buffer "*Ebox Guide*" ebox-guide-input)
 ```
+
+需要同时显示结果时，使用 `ebox-display-buffer`。它先完成渲染，再让 Emacs 放置
+buffer，遵循 `display-buffer-alist`，并接受与原生 `display-buffer` 相同的可选 action：
+
+```elisp
+(ebox-display-buffer "*Ebox Guide*" ebox-guide-input
+                     '(display-buffer-pop-up-window))
+```
+
+它返回 buffer，不选中结果窗口，也不删除其他窗口。渲染报错不会改变窗口布局。
+自定义 display action 仍可能产生自己的窗口效果；如果 action 在发布后报错，
+已经成功渲染的 buffer 仍然保留。调用方完全管理显示位置时，使用 `ebox-render-to-buffer`。
 
 重新构建 canonical input 后，用 `ebox-commit` 原子更新：
 
@@ -367,7 +421,10 @@ Ebox 对 keymap 创建快照；发布新绑定时应替换 `:keymap`，而不是
        "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9"))
 ```
 
-可见 mounted buffer 会跟随其 display window。集成层也可以显式应用 viewport：
+可见 mounted buffer 会跟随选定的一个显示窗口。每个已挂载 buffer 只有一套视口布局：
+将同一个 buffer 同时放到不同宽度的窗口中，不会产生两套独立布局。每个视图需要
+各自宽度时，把同一份 canonical input 分别挂载到不同 buffer。集成层也可以显式应用
+viewport，横向以像素、纵向以行为单位：
 
 ```elisp
 (ebox-rerender-buffer-with-context

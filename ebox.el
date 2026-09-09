@@ -1,10 +1,16 @@
 ;;; ebox.el --- Pixel-perfect box model renderer -*- lexical-binding: t -*-
 
+;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ebox contributors
 ;; Version: 3.0.0
-;; Package-Requires: ((emacs "29.1") (ecss "0.1.0") (tp "1.0.1"))
+;; Package-Requires: ((emacs "29.1") (ecss "0.1.0") (tp "2.0.0"))
 ;; Keywords: ui, graphics, convenience
-;; URL: https://github.com/ginqi7/ebox
+;; URL: https://gitea.gklazycat.heiyu.space/geekinney/ebox
+
+;; This program is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.  See LICENSE for the full text.
 
 ;;; Commentary:
 
@@ -4908,11 +4914,17 @@ through dirty-set and patch-set execution before falling back to root rerender."
      (plist-get state :viewport-height))))
 
 ;;;###autoload
-(defun ebox-display-buffer (buffer-or-name input)
-  "Render canonical INPUT to BUFFER-OR-NAME through TP and display it."
+(defun ebox-display-buffer (buffer-or-name input &optional action)
+  "Render canonical INPUT to BUFFER-OR-NAME, display it, and return its buffer.
+Render before requesting a window, so invalid input does not disturb the
+window layout.  ACTION is passed to `display-buffer'; ordinary display rules
+apply and this function does not select the displayed window."
   (declare (indent 1))
-  (delete-other-windows)
-  (switch-to-buffer (ebox-render-to-buffer buffer-or-name input)))
+  (let ((buffer (ebox-render-to-buffer buffer-or-name input)))
+    (let ((window (display-buffer buffer action)))
+      (when (window-live-p window)
+        (ebox--window-size-change (window-frame window))))
+    buffer))
 
 (defconst ebox-public-api
   '(ebox-buffer-mode
@@ -4943,6 +4955,8 @@ through dirty-set and patch-set execution before falling back to root rerender."
     ebox-host-ref-position
     ebox-help-create
     ebox-keymap-create
+    ebox-next-interaction
+    ebox-previous-interaction
     ebox-native-build
     ebox-native-status
     ebox-region-ids

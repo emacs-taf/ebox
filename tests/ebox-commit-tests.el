@@ -1744,29 +1744,39 @@
   (should (= (ebox-commit-test--participant-v2-count) 2)))
 
 (ert-deftest ebox-transaction-participant-accepts-structured-protocols ()
-  "Both consumer-first and final TP manifests satisfy Ebox's v2 contract."
+  "Supported structured protocols also require the current TP semantics."
   (dolist (protocol '(tp-transaction-protocol-v1+v2
                       tp-transaction-protocol-v2))
     (should
      (ebox-surface--validate-tp-v2-capability
-      (list :transaction-protocol protocol
+      (list :version "2.0.0" :transaction-protocol protocol
             :structured-participant-api
             'tp-transaction-participate-v2)))))
+
+(ert-deftest ebox-transaction-participant-rejects-old-provider-semantics ()
+  "An API symbol alone does not prove native property ownership support."
+  (dolist (version '(nil "1.0.1" "2.0.0-pre" "invalid" 2))
+    (should-error
+     (ebox-surface--validate-tp-v2-capability
+      (list :version version
+            :transaction-protocol 'tp-transaction-protocol-v2
+            :structured-participant-api 'tp-transaction-participate-v2))
+     :type 'ebox-surface-tp-protocol-error)))
 
 (ert-deftest ebox-transaction-participant-rejects-missing-or-malformed-v2 ()
   "Missing or incompatible structured capabilities fail closed."
   (should-error
    (ebox-surface--validate-tp-v2-capability
-    '(:transaction-protocol tp-transaction-protocol-v1+v2))
+    '(:version "2.0.0" :transaction-protocol tp-transaction-protocol-v1+v2))
    :type 'ebox-surface-tp-protocol-error)
   (should-error
    (ebox-surface--validate-tp-v2-capability
-    '(:transaction-protocol tp-transaction-protocol-v1+v2
+    '(:version "2.0.0" :transaction-protocol tp-transaction-protocol-v1+v2
       :structured-participant-api ignore))
    :type 'ebox-surface-tp-protocol-error)
   (should-error
    (ebox-surface--validate-tp-v2-capability
-    '(:transaction-protocol incompatible
+    '(:version "2.0.0" :transaction-protocol incompatible
       :structured-participant-api tp-transaction-participate-v2))
    :type 'ebox-surface-tp-protocol-error))
 

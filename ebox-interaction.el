@@ -20,6 +20,10 @@
 (declare-function ebox--ensure-region-id "ebox" (box))
 (declare-function ebox-runtime-index-get "ebox-runtime-index" (key index &optional default))
 (declare-function ebox-fragment-style-source-node "ebox-fragment" (node))
+(declare-function ebox-surface-buffer-mounted-p "ebox-surface" (buffer))
+(declare-function ebox-surface--buffer-client-state "ebox-surface" (buffer))
+(declare-function ebox-surface--paint-node-chain "ebox-surface" (state role-ids))
+(defvar ebox-region-types)
 (defvar ebox-buffer--decoration-style-map)
 
 (defconst ebox-interaction-properties
@@ -102,6 +106,136 @@ This function does not supply focus navigation, state or event propagation."
           (define-key map key (ebox-interaction--command callback))
           (push key keys))))
     map))
+
+(defun ebox-interaction--navigable-keymap-p (map)
+  "Return non-nil when MAP contains a command, including inherited bindings.
+Inspect prefix and menu maps without invoking menu filters or enable forms."
+  (when (keymapp map)
+    (let ((copy (ebox-interaction--keymap-snapshot map))
+          (seen (make-hash-table :test #'eq)) commands)
+      (cl-labels
+          ((binding
+            (value)
+            (cond
+             ((keymapp value) (visit value) value)
+             ((eq (car-safe value) 'menu-item) (binding (nth 2 value)))
+             ((and (consp value) (stringp (car value))) (binding (cdr value)))
+             (t (when (and (not (eq value 'undefined)) (commandp value))
+                  (cl-pushnew value commands :test #'eq))
+                value)))
+           (visit
+            (value)
+            (unless (gethash value seen)
+              (puthash value t seen)
+              (let ((parent (keymap-parent value))
+                    (local (copy-sequence value)))
+                (set-keymap-parent local nil)
+                (map-keymap (lambda (event definition)
+                              (define-key value (vector event) (binding definition)))
+                            local)
+                (when parent (visit parent))))))
+        ;; Native lookup composes inherited prefix maps instead of treating
+        ;; a local prefix as shadowing its parent's entire prefix.  Remove
+        ;; menu wrappers only in this detached copy before using that lookup.
+        (visit copy)
+        (cl-some (lambda (command)
+                   (where-is-internal command (list copy) 'non-ascii nil t))
+                 commands)))))
+
+(defun ebox-interaction--navigation-owner (position state)
+  "Resolve POSITION's live native keymap to its declaring node in STATE.
+Rendered region ownership and the retained parent index identify inheritance;
+an explicit nil on a descendant blocks an ancestor's declaration."
+  (when-let* ((map (get-text-property position 'keymap))
+              ((keymapp map)))
+    (let ((chain (ebox-surface--paint-node-chain
+                  state (cl-loop for (role . property) in ebox-region-types
+                                 for region = (get-text-property position property)
+                                 when region collect (cons role region)))))
+      (catch 'owner
+        (dolist (node-id chain)
+          (let* ((node (ebox-runtime-index-get node-id (plist-get state :node-table)))
+                 (source (ebox-fragment-style-source-node node))
+                 (entry (plist-member (ebox-get source :surface-properties) 'keymap)))
+            (when entry
+              (throw 'owner
+                     (and (cadr entry)
+                          (ebox-interaction-surface-equal-p
+                           (list 'keymap map) (list 'keymap (cadr entry)))
+                          node-id)))))))))
+
+(defun ebox-interaction--move (count)
+  "Move by COUNT interaction stops in the accessible live Ebox surface.
+Resolve every stop from current rendered properties; keep no navigation state."
+  (unless (integerp count)
+    (signal 'wrong-type-argument (list 'integerp count)))
+  (unless (ebox-surface-buffer-mounted-p (current-buffer))
+    (user-error "Current buffer has no live Ebox surface"))
+  (if (zerop count)
+      (point)
+    (let* ((state (ebox-surface--buffer-client-state (current-buffer)))
+           (origin (point))
+           (current-owner (and (< origin (point-max))
+                               (ebox-interaction--navigation-owner origin state)))
+           (seen (make-hash-table :test #'equal))
+           (maps (make-hash-table :test #'eq))
+           (position (point-min)) stops)
+      (while (< position (point-max))
+        (let* ((end (next-char-property-change position (point-max)))
+               (map (get-text-property position 'keymap))
+               (owner (and map (ebox-interaction--navigation-owner position state))))
+          ;; Structural line breaks carry no activation target.  A property
+          ;; run can begin at one after narrowing or native publication.
+          (while (and (< position end) (eq (char-after position) ?\n))
+            (setq position (1+ position)))
+          (when (and owner (< position end) (not (invisible-p position))
+                     (not (equal (get-text-property position 'display) ""))
+                     (not (gethash owner seen)))
+            (let ((navigable (gethash map maps 'unknown)))
+              (when (eq navigable 'unknown)
+                (setq navigable (ebox-interaction--navigable-keymap-p map))
+                (puthash map navigable maps))
+              (when navigable
+                (puthash owner t seen)
+                (push (cons position owner) stops))))
+          (setq position end)))
+      (when (> count 0) (setq stops (nreverse stops)))
+      (let* ((eligible
+              (cl-remove-if-not
+               (lambda (stop)
+                 (and (not (equal (cdr stop) current-owner))
+                      (if (> count 0) (> (car stop) origin)
+                        (< (car stop) origin))))
+               stops))
+             (target (nth (1- (abs count)) eligible)))
+        (unless target
+          (user-error "No %s Ebox interaction" (if (> count 0) "next" "previous")))
+        (goto-char (car target))))))
+
+;;;###autoload
+(defun ebox-next-interaction (&optional count)
+  "Move point to the next rendered Ebox keymap owner; return its position.
+With COUNT, move that many stops; a negative count moves backward, zero stays.
+Each declaring node is one stop, at its first accessible rendered character,
+even across multiple lines or inherited child content.  Explicit child maps
+are separate stops; nil and maps without commands are skipped.  From within
+an owner, skip that owner and seek the next stop after point.
+Respect narrowing and invisible text.  Use the current committed surface, so
+updates, removal and scrolling need no navigation refresh.  At a boundary,
+signal `user-error' without moving; do not wrap or bind keys automatically.
+Ordinary buffer, overlay and global keymaps do not create stops.  Menu enable
+forms and filters are not evaluated; a declared command remains a stop even
+when an application dynamically disables its menu item."
+  (interactive "p")
+  (ebox-interaction--move (or count 1)))
+
+;;;###autoload
+(defun ebox-previous-interaction (&optional count)
+  "Move point to the previous rendered Ebox keymap owner; return its position.
+COUNT defaults to one.  Negative COUNT moves forward.  See
+`ebox-next-interaction' for ownership, narrowing and boundary behavior."
+  (interactive "p")
+  (ebox-interaction--move (- (or count 1))))
 
 ;;;###autoload
 (defun ebox-help-create (function)

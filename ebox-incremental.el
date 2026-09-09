@@ -49,6 +49,7 @@
 (declare-function tp-object-mounts
                   "tp-surface" (object))
 (declare-function ebox-string-lines "ebox" (string))
+(declare-function ebox-lines-join "ebox" (lines))
 (declare-function ebox-get "ebox" (box key))
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--ensure-region-id "ebox" (box))

@@ -6,7 +6,11 @@ This reference describes the current public boundary of the standalone Ebox
 package. It separates the ordinary author path from the evaluated typed API
 used by framework integrations. Names beginning with `ebox--` are private.
 
-Ebox requires Emacs 29.1 or newer, ECSS, and TP:
+Ebox requires Emacs 29.1 or newer, ECSS 0.1.0 or newer, and TP 2.0.0 or newer.
+EKP 1.0.0 or newer is an optional dependency required for `:wrap-mode kp`;
+`word`, `char`, and `none` do not load it. Missing or incompatible EKP signals
+an actionable error instead of silently changing the wrapping algorithm.
+See [installation](../../README.md#install) for source loading and dependency roles.
 
 ```elisp
 (require 'ebox)
@@ -70,6 +74,14 @@ another public node or wrapper.
 | Paint | `:color`, `:background-color`, exact alias `:bgcolor`, border colors, `:visibility` |
 | Text layout | `:text-align`, `:wrap-mode` (`word`, `char`, `kp`, `none`) |
 | Overflow | `:overflow` (`visible`, `hidden`, `scroll`) |
+
+`hidden` enforces the content width after composing children, preserving whole
+supported text clusters and excluding the container's own padding and border
+from the clipping area. Clipped-away child properties are removed with their
+text. Partial display spaces can be shortened; oversized glyphs/images are
+omitted, not pixel-masked. Vertical clipping uses whole lines. `visible` allows
+overflow, and `scroll` provides vertical scrolling. No ellipsis or horizontal
+scrolling is implied.
 
 Geometry values use explicit `(unit number)` lists: `(px 240)`, `(% 50)`,
 `(vw 100)`, `(vh 100)`, `(ch 80)`, and `(lh 3)`. Each property accepts only
@@ -169,7 +181,19 @@ current buffer, using native dispatch at point.
 
 Raw native keymaps remain supported. Their mouse commands must obtain the
 target window from the event and operate in that window's buffer themselves.
-These capabilities add no Ebox focus navigation or application state system.
+`ebox-next-interaction` and `ebox-previous-interaction` are optional navigation
+commands, each accepting an optional integer count (default one). Negative
+counts reverse direction and zero leaves point unchanged. Each declaring node
+with a command-bearing keymap contributes one stop at its first accessible
+rendered character, including inherited coverage; explicit child maps form
+separate stops. From inside an owner, navigation skips that owner. It respects
+narrowing and invisibility, ignores ordinary buffer/overlay/global maps, and
+uses the current committed output after updates or scrolling. A missing target
+signals `user-error` without moving point; commands do not wrap or bind keys.
+Menu enable forms and filters are not evaluated, so a declared command can
+remain a stop when its application dynamically disables a menu item.
+Navigation moves point only; Ebox provides no separate application state or
+focus-management system.
 See the [interaction guide](ebox-user-guide.en.md#native-node-interaction) for
 a runnable example.
 
@@ -271,12 +295,21 @@ though the facade inventory below focuses on application entry points.
 | `ebox-render` | Accept a single-root `CanonicalEboxInput` and return a propertized string without publishing a live buffer. |
 | `ebox-render-to-buffer` | Accept a single-root `CanonicalEboxInput`, mount a retained TP surface, enable `ebox-buffer-mode`, and return the buffer. Its optional plist accepts only `:observer FUNCTION`. |
 | `ebox-unmount-buffer` | Release a mounted Ebox/TP surface, observers, retained indexes, and runtime authority from a live buffer. |
-| `ebox-display-buffer` | Accept a single-root `CanonicalEboxInput`, render through the retained path, delete other windows, and switch to the result. |
+| `ebox-display-buffer` | `(BUFFER-OR-NAME INPUT &optional ACTION)` renders a single-root `CanonicalEboxInput`, then calls native `display-buffer` with `ACTION` and returns the buffer. Ebox does not delete other windows or select the result. |
 | `ebox-commit` | Atomically publish a single-root `CanonicalEboxInput` or a one-shot logical candidate returned by `ebox-candidate-begin`. |
 | `ebox-buffer-set-observer` | Set or remove one function-valued observer on an already mounted buffer. |
 | `ebox-buffer-update-report` | Return a defensive copy of the last successful update report. |
 | `ebox-rerender-buffer-with-context` | Apply explicit viewport width and optional height while retaining identity. |
 | `ebox-viewport-window-width` | Return Ebox's display-safe pixel width for a window. |
+
+`ebox-display-buffer` respects `display-buffer-alist` and native action
+precedence. Rendering failure occurs before any display call. Window placement
+belongs to the selected Emacs display action; Ebox does not roll back a
+successfully published buffer if a caller-supplied display action fails.
+
+Each mounted buffer has one viewport layout, shared by all windows showing it.
+Independent window widths require separate mounted buffers. Explicit viewport
+updates change that buffer's shared layout.
 
 `ebox-commit` accepts optional framework publish and rollback callbacks. They
 join the existing atomic publication; failures restore the previous buffer,
@@ -398,7 +431,8 @@ names every entry:
   `ebox-normal-layout-create`, `ebox-row-layout-create`,
   `ebox-column-layout-create`, `ebox-flex-layout-create`,
   `ebox-grid-layout-create`, `ebox-box-create`.
-- Interaction: `ebox-help-create`, `ebox-keymap-create`.
+- Interaction: `ebox-help-create`, `ebox-keymap-create`,
+  `ebox-next-interaction`, `ebox-previous-interaction`.
 - Render/publication: `ebox-render`, `ebox-render-to-buffer`,
   `ebox-unmount-buffer`, `ebox-display-buffer`, `ebox-commit`,
   `ebox-buffer-set-observer`,

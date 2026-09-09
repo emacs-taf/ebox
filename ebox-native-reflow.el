@@ -18,6 +18,9 @@
 (require 'ebox-runtime-index)
 (require 'ebox-size)
 
+(declare-function ebox-string-height "ebox" (string))
+(declare-function ebox-surface--retained-property-value-equal-p
+                  "ebox-surface" (left right))
 (declare-function ebox-native--module-version "ebox_native_reflow" ())
 (declare-function ebox-native--module-layout-ready-p "ebox_native_reflow" ())
 (declare-function ebox-native--module-create-session "ebox_native_reflow"
@@ -49,6 +52,7 @@
 (declare-function ebox-native--module-stats "ebox_native_reflow" (session))
 (declare-function ebox-native--module-release "ebox_native_reflow" (session))
 (declare-function ebox--grapheme-clusters "ebox-layout" (string))
+(declare-function ebox--grapheme-cluster-end "ebox-layout" (string start))
 (declare-function ebox--format-content-string "ebox-layout" (box content))
 (declare-function ebox-style-no-soft-wrap-p "ebox-style" (value))
 (declare-function ebox-style-soft-wrap-p "ebox-style" (value))
@@ -101,7 +105,7 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "13:7:12"
+(defconst ebox-native-reflow-abi-version "14:7:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -1681,6 +1685,18 @@ copied separately; no pending frame or registered Rust document is inherited."
             (clrhash ebox-native-reflow--source-cluster-cache))
           (puthash cache-key measured
                    ebox-native-reflow--source-cluster-cache))
+        ;; One native atom carries one opaque property template.  Splitting a
+        ;; cluster at a property-run boundary would turn combining marks or
+        ;; ZWJ tails into independent atoms that clipping/wrapping could lose.
+        ;; Check the last measured cluster against the complete source, also
+        ;; on cache hits; unsupported mixed-property clusters use Elisp layout.
+        (when (and (< next length) (> (length measured) 0)
+                   (> (ebox--grapheme-cluster-end
+                       line (- next (length (plist-get
+                                             (aref measured (1- (length measured)))
+                                             :text))))
+                      next))
+          (error "Native reflow cannot split a grapheme across text property runs"))
         (dolist (cluster (append measured nil))
           (push (append (copy-sequence cluster)
                         (when template-id

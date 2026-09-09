@@ -30,9 +30,42 @@ The owners are `ebox-child-range.el` for immutable child-sequence and key indexe
 
 Use the functions and properties in `docs/user/ebox-api-reference.en.md`; the facade inventory is `ebox-public-api`. Do not call `ebox--*` names from an application or a sibling package. Higher-level Component, reactive, behavior, data, and control concepts belong to ETAF.
 
+ECSS and TP are required package dependencies, even when an author does not
+write selectors or stylesheets. EKP is a separate optional typesetting
+dependency: selecting `:wrap-mode kp` requires its public paragraph layout API.
+An unavailable or incompatible EKP is an error, not permission to substitute a
+different wrapping algorithm. Its accelerator is independent of Ebox's Rust
+reflow module.
+
+`ebox-display-buffer` renders before delegating window placement to native
+`display-buffer`. It accepts the caller's display action, returns the buffer,
+and does not choose an exclusive window layout or select the result. A buffer
+owns one mounted layout and viewport; independently sized views use distinct
+buffers rather than competing layouts over the same text.
+
 ## Layout scope
 
-Ebox supports explicit `px`, `%`, `vw`, `vh`, `ch`, and `lh` dimensions, padding, margins, borders, colors, overflow, wrapping, row/column/flex formatting, and Grid tracks including fixed, fractional, implicit, gap, placement, span, and alignment behavior. The public typography subset is `:font-family`, CSS-reference-pixel `:font-size`, `:font-weight`, and `:font-style`; `:font-slant` is only an exact parse-time alias of `:font-style`. Emacs faces and text properties belong to the final adapter and are not Ebox author properties. CSS compatibility is intentionally partial: absolute positioning, z-index, shadows, border radius, full browser typography, and browser-level bidi are outside this package.
+Ebox supports explicit `px`, `%`, `vw`, `vh`, `ch`, and `lh` dimensions, padding, margins, borders, colors, overflow, wrapping, row/column/flex formatting, and Grid tracks including fixed, fractional, implicit, gap, placement, span, and alignment behavior. The public typography subset is `:font-family`, CSS-reference-pixel `:font-size`, `:font-weight`, and `:font-style`; `:font-slant` is only an exact parse-time alias of `:font-style`. Arbitrary Emacs faces and text-property plists belong to the final adapter and are not Ebox author inputs. Four explicit native capabilities are supported separately: `:help-echo`, `:pointer`, `:hover-style`, and `:keymap`. CSS compatibility is intentionally partial: absolute positioning, z-index, shadows, border radius, full browser typography, and browser-level bidi are outside this package.
+
+The text-cluster model covers common combining marks, variation selectors,
+emoji modifiers, ZWJ sequences, and regional-indicator pairs. It is deliberately
+smaller than complete Unicode grapheme segmentation; neither character count
+nor this limited segmentation promises arbitrary font-shaping equivalence.
+
+Optional interaction navigation moves point between currently rendered keymap
+owners. It reads the committed surface, respects narrowing and invisibility,
+and installs no key bindings, focus registry, or application state. Ownership
+of actions and state remains with the caller.
+
+Horizontal `:overflow hidden` is enforced on the composed content before the
+owner's padding and border are added. It selects a measured prefix of complete
+supported text clusters and fills the remaining pixels with space. Fixed
+display spaces may shrink; glyphs and images are not partially raster-cropped.
+Clipped child properties do not survive on neutral filler. The algorithm adapts
+the prefix-and-filler approach from
+[s-pixel](https://github.com/Kinneyzhang/s-pixel/tree/a2a0d6ae6b3bd71c1a70084d0ea37f56463e5fe0)
+under GPL-3.0-or-later, with Ebox's cluster/property model and no `s` or
+`s-pixel` dependency. It does not add stacking or overlap composition.
 
 ## Size composition
 

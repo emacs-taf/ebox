@@ -18,6 +18,7 @@
 (require 'ebox-buffer-backend)
 (require 'ebox-runtime-index)
 
+(declare-function ekp-pixel-justify "ekp" (string line-pixel))
 (declare-function ebox--render-grid "ebox-grid" (node))
 (declare-function ebox--render-grid-box-children
                   "ebox-grid" (box props children))
@@ -85,6 +86,9 @@
 
 (defvar ebox--region-id-counter)
 (defvar ebox--runtime-node-id-counter)
+(defvar ebox--scroll-global-state)
+(defvar ebox--scroll-idle-prefetch-timers)
+(defvar ebox--smooth-scroll-state-table)
 (defvar ebox--region-box-table)
 (defvar ebox--render-region-id)
 (defvar ebox--defer-scroll-content-index)
@@ -699,6 +703,56 @@ pairs. It is intentionally small; full Unicode segmentation is out of scope."
           (when (> width max-width) (setq max-width width))))
       (max max-width (ebox--space-pixel-width)))))
 
+(defun ebox--clip-line (line max-pixel)
+  "Clip LINE to MAX-PIXEL without splitting supported grapheme clusters.
+Retain visible text properties.  A partially visible fixed display space
+keeps its properties and uses the remaining width; a glyph that cannot fit
+is omitted as a whole.  Any remaining width is neutral box content, never
+an interactive stand-in for an omitted glyph."
+  ;; The prefix-plus-pixel-filler algorithm follows kinney's GPL-3.0-or-later
+  ;; `s-pixel-floor' and `s-pixel-left' (2026), extended here for graphemes,
+  ;; source properties and clipped display spaces without an extra dependency.
+  ;; https://github.com/Kinneyzhang/s-pixel
+  ;; commit a2a0d6ae6b3bd71c1a70084d0ea37f56463e5fe0.
+  (if (<= (ebox--string-pixel-width line) max-pixel)
+      line
+    (let ((position 0)
+          (end (length line))
+          (width 0)
+          clipped)
+      (while (and (< position end) (not clipped))
+        (let* ((display (get-text-property position 'display line))
+               (space-width (ebox--display-space-width display))
+               (next (if (and display (not space-width))
+                         ;; A replacement string or image is one display unit.
+                         (max (ebox--grapheme-cluster-end line position)
+                              (or (next-single-property-change
+                                   position 'display line end) end))
+                       (ebox--grapheme-cluster-end line position)))
+               ;; Measure the complete prefix, preserving the existing font
+               ;; measurement contract when adjacent glyph shaping matters.
+               (next-width (ebox--substring-pixel-width line 0 next))
+               (remaining (- max-pixel width)))
+          (if (<= next-width max-pixel)
+              (setq position next width next-width)
+            (setq clipped
+                  (concat
+                   (substring line 0 position)
+                   (when (> remaining 0)
+                     (let ((space (ebox-pixel-space remaining)))
+                       (when space-width
+                         (add-text-properties
+                          0 (length space)
+                          (text-properties-at position line) space)
+                         (put-text-property
+                          0 (length space) 'display
+                          (cons 'space
+                                (plist-put (copy-tree (cdr display))
+                                           :width (list remaining)))
+                          space))
+                       space)))))))
+      (or clipped (substring line 0 position)))))
+
 (defun ebox--wrap-line (line max-pixel wrap-mode)
   "Wrap a single LINE to MAX-PIXEL width, preserving text properties.
 WRAP-MODE can be `word', `char', or `kp'.
@@ -803,10 +857,11 @@ When WRAP-MODE is `kp', use Knuth-Plass algorithm via ekp package."
    ((memq wrap-mode '(nil none))
     text)
    ((eq wrap-mode 'kp)
-    (if (and (require 'ekp nil t)
-             (fboundp 'ekp-pixel-justify))
-        (ekp-pixel-justify text max-pixel)
-      (ebox--wrap-text text max-pixel 'word)))
+    (unless (require 'ekp nil t)
+      (error "Ebox :wrap-mode kp requires EKP; install the ekp package"))
+    (unless (fboundp 'ekp-pixel-justify)
+      (error "Ebox :wrap-mode kp requires EKP with ekp-pixel-justify; update EKP"))
+    (ekp-pixel-justify text max-pixel))
    (t
     (let* ((lines (ebox-string-lines text))
            (wrapped (mapcan (lambda (l)
@@ -1630,32 +1685,39 @@ one carrier line preserves their paint without inventing a content line."
 
 (defun ebox--format-content-string (box content)
   "Format BOX CONTENT (wrap and justify) returning a string."
-  (let ((wrap-mode (ebox-get box :wrap-mode))
-        (align (ebox-get box :text-align))
-        (known-width
-         (gethash content ebox--rendered-uniform-width-table)))
-    (if (and (eq align 'left)
-             (or (and (ebox-style-no-soft-wrap-p wrap-mode)
-                      (or (plist-get box :ebox-content-width-exact-p)
-                          (and (numberp known-width)
-                               (= known-width
-                                  (ebox--content-pixel box)))))
-                 (and (memq wrap-mode '(word char))
-                      (numberp known-width)
-                      (= known-width (ebox--content-pixel box)))))
-        content
-      (let* ((pixel-width (ebox--content-pixel box))
-             (wrapped-content
-              (if (plist-get box :ebox-content-layout-complete-p)
-                  content
-                (ebox--wrap-text content pixel-width wrap-mode))))
-        ;; kp mode distributes inner gaps, but Ebox still owns the box geometry.
-        ;; Pad ragged lines (notably the last line) back to the content width
-        ;; while preserving the requested alignment for those lines.
-        (ebox--record-rendered-intrinsic-size
-         (ebox--lines-justify wrapped-content pixel-width align)
-         (ebox--rendered-intrinsic-size content :width)
-         (ebox--rendered-intrinsic-size content :height))))))
+  (let* ((wrap-mode (ebox-get box :wrap-mode))
+         (align (ebox-get box :text-align))
+         (known-width (gethash content ebox--rendered-uniform-width-table))
+         (formatted
+          (if (and (eq align 'left)
+                   (or (and (ebox-style-no-soft-wrap-p wrap-mode)
+                            (or (plist-get box :ebox-content-width-exact-p)
+                                (and (numberp known-width)
+                                     (= known-width (ebox--content-pixel box)))))
+                       (and (memq wrap-mode '(word char))
+                            (numberp known-width)
+                            (= known-width (ebox--content-pixel box)))))
+              content
+            (let* ((pixel-width (ebox--content-pixel box))
+                   (wrapped-content
+                    (if (plist-get box :ebox-content-layout-complete-p)
+                        content
+                      (ebox--wrap-text content pixel-width wrap-mode))))
+              ;; KP distributes inner gaps; Ebox still owns the Box geometry.
+              ;; Pad ragged lines back to the requested content width.
+              (ebox--record-rendered-intrinsic-size
+               (ebox--lines-justify wrapped-content pixel-width align)
+               (ebox--rendered-intrinsic-size content :width)
+               (ebox--rendered-intrinsic-size content :height))))))
+    (if (eq (ebox-get box :overflow) 'hidden)
+        (let ((pixel-width (ebox--content-pixel box)))
+          (ebox--record-rendered-intrinsic-size
+           (ebox-lines-join
+            (mapcar (lambda (line) (ebox--clip-line line pixel-width))
+                    (ebox-string-lines formatted)))
+           (and (ebox--rendered-intrinsic-size content :width) pixel-width)
+           (ebox--rendered-intrinsic-size content :height)))
+      formatted)))
 
 (defun ebox--format-content (box)
   "Format BOX content (wrap and justify) returning a string."

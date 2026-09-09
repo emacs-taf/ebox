@@ -47,6 +47,16 @@ The active contract also covers `Makefile`, `.github/workflows/ci.yml`, `tests/e
 
 Runtime index behavior is covered by `tests/ebox-runtime-index-tests.el`.
 
+`tests/ebox-display-tests.el` covers render-before-display ordering, optional
+native display actions, and preservation of unrelated windows and selection.
+`make display-tests` runs it without operating a user's GUI instance.
+
+The source distribution boundary includes `LICENSE`, `release-dependencies.json`,
+`scripts/ebox-release.py`, `scripts/ebox-release-smoke.el`, and
+`scripts/test_ebox_release.py`. The first tool owns locked dependency retrieval,
+deterministic archives, and isolated installation; the Lisp smoke checks run
+inside that installation rather than loading sibling checkouts.
+
 Native node capabilities are covered by `tests/ebox-interaction-tests.el` through
 `make interaction-tests`. The interactive reference and its command regressions
 live in the sibling Playground package.
@@ -113,7 +123,7 @@ Caller-owned Source Tree
 - `ebox-incremental.el` likewise contains no `ebox-surface` symbol or publication call. `ebox-surface.el` installs one immutable read-only context port for live client state, region mounts, cascade proof, and inline-style preparation; batch observation remains in the higher `ebox.el` orchestrator.
 - `ebox-patch-plan.el` consumes only tentative operation plists plus the immutable generation parent table and returns a deterministic plan artifact. The incremental adapter owns all live-fact preparation. E3 defaults to the pure route while retaining explicit `legacy` and equality-checking `shadow` routes; none of the three routes publishes.
 - `ebox-style--property-definitions` is also the single used-value projection truth. Non-default engine lowering lives in each property's `:engine-projection`; ECSS metadata exposes the derived `:engine-targets`, and only non-public engine fields may use the small internal exception table.
-- `ebox-framework-spi-capabilities` returns a fresh immutable SPI v2 provider record declaring paired initial/update stage+rollback, combined participant ordering, same-object reports, initial observation replay, and the actual accepted TP protocol. `ebox-framework-spi-required-tp-version` exposes the minimum TP 1.0.1 dependency, while `ebox-framework-spi-supported-tp-protocols` lists the consumer-first and final v2 protocol identities. Initial TP/Ebox timing is measured during publication, stored as defensive snapshots in the completed report, and replayed without mutation authority; no synthetic zero-duration timing is emitted. Ebox provides no selected port or consumer bootstrap.
+- `ebox-framework-spi-capabilities` returns a fresh immutable SPI v2 provider record declaring paired initial/update stage+rollback, combined participant ordering, same-object reports, initial observation replay, and the actual accepted TP protocol. `ebox-framework-spi-required-tp-version` exposes the minimum TP 2.0.0 dependency, while `ebox-framework-spi-supported-tp-protocols` lists accepted structured protocol identities; protocol membership alone does not satisfy the minimum package version. Initial TP/Ebox timing is measured during publication, stored as defensive snapshots in the completed report, and replayed without mutation authority; no synthetic zero-duration timing is emitted. Ebox provides no selected port or consumer bootstrap.
 - Ebox registers every rollback-capable runtime mirror through TP's public
   `tp-transaction-participate-v2` API. The loaded manifest must advertise that
   callable API with an accepted structured protocol; missing or malformed
@@ -162,6 +172,12 @@ make check
 make size-tests
 make size-migration-tests
 make interaction-tests
+make display-tests
+make release-tool-tests
+make release-deps
+make release-build
+make release-check
+make native-integration
 make core-tests
 make runtime-index-tests
 make child-range-tests
@@ -197,6 +213,70 @@ Run focused tests first, then `make check` after changes to shared rendering, Gr
 
 `make size-tests` includes `make size-migration-tests`, so the migration tool's
 Python regression suite also runs through `make check`.
+
+## Source package distribution
+
+Use `scripts/ebox-release.py` through the Make targets above rather than writing
+another installation probe. `release-dependencies.json` pins public HTTPS URLs
+and full commit IDs for mandatory TP/ECSS and optional EKP. It is a reproducible
+build input, not a replacement for each package's minimum version contract.
+EKP is included only with `--with-ekp`; ordinary archives do not make it an
+Ebox package dependency.
+
+Recommended complete verification:
+
+```sh
+make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0
+make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0-kp RELEASE_OPTIONS=--with-ekp
+```
+
+Both commands fetch locked dependencies and build from the current Ebox source
+files, excluding compiled output and temporary files. The output contains
+deterministic tar archives, `archive-contents`, and a manifest with SHA-256
+checksums, dependency commits, and Ebox source revision/dirty status. Modified
+source is allowed for development verification and is recorded as such; a
+clean release checkout should be used for a formal release artifact. Neither
+command uploads files or creates a tag.
+
+`release-check` builds a new directory and then verifies it. To verify an
+existing archive without rebuilding or fetching dependencies:
+
+```sh
+python3 scripts/ebox-release.py verify --directory /tmp/ebox-release-3.0.0 --emacs emacs
+```
+
+`verify` checks archive checksums, uses `emacs -Q --batch`, and lets `package.el`
+resolve dependencies from that local archive into a disposable package profile.
+It checks autoloads, required package provenance, standalone loading,
+render/update/selector behavior, and the real EKP provider when included.
+No sibling `load-path` or user's installed packages supply missing dependencies.
+The ordinary archive check does not build or require the Rust module.
+
+To reuse already fetched dependencies, run `make release-deps` with a fresh
+`RELEASE_DEPS_DIR`, then pass `RELEASE_OPTIONS="--dependencies /path/to/deps"`
+to `release-check` or `release-build`. Those checkouts must be clean at the
+locked commits. Include `--with-ekp` consistently when fetching and building
+the KP variant. `release-build` stops after producing archives.
+
+`make native-integration RELEASE_DIR=/path/to/archive EMACS=emacs
+NATIVE_MODULE=/absolute/path/to/module` verifies an existing archive and requires
+that exact module to load and produce a native frame. It does not build the
+module. Supply the artifact for the host OS and architecture.
+
+Existing output directories are rejected rather than overwritten. Temporary
+checkouts and package profiles are removed on success, failure, interruption,
+or subprocess timeout; completed archive/dependency outputs remain at the
+explicit paths. Nonzero exit means verification is unsuccessful. Use
+`make release-tool-tests` for tool regressions. This entry point supersedes
+ad hoc clean-install probes.
+
+CI runs the Elisp suite and clean installation on Linux with Emacs 29.1 and
+30.2, including optional EKP installation. The native jobs build and test on
+Linux, macOS, and Windows, then load and execute the built module through a
+clean package installation on Emacs 30.2. Rust MSRV build/test jobs remain
+separate. Configuration is not evidence of a successful remote run: inspect
+the results for the specific revision, and do not infer GUI visual parity
+from batch or Rust tests.
 
 ## Migrate literal author sizes
 

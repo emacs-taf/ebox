@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "dependencies": {
+    "tp": {
+      "url": "https://gitea.gklazycat.heiyu.space/geekinney/tp.git",
+      "revision": "0a820bd0cb9cf227f08c3776f9cbe1d4c302d196"
+    },
+    "ecss": {
+      "url": "https://gitea.gklazycat.heiyu.space/geekinney/ecss.git",
+      "revision": "13559a41f095b4f74acab67e589ad8bd8c21a248"
+    }
+  },
+  "optional": {
+    "ekp": {
+      "url": "https://github.com/Kinneyzhang/emacs-kp.git",
+      "revision": "578540549511e352696c430338afb0c98522cd2f"
+    }
+  }
+}

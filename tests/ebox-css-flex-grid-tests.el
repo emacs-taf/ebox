@@ -475,8 +475,8 @@
                      :column-gap (% 25) (box "A") (box "B"))))))
       (should (= (ebox-string-height vertical) (if (eq overflow 'hidden) 8 10)))
       (should (= (ebox--rendered-intrinsic-size horizontal :width) 80))
-      ;; The buffer backend's existing hidden overflow clips vertically only.
-      (should (= (ebox--string-max-pixel-width horizontal) 100)))))
+      (should (= (ebox--string-max-pixel-width horizontal)
+                 (if (eq overflow 'hidden) 80 100))))))
 
 (ert-deftest ebox-css-flex-preserves-nested-grid-intrinsic-extents ()
   "A Grid child's cyclic gap spill does not enlarge its Flex layout size."

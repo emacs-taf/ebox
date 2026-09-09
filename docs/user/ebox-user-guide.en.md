@@ -237,9 +237,21 @@ changes are resolved again. Floating-point intermediate results are preserved:
 `33vw` of an 853-pixel viewport is 281.49 pixels before display quantization.
 The buffer backend materializes block geometry in whole lines; fractional
 line targets are quantized at that boundary. Vertical `px` lengths are not
-part of the author contract. `:overflow hidden` currently clips vertical lines; horizontal
-overflow is not pixel-clipped by the buffer backend, so content can extend
-beyond the computed width.
+part of the author contract. `:overflow hidden` clips excess vertical lines and
+limits each content line to the measured content width. It retains the fitting
+prefix without splitting supported text clusters; a glyph or image that cannot
+fit is omitted as a whole. Fixed display spaces can be shortened to the exact
+remaining pixel width. Any remaining gap is filled with box content space, so
+padding and borders retain their positions. This is pixel-width truncation,
+not partial-glyph/image masking or automatic ellipsis. Omitted child text does
+not leave its help, hover, pointer, or keymap active in the filler.
+
+For example, `(box :width (ch 3) :wrap-mode none :overflow hidden "ABCDEFGHIJ")`
+keeps only the prefix that fits three zero-glyph advances; with `visible`,
+overflow may extend outside the computed width. Set `hidden` on the container
+whose content boundary should be enforced. It applies to that container's
+composed child output as well as its direct text. `scroll` provides vertical
+scrolling and does not add horizontal scrolling.
 
 Bare geometry numbers, one-element pixel lists, `viewport`, `viewport-height`,
 `contain`, and parameterized `fit-content` are rejected. Even zero needs an
@@ -267,6 +279,36 @@ Text Box geometry.
 
 Use `:outer inline` or `:outer block` to state how a Box participates in its
 parent. The child-layout algorithm still comes from the form name.
+
+### Wrapping and the optional EKP dependency
+
+`:wrap-mode word` wraps ordinary words and permits character breaks for CJK;
+`char` breaks at the common text-cluster boundaries supported by Ebox; `none`
+keeps explicit newlines without adding soft line breaks. `kp` delegates
+paragraph layout to the independent [EKP package](https://github.com/Kinneyzhang/emacs-kp)
+using the Knuth–Plass algorithm. The mode belongs to a Box and is inherited by
+its text content.
+
+Install EKP 1.0.0 or newer, or add its source directory to `load-path`, before
+using `:wrap-mode kp`. It is an optional dependency loaded on demand; ordinary
+Ebox layouts require only ECSS and TP. Choosing `kp` without a compatible EKP
+signals an installation or update error; install EKP or explicitly select
+another mode. Ebox never silently switches to word wrapping. The EKP accelerator and the Ebox Rust
+reflow module are separate optional modules; enabling one does not install the
+other.
+
+```elisp
+(add-to-list 'load-path "/path/to/ekp")
+(ebox-render
+ (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
+                   "Knuth–Plass considers the paragraph when choosing line breaks.")))
+```
+
+Common combining marks, variation selectors, emoji modifiers, ZWJ sequences,
+and regional-indicator pairs are kept together by Ebox's text-cluster handling.
+This is not complete Unicode grapheme segmentation or browser-level
+bidirectional layout. Font shaping and glyph availability remain dependent on
+Emacs, the selected fonts, and the window system.
 
 <a id="native-node-interaction"></a>
 ### Native node interaction
@@ -325,10 +367,25 @@ vectors paired with zero-argument callbacks. The helper uses the event window's
 buffer for mouse callbacks, so a callback can directly update a semantic ID
 with `(ebox-region-update "action" :help-echo "Activated")`.
 
-Move point into the surface to use keyboard bindings. Raw native keymaps are
-also accepted; their mouse commands must handle the event's target buffer
-themselves. Ebox uses native command dispatch; it does not create application
-state or focus navigation. A hand pointer alone does not bind a click command.
+Move point into the surface to use keyboard bindings. Optional commands
+`ebox-next-interaction` and `ebox-previous-interaction` move between declaring
+nodes that currently render a usable keymap. Each owner contributes one stop,
+even if its map covers padding or several lines; explicit child maps are
+separate stops. Empty maps, explicit `nil`, and invisible or clipped-away
+content do not add stops. Navigation follows the current committed buffer, so
+updates do not require a separate refresh. At a boundary it reports a user error
+without wrapping or moving point. These commands add no bindings automatically.
+For example, opt in for buffers using `ebox-buffer-mode`:
+
+```elisp
+(keymap-set ebox-scroll-map "TAB" #'ebox-next-interaction)
+(keymap-set ebox-scroll-map "<backtab>" #'ebox-previous-interaction)
+```
+
+Raw native keymaps are also accepted; their mouse commands must handle the
+event's target buffer themselves. Ebox uses native command dispatch and does
+not create an application state or focus-management system. A hand pointer
+alone does not bind a click command.
 
 The Playground's [interaction lab](../../../ebox-playground/README.md#native-interaction-lab)
 keeps its business functions and state in `interaction-reference.el`, with its
@@ -347,6 +404,21 @@ Both functions, and `ebox-display-buffer`, accept the opaque value returned by
 (ebox-render ebox-guide-input)
 (ebox-render-to-buffer "*Ebox Guide*" ebox-guide-input)
 ```
+
+To display the result as well, use `ebox-display-buffer`. It finishes rendering
+before asking Emacs to place the buffer, respects `display-buffer-alist`, and
+accepts the same optional action argument as native `display-buffer`:
+
+```elisp
+(ebox-display-buffer "*Ebox Guide*" ebox-guide-input
+                     '(display-buffer-pop-up-window))
+```
+
+It returns the buffer and does not select the result or delete other windows.
+A rendering error leaves the window layout untouched. A custom display action
+can still have its own window effects; if it fails after publication, the
+successfully rendered buffer remains available. Use `ebox-render-to-buffer`
+when the caller owns display placement entirely.
 
 Build a fresh canonical input and use `ebox-commit` for an atomic update:
 
@@ -420,8 +492,12 @@ not select an unrelated scroll box elsewhere on the page.
        "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9"))
 ```
 
-Visible mounted buffers follow their display window. Integrations may apply an
-explicit viewport with:
+Visible mounted buffers follow one chosen display window. Each mounted buffer
+owns one viewport layout: showing the same buffer in two windows with different
+widths does not provide two independent layouts. Mount the same canonical input
+in separate buffers when each view needs its own width. Integrations may apply
+an explicit viewport, measured in pixels horizontally and lines vertically,
+with:
 
 ```elisp
 (ebox-rerender-buffer-with-context

@@ -11,6 +11,7 @@
 
 (defconst ebox-test--autoload-source-files
   '("ebox.el"
+    "ebox-interaction.el"
     "ebox-layout-config.el"
     "ebox-node-factory.el"
     "ebox-measure.el"
@@ -46,11 +47,11 @@
            (buffer-string)))
         (source (ebox-test--production-lisp-text)))
     (should (string-match-p "Version: 3.0.0" facade))
-    (should (string-match-p (regexp-quote "(tp \"1.0.1\")") facade))
+    (should (string-match-p (regexp-quote "(tp \"2.0.0\")") facade))
     (should-not (string-match-p "ebox-transaction-participant-route" source))
     (should-not (string-match-p "(tp-transaction-participate\\_>" source))
     (should (string-match-p "(tp-transaction-participate-v2\\_>" source))
-    (should (equal ebox-framework-spi-required-tp-version "1.0.1"))
+    (should (equal ebox-framework-spi-required-tp-version "2.0.0"))
     (should (memq tp-transaction-protocol
                   ebox-framework-spi-supported-tp-protocols))))
 
@@ -90,9 +91,8 @@
 (ert-deftest ebox-canonical-module-loads-typed-port-without-facade ()
   "The canonical autoload boundary should not depend on loading `ebox.el'."
   (let* ((emacs (expand-file-name invocation-name invocation-directory))
-         (parent (file-name-directory (directory-file-name ebox-test--root)))
-         (ecss (expand-file-name "ecss" parent))
-         (tp (expand-file-name "tp" parent)))
+         (ecss (file-name-directory (locate-library "ecss")))
+         (tp (file-name-directory (locate-library "tp"))))
     (with-temp-buffer
       (should
        (zerop
@@ -127,9 +127,8 @@
 (ert-deftest ebox-native-command-autoloads-may-target-the-facade ()
   "Startup registries may safely autoload native commands from `ebox'."
   (let* ((emacs (expand-file-name invocation-name invocation-directory))
-         (parent (file-name-directory (directory-file-name ebox-test--root)))
-         (ecss (expand-file-name "ecss" parent))
-         (tp (expand-file-name "tp" parent)))
+         (ecss (file-name-directory (locate-library "ecss")))
+         (tp (file-name-directory (locate-library "tp"))))
     (with-temp-buffer
       (should
        (zerop
@@ -246,6 +245,8 @@
                      ("ebox-byte-compile" . "defun")
                      ("ebox-native-build" . "defun")
                      ("ebox-native-status" . "defun")
+                     ("ebox-next-interaction" . "defun")
+                     ("ebox-previous-interaction" . "defun")
                      ("ebox-buffer-mode" . "define-minor-mode")
                      ("ebox-render-to-buffer" . "defun")
                      ("ebox-display-buffer" . "defun")))
