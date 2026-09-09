@@ -152,6 +152,7 @@ Flex basis 和 Grid 固定轨道都使用这套格式。Ebox 实现 CSS 尺寸�
 | --- | --- | --- |
 | Inline 几何 | `px`、`ch`、`vw`、`%` | `width`、`min-width`、`max-width`；左右和 inline padding/margin；`column-gap`；Row 的 `item-gap`；Grid 列轨道。 |
 | Block 几何 | `lh`、`vh`、`%` | `height`、`min-height`、`max-height`；上下和 block padding/margin；`row-gap`；Column 的 `item-gap`；Grid 行轨道。 |
+| 定位偏移 | `left` 使用 inline 单位；`top` 使用 block 单位 | 有符号长度及尺寸表达式；`%` 参照绘制宿主对应内容轴。 |
 | Flex 主轴尺寸 | 所在父 Flex 主轴允许的单位 | `flex-basis` 及 `(grow shrink basis)` 中的 basis；row 方向用 inline 单位，column 方向用 block 单位。 |
 | 边框绘制厚度 | `px`、`ch`、`lh`、`vw`、`vh` | `border-width`、各侧边框宽度、border 简写中的宽度；不接受百分比。 |
 
@@ -241,6 +242,65 @@ Text 的样式声明只接受字体、前景/背景和文本装饰 property；�
 
 用 `:outer inline` 或 `:outer block` 表达 Box 如何参与父布局。子布局算法仍由 form
 名称决定。
+
+<a id="retained-layers"></a>
+
+### 保留式图层
+
+在现有 Box form 上设置定位属性即可重叠内容。绝对定位子节点不增加普通流的自动
+尺寸，需要预留画布时，为宿主声明明确的高度。
+
+```elisp
+(ebox-build
+ '(box :width (ch 12) :height (lh 3)
+       "ABCDEFGHIJKL\nabcdefghijkl\n0123456789ab"
+       (box :position absolute :left (ch 2) :top (lh 1)
+            :width (ch 5) :height (lh 1)
+            :background-color "#334155" :color "#FFFFFF"
+            "Panel")))
+```
+
+`:position relative` 保留普通流中的占位，只移动绘制。`:position absolute`
+从 normal、Row、Column、Flex 或 Grid 流中移除子节点，并从父内容原点放置。
+有符号 `:left` 使用 inline 单位；有符号 `:top` 使用 block 单位，最终放置时
+向下取整到宿主的完整行。两者都接受尺寸表达式。局部宿主把合成输出裁剪到自身
+画布。嵌套局部分组自动建立：子节点再高的 `:z-index` 也无法越过宿主的兄弟。
+整数深度从低到高绘制；同深度的普通内容先于定位内容，定位节点按文档顺序绘制。
+
+上层 Box 的内容、padding 和 border 都遮挡下层，空白也不例外；margin 则保留
+下层可见性。可见文本保留原生 help、pointer、hover 和 keymap 属性，被覆盖的
+文本不贡献这些交互。下层 retained 节点及语义 ID 仍然存在；遮挡期间更新后，
+上层移动或隐藏时会显示下层最新的内容与属性。
+
+使用根图层可把面板绘制到局部裁剪容器之外，同时保留逻辑父节点和继承样式：
+
+```elisp
+(ebox-build
+ '(box :width (ch 20) :height (lh 4)
+       (box :height (lh 1) :overflow hidden
+            (box :id "trigger" :width (ch 6) "Open")
+            (box :id "panel" :position absolute :layer root
+                 :anchor "trigger" :placement bottom-start
+                 :width (ch 8) :height (lh 2)
+                 "Choice A\nChoice B"))))
+```
+
+`:layer root` 选择根内容画布作为绘制目标，不改变 selector、继承或 region 更新
+所依据的父子关系。`:anchor` 使用绘制宿主逻辑子树中的唯一语义 ID；两者都要求
+绝对定位。placement 支持 `bottom-start`、`bottom-end`、`top-start`、`top-end`，
+偏移调整请求的原点。对侧能容纳时，面板纵向翻转，再平移到宿主画布内。anchor
+缺失或不可见时不绘制面板；ID 歧义及放置依赖循环会报错。
+
+合成横向使用像素，纵向共享一套文本行网格。定位子树的有效字体行高必须与宿主
+相同。裁剪保留完整的受支持文本簇，不完整字形或图像以中性空白替代，固定 display
+space 可以缩短。不提供 alpha 混合、半字形遮罩或 child frame。native reflow
+无法表示图层时回退到 Elisp。
+
+包括隐藏节点更新和 rollback 在内的发布仍通过 TP transaction。固定外部尺寸的
+局部修改可以只重新合成受影响的宿主；几何变化或根图层依赖可能需要扩大范围。
+不保证每次更新的耗时或所有更新都保持局部。用 `make layer-tests` 运行聚焦契约。
+独立的 `ebox-playground` 包提供 `layer-minimal.ebox`、`layer-reference.ebox`；
+batch 测试不证明 GUI 视觉一致性或远程 CI 成功。
 
 ### 换行与可选 EKP 依赖
 

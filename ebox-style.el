@@ -70,6 +70,34 @@
     (:name :box-sizing :id ebox/box-sizing :initial border-box
      :contexts (box row column flex grid) :group geometry
      :dirty-kind geometry :signature layout)
+    (:name :position :id ebox/position :initial static
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout :validator position
+     :runtime-default t)
+    (:name :left :id ebox/left :initial (px 0)
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :size-axis inline :validator signed-size :runtime-default t)
+    (:name :top :id ebox/top :initial (lh 0)
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout
+     :size-axis block :validator signed-size :runtime-default t)
+    (:name :z-index :id ebox/z-index :initial 0
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout :validator integer
+     :runtime-default t)
+    (:name :layer :id ebox/layer :initial local
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout :validator layer
+     :runtime-default t)
+    (:name :anchor :id ebox/anchor :initial nil
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout :validator anchor
+     :runtime-default t)
+    (:name :placement :id ebox/placement :initial bottom-start
+     :contexts (box row column flex grid) :group geometry
+     :dirty-kind geometry :signature layout :validator placement
+     :runtime-default t)
     (:name :width :id ebox/width :initial auto
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
@@ -904,6 +932,34 @@ the invalid value and its allowed units instead of a shorthand arity error."
   "Return non-nil when VALUE is an Ebox outer participation value."
   (memq value '(inline block)))
 
+(defun ebox-style--signed-size-p (value &optional axis)
+  "Return non-nil when VALUE is a signed typed length in size AXIS.
+Leave fractional and contextual lengths unresolved until used placement."
+  (and (ebox-size-value-p value t)
+       (let ((units (cdr (assq (or axis 'length) ebox-size-axis-units))))
+         (cl-labels ((valid-p (expression)
+                       (or (atom expression)
+                           (if (memq (car expression) '(px ch vw lh vh %))
+                               (memq (car expression) units)
+                             (cl-every #'valid-p (cdr expression))))))
+           (valid-p value)))))
+
+(defun ebox-style--position-p (value)
+  "Return non-nil when VALUE is a supported positioning mode."
+  (memq value '(static relative absolute)))
+
+(defun ebox-style--layer-p (value)
+  "Return non-nil when VALUE is a supported layer paint target."
+  (memq value '(local root)))
+
+(defun ebox-style--anchor-p (value)
+  "Return non-nil when VALUE is nil or a semantic symbol or string id."
+  (or (symbolp value) (stringp value)))
+
+(defun ebox-style--placement-p (value)
+  "Return non-nil when VALUE is a supported anchor placement."
+  (memq value '(bottom-start bottom-end top-start top-end)))
+
 (defun ebox-style--font-family-p (value)
   "Return non-nil when VALUE is an Ebox font family."
   (or (null value)
@@ -1085,6 +1141,12 @@ generated wrappers that already contain exact line breaks."
     ('positive-integer #'ebox-style--positive-integer-p)
     ('grid-placement #'ebox-style--grid-placement-p)
     ('outer #'ebox-style--outer-p)
+    ('signed-size #'ebox-style--signed-size-p)
+    ('position #'ebox-style--position-p)
+    ('integer #'integerp)
+    ('layer #'ebox-style--layer-p)
+    ('anchor #'ebox-style--anchor-p)
+    ('placement #'ebox-style--placement-p)
     ('font-family #'ebox-style--font-family-p)
     ('color #'ebox-style--color-p)
     ('font-size #'ebox-style--font-size-p)
@@ -1162,8 +1224,10 @@ Grid track wrappers are traversed after their structural validator succeeds."
                      (ebox-size-value-for-axis-p entry axis))
                     (t (cl-every #'valid-p entry)))))
               (valid-p value))
-          (or (symbolp value)
-              (ebox-size-value-for-axis-p value axis))))))
+          (if (eq (plist-get property :validator) 'signed-size)
+              (ebox-style--signed-size-p value axis)
+            (or (symbolp value)
+                (ebox-size-value-for-axis-p value axis)))))))
 
 (defun ebox-style--schema-validator (property)
   "Return PROPERTY's grammar and unit-domain validator."
@@ -1243,7 +1307,7 @@ Grid track wrappers are traversed after their structural validator succeeds."
                      (if (memq (plist-get property :name)
                                '(:wrap-mode :item-gap :cross-align
                                  :border-top-p :grid-column-span
-                                 :grid-row-span))
+                                 :grid-row-span :layer :anchor :placement))
                          'ebox
                        'css)))
     (setq metadata
@@ -1439,6 +1503,12 @@ not affect declaration compilation and are intentionally excluded."
     ('min-vertical-size (not (ebox-style--min-vertical-size-p value)))
     ('max-vertical-size (not (ebox-style--max-vertical-size-p value)))
     ('nonnegative-size (not (ebox-style--nonnegative-size-p value)))
+    ('signed-size (not (ebox-style--signed-size-p value)))
+    ('position (not (ebox-style--position-p value)))
+    ('integer (not (integerp value)))
+    ('layer (not (ebox-style--layer-p value)))
+    ('anchor (not (ebox-style--anchor-p value)))
+    ('placement (not (ebox-style--placement-p value)))
     ('positive-integer
      (and (numberp value) (not (ebox-style--positive-integer-p value))))
     ('grid-placement
@@ -1590,16 +1660,17 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
   declarations)
 
 (defun ebox-style--validate-author-values (plist)
-  "Reject explicit author values outside the public property grammars.
+  "Reject values in author PLIST outside the public property grammars.
 An ECSS schema may use nil as an internal initial value, but nil is not an
-author value unless the public grammar is boolean."
+author value unless the public grammar is boolean or an optional anchor."
   (unless (ebox-style--valid-plist-p plist)
     (user-error "Ebox style declarations must be an even property list"))
   (cl-loop for (name value) on plist by #'cddr
            for property = (ebox-style--property name)
            when (and property
                      (null value)
-                     (not (eq (plist-get property :validator) 'boolean)))
+                     (not (memq (plist-get property :validator)
+                                '(boolean anchor))))
            do (error "ebox: invalid value for %S: nil"
                      (plist-get property :name)))
   plist)
@@ -2012,11 +2083,16 @@ explicit generation SOURCE-INDEX; facts are never recovered from its handle."
                       (ebox-style--custom-property-p property))
            append (list property value)))
 
+(defvar ebox-style--box-runtime-defaults)
+
 (defun ebox-style--reset-box-engine-style (box)
   "Reset BOX engine style fields to their declared defaults."
   (cl-loop for (property value) on ebox--longhand by #'cddr
            unless (memq property '(:content :scroll-offset))
            do (plist-put box property (copy-tree value)))
+  (unless (eq (plist-get box :ebox-kind) 'text)
+    (cl-loop for (property value) on ebox-style--box-runtime-defaults by #'cddr
+             do (plist-put box property (copy-tree value))))
   box)
 
 (defun ebox-style--apply-engine-values (box values)
@@ -2292,6 +2368,9 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
   (cl-loop for (property _value) on ebox--longhand by #'cddr
            unless (memq property '(:content :scroll-offset))
            do (ebox-style--transfer-node-property old new property))
+  (when (eq (plist-get new :ebox-kind) 'box)
+    (cl-loop for (property _value) on ebox-style--box-runtime-defaults by #'cddr
+             do (ebox-style--transfer-node-property old new property)))
   (dolist (property ebox-style--item-projection-properties)
     (ebox-style--transfer-node-property old new property))
   new)
@@ -2469,6 +2548,16 @@ used geometry and become zero when the corresponding style is not `solid'."
                      (ebox-style--expand-engine-property property value)))))
     (ebox-style--apply-border-used-widths
      (ebox-style--validate-edge-longhands expanded))))
+
+(defconst ebox-style--box-runtime-defaults
+  (ebox-style--expand-engine-plist
+   (cl-loop for property in ebox-style--property-definitions
+            when (plist-get property :runtime-default)
+            append (list (plist-get property :name)
+                         (copy-tree (plist-get property :initial)))))
+  "Schema-owned defaults for additional Box runtime style fields.
+Reset and source-stable transfer share this registration.  Canonical Text
+does not materialize these box-only placement facts.")
 
 (defun ebox-style--border-delta-value
     (declarations full-declarations style name)

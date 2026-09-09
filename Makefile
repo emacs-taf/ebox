@@ -23,6 +23,12 @@ NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
 all: check
 
+.PHONY: layer-tests
+layer-tests:
+	$(EMACS_TEST) -l tests/ebox-composite-tests.el -l tests/ebox-layer-style-tests.el -l tests/ebox-layer-tests.el -l tests/ebox-layer-publication-tests.el -f ert-run-tests-batch-and-exit
+
+test: layer-tests
+
 interaction-tests:
 	$(EMACS_TEST) -l tests/ebox-interaction-tests.el -f ert-run-tests-batch-and-exit
 

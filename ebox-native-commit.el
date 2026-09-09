@@ -509,8 +509,10 @@ new session with the same bounded configuration used by retained frames."
     (when (ebox-runtime-index-like-p nodes)
       (ebox-runtime-index-map
        (lambda (_node-id node)
-         (unless (memq (plist-get node :ebox-type)
-                       '(box concat stack flex))
+         (unless (and (memq (plist-get node :ebox-type)
+                            '(box concat stack flex))
+                      (not (ebox-layer-host-p node))
+                      (not (ebox-layer-positioned-p node)))
            (setq supported nil)))
        nodes))
     supported))

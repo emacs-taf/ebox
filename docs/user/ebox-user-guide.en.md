@@ -171,6 +171,7 @@ mode. These axis restrictions deliberately narrow CSS's general length model.
 | --- | --- | --- |
 | Inline geometry | `px`, `ch`, `vw`, `%` | `width`, `min-width`, `max-width`; left/right and inline padding/margin; `column-gap`; Row `item-gap`; Grid column tracks. |
 | Block geometry | `lh`, `vh`, `%` | `height`, `min-height`, `max-height`; top/bottom and block padding/margin; `row-gap`; Column `item-gap`; Grid row tracks. |
+| Positioned offsets | Inline units for `left`; block units for `top` | Signed lengths and size expressions; `%` refers to the paint host's corresponding content axis. |
 | Flex main size | The parent Flex's main-axis units | `flex-basis` and the basis in `(grow shrink basis)`; row directions use inline units, column directions use block units. |
 | Border paint thickness | `px`, `ch`, `lh`, `vw`, `vh` | `border-width`, each side's border width, and the width component of border shorthands; percentages are forbidden. |
 
@@ -279,6 +280,79 @@ Text Box geometry.
 
 Use `:outer inline` or `:outer block` to state how a Box participates in its
 parent. The child-layout algorithm still comes from the form name.
+
+<a id="retained-layers"></a>
+
+### Retained layers
+
+Use positioning properties on existing Box forms to overlap content. Give the
+host an explicit height when absolute children need a reserved canvas: they do
+not increase its automatic flow size.
+
+```elisp
+(ebox-build
+ '(box :width (ch 12) :height (lh 3)
+       "ABCDEFGHIJKL\nabcdefghijkl\n0123456789ab"
+       (box :position absolute :left (ch 2) :top (lh 1)
+            :width (ch 5) :height (lh 1)
+            :background-color "#334155" :color "#FFFFFF"
+            "Panel")))
+```
+
+`:position relative` keeps the child's ordinary slot and moves only its paint.
+`:position absolute` removes the child from normal, Row, Column, Flex, or Grid
+flow and places it from the parent content origin. Signed `:left` uses inline
+units; signed `:top` uses block units and is floored to whole host rows at final
+placement. Both accept size expressions. A local host clips its composed output
+to its canvas. Nested local groups are automatic: a child's high `:z-index`
+cannot jump above a sibling of its host. Integer depths paint low to high;
+normal content precedes positioned content at equal depth, and equal-depth
+positioned boxes follow document order.
+
+The upper box covers its content, padding, and border, including blanks, while
+its margin leaves the lower content visible. Visible text retains its native
+help, pointer, hover, and keymap properties; covered text contributes none of
+those interactions. The retained lower node and its semantic ID still exist.
+Updates to it become visible with their latest content and properties when
+the covering box moves or becomes hidden.
+
+Use a root layer to place a panel beyond a clipped local container while
+keeping its logical parent and inherited styles:
+
+```elisp
+(ebox-build
+ '(box :width (ch 20) :height (lh 4)
+       (box :height (lh 1) :overflow hidden
+            (box :id "trigger" :width (ch 6) "Open")
+            (box :id "panel" :position absolute :layer root
+                 :anchor "trigger" :placement bottom-start
+                 :width (ch 8) :height (lh 2)
+                 "Choice A\nChoice B"))))
+```
+
+`:layer root` selects the root content canvas as the paint target. It does not
+reparent the panel for selectors, inheritance, or region updates. `:anchor`
+uses a unique semantic ID in the paint host's logical subtree. Both properties
+require absolute positioning. Placements are `bottom-start`, `bottom-end`,
+`top-start`, and `top-end`; offsets adjust the requested origin. Panels flip
+vertically if the opposite side fits, then shift within the host canvas.
+Missing or invisible anchors do not paint a panel; ambiguous IDs and placement
+dependency cycles are errors.
+
+Composition uses horizontal pixels and one shared vertical text-row grid.
+Positioned subtrees must have the same effective font line height as their
+host. Whole supported clusters survive cuts; partially covered glyphs/images
+are replaced with neutral space, and fixed display spaces can be shortened.
+There is no alpha blending, half-glyph masking, or child frame. Layered trees
+fall back to Elisp when native reflow cannot represent them.
+
+Publication remains a TP transaction, including hidden-node updates and
+rollback. Fixed-footprint local changes can recompose only the affected host;
+geometry changes and root-layer dependencies may require broader work. No
+per-update latency or universal local-update guarantee is implied. Run
+`make layer-tests` for the focused contract. The separate `ebox-playground`
+package provides `layer-minimal.ebox` and `layer-reference.ebox`; batch tests
+do not establish GUI visual parity or remote CI success.
 
 ### Wrapping and the optional EKP dependency
 

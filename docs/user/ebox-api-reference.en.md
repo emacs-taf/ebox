@@ -74,6 +74,7 @@ another public node or wrapper.
 | Paint | `:color`, `:background-color`, exact alias `:bgcolor`, border colors, `:visibility` |
 | Text layout | `:text-align`, `:wrap-mode` (`word`, `char`, `kp`, `none`) |
 | Overflow | `:overflow` (`visible`, `hidden`, `scroll`) |
+| Layer placement | `:position`, `:left`, `:top`, `:z-index`, `:layer`, `:anchor`, `:placement` |
 
 `hidden` enforces the content width after composing children, preserving whole
 supported text clusters and excluding the container's own padding and border
@@ -108,6 +109,53 @@ immediately. See the [geometry section of the user
 guide](ebox-user-guide.en.md#4-use-geometry-and-paint-properties) for percentage
 references, font units, arithmetic rules, and whole-line vertical display
 quantization. This is a CSS semantic subset, not a browser layout engine.
+
+### Retained layer placement
+
+These non-inherited geometry properties apply to `box`, `row`, `column`,
+`flex`, and `grid`; Text does not accept them. Existing author tags are unchanged.
+
+| Property | Accepted value | Default |
+| --- | --- | --- |
+| `:position` | `static`, `relative`, `absolute` | `static` |
+| `:left` | Signed inline length (`px`, `ch`, `vw`, `%`) or size expression | `(px 0)` |
+| `:top` | Signed block length (`lh`, `vh`, `%`) or size expression | `(lh 0)` |
+| `:z-index` | Integer, including negative values | `0` |
+| `:layer` | `local`, `root` | `local` |
+| `:anchor` | Semantic `:id` as a symbol or string, or `nil` | `nil` |
+| `:placement` | `bottom-start`, `bottom-end`, `top-start`, `top-end` | `bottom-start` |
+
+`static` uses ordinary flow. `relative` keeps its flow slot and shifts its paint
+by `:left` and `:top`. `absolute` contributes no normal-flow size or slot and
+uses the parent content origin, or the root content canvas for `:layer root`.
+Offsets use that paint host's font and containing dimensions; `%` uses width
+for `:left` and height for `:top`. Fractions survive length resolution; the
+final vertical offset is floored to the host's whole text rows.
+
+Each local host composes its children as one group. Within a group, smaller
+`:z-index` values paint first; at equal depth, normal content paints before
+positioned content, and positioned siblings follow logical document order.
+A nested child's depth does not escape its local group. A painted Box is
+opaque across its content, padding, and border, including blank space; its
+margin is excluded. Paint is clipped to the host canvas.
+
+`:layer root` changes the paint target while preserving the logical parent,
+selectors, inheritance, and retained identity. Both `:layer root` and a non-nil
+`:anchor` require `:position absolute`. Anchors resolve a unique semantic ID in
+the paint host's logical subtree and use its visible bounds. The panel starts
+above/below and at the start/end edge as requested, flips vertically when the
+opposite side fits, then shifts inside the canvas. Missing or invisible anchors
+produce no panel paint; ambiguous IDs and cyclic placement dependencies signal
+an error before publication.
+
+This is an opaque text compositor: horizontal positions are pixels, vertical
+positions share the host's row grid. Positioned descendants must share their
+host's effective font line height. Whole supported text clusters and display
+units survive clipping; partial glyphs/images become neutral space. There is
+no alpha blending, partial-glyph masking, or child-frame rendering. Layered
+trees use Elisp when the native representation cannot express their placement.
+See the [layer guide](ebox-user-guide.en.md#retained-layers) for examples and
+retained update behavior.
 
 ### Native node capabilities
 

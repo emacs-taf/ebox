@@ -38,6 +38,8 @@
 (defvar ebox--viewport-dependent-subtree-cache)
 (defvar ebox--viewport-height-dependent-subtree-cache)
 (defvar ebox--render-runtime-revision)
+(defvar ebox--render-source-index)
+(defvar ebox-layer--active-p)
 (defvar ebox--render-root-parent-kind)
 (defvar ebox--render-cache-table)
 (defvar ebox--render-cache-signature-cache)
@@ -2386,6 +2388,7 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
                    success native-settled-p)
               (when (and (null on-mismatch)
                          (or (plist-get state-overrides :owner-scoped-proofs)
+                             (plist-get report-base :layer-recompose-p)
                              (plist-get state-overrides
                                         :scroll-state-transaction)
                              (> (length scope-node-ids) 1)))
@@ -3284,6 +3287,15 @@ available during planning; replacements here belong only to the candidate."
           (ebox--smooth-scroll-state-table smooth-table)
           (ebox--render-runtime-revision
            (plist-get state :runtime-revision))
+          (ebox--render-source-index (plist-get state :source-index))
+          (ebox-incremental--render-portals-p
+           (if (plist-member state :root-portals-p)
+               (plist-get state :root-portals-p)
+             'unknown))
+          (ebox-layer--active-p
+           (if (plist-member state :layered-p)
+               (plist-get state :layered-p)
+             'unknown))
           (ebox--render-cache-table (plist-get state :render-cache))
           (ebox--layout-fragments-table
            (plist-get state :layout-fragments))
@@ -4150,6 +4162,42 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                     :external new-external :parent new-parent :roles new-roles
                     :overflow new-overflow :variable-content-p nil))))))
 
+(defun ebox-surface--layer-patch-candidate (buffer previous-state state proof)
+  "Return PROOF's composed host replacement with only newly visible roles.
+Render candidate STATE against BUFFER and its PREVIOUS-STATE.
+Role topology can change inside the host.  The Range footprint validator
+already allows that change while requiring identical external allocation.
+Enclosing effects must be unchanged; retained owner roles restore their paint
+contributions without copying the previous children's hidden properties."
+  (let ((owner-id (plist-get proof :owner-id)))
+    (when (and (ebox-surface--unchanged-enclosing-effects-p
+                previous-state state owner-id)
+               ;; Arbitrary ancestor surface properties need a separate
+               ;; provenance proof; retain the existing full-render fallback.
+               (let ((parent (ebox-runtime-index-get
+                              owner-id (plist-get state :parent-table)))
+                     (valid t))
+                 (while (and valid parent)
+                   (when (ebox-get (ebox-runtime-index-get
+                                    parent (plist-get state :node-table))
+                                   :surface-properties)
+                     (setq valid nil))
+                   (setq parent (ebox-runtime-index-get
+                                 parent (plist-get state :parent-table))))
+                 valid))
+      ;; Paint-only preparation normally reuses visible descendant styles.
+      ;; Occluded descendants have no visible fragments to refresh, so prepare
+      ;; the isolated host's complete style closure before rendering it.
+      (when-let* ((node (ebox-runtime-index-get
+                        owner-id (plist-get state :node-table))))
+        (ebox-surface-prepare-inline-candidate-styles
+         previous-state state (ebox--runtime-node-ids node))
+        (dolist (node-id (ebox--runtime-node-ids node))
+          (when-let* ((child (ebox-runtime-index-get
+                             node-id (plist-get state :node-table))))
+            (remhash child (plist-get state :render-signature-cache)))))
+      (ebox-surface--range-patch-candidate buffer state proof))))
+
 (defun ebox-surface--scroll-replace-index-lines (index changes)
   "Copy INDEX and replace only entries on CHANGES' cached content lines.
 Each change is (LINE-NUMBER OLD-LINE NEW-LINE).  Line counts are unchanged,
@@ -4328,11 +4376,15 @@ local; a declined visible proof leaves the committed scroll prefix untouched."
           (if proofs
               (mapcar
                (lambda (proof)
-                 (if (plist-get proof :range-splice-p)
+                 (cond
+                  ((plist-get proof :layer-recompose-p)
+                   (ebox-surface--layer-patch-candidate
+                    buffer previous-state state proof))
+                  ((plist-get proof :range-splice-p)
                      (unless (ebox-surface--owner-needs-ancestor-paint-p
                               state (plist-get proof :owner-id))
-                       (ebox-surface--range-patch-candidate buffer state proof))
-                   (ebox-surface--owner-patch-candidate
+                       (ebox-surface--range-patch-candidate buffer state proof)))
+                  (t (ebox-surface--owner-patch-candidate
                     buffer state (plist-get proof :owner-id)
                     (plist-get proof :allocated-width)
                     (plist-get proof :variable-content-p)
@@ -4341,7 +4393,7 @@ local; a declined visible proof leaves the committed scroll prefix untouched."
                     (plist-get proof :changed-keys)
                     (plist-get proof :allocation-closure-p)
                     (plist-get proof :retain-external-owner-suffix-p)
-                    (and (= (length proofs) 1) previous-state))))
+                    (and (= (length proofs) 1) previous-state)))))
                proofs)
             (list
              (ebox-surface--owner-patch-candidate
@@ -6223,6 +6275,21 @@ but cannot introduce or remove a viewport expression or node identity."
     (plist-put state :fractional-pixel-output-p
                (plist-get previous-state :fractional-pixel-output-p))
     (plist-put state :root-node root)
+    (plist-put state :layered-p
+               (if projection-kind
+                   (or (plist-get previous-state :layered-p)
+                       (cl-some (lambda (proof)
+                                  (plist-get proof :layer-recompose-p))
+                                (plist-get state :owner-scoped-proofs)))
+                 (and (fboundp 'ebox-layer-subtree-p)
+                      (ebox-layer-subtree-p root))))
+    (plist-put state :root-portals-p
+               (if projection-kind
+                   (or (plist-get previous-state :root-portals-p)
+                       (and (plist-get state :layer-recompose-p)
+                            (ebox-layer-portals-p root)))
+                 (and (fboundp 'ebox-layer-portals-p)
+                      (ebox-layer-portals-p root))))
     (when (plist-get state :native-sync-confirmed-p)
       (ebox-native-commit-attach-confirmed-base previous-state state))
     (plist-put state :projection-kind projection-kind)

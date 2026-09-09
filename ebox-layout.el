@@ -17,6 +17,7 @@
 (require 'ebox-size)
 (require 'ebox-buffer-backend)
 (require 'ebox-runtime-index)
+(require 'ebox-layer)
 
 (declare-function ekp-pixel-justify "ekp" (string line-pixel))
 (declare-function ebox--render-grid "ebox-grid" (node))
@@ -1331,7 +1332,9 @@ Return its empty inline extent through `ebox--box-content-empty-width'."
           (ebox--render-box-content-cached
            box
            (lambda ()
-             (pcase kind
+             (let ((render-flow
+                    (lambda (children)
+                      (pcase kind
                ('normal
                 (ebox--render-normal-box-children box children))
                ('row
@@ -1363,7 +1366,12 @@ Return its empty inline extent through `ebox--box-content-empty-width'."
                  (ebox-layout-config-props
                   (plist-get box :ebox-layout-config))
                  children))
-               (_ (error "Ebox Box has unsupported LayoutConfig: %S" kind)))))))
+               (_ (error "Ebox Box has unsupported LayoutConfig: %S" kind))))))
+               (if (or (ebox-layer-host-p box)
+                       (and (eq box ebox-layer--render-root)
+                            (or ebox-layer--portals (ebox-layer-portals-p box))))
+                   (ebox-layer-render-children box children render-flow)
+                 (funcall render-flow children)))))))
     (plist-put box :ebox-content-layout-complete-p
                (not (and (eq kind 'normal)
                          (eq (ebox-get box :wrap-mode) 'kp))))
@@ -1721,7 +1729,8 @@ one carrier line preserves their paint without inventing a content line."
 
 (defun ebox--format-content (box)
   "Format BOX content (wrap and justify) returning a string."
-  (or (ebox--format-scroll-window-content box)
+  (or (and (not (ebox-layer-active-p box))
+           (ebox--format-scroll-window-content box))
       (ebox--format-content-string box (ebox--box-content box))))
 
 (defun ebox--total-pixel (box)
@@ -2079,6 +2088,15 @@ Internal implementation of `ebox-render' for box nodes."
     rendered))
 
 (defun ebox--render-layout (node)
+  "Render NODE in one candidate-local layer collection context."
+  (if ebox-layer--render-root
+      (ebox--render-layout-in-context node)
+    (let ((ebox-layer--render-root node)
+          (ebox-layer--portals nil)
+          (ebox-layer--active-p ebox-layer--active-p))
+      (ebox--render-layout-in-context node))))
+
+(defun ebox--render-layout-in-context (node)
   "Render layout NODE directly to a multi-line propertized string.
 NODE can be:
   - a box plist created by `ebox-create'
@@ -2107,6 +2125,7 @@ This function owns spatial layout only; it never creates a live TP surface."
            (or ebox--box-content-render-cache
                (make-hash-table :test 'eq))))
       (when (listp node)
+        (ebox-layer-validate-node node)
         (ebox--ensure-node-id node)
         (ebox-buffer-validate-border-capability node))
       (let ((type (plist-get node :ebox-type)))

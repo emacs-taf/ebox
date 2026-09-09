@@ -69,6 +69,7 @@ participation property 就是普通子 Box property，不会创建另一种公�
 | 绘制 | `:color`、`:background-color`、精确 alias `:bgcolor`、border color、`:visibility` |
 | 文本布局 | `:text-align`、`:wrap-mode`（`word`、`char`、`kp`、`none`） |
 | Overflow | `:overflow`（`visible`、`hidden`、`scroll`） |
+| 图层放置 | `:position`、`:left`、`:top`、`:z-index`、`:layer`、`:anchor`、`:placement` |
 
 `hidden` 在组合子节点后约束内容宽度，保留完整的受支持文本簇；容器自身的 padding 与
 border 不在裁剪区域内。被裁掉的子文本同时移除其属性。固定 display space 可以缩短，
@@ -94,6 +95,43 @@ viewport/contain 关键词；零长度也需要允许的单位。边框宽度采
 context/value 组合无效时会直接报错。百分比参照、字体单位、算术规则及纵向完整行显示量化见
 [用户指南的几何章节](ebox-user-guide.zh.md#4-使用几何与绘制-property)。这是 CSS
 语义的子集，不是完整浏览器布局引擎。
+
+### 保留式图层放置
+
+以下不继承的几何属性适用于 `box`、`row`、`column`、`flex` 和 `grid`，Text
+不接受这些属性。现有 author tag 不变。
+
+| 属性 | 接受的值 | 默认值 |
+| --- | --- | --- |
+| `:position` | `static`、`relative`、`absolute` | `static` |
+| `:left` | 有符号 inline 长度（`px`、`ch`、`vw`、`%`）或尺寸表达式 | `(px 0)` |
+| `:top` | 有符号 block 长度（`lh`、`vh`、`%`）或尺寸表达式 | `(lh 0)` |
+| `:z-index` | 整数，允许负值 | `0` |
+| `:layer` | `local`、`root` | `local` |
+| `:anchor` | 以 symbol 或字符串表示的语义 `:id`，或 `nil` | `nil` |
+| `:placement` | `bottom-start`、`bottom-end`、`top-start`、`top-end` | `bottom-start` |
+
+`static` 使用普通流。`relative` 保留流中占位，通过 `:left`、`:top` 平移绘制。
+`absolute` 不贡献普通流尺寸或占位，以父容器内容原点为基准；`:layer root` 则使用
+根内容画布。偏移使用绘制宿主的字体与包含尺寸；`:left` 的 `%` 参照宽度，`:top`
+的 `%` 参照高度。长度解析保留小数，最终纵向偏移向下取整到宿主的完整文本行。
+
+每个局部宿主把子节点合成为一个组。组内较小的 `:z-index` 先绘制；深度相同时，
+普通内容先于定位内容绘制，定位兄弟按逻辑文档顺序绘制。嵌套子节点的深度不能
+越过局部分组。Box 的内容、padding 和 border 区域均为不透明绘制，空白也会遮挡；
+margin 不参与遮挡。绘制裁剪到宿主画布。
+
+`:layer root` 只改变绘制目标，保留逻辑父节点、selector、继承和 retained identity。
+`:layer root` 与非 nil 的 `:anchor` 都要求 `:position absolute`。anchor 在绘制
+宿主的逻辑子树中解析唯一的语义 ID，并使用目标的可见边界。面板按指定的上下及
+起止边放置，对侧可容纳时纵向翻转，然后平移到画布内。anchor 缺失或不可见时不
+绘制面板；ID 歧义或循环放置依赖在发布前报错。
+
+这是不透明文本合成：横向用像素，纵向共享宿主的文本行网格。定位子树必须与宿主
+使用相同的有效字体行高。裁剪保留完整的受支持文本簇和 display unit；不完整字形或
+图像以中性空白替代。不提供 alpha 混合、半字形遮罩或 child frame。native 表示
+无法表达图层放置时使用 Elisp。示例和 retained 更新行为见
+[图层指南](ebox-user-guide.zh.md#retained-layers)。
 
 ### 原生节点能力
 

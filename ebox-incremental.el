@@ -101,6 +101,9 @@
                   "ebox-native-commit" (old-state candidate-state prepared))
 (declare-function ebox-native-reflow-release-session
                   "ebox-native-reflow" (session))
+(declare-function ebox-layer-host-p "ebox-layer" (node))
+(declare-function ebox-layer-subtree-p "ebox-layer" (node))
+(declare-function ebox-layer-portals-p "ebox-layer" (node))
 
 (cl-defstruct
     (ebox-incremental-context-port
@@ -181,6 +184,9 @@
 
 (defvar ebox--render-cache-table nil
   "Dynamic buffer-local render cache used during incremental rerenders.")
+
+(defvar ebox-incremental--render-portals-p 'unknown
+  "Whether the current candidate can produce root portal side effects.")
 
 (defvar ebox--prepared-root-render nil
   "Dynamically bound validated root render for one visible transaction.")
@@ -1063,7 +1069,12 @@ EXTERNAL-SIGNATURE may prove a viewport-dependent non-root context."
 When FORCE is non-nil, cache NODE even when its output is viewport-dependent;
 the complete viewport context remains part of the render signature.
 CACHE-PROBE may supply a prior exact miss from an accelerator boundary."
-  (if-let* ((prepared (and force
+  (if (and ebox-incremental--render-portals-p
+           (fboundp 'ebox-layer-portals-p)
+           (ebox-layer-portals-p node))
+      ;; Cached strings do not replay the candidate-local portal collector.
+      (ebox--render-node node)
+   (if-let* ((prepared (and force
                           (ebox--take-prepared-root-render node))))
       (prog1 prepared
         (ebox--replay-render-output-provenance prepared)
@@ -1102,7 +1113,7 @@ CACHE-PROBE may supply a prior exact miss from an accelerator boundary."
                                 portable-p)))
             (ebox--render-cache-store-context probe rendered metadata)
             (ebox--record-render-output-provenance rendered))
-          rendered))))))
+          rendered)))))))
 
 ;;; Buffer Runtime State
 
@@ -8606,6 +8617,100 @@ an owner for one descendant after its narrower projection proof has failed."
         (ebox-incremental--declarative-tentative-patch-set
          buffer render-dirty-set)))))
 
+(defun ebox-incremental--layer-owner-plan
+    (buffer old-state candidate-state dirty-set)
+  "Promote DIRTY-SET to complete compositing owners when layers are affected.
+BUFFER owns OLD-STATE; CANDIDATE-STATE supplies the next logical tree.
+Ordinary mounted trees use their retained negative layer flag.  Introducing
+layers only inspects changed declarations or replacement subtrees.  Nested
+hosts promote through enclosing hosts because their upper siblings may hide
+the inner host's output."
+  (when (and (fboundp 'ebox-layer-host-p)
+             (or (plist-get old-state :layered-p)
+                 (cl-some
+                  (lambda (dirty)
+                    (cl-intersection (plist-get dirty :changed-keys)
+                                     '(:position :layer :children)))
+                  dirty-set)))
+    (let ((old-nodes (plist-get old-state :node-table))
+          (nodes (plist-get candidate-state :node-table))
+          (parents (plist-get candidate-state :parent-table))
+          (ebox-incremental--buffer-render-state-override
+           (cons buffer candidate-state))
+          affected operations)
+      (dolist (dirty dirty-set)
+        (unless (eq (plist-get dirty :dirty-kind) 'metadata)
+          (let ((node-id (plist-get dirty :node-id)) owner)
+            (while node-id
+              (when (or (ebox-layer-host-p
+                         (ebox-runtime-index-get node-id nodes))
+                        (ebox-layer-host-p
+                         (ebox-runtime-index-get node-id old-nodes)))
+                (setq owner node-id))
+              (setq node-id (ebox-runtime-index-get node-id parents)))
+            ;; Paint or layout on an ordinary ancestor of a layer also
+            ;; requires fresh composition, rather than a blind paint patch.
+            (unless owner
+              (let ((node (ebox-runtime-index-get
+                           (plist-get dirty :node-id) nodes)))
+                (when (and node (ebox-layer-subtree-p node))
+                  (setq owner (plist-get dirty :node-id)))))
+            (push (if owner
+                      (progn
+                        (setq affected t)
+                        (ebox--patch-op 'owner-rerender owner :dirty dirty
+                                        :layer-recompose-p t))
+                    (ebox-incremental--declarative-tentative-op buffer dirty))
+                  operations))))
+      ;; A root portal can cover or anchor to nodes outside its local host.
+      ;; Their updates therefore belong to the root composition as well.
+      (when (or affected
+                (and operations (plist-get old-state :root-portals-p)))
+        (if (or (plist-get old-state :root-portals-p)
+                (ebox-layer-portals-p (plist-get candidate-state :root-node)))
+            (list (ebox--patch-op
+                   'owner-rerender
+                   (plist-get (plist-get candidate-state :root-node) :node-id)
+                   :dirty (ebox--merge-dirty-provenance-list dirty-set)
+                   :layer-recompose-p t))
+          (ebox-patch-plan-merge-ops parents (nreverse operations)))))))
+
+(defun ebox-incremental--layer-span-proof
+    (buffer old-state prepared candidate-state owner-plan path-copied-p)
+  "Prove the stable outer allocation of one recomposed layer owner.
+Compare BUFFER's OLD-STATE with CANDIDATE-STATE using PREPARED dirty facts
+and OWNER-PLAN.  PATH-COPIED-P requires private nodes inside that owner.
+Internal visibility and role topology may change.  The surface validates the
+complete replacement footprint before publishing any resulting spans."
+  (when (and (= (length owner-plan) 1)
+             (plist-get (car owner-plan) :layer-recompose-p))
+    (let* ((owner-id (plist-get (car owner-plan) :owner-id))
+           (node (ebox-runtime-index-get
+                  owner-id (plist-get candidate-state :node-table)))
+           (snapshot (ebox-incremental--cached-layout-snapshot-details
+                      buffer owner-id))
+           (spans (plist-get snapshot :buffer-spans))
+           (ancestors (ebox-incremental--ancestor-slot-signature
+                       buffer old-state candidate-state owner-id)))
+      (when (and node snapshot spans ancestors
+                 (ebox-incremental--same-root-surface-identity-p
+                  old-state candidate-state)
+                 (ebox-incremental--span-patch-identity-stable-p
+                  buffer old-state candidate-state prepared owner-id)
+                 (or (not path-copied-p)
+                     (not (ebox-incremental--candidate-shares-published-node-p
+                           old-state node)))
+                 (not (ebox--node-visible-overflow-p node))
+                 (not (ebox--ancestor-own-overflow-visible-p buffer owner-id))
+                 (with-current-buffer buffer
+                   (or (ebox-buffer--partial-line-slots-p spans)
+                       (ebox--spans-contiguous-lines-p spans))))
+        (list :owner-id owner-id :snapshot snapshot
+              :dirty-set (plist-get prepared :dirty-set)
+              :layer-recompose-p t :ancestor-slot-signature ancestors
+              :layout-snapshot-detail-generation
+              (plist-get old-state :layout-snapshot-detail-generation))))))
+
 (defun ebox-incremental--cascade-root-owner-plan-p
     (old-state candidate-state dirty-set)
   "Return non-nil when cascade makes a local proof unusable.
@@ -10066,7 +10171,10 @@ role, and outside-complement compatibility before publication."
   "Return one atomic single- or multi-owner projection proof, or nil."
   (if (= (length owner-plan) 1)
       (when-let* ((proof
-                  (or (ebox-incremental--single-span-patch-projection-proof
+                  (or (ebox-incremental--layer-span-proof
+                       buffer old-state prepared candidate-state owner-plan
+                       path-copied-p)
+                      (ebox-incremental--single-span-patch-projection-proof
                        buffer old-state prepared candidate-state owner-plan
                        path-copied-p)
                       (ebox-incremental--grouped-owner-span-proof
@@ -10135,7 +10243,8 @@ role, and outside-complement compatibility before publication."
                  ;; new line back into that retained slot before TP sees it;
                  ;; raw string length is not the geometry proof.
                  (cl-every (lambda (proof)
-                             (or (plist-get proof :variable-content-p)
+                             (or (plist-get proof :layer-recompose-p)
+                                 (plist-get proof :variable-content-p)
                                  (let* ((dirty (car (plist-get proof :dirty-set)))
                                         (old-content
                                          (plist-get
@@ -10239,6 +10348,11 @@ role, and outside-complement compatibility before publication."
          (append
           (list :viewport-width (plist-get old-state :viewport-width)
                 :viewport-height (plist-get old-state :viewport-height)
+                :layer-recompose-p
+                (and (fboundp 'ebox-layer-host-p)
+                     (cl-some (lambda (proof)
+                                (plist-get proof :layer-recompose-p))
+                              (ebox-incremental--owner-proof-list span-proof)))
                 :runtime-revision
                 (plist-get candidate-state :runtime-revision)
                 :display-signature (plist-get prepared :display-signature)
@@ -10486,8 +10600,11 @@ role, and outside-complement compatibility before publication."
                                        'structure))
                               (plist-get entry :range-delta)))
                         (plist-get prepared :dirty-set))))))
+         (layer-owner-plan
+          (ebox-incremental--layer-owner-plan
+           buffer old-state candidate-state (plist-get prepared :dirty-set)))
          (formatting-proof
-          (and (not native-program-p)
+          (and (not layer-owner-plan) (not native-program-p)
                (not (cl-some
                      (lambda (entry)
                        (eq (plist-get entry :dirty-kind) 'paint))
@@ -10495,7 +10612,7 @@ role, and outside-complement compatibility before publication."
                (ebox-incremental--formatting-context-reflow-proof
                 buffer old-state candidate-state prepared)))
          (mixed-shape-p
-          (and (not native-program-p)
+          (and (not layer-owner-plan) (not native-program-p)
                (or (not structural-dirty-p) range-structural-p)
                (cl-some
                 (lambda (entry)
@@ -10532,6 +10649,7 @@ role, and outside-complement compatibility before publication."
                         (plist-get mixed-proof :paint-owner-ids)))))
          (owner-plan
           (cond
+           (layer-owner-plan layer-owner-plan)
            ((/= (ebox-tree-author-style-count
                  (plist-get old-state :root-node))
                 (ebox-tree-author-style-count
@@ -10577,7 +10695,9 @@ role, and outside-complement compatibility before publication."
                (ebox-incremental--paint-projection-p
                 buffer old-state prepared candidate-state owner-plan)))
          (span-proof
-          (unless (or native-program-p structural-dirty-p paint-p mixed-proof)
+          (unless (or native-program-p
+                      (and structural-dirty-p (not layer-owner-plan))
+                      paint-p mixed-proof)
             (ebox-incremental--span-patch-projection-proof
              buffer old-state prepared candidate-state owner-plan)))
          (projection-kind
@@ -10593,6 +10713,8 @@ role, and outside-complement compatibility before publication."
            (span-proof 'span-patch))))
     (when projection-kind
       (setq report (plist-put report :projection-kind projection-kind)))
+    (when layer-owner-plan
+      (setq report (plist-put report :layer-recompose-p t)))
     (when mixed-proof
       (setq prepared (plist-put prepared :mixed-owner-proof mixed-proof))
       (setq report
@@ -10722,8 +10844,11 @@ the visible replacement independently before publishing either one."
 
 (defun ebox-incremental--prepare-scoped-candidate
     (buffer old-state next-root isolated-candidate-p
-            &optional skip-span-proof-p scroll-transaction-p)
+            &optional skip-span-proof-p scroll-transaction-p scroll-owner-id)
   "Prepare NEXT-ROOT and its scoped owner plan for BUFFER.
+OLD-STATE provides the published inputs.  ISOLATED-CANDIDATE-P marks a private
+logical tree.  SKIP-SPAN-PROOF-P permits the retained scroll fast path;
+SCROLL-TRANSACTION-P and SCROLL-OWNER-ID identify the changing scroll owner.
 Return the intermediate candidate state, owner plan, projection proof, and
 whether NEXT-ROOT shares untouched published nodes."
   (let* ((ebox-incremental--allocated-slot-proof-cache
@@ -10783,8 +10908,16 @@ whether NEXT-ROOT shares untouched published nodes."
                      (ebox-source--index-derived-stale-p
                       (plist-get candidate-state :source-index)))
             (plist-put candidate-state :selector-index-stale-p t)))
+         (layer-owner-plan
+          (ebox-incremental--layer-owner-plan
+           buffer old-state candidate-state
+           (or (plist-get prepared :dirty-set)
+               (and scroll-transaction-p scroll-owner-id
+                    (list (list :node-id scroll-owner-id
+                                :dirty-kind 'geometry
+                                :changed-keys '(:scroll-offset)))))))
          (formatting-proof
-          (and (not scroll-transaction-p)
+          (and (not layer-owner-plan) (not scroll-transaction-p)
                (not (cl-some
                      (lambda (entry)
                        (eq (plist-get entry :dirty-kind) 'paint))
@@ -10792,7 +10925,8 @@ whether NEXT-ROOT shares untouched published nodes."
                (ebox-incremental--formatting-context-reflow-proof
                 buffer old-state candidate-state prepared)))
          (owner-plan
-          (if formatting-proof
+          (if layer-owner-plan layer-owner-plan
+           (if formatting-proof
               (list
                (ebox--patch-op
                 'formatting-context-reflow
@@ -10804,9 +10938,9 @@ whether NEXT-ROOT shares untouched published nodes."
                      candidate-state))
                 (ebox-incremental--layout-owner-plan
                  buffer old-state candidate-state
-                 (plist-get prepared :dirty-set))))))
+                 (plist-get prepared :dirty-set)))))))
          (mixed-proof
-          (and (not scroll-transaction-p)
+          (and (not layer-owner-plan) (not scroll-transaction-p)
                (ebox-incremental--mixed-owner-proof
                 buffer old-state candidate-state prepared owner-plan)))
          (scope-node-ids
@@ -10818,7 +10952,8 @@ whether NEXT-ROOT shares untouched published nodes."
           (ebox-incremental--paint-projection-p
            buffer old-state prepared candidate-state owner-plan))
          (span-proof
-          (unless (or paint-p mixed-proof skip-span-proof-p)
+          (unless (or paint-p mixed-proof
+                      (and skip-span-proof-p (not layer-owner-plan)))
             (or (ebox-incremental--span-patch-projection-proof
                  buffer old-state prepared candidate-state owner-plan
                  path-copied-p)
@@ -10839,7 +10974,7 @@ whether NEXT-ROOT shares untouched published nodes."
             scope-node-ids (mapcar (lambda (op) (plist-get op :owner-id))
                                   owner-plan)))
     (setq prepared (plist-put prepared :scroll-patch-fast-p
-                              skip-span-proof-p))
+                              (and skip-span-proof-p (not layer-owner-plan))))
     (when mixed-proof
       (setq prepared (plist-put prepared :mixed-owner-proof mixed-proof)))
     (list :prepared prepared
@@ -10849,6 +10984,7 @@ whether NEXT-ROOT shares untouched published nodes."
           :span-proof span-proof
           :mixed-proof mixed-proof
           :formatting-proof formatting-proof
+          :layer-recompose-p (and layer-owner-plan t)
           :projection-kind projection-kind
           :path-copied-p path-copied-p)))
 
@@ -10870,13 +11006,15 @@ runtime candidate whose identities already match the published root."
     (let* ((candidate
             (ebox-incremental--prepare-scoped-candidate
              buffer old-state next-root isolated-candidate-p
-             scroll-patch-fast-p scroll-transaction-p)))
+             scroll-patch-fast-p scroll-transaction-p
+             (plist-get report-overrides :owner-id))))
       ;; A path-copied candidate is safe to render in place only after the
       ;; strict span proof succeeds.  Widened projection would mutate shared
       ;; layout nodes, so promote it to a private copy before the surface sees
       ;; it.  The ordinary full-copy path remains the correctness fallback.
       (when (and (plist-get candidate :path-copied-p)
-                 (not scroll-patch-fast-p)
+                 (or (not scroll-patch-fast-p)
+                     (plist-get candidate :layer-recompose-p))
                  (not (memq (plist-get candidate :projection-kind)
                             '(span-patch owner-scoped scroll-patch
                               mixed-owner-reflow))))
@@ -10886,8 +11024,11 @@ runtime candidate whose identities already match the published root."
                (ebox-tree-copy-node-structure
                 (plist-get (plist-get candidate :prepared) :root))
                isolated-candidate-p scroll-patch-fast-p
-               scroll-transaction-p)))
+               scroll-transaction-p (plist-get report-overrides :owner-id))))
       (let* ((prepared (plist-get candidate :prepared))
+             (scroll-transaction-p
+              (and scroll-transaction-p
+                   (not (plist-get candidate :layer-recompose-p))))
              (candidate-state (plist-get candidate :candidate-state))
              (owner-plan
               (or (plist-get candidate :owner-plan)
@@ -10928,6 +11069,8 @@ runtime candidate whose identities already match the published root."
           (setq report (plist-put report :projection-kind projection-kind)))
         (when projection-kind
           (setq report (plist-put report :projection-kind projection-kind)))
+        (when (plist-get candidate :layer-recompose-p)
+          (setq report (plist-put report :layer-recompose-p t)))
         (when span-proof
           (setq report
                 (plist-put report :ancestor-slot-count

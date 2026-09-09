@@ -2428,6 +2428,7 @@ Grid deliberately stays on the ordinary Ebox renderer until the native
 backend has a matching two-dimensional layout contract."
   (cond
    ((or (null node) (stringp node) (not (listp node))) t)
+   ((or (ebox-layer-host-p node) (ebox-layer-positioned-p node)) nil)
    ((eq (plist-get node :visibility) 'hidden) nil)
    ((not (ebox-native-reflow--node-static-sizes-p node)) nil)
    ((plist-get node :ebox-child-sequence) nil)
