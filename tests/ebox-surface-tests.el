@@ -1101,6 +1101,35 @@ candidate cannot hide mutations by restoring the old hash-table pointer."
       (should (plist-get first :face-baseline-known-p))
       (should-not (get-text-property 0 ebox--paint-origin-property rendered)))))
 
+(ert-deftest ebox-surface-clipped-paint-origin-stays-separate-from-ownership ()
+  "Reclipping retains the paint producer without recovering omitted semantics."
+  (let* ((ebox--paint-origin-capture-p t)
+         (face '(:weight bold))
+         (source (propertize "A" 'face face 'ebox-content 7
+                             'help-echo "child" 'keymap (make-sparse-keymap)))
+         (fill (ebox-composite--fill source 0 5)))
+    (put-text-property 0 (length fill) 'ebox-content-owner 2 fill)
+    (let* ((reclipped (ebox-composite-slice fill 1 4))
+           (origin (get-text-property 0 ebox--paint-origin-property reclipped))
+           (other (ebox--paint-origin-create :baseline face
+                                            :source-roles '((content . 8))))
+           (fragment (car (ebox-surface--rendered-fragments reclipped))))
+      (should (equal (plist-get fragment :role-ids) '((content-owner . 2))))
+      (should (member '(content . 7) (plist-get fragment :paint-role-ids)))
+      (should (equal (plist-get fragment :face-baseline) face))
+      (should-not (ebox-surface--retained-property-value-equal-p origin other))
+      (should (equal (plist-get (plist-get fragment :paint-address) :paint-source-roles)
+                     '((content . 7))))
+      (dolist (property '(help-echo keymap ebox-content ebox--paint-origin))
+        (should-not (get-text-property 0 property reclipped)))
+      ;; Border paint can follow the omitted child, but child semantic tags
+      ;; must not appear on the parent-owned replacement.
+      (plist-put fragment :text reclipped)
+      (ebox-surface--set-horizontal-border-role (list fragment) 7 'bt t)
+      (should (member '(bt . 7) (plist-get fragment :paint-role-ids)))
+      (should-not (member '(bt . 7) (plist-get fragment :role-ids)))
+      (should-not (get-text-property 0 'ebox-bt (plist-get fragment :text))))))
+
 (ert-deftest ebox-native-layout-ir-preserves-default-foreground-face ()
   "Serialize and optionally render the Ebox default foreground reset."
   (let* ((ebox-viewport-width 80)

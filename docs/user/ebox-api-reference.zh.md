@@ -72,7 +72,8 @@ participation property 就是普通子 Box property，不会创建另一种公�
 | 图层放置 | `:position`、`:left`、`:top`、`:z-index`、`:layer`、`:anchor`、`:placement` |
 
 `hidden` 在组合子节点后约束内容宽度，保留完整的受支持文本簇；容器自身的 padding 与
-border 不在裁剪区域内。被裁掉的子文本同时移除其属性。固定 display space 可以缩短，
+border 不在裁剪区域内。被裁掉的子文本不再保留交互属性，半字形补白仍保留原 face
+及其绘制依赖。固定 display space 可以缩短，
 放不下的字形/图像则整体省去，不做像素遮罩。纵向按完整行裁剪。`visible` 允许溢出，
 `scroll` 提供纵向滚动；这些设置不隐含省略号或横向滚动。
 
@@ -129,7 +130,8 @@ margin 不参与遮挡。绘制裁剪到宿主画布。
 
 这是不透明文本合成：横向用像素，纵向共享宿主的文本行网格。定位子树必须与宿主
 使用相同的有效字体行高。裁剪保留完整的受支持文本簇和 display unit；不完整字形或
-图像以中性空白替代。不提供 alpha 混合、半字形遮罩或 child frame。native 表示
+图像以保留原 face（含背景色）的非交互空白替代，源内容之外的画布空白仍保持中性。
+不提供 alpha 混合、半字形遮罩或 child frame。native 表示
 无法表达图层放置时使用 Elisp。示例和 retained 更新行为见
 [图层指南](ebox-user-guide.zh.md#retained-layers)。
 

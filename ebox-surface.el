@@ -3680,7 +3680,7 @@ properties.  Its local renderer cannot prove equivalence for such an owner."
 (defun ebox-surface--retained-property-value-equal-p (left right)
   "Return non-nil when retaining LEFT instead of RIGHT preserves its value.
 Opaque payloads, including callbacks, keymaps and records, must keep identity.
-Render-created paint origins compare their captured baselines instead."
+Render-created paint origins compare their baselines and paint source roles."
   (let ((seen (make-hash-table :test #'eq)))
     (cl-labels
         ((same
@@ -3688,8 +3688,10 @@ Render-created paint origins compare their captured baselines instead."
           (cond
            ((eq old new) t)
            ((and (ebox--paint-origin-p old) (ebox--paint-origin-p new))
-            (same (ebox--paint-origin-baseline old)
-                  (ebox--paint-origin-baseline new)))
+            (and (same (ebox--paint-origin-baseline old)
+                       (ebox--paint-origin-baseline new))
+                 (same (ebox--paint-origin-source-roles old)
+                       (ebox--paint-origin-source-roles new))))
            ((or (functionp old) (functionp new)
                 (keymapp old) (keymapp new)) nil)
            ((memq new (gethash old seen)) t)
@@ -3786,18 +3788,21 @@ Return nil on a proof miss.  The caller still validates the final footprint."
           (origin (with-current-buffer buffer (point-min)))
           result)
       (cl-labels
-          ((baseline-for
+          ((origin-for
             (start end published-properties)
             (while (and fragments (<= (plist-get (car fragments) :end) start))
               (setq fragments (cdr fragments)))
-            (let ((remaining fragments) (position start) seen baseline)
+            (let ((remaining fragments) (position start) seen baseline source-roles)
               (while (< position end)
                 (let ((fragment (car remaining)))
                   (unless (and fragment
                                (<= (plist-get fragment :start) position)
                                (< position (plist-get fragment :end)))
                     (throw 'slot-property-miss nil))
-                  (let ((value
+                  (let ((roles (cl-set-difference
+                                (plist-get fragment :paint-role-ids)
+                                (plist-get fragment :role-ids) :test #'equal))
+                        (value
                          (cond
                           ((plist-get fragment :face-baseline-known-p)
                            (plist-get fragment :face-baseline))
@@ -3806,13 +3811,16 @@ Return nil on a proof miss.  The caller still validates the final footprint."
                            (plist-get published-properties 'face))
                           (t (throw 'slot-property-miss nil)))))
                     (when (and seen
-                               (not (ebox-surface--retained-property-value-equal-p
-                                     baseline value)))
+                               (or (not (ebox-surface--retained-property-value-equal-p
+                                         baseline value))
+                                   (not (equal source-roles roles))))
                       (throw 'slot-property-miss nil))
-                    (setq baseline value seen t))
+                    (setq baseline value source-roles roles seen t))
                   (setq position (min end (plist-get fragment :end))
                         remaining (cdr remaining))))
-              baseline))
+              (ebox--paint-origin-create
+               :baseline (copy-tree baseline)
+               :source-roles (copy-tree source-roles))))
            (pixel-filler-p
             (line start end properties values)
             (let ((display (plist-get properties 'display)))
@@ -3876,11 +3884,9 @@ Return nil on a proof miss.  The caller still validates the final footprint."
                  ;; old fragment coordinates or peeling a composed face.
                  (put-text-property
                   new-position new-end ebox--paint-origin-property
-                  (ebox--paint-origin-create
-                   :baseline (copy-tree
-                              (baseline-for (+ (- (car span) origin) old-position)
-                                            (+ (- (car span) origin) old-end)
-                                            published-props)))
+                  (origin-for (+ (- (car span) origin) old-position)
+                              (+ (- (car span) origin) old-end)
+                              published-props)
                   line)
                  (setq old-position old-end new-position new-end)))
              (unless (and (= old-position old-length) (= new-position new-length))
@@ -3911,7 +3917,11 @@ captured baselines; an unknown baseline remains unknown for later proofs."
                 (- (min end (plist-get fragment :end)) start)
                 ebox--paint-origin-property
                 (ebox--paint-origin-create
-                 :baseline (copy-tree (plist-get fragment :face-baseline)))
+                 :baseline (copy-tree (plist-get fragment :face-baseline))
+                 :source-roles
+                 (copy-tree
+                  (cl-set-difference (plist-get fragment :paint-role-ids)
+                                     (plist-get fragment :role-ids) :test #'equal)))
                 line))))))))
   lines)
 
@@ -5485,16 +5495,7 @@ than replaying old coordinates, properties or revision authority."
 
 (defun ebox-surface--role-ids-from-properties (properties)
   "Return namespaced Ebox role/id pairs from PROPERTIES."
-  (let (roles)
-    (when-let* ((region-id
-                (plist-get properties 'ebox-overflow-foreground-source)))
-      (push (cons 'overflow-foreground region-id) roles))
-    (dolist (region-id (plist-get properties 'ebox-content-owners))
-      (cl-pushnew (cons 'content-owner region-id) roles :test #'equal))
-    (dolist (entry ebox-region-types)
-      (when-let* ((region-id (plist-get properties (cdr entry))))
-            (cl-pushnew (cons (car entry) region-id) roles :test #'equal)))
-    (nreverse roles)))
+  (ebox--render-role-ids-from-properties properties))
 
 (defun ebox-surface--role-ids-at (rendered position &optional cache)
   "Return namespaced Ebox role/id pairs at POSITION in RENDERED.
@@ -5511,27 +5512,29 @@ one output projection."
         roles))))
 
 (defun ebox-surface--paint-address-at
-    (rendered position role-cache ordinal-table)
+    (rendered position role-cache ordinal-table &optional paint-source-roles)
   "Return the semantic paint address at POSITION in RENDERED.
 ROLE-CACHE is the per-render role extraction cache and ORDINAL-TABLE tracks
 the first-to-last occurrence of an otherwise equal owner/content address.
+PAINT-SOURCE-ROLES identifies paint-only producers of clipped glyph fill.
 The result deliberately contains semantic owner/role facts only; it never
 uses a string, buffer, marker, or TP object identity as an address."
   (let* ((properties (text-properties-at position rendered))
          (roles (ebox-surface--role-ids-at rendered position role-cache))
          (content-owner (plist-get properties 'ebox-content-owner))
          (content-index (plist-get properties 'ebox-content-idx))
-         (prefix (and (or roles content-owner (integerp content-index))
-                      (list :roles (copy-tree roles)
-                            :content-owner content-owner
-                            :content-index content-index)))
+         (prefix (and (or roles content-owner (integerp content-index)
+                          paint-source-roles)
+                      (append
+                       (list :roles (copy-tree roles)
+                             :content-owner content-owner
+                             :content-index content-index)
+                       (when paint-source-roles
+                         (list :paint-source-roles (copy-tree paint-source-roles))))))
          (ordinal (and prefix (gethash prefix ordinal-table 0))))
     (when prefix
       (puthash prefix (1+ ordinal) ordinal-table)
-      (list :roles (copy-tree roles)
-            :content-owner content-owner
-            :content-index content-index
-            :ordinal ordinal))))
+      (append prefix (list :ordinal ordinal)))))
 
 (defun ebox-surface--candidate-plan-text (rendered owned-values)
   "Return a private snapshot of RENDERED for an owned TP plan.
@@ -5654,22 +5657,29 @@ when it needs to mutate them."
                                          ebox--paint-origin-property
                                          rendered))
              (roles (ebox-surface--role-ids-at rendered position role-cache))
+             (paint-roles
+              (if (and origin (ebox--paint-origin-source-roles origin))
+                  (delete-dups
+                   (append (copy-sequence (ebox--paint-origin-source-roles origin))
+                           roles))
+                roles))
              (address
               (ebox-surface--paint-address-at
-               rendered position role-cache ordinal-table))
+               rendered position role-cache ordinal-table
+               (cl-set-difference paint-roles roles :test #'equal)))
              (baseline
               (and origin
                    (copy-tree
                     (ebox--paint-origin-baseline origin)))))
         (push (list :text rendered :text-source-p t
                     :start position :end next
-                    :line line :paint-role-ids roles
+                    :line line :paint-role-ids paint-roles
                     :role-ids roles
                     :paint-address address
                     :paint-token
                     (and address
                          (list :baseline (copy-tree baseline)
-                               :roles (copy-tree roles)
+                               :roles (copy-tree paint-roles)
                                :content-owner
                                (plist-get address :content-owner)
                                :content-index
@@ -6561,12 +6571,21 @@ relative face contributions and performs the final merge during prepare."
                     fragment region-id ebox-surface--paint-base-roles)))
              (pair (cons role region-id)))
         (dolist (key '(:paint-role-ids :role-ids))
-          (let ((roles (cl-remove pair (plist-get fragment key) :test #'equal)))
-            (plist-put fragment key (if anchor-p (append roles (list pair)) roles))))
+          (let* ((roles (cl-remove pair (plist-get fragment key) :test #'equal))
+                 (owned-p
+                  (or (eq key :paint-role-ids)
+                      (cl-some
+                       (lambda (entry)
+                         (and (equal (cdr entry) region-id)
+                              (memq (car entry) ebox-surface--paint-base-roles)))
+                       roles))))
+            (plist-put fragment key
+                       (if (and anchor-p owned-p)
+                           (append roles (list pair)) roles))))
         (when (> (length (plist-get fragment :text)) 0)
           (if-let* ((owner
                     (cdr (cl-find role
-                                  (plist-get fragment :paint-role-ids)
+                                  (plist-get fragment :role-ids)
                                   :key #'car :test #'eq :from-end t))))
               (put-text-property 0 (length (plist-get fragment :text))
                                  property owner (plist-get fragment :text))

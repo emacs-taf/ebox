@@ -9,6 +9,7 @@
 
 (require 'cl-lib)
 (require 'ebox-measure)
+(require 'ebox-render-context)
 
 (declare-function ebox--grapheme-cluster-end "ebox-layout" (string start))
 
@@ -45,6 +46,31 @@ Retain the source properties and nested display values by identity."
      (cons 'space (plist-put properties :width (list width))) result)
     result))
 
+(defun ebox-composite--fill (line position width)
+  "Replace LINE's glyph at POSITION with WIDTH pixels of painted blank.
+Keep face values by identity so named paint slots remain live.  Retain paint
+dependencies on the transient origin carrier, separately from the omitted
+glyph's display, interaction and semantic ownership properties."
+  (let ((space (ebox-pixel-space width)))
+    (dolist (property '(face font-lock-face))
+      (when-let* ((value (get-text-property position property line)))
+        (put-text-property 0 (length space) property value space)))
+    (let ((origin (get-text-property position ebox--paint-origin-property line)))
+      (when (or origin ebox--paint-origin-capture-p)
+        (put-text-property
+         0 (length space) ebox--paint-origin-property
+         (ebox--paint-origin-create
+          :baseline (if origin (ebox--paint-origin-baseline origin)
+                      (copy-tree (get-text-property position 'face line)))
+          :source-roles
+          (delete-dups
+           (append (and origin
+                        (copy-sequence (ebox--paint-origin-source-roles origin)))
+                   (ebox--render-role-ids-from-properties
+                    (text-properties-at position line)))))
+         space)))
+    space))
+
 (defun ebox-composite--join (parts)
   "Join PARTS while retaining their separately measured pixel extents.
 A neutral zero-pixel display boundary prevents adjacent EQ replacement runs
@@ -66,7 +92,7 @@ from collapsing or independently shaped source fragments from reshaping."
   "Fit LINE from START through END in its original [LEFT, RIGHT) pixels.
 Removing a left shaping context can change a retained unit's width.  Resolve
 that unit within its original pixel interval, then retry the remaining whole
-run.  A newly wider glyph becomes neutral fill rather than shifting the next
+run.  A newly wider glyph becomes painted fill rather than shifting the next
 source glyph or borrowing its pixels."
   (let ((position start) (pixel left) parts)
     (while (< position end)
@@ -82,12 +108,13 @@ source glyph or borrowing its pixels."
             (cond
              ((<= unit-width available)
               (push unit parts)
-              (push (ebox-pixel-space (- available unit-width)) parts))
+              (push (ebox-composite--fill
+                     line position (- available unit-width)) parts))
              ((ebox--display-space-width
                (get-text-property position 'display line))
               (push (ebox-composite--space line position next available)
                     parts))
-             (t (push (ebox-pixel-space available) parts)))
+             (t (push (ebox-composite--fill line position available) parts)))
             (setq position next pixel next-pixel)))))
     (ebox-composite--join (nreverse parts))))
 
@@ -97,9 +124,10 @@ START and END must be finite nonnegative numbers with START <= END.  LINE is
 a single-line string or nil.  Pixels beyond LINE are neutral blank space.
 Keep complete supported graphemes and replacement display runs, preserving
 their text property values by identity.  Fixed pixel spaces can be cut at
-either edge; other partial glyphs become neutral blanks at their original
-positions.  Measure original prefixes so adjacent shaping is not summed as
-isolated characters.  Neither LINE nor its property values are modified."
+either edge; other partial glyphs become noninteractive blanks retaining their
+source faces at their original positions.  Measure original prefixes so
+adjacent shaping is not summed as isolated characters.  Neither LINE nor its
+property values are modified."
   (unless (ebox-composite--line-p line)
     (error "Ebox composite needs a single-line string: %S" line))
   (unless (and (ebox-size--finite-number-p start) (>= start 0)
@@ -139,7 +167,7 @@ isolated characters.  Neither LINE nor its property values are modified."
                            (get-text-property position 'display line))
                           (ebox-composite--space
                            line position next (- right left))
-                        (ebox-pixel-space (- right left)))
+                        (ebox-composite--fill line position (- right left)))
                       parts)))
               (setq position next pixel next-pixel)))
           (flush))

@@ -78,8 +78,9 @@ another public node or wrapper.
 
 `hidden` enforces the content width after composing children, preserving whole
 supported text clusters and excluding the container's own padding and border
-from the clipping area. Clipped-away child properties are removed with their
-text. Partial display spaces can be shortened; oversized glyphs/images are
+from the clipping area. Clipped-away child interaction properties are removed;
+partial-glyph fill retains the source faces and their paint dependencies.
+Partial display spaces can be shortened; oversized glyphs/images are
 omitted, not pixel-masked. Vertical clipping uses whole lines. `visible` allows
 overflow, and `scroll` provides vertical scrolling. No ellipsis or horizontal
 scrolling is implied.
@@ -151,7 +152,9 @@ an error before publication.
 This is an opaque text compositor: horizontal positions are pixels, vertical
 positions share the host's row grid. Positioned descendants must share their
 host's effective font line height. Whole supported text clusters and display
-units survive clipping; partial glyphs/images become neutral space. There is
+units survive clipping; partial glyphs/images become noninteractive space
+retaining source faces, including background paint. Canvas gaps remain neutral.
+There is
 no alpha blending, partial-glyph masking, or child-frame rendering. Layered
 trees use Elisp when the native representation cannot express their placement.
 See the [layer guide](ebox-user-guide.en.md#retained-layers) for examples and

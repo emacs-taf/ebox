@@ -708,8 +708,8 @@ pairs. It is intentionally small; full Unicode segmentation is out of scope."
   "Clip LINE to MAX-PIXEL without splitting supported grapheme clusters.
 Retain visible text properties.  A partially visible fixed display space
 keeps its properties and uses the remaining width; a glyph that cannot fit
-is omitted as a whole.  Any remaining width is neutral box content, never
-an interactive stand-in for an omitted glyph."
+is omitted as a whole.  Its remaining width retains the source faces, never
+the interaction properties of the omitted glyph."
   ;; The prefix-plus-pixel-filler algorithm follows kinney's GPL-3.0-or-later
   ;; `s-pixel-floor' and `s-pixel-left' (2026), extended here for graphemes,
   ;; source properties and clipped display spaces without an extra dependency.
@@ -740,7 +740,7 @@ an interactive stand-in for an omitted glyph."
                   (concat
                    (substring line 0 position)
                    (when (> remaining 0)
-                     (let ((space (ebox-pixel-space remaining)))
+                     (let ((space (ebox-composite--fill line position remaining)))
                        (when space-width
                          (add-text-properties
                           0 (length space)

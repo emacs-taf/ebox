@@ -242,7 +242,8 @@ part of the author contract. `:overflow hidden` clips excess vertical lines and
 limits each content line to the measured content width. It retains the fitting
 prefix without splitting supported text clusters; a glyph or image that cannot
 fit is omitted as a whole. Fixed display spaces can be shortened to the exact
-remaining pixel width. Any remaining gap is filled with box content space, so
+remaining pixel width. A cut glyph's remaining gap keeps its source faces,
+including background paint, so
 padding and borders retain their positions. This is pixel-width truncation,
 not partial-glyph/image masking or automatic ellipsis. Omitted child text does
 not leave its help, hover, pointer, or keymap active in the filler.
@@ -342,7 +343,9 @@ dependency cycles are errors.
 Composition uses horizontal pixels and one shared vertical text-row grid.
 Positioned subtrees must have the same effective font line height as their
 host. Whole supported clusters survive cuts; partially covered glyphs/images
-are replaced with neutral space, and fixed display spaces can be shortened.
+are replaced with noninteractive space retaining the source faces (including
+background paint), and fixed display spaces can be shortened. Blank canvas
+outside the source remains neutral.
 There is no alpha blending, half-glyph masking, or child frame. Layered trees
 fall back to Elisp when native reflow cannot represent them.
 

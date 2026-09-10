@@ -10,6 +10,7 @@
 (require 'cl-lib)
 (require 'ebox)
 (require 'ebox-composite)
+(require 'ebox-fixtures)
 
 (defun ebox-composite-test--plain-width (text)
   "Measure TEXT with seven-pixel glyphs, zero-width marks, and fi shaping."
@@ -89,6 +90,266 @@
           (should-not (text-property-not-all 0 (length output)
                                            'keymap nil output)))))
     (should (equal (ebox-composite-slice "abc" 2 2) ""))))
+
+(ert-deftest ebox-composite-cut-fill-keeps-source-paint-without-interaction ()
+  "Cut glyphs keep their face, including dynamic slots, but not source actions."
+  (ebox-composite-test--with-metrics
+    (let* ((slot (tp-paint-slot-create '(:background "#eee5ce")))
+           (face (list 'bold (tp-paint-slot-face slot)))
+           (font-lock-face (list :background "#765fa1"))
+           (source (propertize "ABCD" 'face face 'font-lock-face font-lock-face
+                               'keymap (make-sparse-keymap) 'help-echo "hidden"
+                               'mouse-face 'highlight 'ebox-owner '(owner)))
+           (before (copy-sequence source))
+           (output (ebox-composite-slice source 3 24)))
+      (dolist (position '(0 3))
+        (should (eq (get-text-property position 'face output) face))
+        (should (eq (get-text-property position 'font-lock-face output)
+                    font-lock-face))
+        (dolist (property '(keymap help-echo mouse-face ebox-owner))
+          (should-not (get-text-property position property output))))
+      (ebox-composite-test--assert-width output 21)
+      (tp-paint-slot-update slot '(:background "#aabbcc"))
+      (should (memq (tp-paint-slot-face slot)
+                    (get-text-property 0 'face output)))
+      (should (equal (face-attribute (tp-paint-slot-face slot) :background)
+                     "#aabbcc"))
+      (should (equal-including-properties source before)))))
+
+(ert-deftest ebox-composite-cut-fill-covers-shaping-and-replacement-boundaries ()
+  "Reshaped glyphs, images and replacement strings retain source paint."
+  (ebox-composite-test--with-metrics
+    (let ((face (list :background "#eee5ce")))
+      (dolist (source (list (propertize "fiZ" 'face face)
+                            (propertize "abc" 'face face 'display "WXYZ")
+                            (propertize "abc" 'face face 'display
+                                        '(image :type xpm :width 28))))
+        (let ((output (ebox-composite-slice source 7 18)))
+          (should (eq (get-text-property 0 'face output) face))
+          (ebox-composite-test--assert-width output 11))))))
+
+(ert-deftest ebox-composite-overlap-keeps-underlay-paint-at-both-cut-edges ()
+  "Occluding part of two glyphs preserves both exposed background strips."
+  (ebox-composite-test--with-metrics
+    (let* ((under (list :background "#eee5ce"))
+           (over (list :background "#20353e"))
+           (base (propertize "ABCD" 'face under))
+           (top (propertize (ebox-pixel-space 10) 'face over))
+           (output (ebox-composite-line base (list (list :text top :x 3)) 35)))
+      (should (eq (get-text-property 0 'face output) under))
+      (should (eq (get-text-property 1 'face output) over))
+      (should (eq (get-text-property 2 'face output) under))
+      (should-not (get-text-property (1- (length output)) 'face output))
+      (ebox-composite-test--assert-width output 35))))
+
+(ert-deftest ebox-composite-layout-cut-keeps-rich-child-paint ()
+  "Layout clipping preserves child paint and does not resurrect child actions."
+  (ebox-composite-test--with-metrics
+    (dolist (child '("ABCD"
+                     (text :background-color "red" :help-echo "child" "ABCD")
+                     (box :background-color "red" :help-echo "child" "ABCD")))
+      (let* ((output (ebox-render
+                      (ebox-build
+                       `(box :width (px 17) :wrap-mode none :overflow hidden
+                             :background-color "blue" ,child))))
+             (fill (1- (length output)))
+             (expected (if (stringp child) "blue" "red")))
+        (should (equal (substring-no-properties output) "AB "))
+        (should (member expected
+                        (flatten-tree (get-text-property fill 'face output))))
+        (should-not (get-text-property fill 'help-echo output))
+        (ebox-composite-test--assert-width output 17)))))
+
+(ert-deftest ebox-composite-shaped-shorter-unit-keeps-painted-remainder ()
+  "A detached narrower glyph leaves painted fill in its original allocation."
+  (ebox-composite-test--with-metrics
+    (cl-letf (((symbol-function 'ebox-composite-test--plain-width)
+               (lambda (text)
+                 (+ (* 7 (length text))
+                    (if (string-match-p "fi" text) 3 0)))))
+      (let* ((face (list :background "#eee5ce"))
+             (output (ebox-composite-slice (propertize "fiZ" 'face face) 7 24)))
+        (should (equal (substring-no-properties output) "i Z"))
+        (should (eq (get-text-property 1 'face output) face))
+        (ebox-composite-test--assert-width output 17)))))
+
+(ert-deftest ebox-composite-mounted-overlap-keeps-painted-edges-after-updates ()
+  "Real publication preserves edge paint when moving, recoloring and hiding."
+  (ebox-composite-test--with-metrics
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             (current-buffer)
+             (ebox-build
+              '(box :width (px 35) :height (lh 1) :background-color "blue"
+                    (box :id "lower" :width (px 35) :height (lh 1)
+                         :background-color "red" "ABCDE")
+                    (box :id "upper" :position absolute :left (px 3)
+                         :width (px 10) :height (lh 1)
+                         :background-color "cyan"))))
+            (cl-labels
+                ((check (left color visible)
+                   (let* ((actual (buffer-string))
+                          (fresh (ebox-render
+                                  (plist-get (ebox-surface-buffer-snapshot
+                                              (current-buffer)) :input))))
+                     (ebox-composite-test--assert-width actual 35)
+                     (should (equal (substring-no-properties actual)
+                                    (substring-no-properties fresh)))
+                     (dotimes (position (length actual))
+                       (let* ((x (ebox--substring-pixel-width actual 0 position))
+                              (end (ebox--substring-pixel-width
+                                    actual 0 (1+ position))))
+                         (when (< x end)
+                           (should
+                            (equal (cadr (memq :background
+                                               (flatten-tree
+                                                (get-text-property
+                                                 position 'face actual))))
+                                   (if (and visible (>= x left) (< x (+ left 10)))
+                                       "cyan" color))))
+                         (should (equal (get-text-property position 'face actual)
+                                        (get-text-property position 'face fresh))))))))
+              (check 3 "red" t)
+              (ebox-region-update (ebox-region-resolve (current-buffer) "upper")
+                                  :left '(px 9))
+              (check 9 "red" t)
+              (ebox-region-update (ebox-region-resolve (current-buffer) "lower")
+                                  :background-color "orange")
+              (check 9 "orange" t)
+              (ebox-region-update (ebox-region-resolve (current-buffer) "upper")
+                                  :visibility 'hidden)
+              (check 9 "orange" nil)))
+        (when (ebox-surface-buffer-mounted-p (current-buffer))
+          (ebox-unmount-buffer (current-buffer)))))))
+
+(ert-deftest ebox-composite-mounted-layout-fill-tracks-child-paint ()
+  "Clipped fill follows paint, content, border and mixed geometry updates."
+  (ebox-composite-test--with-metrics
+    (dolist (kind '(text box))
+      (with-temp-buffer
+        (unwind-protect
+            (progn
+              (ebox-render-to-buffer
+               (current-buffer)
+               (ebox-build
+                `(box :id "parent" :width (px 17) :wrap-mode none :overflow hidden
+                      :background-color "blue"
+                      (,kind :id "child" :background-color "red"
+                             :help-echo "child" "ABCD"))))
+              (cl-labels
+                  ((check (color)
+                     (let* ((actual (buffer-string))
+                            (fill (1- (length actual)))
+                            (fresh (ebox-render
+                                    (plist-get (ebox-surface-buffer-snapshot
+                                                (current-buffer)) :input))))
+                       (should (equal (substring-no-properties actual)
+                                      (substring-no-properties fresh)))
+                       (should (equal (cadr (memq :background
+                                                 (flatten-tree
+                                                  (get-text-property fill 'face actual))))
+                                      color))
+                       (should-not (get-text-property fill 'help-echo actual))
+                       (should-not (get-text-property fill 'ebox-content actual))
+                       (should-not (get-text-property fill ebox--paint-origin-property actual))
+                       (dotimes (position (length actual))
+                         (should (equal (get-text-property position 'face actual)
+                                        (get-text-property position 'face fresh)))))))
+                (check "red")
+                (ebox-region-update "child" :background-color "yellow")
+                (check "yellow")
+                (dolist (failure-step '(text client-state))
+                  (let ((before (buffer-string))
+                        (state (ebox--buffer-render-state (current-buffer)))
+                        (revision (ebox-surface-buffer-revision (current-buffer)))
+                        (tp--surface-publication-step-function
+                         (lambda (step _surface)
+                           (when (eq step failure-step) (error "Reject fill paint")))))
+                    (should-error (ebox-region-update "child" :background-color "orange"))
+                    (should (equal-including-properties before (buffer-string)))
+                    (should (eq state (ebox--buffer-render-state (current-buffer))))
+                    (should (= revision (ebox-surface-buffer-revision (current-buffer))))))
+                (check "yellow")
+                (ebox-region-update "parent" :background-color "green")
+                (check "yellow")
+                (when (eq kind 'box)
+                  (ebox-region-update "child" :border-top-width '(lh 1)
+                                      :border-top-style 'solid :border-top-color "pink")
+                  (check "yellow")
+                  (ebox-region-update "child" :border-top-width '(lh 0))
+                  (check "yellow"))
+                (ebox-region-update "child" :content "WXYZ")
+                (check "yellow")
+                (ebox-call-with-update-batch
+                 (lambda ()
+                   (ebox-region-update "parent" :width '(px 18))
+                   (ebox-region-update "child" :background-color "purple")))
+                (check "purple")))
+          (when (ebox-surface-buffer-mounted-p (current-buffer))
+            (ebox-unmount-buffer (current-buffer))))))))
+
+(ert-deftest ebox-composite-retained-slot-fill-keeps-paint-origin ()
+  "Transported clipped content still tracks later paint and rolls back safely."
+  (ebox-composite-test--with-metrics
+    (with-temp-buffer
+      (unwind-protect
+          (cl-labels
+              ((paint (content color)
+                 (ebox-test-text content :key 'paint-text :source-identity 'paint-text
+                                 :bgcolor color))
+               (slot (content)
+                 (ebox-test-box :key 'left :source-identity 'left
+                                :wrap-mode 'none :overflow 'hidden
+                                (paint content "red")))
+               (root (content)
+                 (ebox-test-box
+                  :bgcolor "blue"
+                  (ebox-test-grid :key 'grid :width '(60)
+                                  :grid-template-columns '((17) (36)) :column-gap '(7)
+                                  (slot content)
+                                  (ebox-test-box :key 'right :source-identity 'right
+                                                 (ebox-test-text "R")))))
+               (repaint (content)
+                 (let ((candidate (ebox-candidate-begin (current-buffer))))
+                   (ebox-candidate-patch-host-paint
+                    candidate 'paint-text (paint content "red") (paint content "yellow"))
+                   (ebox-commit (current-buffer) candidate))))
+            (ebox-render-to-buffer (current-buffer) (root "ABCD"))
+            (let ((content (concat "A" (string #x0301) "BCD"))
+                  (transport (symbol-function 'ebox-surface--retained-slot-owner-text))
+                  (transported 0))
+              (cl-letf (((symbol-function 'ebox-surface--retained-slot-owner-text)
+                         (lambda (&rest args)
+                           (let ((result (apply transport args)))
+                             (when result (cl-incf transported))
+                             result))))
+                (let ((candidate (ebox-candidate-begin (current-buffer))))
+                  (ebox-candidate-replace-host-ref candidate 'left (slot content))
+                  (ebox-commit (current-buffer) candidate)))
+              (should (= transported 1))
+              (dolist (failure-step '(text client-state))
+                (let ((before (buffer-string))
+                      (revision (ebox-surface-buffer-revision (current-buffer)))
+                      (tp--surface-publication-step-function
+                       (lambda (step _surface)
+                         (when (eq step failure-step) (error "Reject transported paint")))))
+                  (should-error (repaint content))
+                  (should (equal-including-properties before (buffer-string)))
+                  (should (= revision (ebox-surface-buffer-revision (current-buffer))))))
+              (repaint content)
+              (let ((actual (buffer-string))
+                    (fresh (ebox-render (plist-get
+                                         (ebox-surface-buffer-snapshot (current-buffer))
+                                         :input))))
+                (should (equal (substring-no-properties actual)
+                               (substring-no-properties fresh)))
+                (dotimes (position (length actual))
+                  (should (equal (get-text-property position 'face actual)
+                                 (get-text-property position 'face fresh)))))))
+        (when (ebox-surface-buffer-mounted-p (current-buffer))
+          (ebox-unmount-buffer (current-buffer)))))))
 
 (ert-deftest ebox-composite-slice-keeps-supported-graphemes-whole ()
   "Both cut edges preserve combining, variation, modifier, ZWJ, and flags."

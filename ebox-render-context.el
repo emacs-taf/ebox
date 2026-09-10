@@ -12,6 +12,7 @@
 (defvar ebox-layer--active-p)
 (defvar ebox-incremental--render-portals-p)
 (defvar ebox--render-source-index)
+(defvar ebox-region-types)
 
 (declare-function ebox-interaction--refresh-hover! "ebox-interaction"
                   (string start end &optional face))
@@ -102,8 +103,8 @@
 
 (cl-defstruct (ebox--paint-origin
                (:constructor ebox--paint-origin-create))
-  "Transient caller-face baseline captured before Ebox paint composition."
-  baseline)
+  "Transient caller-face baseline and optional paint-only source roles."
+  baseline source-roles)
 
 (defconst ebox--paint-origin-property 'ebox--paint-origin
   "Private transient property carrying one render-time paint baseline.")
@@ -114,6 +115,19 @@
 (defvar ebox--render-output-provenance-table
   (make-hash-table :test #'eq :weakness 'key)
   "Weak map from rendered strings to Ebox-owned property values.")
+
+(defun ebox--render-role-ids-from-properties (properties)
+  "Return namespaced Ebox role/id pairs from rendered PROPERTIES."
+  (let (roles)
+    (when-let* ((region-id
+                (plist-get properties 'ebox-overflow-foreground-source)))
+      (push (cons 'overflow-foreground region-id) roles))
+    (dolist (region-id (plist-get properties 'ebox-content-owners))
+      (cl-pushnew (cons 'content-owner region-id) roles :test #'equal))
+    (dolist (entry ebox-region-types)
+      (when-let* ((region-id (plist-get properties (cdr entry))))
+        (cl-pushnew (cons (car entry) region-id) roles :test #'equal)))
+    (nreverse roles)))
 
 (defun ebox--render-owned-text-values-for (property &optional create)
   "Return the active candidate registry for PROPERTY when CREATE is non-nil."
