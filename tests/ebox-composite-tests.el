@@ -144,6 +144,26 @@
       (should (equal-including-properties before source))
       (should (equal (plist-get (cdr display) :width) '(15.5))))))
 
+(ert-deftest ebox-composite-slice-canonicalizes-whole-pixel-cuts ()
+  "Equal cuts share display properties regardless of numeric allocation type."
+  (ebox-composite-test--with-metrics
+    (let* ((height (list 20))
+           (display (list 'space :width '(15.5) :height height))
+           (source (propertize "abc" 'display display))
+           (integer-cut (ebox-composite-slice source 2 13))
+           (float-cut (ebox-composite-slice source 2.0 13.0))
+           (fractional-cut (ebox-composite-slice source 2.0 13.5)))
+      (should (equal-including-properties integer-cut float-cut))
+      (should (equal (plist-get (cdr (get-text-property 0 'display float-cut))
+                                :width)
+                     '(11)))
+      (should (eq (plist-get (cdr (get-text-property 0 'display float-cut))
+                             :height)
+                  height))
+      (ebox-composite-test--assert-width fractional-cut 11.5)
+      (should (eq (get-text-property 0 'display source) display))
+      (should (equal (plist-get (cdr display) :width) '(15.5))))))
+
 (ert-deftest ebox-composite-slice-never-splits-replacement-runs ()
   "Shared string and image replacements are kept whole, even across faces."
   (ebox-composite-test--with-metrics

@@ -35,6 +35,10 @@
 (defvar ebox-layer--portals nil
   "Candidate-local absolute nodes awaiting root composition.")
 
+(defvar ebox-layer--piece-width-cache nil
+  "Original row prefix widths scoped to one host composition.
+Keys are source strings by identity.  Never retained between renders.")
+
 (defvar ebox-layer--active-p 'unknown
   "Whether the current candidate contains layered layout.
 Retained publication supplies a known boolean; isolated rendering resolves
@@ -72,6 +76,18 @@ the fact once for its spatial root.")
        (or (eq (plist-get node :layer) 'root)
            (cl-some #'ebox-layer-portals-p (ebox-tree-node-children node)))))
 
+(defun ebox-layer-visible-portals-p (node)
+  "Return non-nil when NODE can paint an absolute root projection.
+Hidden owners suppress their complete logical subtree.  Keep this visible
+dependency separate from structural portal detection: hidden portals remain
+in the retained input and can become visible in a later candidate."
+  (and (listp node)
+       (not (eq (plist-get node :visibility) 'hidden))
+       (or (and (eq (plist-get node :position) 'absolute)
+                (eq (plist-get node :layer) 'root))
+           (cl-some #'ebox-layer-visible-portals-p
+                    (ebox-tree-node-children node)))))
+
 (defun ebox-layer--owned-p (line position region)
   "Whether LINE at POSITION visibly belongs to REGION, excluding margins."
   (and (not (cl-some (lambda (role)
@@ -83,16 +99,46 @@ the fact once for its spatial root.")
                       (equal region (get-text-property position (cdr role) line)))
                     ebox-region-types))))
 
+(defun ebox-layer-cached-root-scroll-p (root state)
+  "Return non-nil when ROOT can slice STATE's complete composed content.
+This proves only the cached content geometry.  Callers must separately prove
+a pure root scroll transaction with unchanged source and display context.
+Root projections and anchored provider chains are already composed in this
+content coordinate system, before the root wrapper applies its scroll offset.
+Nested scroll changes and source updates cannot use this root-only proof."
+  (and root state
+       (equal (plist-get root :node-id)
+              (plist-get (plist-get state :box) :node-id))
+       (eq (ebox-get root :overflow) 'scroll)
+       (plist-get state :content-lines)
+       (or (plist-get state :content-lines-complete-p)
+           (and (not (plist-get state :render-content-prefix))
+                (not (plist-get state :materialize-content-lines))))
+       (not (plist-get state :lazy-scroll-prefix-dirty))
+       (not (plist-get state :lazy-scroll-window-refresh-required))))
+
+(defun ebox-layer--prefix-width (line end)
+  "Return LINE's original prefix width at END within this composition."
+  (if (zerop end) 0
+    (let ((widths (or (gethash line ebox-layer--piece-width-cache)
+                      (puthash line (make-hash-table :test #'eql)
+                               ebox-layer--piece-width-cache))))
+      (or (gethash end widths)
+          (puthash end (ebox--substring-pixel-width line 0 end) widths)))))
+
 (defun ebox-layer--pieces (lines node)
   "Return NODE's visible source intervals in LINES, before positioning."
-  (let ((region (ebox--ensure-region-id node)) pieces)
+  (let ((region (ebox--ensure-region-id node))
+        (ebox-layer--piece-width-cache
+         (or ebox-layer--piece-width-cache (make-hash-table :test #'eq)))
+        pieces)
     (cl-loop for line in lines for row from 0 do
              (let ((start 0) (limit (length line)))
                (while (< start limit)
                  (let ((end (next-property-change start line limit)))
                    (when (ebox-layer--owned-p line start region)
-                     (let ((x (ebox--substring-pixel-width line 0 start))
-                           (right (ebox--substring-pixel-width line 0 end)))
+                     (let ((x (ebox-layer--prefix-width line start))
+                           (right (ebox-layer--prefix-width line end)))
                        (when (> right x)
                          ;; Keep the full row as source so shaping and shared
                          ;; display objects are measured in their own context.
@@ -310,7 +356,8 @@ Only candidate-local lists of visible paint records are sorted."
                                (eq (plist-get child :position) 'absolute)) children))
          (base (funcall renderer flow)))
     (if ebox--intrinsic-layout-measurement base
-      (let* ((lines (ebox-string-lines base))
+      (let* ((ebox-layer--piece-width-cache (make-hash-table :test #'eq))
+             (lines (ebox-string-lines base))
              (width (or (ebox--wrapper-content-viewport-pixel host)
                         (if lines (apply #'max (mapcar #'ebox--string-pixel-width lines)) 0)))
              (flow-height (length lines))
@@ -335,7 +382,8 @@ Only candidate-local lists of visible paint records are sorted."
                                                       (plist-get piece :end))) records)))))
         (unless (eq host ebox-layer--render-root)
           (dolist (child absolute)
-            (when (eq (plist-get child :layer) 'root)
+            (when (and (eq (plist-get child :layer) 'root)
+                       (not (eq (plist-get child :visibility) 'hidden)))
               (cl-pushnew child ebox-layer--portals :test #'eq)))
           (setq absolute (cl-remove-if (lambda (child)
                                         (eq (plist-get child :layer) 'root)) absolute)))

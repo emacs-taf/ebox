@@ -185,9 +185,12 @@ Emacs 设置及窗口系统；单独设置指针形状不会绑定命令。
 ```
 
 `:activate` 接收零参数函数，将其绑定到 `RET`、`[return]`、`SPC` 和 `[mouse-1]`。
+主按钮双击、三击的每次释放也各激活一次。主按钮按下和拖动事件，包括其双击、三击
+变体，默认不执行操作，避免触发原生文本选择。
 `:bindings` 接收 alist，key 是按键描述字符串或事件向量，value 是零参数函数。
-两项都可省略，`nil` 表示不添加相应绑定。重复按键和重叠前缀会报错，包括与激活键
-重叠的绑定。辅助函数返回原生 Emacs keymap；回调保留为函数，直到对应命令触发时才调用。
+两项都可省略，`nil` 表示不添加相应绑定。重复按键和重叠前缀会报错，包括与上述四个
+基础激活键重叠的绑定。显式绑定可以覆盖连击、按下和拖动事件的默认行为。
+辅助函数返回原生 Emacs keymap；回调保留为函数，直到对应命令触发时才调用。
 鼠标事件会自动从事件取得窗口，并在其 buffer 中运行回调，不选择窗口或移动 point。
 键盘回调在当前 buffer 中运行，由 point 所在位置进行原生分派。
 
@@ -343,6 +346,7 @@ observer 为 nil 时，Ebox 不创建 observation context，不取 timestamp/GC 
 | `ebox-region-ids` | 按文档顺序返回当前底层 region id。 |
 | `ebox-region-resolve` | 把 mounted buffer 中一个逻辑 `:id` 解析为不透明、surface-scoped 的 handle。 |
 | `ebox-region-update` | 通过一次 retained transaction 应用支持的可变样式、滚动或原生节点能力 property；接受不透明 region handle，或当前已挂载 buffer 中的语义 `:id`。 |
+| `ebox-call-with-update-batch` | `(CALLBACK &optional BUFFER)` 在目标 buffer 中运行零参数回调，合并其排队的 region 更新，并返回回调的返回值。 |
 | `ebox-child-range` | 仅供框架集成：在组装 typed canonical input 时构造非视觉、可寻址的 child Range descriptor。 |
 | `ebox-candidate-begin` | 在 one-shot candidate 中捕获当前准确 mounted generation。 |
 | `ebox-candidate-replace` | 用 single-root `CanonicalEboxInput` 替换一个 candidate node address。 |
@@ -368,6 +372,24 @@ candidate 被 commit 封存后不能复用。
 对应能力并阻止外层值覆盖，省略的属性保持不变。Ebox 对 keymap 创建快照；调用方
 之后直接修改原 map 不会更新已挂载的 surface，应显式替换 `:keymap` 来发布新绑定。
 清除该属性只移除节点 keymap，普通 Emacs buffer 和全局绑定仍然适用。
+
+### 合并 region 更新
+
+`ebox-call-with-update-batch` 的 `BUFFER` 默认是当前 buffer，`CALLBACK` 在该
+buffer 中执行。如果 helper 自己创建 batch，回调正常返回且存在待处理变化时只
+flush 一次。空回调或未产生变化的回调不会发布，也不会替换最近一次成功更新报告。
+flush 成功后，helper 原样返回回调的返回值。
+
+目标 buffer 已有活动 batch 时，helper 加入该 batch 而不 flush，由外层拥有者决定
+何时发布。回调发生 error、quit 或其他非局部退出时，helper 丢弃本次调用排队的
+变化，并将外层 batch 的待处理状态恢复到进入回调前的检查点。helper 自己拥有的
+batch 若 flush 失败，其未发布变化会被丢弃；已有 TP transaction 恢复此前已提交
+的 buffer、runtime、revision 和报告。
+
+回滚范围仅限于 `BUFFER` 中排队的 `ebox-region-update` 工作。回调对应用变量的
+赋值、文件写入及其他业务副作用不会被撤销。显式
+`ebox-incremental-begin-batch` / `ebox-incremental-flush` 生命周期调用应放在回调
+外部；这些底层调用保留各自的重试语义。
 
 author DSL 没有 Range form。普通 author 只组合直接嵌套的 Text/Box child，不调用
 `ebox-child-range`；Range address 只服务已经拥有 semantic child range 与 candidate
@@ -429,6 +451,7 @@ native 模块只是加速器，不是正确性依赖。加载包不会构建它�
   `ebox-candidate-replace-host-ref`、`ebox-candidate-patch-host-paint`、
   `ebox-child-range`、
   `ebox-region-ids`、`ebox-region-resolve`、`ebox-region-update`、
+  `ebox-call-with-update-batch`、
   `ebox-host-ref-bounds`、`ebox-host-ref-position`；
 - Selector：`ebox-selector-parse`、`ebox-selector-match-node-p`、
   `ebox-selector-query-all`、`ebox-selector-query-buffer`、

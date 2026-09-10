@@ -94,6 +94,7 @@
      ((string-match-p "canonical" name) 'ebox-canonical)
      ((string-match-p "render-burst" name) 'ebox-buffer-backend)
      ((string-match-p "render-owned-text-values" name) 'ebox-render-context)
+     ((string-prefix-p "ebox-layer--" name) 'ebox-layer)
      ((string-match-p "font\\|char-width\\|pixel-width\\|face-height\\|space-pixel\\|display-signature" name)
       'ebox-measure)
      ((string-match-p "style" name) 'ebox-style)
@@ -153,6 +154,7 @@
     ebox-incremental--allocated-slot-proof-cache
     ebox-incremental--candidate-path-copy-origin-table
     ebox-incremental--candidate-proof-node-table
+    ebox-layer--piece-width-cache
     ebox-style--box-engine-longhand-cache ebox-style--closed-computed-cache
     ebox-style--closed-inheritance-cache ebox-style--computed-snapshot-cache
     ebox-style--declaration-cache ebox-style--text-engine-longhand-cache

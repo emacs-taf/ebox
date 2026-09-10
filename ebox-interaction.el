@@ -60,9 +60,11 @@
 (defun ebox-keymap-create (&rest options)
   "Create an ordinary native keymap from OPTIONS.
 `:activate' is an optional zero-argument callback for RET, return, SPC and
-the primary mouse button.  Nil omits these activation bindings.  `:bindings'
-is an alist of string key descriptions or key vectors paired with
-zero-argument callbacks.
+the primary mouse button.  Repeated clicks each activate once; primary-button
+press and drag events do nothing, so they do not start native text selection.
+Nil omits these activation bindings.  `:bindings' is an alist of string key
+descriptions or key vectors paired with zero-argument callbacks.  Explicit
+bindings override the repeated-click, press and drag defaults.
 Callbacks are not invoked until a generated command runs.  Keyboard commands
 use the current buffer; mouse commands use the event window's buffer without
 selecting a window or moving point.  Duplicate or overlapping keys are errors.
@@ -104,7 +106,20 @@ This function does not supply focus navigation, state or event propagation."
             (error "Ebox keymap binding overlaps an existing key: %s"
                    (key-description key)))
           (define-key map key (ebox-interaction--command callback))
-          (push key keys))))
+          (push key keys)))
+      (when activate
+        ;; A release-only map lets the preceding press enter mouse-drag-region;
+        ;; double/triple clicks can then select words or whole lines.  Claim
+        ;; the primary-button sequence locally, preserving explicit handlers.
+        (dolist (event '(double-mouse-1 triple-mouse-1
+                                      down-mouse-1 double-down-mouse-1
+                                      triple-down-mouse-1 drag-mouse-1
+                                      double-drag-mouse-1 triple-drag-mouse-1))
+          (unless (lookup-key map (vector event))
+            (define-key map (vector event)
+                        (if (memq event '(double-mouse-1 triple-mouse-1))
+                            (lookup-key map [mouse-1])
+                          #'ignore))))))
     map))
 
 (defun ebox-interaction--navigable-keymap-p (map)

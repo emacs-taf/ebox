@@ -367,6 +367,24 @@
   "Return first content face in STRING."
   (ebox-test--face-at-property string 'ebox-content))
 
+(cl-defmacro ebox-test--with-scroll-producer-counts
+    ((prefix-count &optional materialize-count requested-lines) &body body)
+  "Run BODY observing source calls across candidate producer rebinding.
+Increment PREFIX-COUNT for bounded rendering, optional MATERIALIZE-COUNT for
+full rendering, and store the latest bounded limit in REQUESTED-LINES."
+  (declare (indent 1))
+  (let ((original (make-symbol "original-scroll-source")))
+    `(let ((,original (symbol-function 'ebox--render-scroll-window-source)))
+       (cl-letf (((symbol-function 'ebox--render-scroll-window-source)
+                  (lambda (source limit &optional cache)
+                    (if limit
+                        (progn
+                          (cl-incf ,prefix-count)
+                          ,@(when requested-lines `((setq ,requested-lines limit))))
+                      ,@(when materialize-count `((cl-incf ,materialize-count))))
+                    (funcall ,original source limit cache))))
+         ,@body))))
+
 (defmacro ebox-test--count-full-surface-updates (&rest body)
   "Run BODY and return the number of full TP surface updates it triggered."
   (declare (indent 0))
@@ -4999,6 +5017,201 @@ line compositor's complete property output, including empty lines and chrome."
           (should (eq (plist-get flush-report :strategy)
                       'paint-patch)))))))
 
+(ert-deftest ebox-update-batch-coalesces-ordinary-regions-in-target-buffer ()
+  "A callback should queue every region update and publish once in BUFFER."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer
+   (ebox-build '(column :width (px 180)
+			(box :id first "First")
+			(box :id second "Second")))
+   (let ((target (current-buffer))
+         (before (buffer-string))
+         (revision (ebox-surface-buffer-revision (current-buffer)))
+         (publisher (symbol-function 'ebox--publish-surface-region-batch))
+         (result (list 'callback-result))
+         (publications 0))
+     (cl-letf (((symbol-function 'ebox--publish-surface-region-batch)
+                (lambda (&rest arguments)
+                  (cl-incf publications)
+                  (apply publisher arguments))))
+       (with-temp-buffer
+         (let ((caller (current-buffer)))
+           (should
+            (eq result
+                (ebox-call-with-update-batch
+                 (lambda ()
+                   (should (eq (current-buffer) target))
+                   (ebox-region-update 'first :content "First changed")
+                   (ebox-region-update 'second :color "#112233")
+                   (ebox-region-update 'first :background-color "#445566")
+                   (ebox-region-update 'second :content "Second changed")
+                   (should (= (ebox-incremental-pending-count target) 4))
+                   (should (= publications 0))
+                   (should (= revision (ebox-surface-buffer-revision target)))
+                   (should (equal-including-properties before (buffer-string)))
+                   result)
+                 target)))
+           (should (eq caller (current-buffer))))))
+     (should (= publications 1))
+     (should (= (1+ revision) (ebox-surface-buffer-revision target)))
+     (should (= (plist-get (ebox-buffer-update-report target) :batched-count) 4))
+     (should-not (gethash target ebox-incremental--batch-table))
+     (should (string-match-p "First changed" (buffer-string)))
+     (should (string-match-p "Second changed" (buffer-string)))
+     (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
+
+(ert-deftest ebox-update-batch-empty-callback-preserves-prior-state ()
+  "An empty or unchanged callback should not flush or replace prior reports."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer
+   (ebox-build '(box :id target :color "#112233" "Stable"))
+   (let ((buffer (current-buffer)))
+     (ebox-incremental-begin-batch buffer)
+     (ebox-incremental-flush buffer)
+     (let ((state (ebox-incremental--batch-state buffer))
+           (report (ebox-buffer-update-report buffer))
+           (revision (ebox-surface-buffer-revision buffer)))
+       (cl-letf (((symbol-function 'ebox-incremental-flush)
+                  (lambda (_) (ert-fail "Empty callback must not flush"))))
+         (should (eq 'empty (ebox-call-with-update-batch (lambda () 'empty))))
+         (should-not
+          (ebox-call-with-update-batch
+           (lambda () (ebox-region-update 'target :color "#112233")))))
+       (should (eq state (ebox-incremental--batch-state buffer)))
+       (should (equal report (ebox-buffer-update-report buffer)))
+       (should (= revision (ebox-surface-buffer-revision buffer)))))))
+
+(ert-deftest ebox-update-batch-nested-success-flushes-only-outer-callback ()
+  "Nested callbacks should share one accumulated candidate and publication."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer
+   (ebox-build '(column :width (px 180)
+			(box :id first "First")
+			(box :id second "Second")))
+   (let ((buffer (current-buffer))
+         (publisher (symbol-function 'ebox--publish-surface-region-batch))
+         (publications 0))
+     (cl-letf (((symbol-function 'ebox--publish-surface-region-batch)
+                (lambda (&rest arguments)
+                  (cl-incf publications)
+                  (apply publisher arguments))))
+       (should
+        (eq 'outer
+            (ebox-call-with-update-batch
+             (lambda ()
+               (ebox-region-update 'first :content "Outer")
+               (should
+                (eq 'inner
+                    (ebox-call-with-update-batch
+                     (lambda ()
+                       (ebox-region-update 'second :content "Inner")
+                       'inner))))
+               (should (ebox-incremental-batching-p buffer))
+               (should (= (ebox-incremental-pending-count buffer) 2))
+               (should (= publications 0))
+               (ebox-region-update 'first :color "#112233")
+               'outer)))))
+     (should (= publications 1))
+     (should-not (ebox-incremental-batching-p buffer))
+     (should (string-match-p "Outer" (buffer-string)))
+     (should (string-match-p "Inner" (buffer-string)))
+     (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
+
+(ert-deftest ebox-update-batch-joins-explicit-batch-without-flushing ()
+  "A callback inside legacy begin/flush should leave publication to its caller."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer
+   (ebox-build '(box :id target "Original"))
+   (let ((buffer (current-buffer))
+         (before (buffer-string)))
+     (ebox-incremental-begin-batch buffer)
+     (ebox-region-update 'target :color "#112233")
+     (cl-letf (((symbol-function 'ebox-incremental-flush)
+                (lambda (_) (ert-fail "Joined callback must not flush"))))
+       (ebox-call-with-update-batch
+        (lambda () (ebox-region-update 'target :content "Joined"))))
+     (should (ebox-incremental-batching-p buffer))
+     (should (= (ebox-incremental-pending-count buffer) 2))
+     (should (equal-including-properties before (buffer-string)))
+     (ebox-incremental-flush buffer)
+     (should (string-match-p "Joined" (buffer-string)))
+     (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
+
+(ert-deftest ebox-update-batch-nonlocal-exits-restore-owned-or-outer-state ()
+  "Errors, quits and throws should discard only the callback's queued changes."
+  (dolist (outer '(nil t))
+    (dolist (exit-kind '(error quit throw))
+      (ebox-test--reset-runtime-state)
+      (ebox-test--with-rendered-buffer
+       (ebox-build '(column :width (px 180)
+                            (box :id first "First")
+                            (box :id second "Second")))
+       (let* ((buffer (current-buffer))
+              (before (buffer-string))
+              (runtime (ebox--buffer-render-state buffer))
+              (revision (ebox-surface-buffer-revision buffer)))
+         (when outer
+           (ebox-incremental-begin-batch buffer)
+           (ebox-region-update 'first :content "Outer retained"))
+         (let ((checkpoint (ebox-incremental--batch-state buffer)))
+           (should
+            (eq 'aborted
+                (catch 'batch-abort
+                  (condition-case nil
+                      (ebox-call-with-update-batch
+                       (lambda ()
+                         (ebox-region-update 'first :content "Rejected first")
+                         (ebox-region-update 'second :content "Rejected second")
+                         (pcase exit-kind
+                           ('error (error "Abort callback"))
+                           ('quit (signal 'quit nil))
+                           ('throw (throw 'batch-abort 'aborted)))))
+                    ((error quit) 'aborted)))))
+           (should (eq checkpoint (ebox-incremental--batch-state buffer))))
+         (should (eq runtime (ebox--buffer-render-state buffer)))
+         (should (= revision (ebox-surface-buffer-revision buffer)))
+         (should (equal-including-properties before (buffer-string)))
+         (should (= (ebox-incremental-pending-count buffer) (if outer 1 0)))
+         (ebox-call-with-update-batch
+          (lambda () (ebox-region-update 'second :content "Next callback")))
+         (when outer (ebox-incremental-flush buffer))
+         (should (string-match-p (if outer "Outer retained" "First")
+                                 (buffer-string)))
+         (should (string-match-p "Next callback" (buffer-string)))
+         (should-not (string-match-p "Rejected" (buffer-string)))
+         (should (ebox-test--buffer-visually-matches-runtime-render-p)))))))
+
+(ert-deftest ebox-update-batch-flush-failure-restores-committed-generation ()
+  "A failed TP publication should abort the owned batch and allow the next call."
+  (ebox-test--reset-runtime-state)
+  (ebox-test--with-rendered-buffer
+   (ebox-build '(column :width (px 180)
+			(box :id first "First")
+			(box :id second "Second")))
+   (let* ((buffer (current-buffer))
+          (before (buffer-string))
+          (runtime (ebox--buffer-render-state buffer))
+          (root (ebox-test--runtime-root buffer))
+          (revision (ebox-surface-buffer-revision buffer)))
+     (cl-letf (((symbol-function 'accept-change-group)
+                (lambda (_) (error "Reject batch publication"))))
+       (should-error
+        (ebox-call-with-update-batch
+         (lambda ()
+           (ebox-region-update 'first :content "Rejected first")
+           (ebox-region-update 'second :color "#112233")))))
+     (should-not (gethash buffer ebox-incremental--batch-table))
+     (should (eq runtime (ebox--buffer-render-state buffer)))
+     (should (eq root (ebox-test--runtime-root buffer)))
+     (should (= revision (ebox-surface-buffer-revision buffer)))
+     (should (equal-including-properties before (buffer-string)))
+     (ebox-call-with-update-batch
+      (lambda () (ebox-region-update 'second :content "Next callback")))
+     (should (string-match-p "First" (buffer-string)))
+     (should (string-match-p "Next callback" (buffer-string)))
+     (should-not (string-match-p "Rejected" (buffer-string)))
+     (should (ebox-test--buffer-visually-matches-runtime-render-p)))))
+
 (ert-deftest ebox-batch-flush-stores-report-on-flushed-buffer-only ()
   "Empty and non-empty flushes should update only the target buffer report."
   (ebox-test--reset-runtime-state)
@@ -7797,37 +8010,33 @@ line compositor's complete property output, including empty lines and chrome."
                    (generate-new-buffer-name " *ebox-test*")
                    layout))
             (setq root-id (ebox-test--selector-region-id buffer "#root"))
-            (let* ((state (ebox--scroll-get-state root-id))
-                   (render-prefix (plist-get state :render-content-prefix))
-                   (initial-lines (length (plist-get state :content-lines)))
-                   (content-height (plist-get state :content-height))
-                   (boundary-offset (- initial-lines content-height)))
-              (plist-put
-               state :render-content-prefix
-               (lambda (&rest args)
-                 (cl-incf prefix-count)
-                 (apply render-prefix args)))
-              (puthash root-id state ebox--scroll-global-state)
-              (with-current-buffer buffer
-                (should (= boundary-offset
-                           (ebox--scroll-region-by root-id
-                                                   boundary-offset)))
-                (should (= 4 (ebox--scroll-region-by root-id 4)))
-                (should (= (+ boundary-offset 4)
-                           (plist-get (ebox--scroll-get-state root-id)
-                                      :scroll-offset)))
-                (should (= (+ initial-lines 12)
-                           (length
-                            (plist-get (ebox--scroll-get-state root-id)
-                                       :content-lines))))
-                (should
-                 (= content-height
-                    (length
-                     (plist-get
-                      (plist-get (ebox--buffer-render-state buffer)
-                                 :surface-fragments)
-                      :scroll-lines))))))
-            (should (= prefix-count 1))))
+            (ebox-test--with-scroll-producer-counts (prefix-count)
+              (let* ((state (ebox--scroll-get-state root-id))
+
+                     (initial-lines (length (plist-get state :content-lines)))
+                     (content-height (plist-get state :content-height))
+                     (boundary-offset (- initial-lines content-height)))
+
+                (with-current-buffer buffer
+                  (should (= boundary-offset
+                             (ebox--scroll-region-by root-id
+                                                     boundary-offset)))
+                  (should (= 4 (ebox--scroll-region-by root-id 4)))
+                  (should (= (+ boundary-offset 4)
+                             (plist-get (ebox--scroll-get-state root-id)
+                                        :scroll-offset)))
+                  (should (= (+ initial-lines 12)
+                             (length
+                              (plist-get (ebox--scroll-get-state root-id)
+                                         :content-lines))))
+                  (should
+                   (= content-height
+                      (length
+                       (plist-get
+                        (plist-get (ebox--buffer-render-state buffer)
+                                   :surface-fragments)
+                        :scroll-lines))))))
+	      (should (= prefix-count 1)))))
       (when root-id
         (ebox--smooth-scroll-stop root-id))
       (when (and buffer (buffer-live-p buffer))
@@ -7861,23 +8070,19 @@ line compositor's complete property output, including empty lines and chrome."
                    (generate-new-buffer-name " *ebox-test*")
                    layout))
             (setq root-id (ebox-test--selector-region-id buffer "#root"))
-            (let* ((state (ebox--scroll-get-state root-id))
-                   (render-prefix (plist-get state :render-content-prefix))
-                   (initial-lines (length (plist-get state :content-lines)))
-                   (content-height (plist-get state :content-height))
-                   (boundary-offset (- initial-lines content-height)))
-              (plist-put
-               state :render-content-prefix
-               (lambda (&rest args)
-                 (cl-incf prefix-count)
-                 (apply render-prefix args)))
-              (puthash root-id state ebox--scroll-global-state)
-              (with-current-buffer buffer
-                (should (= boundary-offset
-                           (ebox--scroll-region-by root-id
-                                                   boundary-offset)))
-                (should (= 4 (ebox--scroll-region-by root-id 4 4)))))
-            (should (= prefix-count 1))))
+            (ebox-test--with-scroll-producer-counts (prefix-count)
+              (let* ((state (ebox--scroll-get-state root-id))
+
+                     (initial-lines (length (plist-get state :content-lines)))
+                     (content-height (plist-get state :content-height))
+                     (boundary-offset (- initial-lines content-height)))
+
+                (with-current-buffer buffer
+                  (should (= boundary-offset
+                             (ebox--scroll-region-by root-id
+                                                     boundary-offset)))
+                  (should (= 4 (ebox--scroll-region-by root-id 4 4)))))
+	      (should (= prefix-count 1)))))
       (when root-id
         (ebox--smooth-scroll-stop root-id))
       (when (and buffer (buffer-live-p buffer))
@@ -9238,32 +9443,20 @@ line compositor's complete property output, including empty lines and chrome."
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
           (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (let* ((state (ebox--scroll-get-state root-id))
-                 (render-prefix (plist-get state :render-content-prefix))
-                 (materialize (plist-get state :materialize-content-lines)))
-            (should (= (length (plist-get state :content-lines)) 3))
-            (plist-put
-             state :render-content-prefix
-             (lambda (&rest args)
-               (cl-incf prefix-count)
-               (apply render-prefix args)))
-            (plist-put
-             state :materialize-content-lines
-             (lambda (&rest args)
-               (cl-incf materialize-count)
-               (apply materialize args)))
-            (puthash root-id state ebox--scroll-global-state))
-          (with-current-buffer buffer
-            (should (ebox--smooth-scroll-region-by root-id 16)))
-          (should (= prefix-count 1))
-          (should (= materialize-count 0))
-          (should (> (plist-get (ebox--scroll-get-state root-id)
-                                :scroll-offset)
-                     1))
-          (let ((entry (gethash root-id ebox--smooth-scroll-state-table)))
-            (should entry)
-            (should (> (or (plist-get entry :pending) 0) 0))
-            (should-not (plist-get entry :waiting-prefetch))))
+          (ebox-test--with-scroll-producer-counts (prefix-count materialize-count)
+            (let ((state (ebox--scroll-get-state root-id)))
+              (should (= (length (plist-get state :content-lines)) 3)))
+            (with-current-buffer buffer
+              (should (ebox--smooth-scroll-region-by root-id 16)))
+            (should (= prefix-count 1))
+            (should (= materialize-count 0))
+            (should (> (plist-get (ebox--scroll-get-state root-id)
+                                  :scroll-offset)
+                       1))
+            (let ((entry (gethash root-id ebox--smooth-scroll-state-table)))
+              (should entry)
+              (should (> (or (plist-get entry :pending) 0) 0))
+	      (should-not (plist-get entry :waiting-prefetch)))))
       (ebox--smooth-scroll-stop root-id)
       (ebox--scroll-cancel-idle-prefetch root-id)
       (when (and buffer (buffer-live-p buffer))
@@ -9301,32 +9494,20 @@ line compositor's complete property output, including empty lines and chrome."
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
           (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (let* ((state (ebox--scroll-get-state root-id))
-                 (render-prefix (plist-get state :render-content-prefix))
-                 (materialize (plist-get state :materialize-content-lines)))
-            (should (= (length (plist-get state :content-lines)) 3))
-            (plist-put
-             state :render-content-prefix
-             (lambda (&rest args)
-               (cl-incf prefix-count)
-               (apply render-prefix args)))
-            (plist-put
-             state :materialize-content-lines
-             (lambda (&rest args)
-               (cl-incf materialize-count)
-               (apply materialize args)))
-            (puthash root-id state ebox--scroll-global-state))
-          (with-current-buffer buffer
-            (should (ebox--smooth-scroll-region-by root-id 16))
-            (ebox--smooth-scroll-tick root-id))
-          (should (> prefix-count 0))
-          (should (= materialize-count 0))
-          (should (> (plist-get (ebox--scroll-get-state root-id)
-                                :scroll-offset)
-                     1))
-          (let ((entry (gethash root-id ebox--smooth-scroll-state-table)))
-            (should entry)
-            (should-not (plist-get entry :waiting-prefetch))))
+          (ebox-test--with-scroll-producer-counts (prefix-count materialize-count)
+            (let ((state (ebox--scroll-get-state root-id)))
+              (should (= (length (plist-get state :content-lines)) 3)))
+            (with-current-buffer buffer
+              (should (ebox--smooth-scroll-region-by root-id 16))
+              (ebox--smooth-scroll-tick root-id))
+            (should (> prefix-count 0))
+            (should (= materialize-count 0))
+            (should (> (plist-get (ebox--scroll-get-state root-id)
+                                  :scroll-offset)
+                       1))
+            (let ((entry (gethash root-id ebox--smooth-scroll-state-table)))
+              (should entry)
+	      (should-not (plist-get entry :waiting-prefetch)))))
       (ebox--smooth-scroll-stop root-id)
       (ebox--scroll-cancel-idle-prefetch root-id)
       (when (and buffer (buffer-live-p buffer))
@@ -9365,26 +9546,19 @@ line compositor's complete property output, including empty lines and chrome."
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
           (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (let* ((state (ebox--scroll-get-state root-id))
-                 (render-prefix (plist-get state :render-content-prefix)))
-            (should (= (length (plist-get state :content-lines)) 3))
-            (plist-put
-             state :render-content-prefix
-             (lambda (state region-id required-lines)
-               (cl-incf prefix-count)
-               (setq requested-lines required-lines)
-               (funcall render-prefix state region-id required-lines)))
-            (puthash root-id state ebox--scroll-global-state))
-          (with-current-buffer buffer
-            (should (ebox--smooth-scroll-region-by root-id 1000)))
-          (should (= prefix-count 1))
-          (should (<= requested-lines 8))
-          (should (<= (plist-get (ebox--scroll-get-state root-id)
-                                 :scroll-offset)
-                      ebox-wheel-smooth-scroll-lines-per-tick))
-          (let ((entry (gethash root-id ebox--smooth-scroll-state-table)))
-            (should entry)
-            (should-not (plist-get entry :waiting-prefetch))))
+          (ebox-test--with-scroll-producer-counts (prefix-count nil requested-lines)
+            (let ((state (ebox--scroll-get-state root-id)))
+              (should (= (length (plist-get state :content-lines)) 3)))
+            (with-current-buffer buffer
+              (should (ebox--smooth-scroll-region-by root-id 1000)))
+            (should (= prefix-count 1))
+            (should (<= requested-lines 8))
+            (should (<= (plist-get (ebox--scroll-get-state root-id)
+                                   :scroll-offset)
+                        ebox-wheel-smooth-scroll-lines-per-tick))
+            (let ((entry (gethash root-id ebox--smooth-scroll-state-table)))
+              (should entry)
+	      (should-not (plist-get entry :waiting-prefetch)))))
       (ebox--smooth-scroll-stop root-id)
       (ebox--scroll-cancel-idle-prefetch root-id)
       (when (and buffer (buffer-live-p buffer))
@@ -9421,25 +9595,19 @@ line compositor's complete property output, including empty lines and chrome."
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
           (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (let* ((state (ebox--scroll-get-state root-id))
-                 (render-prefix (plist-get state :render-content-prefix)))
-            (plist-put
-             state :render-content-prefix
-             (lambda (&rest args)
-               (cl-incf prefix-count)
-               (apply render-prefix args)))
-            (puthash root-id state ebox--scroll-global-state))
-          (with-current-buffer buffer
-            (should (ebox--smooth-scroll-region-by root-id 16)))
-          (should (gethash root-id ebox--smooth-scroll-state-table))
-          (let ((prefix-after-start prefix-count))
-            (should (> prefix-after-start 0))
-            (ebox--scroll-idle-prefetch root-id)
-            (should (= prefix-count prefix-after-start))
-            (should (gethash root-id ebox--scroll-idle-prefetch-timers))
-            (ebox--smooth-scroll-stop root-id)
-            (ebox--scroll-idle-prefetch root-id)
-            (should (> prefix-count prefix-after-start))))
+          (ebox-test--with-scroll-producer-counts (prefix-count)
+
+            (with-current-buffer buffer
+              (should (ebox--smooth-scroll-region-by root-id 16)))
+            (should (gethash root-id ebox--smooth-scroll-state-table))
+            (let ((prefix-after-start prefix-count))
+              (should (> prefix-after-start 0))
+              (ebox--scroll-idle-prefetch root-id)
+              (should (= prefix-count prefix-after-start))
+              (should (gethash root-id ebox--scroll-idle-prefetch-timers))
+              (ebox--smooth-scroll-stop root-id)
+              (ebox--scroll-idle-prefetch root-id)
+	      (should (> prefix-count prefix-after-start)))))
       (ebox--smooth-scroll-stop root-id)
       (ebox--scroll-cancel-idle-prefetch root-id)
       (when (and buffer (buffer-live-p buffer))
@@ -9476,27 +9644,21 @@ line compositor's complete property output, including empty lines and chrome."
                  (generate-new-buffer-name " *ebox-test*")
                  layout))
           (setq root-id (ebox-test--selector-region-id buffer "#root"))
-          (let* ((state (ebox--scroll-get-state root-id))
-                 (render-prefix (plist-get state :render-content-prefix)))
-            (plist-put
-             state :render-content-prefix
-             (lambda (&rest args)
-               (cl-incf prefix-count)
-               (apply render-prefix args)))
-            (puthash root-id state ebox--scroll-global-state))
-          (with-current-buffer buffer
-            (should (ebox--smooth-scroll-region-by root-id 16)))
-          (should (> prefix-count 0))
-          (let ((offset-before (plist-get (ebox--scroll-get-state root-id)
-                                          :scroll-offset)))
-            (ebox--smooth-scroll-tick root-id)
-            (should (> (plist-get (ebox--scroll-get-state root-id)
-                                  :scroll-offset)
-                       offset-before)))
-          (let ((entry (gethash root-id ebox--smooth-scroll-state-table)))
-            (should entry)
-            (should-not (plist-get entry :waiting-prefetch))
-            (should (timerp (plist-get entry :timer)))))
+          (ebox-test--with-scroll-producer-counts (prefix-count)
+
+            (with-current-buffer buffer
+              (should (ebox--smooth-scroll-region-by root-id 16)))
+            (should (> prefix-count 0))
+            (let ((offset-before (plist-get (ebox--scroll-get-state root-id)
+                                            :scroll-offset)))
+              (ebox--smooth-scroll-tick root-id)
+              (should (> (plist-get (ebox--scroll-get-state root-id)
+                                    :scroll-offset)
+                         offset-before)))
+            (let ((entry (gethash root-id ebox--smooth-scroll-state-table)))
+              (should entry)
+              (should-not (plist-get entry :waiting-prefetch))
+	      (should (timerp (plist-get entry :timer))))))
       (ebox--smooth-scroll-stop root-id)
       (ebox--scroll-cancel-idle-prefetch root-id)
       (when (and buffer (buffer-live-p buffer))
@@ -14223,5 +14385,106 @@ face patch must match that exactly (issue014)."
     (maphash (lambda (id spans) (should (equal (gethash id actual) spans))) expected)
     (should-not (gethash 999 actual))
     (should (= calls 36))))
+
+(ert-deftest ebox-content-box-owner-keeps-one-line-updates-local ()
+  "Canonical Text changes use their allocated Box, alone or beside a layer."
+  (dolist (with-layer '(nil t))
+    (ebox-test--reset-runtime-state)
+    (let ((ebox-viewport-width 24) (ebox-viewport-height 8))
+      (cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
+                 (lambda () nil)))
+        (ebox-test--with-rendered-buffer
+         (ebox-build
+          '(column :width (vw 100) :padding-inline (ch 2)
+                   (box :id host :width (ch 8) :height (lh 2)
+			(box :id card :position absolute :width (ch 4)
+			     :height (lh 1) "CARD"))
+                   (box :id status :padding-inline (ch 1)
+			:background-color "#112233" "Idle")
+                   (box "FOLLOWING")))
+         (dolist (value '("Expanded" "ok"))
+           (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                      (lambda (&rest _)
+                        (ert-fail "One-line content update rendered the root"))))
+             (ebox-call-with-update-batch
+              (lambda ()
+                (when with-layer
+                  (ebox-region-update 'card :left
+                                      (if (equal value "Expanded") '(ch 1) '(ch 0))))
+                (ebox-region-update 'status :content value))))
+           (should (ebox-test--buffer-propertized-matches-runtime-render-p)))
+         ;; Growth that wraps must still take a wider proof/fallback.
+         (ebox-region-update 'status :content "This content needs several rows")
+         (should (ebox-test--buffer-propertized-matches-runtime-render-p))
+         (should (string-match-p "FOLLOWING" (buffer-string))))))))
+
+(ert-deftest ebox-content-box-owner-keeps-disjoint-scroll-cache ()
+  "An allocated Box keeps unrelated scroll lines during growth and shrink."
+  (dolist (with-layer '(nil t))
+    (ebox-test--reset-runtime-state)
+    (let ((ebox-viewport-width 24) (ebox-viewport-height 10))
+      (cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
+                 (lambda () nil)))
+        (ebox-test--with-rendered-buffer
+         (ebox-build
+          '(column :width (vw 100) :padding-inline (ch 2)
+                   :background-color "#101117" :color "#DCE0EC"
+                   (box :id host :width (ch 8) :height (lh 2)
+			(box :id card :position absolute :width (ch 4)
+			     :height (lh 1) "CARD"))
+                   (box :id status :padding-inline (ch 1)
+			:margin-inline (ch 1) :box-sizing content-box
+			:background-color "#112233" "Idle")
+                   (column :id scroller :height (lh 2) :overflow scroll
+			   (box "A") (box "B") (box "C") (box "D"))
+                   (box "FOLLOWING")))
+         (let* ((scroll-id (ebox-test--selector-region-id
+                            (current-buffer) "#scroller"))
+                (lines (plist-get (gethash scroll-id ebox--scroll-global-state)
+                                  :content-lines)))
+           (should lines)
+           (dolist (value '("Expanded" "ok"))
+             (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                        (lambda (&rest _)
+                          (ert-fail "Disjoint scroll forced a root render"))))
+               (ebox-call-with-update-batch
+                (lambda ()
+                  (when with-layer
+                    (ebox-region-update
+                     'card :left (if (equal value "Expanded") '(ch 1) '(ch 0))))
+                  (ebox-region-update 'status :content value))))
+             (should (eq lines
+                         (plist-get (gethash scroll-id ebox--scroll-global-state)
+                                    :content-lines)))
+             (should (ebox-test--buffer-propertized-matches-runtime-render-p)))))))))
+
+(ert-deftest ebox-content-box-owner-retains-painted-ancestors-in-batch ()
+  "Disjoint Box and layer updates keep their shared ancestor's properties."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-viewport-width 24) (ebox-viewport-height 8))
+    (cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
+               (lambda () nil)))
+      (ebox-test--with-rendered-buffer
+       (ebox-build
+        '(column :width (vw 100) :padding-inline (ch 2)
+                 :background-color "#101117" :color "#DCE0EC"
+		 (box :id host :width (ch 8) :height (lh 2)
+                      (box :id card :position absolute :width (ch 4)
+			   :height (lh 1) "CARD"))
+		 (box :id status :padding-inline (ch 1)
+                      :background-color "#112233" "Idle")
+		 (box "FOLLOWING")))
+       ;; Equal-length transport must keep paint provenance for a later
+       ;; variable-length update after another owner rebuilds the ledger.
+       (dolist (value '("Seed" "Expanded" "ok"))
+         (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                    (lambda (&rest _)
+                      (ert-fail "Painted multi-owner update rendered the root"))))
+           (ebox-call-with-update-batch
+            (lambda ()
+              (ebox-region-update 'card :left
+                                  (if (equal value "ok") '(ch 0) '(ch 1)))
+              (ebox-region-update 'status :content value))))
+         (should (ebox-test--buffer-propertized-matches-runtime-render-p)))))))
 
 ;;; ebox-core-render-tests.el ends here

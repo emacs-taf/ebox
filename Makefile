@@ -25,7 +25,7 @@ all: check
 
 .PHONY: layer-tests
 layer-tests:
-	$(EMACS_TEST) -l tests/ebox-composite-tests.el -l tests/ebox-layer-style-tests.el -l tests/ebox-layer-tests.el -l tests/ebox-layer-publication-tests.el -f ert-run-tests-batch-and-exit
+	$(EMACS_TEST) -l tests/ebox-composite-tests.el -l tests/ebox-layer-style-tests.el -l tests/ebox-layer-tests.el -l tests/ebox-layer-publication-tests.el -l tests/ebox-layer-scroll-tests.el -f ert-run-tests-batch-and-exit
 
 test: layer-tests
 
@@ -33,6 +33,24 @@ interaction-tests:
 	$(EMACS_TEST) -l tests/ebox-interaction-tests.el -f ert-run-tests-batch-and-exit
 
 test: interaction-tests
+
+.PHONY: nested-scroll-tests
+nested-scroll-tests:
+	$(EMACS_TEST) -l tests/ebox-nested-scroll-tests.el -f ert-run-tests-batch-and-exit
+
+test: nested-scroll-tests
+
+.PHONY: scroll-slice-tests
+scroll-slice-tests:
+	$(EMACS_TEST) -l tests/ebox-scroll-slice-tests.el -f ert-run-tests-batch-and-exit
+
+test: scroll-slice-tests
+
+.PHONY: scroll-cold-tests
+scroll-cold-tests:
+	$(EMACS_TEST) -l tests/ebox-scroll-cold-tests.el -f ert-run-tests-batch-and-exit
+
+test: scroll-cold-tests
 
 display-tests:
 	$(EMACS_TEST) -l tests/ebox-display-tests.el -f ert-run-tests-batch-and-exit

@@ -273,8 +273,8 @@ MIXED starts with three integral rows before the fractional cached rows."
             (cl-mapc (lambda (actual source) (should (eq actual source)))
                      lines (seq-take raw 3))))))))
 
-(ert-deftest ebox-css-layout-fractional-scroll-keeps-wrapper-fallbacks ()
-  "Nested or chrome-bearing fractional scrolls retain full-line projection."
+(ert-deftest ebox-css-layout-fractional-scroll-respects-wrapper-boundaries ()
+  "Root chrome normalizes complete rows; nested fractional origins fall back."
   (ebox-css-layout-test--with-pixel-display
     (let ((ebox-viewport-width 101)
           (ebox-viewport-height 3))
@@ -292,7 +292,7 @@ MIXED starts with three integral rows before the fractional cached rows."
                          (cl-incf calls)
                          (apply original args))))
               (should (= (ebox--scroll-region-by region 1 1) 1)))
-            (should (= calls 1))
+            (should (= calls (if (eq boundary 'nested) 1 0)))
             (should (equal (ebox-css-layout-test--display (buffer-string))
                            (ebox-css-layout-test--display
                             (ebox-render

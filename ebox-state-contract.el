@@ -253,7 +253,8 @@
                ebox--render-string-pixel-width-cache
                ebox--rendered-uniform-width-table ebox--rendered-intrinsic-size-table
                ebox--runtime-ancestor-cache
-               ebox--scroll-window-cached-state ebox--space-pixel-cache
+               ebox--scroll-window-cached-state :rendered-content-line-cells
+               ebox--space-pixel-cache
                ebox--string-pixel-width-cache
                ebox--string-pixel-width-cache-ring
                ebox--viewport-dependent-node-ids-cache
@@ -304,6 +305,9 @@ rather than relying on an implicit default.")
     (:symbol ebox-layer--portals
      :reason dynamically-bound-render-collection
      :evidence let-bound-per-spatial-root-and-discarded-with-the-candidate-render)
+    (:symbol ebox-layer--piece-width-cache
+     :reason dynamically-bound-composition-index
+     :evidence let-bound-per-layer-host-and-never-retained-between-renders)
     (:symbol ebox--string-pixel-width-cache-ring-index
      :reason numeric-eviction-cursor
      :evidence value-is-an-integer-ring-position)

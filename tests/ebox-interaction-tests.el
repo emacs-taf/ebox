@@ -330,6 +330,138 @@
       (kill-buffer target)
       (kill-buffer other))))
 
+(defun ebox-interaction-test--mouse-event (type window position)
+  "Return an event of TYPE at WINDOW's POSITION with its native click count."
+  (append (list type (list window position '(1 . 1) 0))
+          (cond
+           ((memq 'drag (event-modifiers type))
+            (list (list window (1+ position) '(2 . 1) 1)))
+           ((memq 'triple (event-modifiers type)) '(3))
+           ((memq 'double (event-modifiers type)) '(2)))))
+
+(defun ebox-interaction-test--dispatch-mouse (type window position)
+  "Dispatch a native event of TYPE at WINDOW's POSITION without moving point."
+  (let* ((event (ebox-interaction-test--mouse-event type window position))
+         (keys (vector event))
+         (command (with-current-buffer (window-buffer window)
+                    (key-binding keys nil nil position)))
+         (map (with-current-buffer (window-buffer window)
+                (get-text-property position 'keymap))))
+    ;; Resolve the event's actual window/position, not the caller's point.
+    ;; Fail before invoking a global drag command that would read more input.
+    (should (commandp command))
+    (should (eq command (lookup-key map (vector type))))
+    (let ((last-input-event event))
+      (call-interactively command nil keys))))
+
+(ert-deftest ebox-keymap-create-repeated-clicks-preserve-point-and-selection ()
+  "Press/release/drag sequences activate once per click without text selection."
+  (let ((target (generate-new-buffer " *ebox-click-target*"))
+        (other (generate-new-buffer " *ebox-click-other*"))
+        (calls 0) seen)
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (set-window-buffer (selected-window) other)
+          (let* ((selected (selected-window))
+                 (window (split-window-right))
+                 (map (ebox-keymap-create
+                       :activate (lambda ()
+                                   (cl-incf calls)
+                                   (push (current-buffer) seen)
+                                   (ebox-region-update "action" :help-echo
+                                                       (number-to-string calls))))))
+            (ebox-render-to-buffer
+             target (ebox-build (list 'column
+                                     (list 'text :id "action" :keymap map "action")
+                                     '(text "ordinary text"))))
+            (set-window-buffer window target)
+            (with-current-buffer other
+              (insert "other") (goto-char 2) (set-mark 4)
+              (setq mark-active nil)
+              (dolist (active '(nil t))
+                (with-current-buffer target
+                  (setq buffer-read-only t)
+                  (goto-char (- (point-max) 2)) (set-mark 3)
+                  (setq mark-active active))
+                (let ((point-before (with-current-buffer target (point)))
+                      (window-point-before (window-point window)))
+                  (dolist (events '((down-mouse-1 mouse-1)
+                                     (double-down-mouse-1 double-mouse-1)
+                                     (triple-down-mouse-1 triple-mouse-1)))
+                    (let ((before calls))
+                      (ebox-interaction-test--dispatch-mouse (car events) window 1)
+                      (should (= calls before))
+                      (ebox-interaction-test--dispatch-mouse (cadr events) window 1)
+                      (should (= calls (1+ before)))))
+                  (let ((before calls))
+                    (dolist (type '(drag-mouse-1 double-drag-mouse-1
+                                               triple-drag-mouse-1))
+                      (ebox-interaction-test--dispatch-mouse type window 1))
+                    (should (= calls before)))
+                  (with-current-buffer target
+                    (should (= (point) point-before))
+                    (should (= (mark) 3))
+                    (should (eq mark-active active)))
+                  (should (= (window-point window) window-point-before))
+                  (should (eq (current-buffer) other))
+                  (should (= (point) 2))
+                  (should (= (mark) 4))
+                  (should-not mark-active)
+                  (should (eq (selected-window) selected)))))
+            (should (= calls 6))
+            (should (cl-every (lambda (buffer) (eq buffer target)) seen))))
+      (kill-buffer target)
+      (kill-buffer other))))
+
+(ert-deftest ebox-keymap-create-click-defaults-follow-replacement-and-removal ()
+  "Native click defaults follow published maps while explicit bindings win."
+  (let ((buffer (generate-new-buffer " *ebox-click-lifecycle*"))
+        (activations 0) (overrides 0))
+    (unwind-protect
+        (save-window-excursion
+          (let ((window (selected-window))
+                (map (ebox-keymap-create :activate (lambda ()
+                                                    (cl-incf activations)))))
+            (ebox-render-to-buffer
+             buffer (ebox-build (list 'text :id "action" :keymap map "action")))
+            (set-window-buffer window buffer)
+            (with-current-buffer buffer
+              (ebox-region-update "action" :color "red")
+              (ebox-rerender-buffer-with-context buffer 80 30)
+              (ebox-interaction-test--dispatch-mouse 'double-mouse-1 window 1)
+              (should (= activations 1))
+              (ebox-region-update
+               "action" :keymap
+               (ebox-keymap-create
+                :activate (lambda () (cl-incf activations))
+                :bindings (mapcar (lambda (key)
+                                    (cons (vector key)
+                                          (lambda () (cl-incf overrides))))
+                                  '(down-mouse-1 double-mouse-1 triple-mouse-1
+                                                drag-mouse-1))))
+              (dolist (type '(down-mouse-1 double-mouse-1 triple-mouse-1
+                                         drag-mouse-1))
+                (ebox-interaction-test--dispatch-mouse type window 1))
+              (should (= overrides 4))
+              (should (= activations 1))
+              (ebox-interaction-test--dispatch-mouse 'mouse-1 window 1)
+              (should (= activations 2))
+              ;; A raw map remains literal; replacing/removing the helper
+              ;; restores native selection instead of leaving stale guards.
+              (ebox-region-update "action" :keymap '(keymap (mouse-1 . ignore)))
+              (let ((event (list 'down-mouse-1 (list window 1 '(1 . 1) 0))))
+                (should (eq (key-binding (vector event))
+                            (global-key-binding [down-mouse-1]))))
+              (should-not (lookup-key (get-text-property 1 'keymap)
+                                      [double-mouse-1]))
+              (ebox-region-update "action" :keymap nil)
+              (dolist (type '(down-mouse-1 mouse-1 drag-mouse-1))
+                (let ((event (list type (list window 1 '(1 . 1) 0))))
+                  (should (eq (key-binding (vector event))
+                              (global-key-binding (vector type)))))))))
+      (kill-buffer buffer))))
+
 (ert-deftest ebox-region-update-semantic-id-keeps-handle-lifecycle ()
   "IDs resolve locally and opaque handles retain their owning surface checks."
   (let ((first (generate-new-buffer " *ebox-id-first*"))

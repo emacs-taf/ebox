@@ -455,7 +455,7 @@
           (should (zerop root-renders)))))))
 
 (ert-deftest ebox-commit-inherited-text-exclusions-render-current-properties ()
-  "Property, extent, display and identity changes retain the exact fallback."
+  "Unsafe property changes fall back; proven source rebinding keeps current facts."
   (dolist (change '(property char-length display identity opaque-callback))
     (ert-info ((format "inherited text exclusion: %S" change))
       (with-temp-buffer
@@ -492,7 +492,12 @@
               (when (eq change 'identity)
                 (should-not (ebox--host-ref-node (current-buffer) 'counter))
                 (should (ebox--host-ref-node (current-buffer) 'new-counter)))
-              (should (> (cdr result) 0)))))))))
+              ;; A source handle can change while the runtime slot, author key
+              ;; and full rendered properties remain proven.  The assertions
+              ;; above also require replacing its public host lookup identity.
+              (if (eq change 'identity)
+                  (should (zerop (cdr result)))
+                (should (> (cdr result) 0))))))))))
 
 (ert-deftest ebox-commit-inherited-text-rolls-back-properties-and-retries ()
   "Late publication rejection retains text, metadata and one old generation."
@@ -1833,7 +1838,7 @@
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-commit-expands-scope-for-length-changing-column-content ()
-  "A column content growth must publish shifted later styled siblings."
+  "An intrinsically sized column grows with content and later styled siblings."
   (let* ((buffer (generate-new-buffer-name " *ebox-commit-column-scope*"))
          (old-root
           (ebox-test-column
@@ -1866,7 +1871,8 @@
                                   (with-current-buffer buffer (buffer-string))))
           (should (eq (plist-get report :strategy) 'owner-rerender))
           (should (equal (plist-get report :patch-ops) '(owner-rerender)))
-          (should-not (plist-get report :tp-scope-fallback)))
+          (should-not (plist-get report :tp-scope-fallback))
+          (ebox-commit-test--assert-allocated-output (get-buffer buffer) new-root))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -2314,6 +2320,8 @@ remain retained identities."
           ;; publishes one scoped transaction, with one exact text operation
           ;; per changed slot instead of replacing the unchanged gap.
           (should (= 2 (plist-get report :tp-text-operations)))
+          (with-current-buffer buffer
+            (ebox-commit-test--assert-full-render-equivalent))
           (should (string-match-p "L"
                                   (ebox-commit-test--buffer-string buffer)))
           (setq fresh
@@ -2383,9 +2391,60 @@ remain retained identities."
                   (should (memq (plist-get report :projection-kind)
                                 '(span-patch owner-scoped)))
                   (should-not (plist-get report :tp-full-root))
-                  (should-not (plist-get report :tp-scope-fallback)))))
+                  (should-not (plist-get report :tp-scope-fallback))
+                  (with-current-buffer buffer
+                    (ebox-commit-test--assert-full-render-equivalent)))))
           (when (buffer-live-p buffer)
             (kill-buffer buffer)))))))
+
+(ert-deftest ebox-commit-variable-grid-retains-ancestor-and-caller-properties ()
+  "Anonymous Text replacements keep proven properties and new opaque values."
+  (let* ((callback (lambda () 'original))
+         (replacement-callback (lambda () 'replacement))
+         (payload (make-symbol "caller-payload"))
+         (properties (list 'help-echo callback 'caller-payload payload)))
+    (cl-labels
+        ((child (key value action)
+           (ebox-test-box
+            :key key :source-identity key
+            (ebox-test-text (propertize value 'face '(:weight bold)
+                                       'action action)))))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-test-grid
+          :key 'grid :width '(80) :grid-template-columns '((36) (36))
+          :column-gap '(8) :bgcolor "#102030" :surface-properties properties
+          (child 'left "left-old" callback)
+          (child 'right "right-old" callback)))
+        (let ((candidate (ebox-candidate-begin (current-buffer))))
+          (ebox-candidate-replace-host-ref candidate 'left (child 'left "L" callback))
+          (ebox-candidate-replace-host-ref candidate 'right (child 'right "R" callback))
+          (let* ((observed
+                  (ebox-commit-test--count-root-renders
+                   (lambda () (ebox-commit (current-buffer) candidate))))
+                 (report (car observed)))
+            (should (zerop (cdr observed)))
+            (should (memq (plist-get report :projection-kind)
+                          '(span-patch owner-scoped)))))
+        (ebox-commit-test--assert-full-render-equivalent)
+        (dolist (value '("L" "R"))
+          (goto-char (point-min))
+          (search-forward value)
+          (should (eq callback (get-text-property (1- (point)) 'action)))
+          (should (eq callback (get-text-property (1- (point)) 'help-echo)))
+          (should (eq payload (get-text-property (1- (point)) 'caller-payload))))
+        ;; A new opaque value must survive any declined local property proof.
+        (let ((candidate (ebox-candidate-begin (current-buffer))))
+          (ebox-candidate-replace-host-ref
+           candidate 'left (child 'left "NEW" replacement-callback))
+          (ebox-commit (current-buffer) candidate))
+        (ebox-commit-test--assert-full-render-equivalent)
+        (goto-char (point-min))
+        (search-forward "NEW")
+        (should (eq replacement-callback
+                    (get-text-property (1- (point)) 'action)))
+        (should (eq callback (get-text-property (1- (point)) 'help-echo)))))))
 
 (ert-deftest ebox-commit-updates-selector-type-counts ()
   "A structural candidate should publish exact author selector-type counts."
@@ -2896,7 +2955,7 @@ Normalize only buffer-local region identifiers; retain every text property."
    buffer (ebox-commit-test--allocated-single-root content color nil sibling-content)))
 
 (defun ebox-commit-test--allocated-single-round-trip (paint-p)
-  "One longer/shorter row promotes its allocated owner, with disjoint paint."
+  "One longer/shorter row retains its smallest proven allocation and scroll."
     (ert-info ((format "allocated single with disjoint paint: %S" paint-p))
       (with-temp-buffer
         (ebox-render-to-buffer

@@ -47,17 +47,33 @@ If any proof condition fails, the update uses the ordinary safe projection path.
 
 ## Retained scroll window
 
-For a chrome-free root scroll owner whose cached rendered lines cover the
-current visible window (the lazy prefix may remain incomplete),
-the scroll patch joins the staged visible window directly instead of entering
-the full candidate layout. It reuses the published cascade, viewport axes,
-object maps, and descendant `region-box-table`; it only advances the scroll
-offset and installs the root `ebox-scroll-window` property. The proof is
-conservative: a cache miss, chrome, active style dependency, topology change,
-or incomplete window falls back to the ordinary retained path. Scroll
-publication still goes through TP and the Ebox participant, so a failure after
-TP client-state publication restores text, offsets, indexes, objects, mounts,
-and report together.
+Cached scroll intents reuse the published cascade, viewport axes and unchanged
+runtime indexes when the visible window and display context are proven stable.
+Chrome-free roots join cached rendered lines directly; layered or chrome-bearing
+roots may reuse their complete composed content and render only the wrapper.
+Pure root offset changes preserve already composed portal and anchor content.
+Style, placement, content and display-context changes must invalidate that proof.
+
+A nested owner can replace its viewport within a proven unchanged allocation,
+without rendering unrelated siblings. With one unchanged root scroll ancestor,
+the update must also patch that ancestor's retained content, ownership membership
+and line indexes, and rebind its producer to the candidate tree. Cached-content
+coordinates and mounted-buffer coordinates require separate proofs. Unsupported
+ancestor chains, partial visibility and failed footprint or wrapper proofs retain
+the ordinary fallback.
+
+Classify cache hits before staging. A true prefix miss owns a copied target
+subtree and ancestor path, private indexes and registries, copied cache lines and
+freshly rebound producers. A producer must not mutate a published continuation
+before TP commits. This isolation can rebuild the target prefix on a miss;
+cached-hit timings do not describe that cost.
+
+Scroll publication still goes through TP and the Ebox participant. Rejection
+preserves the old text, properties, offsets, raw and rendered caches, source
+nodes, indexes, objects, mounts and report. The focused regression targets are
+`make layer-tests`, `make nested-scroll-tests`, `make scroll-cold-tests`
+and `make scroll-slice-tests`; the playground scroll evaluator checks fresh-render
+parity and distinguishes cached motion from actual prefix extension.
 
 ## Identity and coordinates
 

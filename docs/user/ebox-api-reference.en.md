@@ -218,10 +218,14 @@ no command binding by itself.
 ```
 
 `:activate` accepts a zero-argument function and binds it to `RET`, `[return]`,
-`SPC`, and `[mouse-1]`. `:bindings` accepts an alist from key-description strings
+`SPC`, and `[mouse-1]`. Double and triple primary-button releases also activate
+once per click. Primary-button press and drag events, including their double
+and triple variants, do nothing by default, avoiding native text selection.
+`:bindings` accepts an alist from key-description strings
 or event vectors to zero-argument functions. Both options are optional; `nil`
 omits their bindings. Duplicate keys and overlapping key prefixes are errors,
-including overlaps with the activation keys. The helper returns a native Emacs
+including overlaps with the four primary activation keys. Explicit bindings
+can override the repeated-click, press and drag defaults. The helper returns a native Emacs
 keymap; callbacks remain literal until their command is invoked. For mouse
 events, the helper obtains the event window and runs the callback in its buffer.
 It does not select that window or move point. Keyboard callbacks run in the
@@ -397,6 +401,7 @@ They do not publish by themselves.
 | `ebox-region-ids` | Return current low-level region ids in document order. |
 | `ebox-region-resolve` | Resolve one logical `:id` in a mounted buffer to an opaque surface-scoped handle. |
 | `ebox-region-update` | Apply supported mutable style, scroll, or native node capability properties through one retained transaction. Accept an opaque region handle or a semantic `:id` in the current mounted buffer. |
+| `ebox-call-with-update-batch` | `(CALLBACK &optional BUFFER)` runs a zero-argument callback in the target buffer and groups its queued region updates; return the callback's value. |
 | `ebox-child-range` | Framework integration only: build a nonvisual, addressable child Range descriptor while assembling a typed canonical input. |
 | `ebox-candidate-begin` | Capture the exact current mounted generation in a one-shot candidate. |
 | `ebox-candidate-replace` | Replace one candidate node address from a single-root `CanonicalEboxInput`. |
@@ -425,6 +430,27 @@ blocks an enclosing value. Omitted properties are unchanged. Replace the
 `:keymap` property when publishing new bindings: Ebox snapshots keymaps, so
 later caller-side mutations do not update a mounted surface. Clearing it removes that
 node's keymap; ordinary Emacs buffer and global bindings still apply.
+
+### Grouping region updates
+
+`ebox-call-with-update-batch` defaults `BUFFER` to the current buffer and runs
+`CALLBACK` there. If it starts the batch, it flushes once after a normal return
+when changes are pending. An empty or unchanged callback publishes nothing and
+preserves the last successful update report. The helper returns the callback's
+value unchanged after a successful flush.
+
+If a batch is already active in that buffer, the helper joins it without
+flushing; the outer owner decides when to publish. On an error, quit, or other
+nonlocal exit, the helper discards its own queued changes and restores the
+outer batch's pending state as it was on entry. A failed flush of a batch owned
+by this helper discards its unpublished changes; the existing TP transaction
+restores the previously committed buffer, runtime, revision, and report.
+
+The rollback scope is the queued `ebox-region-update` work in `BUFFER`.
+Assignments to application variables, file writes, and other business side
+effects in the callback are not reverted. Keep explicit
+`ebox-incremental-begin-batch` / `ebox-incremental-flush` lifecycle calls outside
+the callback; those lower-level calls retain their own retry semantics.
 
 The author DSL has no Range form. Ordinary authors compose direct Text/Box
 children and never call `ebox-child-range`; Range addresses exist only for
@@ -493,6 +519,7 @@ names every entry:
   `ebox-candidate-replace-host-ref`, `ebox-candidate-patch-host-paint`,
   `ebox-child-range`,
   `ebox-region-ids`, `ebox-region-resolve`, `ebox-region-update`,
+  `ebox-call-with-update-batch`,
   `ebox-host-ref-bounds`, `ebox-host-ref-position`.
 - Selectors: `ebox-selector-parse`, `ebox-selector-match-node-p`,
   `ebox-selector-query-all`, `ebox-selector-query-buffer`,

@@ -35,7 +35,11 @@
 Retain the source properties and nested display values by identity."
   (let* ((result (substring line start end))
          (display (get-text-property start 'display line))
-         (properties (copy-sequence (cdr display))))
+         (properties (copy-sequence (cdr display)))
+         ;; Match `ebox-pixel-space': retained integer allocations and
+         ;; freshly resolved float allocations describe the same pixels.
+         (whole-pixels (truncate width))
+         (width (if (= width whole-pixels) whole-pixels width)))
     (put-text-property
      0 (length result) 'display
      (cons 'space (plist-put properties :width (list width))) result)

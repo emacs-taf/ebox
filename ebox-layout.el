@@ -1369,7 +1369,8 @@ Return its empty inline extent through `ebox--box-content-empty-width'."
                (_ (error "Ebox Box has unsupported LayoutConfig: %S" kind))))))
                (if (or (ebox-layer-host-p box)
                        (and (eq box ebox-layer--render-root)
-                            (or ebox-layer--portals (ebox-layer-portals-p box))))
+                            (or ebox-layer--portals
+                                (ebox-layer-visible-portals-p box))))
                    (ebox-layer-render-children box children render-flow)
                  (funcall render-flow children)))))))
     (plist-put box :ebox-content-layout-complete-p
@@ -1731,7 +1732,12 @@ one carrier line preserves their paint without inventing a content line."
 
 (defun ebox--format-content (box)
   "Format BOX content (wrap and justify) returning a string."
-  (or (and (not (ebox-layer-active-p box))
+  (or (and (or (not (ebox-layer-active-p box))
+               ;; Only the staged root viewport may replay composed layers.
+               ;; Fresh lazy producers and nested owners still compose fully.
+               (and (eq box ebox-layer--render-root)
+                    (ebox-layer-cached-root-scroll-p
+                     box ebox--scroll-window-cached-state)))
            (ebox--format-scroll-window-content box))
       (ebox--format-content-string box (ebox--box-content box))))
 
@@ -2134,7 +2140,12 @@ This function owns spatial layout only; it never creates a live TP surface."
         (cond
          ((eq (plist-get node :ebox-kind) 'text)
           (ebox--render-text-node node))
-         ((eq type 'box)    (ebox--render-box node))
+         ((eq type 'box)
+          (if (eq (ebox-get node :visibility) 'hidden)
+              ;; Keep hidden geometry, but do not let descendant portals
+              ;; escape this visibility boundary into an outer composition.
+              (let ((ebox-layer--portals nil)) (ebox--render-box node))
+            (ebox--render-box node)))
          ((eq type 'concat) (ebox--render-concat node))
          ((eq type 'stack)  (ebox--render-stack node))
          ((eq type 'flex)   (ebox--render-flex node))

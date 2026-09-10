@@ -371,9 +371,12 @@ margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 
 
 `:keymap` 接受原生 Emacs keymap 或 `nil`。推荐使用 `ebox-keymap-create`：
 `:activate` 的回调不带参数，处理 `RET`、`[return]`、`SPC` 和 `[mouse-1]`。
+快速双击、三击的每次释放也各激活一次；主按钮按下和拖动默认不执行操作，保留 point
+和选区，避免触发原生的选词或整行选择。
 `:bindings` 接受 alist，按键描述字符串或事件向量对应零参数回调。
 辅助函数让鼠标回调在事件窗口的 buffer 中运行，因此回调可以直接按语义 ID 更新：
 `(ebox-region-update "action" :help-echo "Activated")`。
+显式绑定可以覆盖连击、按下和拖动事件的默认行为。
 
 使用键盘绑定时，先把 point 移到交互范围内。可选命令 `ebox-next-interaction` 与
 `ebox-previous-interaction` 在当前渲染了可用 keymap 的声明节点之间移动。每个 owner
@@ -467,6 +470,23 @@ Ebox 对 keymap 创建快照；发布新绑定时应替换 `:keymap`，而不是
 `ebox-selector-query-buffer` 按文档顺序返回 mounted buffer 中的匹配；
 `ebox-selector-update-buffer` 对所有可编辑匹配应用一次样式更新。数字 region id
 只是诊断用渲染 metadata，不是稳定更新 handle。
+
+一个操作需要多次更新 region 时，可以合并这些更新：
+
+```elisp
+(ebox-call-with-update-batch
+ (lambda ()
+   (ebox-region-update "status" :help-echo "Ready")
+   (ebox-region-update "status" :color "#166534")
+   'ready)
+ (get-buffer "*Ebox Guide*"))
+```
+
+回调在指定 buffer 中运行，省略 buffer 时使用当前 buffer；本例的 helper 返回
+`ready`。helper 只 flush 一次自己拥有的非空 batch；已有 batch 时，由外层拥有者
+负责 flush。非局部退出会恢复到本次调用前的待处理状态，自己拥有的 batch 若
+flush 失败则保留上次已提交 surface。回调中的其他业务副作用不会被撤销。嵌套、
+no-op 和显式生命周期行为见[批量更新契约](ebox-api-reference.zh.md#合并-region-更新)。
 
 ## 7. Resize 与滚动
 

@@ -436,10 +436,14 @@ value; an omitted property leaves the enclosing surface coverage in place.
 
 `:keymap` accepts a native Emacs keymap or `nil`. Prefer `ebox-keymap-create`:
 its `:activate` callback takes no arguments and handles `RET`, `[return]`, `SPC`,
-and `[mouse-1]`. Use `:bindings` for an alist of key-description strings or event
+and `[mouse-1]`. Rapid double and triple clicks each activate once per release;
+primary-button press and drag events do nothing, preserving point and selection
+instead of starting native word or line selection. Use `:bindings` for an alist
+of key-description strings or event
 vectors paired with zero-argument callbacks. The helper uses the event window's
 buffer for mouse callbacks, so a callback can directly update a semantic ID
 with `(ebox-region-update "action" :help-echo "Activated")`.
+Explicit bindings can override the repeated-click, press and drag defaults.
 
 Move point into the surface to use keyboard bindings. Optional commands
 `ebox-next-interaction` and `ebox-previous-interaction` move between declaring
@@ -550,6 +554,26 @@ global bindings available.
 buffer. `ebox-selector-update-buffer` applies one style update to all editable
 matches. Numeric region ids are diagnostic render metadata, not stable update
 handles.
+
+For one action that makes several region updates, group them:
+
+```elisp
+(ebox-call-with-update-batch
+ (lambda ()
+   (ebox-region-update "status" :help-echo "Ready")
+   (ebox-region-update "status" :color "#166534")
+   'ready)
+ (get-buffer "*Ebox Guide*"))
+```
+
+The callback runs in the supplied buffer, or the current buffer when omitted,
+and the helper returns `ready` here. It flushes its own nonempty batch once;
+inside an existing batch it leaves the flush to the outer owner. A nonlocal
+exit restores the pending state from before this call, and a failed owned
+flush preserves the last committed surface. This does not undo arbitrary
+business side effects in the callback. See the [batch API
+contract](ebox-api-reference.en.md#grouping-region-updates) for nesting, no-op,
+and explicit lifecycle behavior.
 
 ## 7. Resize and scroll
 

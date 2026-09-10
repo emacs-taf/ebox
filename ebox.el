@@ -91,6 +91,44 @@
    buffer 'batch
    (lambda () (ebox-incremental--flush buffer))))
 
+;;;###autoload
+(defun ebox-call-with-update-batch (callback &optional buffer)
+  "Call CALLBACK in BUFFER, coalescing its region updates into one publication.
+BUFFER defaults to the current buffer.  CALLBACK receives no arguments and its
+return value is returned unchanged.  Flush after CALLBACK returns normally;
+an empty or unchanged batch does not publish or replace the last update report.
+
+When BUFFER already has an active batch, join it without flushing.  Errors,
+quits and other nonlocal exits discard only this call's queued changes and
+preserve the outer batch.  A failed owned flush discards its unpublished batch;
+the TP publication boundary preserves the previously committed generation.
+
+This scope covers queued `ebox-region-update' calls for BUFFER, not arbitrary
+side effects in CALLBACK.  Leave explicit begin/flush lifecycle calls outside
+CALLBACK; the existing explicit API retains its separate retry semantics."
+  (let* ((buffer (or buffer (current-buffer)))
+         (previous (ebox-incremental--batch-state buffer))
+         (outer-batch (ebox-incremental-batching-p buffer))
+         completed)
+    (with-current-buffer buffer
+      (unwind-protect
+          (progn
+            (if outer-batch
+                ;; Queuing replaces candidate roots/source indexes and appends
+                ;; pending entries, so copying the plist isolates this scope.
+                (puthash buffer (copy-sequence previous)
+                         ebox-incremental--batch-table)
+              (ebox-incremental-begin-batch buffer))
+            (prog1 (funcall callback)
+              (when (and (not outer-batch)
+                         (> (ebox-incremental-pending-count buffer) 0))
+                (ebox-incremental-flush buffer))
+              (setq completed t)))
+        (unless (and outer-batch completed)
+          (if previous
+              (puthash buffer previous ebox-incremental--batch-table)
+            (remhash buffer ebox-incremental--batch-table)))))))
+
 (declare-function ebox--buffer-update-report "ebox-incremental" (buffer))
 (declare-function ebox--set-buffer-update-report
                   "ebox-incremental" (buffer report))
@@ -1089,6 +1127,7 @@ content back to their own source model."
     :region-line-span-index-deferred
     :rendered-region-line-span-index
     :rendered-region-line-span-index-deferred
+    :rendered-content-line-cells
     :region-line-span-hints
     :lazy-scroll-prefix-dirty
     :lazy-scroll-window-refresh-required
@@ -1268,6 +1307,33 @@ remain transaction-local."
     (when had-state
       (ebox--record-render-cache-scroll-region region-id))))
 
+(defun ebox--scroll-rendered-line-cells-current-p (cells lines)
+  "Return non-nil when positional CELLS still describe rendered LINES.
+Rendered list spines are append-only between installations.  Equal-length
+prefix rewrites replace cars, so retained cons handles see current row values;
+an appended tail or replacement head invalidates the positional index."
+  (and (vectorp cells) (> (length cells) 0)
+       (eq (aref cells 0) lines)
+       (null (cdr (aref cells (1- (length cells)))))))
+
+(defun ebox--scroll-rendered-line-cells (state lines)
+  "Return STATE's immutable positional cons-cell index for complete LINES.
+Only a complete cache is indexed, avoiding full-prefix rebuilds during lazy
+extension.  Indexes may be shared by shallow candidate state copies; replacement
+or extension creates a new vector without changing earlier state or row data."
+  (when (or (plist-get state :content-lines-complete-p)
+            (and (not (plist-get state :render-content-prefix))
+                 (not (plist-get state :materialize-content-lines))))
+    (let ((cells (plist-get state :rendered-content-line-cells)))
+      (unless (ebox--scroll-rendered-line-cells-current-p cells lines)
+        (setq cells (make-vector (length lines) nil))
+        (let ((tail lines))
+          (dotimes (index (length cells))
+            (aset cells index tail)
+            (setq tail (cdr tail))))
+        (plist-put state :rendered-content-line-cells cells))
+      cells)))
+
 (defun ebox--scroll-state-rendered-visible-window (state)
   "Return STATE's current rendered visible slice, including text properties."
   (let* ((content-height (plist-get state :content-height))
@@ -1282,10 +1348,16 @@ remain transaction-local."
       (list offset native-lines))
      ((and (integerp content-height) (>= content-height 0))
       (when-let* ((lines (plist-get state :rendered-content-lines)))
-        (let* ((max-offset (max 0 (- (length lines) content-height)))
+        (let* ((cells (ebox--scroll-rendered-line-cells state lines))
+               (count (if cells (length cells) (length lines)))
+               (max-offset (max 0 (- count content-height)))
                (offset (max 0 (min max-offset offset)))
-               (end (min (+ offset content-height) (length lines))))
-          (list offset (seq-subseq lines offset end))))))))
+               (end (min (+ offset content-height) count)))
+          (list offset
+                (if cells
+                    (when (< offset end)
+                      (seq-subseq (aref cells offset) 0 (- end offset)))
+                  (seq-subseq lines offset end)))))))))
 
 (defun ebox--scroll-state-retained-window-ready-p (state)
   "Return non-nil when STATE can publish its cached visible window directly.
@@ -2047,6 +2119,9 @@ fall back to the complete role scanner."
 (defun ebox--scroll-state-set-lines
     (state content-lines &optional rendered-lines)
   "Return STATE with CONTENT-LINES and derived span indexes installed."
+  (unless (ebox--scroll-rendered-line-cells-current-p
+           (plist-get state :rendered-content-line-cells) rendered-lines)
+    (setq state (plist-put state :rendered-content-line-cells nil)))
   (let ((old-lines (plist-get state :content-lines)))
     (setq state
           (plist-put
@@ -3061,23 +3136,117 @@ inside the old prefix, so a line-slide never mixes two layout versions."
       (ebox--scroll-state-ensure-prefix-lines
        region-id state required-lines t))))
 
-(defun ebox--surface-scroll-runtime (buffer region-id)
-  "Return isolated scroll candidate runtime for BUFFER and REGION-ID."
+(defun ebox--surface-scroll-cached-intent-p (scroll delta)
+  "Return non-nil when SCROLL can consume DELTA without any producer work."
+  (and (not (plist-get scroll :lazy-scroll-prefix-dirty))
+       (not (plist-get scroll :lazy-scroll-window-refresh-required))
+       (not (plist-get scroll :native-reflow-target-prefix-p))
+       (not (and (plist-get scroll :native-reflow-materialize-p)
+                 (plist-get scroll :materialize-content-lines)))
+       (or (plist-get scroll :content-lines-complete-p)
+           (and (not (plist-get scroll :render-content-prefix))
+                (not (plist-get scroll :materialize-content-lines)))
+           (and (integerp delta)
+                (<= (+ (max 0 (+ (or (plist-get scroll :scroll-offset) 0) delta))
+                       (or (plist-get scroll :content-height) 0))
+                    (length (plist-get scroll :content-lines)))))))
+
+(defun ebox--surface-nested-scroll-cached-p (scroll &optional delta)
+  "Return non-nil when SCROLL can move DELTA without running a producer.
+Complete caches support the ordinary wrapper proof.  An incomplete prefix
+must cover the exact requested chrome-free window before nodes can be shared."
+  (or (plist-get scroll :content-lines-complete-p)
+      (and (not (plist-get scroll :render-content-prefix))
+           (not (plist-get scroll :materialize-content-lines)))
+      (and (integerp delta)
+           (not (plist-get scroll :native-reflow-materialize-p))
+           (not (plist-get scroll :native-reflow-target-prefix-p))
+           (let* ((offset (max 0 (+ (or (plist-get scroll :scroll-offset) 0) delta)))
+                  (height (plist-get scroll :content-height))
+                  (candidate (plist-put (copy-sequence scroll) :scroll-offset offset))
+                  (visible (ebox--scroll-state-retained-window-ready-p candidate)))
+             (and (integerp height) visible (= (car visible) offset)
+                  (= (length (cadr visible)) height)
+                  (<= (+ offset height) (length (plist-get scroll :content-lines))))))))
+
+(defun ebox--surface-nested-scroll-proof
+    (buffer state region-id owner-id &optional delta isolated-producer-p)
+  "Return a retained allocation proof for BUFFER's nested scroll REGION-ID.
+OWNER-ID names its Box in STATE.  Complete cached content keeps intrinsic size
+unchanged; the publisher still validates every replacement slot and enclosing
+effect.  DELTA additionally permits a covered incomplete prefix.
+ISOLATED-PRODUCER-P permits a clean prefix miss after the caller isolates the
+owner subtree and its producer.  One enclosing root cache has a separate
+coordinate proof; deeper scroll chains, layers and fractions keep fallback."
+  (let* ((root (plist-get state :root-node))
+         (table (plist-get state :scroll-state-table))
+         (scroll (and table (gethash region-id table)))
+         (box (and scroll (plist-get scroll :box)))
+         enclosing-region)
+    (when (and owner-id root box
+               (not (equal owner-id (plist-get root :node-id)))
+               (cl-every
+                (lambda (other-region)
+                  (or (equal other-region region-id)
+                      (when-let* ((other-owner
+                                   (ebox--buffer-region-render-owner-node-id
+                                    buffer other-region)))
+                        (cond
+                         ((equal other-owner (plist-get root :node-id))
+                          (setq enclosing-region other-region))
+                         (t
+                          (not (or (ebox--runtime-ancestor-id-p buffer other-owner owner-id)
+                                   (ebox--runtime-ancestor-id-p buffer owner-id other-owner))))))))
+                (plist-get state :scroll-region-ids))
+               (or (ebox--surface-nested-scroll-cached-p scroll delta)
+                   (and isolated-producer-p (integerp delta) (> delta 0)
+                        (plist-get scroll :render-content-prefix)
+                        (not (plist-get scroll :native-reflow-materialize-p))
+                        (not (plist-get scroll :native-reflow-target-prefix-p))))
+               (plist-get scroll :content-lines)
+               (not (plist-get scroll :lazy-scroll-prefix-dirty))
+               (not (plist-get scroll :lazy-scroll-window-refresh-required))
+               (not (plist-get state :fractional-pixel-output-p))
+               (not (if (plist-member state :layered-p)
+                        (plist-get state :layered-p)
+                      (ebox-layer-active-p root)))
+               (equal (plist-get state :display-signature)
+                      (ebox--current-display-signature)))
+      (if enclosing-region
+          ;; The incremental preparation validates the owner in its enclosing
+          ;; root cache, including owners currently outside the mounted window.
+          (list :owner-id owner-id :nested-scroll-patch-p t
+                :scroll-content-region-id enclosing-region)
+        (when-let* ((snapshot (ebox--ensure-layout-snapshot-details buffer owner-id))
+                  ((plist-get snapshot :buffer-spans))
+                  (width (plist-get
+                          (plist-get snapshot :external-footprint-signature)
+                          :max-line-pixel-width)))
+        (list :owner-id owner-id :snapshot snapshot :allocated-width width
+              :nested-scroll-patch-p t))))))
+
+(defun ebox--surface-scroll-runtime (buffer region-id &optional delta)
+  "Return isolated scroll candidate runtime for BUFFER and REGION-ID.
+DELTA proves cached hits before sharing children or continuation closures.
+A miss owns its subtree, indexes, cache lines and producers before staging."
   (let* ((old-state (ebox--buffer-render-state buffer))
          (old-root (plist-get old-state :root-node))
+         (old-scroll-state (gethash region-id (plist-get old-state :scroll-state-table)))
+         (cached-intent-p (ebox--surface-scroll-cached-intent-p old-scroll-state delta))
          (owner-id (ebox--buffer-region-render-owner-node-id
                     buffer region-id))
+         (nested-proof (ebox--surface-nested-scroll-proof
+                        buffer old-state region-id owner-id delta (not cached-intent-p)))
          ;; Scrolling changes one box property and never changes the logical
-         ;; tree.  Copy only that owner path when it is the published root;
-         ;; nested scroll owners retain the old conservative isolated-copy
-         ;; path until their ancestor publication contract is proven.  The
+         ;; tree.  A nested owner additionally keeps a retained allocation
+         ;; certificate; its cached wrapper never renders shared descendants. The
          ;; previous implementation copied and indexed the complete gallery
          ;; for every wheel event, which made a 512-node grid visibly stall.
          (path-root
           (and owner-id old-root
-               (equal owner-id (plist-get old-root :node-id))
+               (or (equal owner-id (plist-get old-root :node-id)) nested-proof)
                (ebox-incremental-surface-region-candidate-root
-                buffer region-id)))
+                buffer region-id (not cached-intent-p))))
          (root (or path-root
                    (ebox-tree-copy-node-structure old-root)))
          ;; All runtime index keys remain stable for a scroll-only path copy.
@@ -3087,29 +3256,49 @@ inside the old prefix, so a line-slide never mixes two layout versions."
           (copy-hash-table (plist-get old-state :region-box-table)))
          (candidate-box (ebox--root-region-box root region-id))
          (_ (when candidate-box
-              (puthash region-id candidate-box region-box-table)))
+              (puthash region-id candidate-box region-box-table)
+              (when-let* ((enclosing (plist-get nested-proof :scroll-content-region-id)))
+                (puthash enclosing root region-box-table))))
          (index
-          (list :region-id-set (plist-get old-state :region-id-set)
-                :region-box-table region-box-table))
+          (if cached-intent-p
+              (list :region-id-set (plist-get old-state :region-id-set)
+                    :region-box-table region-box-table)
+            (plist-get (ebox-incremental--candidate-local-index-delta old-state root) :index)))
+         (_private-registry
+          (setq region-box-table (plist-get index :region-box-table)))
          (scroll-table
-          (ebox-incremental--candidate-scroll-state-table
-           buffer old-state index region-box-table))
-         (old-scroll-state (ebox--scroll-get-state region-id))
+          (let ((ebox--render-string-pixel-width-cache
+                 (unless cached-intent-p (make-hash-table :test 'equal)))
+                (ebox--render-string-max-pixel-width-cache
+                 (unless cached-intent-p (make-hash-table :test 'eq)))
+                (ebox--render-recached-source-node-cache
+                 (unless cached-intent-p (make-hash-table :test 'eq))))
+            (ebox-incremental--candidate-scroll-state-table
+             buffer old-state index region-box-table)))
          (candidate-scroll-state (gethash region-id scroll-table))
          (state (copy-sequence old-state)))
-    (dolist (key '(:render-content-prefix :materialize-content-lines))
-      (when (plist-member old-scroll-state key)
+    ;; Even a cache hit publishes a new Box.  Keep its rebound continuations:
+    ;; a later idle prefix or materializer must never return the retired Box.
+    (unless cached-intent-p
+      ;; Prefix continuations may extend or rewrite both lists and their
+      ;; indexes in place.  A new closure must never receive published spines.
+      (let ((ebox--defer-scroll-content-index t))
+        (plist-put candidate-scroll-state :region-line-bounds-index nil)
         (setq candidate-scroll-state
-              (plist-put candidate-scroll-state key
-                         (plist-get old-scroll-state key)))))
+              (ebox--scroll-state-set-lines
+               candidate-scroll-state
+               (mapcar #'copy-sequence (plist-get old-scroll-state :content-lines))
+               (mapcar #'copy-sequence (plist-get old-scroll-state :rendered-content-lines))))))
     (puthash region-id candidate-scroll-state scroll-table)
     (setq state (ebox--render-state-install-index state index))
     (plist-put state :root-node root)
     (plist-put state :scroll-state-table scroll-table)
+    (unless cached-intent-p
+      (ebox-incremental--isolate-candidate-caches state))
     (unless (gethash region-id scroll-table)
       (error "Ebox scroll region has no candidate state: %S" region-id))
     (list :root root :state state :scroll-table scroll-table
-          :base-state old-state)))
+          :base-state old-state :nested-scroll-patch-proof nested-proof)))
 
 (defun ebox--surface-scroll-target (region-id state delta prefix-budget-lines)
   "Return REGION-ID STATE staged by DELTA within PREFIX-BUDGET-LINES."
@@ -3201,9 +3390,9 @@ inside the old prefix, so a line-slide never mixes two layout versions."
       (error "Ebox runtime changed during scroll update notification"))
     (let* ((staged-scroll-state (copy-sequence state))
            (scroll-patch-fast-p
-           (and (ebox--scroll-state-retained-window-ready-p
-                  staged-scroll-state)
-                 t))
+            (or (and (ebox--scroll-state-retained-window-ready-p
+                      staged-scroll-state) t)
+                (and (plist-get runtime :nested-scroll-patch-proof) t)))
            (commit-input
             (let ((ebox--scroll-global-state table))
               (ebox-incremental-prepare-scoped-commit
@@ -3232,6 +3421,9 @@ inside the old prefix, so a line-slide never mixes two layout versions."
                 (list owner-id)))
            (state-overrides
             (let ((value (plist-get commit-input :state-overrides)))
+              (when (plist-get runtime :nested-scroll-patch-proof)
+                (setq value (plist-put value :nested-scroll-patch-proof
+                                       (plist-get runtime :nested-scroll-patch-proof))))
               (setq value
                     (plist-put
                      value :preserve-scroll-producer-region-ids
@@ -3270,6 +3462,7 @@ inside the old prefix, so a line-slide never mixes two layout versions."
          (table (plist-get overrides :scroll-state-table))
          (state (gethash region-id table)))
     (dolist (key '(:content-lines :rendered-content-lines
+                   :rendered-content-line-cells
                    :content-lines-complete-p :render-content-prefix
                    :materialize-content-lines :content-region-id-set
                    :region-line-bounds-index :region-line-span-index
@@ -3290,11 +3483,12 @@ inside the old prefix, so a line-slide never mixes two layout versions."
 (defun ebox--surface-scroll-region-by
     (buffer region-id delta prefix-budget-lines)
   "Scroll mounted BUFFER REGION-ID by DELTA within PREFIX-BUDGET-LINES."
-  (let* ((runtime (ebox--surface-scroll-runtime buffer region-id))
+  (let* ((runtime (ebox--surface-scroll-runtime buffer region-id delta))
          (table (plist-get runtime :scroll-table))
          (candidate-state (plist-get runtime :state))
          (transition
           (let ((ebox--scroll-global-state table)
+                (ebox--region-box-table (plist-get candidate-state :region-box-table))
                 (ebox--scroll-idle-prefetch-timers
                  (make-hash-table :test 'equal))
                 (ebox--smooth-scroll-state-table

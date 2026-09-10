@@ -42,6 +42,54 @@
             (plist-get (ebox-surface-buffer-snapshot (current-buffer))
                        :input))))))
 
+(defun ebox-layer-publication-test--mount-signature (buffer)
+  "Return BUFFER's complete mounted ranges normalized to runtime tree paths."
+  (let* ((state (ebox--buffer-render-state buffer))
+         (objects (plist-get state :surface-node-object-table))
+         result)
+    (cl-labels
+        ((walk (node path)
+           (let ((object (gethash (plist-get node :node-id) objects)))
+             (should object)
+             (push
+              (cons path
+                    (sort
+                     (mapcar (lambda (mount)
+                               (cons (plist-get mount :start)
+                                     (plist-get mount :end)))
+                             (tp-object-mounts object))
+                     (lambda (left right)
+                       (if (= (car left) (car right))
+                           (< (cdr left) (cdr right))
+                         (< (car left) (car right))))))
+              result))
+           (cl-loop for child in (ebox-tree-node-children node)
+                    for index from 0
+                    do (walk child (append path (list index))))))
+      (walk (plist-get state :root-node) '(root)))
+    (nreverse result)))
+
+(defun ebox-layer-publication-test--assert-fresh-mounts ()
+  "Compare current mounts and paint with an independent committed-input render."
+  (let ((buffer (current-buffer))
+        (input (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input)))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer (current-buffer) input)
+            (should (equal
+                     (ebox-layer-publication-test--mount-signature buffer)
+                     (ebox-layer-publication-test--mount-signature (current-buffer))))
+            (let ((actual (with-current-buffer buffer (buffer-string)))
+                  (expected (buffer-string)))
+              (should (equal (substring-no-properties actual)
+                             (substring-no-properties expected)))
+              (dotimes (position (length actual))
+                (should (equal (get-text-property position 'face actual)
+                               (get-text-property position 'face expected))))))
+        (when (ebox-surface-buffer-mounted-p (current-buffer))
+          (ebox-unmount-buffer (current-buffer)))))))
+
 (ert-deftest ebox-layer-publication-updates-every-placement-property ()
   "Each layer declaration reaches the mounted runtime through a region update."
   (dolist (properties '((:position relative) (:left (ch 2)) (:top (lh 1))
@@ -181,6 +229,60 @@
       (should (equal (get-text-property position 'help-echo) "lower-new")))
     (ebox-layer-publication-test--assert-fresh-render)))
 
+(ert-deftest ebox-layer-publication-visible-mounts-follow-occlusion-and-rollback ()
+  "Hide/reveal remounts visible owners and rolls back both TP failure stages."
+  (ebox-layer-publication-test--with-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build
+      '(column :id "root" :width (ch 12) :height (lh 2)
+               :padding-inline (ch 2) :background-color "#101117" :color "#DCE0EC"
+               :border-top-width (px 1) :border-top-style solid
+               :border-top-color "#ABCDEF"
+               :border-bottom-width (px 1) :border-bottom-style solid
+               :border-bottom-color "#FEDCBA"
+        (box :id "host" :width (ch 8) :height (lh 2)
+          (box :id "lower" :width (ch 8) :height (lh 2)
+               :background-color "#234567" :help-echo "lower"
+               "LOWER001\nLOWER002")
+          (box :id "upper" :position absolute :width (ch 8) :height (lh 1)
+               :background-color "#AABBCC" :help-echo "upper" "UPPER001")))))
+    (ebox-region-update "lower" :keymap '(keymap (13 . backward-char)))
+    (ebox-region-update "upper" :keymap '(keymap (13 . forward-char)))
+    (dolist (failure-step '(text client-state))
+      (let ((before (buffer-string))
+            (state (ebox--buffer-render-state (current-buffer)))
+            (revision (ebox-surface-buffer-revision (current-buffer)))
+            (mounts (ebox-layer-publication-test--mount-signature (current-buffer))))
+        (let ((tp--surface-publication-step-function
+               (lambda (step _surface)
+                 (when (eq step failure-step) (error "Reject layer mounts")))))
+          (should-error (ebox-region-update "upper" :visibility 'hidden)))
+        (should (eq state (ebox--buffer-render-state (current-buffer))))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal-including-properties before (buffer-string)))
+        (should (equal mounts
+                       (ebox-layer-publication-test--mount-signature (current-buffer)))))
+      (dolist (visibility '(hidden visible))
+        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                   (lambda (&rest _) (ert-fail "Layer remount rendered the root"))))
+          (ebox-region-update "upper" :visibility visibility))
+        (let* ((state (ebox--buffer-render-state (current-buffer)))
+               (upper (car (ebox-selector-query-buffer (current-buffer) "#upper")))
+               (object (gethash (plist-get upper :node-id)
+                                (plist-get state :surface-node-object-table))))
+          (should (eq (null (tp-object-mounts object)) (eq visibility 'hidden)))
+          (should (eq (null (ebox-surface-region-bounds
+                            (current-buffer) (plist-get upper :region-id)))
+                      (eq visibility 'hidden)))
+          (goto-char (point-min))
+          (search-forward (if (eq visibility 'hidden) "LOWER001" "UPPER001"))
+          (should (equal (get-text-property (1- (point)) 'help-echo)
+                         (if (eq visibility 'hidden) "lower" "upper")))
+          (should (eq (lookup-key (get-text-property (1- (point)) 'keymap) (kbd "RET"))
+                      (if (eq visibility 'hidden) #'backward-char #'forward-char))))
+        (ebox-layer-publication-test--assert-fresh-mounts)))))
+
 (ert-deftest ebox-layer-publication-ancestor-paint-survives-recomposition ()
   "A detached host retains enclosing paint and interaction contributions."
   (ebox-layer-publication-test--with-buffer
@@ -217,6 +319,45 @@
     (ebox-region-update "upper" :visibility 'hidden)
     (should (string-match-p "LOWER002" (buffer-string)))
     (ebox-layer-publication-test--assert-fresh-render)))
+
+(ert-deftest ebox-layer-publication-hidden-portals-keep-unrelated-host-local ()
+  "Hidden portals cannot widen unrelated local updates, even after a reveal."
+  (dolist (hidden-owner '(nil t))
+    (ebox-layer-publication-test--with-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        `(column :id "root" :width (ch 12) :height (lh 5)
+           (box :id "host" :width (ch 8) :height (lh 2)
+             (box :id "lower" :width (ch 8) :height (lh 1) "LOWER001")
+             (box :id "upper" :position absolute :width (ch 8)
+                  :height (lh 1) :z-index 1 "UPPER001"))
+           (box :id "portal-owner" :height (lh 1)
+                :visibility ,(if hidden-owner 'hidden 'visible)
+             (box :id "portal" :position absolute :layer root
+                  :width (ch 8) :height (lh 1) :z-index 2
+                  :visibility ,(if hidden-owner 'visible 'hidden) "PORTAL01")))))
+      (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                 (lambda (&rest _)
+                   (ert-fail "Hidden portal caused an unrelated root render"))))
+        (ebox-region-update "lower" :content "LOWER002")
+        (ebox-region-update "upper" :visibility 'hidden))
+      (should (string-match-p "LOWER002" (buffer-string)))
+      (ebox-layer-publication-test--assert-fresh-render)
+      (ebox-region-update (if hidden-owner "portal-owner" "portal")
+                          :visibility 'visible)
+      (should (string-match-p "PORTAL01" (buffer-string)))
+      (ebox-region-update "lower" :content "LOWER003")
+      (should-not (string-match-p "LOWER003" (buffer-string)))
+      (ebox-layer-publication-test--assert-fresh-render)
+      (ebox-region-update (if hidden-owner "portal-owner" "portal")
+                          :visibility 'hidden)
+      (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                 (lambda (&rest _)
+                   (ert-fail "Closed portal retained a stale root dependency"))))
+        (ebox-region-update "lower" :content "LOWER004"))
+      (should (string-match-p "LOWER004" (buffer-string)))
+      (ebox-layer-publication-test--assert-fresh-render))))
 
 (ert-deftest ebox-layer-publication-root-portal-occludes-unrelated-owner ()
   "Updates outside a root portal's local host cannot paint over the portal."
@@ -318,6 +459,187 @@
         (should (string-match-p "TWO00000" (buffer-string)))
         (should (string-match-p "Before" (buffer-string)))
         (should (string-match-p "After" (buffer-string)))))))
+
+(defun ebox-layer-publication-test--allocated-input (&rest host-style)
+  "Build a host with HOST-STYLE inside a padded parent allocation."
+  (ebox-build
+   `(column :id "root" :width (ch 24) :height (lh 7)
+            :padding ((lh 1) (ch 2))
+      (box :id "before" "Before")
+      (box :id "host" :height (lh 2) :background-color "#004488"
+           ,@host-style
+        (box :id "lower" :width (ch 8) :height (lh 1) "LOWER001")
+        (box :id "upper" :position absolute :left (px 0) :top (lh 0)
+             :width (ch 4) :height (lh 1) :background-color "#884400"
+             :help-echo "Upper layer" :pointer hand
+             :keymap (keymap (13 . ignore)) "UP01"))
+      (box :id "after" "After"))))
+
+(defun ebox-layer-publication-test--assert-fresh-properties ()
+  "Compare visible text, geometry, paint and interactions with a fresh render."
+  (let ((actual (buffer-string))
+        (fresh (ebox-render
+                (plist-get (ebox-surface-buffer-snapshot (current-buffer))
+                           :input))))
+    (should (equal (substring-no-properties actual)
+                   (substring-no-properties fresh)))
+    (dotimes (position (length actual))
+      (dolist (property '(face font-lock-face display help-echo keymap
+                         mouse-face pointer))
+        (ert-info ((format "Property %S at character %d" property position))
+          (should (equal (get-text-property position property actual)
+                         (get-text-property position property fresh))))))))
+
+(ert-deftest ebox-layer-publication-auto-host-keeps-padded-parent-allocation ()
+  "An auto-width host keeps its parent's content width during local updates."
+  (ebox-layer-publication-test--with-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-layer-publication-test--allocated-input))
+    (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+               (lambda (&rest _)
+                 (ert-fail "Auto-width layer host rendered the root"))))
+      (dolist (left '((ch 1) (ch 0)))
+        (ebox-region-update "upper" :left left)
+        (ebox-layer-publication-test--assert-fresh-properties)))))
+
+(ert-deftest ebox-layer-publication-allocation-respects-host-box-model ()
+  "A local allocation includes margins and content-box padding exactly once."
+  (dolist (style '((:width (ch 8) :margin-inline (ch 1))
+                   (:width (ch 8) :box-sizing content-box
+                    :padding-inline (ch 1))))
+    (ert-info ((format "Host style %S" style))
+      (ebox-layer-publication-test--with-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (apply #'ebox-layer-publication-test--allocated-input style))
+        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                   (lambda (&rest _)
+                     (ert-fail "Stable host box model rendered the root"))))
+          (dolist (left '((ch 1) (ch 0)))
+            (ebox-region-update "upper" :left left)
+            (ebox-layer-publication-test--assert-fresh-properties)))))))
+
+(ert-deftest ebox-layer-publication-intrinsic-host-width-can-grow ()
+  "Content-dependent hosts must grow naturally and move their following sibling."
+  (dolist (width '(max-content min-content fit-content auto))
+    (ert-info ((format "Intrinsic host width %S" width))
+      (ebox-layer-publication-test--with-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(row :width (ch 20) :height (lh 2)
+                (box :id "host" :width ,width :height (lh 1)
+                     (box :id "lower" "AAAA")
+                     (box :position absolute :width (ch 2)
+                          :height (lh 1) "XX"))
+                (box "TAIL"))))
+        (dolist (content '("AAAAAA" "AAA"))
+          (ebox-region-update "lower" :content content)
+          (ebox-layer-publication-test--assert-fresh-properties))))))
+
+(ert-deftest ebox-layer-publication-inline-auto-host-width-can-grow ()
+  "Automatic inline widths remain content-dependent even under normal flow."
+  (ebox-layer-publication-test--with-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build
+      '(box :width (ch 20) :height (lh 2)
+            (box :id "host" :outer inline :height (lh 1)
+                 (box :id "lower" :outer inline "AAAA")
+                 (box :position absolute :width (ch 2)
+                      :height (lh 1) "XX"))
+            (box :outer inline "TAIL"))))
+    (dolist (content '("AAA" "AAAAAA"))
+      (ebox-region-update "lower" :content content)
+      (ebox-layer-publication-test--assert-fresh-properties))))
+
+(ert-deftest ebox-layer-publication-owner-geometry-does-not-reuse-allocation ()
+  "Owner width, sizing model and margin changes retain the geometry fallback."
+  (dolist (case '(((:width (ch 8)) (:width (ch 10)))
+                  ((:width (ch 8) :padding-inline (ch 1))
+                   (:box-sizing content-box))
+                  ((:width (ch 8) :margin-inline (ch 1))
+                   (:margin-inline (ch 2)))))
+    (ert-info ((format "Host geometry change %S" case))
+      (ebox-layer-publication-test--with-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (apply #'ebox-layer-publication-test--allocated-input (car case)))
+        (let ((render (symbol-function 'ebox-surface--render-candidate))
+              (full-renders 0))
+          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                     (lambda (&rest arguments)
+                       (cl-incf full-renders)
+                       (apply render arguments))))
+            (apply #'ebox-region-update "host" (cadr case)))
+          (should (> full-renders 0)))
+        (ebox-layer-publication-test--assert-fresh-properties)))))
+
+(ert-deftest ebox-layer-publication-allocated-host-failure-rolls-back ()
+  "Failed local text and client-state publication preserve the old allocation."
+  (ebox-layer-publication-test--with-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-layer-publication-test--allocated-input))
+    (let ((before (buffer-string))
+          (revision (ebox-surface-buffer-revision (current-buffer))))
+      (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                 (lambda (&rest _)
+                   (ert-fail "Allocated layer rollback rendered the root"))))
+        (dolist (failure-step '(text client-state))
+          (let* ((failed-step nil)
+                 (tp--surface-publication-step-function
+                  (lambda (step _surface)
+                    (when (eq step failure-step)
+                      (setq failed-step step)
+                      (error "Reject allocated layer %S" step)))))
+            (should-error (ebox-region-update "upper" :left '(ch 1)))
+            (should (eq failed-step failure-step)))
+          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (equal-including-properties before (buffer-string)))
+          (ebox-layer-publication-test--assert-fresh-properties))
+        (ebox-region-update "upper" :left '(ch 1))
+        (should (= (1+ revision)
+                   (ebox-surface-buffer-revision (current-buffer))))
+        (should-not (equal-including-properties before (buffer-string)))
+        (ebox-layer-publication-test--assert-fresh-properties)))))
+
+(ert-deftest ebox-layer-publication-hidden-ancestor-portals-stay-hidden-in-active-root ()
+  "Root composition must not collect portals under a hidden flow ancestor."
+  (dolist (other-root-paint '(absolute portal))
+    (ert-info ((format "Other root paint %S" other-root-paint))
+      (ebox-layer-publication-test--with-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(box :width (ch 12) :height (lh 3)
+                (box "BASE00000000\nABCDEFGHIJKL\n0123456789ab")
+                (box :id "hidden-owner" :visibility hidden :height (lh 1)
+                     (box :height (lh 1)
+                          (box :id "hidden-portal" :position absolute :layer root
+                               :left (ch 0) :top (lh 0) :width (ch 8)
+                               :height (lh 1) :z-index 9 "HIDDEN01")))
+                ,(if (eq other-root-paint 'absolute)
+                     '(box :position absolute :left (ch 10) :top (lh 2)
+                           :width (ch 2) :height (lh 1) "XY")
+                   '(box :height (lh 1)
+                         (box :position absolute :layer root
+                              :left (ch 10) :top (lh 2)
+                              :width (ch 2) :height (lh 1) "XY"))))))
+        (should-not (string-match-p "HIDDEN01" (buffer-string)))
+        (should (string-match-p "XY" (buffer-string)))
+        (ebox-layer-publication-test--assert-fresh-properties)
+        (ebox-region-update "hidden-portal" :content "HIDDEN02")
+        (should-not (string-match-p "HIDDEN02" (buffer-string)))
+        (ebox-layer-publication-test--assert-fresh-properties)
+        (dotimes (_ 2)
+          (ebox-region-update "hidden-owner" :visibility 'visible)
+          (should (string-match-p "HIDDEN02" (buffer-string)))
+          (should (string-match-p "XY" (buffer-string)))
+          (ebox-layer-publication-test--assert-fresh-properties)
+          (ebox-region-update "hidden-owner" :visibility 'hidden)
+          (should-not (string-match-p "HIDDEN02" (buffer-string)))
+          (should (string-match-p "XY" (buffer-string)))
+          (ebox-layer-publication-test--assert-fresh-properties))))))
 
 (provide 'ebox-layer-publication-tests)
 ;;; ebox-layer-publication-tests.el ends here

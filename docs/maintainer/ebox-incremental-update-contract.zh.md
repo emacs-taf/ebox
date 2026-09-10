@@ -47,14 +47,28 @@ span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，pr
 
 ## 保留式 scroll window
 
-对于 chrome-free、缓存 rendered lines 已覆盖当前可见窗口的 root scroll owner
-（lazy prefix 可以仍未完整 materialize），scroll patch 会
-直接从 staged visible window 拼接输出，不再进入完整 candidate layout。它复用已
-发布的 cascade、viewport axes、object maps 和 descendant `region-box-table`，只推进
-scroll offset 并安装 root `ebox-scroll-window` 属性。证明保持保守：cache miss、
-chrome、active style dependency、topology 变化或窗口不完整时，回退到普通 retained
-路径。Scroll publication 仍经过 TP 与 Ebox participant；即使 TP client-state 发布
-之后失败，也会一起恢复文本、offset、index、object、mount 和 report。
+缓存滚动在可见窗口和 display context 的稳定性得到证明后，复用已发布的 cascade、
+viewport axes 与未变化的 runtime index。Chrome-free root 直接拼接 rendered lines；
+layered 或带 chrome 的 root 可以复用完整合成内容，只渲染 wrapper。纯 root offset
+变化保留已经合成的 portal 和 anchor 内容；style、placement、content 或 display
+context 变化必须使该证明失效。
+
+Nested owner 在 allocation 不变且通过证明时，可以只替换自己的 viewport，避免渲染
+无关兄弟节点。若存在一个 offset 不变的 root scroll ancestor，还必须更新该祖先的
+保留内容、ownership membership 和 line index，并将 producer 重新绑定到 candidate
+树。缓存内容坐标与 mounted buffer 坐标分别验证。不支持的祖先链、部分可见的 owner，
+以及 footprint 或 wrapper 证明失败的情况，保留普通 fallback。
+
+必须在 staging 前区分 cache hit 与真实 prefix miss。Miss 使用复制的目标子树和祖先
+路径、私有 index 与 registry、复制的缓存行，以及重新绑定的 producer；producer
+不得在 TP commit 前修改已发布的 continuation。该隔离可能在 miss 时重建目标 prefix，
+因此 cached-hit 耗时不能代表 miss 的代价。
+
+Scroll publication 仍经过 TP 与 Ebox participant。发布失败时，旧文本、属性、offset、
+raw/rendered cache、source node、index、object、mount 和 report 均保持不变。聚焦回归
+入口为 `make layer-tests`、`make nested-scroll-tests`、`make scroll-cold-tests`
+和 `make scroll-slice-tests`；playground scroll evaluator 验证 fresh-render parity，
+并区分缓存滚动与实际 prefix 扩展。
 
 ## Identity 与坐标
 
