@@ -4787,14 +4787,30 @@ Examples:
                  (memq (car entry) ebox--scroll-overridden-minor-modes))
                minor-mode-overriding-map-alist)))
 
+(defvar-local ebox--saved-overline-margin nil
+  "Original local-binding flag and value of `overline-margin' while mounted.")
+
 ;;;###autoload
 (define-minor-mode ebox-buffer-mode
   "Minor mode for interactive ebox buffers."
   :lighter " Ebox"
   :keymap ebox-scroll-map
   (if ebox-buffer-mode
-      (ebox--install-scroll-map-overrides)
-    (ebox--clear-scroll-map-overrides)))
+      (progn
+        (unless ebox--saved-overline-margin
+          (setq ebox--saved-overline-margin
+                (cons (local-variable-p 'overline-margin) overline-margin)))
+        ;; Native overlines otherwise add ascent to whichever row currently
+        ;; contains a top border.  Paint inside the measured line grid so
+        ;; moving a positioned border cannot move the surrounding rows.
+        (setq-local overline-margin 0)
+        (ebox--install-scroll-map-overrides))
+    (ebox--clear-scroll-map-overrides)
+    (when ebox--saved-overline-margin
+      (if (car ebox--saved-overline-margin)
+          (setq-local overline-margin (cdr ebox--saved-overline-margin))
+        (kill-local-variable 'overline-margin))
+      (setq ebox--saved-overline-margin nil))))
 
 (defun ebox--render-observer-option (options)
   "Validate OPTIONS and return `(PRESENT . OBSERVER)'."

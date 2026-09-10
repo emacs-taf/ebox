@@ -403,6 +403,9 @@ rather than relying on an implicit default.")
     (:symbol ebox-native-status--diagnosis
      :reason buffer-local-native-status-diagnostic
      :evidence status-buffer-presentation-only)
+    (:symbol ebox--saved-overline-margin
+     :reason buffer-local-native-display-preference
+     :evidence mode-lifetime-preference-restoration-not-render-generation-state)
     (:symbol ebox-surface--observation-context
      :reason dynamically-bound-publication-observation
      :evidence let-bound-for-one-public-ebox-call)
