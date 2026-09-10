@@ -7305,9 +7305,27 @@ certificate."
                           candidate-source-index 'type))))
            (candidate-region-box-table
             (plist-get candidate-index :region-box-table))
+           (source-dirty-set
+            (if local-preparation
+                (plist-get local-preparation :dirty-set)
+              (ebox-incremental--declarative-dirty-set
+               old-state candidate-root candidate-index)))
            (style-node-ids
             (or (plist-get local-preparation :touched-node-ids)
-                (and prepare-all-styles-p
+                (and (or prepare-all-styles-p
+                         ;; A fully copied region batch has no touched-node
+                         ;; index.  Mixed projection retains the style tree,
+                         ;; so prepare inherited consumers before proving or
+                         ;; rendering either its paint or geometry owners.
+                         (and (cl-some
+                               (lambda (entry)
+                                 (eq (plist-get entry :dirty-kind) 'paint))
+                               source-dirty-set)
+                              (cl-some
+                               (lambda (entry)
+                                 (memq (plist-get entry :dirty-kind)
+                                       '(geometry structure)))
+                               source-dirty-set)))
                      (ebox-incremental--hash-keys
                       (plist-get candidate-index :node-table)))))
            (candidate-subject-table
@@ -7315,11 +7333,6 @@ certificate."
                  (ebox-incremental--prepare-inline-candidate-styles
                   old-state candidate-index style-node-ids)))
            (styles-prepared-p (hash-table-p candidate-subject-table))
-           (source-dirty-set
-            (if local-preparation
-                (plist-get local-preparation :dirty-set)
-              (ebox-incremental--declarative-dirty-set
-               old-state candidate-root candidate-index)))
            (axis-node-ids
             (unless (ebox-style-cascade-active-p)
               (cl-loop for entry in source-dirty-set
@@ -7374,7 +7387,13 @@ certificate."
            buffer (plist-get old-root :node-id))))
       (let* ((structural-caches
               (ebox-incremental--candidate-structural-caches
-               old-state candidate-index dirty-set local-preparation))
+               old-state candidate-index dirty-set
+               (or local-preparation
+                   ;; Newly prepared inheritance changes descendants whose
+                   ;; source declarations are unchanged.  Their retained
+                   ;; render signatures must not survive the style refresh.
+                   (and styles-prepared-p
+                        (list :touched-node-ids style-node-ids)))))
              (render-signature-cache
               (plist-get structural-caches :render-signature-cache))
              (viewport-height-dependent-subtree-cache
@@ -8081,10 +8100,15 @@ suppresses the ordinary fallback when any fact is missing."
                                      (ebox-runtime-index-get node-id
                                               (plist-get candidate-state
                                                          :parent-table)))
-                              (equal (ebox-incremental--layout-slot-style-signature
-                                      old-node)
-                                     (ebox-incremental--layout-slot-style-signature
-                                      new-node))
+                              ;; Paint consumes effective values.  Its newly
+                              ;; computed style may explicitly store nil
+                              ;; defaults that the retained node omitted.
+                              (null
+                               (ebox-fragment-plist-changed-keys
+                                (ebox-incremental--layout-slot-style-signature
+                                 old-node)
+                                (ebox-incremental--layout-slot-style-signature
+                                 new-node)))
                               (equal (ebox-get old-node :width)
                                      (ebox-get new-node :width))
                               (equal (ebox-get old-node :height)
@@ -8121,6 +8145,10 @@ suppresses the ordinary fallback when any fact is missing."
             (plist-put (copy-sequence geometry-span-proof)
                        :retain-external-owner-suffix-p t)))
     (when (and geometry-proof paint-valid-p disjoint-p
+               ;; Reusing the style tree is safe only after the candidate's
+               ;; inherited paint closure was projected.  Tree-dependent
+               ;; selectors keep the ordinary cascade/render fallback.
+               (plist-get prepared :styles-prepared-p)
                allocation-disjoint-p cascade-safe-p
                ;; Both the rendered geometry and inherited paint must leave
                ;; every retained scroll producer outside their dependency scope.

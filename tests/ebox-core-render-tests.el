@@ -14487,4 +14487,117 @@ face patch must match that exactly (issue014)."
               (ebox-region-update 'status :content value))))
          (should (ebox-test--buffer-propertized-matches-runtime-render-p)))))))
 
+(ert-deftest ebox-mixed-content-paint-refreshes-inherited-foreground ()
+  "A changed sibling label must not retain another Box's inherited color."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-viewport-width 80) (ebox-viewport-height 24))
+    (ebox-test--with-rendered-buffer
+     (ebox-build
+      '(column :width (ch 20)
+               (box :id paint :color "#BBA9FF" "Alpha")
+               (box :id label "Beta")))
+     (dolist (step '(("B" "#674795")
+                     ("Beta longer" "#BBA9FF")
+                     ("Beta" "#674795")))
+       (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                  (lambda (&rest _)
+                    (ert-fail "Mixed inherited paint rendered the root"))))
+         (ebox-call-with-update-batch
+          (lambda ()
+            (ebox-region-update 'paint :color (cadr step))
+            (ebox-region-update 'label :content (car step)))))
+       (should
+        (equal (ebox-test--visible-foreground
+                (get-text-property (point-min) 'face))
+               (cadr step)))
+       (should (ebox-test--buffer-propertized-matches-runtime-render-p))))))
+
+(ert-deftest ebox-mixed-content-paint-refreshes-ancestor-and-keeps-override ()
+  "Ancestor paint reaches retained and replaced Text while keeping overrides."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-viewport-width 80) (ebox-viewport-height 24))
+    (ebox-test--with-rendered-buffer
+     (ebox-build
+      '(column :id root :width (ch 20) :color "#BBA9FF"
+               (column (box "Alpha"))
+               (box :id label "Beta")
+               (box :color "#123456" "Override")))
+     (dolist (step '(("B" "#674795") ("Beta longer" "#BBA9FF")))
+       (ebox-call-with-update-batch
+        (lambda ()
+          (ebox-region-update 'root :color (cadr step))
+          (ebox-region-update 'label :content (car step))))
+       (dolist (text (list "Alpha" (car step) "Override"))
+         (goto-char (point-min))
+         (search-forward text)
+         (should
+          (equal (ebox-test--visible-foreground
+                  (get-text-property (match-beginning 0) 'face))
+                 (if (equal text "Override") "#123456" (cadr step)))))
+       (should (ebox-test--buffer-propertized-matches-runtime-render-p))))))
+
+(ert-deftest ebox-mixed-content-paint-inheritance-rolls-back-and-retries ()
+  "Failed mixed publication preserves the old style closure and accepts retry."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-viewport-width 80) (ebox-viewport-height 24))
+    (ebox-test--with-rendered-buffer
+     (ebox-build
+      '(column :width (ch 20)
+               (box :id paint :color "#BBA9FF" "Alpha")
+               (box :id label "Beta")))
+     (let* ((state (ebox--buffer-render-state (current-buffer)))
+            (before (buffer-string))
+            (revision (ebox-surface-buffer-revision (current-buffer)))
+            (paint (plist-get
+                    (car (ebox-selector-query-buffer (current-buffer) "#paint"))
+                    :node))
+            (text (car (ebox-tree-node-children paint)))
+            (color (plist-get text :color))
+            (update (lambda ()
+                      (ebox-region-update 'paint :color "#674795")
+                      (ebox-region-update 'label :content "B")))
+            rejected)
+       (should text)
+       (should (equal color "#BBA9FF"))
+       (let ((tp--surface-publication-step-function
+              (lambda (step _surface)
+                (when (eq step 'client-state)
+                  (setq rejected t)
+                  (error "Reject mixed inherited paint")))))
+         (should-error (ebox-call-with-update-batch update)))
+       (should rejected)
+       (should (eq state (ebox--buffer-render-state (current-buffer))))
+       (should (equal (plist-get text :color) color))
+       (should (equal-including-properties before (buffer-string)))
+       (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+       (ebox-call-with-update-batch update)
+       (should (equal (ebox-test--visible-foreground
+                       (get-text-property (point-min) 'face))
+                      "#674795"))
+       (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+       (should (ebox-test--buffer-propertized-matches-runtime-render-p))))))
+
+(ert-deftest ebox-mixed-content-paint-inheritance-keeps-cascade-fallback ()
+  "Tree-dependent rules retain full style projection for mixed inheritance."
+  (ebox-test--reset-runtime-state)
+  (let ((ebox-viewport-width 80) (ebox-viewport-height 24)
+        (ebox-style-stylesheet (ecss-stylesheet-create)))
+    (ebox-style-add-rule "#paint text" '(:font-weight bold))
+    (ebox-test--with-rendered-buffer
+     (ebox-build
+      '(column :width (ch 20)
+               (box :id paint :color "#BBA9FF" "Alpha")
+               (box :id label "Beta")))
+     (cl-letf (((symbol-function 'ebox-surface--mixed-owner-output)
+                (lambda (&rest _)
+                  (ert-fail "Unprepared cascade entered mixed projection"))))
+       (ebox-call-with-update-batch
+        (lambda ()
+          (ebox-region-update 'paint :color "#674795")
+          (ebox-region-update 'label :content "B"))))
+     (should (equal (ebox-test--visible-foreground
+                     (get-text-property (point-min) 'face))
+                    "#674795"))
+     (should (ebox-test--buffer-propertized-matches-runtime-render-p)))))
+
 ;;; ebox-core-render-tests.el ends here
