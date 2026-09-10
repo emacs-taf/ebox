@@ -53,6 +53,13 @@ layered 或带 chrome 的 root 可以复用完整合成内容，只渲染 wrappe
 变化保留已经合成的 portal 和 anchor 内容；style、placement、content 或 display
 context 变化必须使该证明失效。
 
+通过证明的纯滚动变更从已发布状态与局部不可变 index delta 构造完整 candidate，
+跳过通用声明式准备。Surface 提前生成带属性的替换文本及精确的新旧字符范围，
+再通过带完整目标 mount specs 的认证 TP commit batch 发布，不构造 surface plan。
+文本等长不能证明旧 mount 可复用：新进入视口的行可能具有不同 owner 与交互 tag。
+Topology 与 TP object index 有效时，可复用私有 owner 解析缓存。属性更新与布局
+重排仍使用各自的准备路径，只共享最终发布与回滚边界。
+
 Nested owner 在 allocation 不变且通过证明时，可以只替换自己的 viewport，避免渲染
 无关兄弟节点。若存在一个 offset 不变的 root scroll ancestor，还必须更新该祖先的
 保留内容、ownership membership 和 line index，并将 producer 重新绑定到 candidate
@@ -63,6 +70,12 @@ Nested owner 在 allocation 不变且通过证明时，可以只替换自己的 
 路径、私有 index 与 registry、复制的缓存行，以及重新绑定的 producer；producer
 不得在 TP commit 前修改已发布的 continuation。该隔离可能在 miss 时重建目标 prefix，
 因此 cached-hit 耗时不能代表 miss 的代价。
+
+预备的 viewport batch 在现有 scoped TP transaction 中只消费一次。后续 signal
+触发的求值读取当前已提交 source，使用普通 projection。证明失败在发布前选择普通
+路径；发布错误直接进入 rollback，不换另一个 renderer 重试。共享 evaluator 的
+通用准备与 surface-plan 计数分别验证这两项工作已跳过；TP bookkeeping 与实际
+buffer 写入另行测量。该路径并不保证耗时与总 object 数无关。
 
 Scroll publication 仍经过 TP 与 Ebox participant。发布失败时，旧文本、属性、offset、
 raw/rendered cache、source node、index、object、mount 和 report 均保持不变。聚焦回归

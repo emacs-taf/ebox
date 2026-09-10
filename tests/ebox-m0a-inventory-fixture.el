@@ -387,6 +387,11 @@
      :proposed-category disposable-cache :owner ebox-incremental :authority ebox
      :lifetime buffer-runtime :rollback copy-on-candidate
      :rebuild viewport-proof :cleanup clear-cache-or-buffer-kill)
+    (:id buffer-runtime/scroll-viewport-owner-cache
+     :storage (:state-key :scroll-viewport-owner-cache)
+     :proposed-category disposable-cache :owner ebox-surface :authority ebox
+     :lifetime unchanged-topology-and-object-indexes :rollback copy-on-candidate
+     :rebuild rich-line-owner-resolution :cleanup ordinary-projection)
     (:id buffer-runtime/render-owned-text-values
      :storage (:state-key :render-owned-text-values)
      :proposed-category generation-bound-mutable :owner ebox-surface :authority ebox

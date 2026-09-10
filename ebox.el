@@ -3393,29 +3393,35 @@ A miss owns its subtree, indexes, cache lines and producers before staging."
             (or (and (ebox--scroll-state-retained-window-ready-p
                       staged-scroll-state) t)
                 (and (plist-get runtime :nested-scroll-patch-proof) t)))
+           (report-overrides
+            (append
+             (ebox--constraint-change-report-props
+              (ebox--region-constraint-change
+               buffer region-id 'geometry '(:scroll-offset)))
+             (list :region-id region-id
+                   :constraint-source 'scroll
+                   :strategy 'span-patch
+                   :patch-count 1
+                   :patch-ops '(span-patch)
+                   :owner-id owner-id
+                   :owner-ids (list owner-id)
+                   :scroll-state-transaction t
+                   :scroll-patch-fast-p scroll-patch-fast-p
+                   :native-scroll-materialize-p
+                   (plist-get transition :native-materialize-p))))
+           (viewport-commit
+            (unless (plist-get transition :native-materialize-p)
+              (ebox--surface-scroll-viewport-commit
+               buffer region-id runtime report-overrides)))
            (commit-input
+            (or viewport-commit
             (let ((ebox--scroll-global-state table))
               (ebox-incremental-prepare-scoped-commit
-               buffer root
-               (append
-                (ebox--constraint-change-report-props
-                 (ebox--region-constraint-change
-                  buffer region-id 'geometry '(:scroll-offset)))
-                (list :region-id region-id
-                      :constraint-source 'scroll
-                      :strategy 'span-patch
-                      :patch-count 1
-                      :patch-ops '(span-patch)
-                      :owner-id owner-id
-                      :owner-ids (list owner-id)
-                      :scroll-state-transaction t
-                      :scroll-patch-fast-p scroll-patch-fast-p
-                      :native-scroll-materialize-p
-                      (plist-get transition :native-materialize-p)))
-               t)))
+               buffer root report-overrides t))))
            (_staged-cache
-            (ebox--surface-restore-staged-scroll-cache
-             commit-input region-id staged-scroll-state))
+            (unless viewport-commit
+              (ebox--surface-restore-staged-scroll-cache
+               commit-input region-id staged-scroll-state)))
            (scope-node-ids
             (or (plist-get commit-input :scope-node-ids)
                 (list owner-id)))
@@ -3454,6 +3460,124 @@ A miss owns its subtree, indexes, cache lines and producers before staging."
              t)))
       (ignore surface)
       (plist-get transition :result))))
+
+(defun ebox--surface-scroll-viewport-commit
+    (buffer region-id runtime report)
+  "Prepare BUFFER's REGION-ID retained viewport from isolated RUNTIME.
+Return an ordinary scoped commit input, or nil before publication when the
+document, display context or allocation needs general preparation.  REPORT
+describes the scroll intent; Surface supplies exact text and ownership.
+The local index delta preserves immutable source facts and rebinds copied
+Boxes without publishing RUNTIME's deliberately sparse staging indexes."
+  (let* ((base (plist-get runtime :base-state))
+         (root (plist-get runtime :root))
+         (old-root (plist-get base :root-node))
+         (owner (plist-get report :owner-id))
+         (root-p (equal owner (plist-get root :node-id)))
+         (nested-proof (plist-get runtime :nested-scroll-patch-proof))
+         (old-scroll (gethash region-id (plist-get base :scroll-state-table))))
+    (when (and owner old-scroll
+               (ebox-surface--runtime-index-ready-p base)
+               (hash-table-p (plist-get base :surface-node-object-table))
+               (hash-table-p (plist-get base :region-surface-object-table))
+               (or root-p nested-proof)
+               (not (plist-get base :native-sync-session))
+               (not (plist-get base :native-sync-confirmed-p))
+               (not (plist-get old-scroll :lazy-scroll-prefix-dirty))
+               (not (plist-get old-scroll :lazy-scroll-window-refresh-required))
+               (not (plist-get old-scroll :native-reflow-target-prefix-p))
+               (not (plist-get old-scroll :native-reflow-materialize-p))
+               (zerop (ebox-tree-author-style-count old-root))
+               (zerop (ebox-tree-author-style-count root))
+               (equal (plist-get base :display-signature)
+                      (ebox--current-display-signature))
+               (eq (not (null (plist-get base :cascade-active-p)))
+                   (not (null (ebox-style-cascade-active-p))))
+               (or (not (plist-get base :cascade-active-p))
+                   (equal (plist-get base :stylesheet-signature)
+                          (ebox-surface--stylesheet-signature))))
+      (let* ((delta (ebox-incremental--candidate-local-index-delta base root))
+             (dirty (plist-get delta :dirty-set))
+             (index (plist-get delta :index)))
+        (when (and (null (plist-get delta :removed-node-ids))
+                   (cl-every
+                    (lambda (entry)
+                      (and (equal owner (plist-get entry :node-id))
+                           (not (plist-get entry :children))
+                           (cl-every
+                            (lambda (key)
+                              (memq key '(:scroll-offset :ebox-scroll-offset-controlled-p)))
+                            (plist-get entry :changed-keys))))
+                    dirty))
+          (let* ((candidate (ebox--render-state-install-index (copy-sequence base) index))
+                 (table (plist-get runtime :scroll-table))
+                 (prepared (list :root root :dirty-set dirty :scroll-state-table table))
+                 (structural-caches
+                  (ebox-incremental--candidate-structural-caches base index dirty delta)))
+            (dolist (key '(:owner-scoped-proofs :scroll-content-proof
+                           :content-coordinate-patches :content-base-extent
+                           :span-patch-fragment-data :span-patch-content-p
+                           :span-patch-retained-owned-ranges :scroll-patch-lines
+                           :paint-property-contributions :previous-surface-owned-ranges
+                           :mixed-owner-proof :mixed-owner-fragment-data
+                           :mixed-owner-content-p :formatting-context-reflow-proof
+                           :layer-recompose-p :native-scroll-materialize-p
+                           :native-buffer-scroll-p :native-render-fallback))
+              (cl-remf candidate key))
+            (ebox-incremental--isolate-candidate-caches candidate)
+            (plist-put candidate :root-node root)
+            (plist-put candidate :scroll-state-table table)
+            (plist-put candidate :runtime-index-prepared-p t)
+            (plist-put candidate :runtime-revision
+                       (1+ (or (plist-get base :runtime-revision) 0)))
+            (plist-put candidate :selector-index-stale-p
+                       (plist-get index :selector-index-stale-p))
+            (plist-put candidate :layout-snapshots (make-hash-table :test 'equal))
+            (plist-put candidate :layout-snapshots-complete-p nil)
+            (plist-put candidate :layout-snapshot-detail-generation
+                       (1+ (or (plist-get base :layout-snapshot-detail-generation) 0)))
+            (plist-put candidate :retained-allocation-certificates nil)
+            (plist-put candidate :reflow-prewarm-scratch nil)
+            ;; Quantization registers nested mutable property-value tables.
+            ;; A viewport candidate owns that registry before touching even
+            ;; one fractional carrier, including when TP later rejects it.
+            (plist-put candidate :render-owned-text-values (make-hash-table :test #'eq))
+            (plist-put candidate :flex-content-min-widths (make-hash-table :test #'eq))
+            (dolist (key '(:render-signature-cache :viewport-height-dependent-subtree-cache))
+              (plist-put candidate key (plist-get structural-caches key)))
+            (plist-put candidate :projection-kind 'scroll-patch)
+            (plist-put candidate :scroll-state-transaction t)
+            (plist-put candidate :scroll-patch-region-id region-id)
+            (plist-put candidate :span-patch-owner-id owner)
+            (plist-put candidate :scroll-fast-window-p t)
+            (plist-put candidate :retained-scroll-content-p root-p)
+            (plist-put candidate :preserve-scroll-producer-region-ids (list region-id))
+            (plist-put candidate :nested-scroll-patch-proof nested-proof)
+            (let ((ebox--render-source-index (plist-get candidate :source-index))
+                  (ebox--render-source-generations
+                   (list (plist-get candidate :source-index) (plist-get base :source-index)))
+                  (ebox--render-source-states (list candidate base)))
+              (when (plist-get nested-proof :scroll-content-region-id)
+                (when-let* ((proof (ebox-incremental--scroll-content-span-proof
+                                   buffer base prepared candidate owner)))
+                  (plist-put candidate :owner-scoped-proofs (list proof))
+                  (plist-put candidate :scroll-content-proof
+                             (plist-get proof :scroll-content-proof))))
+              (when-let* (((or (not root-p)
+                              (not (or (plist-get base :layered-p)
+                                       (plist-get base :root-portals-p)))
+                              (ebox-incremental--layer-root-scroll-p
+                               base candidate prepared owner)))
+                          (output (ebox-surface--prepare-scroll-viewport buffer base candidate)))
+                (plist-put candidate :scroll-viewport-output output)
+                (list :root root :scope-node-ids (list owner)
+                      :report-base
+                      (ebox-incremental--plist-overlay
+                       (ebox-incremental--layout-owner-report
+                        prepared (list (ebox--patch-op 'span-patch owner :dirty dirty)) candidate)
+                       (append report '(:projection-kind scroll-patch :full-rerender nil)))
+                      :projection-kind 'scroll-patch
+                      :state-overrides candidate)))))))))
 
 (defun ebox--surface-restore-staged-scroll-cache
     (commit-input region-id staged-state)

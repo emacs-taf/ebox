@@ -9,6 +9,27 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'ebox)
+(require 'ebox-layer-publication-tests)
+
+(defmacro ebox-layer-scroll-test--without-general-preparation (&rest body)
+  "Run cached publication BODY without document preparation or surface scans."
+  (declare (indent 0) (debug t))
+  `(let ((stages '(ebox-incremental-prepare-scoped-commit
+                   ebox-incremental--prepare-declarative-runtime
+                   ebox--runtime-index ebox-surface--surface-plan))
+         counters advices)
+     (unwind-protect
+         (progn
+           (dolist (stage stages)
+             (let* ((counter (cons stage 0))
+                    (advice (lambda (&rest _) (cl-incf (cdr counter)))))
+               (push counter counters)
+               (push (cons stage advice) advices)
+               (advice-add stage :before advice)))
+           ,@body)
+       (dolist (entry advices) (advice-remove (car entry) (cdr entry))))
+     (should (equal (nreverse counters)
+                    (mapcar (lambda (stage) (cons stage 0)) stages)))))
 
 (defmacro ebox-layer-scroll-test--with-buffer (&rest body)
   "Run BODY in an isolated Elisp scroll buffer without native window scrolling."
@@ -55,6 +76,24 @@
          (root (plist-get runtime :root-node)))
     (gethash (plist-get root :region-id) (plist-get runtime :scroll-state-table))))
 
+(defun ebox-layer-scroll-test--ordinary-input ()
+  "Build an ordinary root with fractional carriers in retained physical rows."
+  (ebox-build
+   `(column :id "root" :width (vw 100) :height (vh 100) :overflow scroll
+            ,@(cl-loop for index below 80
+                       collect `(box :padding-left (px 1.5)
+                                     ,(format "ROW%02d" index))))))
+
+(defun ebox-layer-scroll-test--materialize-root ()
+  "Fully cache the root and bootstrap its retained physical rows."
+  (let* ((runtime (ebox--buffer-render-state (current-buffer)))
+         (state (ebox-layer-scroll-test--root-state))
+         (region (plist-get (plist-get state :box) :region-id)))
+    (setq state (ebox--scroll-state-materialize-lines region state))
+    (puthash region state (plist-get runtime :scroll-state-table))
+    (should (= 1 (ebox--scroll-region-by region 1 1)))
+    (should (= -1 (ebox--scroll-region-by region -1 1)))))
+
 (defun ebox-layer-scroll-test--portal-chain-input ()
   "Build two visible anchored root projections through a clipped logical owner."
   (ebox-build
@@ -93,6 +132,7 @@
             (unless (eq candidate root)
               (ebox-put candidate :scroll-offset offset)
               (ebox-put candidate :ebox-scroll-offset-controlled-p t))))
+         (mounts (ebox-layer-publication-test--mount-signature (current-buffer)))
          actual fresh)
     (setq actual (buffer-string))
     ;; Bind only the first layout invocation, leaving nested scroll offsets
@@ -102,7 +142,16 @@
                  (lambda (candidate)
                    (unless first (setq first t) (funcall set-offset candidate))
                    (funcall render candidate))))
-        (setq fresh (ebox-render input))))
+        (with-temp-buffer
+          (unwind-protect
+              (progn
+                (ebox-render-to-buffer (current-buffer) input)
+                (setq fresh (buffer-string))
+                (should (equal mounts
+                               (ebox-layer-publication-test--mount-signature
+                                (current-buffer)))))
+            (when (ebox-surface-buffer-mounted-p (current-buffer))
+              (ebox-unmount-buffer (current-buffer)))))))
     (should (equal (substring-no-properties actual) (substring-no-properties fresh)))
     (should (= (length actual) (length fresh)))
     (dotimes (position (length actual))
@@ -120,22 +169,38 @@
       (let* ((state (ebox-layer-scroll-test--root-state))
              (region-id (plist-get (plist-get state :box) :region-id))
              (content (plist-get state :content-lines))
+             (objects (copy-hash-table
+                       (plist-get (ebox--buffer-render-state (current-buffer))
+                                  :surface-node-object-table)))
              (root-renders 0)
              (render (symbol-function 'ebox-surface--render-candidate)))
         (when (eq chrome 'fractional)
           (should (plist-get (ebox--buffer-render-state (current-buffer))
                              :fractional-pixel-output-p)))
         (dolist (delta '(1 1 -1 -1))
-          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
-                     (lambda (&rest arguments)
-                       (cl-incf root-renders)
-                       (apply render arguments))))
-            (should (= delta (ebox--scroll-region-by region-id delta 1)))
-            (should (eq content
-                        (plist-get (ebox-layer-scroll-test--root-state) :content-lines)))
-            (should (eq (plist-get (ebox-buffer-update-report (current-buffer))
-                                   :projection-kind)
-                        'scroll-patch)))
+          (ebox-layer-scroll-test--without-general-preparation
+            (let ((revision (ebox-surface-buffer-revision (current-buffer)))
+                  (before (buffer-string)))
+              (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                         (lambda (&rest arguments)
+                           (cl-incf root-renders)
+                           (apply render arguments))))
+                (should (= delta (ebox--scroll-region-by region-id delta 1)))
+                (should (eq content
+                            (plist-get (ebox-layer-scroll-test--root-state) :content-lines)))
+                (should (eq (plist-get (ebox-buffer-update-report (current-buffer))
+                                       :projection-kind)
+                            'scroll-patch)))
+              (should (= (1+ revision)
+                         (ebox-surface-buffer-revision (current-buffer))))
+              (should-not (equal-including-properties before (buffer-string))))
+            (maphash
+             (lambda (id object)
+               (should (eq object
+                           (gethash id (plist-get
+                                        (ebox--buffer-render-state (current-buffer))
+                                        :surface-node-object-table)))))
+             objects))
           (ebox-layer-scroll-test--assert-fresh))
         (should (= root-renders 0))))))
 
@@ -185,22 +250,53 @@
 
 (ert-deftest ebox-layer-scroll-rejected-publication-keeps-cache-and-input ()
   "Both publication failure stages preserve composed cache and current offset."
-  (dolist (failure-step '(text client-state))
+  (pcase-dolist (`(,fixture ,failure-step)
+                '((layer text) (layer client-state)
+                  (ordinary text) (ordinary client-state)))
     (ebox-layer-scroll-test--with-buffer
       (ebox-render-to-buffer
-       (current-buffer) (ebox-layer-scroll-test--input 'fractional))
+       (current-buffer) (if (eq fixture 'layer)
+                            (ebox-layer-scroll-test--input 'fractional)
+                          (ebox-layer-scroll-test--ordinary-input)))
+      (when (eq fixture 'ordinary) (ebox-layer-scroll-test--materialize-root))
       (let* ((runtime (ebox--buffer-render-state (current-buffer)))
              (state (ebox-layer-scroll-test--root-state))
              (region-id (plist-get (plist-get state :box) :region-id))
              (content (plist-get state :content-lines))
              (snapshot (ebox-surface-buffer-snapshot (current-buffer)))
              (revision (ebox-surface-buffer-revision (current-buffer)))
-             (before (buffer-string)))
-        (let ((tp--surface-publication-step-function
-               (lambda (step _surface)
-                 (when (eq step failure-step) (error "Reject cached root scroll")))))
-          (should-error (ebox--scroll-region-by region-id 1 1)))
+             (mounts (ebox-layer-publication-test--mount-signature (current-buffer)))
+             (before (buffer-string))
+             (owned (plist-get runtime :render-owned-text-values))
+             (membership
+              (let (properties)
+                (maphash
+                 (lambda (property values)
+                   (let (entries)
+                     (maphash (lambda (value member) (push (cons value member) entries))
+                              values)
+                     (push (list property values entries) properties)))
+                 owned)
+                properties))
+             rejected-step)
+        (ebox-layer-scroll-test--without-general-preparation
+          (let ((tp--surface-publication-step-function
+                 (lambda (step _surface)
+                   (when (eq step failure-step)
+                     (setq rejected-step step)
+                     (error "Reject cached root scroll")))))
+            (should-error (ebox--scroll-region-by region-id 1 1))))
+        (should (eq rejected-step failure-step))
         (should (eq runtime (ebox--buffer-render-state (current-buffer))))
+        (should (eq owned (plist-get runtime :render-owned-text-values)))
+        (should (= (hash-table-count owned) (length membership)))
+        (dolist (property membership)
+          (let ((values (gethash (car property) owned))
+                (entries (nth 2 property)))
+            (should (eq values (nth 1 property)))
+            (should (= (hash-table-count values) (length entries)))
+            (dolist (entry entries)
+              (should (eq (gethash (car entry) values 'missing) (cdr entry))))))
         (should (eq state (ebox-layer-scroll-test--root-state)))
         (should (eq content (plist-get state :content-lines)))
         (let* ((after (ebox-surface-buffer-snapshot (current-buffer)))
@@ -210,8 +306,85 @@
           (should same-input)
           (should (= (plist-get snapshot :mount-id) (plist-get after :mount-id))))
         (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal mounts
+                       (ebox-layer-publication-test--mount-signature (current-buffer))))
         (should (equal-including-properties before (buffer-string)))
-        (should (= 1 (ebox--scroll-region-by region-id 1 1)))
+        (ebox-layer-scroll-test--without-general-preparation
+          (should (= 1 (ebox--scroll-region-by region-id 1 1))))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (ebox-layer-scroll-test--assert-fresh)))))
+
+(ert-deftest ebox-layer-scroll-reactive-width-change-renders-current-viewport ()
+  "A retained cached-scroll producer republishes current width without replay."
+  (ebox-layer-scroll-test--with-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-layer-scroll-test--input 'fractional))
+    (ebox-region-update "root" :width '(vw 100))
+    (let* ((region (plist-get (plist-get (ebox-layer-scroll-test--root-state) :box)
+                              :region-id))
+           (width (ebox-surface--signals-viewport-width ebox-surface--context-signals))
+           (publish (symbol-function 'ebox-surface--scroll-viewport-result))
+           (prepared-publications 0))
+      (cl-letf (((symbol-function 'ebox-surface--scroll-viewport-result)
+                 (lambda (&rest arguments)
+                   (cl-incf prepared-publications)
+                   (apply publish arguments))))
+        (ebox-layer-scroll-test--without-general-preparation
+          (should (= 1 (ebox--scroll-region-by region 1 1))))
+        (should (= prepared-publications 1))
+        (let ((revision (ebox-surface-buffer-revision (current-buffer)))
+              (before (buffer-string)))
+          (should (= (tp-signal-subscriber-count width) 1))
+          (tp-with-transaction (tp-signal-set width 30))
+          (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+          (should (= (plist-get (ebox--buffer-render-state (current-buffer))
+                               :viewport-width) 30))
+          (should (= (plist-get (ebox-layer-scroll-test--root-state) :scroll-offset) 1))
+          (should-not (equal-including-properties before (buffer-string)))
+          (should (= prepared-publications 1))
+          (ebox-layer-scroll-test--assert-fresh))))))
+
+(ert-deftest ebox-layer-scroll-first-guard-miss-releases-batch-and-uses-current-axes ()
+  "A declined prepared producer releases its candidate and follows current axes."
+  (ebox-layer-scroll-test--with-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-layer-scroll-test--input 'fractional))
+    (ebox-region-update "root" :width '(vw 100))
+    (let* ((region (plist-get (plist-get (ebox-layer-scroll-test--root-state) :box)
+                              :region-id))
+           (surface ebox-surface--buffer-surface)
+           (signals ebox-surface--context-signals)
+           (width (ebox-surface--signals-viewport-width signals))
+           (make-producer (symbol-function 'ebox-surface--scroll-viewport-producer))
+           (retired (make-hash-table :test #'eq :weakness 'key))
+           retained-producer)
+      (cl-letf (((symbol-function 'ebox-surface--scroll-viewport-producer)
+                 (lambda (previous prepared context-signals)
+                   (let ((declined (copy-sequence prepared)))
+                     ;; Invalidate only the captured certificate, before TP's
+                     ;; first evaluation, leaving the live display unchanged.
+                     (plist-put declined :display-signature 'stale-display)
+                     (puthash declined t retired)
+                     (puthash (plist-get declined :scroll-viewport-batch) t retired)
+                     (setq retained-producer
+                           (funcall make-producer previous declined context-signals)))))
+                ((symbol-function 'ebox-surface--scroll-viewport-result)
+                 (lambda (&rest _) (ert-fail "Replayed a declined viewport batch"))))
+        (should (= 1 (ebox--scroll-region-by region 1 1))))
+      (should retained-producer)
+      (ebox-layer-scroll-test--assert-fresh)
+      (garbage-collect)
+      (should (= (hash-table-count retired) 0))
+      (ebox-region-update "root" :width '(ch 20))
+      (should (= (tp-signal-subscriber-count width) 0))
+      (let ((revision (ebox-surface-buffer-revision (current-buffer))))
+        (cl-letf (((symbol-function 'ebox-surface--scroll-viewport-result)
+                   (lambda (&rest _) (ert-fail "Replayed a retired viewport batch"))))
+          (tp-surface-update surface retained-producer))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (should (= (tp-signal-subscriber-count width) 0))
+        (should (= (tp-signal-subscriber-count
+                    (ebox-surface--signals-display signals)) 1))
+        (should (= (tp-signal-subscriber-count
+                    (ebox-surface--signals-scroll signals)) 1))
         (ebox-layer-scroll-test--assert-fresh)))))
 
 (ert-deftest ebox-layer-scroll-visible-root-dependencies-retain-composed-cache ()
@@ -322,11 +495,7 @@
   (ebox-layer-scroll-test--with-buffer
     (ebox-render-to-buffer
      (current-buffer)
-     (ebox-build
-      `(column :id "root" :width (vw 100) :height (vh 100) :overflow scroll
-               ,@(cl-loop for index below 80
-                          collect `(box :padding-left (px 1.5)
-                                        ,(format "ROW%02d" index))))))
+     (ebox-layer-scroll-test--ordinary-input))
     (let* ((runtime (ebox--buffer-render-state (current-buffer)))
            (state (ebox-layer-scroll-test--root-state))
            (region-id (plist-get (plist-get state :box) :region-id)))
@@ -339,10 +508,25 @@
       (should (= 1 (ebox--scroll-region-by region-id 1 1)))
       (should (= -1 (ebox--scroll-region-by region-id -1 1)))
       (should (plist-get (ebox-layer-scroll-test--root-state) :rendered-content-lines))
-      (cl-letf (((symbol-function 'ebox-surface--render-candidate-node)
-                 (lambda (&rest _) (ert-fail "Cached ordinary scroll rendered wrapper"))))
-        (should (= 1 (ebox--scroll-region-by region-id 1 1))))
-      (ebox-layer-scroll-test--assert-fresh))))
+      (dolist (delta '(1 1 -1 -1))
+        (let ((revision (ebox-surface-buffer-revision (current-buffer)))
+              (before (buffer-string))
+              (objects (copy-hash-table
+                        (plist-get (ebox--buffer-render-state (current-buffer))
+                                   :surface-node-object-table))))
+          (ebox-layer-scroll-test--without-general-preparation
+            (cl-letf (((symbol-function 'ebox-surface--render-candidate-node)
+                       (lambda (&rest _) (ert-fail "Cached ordinary scroll rendered wrapper"))))
+              (should (= delta (ebox--scroll-region-by region-id delta 1)))))
+          (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+          (should-not (equal-including-properties before (buffer-string)))
+          (maphash
+           (lambda (id object)
+             (should (eq object
+                         (gethash id (plist-get (ebox--buffer-render-state (current-buffer))
+                                                :surface-node-object-table)))))
+           objects)
+          (ebox-layer-scroll-test--assert-fresh))))))
 
 (provide 'ebox-layer-scroll-tests)
 ;;; ebox-layer-scroll-tests.el ends here

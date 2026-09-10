@@ -10,6 +10,26 @@
 (require 'cl-lib)
 (require 'ebox)
 
+(defmacro ebox-nested-scroll-test--without-general-preparation (&rest body)
+  "Run cached publication BODY without document preparation or surface scans."
+  (declare (indent 0) (debug t))
+  `(let ((stages '(ebox-incremental-prepare-scoped-commit
+                   ebox-incremental--prepare-declarative-runtime
+                   ebox--runtime-index ebox-surface--surface-plan))
+         counters advices)
+     (unwind-protect
+         (progn
+           (dolist (stage stages)
+             (let* ((counter (cons stage 0))
+                    (advice (lambda (&rest _) (cl-incf (cdr counter)))))
+               (push counter counters)
+               (push (cons stage advice) advices)
+               (advice-add stage :before advice)))
+           ,@body)
+       (dolist (entry advices) (advice-remove (car entry) (cdr entry))))
+     (should (equal (nreverse counters)
+                    (mapcar (lambda (stage) (cons stage 0)) stages)))))
+
 (defmacro ebox-nested-scroll-test--with-buffer (&rest body)
   "Run BODY with an isolated mounted surface and the Elisp renderer."
   (declare (indent 0) (debug t))
@@ -87,7 +107,7 @@ PRESERVE-ORDER-P retains attachment order for exact rollback checks."
             (should (equal (substring-no-properties actual)
                            (buffer-substring-no-properties (point-min) (point-max))))
             (dotimes (position (length actual))
-              (dolist (property '(face display help-echo mouse-face pointer keymap))
+              (dolist (property '(face font-lock-face display help-echo mouse-face pointer keymap))
                 (should (equal (get-text-property position property actual)
                                (get-text-property (1+ position) property)))))
             (should (equal mounts (ebox-nested-scroll-test--mounts))))
@@ -193,10 +213,28 @@ PRESERVE-ORDER-P retains attachment order for exact rollback checks."
       (ebox-nested-scroll-test--parity)
       (let* ((state (ebox--buffer-render-state (current-buffer)))
              (scroll (gethash right (plist-get state :scroll-state-table)))
-             (lines (plist-get scroll :content-lines)))
-        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
-                   (lambda (&rest _) (ert-fail "Independent scroll rendered root"))))
-          (should (= (ebox--surface-scroll-region-by (current-buffer) left 1 nil) 1)))
+             (lines (plist-get scroll :content-lines))
+             (revision (ebox-surface-buffer-revision (current-buffer)))
+             (objects (copy-hash-table (plist-get state :surface-node-object-table))))
+        (dolist (delta '(1 1 -1))
+          (ebox-nested-scroll-test--without-general-preparation
+            (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                       (lambda (&rest _) (ert-fail "Independent scroll rendered root"))))
+              (should (= (ebox--surface-scroll-region-by
+                          (current-buffer) left delta nil) delta))))
+          (cl-incf revision)
+          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+          (let ((next (gethash right (plist-get (ebox--buffer-render-state
+                                               (current-buffer)) :scroll-state-table))))
+            (should (= (plist-get next :scroll-offset) 2))
+            (should (eq (plist-get next :content-lines) lines)))
+          (ebox-nested-scroll-test--parity))
+        (maphash
+         (lambda (id object)
+           (should (eq object
+                       (gethash id (plist-get (ebox--buffer-render-state (current-buffer))
+                                              :surface-node-object-table)))))
+         objects)
         (let ((next (gethash right (plist-get (ebox--buffer-render-state
                                              (current-buffer)) :scroll-state-table))))
           (should (= (plist-get next :scroll-offset) 2))
@@ -204,10 +242,14 @@ PRESERVE-ORDER-P retains attachment order for exact rollback checks."
       (ebox-nested-scroll-test--parity)
       (ebox-region-update "line-1" :content "UPDATED")
       (should (string-match-p "UPDATED" (buffer-string)))
+      (should (= (plist-get (ebox--scroll-get-state right) :scroll-offset) 2))
       (ebox-nested-scroll-test--parity)
       (ebox-rerender-buffer-with-context (current-buffer) 120 35)
+      (should (= (plist-get (ebox--scroll-get-state left) :scroll-offset) 1))
+      (should (= (plist-get (ebox--scroll-get-state right) :scroll-offset) 2))
       (ebox-nested-scroll-test--parity)
-      (should (= (ebox--surface-scroll-region-by (current-buffer) left -1 nil) -1))
+      (ebox-nested-scroll-test--without-general-preparation
+        (should (= (ebox--surface-scroll-region-by (current-buffer) left -1 nil) -1)))
       (ebox-nested-scroll-test--parity))))
 
 (ert-deftest ebox-nested-scroll-rejection-restores-local-and-fallback-state ()
@@ -224,6 +266,7 @@ PRESERVE-ORDER-P retains attachment order for exact rollback checks."
              (before (buffer-string))
              (mounts (ebox-nested-scroll-test--mounts t))
              (revision (ebox-surface-buffer-revision (current-buffer)))
+             rejected-step
              (root-renders 0)
              (render (symbol-function 'ebox-surface--render-candidate)))
         (cl-letf (((symbol-function 'ebox-surface--render-candidate)
@@ -231,9 +274,16 @@ PRESERVE-ORDER-P retains attachment order for exact rollback checks."
                      (cl-incf root-renders) (apply render arguments))))
           (let ((tp--surface-publication-step-function
                  (lambda (step _surface)
-                   (when (eq step 'client-state) (error "Reject nested scroll")))))
-            (should-error (ebox--surface-scroll-region-by
-                           (current-buffer) region 1 nil))))
+                   (when (eq step 'client-state)
+                     (setq rejected-step step)
+                     (error "Reject nested scroll"))))
+                (attempt (lambda ()
+                           (should-error (ebox--surface-scroll-region-by
+                                          (current-buffer) region 1 nil)))))
+            (if fallback (funcall attempt)
+              (ebox-nested-scroll-test--without-general-preparation
+                (funcall attempt)))))
+        (should (eq rejected-step 'client-state))
         (should (eq state (ebox--buffer-render-state (current-buffer))))
         (should (= revision (ebox-surface-buffer-revision (current-buffer))))
         (should (equal-including-properties before (buffer-string)))
@@ -241,7 +291,11 @@ PRESERVE-ORDER-P retains attachment order for exact rollback checks."
         (should (= (plist-get scroll :scroll-offset) 0))
         (should (= (or (ebox-get box :scroll-offset) 0) 0))
         (should (if fallback (> root-renders 0) (= root-renders 0)))
-        (should (= (ebox--surface-scroll-region-by (current-buffer) region 1 nil) 1))
+        (if fallback
+            (should (= (ebox--surface-scroll-region-by (current-buffer) region 1 nil) 1))
+          (ebox-nested-scroll-test--without-general-preparation
+            (should (= (ebox--surface-scroll-region-by (current-buffer) region 1 nil) 1))))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
         (ebox-nested-scroll-test--parity)))))
 
 (ert-deftest ebox-nested-scroll-updates-enclosing-cache-and-role-membership ()
@@ -253,12 +307,14 @@ PRESERVE-ORDER-P retains attachment order for exact rollback checks."
           (outer (ebox-nested-scroll-test--region "root"))
           (hidden (ebox-nested-scroll-test--region "line-0"))
           (visible (ebox-nested-scroll-test--region "line-5")))
-      (cl-letf (((symbol-function 'ebox-surface--render-candidate)
-                 (lambda (&rest _) (ert-fail "Inner scroll rendered enclosing root"))))
-        (should (= (ebox--surface-scroll-region-by (current-buffer) inner 1 nil) 1)))
+      (ebox-nested-scroll-test--without-general-preparation
+        (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                   (lambda (&rest _) (ert-fail "Inner scroll rendered enclosing root"))))
+          (should (= (ebox--surface-scroll-region-by (current-buffer) inner 1 nil) 1))))
       (let* ((state (ebox--buffer-render-state (current-buffer)))
              (scroll (gethash outer (plist-get state :scroll-state-table)))
              (members (ebox--scroll-state-ensure-content-region-id-set scroll)))
+        (should (= (plist-get scroll :scroll-offset) 0))
         (should (eq (plist-get scroll :box) (plist-get state :root-node)))
         (should-not (gethash hidden members))
         (should (gethash visible members))

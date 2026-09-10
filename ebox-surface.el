@@ -184,6 +184,7 @@ the winning client state; otherwise only the candidate is disposable."
                   (owner key compute value dependencies &rest options))
 (declare-function ebox--record-render-output-provenance
                   "ebox-render-context" (rendered))
+(declare-function ebox--strip-paint-origins! "ebox-render-context" (string))
 (declare-function ebox--render-owned-text-value-p
                   "ebox-render-context" (property value &optional registry))
 (declare-function ebox-incremental--hash-snapshot
@@ -2424,10 +2425,13 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
                    (signals (car signals-result))
                    (signals-created-p (cdr signals-result))
                    (producer
-                    (ebox-surface-producer
-                     source old-state t state-overrides signals projection-kind
-                     source-isolated-p
-                     (plist-get state-overrides :source-path-copied-p)))
+                    (if (plist-get state-overrides :scroll-viewport-batch)
+                        (ebox-surface--scroll-viewport-producer
+                         old-state state-overrides signals)
+                      (ebox-surface-producer
+                       source old-state t state-overrides signals projection-kind
+                       source-isolated-p
+                       (plist-get state-overrides :source-path-copied-p))))
                    success native-settled-p)
               (when (and (null on-mismatch)
                          (or (plist-get state-overrides :owner-scoped-proofs)
@@ -5275,6 +5279,173 @@ copies where needed.  Detached owners keep their fractional-origin guard."
            0 (length output) (list 'ebox-scroll-window region-id) output))
         output))))
 
+(defun ebox-surface--prepare-scroll-viewport (buffer previous-state state)
+  "Stage STATE's exact rich viewport without document or surface planning.
+PREVIOUS-STATE remains the published generation in BUFFER.  Existing root
+wrapper and nested allocation proofs select the output; a proof miss returns
+nil before any TP publication.  The resulting ordinary TP batch contains only
+the proved replacement coordinates, including an enclosing cache's separate
+content-coordinate update when present."
+  (with-current-buffer buffer
+    (save-restriction
+      (widen)
+      (let* ((nested (plist-get state :nested-scroll-patch-proof))
+             (output
+              (if nested
+                  (when (and (not (plist-get previous-state :fractional-pixel-output-p))
+                             (or (not (plist-get nested :scroll-content-region-id))
+                                 (plist-get state :scroll-content-proof)))
+                    (unless (plist-get state :owner-scoped-proofs)
+                      (plist-put state :owner-scoped-proofs (list nested)))
+                    (let ((ebox-surface--integral-local-output-required-p t))
+                      (catch 'ebox/fractional-local-output
+                        (ebox-surface--span-patch-output buffer previous-state state))))
+                (ebox-surface--scroll-patch-output buffer state t))))
+        (when (and (stringp output)
+                   (not (plist-get state :paint-property-contributions)))
+          (unless (plist-get state :scroll-patch-lines)
+            (plist-put state :scroll-viewport-fragments
+                       (or (plist-get state :span-patch-fragment-data)
+                           (ebox-surface--rendered-fragments output))))
+          (ebox--strip-paint-origins! output)
+          (let* ((base-extent (- (point-max) (point-min)))
+                 (target-extent (length output))
+                 (coordinates
+                  (or (plist-get state :content-coordinate-patches)
+                      (list (list :old-start 0 :old-end base-extent
+                                  :new-start 0 :new-end target-extent))))
+                 (patches
+                  (mapcar
+                   (lambda (patch)
+                     (append patch
+                             (list :replacement
+                                   (substring output (plist-get patch :new-start)
+                                              (plist-get patch :new-end)))))
+                   coordinates))
+                 (batch
+                  (condition-case nil
+                      (tp-commit-batch-create
+                       :base-revision (plist-get state :runtime-revision)
+                       :target-revision (1+ (plist-get state :runtime-revision))
+                       :base-extent base-extent :target-extent target-extent
+                       :patches patches :coordinate-patches coordinates)
+                    (tp-surface-error nil))))
+            (when batch
+              (plist-put state :scroll-viewport-batch batch)
+              output)))))))
+
+(defun ebox-surface--scroll-viewport-owner-cache (previous-state state)
+  "Return a private owner-resolution cache for STATE's unchanged topology.
+Reuse requires PREVIOUS-STATE's exact parent, region and TP object indexes.
+The scroll-only source proof preserves their meanings when rebinding copied
+Boxes; ordinary document projection discards this optional derived cache."
+  (let* ((old (plist-get previous-state :scroll-viewport-owner-cache))
+         (keys '(:parent-table :region-node-table
+                  :surface-node-object-table :region-surface-object-table))
+         (valid (and old
+                     (cl-every (lambda (key)
+                                 (eq (plist-get old key) (plist-get previous-state key)))
+                               keys)))
+         (cache (list :owners
+                      (if valid (copy-hash-table (plist-get old :owners))
+                        (make-hash-table :test #'equal)))))
+    (dolist (key keys)
+      (plist-put cache key (plist-get state key)))
+    cache))
+
+(defun ebox-surface--scroll-viewport-result (context previous-state state output batch)
+  "Publish STATE's proved viewport OUTPUT and BATCH in the active CONTEXT.
+Reuse PREVIOUS-STATE's keyed topology and resolve rich roles against that
+unchanged topology.  Every batch supplies complete target ownership, since
+equal character lengths do not imply equal visible owners or interaction."
+  (let* ((surface-root (tp-object-ensure context nil ebox-surface--root-key 'ebox/surface))
+         (node-root (tp-object-ensure context surface-root ebox-surface--nodes-key 'ebox/nodes))
+         (fragment-root (tp-object-ensure context surface-root
+                                          ebox-surface--fragments-key 'ebox/fragments))
+         (text-leaf (tp-object-ensure context fragment-root ebox-surface--text-key 'ebox/text))
+         (node-objects (plist-get state :surface-node-object-table))
+         (region-objects (plist-get state :region-surface-object-table))
+         (lines (plist-get state :scroll-patch-lines))
+         (fragments
+          (unless lines
+            (plist-get state :scroll-viewport-fragments)))
+         (_cache
+          (plist-put state :scroll-viewport-owner-cache
+                     (ebox-surface--scroll-viewport-owner-cache previous-state state)))
+         (owned-ranges
+          (if lines
+              (ebox-surface--scroll-owned-ranges
+               context text-leaf lines state node-objects region-objects nil)
+            (ebox-surface--owned-ranges
+             context text-leaf fragments state node-objects region-objects nil)))
+         (length (length output))
+         (records
+          (list (list :object text-leaf :start 0 :end length :props nil :tags nil :leaf t)
+                (list :object fragment-root :start 0 :end length :props nil :tags nil :leaf nil)
+                (list :object surface-root :start 0 :end length :props nil :tags nil :leaf nil))))
+    (tp-object-reuse-subtree context node-root)
+    (plist-put state :surface-owned-ranges owned-ranges)
+    (plist-put state :surface-fragments
+               (if lines (list :scroll-lines (copy-sequence lines))
+                 (ebox-surface--fragment-metadata fragments state)))
+    (dolist (key '(:scroll-viewport-output :scroll-viewport-batch :scroll-viewport-fragments
+                   :content-coordinate-patches :content-base-extent
+                   :span-patch-fragment-data :span-patch-content-p
+                   :span-patch-retained-owned-ranges :scroll-patch-lines
+                   :nested-scroll-patch-proof :scroll-content-proof
+                   :owner-scoped-proofs :scroll-state-transaction
+                   :scroll-fast-window-p :scroll-patch-region-id :span-patch-owner-id
+                   :preserve-scroll-producer-region-ids :previous-surface-owned-ranges))
+      (cl-remf state key))
+    (plist-put state :retained-scroll-content-p nil)
+    (tp-commit-batch-result-create
+     context batch :mount-specs (ebox-surface--commit-mount-specs records owned-ranges)
+     :client-state state)))
+
+(defun ebox-surface--scroll-viewport-producer (previous-state state signals)
+  "Return a scroll-only producer using the existing scoped transaction.
+STATE owns one prepared viewport batch after PREVIOUS-STATE.  Subscribe to
+SIGNALS just like ordinary projection, but consume that batch only once.
+A later reactive evaluation renders the then-current source normally rather
+than replaying old coordinates, properties or revision authority."
+  (let ((output (plist-get state :scroll-viewport-output))
+        (batch (plist-get state :scroll-viewport-batch))
+        (offsets (ebox-surface--scroll-offsets (plist-get state :scroll-state-table))))
+    (lambda (context)
+      (let* ((buffer (ebox-surface--signals-buffer signals))
+             (surface (ebox-surface--live-buffer-surface buffer))
+             (current (tp-surface-client-state surface))
+             (prepared state)
+             (base previous-state)
+             (rendered output)
+             (prepared-batch batch)
+             (expected-offsets offsets)
+             (_consume
+              ;; A producer remains subscribed after this evaluation.  Keep
+              ;; only current signals in that closure, on success or fallback;
+              ;; later evaluations must not retain an obsolete document.
+              (setq state nil previous-state nil output nil batch nil offsets nil))
+             (axes (plist-get (or prepared current) :viewport-dependent-node-id-axes))
+             (display (tp-signal-read (ebox-surface--signals-display signals)))
+             (width (funcall (if (car axes) #'tp-signal-read #'tp-signal-peek)
+                             (ebox-surface--signals-viewport-width signals)))
+             (height (funcall (if (cdr axes) #'tp-signal-read #'tp-signal-peek)
+                              (ebox-surface--signals-viewport-height signals)))
+             (scroll (tp-signal-read (ebox-surface--signals-scroll signals))))
+        (with-current-buffer buffer
+          (if (and prepared (eq current base)
+                   (equal display (plist-get prepared :display-signature))
+                   (equal width (plist-get prepared :viewport-width))
+                   (equal height (plist-get prepared :viewport-height))
+                   (equal scroll expected-offsets))
+              (ebox-surface--scroll-viewport-result
+               context base prepared rendered prepared-batch)
+            (ebox-surface--project
+             context (ebox-tree-copy-node-structure (plist-get current :root-node))
+             current t (list :runtime-revision (tp-surface-revision surface)
+                             :source-base-index (plist-get current :source-index))
+             signals nil t nil)))))))
+
 (defun ebox-surface--runtime-index-ready-p (state)
   "Return non-nil when STATE carries a complete prepared runtime index."
   (let* ((root (plist-get state :root-node))
@@ -5766,7 +5937,9 @@ VISIT-RUNS receives one callback accepting ROLE-IDS, START, END, and optional
 layout dependency region ids.
 Adjacent ranges merge only when both their owner and opaque tags match."
   (let ((active (make-hash-table :test #'eq))
-        (owner-cache (make-hash-table :test #'equal))
+        (owner-cache
+         (or (plist-get (plist-get state :scroll-viewport-owner-cache) :owners)
+             (make-hash-table :test #'equal)))
         ranges)
     (funcall
      visit-runs

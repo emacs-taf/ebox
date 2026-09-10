@@ -54,6 +54,16 @@ roots may reuse their complete composed content and render only the wrapper.
 Pure root offset changes preserve already composed portal and anchor content.
 Style, placement, content and display-context changes must invalidate that proof.
 
+Proved scroll-only changes build a complete candidate from the published state
+and a local immutable index delta, bypassing general declarative preparation.
+Surface stages rich replacement text and exact old/new character ranges, then
+returns an authenticated TP commit batch with complete target mount specs;
+it does not build a surface plan. Equal text lengths never authorize reuse of
+old mounts: newly visible rows may have different owners and interaction tags.
+Owner resolution can reuse a private cache while its topology and TP object
+indexes remain valid. Attribute updates and layout reflow retain their own
+preparation paths; only terminal publication and rollback are shared.
+
 A nested owner can replace its viewport within a proven unchanged allocation,
 without rendering unrelated siblings. With one unchanged root scroll ancestor,
 the update must also patch that ancestor's retained content, ownership membership
@@ -67,6 +77,14 @@ subtree and ancestor path, private indexes and registries, copied cache lines an
 freshly rebound producers. A producer must not mutate a published continuation
 before TP commits. This isolation can rebuild the target prefix on a miss;
 cached-hit timings do not describe that cost.
+
+The prepared viewport batch is consumed once inside the existing scoped TP
+transaction. Subsequent signal-driven evaluation uses the current committed
+source and ordinary projection. A proof miss chooses the ordinary path before
+publication; a publication error propagates through rollback without retrying
+through another renderer. General preparation and surface-plan counters in the
+shared evaluator verify the bypass separately from TP bookkeeping and buffer
+write time; this path does not establish constant cost in total object count.
 
 Scroll publication still goes through TP and the Ebox participant. Rejection
 preserves the old text, properties, offsets, raw and rendered caches, source
