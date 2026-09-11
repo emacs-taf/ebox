@@ -319,6 +319,12 @@ rather than relying on an implicit default.")
     (:symbol ebox-layer--piece-width-cache
      :reason dynamically-bound-composition-index
      :evidence let-bound-per-layer-host-and-never-retained-between-renders)
+    (:symbol ebox-layer--composition-cache
+     :reason dynamically-bound-candidate-composition-ledger
+     :evidence candidate-local hash table is published through the render state plist)
+    (:symbol ebox-layer--previous-composition-cache
+     :reason dynamically-bound-committed-composition-ledger
+     :evidence read-only prior ledger supplied by committed render state and discarded on replacement)
     (:symbol ebox--string-pixel-width-cache-ring-index
      :reason numeric-eviction-cursor
      :evidence value-is-an-integer-ring-position)

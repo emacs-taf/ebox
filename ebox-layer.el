@@ -44,6 +44,27 @@ Keys are source strings by identity.  Never retained between renders.")
 Retained publication supplies a known boolean; isolated rendering resolves
 the fact once for its spatial root.")
 
+(defvar ebox-layer--previous-composition-cache nil
+  "Read-only retained host composition ledger for the current candidate.
+The ledger is an opaque hash table owned by the Surface runtime.  Entries are
+keyed by host identity and composition phase and contain immutable row
+signatures plus their already composed rows.  A missing ledger disables reuse.")
+
+(defvar ebox-layer--composition-cache nil
+  "Candidate-local host composition ledger populated during rendering.
+Callers should bind this to a fresh hash table for one candidate; this module
+never mutates `ebox-layer--previous-composition-cache'.  Use an `equal' hash
+table because ledger keys are freshly allocated HOST/PHASE cons cells.")
+
+(defvar ebox-layer--composition-context nil
+  "Immutable context token for host composition reuse.
+The Surface runtime should include every display and allocation fact that can
+change pixel measurement.  Reuse is disabled when this token is nil.")
+
+(defvar ebox-layer--composition-phase 'final
+  "Composition phase used as the default host ledger key.
+Anchor prepasses and final paints must use distinct phase values.")
+
 (defun ebox-layer-active-p (&optional node)
   "Return the current candidate's layer capability without repeated scans."
   (if (eq ebox-layer--active-p 'unknown)
@@ -214,15 +235,82 @@ Nested scroll changes and source updates cannot use this root-only proof."
            (not (ebox-layer-positioned-p an)))
           (t (< (gethash an order 0) (gethash bn order 0)))))))))
 
-(defun ebox-layer--compose-rows (host records width height)
-  "Compose HOST's visible RECORDS in a WIDTH by HEIGHT content canvas."
-  (let ((rows (make-vector height nil)))
-    (dolist (record (ebox-layer--ordered-records host records))
+(defun ebox-layer--stable-node-id (node)
+  "Return NODE's retained identity, or nil when it cannot be proven stable."
+  (or (plist-get node :node-id)
+      (and ebox--render-source-index
+           (ebox-tree-node-id ebox--render-source-index node))))
+
+(defun ebox-layer--record-signature (record)
+  "Return immutable comparison facts for one paint RECORD.
+Do not retain NODE itself: copied candidate nodes can have mutable transient
+attachments.  The sliced text is compared with its complete text properties,
+which captures display geometry, paint and interaction values."
+  (let ((node (plist-get record :node)))
+    (list :node-id (ebox-layer--stable-node-id node)
+          :x (plist-get record :x)
+          :y (plist-get record :y)
+          :z-index (or (plist-get node :z-index) 0)
+          :positioned (and (ebox-layer-positioned-p node) t)
+          :text (plist-get record :text))))
+
+(defun ebox-layer--compose-cache-key (host phase)
+  "Return the retained-ledger key for HOST and composition PHASE.
+Use the retained node id so copied candidate nodes can reuse their prior
+host's rows; an unidentifiable host disables the cache."
+  (when-let* ((id (ebox-layer--stable-node-id host)))
+    (cons id phase)))
+
+(defun ebox-layer--compose-rows (host records width height &optional phase)
+  "Compose HOST's visible RECORDS in a WIDTH by HEIGHT content canvas.
+When the caller binds the retained and candidate ledgers and an immutable
+composition context, rows whose ordered record signatures are unchanged are
+returned directly without calling `ebox-composite-line'.  PHASE separates
+anchor prepasses from final composition so neither can reuse the other."
+  (let* ((phase (or phase ebox-layer--composition-phase))
+         (ordered (ebox-layer--ordered-records host records))
+         (rows (make-vector height nil))
+         (signatures (make-vector height nil))
+         (key (ebox-layer--compose-cache-key host phase))
+         (previous (and ebox-layer--composition-context
+                        (hash-table-p ebox-layer--previous-composition-cache)
+                        (gethash key ebox-layer--previous-composition-cache)))
+         (old-context (and previous (plist-get previous :context)))
+         (old-signatures (and previous (plist-get previous :signatures)))
+         (old-rows (and previous (plist-get previous :rows)))
+         (cacheable-p (and key ebox-layer--composition-context
+                           (hash-table-p ebox-layer--composition-cache))))
+    (dolist (record ordered)
       (let ((row (plist-get record :y)))
-        (when (and (>= row 0) (< row height))
+        (when (and (integerp row) (>= row 0) (< row height))
           (push record (aref rows row)))))
-    (cl-loop for row across rows collect
-             (ebox-composite-line "" (nreverse row) width))))
+    (dotimes (row height)
+      (let* ((placements (nreverse (aref rows row)))
+             (signature (mapcar #'ebox-layer--record-signature placements))
+             (reusable-p
+              (and cacheable-p previous
+                   (equal old-context ebox-layer--composition-context)
+                   (= width (plist-get previous :width))
+                   (= height (plist-get previous :height))
+                   (vectorp old-signatures) (vectorp old-rows)
+                   (= (length old-rows) height)
+                   (cl-every (lambda (entry)
+                               (plist-get entry :node-id))
+                             signature)
+                   (= (length old-signatures) height)
+                   (equal-including-properties
+                    signature (aref old-signatures row)))))
+        (aset signatures row signature)
+        (aset rows row
+              (if reusable-p
+                  (aref old-rows row)
+                (ebox-composite-line "" placements width)))))
+    (when cacheable-p
+      (puthash key (list :context ebox-layer--composition-context
+                         :width width :height height
+                         :signatures signatures :rows rows)
+               ebox-layer--composition-cache))
+    (append rows nil)))
 
 (defun ebox-layer--anchor-node (host id)
   "Find one logical anchor ID under HOST, rejecting ambiguous IDs."
@@ -393,7 +481,8 @@ Only candidate-local lists of visible paint records are sorted."
           ;; Anchor geometry follows relative movement and visible clipping,
           ;; not the original flow slot.  This extra composition is needed
           ;; only by anchored panels.
-          (setq lines (ebox-layer--compose-rows host records width height)))
+          (setq lines (ebox-layer--compose-rows host records width height
+                                                'anchor-prepass)))
         (setq records (nconc (ebox-layer--absolute-records host absolute lines width height)
                              records))
         (ebox--record-rendered-intrinsic-size

@@ -138,6 +138,87 @@
       (should (= full-renders 0))
       (ebox-layer-publication-test--assert-fresh-render))))
 
+(ert-deftest ebox-layer-publication-drag-recomposes-only-damaged-rows ()
+  "Moving an overlay recomposes its old and new rows and reuses the rest.
+
+This is the focused regression for retained composition during a drag: the
+overlay moves from row one to row two while three underlying rows stay
+unchanged.  Count calls to `ebox-composite-line' to prove that only the two
+damaged rows are recomposed, then compare the result with a cold composition
+including all text properties."
+  (let* ((base-0 (list :node-id "base-0" :ebox-kind 'box))
+         (base-1 (list :node-id "base-1" :ebox-kind 'box))
+         (base-2 (list :node-id "base-2" :ebox-kind 'box))
+         (overlay (list :node-id "overlay" :ebox-kind 'box
+                        :position 'absolute :z-index 1))
+         (host (list :node-id "drag-host" :ebox-kind 'box
+                     :children (list base-0 base-1 base-2 overlay)))
+         (face-base '(foreground-color "white"))
+         (face-overlay '(foreground-color "red" :weight bold))
+         (base-records
+          (list (list :node base-0 :x 0 :y 0
+                      :text (propertize "BASE-0" 'face face-base
+                                        'help-echo "base-0"))
+                (list :node base-1 :x 0 :y 1
+                      :text (propertize "BASE-1" 'face face-base
+                                        'help-echo "base-1"))
+                (list :node base-2 :x 0 :y 2
+                      :text (propertize "BASE-2" 'face face-base
+                                        'help-echo "base-2"))))
+         (first-records
+          (append base-records
+                  (list (list :node overlay :x 2 :y 1
+                              :text (propertize "DRAG" 'face face-overlay
+                                                'keymap '(keymap (13 . ignore)))))))
+         (moved-records
+          (append base-records
+                  (list (list :node overlay :x 2 :y 2
+                              :text (propertize "DRAG" 'face face-overlay
+                                                'keymap '(keymap (13 . ignore)))))))
+         (context '(drag-test 12 3))
+         (ebox-layer--composition-context context)
+         (first-cache (make-hash-table :test #'equal))
+         (moved-cache (make-hash-table :test #'equal))
+         (first-calls 0)
+         (moved-calls 0)
+         (first-lines nil)
+         (moved-lines nil)
+         first moved cold)
+    ;; Cold render seeds the retained ledger for the initial drag position.
+    (let ((ebox-layer--previous-composition-cache nil)
+          (ebox-layer--composition-cache first-cache)
+          (original (symbol-function 'ebox-composite-line)))
+      (cl-letf (((symbol-function 'ebox-composite-line)
+                 (lambda (&rest args)
+                   (cl-incf first-calls)
+                   (push (plist-get (car (cadr args)) :y) first-lines)
+                   (funcall original (car args) (cadr args) (caddr args)))))
+        (setq first (ebox-layer--compose-rows host first-records 12 3))))
+    ;; The moved candidate reuses row zero and recomposes exactly old/new rows.
+    (let ((ebox-layer--previous-composition-cache first-cache)
+          (ebox-layer--composition-cache moved-cache)
+          (original (symbol-function 'ebox-composite-line)))
+      (cl-letf (((symbol-function 'ebox-composite-line)
+                 (lambda (&rest args)
+                   (cl-incf moved-calls)
+                   (push (plist-get (car (cadr args)) :y) moved-lines)
+                   (funcall original (car args) (cadr args) (caddr args)))))
+        (setq moved (ebox-layer--compose-rows host moved-records 12 3))))
+    (should (= first-calls 3))
+    (should (= moved-calls 2))
+    (should (equal (nreverse first-lines) '(0 1 2)))
+    (should (equal (sort moved-lines #'<) '(1 2)))
+    ;; A cold render at the moved position is the oracle for text properties.
+    (let ((ebox-layer--previous-composition-cache nil)
+          (ebox-layer--composition-cache nil))
+      (setq cold (ebox-layer--compose-rows host moved-records 12 3)))
+    (should (equal-including-properties moved cold))
+    ;; The retained row is the same object, proving ledger reuse rather than
+    ;; merely an equivalent recomposition.
+    (should (eq (nth 0 moved) (nth 0 first)))
+    (should-not (eq (nth 1 moved) (nth 1 first)))
+    (should-not (eq (nth 2 moved) (nth 2 first)))))
+
 (ert-deftest ebox-layer-publication-rejected-hidden-commit-rolls-back ()
   "Rejected hidden updates leave retained input, revision and text unchanged."
   (ebox-layer-publication-test--with-buffer

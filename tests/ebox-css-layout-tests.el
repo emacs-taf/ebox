@@ -179,6 +179,184 @@
                              (ebox-css-layout-test--display
                               (ebox-render next)))))))))))
 
+(defun ebox-css-layout-test--fractional-layer (&optional partial left)
+  "Build a layer at LEFT with a disjoint status; PARTIAL shares its rows."
+  (let ((canvas
+         `(box :id canvas :height (lh 6) :background-color "#112233"
+               (box :id card :position absolute :left ,(or left '(% 15)) :top (lh 1)
+                    :width (px 35) :height (lh 3) :border "red"
+                    :background-color "#334455" :help-echo "Moving card"
+                    :pointer hand :keymap (keymap (13 . ignore))
+                    "CARD"))))
+    (ebox-build
+     `(column :width (px 101)
+              (box :height (lh 1) "Header")
+              ,(if partial
+                   `(row (box :width (% 50) ,canvas)
+                         (box :width (% 50) "Sibling"))
+                 canvas)
+              (box :id status :height (lh 1) "0")))))
+
+(defun ebox-css-layout-test--assert-fresh-properties ()
+  "Compare retained geometry, paint and interactions with a fresh render."
+  (let ((actual (buffer-string))
+        (fresh (ebox-render
+                (plist-get (ebox-surface-buffer-snapshot (current-buffer))
+                           :input))))
+    (should (equal (substring-no-properties actual)
+                   (substring-no-properties fresh)))
+    (dotimes (position (length actual))
+      (dolist (property '(face font-lock-face display help-echo keymap
+                         mouse-face pointer))
+        (ert-info ((format "Property %S at character %d" property position))
+          (should (equal (get-text-property position property actual)
+                         (get-text-property position property fresh))))))))
+
+(ert-deftest ebox-css-layout-fractional-layer-moves-in-complete-rows ()
+  "Complete-row composition keeps local updates and per-line pixel origins."
+  (ebox-css-layout-test--with-pixel-display
+    (let ((ebox-viewport-width 101) (ebox-viewport-height 8))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-css-layout-test--fractional-layer))
+        (should (plist-get (ebox--buffer-render-state (current-buffer))
+                           :fractional-pixel-output-p))
+        (dolist (position '(16.5 4.5 -3.5 15.15))
+          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                     (lambda (&rest _) (ert-fail "Complete layer rerendered root"))))
+            (ebox-call-with-update-batch
+             (lambda ()
+               (ebox-region-update 'card :left `(px ,position))
+               (ebox-region-update 'status :content (format "%s" position)))))
+          (ebox-css-layout-test--assert-pixel-lines (buffer-string) 101)
+          (should
+           (equal (ebox-css-layout-test--display (buffer-string))
+                  (ebox-css-layout-test--display
+                   (ebox-render (plist-get (ebox-surface-buffer-snapshot
+                                           (current-buffer)) :input))))))))))
+
+(ert-deftest ebox-css-layout-fractional-layer-keeps-partial-row-fallback ()
+  "A layer sharing a physical row cannot discard its sibling's remainder."
+  (ebox-css-layout-test--with-pixel-display
+    (let ((ebox-viewport-width 101) (ebox-viewport-height 8))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-css-layout-test--fractional-layer t))
+        (let ((render (symbol-function 'ebox-surface--render-candidate)) (calls 0))
+          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                     (lambda (&rest args) (cl-incf calls) (apply render args))))
+            (ebox-region-update 'card :left '(px 16.5)))
+          (should (> calls 0)))
+        (should
+         (equal (ebox-css-layout-test--display (buffer-string))
+                (ebox-css-layout-test--display
+                 (ebox-render (plist-get (ebox-surface-buffer-snapshot
+                                         (current-buffer)) :input)))))))))
+
+(ert-deftest ebox-css-layout-fractional-layer-keeps-raw-allocation-fallback ()
+  "Whole rows preserve both unrounded widths and the containing CSS basis."
+  (ebox-css-layout-test--with-pixel-display
+    (let ((ebox-viewport-width 101) (ebox-viewport-height 4))
+      (dolist (input
+               '((column :width (px 100.5)
+                         (box :id host :width (% 100) :height (lh 2)
+                              (box :id card :position absolute :left (% 67.7)
+                                   :width (px 7) :height (lh 1) "X")))
+                 ;; Published and raw widths both equal 150 here.  Detached
+                 ;; padding must still resolve against 150, not viewport 101.
+                 (column :width (px 150)
+                         (box :id host :width (% 100) :padding-inline (% 10)
+                              :height (lh 2)
+                              (box :id card :position absolute :left (px 0)
+                                   :width (px 7) :height (lh 1) "X")))))
+        (ert-info ((format "Containing width %S" (plist-get (cdr input) :width)))
+          (with-temp-buffer
+            (ebox-render-to-buffer (current-buffer) (ebox-build input))
+            (let ((render (symbol-function 'ebox-surface--render-candidate)) (calls 0))
+              (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                         (lambda (&rest args) (cl-incf calls) (apply render args))))
+                (ebox-region-update 'card :top '(lh 1)))
+              (should (> calls 0)))
+            (ebox-css-layout-test--assert-fresh-properties)))))))
+
+(ert-deftest ebox-css-layout-fractional-layer-retains-new-raw-fraction-flag ()
+  "Local layers retain newly observed raw fractions after integral movement."
+  (ebox-css-layout-test--with-pixel-display
+    (let ((ebox-viewport-width 101) (ebox-viewport-height 8))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-css-layout-test--fractional-layer nil '(px 0)))
+        (should-not (plist-get (ebox--buffer-render-state (current-buffer))
+                               :fractional-pixel-output-p))
+        (dolist (left '(16.5 0))
+          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                     (lambda (&rest _) (ert-fail "Complete layer rerendered root"))))
+            (ebox-region-update 'card :left `(px ,left)))
+          (should (plist-get (ebox--buffer-render-state (current-buffer))
+                             :fractional-pixel-output-p))
+          (ebox-css-layout-test--assert-pixel-lines (buffer-string) 101)
+          (ebox-css-layout-test--assert-fresh-properties))))))
+
+(ert-deftest ebox-css-layout-fractional-layer-rolls-back-normalized-output ()
+  "Failed mixed publication restores raw provenance and retries local layers."
+  (ebox-css-layout-test--with-pixel-display
+    (let ((ebox-viewport-width 101) (ebox-viewport-height 8))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-css-layout-test--fractional-layer nil '(px 0)))
+        (let ((state (ebox--buffer-render-state (current-buffer)))
+              (revision (ebox-surface-buffer-revision (current-buffer)))
+              (contents (buffer-string)))
+          (should-not (plist-get state :fractional-pixel-output-p))
+          (cl-labels ((update ()
+                        (ebox-call-with-update-batch
+                         (lambda ()
+                           (ebox-region-update 'card :left '(px 16.5))
+                           (ebox-region-update 'status :content "Moved")))))
+            (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                       (lambda (&rest _) (ert-fail "Layer retry rerendered root"))))
+              (dolist (failure-step '(text client-state))
+                (let* ((failed-step nil)
+                       (tp--surface-publication-step-function
+                        (lambda (step _surface)
+                          (when (eq step failure-step)
+                            (setq failed-step step)
+                            (error "Reject normalized layer %S" step)))))
+                  (should-error (update))
+                  (should (eq failed-step failure-step)))
+                (should (= (ebox-surface-buffer-revision (current-buffer)) revision))
+                (should (eq (ebox--buffer-render-state (current-buffer)) state))
+                (should-not (plist-get state :fractional-pixel-output-p))
+                (should (equal-including-properties contents (buffer-string))))
+              (update)))
+          (should (= (ebox-surface-buffer-revision (current-buffer)) (1+ revision)))
+          (should (plist-get (ebox--buffer-render-state (current-buffer))
+                             :fractional-pixel-output-p))
+          (ebox-css-layout-test--assert-pixel-lines (buffer-string) 101)
+          (ebox-css-layout-test--assert-fresh-properties))))))
+
+(ert-deftest ebox-css-layout-fractional-layer-move-and-paint-preserve-interactions ()
+  "Normalized movement and later paint keep visible interaction properties."
+  (ebox-css-layout-test--with-pixel-display
+    (let ((ebox-viewport-width 101) (ebox-viewport-height 8))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-css-layout-test--fractional-layer))
+        (dolist (update '((:left (px 16.5)) (:background-color "#556677")))
+          (cl-letf (((symbol-function 'ebox-surface--render-candidate)
+                     (lambda (&rest _) (ert-fail "Layer paint rerendered root"))))
+            (apply #'ebox-region-update 'card update))
+          (should (plist-get (ebox--buffer-render-state (current-buffer))
+                             :fractional-pixel-output-p))
+          (ebox-css-layout-test--assert-pixel-lines (buffer-string) 101)
+          (ebox-css-layout-test--assert-fresh-properties)
+          (goto-char (point-min))
+          (search-forward "CARD")
+          (should (equal (get-text-property (1- (point)) 'help-echo) "Moving card"))
+          (should (eq (get-text-property (1- (point)) 'pointer) 'hand))
+          (should (eq (lookup-key (get-text-property (1- (point)) 'keymap) (kbd "RET"))
+                      #'ignore)))))))
+
 (defun ebox-css-layout-test--fractional-scroll (offset &optional boundary mixed)
   "Build a centered percentage scroll at OFFSET with optional BOUNDARY.
 MIXED starts with three integral rows before the fractional cached rows."

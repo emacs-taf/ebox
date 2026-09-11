@@ -10452,7 +10452,14 @@ role, and outside-complement compatibility before publication."
                 (plist-get candidate-state :runtime-revision)
                 :display-signature (plist-get prepared :display-signature)
                 :source-index (plist-get candidate-state :source-index)
-                :scroll-state-table (plist-get prepared :scroll-state-table))
+                :scroll-state-table (plist-get prepared :scroll-state-table)
+                :previous-layer-composition-cache
+                (plist-get old-state :layer-composition-cache)
+                :layer-composition-cache (make-hash-table :test 'equal)
+                :layer-composition-context
+                (list (plist-get candidate-state :viewport-width)
+                      (plist-get candidate-state :viewport-height)
+                      (plist-get prepared :display-signature)))
           (ebox-incremental--native-runtime-overrides candidate-state)
           (list :source-path-copied-p source-path-copied-p
                 :runtime-index-prepared-p
@@ -11279,6 +11286,13 @@ When RETAIN-NATIVE-P is non-nil, preserve its committed native frame bases."
         :layout-fragments-reuse-p
         (plist-get state :layout-fragments-reuse-p)
         :render-signature-cache (plist-get state :render-signature-cache)
+        :previous-layer-composition-cache
+        (plist-get state :layer-composition-cache)
+        :layer-composition-cache (make-hash-table :test 'equal)
+        :layer-composition-context
+        (list (plist-get state :viewport-width)
+              (plist-get state :viewport-height)
+              (plist-get state :display-signature))
         :flex-content-min-widths (plist-get state :flex-content-min-widths)
         :viewport-height-dependent-subtree-cache
         (plist-get state :viewport-height-dependent-subtree-cache)

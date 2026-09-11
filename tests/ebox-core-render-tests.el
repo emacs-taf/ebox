@@ -14600,4 +14600,5 @@ face patch must match that exactly (issue014)."
                     "#674795"))
      (should (ebox-test--buffer-propertized-matches-runtime-render-p)))))
 
+
 ;;; ebox-core-render-tests.el ends here
