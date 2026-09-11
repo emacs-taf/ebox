@@ -2154,8 +2154,17 @@ function composes those retained facts into TP's standard validated commit
 batch without asking TP to rediscover the same diff from a full plan.
 PROPERTY-CONTRIBUTIONS add ordered target paint.  RETAINED-ORIGIN is the live
 surface origin when an exact ownership proof permits indexed owner lookup.
-This proof step does not register objects in the active prepare context."
+This proof step does not register objects in the active prepare context.
+
+Layer recomposition has a stronger damage proof than ordinary owner-scoped
+updates: `:content-coordinate-patches' already contains every row whose text
+or paint properties changed.  In that mode, keep those intervals discrete;
+adding the owner's enclosing mount would turn two distant damaged rows into
+one large replacement and needlessly rewrite the rows between them."
   (let* ((proof (plist-get state :mixed-owner-proof))
+         (layer-damage-only-p
+          (and (plist-get state :layer-recompose-p)
+               (null property-contributions)))
          (owner-ids
           (or (plist-get proof :owner-ids)
               (mapcar (lambda (owner-proof)
@@ -2189,32 +2198,33 @@ This proof step does not register objects in the active prepare context."
                      :new-start (plist-get patch :new-start)
                      :new-end (plist-get patch :new-end)))
              coordinate-patches))
-      (if retained-origin
-          ;; The strict retained-property witness preserves the complete
-          ;; mount projection.  Read just the changed owners from TP's
-          ;; existing index, including baseline-only paint removals.
-          (maphash
-           (lambda (object _present)
-             (dolist (mount (tp-object-mounts object))
-               (let ((start (- (plist-get mount :start) retained-origin))
-                     (end (- (plist-get mount :end) retained-origin)))
-                 (push (list :old-start start :old-end end
-                             :new-start start :new-end end)
-                       intervals))))
-           owner-set)
-        (dolist (range previous-owned-ranges)
-          (when (gethash (plist-get range :object) owner-set)
-            (when-let* ((new-start
-                        (ebox-surface--rebase-coordinate
-                         (plist-get range :start) coordinate-patches))
-                       (new-end
-                        (ebox-surface--rebase-coordinate
-                         (plist-get range :end) coordinate-patches)))
-              (push (list :old-start (plist-get range :start)
-                          :old-end (plist-get range :end)
-                          :new-start (car new-start)
-                          :new-end (car new-end))
-                    intervals)))))
+      (unless layer-damage-only-p
+        (if retained-origin
+            ;; The strict retained-property witness preserves the complete
+            ;; mount projection.  Read just the changed owners from TP's
+            ;; existing index, including baseline-only paint removals.
+            (maphash
+             (lambda (object _present)
+               (dolist (mount (tp-object-mounts object))
+                 (let ((start (- (plist-get mount :start) retained-origin))
+                       (end (- (plist-get mount :end) retained-origin)))
+                   (push (list :old-start start :old-end end
+                               :new-start start :new-end end)
+                         intervals))))
+             owner-set)
+          (dolist (range previous-owned-ranges)
+            (when (gethash (plist-get range :object) owner-set)
+              (when-let* ((new-start
+                          (ebox-surface--rebase-coordinate
+                           (plist-get range :start) coordinate-patches))
+                         (new-end
+                          (ebox-surface--rebase-coordinate
+                           (plist-get range :end) coordinate-patches)))
+                (push (list :old-start (plist-get range :start)
+                            :old-end (plist-get range :end)
+                            :new-start (car new-start)
+                            :new-end (car new-end))
+                      intervals))))))
       (setq intervals
             (sort intervals
                   (lambda (left right)

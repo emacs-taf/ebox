@@ -219,6 +219,61 @@ including all text properties."
     (should-not (eq (nth 1 moved) (nth 1 first)))
     (should-not (eq (nth 2 moved) (nth 2 first)))))
 
+(ert-deftest ebox-layer-publication-drag-publishes-only-damaged-rows ()
+  "A distant layer move publishes two disjoint row patches.
+
+The retained compositor already limits recomposition to the old and new rows.
+This regression checks the next boundary too: TP must receive two disjoint
+content patches, so the untouched rows between them never enter a buffer
+delete/insert operation."
+  (ebox-layer-publication-test--with-buffer
+    (let ((input
+           (ebox-build
+            '(column :id "root" :width (ch 12) :height (lh 8)
+               (box :id "before" "Before")
+               (box :id "host" :width (ch 8) :height (lh 5)
+                 (box :id "base0" :width (ch 8) :height (lh 1) "BASE0000")
+                 (box :id "base1" :width (ch 8) :height (lh 1) "BASE1111")
+                 (box :id "base2" :width (ch 8) :height (lh 1) "BASE2222")
+                 (box :id "base3" :width (ch 8) :height (lh 1) "BASE3333")
+                 (box :id "base4" :width (ch 8) :height (lh 1) "BASE4444")
+                 (box :id "upper" :position absolute :left (px 0)
+                   :top (lh 0) :width (ch 8) :height (lh 1)
+                   :z-index 1 "UPPER001"))
+               (box :id "after" "After")))))
+      (ebox-render-to-buffer (current-buffer) input)
+      (let* ((before (buffer-string))
+             (old-start (+ (point-min) (string-match "UPPER001" before)))
+             (new-start (+ (point-min) (string-match "BASE4444" before)))
+             (batch-patches nil)
+             (changes nil)
+             (apply-patches (symbol-function 'tp--commit-batch-apply-patches))
+             (ranges (list (cons old-start (+ old-start 8))
+                          (cons new-start (+ new-start 8)))))
+        (add-hook 'before-change-functions
+                  (lambda (beg end) (push (cons beg end) changes)) nil t)
+        (cl-letf (((symbol-function 'tp--commit-batch-apply-patches)
+                   (lambda (surface batch)
+                     (setq batch-patches (tp-commit-batch-patches batch))
+                     (funcall apply-patches surface batch))))
+          (ebox-region-update "upper" :top '(lh 4)))
+        (should (equal
+                 '((8 . 16) (48 . 56))
+                 (mapcar (lambda (patch)
+                           (cons (plist-get patch :old-start)
+                                 (plist-get patch :old-end)))
+                         batch-patches)))
+        (should changes)
+        (should
+         (cl-every
+          (lambda (change)
+            (cl-some (lambda (range)
+                       (and (<= (car range) (car change))
+                            (<= (cdr change) (cdr range))))
+                     ranges))
+          changes))
+        (ebox-layer-publication-test--assert-fresh-render)))))
+
 (ert-deftest ebox-layer-publication-rejected-hidden-commit-rolls-back ()
   "Rejected hidden updates leave retained input, revision and text unchanged."
   (ebox-layer-publication-test--with-buffer
