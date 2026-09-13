@@ -112,5 +112,31 @@
         (should (equal (get-text-property position 'display expected)
                        (get-text-property position 'display actual)))))))
 
+(ert-deftest ebox-canonical-configuration-preserves-deferred-layout-values ()
+  "Canonical producers share the DSL's concrete layout and deferred cascade."
+  (let* ((properties (list :flex-direction (ecss-important 'column)
+                           :outer (ecss-wide-value 'initial) :width '(ch 10)))
+         (declarations (ebox-style-compile-form 'flex properties))
+         (configuration (ebox-canonical-box-configuration 'flex declarations))
+         (builder (ebox-source-builder-create))
+         (handle (ebox-source-builder-bind builder :declarations declarations))
+         (children (ebox-build '(box "Child")))
+         (node (apply #'ebox-box-create
+                      (append configuration
+                              (list :children (ebox-canonical-input-import-roots
+                                               children (ebox-canonical-input-roots children) builder)
+                                    :source-handle handle :source-builder builder
+                                    :owned-facts (ebox-canonical-facts-from-declarations
+                                                  'flex declarations)))))
+         (input (ebox-canonical-input-create (list node) (ebox-source-builder-finish builder))))
+    (should (equal (ebox-cascade-value-test--appearance (ebox-render input))
+                   (ebox-cascade-value-test--appearance
+                    (ebox-render (ebox-build (append (list 'flex) properties '((box "Child"))))))))
+    (plist-put configuration :outer 'invalid)
+    (should (eq 'block (plist-get (ebox-canonical-box-configuration 'flex declarations) :outer))))
+  (should-error (ebox-canonical-box-configuration 'text nil))
+  (should-error (ebox-canonical-box-configuration 'row '(ebox/flex-direction column)))
+  (should-error (ebox-canonical-box-configuration 'flex '(ebox/flex-direction invalid))))
+
 (provide 'ebox-cascade-values-tests)
 ;;; ebox-cascade-values-tests.el ends here

@@ -600,6 +600,11 @@
       "name": "ebox-selector-canonical-metadata-commit-refreshes-tree-queries",
       "file": "tests/ebox-selector-tests.el",
       "purpose": "Tree queries observe accepted canonical attribute/state changes after metadata-only commits."
+    },
+    {
+      "name": "ebox-canonical-configuration-preserves-deferred-layout-values",
+      "file": "tests/ebox-cascade-values-tests.el",
+      "purpose": "Canonical Box configuration shares DSL layout behavior, defers ECSS values and rejects invalid canonical inputs."
     }
   ]
 }

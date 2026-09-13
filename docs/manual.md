@@ -685,6 +685,33 @@ relationships or inherited computed values. Create a new canonical input when
 ownership changes. A failed candidate leaves committed ownership and output intact.
 Exported canonical snapshots retain their targets for independent remounting.
 
+Canonical Box producers use `ebox-canonical-box-configuration` to derive the
+`:layout` and `:outer` constructor fields from canonical declarations. This is the
+same projection used by the DSL: concrete configuration is cached in Ebox, and
+ECSS-tagged values wait for cascade. The returned plist is detached and its typed
+LayoutConfig is immutable. Invalid tags, declaration contexts or concrete values
+signal an error. Keep the complete declarations in the source binding and derive
+owned facts from them so deferred values participate in rendering and updates.
+
+```elisp
+(require 'ebox)
+(require 'ecss)
+(let* ((declarations (ebox-style-compile-form
+                      'flex (list :flex-direction (ecss-important 'column))))
+       (builder (ebox-source-builder-create))
+       (handle (ebox-source-builder-bind builder :declarations declarations))
+       (child-input (ebox-build '(box "Child")))
+       (children (ebox-canonical-input-import-roots
+                  child-input (ebox-canonical-input-roots child-input) builder))
+       (node (apply #'ebox-box-create
+                    (append (ebox-canonical-box-configuration 'flex declarations)
+                            (list :children children :source-handle handle
+                                  :owned-facts (ebox-canonical-facts-from-declarations
+                                                'flex declarations))))))
+  (ebox-render (ebox-canonical-input-create
+                (list node) (ebox-source-builder-finish builder))))
+```
+
 ## Computed declaration values
 
 Programmatic style inputs can use `ecss-important`, `ecss-wide-value`, and

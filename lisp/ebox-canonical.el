@@ -324,6 +324,32 @@ and author TAG."
                     (eq (plist-get property :group) 'paint)))))
             nil))))
 
+(defvar ebox-canonical--box-configuration-cache (make-hash-table :test #'equal)
+  "Bounded immutable layout configurations keyed by concrete layout input.")
+
+(defun ebox-canonical-box-configuration (tag declarations)
+  "Return provisional `:layout' and `:outer' inputs for Box TAG.
+DECLARATIONS are canonical source declarations, validated for TAG.  Keep the
+complete declarations in the source binding and derive owned facts from them.
+Only concrete values enter this configuration; ECSS resolves tagged values
+before rendering.  The returned plist is detached; its LayoutConfig is opaque."
+  (let* ((names (ebox-layout-config-property-names tag))
+         (concrete (ebox-style--concrete-declarations
+                    (ebox-style-validate-form-declarations tag declarations)))
+         (properties
+          (ebox-style-declaration-properties
+           concrete (lambda (property) (memq (plist-get property :name) names))))
+         (outer (or (plist-get concrete 'ebox/outer) 'block))
+         (key (list tag properties outer))
+         (cached (gethash key ebox-canonical--box-configuration-cache)))
+    (unless cached
+      (setq cached (list :layout (ebox-layout-config-for-form tag properties)
+                         :outer outer))
+      (when (>= (hash-table-count ebox-canonical--box-configuration-cache) 128)
+        (clrhash ebox-canonical--box-configuration-cache))
+      (puthash (copy-tree key) cached ebox-canonical--box-configuration-cache))
+    (copy-sequence cached)))
+
 (defun ebox-canonical-facts-from-declarations (tag declarations &optional interactions)
   "Return immutable node-owned facts for TAG from DECLARATIONS.
 Source declarations stay behind the source handle; the returned value contains

@@ -107,22 +107,6 @@
      (error "%s rejected properties: %s"
             context (error-message-string err)))))
 
-(defun ebox-dsl--layout-config (tag declarations context)
-  "Construct TAG LayoutConfig from canonical DECLARATIONS for CONTEXT."
-  (if (eq tag 'text)
-      nil
-    (condition-case err
-        (let ((names (ebox-layout-config-property-names tag)))
-          (ebox-layout-config-for-form
-           tag
-           (ebox-style-declaration-properties
-            declarations
-            (lambda (property)
-              (memq (plist-get property :name) names)))))
-      (error
-       (error "%s rejected layout config: %s"
-              context (error-message-string err))))))
-
 (defun ebox-dsl--normalize-properties (tag properties source source-builder)
   "Project evaluated TAG PROPERTIES for author SOURCE.
 
@@ -140,25 +124,17 @@ function."
       (when (plist-member properties field)
         (error "%s does not accept private author property %S"
                context field)))
-    (let* ((outer-field
-            (and (not (eq tag 'text))
-                 (ebox-dsl--optional-field
-                  properties :outer context)))
-           (outer (and (not (eq tag 'text))
-                       (if (and outer-field
-                                (not (ecss-declaration-value-tagged-p (cdr outer-field))))
-                           (cdr outer-field) 'block)))
-         (ecss-field (ebox-dsl--optional-field properties :ecss context))
-         (ecss-file-field (ebox-dsl--optional-field properties :ecss-file context))
-         (_ (when (and (or ecss-field ecss-file-field) (eq tag 'text))
-              (error "Ebox :ecss requires a Box form")))
-         (_ (when (and ecss-file-field (not (stringp (cdr ecss-file-field))))
-              (error "%s :ecss-file must be a string" context)))
-         (ecss (ebox-style-compile-rules
-                (append (and ecss-file-field (ecss-file-read (cdr ecss-file-field)))
-                        (and ecss-field (cdr ecss-field)))))
-         (style-properties
-          (ebox-dsl--without-keys
+    (let* ((ecss-field (ebox-dsl--optional-field properties :ecss context))
+           (ecss-file-field (ebox-dsl--optional-field properties :ecss-file context))
+           (_ (when (and (or ecss-field ecss-file-field) (eq tag 'text))
+                (error "Ebox :ecss requires a Box form")))
+           (_ (when (and ecss-file-field (not (stringp (cdr ecss-file-field))))
+                (error "%s :ecss-file must be a string" context)))
+           (ecss (ebox-style-compile-rules
+                  (append (and ecss-file-field (ecss-file-read (cdr ecss-file-field)))
+                          (and ecss-field (cdr ecss-field)))))
+           (style-properties
+            (ebox-dsl--without-keys
              properties (append '(:ecss :ecss-file) ebox-dsl--source-fields
                                 ebox-interaction-properties)))
            (interactions
@@ -166,7 +142,10 @@ function."
              (ebox-dsl--keep-keys properties ebox-interaction-properties)))
            (declarations
             (ebox-dsl--compile-style
-             tag style-properties context)))
+             tag style-properties context))
+           (configuration
+            (unless (eq tag 'text)
+              (ebox-canonical-box-configuration tag declarations))))
       (ebox-dsl--make-properties
        :tag tag
        :source-handle
@@ -184,10 +163,8 @@ function."
         :ecss ecss
         :provenance (list :adapter 'ebox-dsl :tag tag
                           :source-present-p (not (null source))))
-       :outer outer
-       :layout
-       (ebox-dsl--layout-config
-        tag (ebox-style--concrete-declarations declarations) context)
+       :outer (plist-get configuration :outer)
+       :layout (plist-get configuration :layout)
        :declarations declarations
        :owned-facts
        (ebox-canonical-facts-from-declarations tag declarations interactions)))))

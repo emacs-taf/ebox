@@ -585,6 +585,31 @@ nil 禁用该作用域的规则。绑定时保存列表快照，渲染时在候�
 构造新规范输入；候选失败保留已提交的所有权和显示。导出的规范快照保留目标集合，
 可以独立重新挂载。
 
+规范 Box 构造者使用 `ebox-canonical-box-configuration`，从规范声明取得
+`:layout` 和 `:outer` 构造字段。DSL 使用同一投影：Ebox 缓存具体配置，带 ECSS
+标记的值等待层叠计算。返回的 plist 独立于缓存，其中的类型化 LayoutConfig
+不可变。非法 tag、声明上下文或具体值会报错。完整声明仍需保留在 source binding
+中，并据此生成 owned facts，让延迟值参与渲染和更新。
+
+```elisp
+(require 'ebox)
+(require 'ecss)
+(let* ((declarations (ebox-style-compile-form
+                      'flex (list :flex-direction (ecss-important 'column))))
+       (builder (ebox-source-builder-create))
+       (handle (ebox-source-builder-bind builder :declarations declarations))
+       (child-input (ebox-build '(box "Child")))
+       (children (ebox-canonical-input-import-roots
+                  child-input (ebox-canonical-input-roots child-input) builder))
+       (node (apply #'ebox-box-create
+                    (append (ebox-canonical-box-configuration 'flex declarations)
+                            (list :children children :source-handle handle
+                                  :owned-facts (ebox-canonical-facts-from-declarations
+                                                'flex declarations))))))
+  (ebox-render (ebox-canonical-input-create
+                (list node) (ebox-source-builder-finish builder))))
+```
+
 ## 需要计算的声明值
 
 程序构造的样式可使用 `ecss-important`、`ecss-wide-value` 和 `ecss-var`。

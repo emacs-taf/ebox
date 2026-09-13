@@ -165,6 +165,16 @@
 ;; The root address is private, base-bound, and cannot collide with host refs.
 ;; Repeated calls are last-wins and absorb all descendant candidate operations.
 ;;
+;; Function: ebox-canonical-box-configuration (tag declarations)
+;;;###autoload (autoload 'ebox-canonical-box-configuration "ebox" nil nil)
+;; Return a detached plist with :layout and :outer for the canonical Box
+;; constructor. TAG is box, row, column, flex or grid; DECLARATIONS must be
+;; canonical declarations accepted by that tag, otherwise an error is signaled.
+;; The LayoutConfig is opaque and immutable. Concrete values are projected now;
+;; tagged values use provisional defaults until ECSS computes the node. Keep
+;; the complete declarations in its source binding and pass facts derived from
+;; them to ebox-box-create. This call performs no rendering or value evaluation.
+;;
 ;; Function: ebox-canonical-facts-from-declarations (tag declarations &optional interactions)
 ;;;###autoload (autoload 'ebox-canonical-facts-from-declarations "ebox" nil nil)
 ;; Return immutable node-owned facts for TAG from DECLARATIONS.

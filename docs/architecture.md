@@ -32,6 +32,11 @@ Cascade reuse compares mounting source identity, rules, and target membership.
 Metadata-only publication can retain lazy selector views; tree queries rebuild
 stale views from current source facts before matching.
 
+Canonical producers and the DSL derive provisional LayoutConfig and outer
+fields through one Ebox-owned declaration projection. It filters deferred values
+and caches concrete configurations without taking ownership of source declarations.
+The complete declarations remain inputs to cascade.
+
 ## Commit lifecycle
 
 ```text

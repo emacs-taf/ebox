@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- `ebox-canonical-box-configuration` shares provisional layout and outer
+  projection between canonical producers and the DSL, deferring ECSS-tagged
+  values until cascade computation.
+
 - Tree selector queries refresh stale subject views after canonical metadata
   commits. Changing only a local stylesheet's target identities now invalidates
   its computed output as well.
