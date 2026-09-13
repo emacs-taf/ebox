@@ -800,6 +800,11 @@
       "name": "ebox-scoped-viewport-reflow-preserves-cascade-and-layout",
       "file": "tests/ebox-shared-scope-tests.el",
       "purpose": "Unchanged local scopes retain viewport reflow and match fresh layout and paint across widths."
+    },
+    {
+      "name": "ebox-flex-minima-preserve-overflow-semantics-in-both-backends",
+      "file": "tests/ebox-css-flex-grid-tests.el",
+      "purpose": "Row and column explicit and automatic Flex minima preserve visible, hidden and scroll overflow behavior, with identical observable output when the optional native module is enabled or unavailable."
     }
   ]
 }

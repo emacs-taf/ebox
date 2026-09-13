@@ -107,7 +107,7 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "14:7:12"
+(defconst ebox-native-reflow-abi-version "15:7:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -2171,13 +2171,13 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
              (if typed-text-p 'max-content (ebox-get box :width))
              'horizontal "auto")
      :min-width (ebox-native-reflow--compile-size
-                 (ebox-get box :min-width) 'horizontal "pixels")
+                 (ebox-get box :min-width) 'horizontal "auto")
      :max-width (ebox-native-reflow--compile-size
                  (ebox-get box :max-width) 'horizontal "none")
      :height (ebox-native-reflow--compile-size
               (ebox-get box :height) 'vertical "auto")
      :min-height (ebox-native-reflow--compile-size
-                  (ebox-get box :min-height) 'vertical "lines")
+                  (ebox-get box :min-height) 'vertical "auto")
      :max-height (ebox-native-reflow--compile-size
                   (ebox-get box :max-height) 'vertical "none")
      :box-sizing
@@ -2245,12 +2245,6 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                    (hash-table-p ebox--flex-content-min-width-table))
               (gethash source ebox--flex-content-min-width-table missing)
             missing)))
-    (let ((minimum (ebox-get source (if (eq axis 'row)
-                                        :min-width :min-height))))
-      (when (and (eq (plist-get source :ebox-kind) 'box)
-                 (not (memq minimum '(nil auto))))
-        (error "Native reflow uses Elisp for an explicit Flex item minimum: %S"
-               minimum)))
     (unless (eq captured-content-min missing)
       (setq content-min-width captured-content-min
             content-min-width-p t))

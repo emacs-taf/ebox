@@ -5838,8 +5838,13 @@ fn flex_min_main(
     context: LayoutContext,
 ) -> Result<i64, String> {
     let LayoutNode::Box {
+        width,
+        height,
         min_width,
         min_height,
+        max_width,
+        max_height,
+        overflow,
         wrap_mode,
         content_min_width,
         ..
@@ -5850,42 +5855,71 @@ fn flex_min_main(
             FlexAxis::Column => rendered.height(),
         });
     };
-    Ok(match axis {
-        FlexAxis::Row => {
-            let side = box_horizontal_side(source).unwrap_or(0);
-            let declared = flex_box_resolve_width(
-                source,
-                min_width,
-                Some(0),
-                &scope.phase(Phase::FlexMinWidth),
-                context,
-            )?
-            .unwrap_or(0);
-            if *wrap_mode == WrapMode::None {
-                rendered.max_width().max(side + declared)
-            } else {
-                let content_min = match content_min_width {
-                    Some(content_min_width) => *content_min_width,
-                    None => {
-                        box_content_intrinsics(
-                            source,
-                            &scope.phase(Phase::FlexAutoMinContent),
-                            context,
-                        )?
-                        .unwrap_or((0, 0))
-                        .0
-                    }
-                };
-                side + declared.max(content_min)
+    let horizontal = matches!(axis, FlexAxis::Row);
+    let side = if horizontal {
+        box_horizontal_side(source).unwrap_or(0)
+    } else {
+        box_vertical_side(source).unwrap_or(0)
+    };
+    let minimum = if horizontal { min_width } else { min_height };
+    let declared = if horizontal {
+        flex_box_resolve_width(
+            source,
+            minimum,
+            Some(0),
+            &scope.phase(Phase::FlexMinWidth),
+            context,
+        )?
+    } else {
+        flex_box_resolve_height(source, minimum, Some(0), context)
+    }
+    .unwrap_or(0);
+    // Explicit minima replace the automatic content constraint. Scrollable
+    // overflow also has a zero automatic minimum on either main axis.
+    if !matches!(minimum, Size::Auto) || *overflow != Overflow::Visible {
+        return Ok(side + declared);
+    }
+    let content_min = if horizontal && *wrap_mode != WrapMode::None {
+        match content_min_width {
+            Some(value) => *value,
+            None => {
+                box_content_intrinsics(source, &scope.phase(Phase::FlexAutoMinContent), context)?
+                    .unwrap_or((0, 0))
+                    .0
             }
         }
-        FlexAxis::Column => {
-            box_vertical_side(source).unwrap_or(0)
-                + flex_box_resolve_height(source, min_height, Some(0), context)
-                    .unwrap_or(0)
-                    .max(0)
+    } else if horizontal {
+        (rendered.max_width() - side).max(0)
+    } else {
+        (rendered.height() - side).max(0)
+    };
+    let preferred = if horizontal { width } else { height };
+    let definite = match preferred {
+        Size::Pixels { .. } | Size::Lines { .. } => {
+            if horizontal {
+                flex_box_resolve_width(source, preferred, None, scope, context)?
+            } else {
+                flex_box_resolve_height(source, preferred, None, context)
+            }
         }
-    })
+        _ => None,
+    };
+    let maximum = if horizontal {
+        flex_box_resolve_width(
+            source,
+            max_width,
+            None,
+            &scope.phase(Phase::FlexMaxWidth),
+            context,
+        )?
+    } else {
+        flex_box_resolve_height(source, max_height, None, context)
+    };
+    Ok(side.max(
+        (side + content_min)
+            .min(definite.map(|value| side + value).unwrap_or(i64::MAX))
+            .min(maximum.map(|value| side + value).unwrap_or(i64::MAX)),
+    ))
 }
 
 fn flex_max_main(

@@ -6,6 +6,12 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Native Flex layout accepts supported explicit main-axis minima, including
+  zero, and follows the same overflow-dependent automatic minimum and size
+  caps as Elisp. Rebuild the optional module for ABI `15:7:12` and restart Emacs; older modules
+  cannot supply the corrected semantics. Unsupported scene features still use
+  ordinary rendering.
+
 - Viewport updates compare the mounted local and shared scopes when proving
   style stability, preserving retained reflow for unchanged scoped styles.
 

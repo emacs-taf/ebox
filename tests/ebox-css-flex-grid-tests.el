@@ -73,5 +73,44 @@
     (should (string-match-p "A" (nth 0 lines)))
     (should (string-match-p "B" (nth 2 lines)))))
 
+(ert-deftest ebox-flex-minima-preserve-overflow-semantics-in-both-backends ()
+  "Explicit minima replace content floors; scrollable auto minima permit shrink."
+  (let ((ebox-viewport-width 8)
+        (ebox-viewport-height 20))
+    (dolist (axis '(row column))
+      (dolist (minimum '(auto zero small floor))
+        (dolist (overflow '(visible hidden scroll))
+          (let* ((row (eq axis 'row))
+                 (size (if row '(px 8) '(lh 4)))
+                 (min (pcase minimum
+                        ('auto 'auto)
+                        ('zero (if row '(ch 0) '(lh 0)))
+                        ('floor (if row '(ch 6) '(lh 3)))
+                        (_ (if row '(ch 2) '(lh 1)))))
+                 (input
+                  (ebox-build
+                   `(flex :wrap-mode none :overflow visible
+                          :flex-direction ,axis ,(if row :width :height) ,size
+                          (box :id a :flex-shrink 1 :overflow ,overflow :wrap-mode word
+                               ,(if row :min-width :min-height) ,min "Alpha Bravo")
+                          (box :id b :flex-shrink 1 :overflow ,overflow :wrap-mode word
+                               ,(if row :min-width :min-height) ,min "Charlie Delta")))))
+            (with-temp-buffer
+              (ebox-render-to-buffer (current-buffer) input)
+              (ert-info ((format "%S %S %S" axis minimum overflow))
+                (should
+                 (equal (buffer-substring-no-properties (point-min) (point-max))
+                        (cond
+                         ((eq minimum 'floor)
+                          (if row "Alpha Charli\nBravo e  \n Delta "
+                            "Alpha  \nBravo \n \nCharlie \nDelta \n "))
+                         (row
+                          (if (and (eq minimum 'auto) (eq overflow 'visible))
+                              "AlphaCharlie\nBravoDelta "
+                            "AlpCharl\nha ie  \nBraDelta\nvo  "))
+                         ((eq overflow 'visible)
+                          "Alpha  \nBravo \nCharlie \nDelta ")
+                         (t "Alpha  \nCharlie \n \n "))))))))))))
+
 (provide 'ebox-css-flex-grid-tests)
 ;;; ebox-css-flex-grid-tests.el ends here
