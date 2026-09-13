@@ -140,7 +140,10 @@ interaction facts supply tab order and disabled status; they do not yet feed
 selector states. A lazily built navigation vector and rank index are derived
 once per publication, with visibility checked at use. Navigation does not
 rescan and sort every Host on each key. New publication invalidates the derived
-index. Stable runtime identity bridges new source handles in keyed DSL commits.
+index. Source identity takes precedence over reused layout nodes; retained
+node identity plus a matching non-nil sibling key bridges fresh DSL handles.
+Region updates compare source interaction facts as well as native projection,
+so tab order or a disabled node's replacement keymap cannot become a false no-op.
 
 The rollback-capable Ebox participant promotes focus together with the candidate
 and restores it on rejection. TP restores native view markers at final accept,

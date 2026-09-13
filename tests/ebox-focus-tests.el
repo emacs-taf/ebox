@@ -7,8 +7,8 @@
 (require 'ert)
 (require 'ebox)
 
-(defun ebox-focus-test--input (rows)
-  "Build a column from ROWS of (IDENTITY TEXT INTERACTIONS)."
+(defun ebox-focus-test--input (rows &optional unkeyed)
+  "Build ROWS of (IDENTITY TEXT INTERACTIONS); UNKEYED omits sibling keys."
   (let* ((builder (ebox-source-builder-create))
          (root (ebox-source-builder-bind builder :identity 'root :key 'root))
          (children
@@ -16,7 +16,7 @@
            (lambda (row)
              (let* ((ref (nth 0 row)) (text (nth 1 row)) (interactions (nth 2 row))
                     (handle (ebox-source-builder-bind
-                             builder :identity ref :key ref :id ref
+                             builder :identity ref :key (unless unkeyed ref) :id ref
                              :interactions interactions)))
                (ebox-text-create
                 :value text :source-handle handle
@@ -51,9 +51,17 @@
     (should (eq (ebox-focus-next) 'b))
     (should (eq (ebox-focus 'e) 'e))
     (should (eq (ebox-focus-previous) 'a))
+    (should (eq (ebox-focus-first) 'b))
+    (should (eq (ebox-focus-next) 'a))
     (should-error (ebox-focus 'c) :type 'user-error)
     (should-error (ebox-focus 'absent) :type 'user-error)
     (should (eq (ebox-focused-host-ref) 'a))
+    (ebox-region-update (ebox-region-resolve (current-buffer) "a") :tab-index nil)
+    (ebox-region-update (ebox-region-resolve (current-buffer) "b") :tab-index nil)
+    (let ((before (point)))
+      (should-error (ebox-focus-first) :type 'user-error)
+      (should (eq (ebox-focused-host-ref) 'a))
+      (should (= before (point))))
     (should-not (ebox-focus nil))
     (should-not (ebox-focus-next 0))
     (should-error (ebox-focus-next 1.5) :type 'wrong-type-argument)
@@ -165,7 +173,13 @@
       (ebox-focus-next 1 t)
       (should (looking-at "Disabled"))
       (ebox-activate)
-      (should (= calls 2)))))
+      (should (= calls 2))
+      (ebox-region-update "disabled" :disabled t)
+      (ebox-region-update
+       "disabled" :keymap (ebox-keymap-create :activate (lambda () (setq calls (+ calls 10)))))
+      (ebox-region-update "disabled" :disabled nil)
+      (ebox-activate (point-min))
+      (should (= calls 12)))))
 
 (ert-deftest ebox-focus-retains-keyed-dsl-nodes-and-clears-hidden-focus ()
   "Fresh source handles preserve keyed focus until published visibility hides it."
@@ -223,6 +237,24 @@
       (should (eq (ebox-focused-host-ref) 'b))
       (should (= (point) before))
       (should (looking-at "BBB")))))
+
+(ert-deftest ebox-focus-prefers-source-identity-over-reused-layout-nodes ()
+  "Source identity follows unkeyed reorder, and a replacement cannot acquire focus."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-focus-test--input '((a "AAA" (:tab-index 0)) (b "BBB" (:tab-index 0))) t))
+    (ebox-focus 'a)
+    (ebox-commit
+     (current-buffer)
+     (ebox-focus-test--input '((b "BBB" (:tab-index 0)) (a "AAA" (:tab-index 0))) t))
+    (should (eq (ebox-focused-host-ref) 'a))
+    (should (looking-at "AAA"))
+    (ebox-commit
+     (current-buffer)
+     (ebox-focus-test--input '((b "BBB" (:tab-index 0)) (c "CCC" (:tab-index 0))) t))
+    (should-not (ebox-focused-host-ref))
+    (should (eq (ebox-focus-first) 'b))))
 
 (provide 'ebox-focus-tests)
 ;;; ebox-focus-tests.el ends here

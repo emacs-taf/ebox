@@ -695,6 +695,11 @@
       "name": "ebox-focus-returns-owned-references-and-restores-rejected-reorder",
       "file": "tests/ebox-focus-tests.el",
       "purpose": "Returned reference data cannot corrupt ownership, and reorder rejection restores point."
+    },
+    {
+      "name": "ebox-focus-prefers-source-identity-over-reused-layout-nodes",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Source identity follows unkeyed reorder, and a replacement cannot acquire focus."
     }
   ]
 }

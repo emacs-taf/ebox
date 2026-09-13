@@ -182,7 +182,9 @@ narrowing 与不可见性，不安装按键绑定、焦点注册表或应用状�
 逻辑焦点只有一个 buffer-local retained node owner。发布后的 source interaction facts
 提供 tab 顺序与禁用状态，暂不进入 selector states。每次发布后延迟重建导航向量与 rank
 索引，使用时检查可见性；每次导航不再扫描、排序全部 Host。稳定 runtime identity
-连接 keyed DSL commit 中新生成的 source handle。
+加上非 nil 兄弟 key，连接 keyed DSL commit 中新生成的 source handle；仍存在的显式
+source identity 优先于复用的绘制节点。Region 更新同时比较 source interaction facts
+和原生投影，因此 tab 顺序或禁用节点的 keymap 更换不会被误判成 no-op。
 
 Ebox 的可回滚 participant 随候选提升焦点，拒绝时恢复。TP 在 final accept 恢复原生
 视图 marker，因此 Ebox 在受控 after-commit 回调中重新应用 point，且只作用于仍为

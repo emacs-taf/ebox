@@ -29,6 +29,7 @@
 (declare-function ebox-host-ref-bounds "ebox-runtime" (buffer-or-name host-ref))
 (declare-function ebox-source--copy-data "ebox-source" (value))
 (declare-function ebox-source--index-record "ebox-source" (index handle))
+(declare-function ebox-source-record-key "ebox-source" (record))
 (declare-function ebox-source-record-interactions "ebox-source" (record))
 (declare-function ebox-source--handle-id-view "ebox-source" (handle))
 (defvar ebox-region-types)
@@ -236,6 +237,14 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
               (handle (plist-get node :ebox-source-handle)))
     (ebox-source--handle-id-view handle)))
 
+(defun ebox-interaction--focus-key (state owner)
+  "Return OWNER's sibling key in STATE, or nil."
+  (when-let* ((node (ebox-interaction--focus-node state owner))
+              (record (ebox-source--index-record
+                       (plist-get state :source-index)
+                       (plist-get node :ebox-source-handle))))
+    (ebox-source-record-key record)))
+
 (defun ebox-interaction--focus-properties (state owner)
   "Return OWNER's committed interaction facts in STATE."
   (when-let* ((node (ebox-interaction--focus-node state owner))
@@ -328,6 +337,8 @@ following the target until point is moved back to that target's first character.
                  (equal (point) (ebox-interaction--focus-position
                                  state ebox-interaction--focus-owner)))
             (and state (ebox-interaction--focus-ref
+                        state ebox-interaction--focus-owner))
+            (and state (ebox-interaction--focus-key
                         state ebox-interaction--focus-owner))))))
 
 (defun ebox-interaction--focus-publish (buffer snapshot)
@@ -335,10 +346,12 @@ following the target until point is moved back to that target's first character.
   (with-current-buffer buffer
     (setq ebox-interaction--focus-order nil)
     (let* ((state (ebox-surface--buffer-client-state buffer))
-           (owner (or (and (ebox-interaction--focus-node state (car snapshot))
-                           (car snapshot))
-                      (and (nth 3 snapshot)
-                           (gethash (nth 3 snapshot) (ebox--buffer-host-ref-table buffer)))))
+           (owner (or (and (nth 3 snapshot)
+                           (gethash (nth 3 snapshot) (ebox--buffer-host-ref-table buffer)))
+                      (and (nth 4 snapshot)
+                           (equal (nth 4 snapshot)
+                                  (ebox-interaction--focus-key state (car snapshot)))
+                           (car snapshot))))
            (position (and owner (ebox-interaction--focus-position state owner))))
       (setq ebox-interaction--focus-owner (and position owner))
       (when (car snapshot)
@@ -404,6 +417,10 @@ node identity.  Disabled, hidden and inaccessible nodes are skipped.  Navigation
 starts at the first (or backward last) stop when there is no eligible focus.
 No window is selected and no key bindings are installed."
   (interactive "p")
+  (ebox-interaction--focus-move (or count 1) cycle buffer-or-name nil))
+
+(defun ebox-interaction--focus-move (count cycle buffer-or-name restart)
+  "Move COUNT stops in BUFFER-OR-NAME; CYCLE wraps and RESTART ignores focus."
   (setq count (or count 1))
   (unless (integerp count) (signal 'wrong-type-argument (list 'integerp count)))
   (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
@@ -413,7 +430,7 @@ No window is selected and no key bindings are installed."
              (owners (car index))
              (size (length owners))
              (step (if (> count 0) 1 -1))
-             (rank (and (ebox-interaction--focus-position state ebox-interaction--focus-owner)
+             (rank (and (not restart) (ebox-interaction--focus-position state ebox-interaction--focus-owner)
                         (gethash ebox-interaction--focus-owner (cadr index))))
              (rank (or rank (if (> step 0) -1 size)))
              owner)
@@ -429,6 +446,15 @@ No window is selected and no key bindings are installed."
                   (setq owner (aref owners rank)))))
             (unless owner (user-error "No eligible Ebox focus stop"))))
         (ebox-focus (ebox-interaction--focus-ref state owner))))))
+
+;;;###autoload
+(defun ebox-focus-first (&optional buffer-or-name)
+  "Focus the first eligible navigation stop in BUFFER-OR-NAME and return its ref.
+Default to the current buffer.  Use the same tab order and visibility rules as
+`ebox-focus-next', independently of current focus.  If no stop exists, signal
+`user-error' without changing focus or point.  Never select a window."
+  (interactive)
+  (ebox-interaction--focus-move 1 nil buffer-or-name t))
 
 ;;;###autoload
 (defun ebox-focus-previous (&optional count cycle buffer-or-name)
@@ -816,7 +842,7 @@ padding.  Border glyphs are excluded; horizontal strokes keep their own paint."
   string)
 
 (defun ebox-interaction-surface-equal-p (left right)
-  "Compare native surface plists LEFT and RIGHT without collapsing commands.
+  "Compare native surface or interaction plists LEFT and RIGHT literally.
 Literal callbacks retain identity; keymap snapshots use TP's native property
 policy, which compares bindings while retaining command identity.  Paint and
 data values use native value equality, before surface publication loads."
@@ -829,7 +855,8 @@ data values use native value equality, before surface publication loads."
                                  ((or (keymapp value) (keymapp (cadr entry)))
                                   (funcall
                                    (tp-property-policy-equality
-                                    (tp-register-text-property property))
+                                    (tp-register-text-property
+                                     (if (eq property :keymap) 'keymap property)))
                                    value (cadr entry)))
                                  ((or (functionp value) (functionp (cadr entry)))
                                   (eq value (cadr entry)))

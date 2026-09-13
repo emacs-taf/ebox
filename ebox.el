@@ -461,6 +461,13 @@
 ;; Manual point movement does not clear logical focus; it stops publication from
 ;; following the target until point is moved back to that target's first character.
 ;;
+;; Function: ebox-focus-first (&optional buffer-or-name)
+;;;###autoload (autoload 'ebox-focus-first "ebox" nil t)
+;; Focus the first eligible navigation stop in BUFFER-OR-NAME and return its ref.
+;; Default to the current buffer. Use the tab order and visibility rules of
+;; ebox-focus-next, independently of current focus. No stop signals user-error
+;; without changing focus or point. No window is selected.
+;;
 ;; Function: ebox-focus-next (&optional count cycle buffer-or-name)
 ;;;###autoload (autoload 'ebox-focus-next "ebox" nil t)
 ;; Move logical focus COUNT stops forward in BUFFER-OR-NAME and return its ref.

@@ -4217,7 +4217,7 @@ Defaults to the current buffer."
     (ebox-text-node-value text)))
 
 (defun ebox--region-update-analysis
-    (source-index box expanded declarations)
+    (source-index box expanded declarations &optional interactions)
   "Return change analysis for BOX in SOURCE-INDEX and new DECLARATIONS."
   (let (content-seen
         content-value
@@ -4249,6 +4249,11 @@ Defaults to the current buffer."
     (list :changed-p
           (or (not (equal declarations
                           (ebox-style-node-declarations source-index box)))
+              (and (plist-member expanded :surface-properties)
+                   (not (ebox-interaction-surface-equal-p
+                         interactions
+                         (ebox-source-index-interactions
+                          source-index (ebox-tree-node-source-handle box)))))
               style-changed-p
               (and content-seen
                    (not (equal (ebox--region-update-content-value box)
@@ -4319,6 +4324,12 @@ cannot be changed through the unpublished batch root."
         changed-keys)
     (unless box
       (user-error "Ebox region handle no longer resolves to a box"))
+    (when (and (plist-member expanded :surface-properties)
+               (not (ebox-interaction-surface-equal-p
+                     interactions
+                     (ebox-source-index-interactions
+                      source-index (ebox-tree-node-source-handle box)))))
+      (push :surface-properties changed-keys))
     (let ((declarations-changed
            (not (ebox-style-declarations-equal-p
                  declarations
@@ -4379,7 +4390,7 @@ cannot be changed through the unpublished batch root."
                        "Ebox content update requires Text or a Box with one direct Text child"))
                   (plist-put box target-key value))
              and do (push target-key changed-keys)))
-    (list :changed-keys (nreverse changed-keys)
+    (list :changed-keys (delete-dups (nreverse changed-keys))
           :source-index candidate-source-index)))
 
 (defun ebox--surface-region-no-op-report (state region-id handle)
@@ -4649,7 +4660,7 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
          (analysis
           (ebox--region-update-analysis
            source-index
-           candidate-box expanded declarations)))
+           candidate-box expanded declarations interactions)))
     (dolist (key (plist-get analysis :unknown-keys))
       (message "ebox-region-update: unknown key %S (ignored)" key))
     (if (not (plist-get analysis :changed-p))

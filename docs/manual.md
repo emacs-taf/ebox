@@ -469,7 +469,8 @@ again. Publish both inputs through ordinary `ebox-region-update` or canonical
 commits. Disabled and focus inputs do not yet produce selector pseudo-states.
 
 Use `ebox-focus-next` / `ebox-focus-previous` for logical navigation. The optional
-second argument enables cycling. They return an opaque Host reference for
+second argument enables cycling. `ebox-focus-first` selects the first eligible
+stop without clearing the existing focus if no stop exists. They return an opaque Host reference for
 `ebox-focus` and `ebox-focused-host-ref`; frameworks may also use their explicit
 source-builder identities. `ebox-focus` accepts nil to clear focus. It may
 explicitly focus any enabled visible node, even without a tab index or keymap.
@@ -485,6 +486,10 @@ The complete signatures and error contracts are in [ebox.el](../ebox.el).
     (ebox-focus-next 1 t)
     (ebox-focus first)))
 ```
+
+Focus first follows an existing explicit source identity. An expired reference
+can continue only through a retained node with the same non-nil sibling key; an
+unkeyed replacement clears focus.
 
 Focus belongs to the mounted buffer, without selecting a window or maintaining
 separate focus per window. Keyed reorder follows the retained node, even when a

@@ -408,6 +408,7 @@ map、结构换行和不可见文本不构成目标。框架不移动 point 或�
 或 canonical commit 发布。这些输入暂不产生 selector 伪状态。
 
 `ebox-focus-next` / `ebox-focus-previous` 操作逻辑焦点，第二个可选参数允许循环。
+`ebox-focus-first` 选择第一个有效停靠点；没有停靠点时保持原焦点和 point。
 它们返回不透明 Host 引用，供 `ebox-focus` 和 `ebox-focused-host-ref` 使用；框架也可以
 传入自己的 source-builder identity。`ebox-focus` 接受 nil 清空焦点；显式设置允许任何
 已启用且可见的节点，不要求 tab index 或 keymap。完整签名和错误约束见
@@ -423,6 +424,9 @@ map、结构换行和不可见文本不构成目标。框架不移动 point 或�
     (ebox-focus-next 1 t)
     (ebox-focus first)))
 ```
+
+焦点首先跟随仍存在的显式 source identity；旧引用失效时，只有保留节点中相同的非 nil
+兄弟 key 可以维持焦点，无 key 的替换节点不会接管被移除的焦点。
 
 焦点属于已挂载 buffer，不选择窗口，也不为同一个 buffer 的每个窗口维护独立焦点。
 Keyed 重排跟随保留节点，即使新输入给出新的 source handle；发布后应查询当前引用，

@@ -6,6 +6,12 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Focus prefers a surviving source identity over a reused layout node. When a
+  generated source reference expires, only a matching retained sibling key can
+  preserve focus; an unkeyed replacement cannot acquire the removed focus.
+- Interaction-only updates publish source facts even when rendered properties
+  are unchanged, including tab order and replacement keymaps on disabled nodes.
+
 - `ebox-style-scope-with-rules` updates root rules while retaining scope
   membership across imported fragments. Old canonical snapshots stay unchanged.
 
@@ -40,6 +46,9 @@ All notable changes to Ebox are documented here.
 
 
 ### Added
+
+- `ebox-focus-first` selects the first eligible tab stop independently of current
+  focus, leaving focus and point unchanged when no stop is available.
 
 - Buffer-local logical focus with explicit setting, querying, ordered navigation
   and optional cycling. Retained updates preserve focus and point, while rejected
