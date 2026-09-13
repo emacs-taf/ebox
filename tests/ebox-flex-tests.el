@@ -128,5 +128,23 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-flex-composed-lines-are-not-rewrapped-by-outer-box ()
+  "Outer text wrapping preserves Flex item positions and child wrapping."
+  (let ((ebox-viewport-width 160)
+        (ebox-viewport-height 20))
+    (dolist (wrap '(none word char))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(flex :width (px 8) :wrap-mode ,wrap
+                 (box :id a :overflow visible :wrap-mode word "Alpha Bravo")
+                 (box :id b :overflow visible :wrap-mode word "Charlie Delta"))))
+        (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                       "AlphaCharlie\nBravoDelta "))
+        (ebox-region-update "a" :content "Other Words")
+        (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                       "OtherCharlie\nWordsDelta "))))))
+
 (provide 'ebox-flex-tests)
 ;;; ebox-flex-tests.el ends here

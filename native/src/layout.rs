@@ -7459,7 +7459,22 @@ fn render_node_body(
             } else {
                 let rendered = child_rendered.expect("validated child");
                 let uniform_width = rendered.lines.uniform_width(content_width);
-                let rendered = if *wrap_mode != WrapMode::None && !uniform_width {
+                // A child formatting context has already laid out its items.
+                // Rewrapping its composed lines would split adjacent Flex
+                // items and discard their placement, unlike ordinary Box text.
+                let composed_layout = child.as_deref().is_some_and(|node| {
+                    let node = resolver
+                        .and_then(|document| document.resolve(node).ok())
+                        .unwrap_or(node);
+                    matches!(
+                        node,
+                        LayoutNode::Flex { .. }
+                            | LayoutNode::Row { .. }
+                            | LayoutNode::Column { .. }
+                    )
+                });
+                let rendered = if *wrap_mode != WrapMode::None && !uniform_width && !composed_layout
+                {
                     child_change = None;
                     wrap_rendered(rendered, content_width, *wrap_mode)
                 } else {

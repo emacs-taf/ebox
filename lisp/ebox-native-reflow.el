@@ -107,7 +107,7 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "15:7:12"
+(defconst ebox-native-reflow-abi-version "16:7:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"

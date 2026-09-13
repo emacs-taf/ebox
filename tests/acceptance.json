@@ -810,6 +810,11 @@
       "name": "ebox-font-relative-root-width-survives-viewport-and-updates",
       "file": "tests/ebox-size-style-tests.el",
       "purpose": "Font-relative root widths retain their measured size across viewport changes and region width updates in either backend."
+    },
+    {
+      "name": "ebox-flex-composed-lines-are-not-rewrapped-by-outer-box",
+      "file": "tests/ebox-flex-tests.el",
+      "purpose": "Outer word and character wrapping preserve composed Flex item positions and independently wrapped child text across updates."
     }
   ]
 }
