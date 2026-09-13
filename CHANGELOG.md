@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Viewport updates compare the mounted local and shared scopes when proving
+  style stability, preserving retained reflow for unchanged scoped styles.
+
 - Retained intrinsic-size measurements preserve already computed scoped styles.
   Updating a scoped application no longer attempts to remount an ancestor scope
   on a detached subtree, which could fail during pagination.

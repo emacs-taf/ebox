@@ -795,6 +795,11 @@
       "name": "ebox-focus-state-clears-invisible-target-during-sibling-update",
       "file": "tests/ebox-focus-style-tests.el",
       "purpose": "An unrelated local update clears inaccessible focus and restores its base paint."
+    },
+    {
+      "name": "ebox-scoped-viewport-reflow-preserves-cascade-and-layout",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Unchanged local scopes retain viewport reflow and match fresh layout and paint across widths."
     }
   ]
 }

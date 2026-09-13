@@ -176,5 +176,27 @@ TRANSFER assigns the slot to CHILD; REVERSE reverses the physical root order."
     (should (equal "#0000ff" (ebox-shared-scope-test-color text "New")))
     (should (equal "#aabbcc" (ebox-shared-scope-test-color text "Default")))))
 
+(ert-deftest ebox-scoped-viewport-reflow-preserves-cascade-and-layout ()
+  "Unchanged local scopes retain viewport reflow and match a fresh rendering."
+  (let* ((input (ebox-build
+                 '(column :width (vw 100)
+                          :ecss (("text" :color "#ff0000"))
+                          (text :id label "Alpha Bravo Charlie Delta"))))
+         (ebox-viewport-width 160)
+         (ebox-viewport-height 20))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) input)
+      (dolist (width '(80 240 160))
+        (let ((report (ebox-rerender-buffer-with-context (current-buffer) width 20))
+              (ebox-viewport-width width))
+          (should (memq (plist-get report :projection-kind)
+                        '(viewport-reflow native-frame)))
+          (should (plist-get report :runtime-published))
+          (should-not (plist-get report :tp-scope-fallback))
+          (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                         (substring-no-properties (ebox-render input))))
+          (should (equal "#ff0000"
+                         (ebox-shared-scope-test-color (buffer-string) "Alpha"))))))))
+
 (provide 'ebox-shared-scope-tests)
 ;;; ebox-shared-scope-tests.el ends here

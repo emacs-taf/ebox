@@ -1530,8 +1530,12 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
            (width-changed (not (equal width old-width)))
            (height-changed (not (equal target-height old-height)))
            (style-context-stable-p
-            (equal (ebox-surface--stylesheet-signature)
-                   (plist-get state :stylesheet-signature)))
+            (let ((ebox-style--scopes
+                   (ebox-style-source-scopes
+                    (plist-get state :source-index)
+                    (plist-get state :root-node))))
+              (equal (ebox-surface--stylesheet-signature)
+                     (plist-get state :stylesheet-signature))))
            (axes (cond ((and width-changed height-changed) 'both)
                        (width-changed 'width)
                        (height-changed 'height)
