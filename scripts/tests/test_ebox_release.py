@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("ebox_release", Path(__file__).resolve().parents[1] / "scripts" / "ebox-release.py")
+SPEC = importlib.util.spec_from_file_location("ebox_release", Path(__file__).resolve().parents[2] / "scripts" / "ebox-release.py")
 RELEASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RELEASE)
 
