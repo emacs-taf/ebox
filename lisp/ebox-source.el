@@ -11,10 +11,15 @@
 (require 'subr-x)
 (require 'ebox-interaction)
 
+(cl-defstruct (ebox-style-scope (:constructor ebox-style--make-scope))
+  "Immutable stylesheet shared by explicitly marked roots and member sources."
+  identity stylesheet)
+
 (cl-defstruct (ebox-source-record
                (:constructor ebox-source--make-record))
   "Immutable facts supplied by one author source."
-  key id classes attributes states declarations provenance interactions ecss ecss-targets)
+  key id classes attributes states declarations provenance interactions
+  ecss ecss-targets ecss-scopes ecss-scope-roots)
 
 (cl-defstruct (ebox-source-handle
                (:constructor ebox-source--make-handle)
@@ -346,15 +351,23 @@ Functions and records are opaque values and retain identity."
 
 (cl-defun ebox-source-builder-bind
     (builder &key identity key id class selector-attributes selector-state
-             declarations provenance interactions ecss (ecss-targets t))
+             declarations provenance interactions ecss (ecss-targets t)
+             ecss-scopes ecss-scope-roots)
   "Bind normalized source facts in BUILDER and return an opaque handle.
 The returned handle contains identity only; all facts are owned by BUILDER
 until `ebox-source-builder-finish' seals them into a source index.
 ECSS-TARGETS is t for all descendants or a proper list of source identities
 eligible for this source's ECSS rules.  nil selects none.  Identities use
-`equal'; the list is snapshotted and resolved within each candidate input."
+`equal'; the list is snapshotted and resolved within each candidate input.
+ECSS-SCOPES and ECSS-SCOPE-ROOTS are lists of distinct shared scope objects,
+declaring membership and independent roots.  Both lists are snapshotted."
   (unless (or (eq ecss-targets t) (proper-list-p ecss-targets))
     (signal 'wrong-type-argument (list 'listp ecss-targets)))
+  (dolist (scopes (list ecss-scopes ecss-scope-roots))
+    (unless (and (proper-list-p scopes)
+                 (cl-every #'ebox-style-scope-p scopes)
+                 (= (length scopes) (length (delete-dups (copy-sequence scopes)))))
+      (error "Ebox shared scopes must be a list of distinct scope objects")))
   (when (and key (not (ebox-source-stable-key-p key)))
     (error "Ebox source key must be a non-nil symbol, string, or integer: %S"
            key))
@@ -385,7 +398,9 @@ eligible for this source's ECSS rules.  nil selects none.  Identities use
           :provenance (ebox-source--copy-data provenance)
           :interactions (ebox-interaction-normalize interactions)
           :ecss (ebox-source--copy-data ecss)
-          :ecss-targets (ebox-source--copy-data ecss-targets))))
+          :ecss-targets (ebox-source--copy-data ecss-targets)
+          :ecss-scopes (copy-sequence ecss-scopes)
+          :ecss-scope-roots (copy-sequence ecss-scope-roots))))
     (ebox-source--builder-add-record builder handle record)))
 
 (defun ebox-source--builder-record (builder handle)
@@ -415,6 +430,8 @@ error because one canonical forest cannot contain the same source twice."
            (declarations nil declarations-p)
            (ecss nil ecss-p)
            (ecss-targets nil ecss-targets-p)
+           (ecss-scopes nil ecss-scopes-p)
+           (ecss-scope-roots nil ecss-scope-roots-p)
            (interactions nil interactions-p)
            (provenance nil provenance-p))
   "Return `(NEW-INDEX . NEW-HANDLE)' after rebinding HANDLE in INDEX.
@@ -443,6 +460,10 @@ facts on the canonical node."
              :ecss (if ecss-p ecss (ebox-source-record-ecss record))
              :ecss-targets (if ecss-targets-p ecss-targets
                              (ebox-source-record-ecss-targets record))
+             :ecss-scopes (if ecss-scopes-p ecss-scopes
+                            (ebox-source-record-ecss-scopes record))
+             :ecss-scope-roots (if ecss-scope-roots-p ecss-scope-roots
+                                 (ebox-source-record-ecss-scope-roots record))
              :interactions (if interactions-p interactions
                              (ebox-source-record-interactions record))
              :provenance
@@ -777,6 +798,8 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
         :ecss (ebox-source--copy-data (ebox-source-record-ecss record))
         :ecss-targets (ebox-source--copy-data
                        (ebox-source-record-ecss-targets record))
+        :ecss-scopes (copy-sequence (ebox-source-record-ecss-scopes record))
+        :ecss-scope-roots (copy-sequence (ebox-source-record-ecss-scope-roots record))
         :key (ebox-source--copy-data (ebox-source-record-key record))
         :id (ebox-source--copy-data (ebox-source-record-id record))
         :classes (ebox-source--copy-data

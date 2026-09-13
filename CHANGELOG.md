@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Shared immutable style scopes can mark multiple canonical roots and explicit
+  source memberships, preserving projected content ownership without visual
+  wrappers. Rules support ECSS origins and follow retained source publication.
+
 - `ebox-canonical-box-configuration` shares provisional layout and outer
   projection between canonical producers and the DSL, deferring ECSS-tagged
   values until cascade computation.

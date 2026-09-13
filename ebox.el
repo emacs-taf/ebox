@@ -728,7 +728,7 @@
 ;; Invalid Ebox size
 ;; Catch this condition with condition-case; failed calls do not return a value.
 ;;
-;; Function: ebox-source-builder-bind (builder &key identity key id class selector-attributes selector-state declarations provenance interactions ecss (ecss-targets t))
+;; Function: ebox-source-builder-bind (builder &key identity key id class selector-attributes selector-state declarations provenance interactions ecss (ecss-targets t) ecss-scopes ecss-scope-roots)
 ;;;###autoload (autoload 'ebox-source-builder-bind "ebox" nil nil)
 ;; Bind normalized source facts in BUILDER and return an opaque handle.
 ;; The returned handle contains identity only; all facts are owned by BUILDER
@@ -739,6 +739,11 @@
 ;; wrong-type-argument.  Rendering resolves targets in the candidate input;
 ;; an absent identity is an error.  Targets outside the source's subtree do
 ;; not match.  Structural selectors and inheritance retain the canonical tree.
+;; ECSS-SCOPES and ECSS-SCOPE-ROOTS are snapshotted proper lists of distinct
+;; ebox-style-scope-create results, declaring this source's membership and
+;; mounting roots respectively. Invalid lists are errors. A root need not be
+;; a member. Shared scopes follow local :ecss scopes in cascade source order;
+;; shared scopes follow the first root's document and declaration-list order.
 ;;
 ;; Function: ebox-source-builder-create ()
 ;;;###autoload (autoload 'ebox-source-builder-create "ebox" nil nil)
@@ -773,6 +778,19 @@
 ;;;###autoload (autoload 'ebox-style-compile-declarations "ebox" nil nil)
 ;; Compile Ebox PLIST aliases to ECSS schema declarations.
 ;; When STRICT is non-nil, reject properties outside the Ebox style domain.
+;;
+;; Function: ebox-style-scope-create (rules &key (origin 'author))
+;;;###autoload (autoload 'ebox-style-scope-create "ebox" nil nil)
+;; Snapshot ordered rule data as an immutable shared scope. RULES use the same
+;; syntax and schema as ebox-style-compile-rules; ORIGIN follows ECSS origins.
+;; Invalid input signals an error without changing other scopes. Scope objects
+;; are opaque, have no mutators or runtime resources, and may be shared safely
+;; by independent canonical inputs. Source :ecss-scopes lists declare membership;
+;; :ecss-scope-roots lists mark independent mounting roots. Each root limits
+;; rules to members within its subtree; root matching requires membership too.
+;; &/:scope address each marked root; ordinary selectors address descendants.
+;; Without a root in the input, the scope contributes no rules. Tree relations
+;; and inheritance remain unchanged. See the manual for composition examples.
 ;;
 ;; Function: ebox-style-compile-rules (rules)
 ;;;###autoload (autoload 'ebox-style-compile-rules "ebox" nil nil)

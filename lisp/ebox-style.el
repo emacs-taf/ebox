@@ -1385,6 +1385,50 @@ Grid track wrappers are traversed after their structural validator succeeds."
 (defvar ebox-style--scope-source-signatures (make-hash-table :test 'eq :weakness 'key)
   "Immutable source identity, rule, and membership facts per mounted scope.")
 
+(cl-defun ebox-style-scope-create (rules &key (origin 'author))
+  "Create an immutable shared scope from ordered RULES at ORIGIN.
+RULES use the same syntax and Ebox schema as `ebox-style-compile-rules'.
+Attach the returned object to source bindings through `:ecss-scopes' for
+membership and `:ecss-scope-roots' for roots.  Each root mounts independently;
+only members within that root can receive rules.  No roots means no rules."
+  (let ((sheet (ecss-stylesheet-create)))
+    (ecss-stylesheet-declare-layers sheet nil origin)
+    (dolist (rule (ebox-style-compile-rules rules))
+      (ecss-stylesheet-add-rule sheet ebox-style-schemas (car rule) (cdr rule)
+                                :origin origin))
+    (ebox-style--make-scope :identity (make-symbol "ebox-style-scope")
+                            :stylesheet sheet)))
+
+(defun ebox-style--shared-source-scopes (source-index)
+  "Mount shared scope roots and memberships from SOURCE-INDEX."
+  (let ((roots (make-hash-table :test #'eq))
+        (members (make-hash-table :test #'eq))
+        order scopes)
+    (dolist (handle (ebox-source-index-handles source-index))
+      (let ((record (ebox-source--index-record source-index handle)))
+        (dolist (scope (ebox-source-record-ecss-scopes record))
+          (push handle (gethash scope members)))
+        (dolist (scope (ebox-source-record-ecss-scope-roots record))
+          (unless (gethash scope roots) (push scope order))
+          (push handle (gethash scope roots)))))
+    (dolist (description (nreverse order))
+      (let* ((targets (nreverse (gethash description members)))
+             (subjects (mapcar (lambda (handle)
+                                 (ebox-source--index-subject source-index handle))
+                               targets))
+             (identities (mapcar #'ebox-source--handle-id-view targets)))
+        (dolist (handle (nreverse (gethash description roots)))
+          (let ((scope (ecss-scope-create
+                        (ebox-source--index-subject source-index handle)
+                        (ebox-style-scope-stylesheet description)
+                        :subjects subjects)))
+            (puthash scope
+                     (list (ebox-style-scope-identity description)
+                           (ebox-source--handle-id-view handle) identities)
+                     ebox-style--scope-source-signatures)
+            (push scope scopes)))))
+    (nreverse scopes)))
+
 (defun ebox-style-source-scopes (source-index &optional root)
   "Mount SOURCE-INDEX local styles on its canonical selector subjects."
   (when (and source-index (or (ebox-source--index-subjects source-index) root))
@@ -1395,38 +1439,42 @@ Grid track wrappers are traversed after their structural validator succeeds."
     (let* ((missing (make-symbol "missing"))
            (cached (gethash source-index ebox-style--scope-cache missing)))
       (if (not (eq cached missing)) cached
-        (let (subjects scopes)
+        (let (subjects scopes shared-p)
           (dolist (handle (ebox-source-index-handles source-index))
-            (when-let* ((record (ebox-source--index-record source-index handle))
-                        (rules (ebox-source-record-ecss record)))
-              (let ((sheet (ecss-stylesheet-create))
-                    (subject (ebox-source--index-subject source-index handle)))
-                (unless subject (error "Local ECSS requires indexed subjects"))
-                (dolist (rule rules)
-                  (ecss-stylesheet-add-rule
-                   sheet ebox-style-schemas (car rule) (cdr rule)))
-                (push (ecss-scope-create
-                       subject sheet
-                       :subjects
-                       (let ((targets (ebox-source-record-ecss-targets record)))
-                         (if (eq targets t) t
-                           (when (and targets (null subjects))
-                             (setq subjects (make-hash-table :test #'equal))
-                             (dolist (target (ebox-source-index-handles source-index))
-                               (puthash (ebox-source--handle-id-view target)
-                                        (ebox-source--index-subject source-index target)
-                                        subjects)))
-                           (mapcar
-                            (lambda (identity)
-                              (or (gethash identity subjects)
-                                  (error "Ebox ECSS target is absent: %S" identity)))
-                            targets))))
-                      scopes)
-                (puthash (car scopes)
-                         (list (ebox-source--handle-id-view handle)
-                               rules (ebox-source-record-ecss-targets record))
-                         ebox-style--scope-source-signatures))))
-          (setq scopes (nreverse scopes))
+            (when-let* ((record (ebox-source--index-record source-index handle)))
+              (when (ebox-source-record-ecss-scope-roots record)
+                (setq shared-p t))
+              (when-let* ((rules (ebox-source-record-ecss record)))
+                (let ((sheet (ecss-stylesheet-create))
+                      (subject (ebox-source--index-subject source-index handle)))
+                  (unless subject (error "Local ECSS requires indexed subjects"))
+                  (dolist (rule rules)
+                    (ecss-stylesheet-add-rule
+                     sheet ebox-style-schemas (car rule) (cdr rule)))
+                  (push (ecss-scope-create
+                         subject sheet
+                         :subjects
+                         (let ((targets (ebox-source-record-ecss-targets record)))
+                           (if (eq targets t) t
+                             (when (and targets (null subjects))
+                               (setq subjects (make-hash-table :test #'equal))
+                               (dolist (target (ebox-source-index-handles source-index))
+                                 (puthash (ebox-source--handle-id-view target)
+                                          (ebox-source--index-subject source-index target)
+                                          subjects)))
+                             (mapcar
+                              (lambda (identity)
+                                (or (gethash identity subjects)
+                                    (error "Ebox ECSS target is absent: %S" identity)))
+                              targets))))
+                        scopes)
+                  (puthash (car scopes)
+                           (list (ebox-source--handle-id-view handle)
+                                 rules (ebox-source-record-ecss-targets record))
+                           ebox-style--scope-source-signatures)))))
+          (setq scopes (nconc (nreverse scopes)
+                              (and shared-p
+                                   (ebox-style--shared-source-scopes source-index))))
           (puthash source-index scopes ebox-style--scope-cache)
           scopes)))))
 

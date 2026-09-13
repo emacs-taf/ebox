@@ -605,6 +605,36 @@
       "name": "ebox-canonical-configuration-preserves-deferred-layout-values",
       "file": "tests/ebox-cascade-values-tests.el",
       "purpose": "Canonical Box configuration shares DSL layout behavior, defers ECSS values and rejects invalid canonical inputs."
+    },
+    {
+      "name": "ebox-shared-scopes-preserve-multiple-roots-and-slot-ownership",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "One scope styles multiple trees and projected content without piercing fallback."
+    },
+    {
+      "name": "ebox-shared-scopes-membership-updates-and-snapshots",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Ownership changes repaint retained output while snapshots retain old membership."
+    },
+    {
+      "name": "ebox-shared-scopes-roots-and-membership-are-independent",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Root matching requires membership, while unanchored slices contribute no rules."
+    },
+    {
+      "name": "ebox-shared-scopes-use-ecss-origin-and-source-order",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Theme defaults and author scopes retain ECSS precedence and explicit ordering."
+    },
+    {
+      "name": "ebox-shared-scopes-reject-invalid-input",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Invalid rules, origins and source membership never produce usable scopes."
+    },
+    {
+      "name": "ebox-shared-scopes-compose-unanchored-fragments",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Canonical fragment import preserves membership until composition supplies an enclosing scope root."
     }
   ]
 }

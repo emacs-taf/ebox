@@ -610,6 +610,53 @@ nil 禁用该作用域的规则。绑定时保存列表快照，渲染时在候�
                 (list node) (ebox-source-builder-finish builder))))
 ```
 
+## 共享样式作用域
+
+框架通过 `ebox-style-scope-create` 创建不可变作用域描述，输入仍是各样式入口
+共用的有序规则列表。可选 `:origin` 使用 ECSS 来源语义，因此主题可以提供 UA
+默认值，组件规则仍作为 author 声明。非法规则或来源会报错，不改变已有描述。
+描述不拥有 buffer 或运行时资源，无需释放；规则输入被快照保存，修改规则时创建
+新描述。
+
+每个规范 source 通过 `:ecss-scopes` 列出所属作用域，通过 `:ecss-scope-roots`
+列出自身作为哪些作用域的根。两者都接受不重复描述对象的 proper list，非法输入
+在绑定时报错。根与成员身份相互独立：成员只有位于某个已标记根的子树内才能接收
+规则；根自身也必须是成员，才能接收 `&` 或 `:scope` 规则。普通选择器匹配严格
+后代。一个描述可有多个根，每个根独立挂载；结构关系和继承仍使用规范节点树。
+
+父组件提供的 slot 可以在子组件根下携带父描述，fallback 携带子描述。动态内容
+携带已有描述即可，无需改写祖先上的目标列表。输入中没有根的描述不贡献规则，
+因此可以先组合独立片段，再接入其外部根。规范导入、保留更新和快照均保留这些
+事实，失败候选保留已提交归属。应用之间可以共享描述中的不可变规则，不共享
+live 状态。
+
+在层叠 source order 中，共享作用域排在 source 局部 `:ecss` 作用域之后。
+共享描述之间按首个根的文档顺序、该根列表内的顺序排序；specificity、origin、
+importance 和作用域距离仍遵循 ECSS。两个根可共享展示规则，无需为作用域增加
+可见节点：
+
+```elisp
+(require 'ebox)
+(let* ((scope (ebox-style-scope-create '(("&" :color "#ff0000"))))
+       (builder (ebox-source-builder-create))
+       (children
+        (mapcar
+         (lambda (label)
+           (ebox-text-create
+            :value label
+            :source-handle (ebox-source-builder-bind
+                            builder :ecss-scopes (list scope)
+                            :ecss-scope-roots (list scope))
+            :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))
+         '("First root" "Second root")))
+       (root (ebox-box-create
+              :layout (ebox-column-layout-create) :children children
+              :source-handle (ebox-source-builder-bind builder)
+              :owned-facts (ebox-canonical-facts-from-declarations 'column nil))))
+  (ebox-render (ebox-canonical-input-create
+                (list root) (ebox-source-builder-finish builder))))
+```
+
 ## 需要计算的声明值
 
 程序构造的样式可使用 `ecss-important`、`ecss-wide-value` 和 `ecss-var`。

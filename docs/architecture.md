@@ -37,6 +37,13 @@ fields through one Ebox-owned declaration projection. It filters deferred values
 and caches concrete configurations without taking ownership of source declarations.
 The complete declarations remain inputs to cascade.
 
+Shared author descriptions are immutable stylesheet snapshots. Source records
+carry member and root markers; the candidate source index groups those markers
+into ECSS mounts. Multiple roots do not require synthetic visual nodes. Membership
+is candidate-local, so slot insertion and removal change ownership through ordinary
+source deltas. Cascade signatures include description identity, mounting source and
+member identities. Unanchored descriptions remain inert until composed with a root.
+
 ## Commit lifecycle
 
 ```text

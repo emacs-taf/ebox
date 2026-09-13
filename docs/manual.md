@@ -712,6 +712,58 @@ owned facts from them so deferred values participate in rendering and updates.
                 (list node) (ebox-source-builder-finish builder))))
 ```
 
+## Shared author scopes
+
+Frameworks create immutable scope descriptions with `ebox-style-scope-create`.
+The input is the same ordered rule list as other style entries; optional `:origin`
+uses ECSS origins, so a theme may provide UA defaults while component rules remain
+author declarations. Invalid rules or origins signal errors without modifying
+existing descriptions. Descriptions own no buffers or runtime resources and need
+no disposal. Use a new description to change rules; source data is snapshotted.
+
+Each canonical source lists its memberships in `:ecss-scopes` and its mounting
+roots in `:ecss-scope-roots`. Both accept proper lists of distinct descriptions;
+invalid lists fail during binding. Roots and members are independent. A member
+receives rules only within a marked root's subtree; the root itself must also be
+a member to receive `&` or `:scope` rules. Ordinary selectors address strict
+descendants. A description may have several roots, each mounted independently.
+Structural relationships and inheritance remain those of the canonical tree.
+
+A parent-owned slot may carry its parent's description below a child component's
+root while fallback carries the child's description. Dynamic content can carry
+the existing description without rewriting target lists on ancestors. Descriptions
+with no root in an input contribute no rules, allowing detached slices to be
+assembled before their enclosing roots. Canonical import, retained updates and
+snapshots preserve these facts. Failed candidates preserve committed ownership.
+Sharing a description between applications shares immutable rules, not live state.
+
+Shared scopes follow source-local `:ecss` scopes in cascade source order. Among
+shared descriptions, the first marked root's document order and its list order
+determine source order. Specificity, origin, importance and scope proximity retain
+ECSS precedence. Two roots can share presentation without adding a visual node:
+
+```elisp
+(require 'ebox)
+(let* ((scope (ebox-style-scope-create '(("&" :color "#ff0000"))))
+       (builder (ebox-source-builder-create))
+       (children
+        (mapcar
+         (lambda (label)
+           (ebox-text-create
+            :value label
+            :source-handle (ebox-source-builder-bind
+                            builder :ecss-scopes (list scope)
+                            :ecss-scope-roots (list scope))
+            :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))
+         '("First root" "Second root")))
+       (root (ebox-box-create
+              :layout (ebox-column-layout-create) :children children
+              :source-handle (ebox-source-builder-bind builder)
+              :owned-facts (ebox-canonical-facts-from-declarations 'column nil))))
+  (ebox-render (ebox-canonical-input-create
+                (list root) (ebox-source-builder-finish builder))))
+```
+
 ## Computed declaration values
 
 Programmatic style inputs can use `ecss-important`, `ecss-wide-value`, and
