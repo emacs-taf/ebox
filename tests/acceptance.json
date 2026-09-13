@@ -815,6 +815,11 @@
       "name": "ebox-flex-composed-lines-are-not-rewrapped-by-outer-box",
       "file": "tests/ebox-flex-tests.el",
       "purpose": "Outer word and character wrapping preserve composed Flex item positions and independently wrapped child text across updates."
+    },
+    {
+      "name": "ebox-nested-scroll-preserves-independent-publication-and-cleanup",
+      "file": "tests/ebox-scroll-tests.el",
+      "purpose": "Independent nested scroll owners preserve offsets after rejected removal, clamp on shorter content and clear state on unmount, including optional native fallback."
     }
   ]
 }

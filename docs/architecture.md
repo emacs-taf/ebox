@@ -118,12 +118,18 @@ through another renderer. General preparation and surface-plan counters in the
 shared evaluator verify the bypass separately from TP bookkeeping and buffer
 write time; this path does not establish constant cost in total object count.
 
+Native frame publication currently installs one complete scroll producer owned
+by the actual root. Active nested scroll owners use the Elisp fallback before
+TP publication: visible fragment spans alone cannot supply their full content,
+effective offsets and independent scroll state. A loaded module therefore does
+not imply native publication for every scroll topology.
+
 Scroll publication still goes through TP and the Ebox participant. Rejection
 preserves the old text, properties, offsets, raw and rendered caches, source
-nodes, indexes, objects, mounts and report. The focused regression targets are
-`make test`, `make test`, `make test`
-and `make test`; the playground scroll evaluator checks fresh-render
-parity and distinguishes cached motion from actual prefix extension.
+nodes, indexes, objects, mounts and report. `make test` covers independent nested
+owners, rejected removal, offset clamping after content shrinks and unmount
+cleanup. The playground scroll evaluator checks fresh-render parity and
+distinguishes cached motion from actual prefix extension.
 
 ## Identity and coordinates
 

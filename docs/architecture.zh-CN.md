@@ -101,11 +101,14 @@ Nested owner 在 allocation 不变且通过证明时，可以只替换自己的 
 通用准备与 surface-plan 计数分别验证这两项工作已跳过；TP bookkeeping 与实际
 buffer 写入另行测量。该路径并不保证耗时与总 object 数无关。
 
+原生 frame 发布目前安装一个由实际根节点拥有的完整 scroll producer。活动的嵌套
+滚动容器在 TP 发布前使用 Elisp 回退：只有可见片段的 span，不能提供各容器的完整
+内容、实际 offset 和独立滚动状态。因此，已加载原生模块不代表所有滚动拓扑均原生发布。
+
 Scroll publication 仍经过 TP 与 Ebox participant。发布失败时，旧文本、属性、offset、
-raw/rendered cache、source node、index、object、mount 和 report 均保持不变。聚焦回归
-入口为 `make test`、`make test`、`make test`
-和 `make test`；playground scroll evaluator 验证 fresh-render parity，
-并区分缓存滚动与实际 prefix 扩展。
+raw/rendered cache、source node、index、object、mount 和 report 均保持不变。
+`make test` 覆盖独立嵌套容器、拒绝移除、内容缩短后的 offset 修正和卸载清理；
+playground scroll evaluator 验证 fresh-render parity，并区分缓存滚动与实际 prefix 扩展。
 
 ## Identity 与坐标
 
