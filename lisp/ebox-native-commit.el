@@ -32,7 +32,10 @@
                   "ebox-native-reflow" (session))
 (declare-function ebox-native-reflow-frame-fragments
                   "ebox-native-reflow" (frame))
-(declare-function ebox--literal-root-pixel-width "ebox" (box))
+(declare-function ebox--size-pixels "ebox-layout"
+                  (value &optional box axis percent-base))
+(declare-function ebox-size-value-p "ebox-size" (value &optional allow-negative allow-percent))
+(declare-function ebox-size-dependencies "ebox-size" (value))
 (declare-function ebox-get "ebox" (box key))
 (declare-function ebox-put "ebox" (box key value))
 (declare-function ebox--scroll-set-state "ebox" (region-id state))
@@ -323,15 +326,13 @@ new session with the same bounded configuration used by retained frames."
 (defun ebox-native-commit-attach-confirmed-base (previous-state state)
   "Attach PREVIOUS-STATE's confirmed geometry identity to candidate STATE."
   (when (and previous-state (plist-get state :native-sync-confirmed-p))
-    (let* ((root (plist-get previous-state :root-node))
-           (box (ebox-native-commit--root-box root)))
-      (plist-put state :native-base-viewport-width
-                 (plist-get previous-state :viewport-width))
-      (plist-put state :native-base-viewport-height
-                 (plist-get previous-state :viewport-height))
-      (plist-put state :native-base-root-width
-                 (or (and box (ebox--literal-root-pixel-width box))
-                     (plist-get previous-state :viewport-width)))))
+    (plist-put state :native-base-viewport-width
+               (plist-get previous-state :viewport-width))
+    (plist-put state :native-base-viewport-height
+               (plist-get previous-state :viewport-height))
+    (plist-put state :native-base-root-width
+               (plist-get (plist-get previous-state :native-render-frame)
+                          :root-width)))
   state)
 
 (defun ebox-native-commit-prepare-viewport-continuity
@@ -532,14 +533,29 @@ new session with the same bounded configuration used by retained frames."
        (plist-get state :region-box-count-table)))
     table))
 
+(defun ebox-native-commit--root-frame-width (box viewport-width)
+  "Resolve BOX's declared static width in its font context for one frame.
+This is execution geometry, not a proof that the width is font-independent."
+  (let* ((width (and box (ebox-get box :width)))
+         (resolved
+          (cond
+           ((numberp width) width)
+           ((and (ebox-size-value-p width)
+                 (not (cl-intersection
+                       '(percent viewport-width viewport-height)
+                       (ebox-size-dependencies width))))
+            (ebox--size-pixels width box 'width)))))
+    (if (and (numberp resolved) (= resolved (floor resolved)))
+        (floor resolved)
+      viewport-width)))
+
 (defun ebox-native-commit--frame-spec (state node)
   "Return the exact native execution frame for STATE and NODE."
   (let* ((viewport-width (plist-get state :viewport-width))
          (viewport-height (plist-get state :viewport-height))
          (root-box (ebox-native-commit--root-box node))
          (root-width
-          (or (and root-box (ebox--literal-root-pixel-width root-box))
-              viewport-width)))
+          (ebox-native-commit--root-frame-width root-box viewport-width)))
     (when (and (integerp viewport-width) (> viewport-width 0)
                (integerp viewport-height) (> viewport-height 0)
                (integerp root-width) (> root-width 0))
@@ -689,6 +705,7 @@ publication transaction can still roll back."
                         (plist-get result :reuse-mount-projection)
                         :fragment-style-delta fragment-style-delta))
               result)))
+      (setq frame (plist-put frame :root-width (plist-get frame-spec :root-width)))
       (plist-put state :native-sync-pending
                  (list :generation generation :key 1
                        :confirmed-revision

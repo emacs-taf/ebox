@@ -805,6 +805,11 @@
       "name": "ebox-flex-minima-preserve-overflow-semantics-in-both-backends",
       "file": "tests/ebox-css-flex-grid-tests.el",
       "purpose": "Row and column explicit and automatic Flex minima preserve visible, hidden and scroll overflow behavior, with identical observable output when the optional native module is enabled or unavailable."
+    },
+    {
+      "name": "ebox-font-relative-root-width-survives-viewport-and-updates",
+      "file": "tests/ebox-size-style-tests.el",
+      "purpose": "Font-relative root widths retain their measured size across viewport changes and region width updates in either backend."
     }
   ]
 }

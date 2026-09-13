@@ -149,5 +149,25 @@
       (should (string-match-p (nth 2 case) message))
       (should (string-match-p "allowed units:" message)))))
 
+(ert-deftest ebox-font-relative-root-width-survives-viewport-and-updates ()
+  "A root's font-relative width stays independent of its viewport."
+  (let ((ebox-viewport-width 160)
+        (ebox-viewport-height 20)
+        (unit (ebox-string-pixel-width "0")))
+    (dolist (width '((ch 8) (calc (+ (ch 4) (ch 4)))))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-build `(box :id root :width ,width "Alpha")))
+        (should (= (* 8 unit) (ebox-string-pixel-width (buffer-string))))
+        (dolist (viewport '(240 80))
+          (ebox-rerender-buffer-with-context (current-buffer) viewport 20)
+          (should (= (* 8 unit) (ebox-string-pixel-width (buffer-string))))))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-build `(box :id root :width ,width "Alpha")))
+        (dolist (columns '(12 6))
+          (ebox-region-update "root" :width (list 'ch columns))
+          (should (= (* columns unit) (ebox-string-pixel-width (buffer-string)))))))))
+
 (provide 'ebox-size-style-tests)
 ;;; ebox-size-style-tests.el ends here

@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Native frames resolve font-relative root widths in the root font context
+  instead of substituting the viewport width. Retained frames keep their exact
+  accepted root width as the base for subsequent publication.
+
 - Native Flex layout accepts supported explicit main-axis minima, including
   zero, and follows the same overflow-dependent automatic minimum and size
   caps as Elisp. Rebuild the optional module for ABI `15:7:12` and restart Emacs; older modules
