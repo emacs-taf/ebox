@@ -405,7 +405,10 @@ map、结构换行和不可见文本不构成目标。框架不移动 point 或�
 负整数允许显式设置焦点，但跳过导航；nil 或省略不创建停靠点。`:disabled t` 排除该节点
 的焦点，并阻断自身或继承的 keymap。两个输入仅约束声明节点；子节点仍可独立声明
 启用的 keymap。用 `:disabled nil` 恢复原来声明的 keymap，通过普通 `ebox-region-update`
-或 canonical commit 发布。这些输入暂不产生 selector 伪状态。
+或 canonical commit 发布。同一禁用事实派生供选择器查询与 cascade 使用的 `:disabled`，
+包括后代与兄弟规则；禁用父节点不会将子节点标记为禁用。作者 `:states`（typed 输入的
+`:selector-state`）可以声明自定义状态，但拒绝 `disabled`，应改用 `:disabled t`。
+焦点、悬停与按下状态接入 cascade 仍待完成。
 
 `ebox-focus-next` / `ebox-focus-previous` 操作逻辑焦点，第二个可选参数允许循环。
 `ebox-focus-first` 选择第一个有效停靠点；没有停靠点时保持原焦点和 point。

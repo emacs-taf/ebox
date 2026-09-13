@@ -6966,8 +6966,8 @@ Each immutable source record is resolved once for this node pair."
          (and new-record (ebox-source-record-attributes new-record)))
         (record-change
          :selector-state
-         (and old-record (ebox-source-record-states old-record))
-         (and new-record (ebox-source-record-states new-record)))
+         (and old-record (ebox-source--record-selector-states old-record))
+         (and new-record (ebox-source--record-selector-states new-record)))
         (record-change
          :ecss
          (and old-record (ebox-source-record-ecss old-record))

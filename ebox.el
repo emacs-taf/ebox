@@ -97,6 +97,8 @@
 ;; Function: ebox-build (dsl)
 ;;;###autoload (autoload 'ebox-build "ebox" nil nil)
 ;; Compile an Ebox author form into one opaque canonical input.
+;; :disabled t derives the disabled selector state. Author :states may contain
+;; custom states, but declaring disabled there signals an error.
 ;;
 ;; Function: ebox-byte-compile ()
 ;;;###autoload (autoload 'ebox-byte-compile "ebox" nil t)
@@ -187,7 +189,8 @@
 ;; :help-echo, :pointer, :hover-style, :keymap, :tab-index and :disabled.
 ;; Tab index is nil or an integer; nonnegative values create navigation stops.
 ;; Disabled is nil or t; t excludes focus and blocks this node's own or inherited
-;; keymap. Both inputs are local to the node; explicit child capabilities remain
+;; keymap and derives the disabled selector state for queries and cascade.
+;; Both inputs are local to the node; explicit child capabilities remain
 ;; independent. Pass the same interactions to its source-builder binding.
 ;;
 ;; Function: ebox-canonical-input-create (nodes source-index &optional range-anchors)
@@ -809,6 +812,9 @@
 ;; Bind normalized source facts in BUILDER and return an opaque handle.
 ;; The returned handle contains identity only; all facts are owned by BUILDER
 ;; until `ebox-source-builder-finish' seals them into a source index.
+;; SELECTOR-STATE contains authored state tokens. The disabled token is reserved:
+;; supply :disabled t in INTERACTIONS instead; authored disabled signals an error.
+;; Interaction-derived states participate in queries and cascade in each candidate.
 ;; ECSS-TARGETS is t (default) for all descendants or a proper list of source
 ;; identities eligible for this source's ECSS rules.  nil selects none.  The
 ;; identities use equal and are snapshotted.  Non-list input signals

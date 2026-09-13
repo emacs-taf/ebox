@@ -472,7 +472,11 @@ from focus and suppresses its own or inherited keymap. These two inputs are
 local to the declaring node; a child may declare an enabled map independently.
 Reenable with `:disabled nil`; the original declared keymap becomes effective
 again. Publish both inputs through ordinary `ebox-region-update` or canonical
-commits. Disabled and focus inputs do not yet produce selector pseudo-states.
+commits. The same disabled fact derives `:disabled` for selector queries and
+cascade, including descendant and sibling rules. Disabling a parent does not
+mark its children disabled. Authored `:states` (or typed `:selector-state`)
+accept custom states, but reject `disabled`; declare `:disabled t` instead.
+Focus, hover and pressed state integration into the cascade remains pending.
 
 Use `ebox-focus-next` / `ebox-focus-previous` for logical navigation. The optional
 second argument enables cycling. `ebox-focus-first` selects the first eligible

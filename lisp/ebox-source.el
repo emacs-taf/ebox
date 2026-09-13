@@ -356,6 +356,8 @@ Functions and records are opaque values and retain identity."
   "Bind normalized source facts in BUILDER and return an opaque handle.
 The returned handle contains identity only; all facts are owned by BUILDER
 until `ebox-source-builder-finish' seals them into a source index.
+SELECTOR-STATE accepts authored tokens except disabled, which is derived from
+INTERACTIONS :disabled. Declaring disabled as an authored state is an error.
 ECSS-TARGETS is t for all descendants or a proper list of source identities
 eligible for this source's ECSS rules.  nil selects none.  Identities use
 `equal'; the list is snapshotted and resolved within each candidate input.
@@ -382,6 +384,8 @@ declaring membership and independent roots.  Both lists are snapshotted."
   (unless (ebox-source-selector-states-p selector-state)
     (error "Ebox source selector state must be a token or proper token list: %S"
            selector-state))
+  (when (member "disabled" (ebox-source--metadata-tokens selector-state))
+    (error "Ebox disabled selector state is derived from :disabled interaction input"))
   (unless (ebox-source-selector-attributes-p selector-attributes)
     (error "Ebox source selector attributes must be an alist: %S"
            selector-attributes))
@@ -480,7 +484,11 @@ facts on the canonical node."
                (list (cons handle new-handle))))
              (node-subjects (ebox-source--index-node-subjects index))
              (selector-stable-p
-              (not (or id-p class-p attributes-p states-p)))
+              (not (or id-p class-p attributes-p states-p
+                       (not (equal
+                             (ebox-source--record-selector-states record)
+                             (ebox-source--record-selector-states
+                              (ebox-source--index-record incoming new-handle)))))))
              (subject (and selector-stable-p node-subjects
                            (ebox-source--table-value node-subjects handle))))
         (cond
@@ -769,10 +777,17 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
   "Return HANDLE's detached selector states in candidate INDEX."
   (ebox-source--copy-data (ebox-source--index-states-view index handle)))
 
+(defun ebox-source--record-selector-states (record)
+  "Return authored and interaction-derived selector states for RECORD."
+  (let ((states (ebox-source-record-states record)))
+    (if (plist-get (ebox-source-record-interactions record) :disabled)
+        (cons "disabled" states)
+      states)))
+
 (defun ebox-source--index-states-view (index handle)
   "Return HANDLE's private immutable selector states view in INDEX."
   (when-let* ((record (ebox-source--index-record index handle)))
-    (ebox-source-record-states record)))
+    (ebox-source--record-selector-states record)))
 
 (defun ebox-source-index-declarations (index handle)
   "Return HANDLE's detached canonical declarations from candidate INDEX."

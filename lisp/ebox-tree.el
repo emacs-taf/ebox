@@ -1082,7 +1082,7 @@ candidate runtime index agree."
                       (ebox-tree--selector-attribute-value (cdr attribute)))
                      attributes))
              (nreverse attributes)))
-   :states (ebox-source-record-states record)))
+   :states (ebox-source--record-selector-states record)))
 
 (defun ebox-tree-node-subject (source-index node)
   "Return SOURCE-INDEX's retained ECSS selector subject for NODE."

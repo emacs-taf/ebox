@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- `:disabled` now supplies both interaction protection and the `:disabled`
+  selector state, including retained cascade updates and rejected publication.
+  Move authored `:states disabled` or `:selector-state '(disabled)` to the
+  `:disabled t` interaction input; authored disabled states now signal an error.
+
 - Mounted `ebox-buffer-mode` now owns cyclic TAB/backtab navigation and
   RET/return activation. Rename customizations of `ebox-scroll-map` to
   `ebox-buffer-mode-map`; the old map is removed.

@@ -136,8 +136,12 @@ and structural text cannot become activation targets. Commands run only after
 ownership validation, and callback errors remain observable.
 
 Logical focus has one buffer-local retained node owner. Published source
-interaction facts supply tab order and disabled status; they do not yet feed
-selector states. A lazily built navigation vector and rank index are derived
+interaction facts supply tab order and disabled status. Source records keep authored
+states separate; subject construction derives `disabled` from the interaction fact.
+Queries, cascade and incremental invalidation consume that same derived view;
+rebinding retains raw authored states and invalidates subjects when disabled changes.
+Focus, hover and pressed state integration into the cascade remains pending.
+A lazily built navigation vector and rank index are derived
 once per publication, with visibility checked at use. Navigation does not
 rescan and sort every Host on each key. New publication invalidates the derived
 index. Source identity takes precedence over reused layout nodes; retained

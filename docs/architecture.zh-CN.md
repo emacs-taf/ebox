@@ -180,7 +180,10 @@ narrowing 与不可见性，不安装按键绑定、焦点注册表或应用状�
 回调错误保持可观察，不另建目标注册表。
 
 逻辑焦点只有一个 buffer-local retained node owner。发布后的 source interaction facts
-提供 tab 顺序与禁用状态，暂不进入 selector states。每次发布后延迟重建导航向量与 rank
+提供 tab 顺序与禁用状态。Source record 分别保存作者状态与交互事实，subject 构造从
+交互事实派生 `disabled`。查询、cascade 和增量失效读取同一派生视图；rebind 保留原始
+作者状态，禁用变化会使 subject 失效。焦点、悬停和按下状态接入 cascade 仍待完成。
+每次发布后延迟重建导航向量与 rank
 索引，使用时检查可见性；每次导航不再扫描、排序全部 Host。稳定 runtime identity
 加上非 nil 兄弟 key，连接 keyed DSL commit 中新生成的 source handle；仍存在的显式
 source identity 优先于复用的绘制节点。Region 更新同时比较 source interaction facts

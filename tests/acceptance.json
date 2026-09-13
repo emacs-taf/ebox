@@ -720,6 +720,21 @@
       "name": "ebox-native-keyboard-follows-manual-point-and-committed-map-replacement",
       "file": "tests/ebox-focus-tests.el",
       "purpose": "Manual point selects another native target, and retained updates replace focused commands."
+    },
+    {
+      "name": "ebox-disabled-state-drives-pure-and-retained-cascade",
+      "file": "tests/ebox-selector-tests.el",
+      "purpose": "Disabled facts invalidate own, descendant and sibling rules without a keymap."
+    },
+    {
+      "name": "ebox-disabled-state-rejected-commit-restores-style-and-focus",
+      "file": "tests/ebox-selector-tests.el",
+      "purpose": "Rejected state publication restores selectors, paint and focus together."
+    },
+    {
+      "name": "ebox-disabled-state-rejects-authored-duplicates",
+      "file": "tests/ebox-selector-tests.el",
+      "purpose": "Only interaction input may declare disabled in DSL and typed input."
     }
   ]
 }
