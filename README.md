@@ -164,7 +164,10 @@ and the Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/geeki
 
 Nodes can declare `:tab-index` and `:disabled`. Ebox owns buffer-local logical
 focus, optional cyclic navigation, update retention and rollback through the
-`ebox-focus` family. See the interaction guide for point and lifetime rules.
+`ebox-focus` family. Mounted `ebox-buffer-mode` provides TAB/backtab cycling
+and RET/return activation through `ebox-buffer-mode-map`. Generated activation
+commands respect focus; mouse commands use the clicked target. See the
+interaction guide for point and lifetime rules.
 
 ## Render and update
 

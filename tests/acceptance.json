@@ -27,7 +27,7 @@
       "purpose": "A typed Text leaf must not enter legacy Box geometry measurement."
     },
     {
-      "name": "ebox-scroll-map-keeps-wheel-on-event-aware-handler",
+      "name": "ebox-buffer-mode-keeps-event-aware-wheel-bindings",
       "file": "tests/ebox-core-render-tests.el",
       "purpose": "Mouse wheel bindings should use event-aware handlers, not line fallbacks."
     },
@@ -700,6 +700,26 @@
       "name": "ebox-focus-prefers-source-identity-over-reused-layout-nodes",
       "file": "tests/ebox-focus-tests.el",
       "purpose": "Source identity follows unkeyed reorder, and a replacement cannot acquire focus."
+    },
+    {
+      "name": "ebox-native-activation-shares-focus-with-position-and-mouse-selection",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Keyboard and logical activation respect focus; explicit positions and mouse use the hit target."
+    },
+    {
+      "name": "ebox-native-activation-keeps-focus-barriers-and-custom-bindings",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "A callbackless focused parent blocks activation while custom bindings remain native."
+    },
+    {
+      "name": "ebox-buffer-mode-provides-cyclic-focus-and-releases-bindings",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Mounted mode supplies cyclic TAB navigation and default RET, then releases them on unmount."
+    },
+    {
+      "name": "ebox-native-keyboard-follows-manual-point-and-committed-map-replacement",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Manual point selects another native target, and retained updates replace focused commands."
     }
   ]
 }

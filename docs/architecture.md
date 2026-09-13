@@ -152,6 +152,15 @@ if that candidate is still current. Manual point movement preserves a clamped
 numeric position. Unmount clears focus and the derived index. This state does
 not own application values or select windows.
 
+The mounted buffer mode owns the shared navigation and activation bindings.
+Native generated activation commands consult the live focus owner at point;
+explicit position activation and mouse callbacks retain physical targeting.
+Effective maps resolve through source ownership and ancestor nil barriers.
+A dynamic dispatch guard prevents a generated command from reentering target
+selection after `ebox-activate` has already chosen the committed command.
+Custom native bindings remain native commands. No consumer focus or input
+mode is needed to activate overlapping controls correctly.
+
 ## Verification
 
 Every update path must prove:

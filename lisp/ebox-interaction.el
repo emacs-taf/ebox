@@ -44,12 +44,18 @@
     :text-decoration-color :text-decoration-style)
   "Geometry-independent Ebox declarations accepted by `:hover-style'.")
 
-(defun ebox-interaction--command (callback)
-  "Wrap zero-argument CALLBACK as a keyboard or mouse command."
+(defvar ebox-interaction--dispatching-activation nil
+  "Non-nil while invoking a target already selected by Ebox activation.")
+
+(defun ebox-interaction--command (callback &optional activation-p)
+  "Wrap CALLBACK as a command; ACTIVATION-P uses shared keyboard focus."
   (lambda (&optional event)
     (interactive (list (and (mouse-event-p last-input-event) last-input-event)))
     (if (null event)
-        (funcall callback)
+        (if (and activation-p (not ebox-interaction--dispatching-activation)
+                 (ebox-interaction--focused-owner-at-point))
+            (ebox-activate)
+          (funcall callback))
       (unless (and (consp event) (mouse-event-p event))
         (user-error "Ebox activation requires a mouse text event"))
       (let* ((position (event-start event))
@@ -77,7 +83,10 @@ bindings override the repeated-click, press and drag defaults.
 Callbacks are not invoked until a generated command runs.  Keyboard commands
 use the current buffer; mouse commands use the event window's buffer without
 selecting a window or moving point.  Duplicate or overlapping keys are errors.
-This function does not supply focus navigation, state or event propagation."
+Generated activation keys use Ebox's logical focus when point still addresses
+it, including a focused parent overlapping a child.  Mouse events always use
+the clicked binding.  Explicit custom bindings keep their own native behavior.
+This function does not install navigation bindings or event propagation."
   (unless (and (proper-list-p options) (zerop (% (length options) 2)))
     (error "Ebox keymap options must be an even plist"))
   (let ((map (make-sparse-keymap)) seen keys)
@@ -114,7 +123,9 @@ This function does not supply focus navigation, state or event propagation."
                          keys)
             (error "Ebox keymap binding overlaps an existing key: %s"
                    (key-description key)))
-          (define-key map key (ebox-interaction--command callback))
+          (define-key map key
+                      (ebox-interaction--command
+                       callback (and activate (member key '([13] [return] [32] [mouse-1])))))
           (push key keys)))
       (when activate
         ;; A release-only map lets the preceding press enter mouse-drag-region;
@@ -191,6 +202,9 @@ an explicit nil on a descendant blocks an ancestor's declaration."
 ;;;###autoload
 (defun ebox-activate (&optional position noerror)
   "Invoke the live Ebox RET binding at POSITION, defaulting to point.
+With nil POSITION, prefer logical focus if point is still at that target's
+first visible character.  Focus resolves its own or inherited map, ignoring
+an overlapping child's map.  Explicit POSITION always selects by that position.
 Only visible, accessible text belonging to a committed node keymap is eligible.
 Inherited maps use their declaring owner; an explicit nil keymap blocks it.
 Buffer and overlay maps do not supply activation targets.  This function does
@@ -199,8 +213,9 @@ with RET as `last-input-event'; its result or error is returned unchanged.
 An absent target or RET command signals `user-error', or returns nil when
 NOERROR is non-nil.  NOERROR does not suppress command errors."
   (interactive)
-  (setq position (or position (point)))
-  (let* ((eligible
+  (let* ((focused-owner (and (null position) (ebox-interaction--focused-owner-at-point)))
+         (position (or position (point)))
+         (eligible
           (and (ebox-surface-buffer-mounted-p (current-buffer))
                (integer-or-marker-p position)
                (or (integerp position) (eq (marker-buffer position) (current-buffer)))
@@ -209,11 +224,16 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
                (not (invisible-p position))
                (not (equal (get-text-property position 'display) ""))))
          (state (and eligible (ebox-surface--buffer-client-state (current-buffer))))
-         (owner (and state (ebox-interaction--navigation-owner position state)))
-         (map (and owner (get-text-property position 'keymap)))
+         (owner (and state (or focused-owner
+                               (ebox-interaction--navigation-owner position state))))
+         (map (and owner (if focused-owner
+                             (ebox-interaction--owner-keymap state owner)
+                           (get-text-property position 'keymap))))
          (command (and map (lookup-key map (kbd "RET")))))
     (if (commandp command)
-        (let ((last-input-event ?\r)) (command-execute command))
+        (let ((last-input-event ?\r)
+              (ebox-interaction--dispatching-activation t))
+          (command-execute command))
       (unless noerror (user-error "No live Ebox RET command at position")))))
 
 (defvar-local ebox-interaction--focus-owner nil
@@ -285,6 +305,24 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
                                            when region collect (cons role region)))))
                 (throw 'position position))
               (setq position end))))))))
+
+(defun ebox-interaction--focused-owner-at-point ()
+  "Return the current mounted focus owner when point still addresses it."
+  (when (and ebox-interaction--focus-owner
+             (ebox-surface-buffer-mounted-p (current-buffer)))
+    (let ((state (ebox-surface--buffer-client-state (current-buffer))))
+      (and (equal (point) (ebox-interaction--focus-position state ebox-interaction--focus-owner))
+           ebox-interaction--focus-owner))))
+
+(defun ebox-interaction--owner-keymap (state owner)
+  "Return OWNER's effective committed keymap in STATE, respecting nil barriers."
+  (catch 'keymap
+    (while owner
+      (let* ((node (ebox-interaction--focus-node state owner))
+             (source (ebox-fragment-style-source-node node))
+             (entry (plist-member (ebox-get source :surface-properties) 'keymap)))
+        (when entry (throw 'keymap (cadr entry))))
+      (setq owner (ebox-runtime-index-get owner (plist-get state :parent-table))))))
 
 (defun ebox-interaction--focus-buffer (buffer-or-name)
   "Resolve BUFFER-OR-NAME to a mounted buffer, defaulting to current buffer."

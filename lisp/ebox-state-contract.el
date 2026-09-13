@@ -427,7 +427,7 @@ rather than relying on an implicit default.")
     (:symbol ebox-native-reflow--flex-geometry-call-count
      :reason diagnostic-counter
      :evidence performance-observation-only)
-    (:symbol ebox-scroll-map
+    (:symbol ebox-buffer-mode-map
      :reason static-ui-keymap
      :evidence command-binding-table-not-render-state))
   "Source-state symbols proven not to hold retained runtime authority.")

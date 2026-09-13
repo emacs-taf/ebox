@@ -6,6 +6,13 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Mounted `ebox-buffer-mode` now owns cyclic TAB/backtab navigation and
+  RET/return activation. Rename customizations of `ebox-scroll-map` to
+  `ebox-buffer-mode-map`; the old map is removed.
+- Default `ebox-activate` and generated keyboard activation commands prefer
+  logical focus while point remains at its first visible character. Explicit
+  position activation and mouse clicks still select their physical target.
+
 - Focus prefers a surviving source identity over a reused layout node. When a
   generated source reference expires, only a matching retained sibling key can
   preserve focus; an unkeyed replacement cannot acquire the removed focus.
@@ -65,8 +72,8 @@ All notable changes to Ebox are documented here.
   `ebox-keymap-create`, nested overrides, explicit-nil blocking, and retained
   updates. These do not require ETAF or an arbitrary text-property escape hatch.
 - Optional `ebox-next-interaction` and `ebox-previous-interaction` navigation
-  commands for rendered keymap owners; no default navigation bindings or
-  application state system are installed.
+  commands for rendered keymap owners, independent of the declared tab stops
+  used by the mounted buffer mode; no application state system is installed.
 - Explicit geometry units `px`, `%`, `vw`, `vh`, `ch`, and `lh`, composable
   `calc`/`min`/`max`/`clamp` functions, and construction-time axis validation.
 - A repository-level GPL-3.0-or-later license and consistent Ebox/Rust package

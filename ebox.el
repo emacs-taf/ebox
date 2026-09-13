@@ -52,7 +52,10 @@
 ;;
 ;; Function: ebox-buffer-mode (&optional arg)
 ;;;###autoload (autoload 'ebox-buffer-mode "ebox" nil t)
-;; Minor mode for interactive ebox buffers.
+;; Minor mode for mounted Ebox buffers, enabled after successful mount and
+;; disabled on unmount. Its shared map supplies scrolling, cyclic TAB/backtab
+;; navigation over declared tab stops, and RET/return activation. Native node
+;; maps supply their own keys; generated activation commands respect focus.
 ;;
 ;; This is a minor mode.  If called interactively, toggle the `Ebox-Buffer
 ;; mode' mode.  If the prefix argument is positive, enable the mode, and if
@@ -68,7 +71,7 @@
 ;; The mode's hook is called both when the mode is enabled and when it is
 ;; disabled.
 ;;
-;; \{ebox-scroll-map}
+;; \{ebox-buffer-mode-map}
 ;;
 ;; Hook: ebox-buffer-mode-hook
 ;; Hook run after entering or leaving `ebox-buffer-mode'.
@@ -490,14 +493,17 @@
 ;;;###autoload (autoload 'ebox-activate "ebox" nil t)
 ;; Invoke the committed node keymap's RET command at POSITION (default point)
 ;; in the current buffer. POSITION is an accessible integer or current-buffer
-;; marker on visible non-newline text. Inherited keymaps resolve to their owner;
+;; marker on visible non-newline text. With nil POSITION, logical focus wins
+;; when point remains at that target's first visible character. Resolve its own
+;; or inherited map even when a child's map overlaps it. Explicit POSITION
+;; always uses the hit position. Inherited keymaps resolve to their owner;
 ;; explicit nil blocks ancestor activation. Overlay and buffer maps are ignored.
 ;; Missing surface, target or RET command signals user-error, or returns nil
 ;; when NOERROR is non-nil. Command errors still propagate. The framework
 ;; leaves point and window selection unchanged; commands may change them.
 ;; Commands see RET as last-input-event and their result/errors propagate.
 ;; No callback is cached between calls: retained updates and unmount take effect
-;; immediately. This entry does not add focus, state or event propagation.
+;; immediately. It does not change focus or add event propagation.
 ;;
 ;; Function: ebox-keymap-create (&rest options)
 ;;;###autoload (autoload 'ebox-keymap-create "ebox" nil nil)
@@ -511,7 +517,10 @@
 ;; Callbacks are not invoked until a generated command runs.  Keyboard commands
 ;; use the current buffer; mouse commands use the event window's buffer without
 ;; selecting a window or moving point.  Duplicate or overlapping keys are errors.
-;; This function does not supply focus navigation, state or event propagation.
+;; Generated activation keys use logical focus when point still addresses it,
+;; including an overlapping parent. Mouse commands use the clicked binding.
+;; Explicit custom bindings and raw native maps retain their native behavior.
+;; This helper does not install navigation bindings or event propagation.
 ;;
 ;; Function: ebox-layout-config-for-form (tag properties)
 ;;;###autoload (autoload 'ebox-layout-config-for-form "ebox" nil nil)
@@ -731,8 +740,11 @@
 ;; scrolling can replace already-rendered line strings instead of producing
 ;; hidden rows inside a wheel tick.  Set to 0 to disable idle prefetch.
 ;;
-;; Variable: ebox-scroll-map
-;; Keymap for scroll interaction within ebox.
+;; Variable: ebox-buffer-mode-map
+;; Shared mounted-buffer bindings for scrolling, cyclic TAB/backtab focus,
+;; RET/return activation and quitting. Customize this map after requiring Ebox.
+;; Native node keymaps remain effective; their generated activation commands
+;; use logical focus when point is still at its first visible character.
 ;;
 ;; Function: ebox-scroll-page-down (&optional arg)
 ;;;###autoload (autoload 'ebox-scroll-page-down "ebox" nil t)

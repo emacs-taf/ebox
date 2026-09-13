@@ -256,5 +256,102 @@
     (should-not (ebox-focused-host-ref))
     (should (eq (ebox-focus-first) 'b))))
 
+(ert-deftest ebox-native-activation-shares-focus-with-position-and-mouse-selection ()
+  "Keyboard and logical activation respect focus; explicit positions and mouse use the hit target."
+  (with-temp-buffer
+    (let (events)
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        `(box :tab-index 0 :keymap ,(ebox-keymap-create :activate (lambda () (push 'parent events) 'parent))
+              (text :tab-index 1 :keymap ,(ebox-keymap-create :activate (lambda () (push 'child events) 'child))
+                    "Child"))))
+      (let ((parent (ebox-focus-first)) (window (selected-window)))
+        (dolist (keys '("RET" "<return>" "SPC"))
+          (let ((last-input-event (aref (vconcat (kbd keys)) 0)))
+            (should (eq (call-interactively (key-binding (kbd keys))) 'parent))))
+        (should (eq (ebox-activate) 'parent))
+        (should (eq (ebox-activate (point)) 'child))
+        (save-window-excursion
+          (set-window-buffer window (current-buffer))
+          (let* ((last-input-event (list 'mouse-1 (list window (point) '(1 . 1) 0)))
+                 (command (lookup-key (get-text-property (point) 'keymap) [mouse-1])))
+            (should (eq (call-interactively command) 'child))))
+        (should (equal (ebox-focused-host-ref) parent))
+        (should (eq (selected-window) window))
+        (should (equal events '(child child parent parent parent parent)))
+        (ebox-focus-next)
+        (should (eq (ebox-activate) 'child))))))
+
+(ert-deftest ebox-native-activation-keeps-focus-barriers-and-custom-bindings ()
+  "A callbackless focused parent blocks activation while custom bindings remain native."
+  (with-temp-buffer
+    (let ((calls 0))
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        `(box :tab-index 0 :keymap nil
+              (text :tab-index 1
+                    :keymap ,(ebox-keymap-create
+                              :activate (lambda () (setq calls (1+ calls)))
+                              :bindings (list (cons "x" (lambda () (setq calls (+ calls 10))))))
+                    "Child"))))
+      (ebox-focus-first)
+      (should-error (ebox-activate) :type 'user-error)
+      (should-not (ebox-activate nil t))
+      (let ((last-input-event ?\r))
+        (should-error (call-interactively (key-binding (kbd "RET"))) :type 'user-error))
+      (should (= calls 0))
+      (let ((last-input-event ?x)) (call-interactively (key-binding (kbd "x"))))
+      (should (= calls 10))
+      (ebox-activate (point))
+      (should (= calls 11)))))
+
+(ert-deftest ebox-buffer-mode-provides-cyclic-focus-and-releases-bindings ()
+  "Mounted mode supplies cyclic TAB navigation and default RET, then releases them on unmount."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-focus-test--input '((a "AAA" (:tab-index 0))
+                               (b "BBB" (:tab-index 0 :disabled t))
+                               (c "CCC" (:tab-index 0)))))
+    (let ((forward (key-binding (kbd "TAB")))
+          (backward (key-binding (kbd "<backtab>"))))
+      (should (eq forward (lookup-key ebox-buffer-mode-map (kbd "TAB"))))
+      (should (eq (key-binding (kbd "RET")) #'ebox-activate))
+      (call-interactively forward)
+      (should (eq (ebox-focused-host-ref) 'a))
+      (call-interactively forward)
+      (should (eq (ebox-focused-host-ref) 'c))
+      (call-interactively forward)
+      (should (eq (ebox-focused-host-ref) 'a))
+      (call-interactively backward)
+      (should (eq (ebox-focused-host-ref) 'c))
+      (ebox-unmount-buffer (current-buffer))
+      (should-not (eq (key-binding (kbd "TAB")) forward))
+      (should-not (eq (key-binding (kbd "RET")) #'ebox-activate)))))
+
+(ert-deftest ebox-native-keyboard-follows-manual-point-and-committed-map-replacement ()
+  "Manual point selects another native target, and retained updates replace focused commands."
+  (with-temp-buffer
+    (let (events)
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        `(column
+          (text :key a :id "a" :tab-index 0
+                :keymap ,(ebox-keymap-create :activate (lambda () (push 'a events))) "AAA")
+          (text :key b :id "b" :tab-index 1
+                :keymap ,(ebox-keymap-create :activate (lambda () (push 'b events))) "BBB"))))
+      (ebox-focus-first)
+      (goto-char (+ (point-min) (string-match "BBB" (buffer-string))))
+      (let ((last-input-event ?\r)) (call-interactively (key-binding (kbd "RET"))))
+      (should (equal events '(b)))
+      (ebox-focus-first)
+      (ebox-region-update
+       "a" :keymap (ebox-keymap-create :activate (lambda () (push 'replacement events))))
+      (let ((last-input-event ?\r)) (call-interactively (key-binding (kbd "RET"))))
+      (should (equal events '(replacement b))))))
+
 (provide 'ebox-focus-tests)
 ;;; ebox-focus-tests.el ends here

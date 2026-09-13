@@ -4753,10 +4753,10 @@ Examples:
           (funcall execute)
         (ebox-surface-call-with-observation buffer 'region execute)))))
 
-(defvar ebox-scroll-map nil
-  "Keymap for scroll interaction within ebox.")
+(defvar ebox-buffer-mode-map nil
+  "Keymap for scrolling, focus navigation and activation in mounted Ebox buffers.")
 
-(setq ebox-scroll-map
+(setq ebox-buffer-mode-map
       (let ((map (make-sparse-keymap)))
         (dolist (area '(nil right-fringe left-fringe right-margin left-margin
                             vertical-scroll-bar horizontal-scroll-bar
@@ -4779,6 +4779,14 @@ Examples:
         (dolist (key '("M-v" "<prior>" "<kp-prior>" "S-SPC" "<backspace>"))
           (define-key map (kbd key) #'ebox-scroll-page-up))
         (define-key map (kbd "q") #'quit-window)
+        (dolist (key '("TAB" "<tab>"))
+          (define-key map (kbd key)
+                      (lambda () (interactive) (ebox-focus-next 1 t))))
+        (dolist (key '("S-TAB" "<backtab>"))
+          (define-key map (kbd key)
+                      (lambda () (interactive) (ebox-focus-previous 1 t))))
+        (dolist (key '("RET" "<return>"))
+          (define-key map (kbd key) #'ebox-activate))
         map))
 
 (defconst ebox--scroll-overridden-minor-modes
@@ -4793,7 +4801,7 @@ Examples:
                  (memq (car entry) ebox--scroll-overridden-minor-modes))
                minor-mode-overriding-map-alist))
   (dolist (mode ebox--scroll-overridden-minor-modes)
-    (push (cons mode ebox-scroll-map)
+    (push (cons mode ebox-buffer-mode-map)
           minor-mode-overriding-map-alist)))
 
 (defun ebox--clear-scroll-map-overrides ()
@@ -4811,7 +4819,7 @@ Examples:
 (define-minor-mode ebox-buffer-mode
   "Minor mode for interactive ebox buffers."
   :lighter " Ebox"
-  :keymap ebox-scroll-map
+  :keymap ebox-buffer-mode-map
   (if ebox-buffer-mode
       (progn
         (unless ebox--saved-overline-margin

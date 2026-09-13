@@ -449,7 +449,8 @@ buffer for mouse callbacks, so a callback can directly update a semantic ID
 with `(ebox-region-update "action" :help-echo "Activated")`.
 Explicit bindings can override the repeated-click, press and drag defaults.
 
-Use `M-x ebox-activate` to invoke the current node's RET command, or call
+Use `M-x ebox-activate` to invoke the focus target's RET command when point
+remains at its first visible character, or otherwise the node at point. Call
 `(ebox-activate position)` at an explicit accessible position. This uses only
 the committed node keymap, including inherited maps and explicit nil barriers;
 overlay/global maps, structural newlines and invisible text are not targets.
@@ -457,6 +458,11 @@ The framework does not move point or select a window. Missing targets signal
 `user-error`; `(ebox-activate position t)` quietly returns nil for a missing
 target, while callback errors still propagate. Each invocation reads the latest
 publication, so replacement, rollback and unmount need no activation registry.
+Generated `ebox-keymap-create :activate` commands use this same focus precedence
+for RET, return and SPC. A focused parent therefore wins over a child map at the
+same character. Mouse activation always uses the clicked binding. Custom keys
+and raw native keymap commands keep their declared native behavior; explicit
+`ebox-activate` applies logical focus to any native RET map.
 
 Declare `:tab-index 0` to make a node a logical focus navigation stop; any
 nonnegative integer participates, in ascending numeric order followed by buffer
@@ -502,8 +508,11 @@ removal, hiding or disabling clears focus and preserves that clamped position;
 the next navigation starts at the first/last eligible stop. Rejected publication
 restores the previous focus and point. Unmount and buffer death release focus.
 Narrowing and invisible overlays are checked when navigating or setting focus.
-Native activation remains the node keymap's action; logical focus does not yet
-redirect an overlapping child's native keymap to its focused parent.
+The mounted `ebox-buffer-mode` supplies cyclic TAB and Shift-TAB/backtab
+navigation, plus RET/return activation through `ebox-buffer-mode-map`. It is
+enabled after successful mount and disabled on unmount, for standalone Ebox
+and framework callers alike. No application input mode is required. Disabling
+this mode removes its buffer bindings; native node keymaps remain available.
 
 Move point into the surface to use keyboard bindings. Optional commands
 `ebox-next-interaction` and `ebox-previous-interaction` move between declaring
@@ -513,11 +522,11 @@ separate stops. Empty maps, explicit `nil`, and invisible or clipped-away
 content do not add stops. Navigation follows the current committed buffer, so
 updates do not require a separate refresh. At a boundary it reports a user error
 without wrapping or moving point. These commands add no bindings automatically.
-For example, opt in for buffers using `ebox-buffer-mode`:
+To bind these keys to keymap-owner navigation, customize the shared map:
 
 ```elisp
-(keymap-set ebox-scroll-map "TAB" #'ebox-next-interaction)
-(keymap-set ebox-scroll-map "<backtab>" #'ebox-previous-interaction)
+(keymap-set ebox-buffer-mode-map "TAB" #'ebox-next-interaction)
+(keymap-set ebox-buffer-mode-map "<backtab>" #'ebox-previous-interaction)
 ```
 
 Raw native keymaps are also accepted; their mouse commands must handle the

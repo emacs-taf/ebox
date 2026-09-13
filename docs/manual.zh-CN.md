@@ -391,11 +391,11 @@ map、结构换行和不可见文本不构成目标。框架不移动 point 或�
 只有一个停靠点，即使其 map 覆盖 padding 或多行；显式子 map 单独形成停靠点。
 空 map、显式 `nil`、不可见或被裁掉的内容不产生停靠点。导航读取当前已提交 buffer，
 更新后不需要额外刷新。到达边界时报用户错误，不循环跳转，也不移动 point。
-这些命令不会自动添加按键绑定。例如，为启用了 `ebox-buffer-mode` 的 buffer 选择启用：
+这些命令不会自动添加按键绑定。要把共享按键改为 keymap-owner 导航，可以配置：
 
 ```elisp
-(keymap-set ebox-scroll-map "TAB" #'ebox-next-interaction)
-(keymap-set ebox-scroll-map "<backtab>" #'ebox-previous-interaction)
+(keymap-set ebox-buffer-mode-map "TAB" #'ebox-next-interaction)
+(keymap-set ebox-buffer-mode-map "<backtab>" #'ebox-previous-interaction)
 ```
 
 仍可直接传入原生 keymap，其鼠标命令需要自行处理事件的目标 buffer。Ebox 使用原生
@@ -434,8 +434,17 @@ Keyed 重排跟随保留节点，即使新输入给出新的 source handle；发
 的新位置；手动移开 point 后，保留其数值位置，并限制在当前可访问范围内。发布删除、
 隐藏或禁用会清空焦点并保留这个受限位置，随后导航从首个／末个有效停靠点开始。
 发布被拒绝时恢复原焦点和 point；卸载和 buffer 关闭释放焦点。导航和显式设置还检查
-narrowing 与不可见 overlay。原生激活仍执行节点 keymap 的动作；逻辑焦点暂不把重叠
-子节点的原生 keymap 重定向到获得焦点的父节点。
+narrowing 与不可见 overlay。
+
+`ebox-activate` 不传位置时，若 point 仍位于焦点首个可见字符，优先选择该逻辑焦点的
+自身或继承 keymap，即使子节点的 map 覆盖同一字符；传入显式位置则始终按位置选择。
+`ebox-keymap-create :activate` 生成的 RET、return 与 SPC 使用相同的焦点优先级。
+鼠标始终执行点击位置的绑定。自定义按键及直接传入的原生 keymap 命令保持其原生行为。
+
+挂载后的 `ebox-buffer-mode` 通过 `ebox-buffer-mode-map` 提供循环 TAB 与
+Shift-TAB/backtab 导航及 RET/return 激活。独立 Ebox 与框架调用方都在成功挂载后
+启用它，卸载时禁用，不要求额外的应用输入模式。手动禁用该 mode 移除 buffer 绑定，
+节点自身的原生 keymap 仍有效。
 
 Playground 的[交互实验室](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)
 把业务函数与状态放在 `interaction-reference.el`，把布局放在
