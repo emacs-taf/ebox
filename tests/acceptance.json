@@ -550,6 +550,31 @@
       "name": "ebox-compiled-rules-use-canonical-source-pipeline",
       "file": "tests/ebox-file-tests.el",
       "purpose": "Compiled rule data in canonical source facts matches DSL paint and rejects invalid declarations."
+    },
+    {
+      "name": "ebox-cascade-values-compute-inline-tags-before-paint",
+      "file": "tests/ebox-cascade-values-tests.el",
+      "purpose": "Inline ECSS importance, inheritance and variable fallback produce final face values."
+    },
+    {
+      "name": "ebox-cascade-values-share-inline-and-rule-importance",
+      "file": "tests/ebox-cascade-values-tests.el",
+      "purpose": "Stylesheet and inline importance obey the same ECSS ordering."
+    },
+    {
+      "name": "ebox-cascade-values-resolve-before-geometry",
+      "file": "tests/ebox-cascade-values-tests.el",
+      "purpose": "Tagged geometry and shorthand declarations compute before physical layout."
+    },
+    {
+      "name": "ebox-cascade-values-update-inherited-custom-properties",
+      "file": "tests/ebox-cascade-values-tests.el",
+      "purpose": "Custom property and tagged input updates reach retained consumers and invalid updates preserve output."
+    },
+    {
+      "name": "ebox-cascade-values-update-inherited-geometry",
+      "file": "tests/ebox-cascade-values-tests.el",
+      "purpose": "Inherited custom lengths and important width updates match freshly computed display geometry."
     }
   ]
 }

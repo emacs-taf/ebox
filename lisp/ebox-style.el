@@ -1368,9 +1368,10 @@ Grid track wrappers are traversed after their structural validator succeeds."
 (declare-function tp-computed-p "tp-style" (value))
 
 (defun ebox-style--closed-declarations-p (declarations)
-  "Return non-nil when DECLARATIONS contain no computed value source."
+  "Return non-nil when DECLARATIONS contain no deferred source or ECSS tag."
   (cl-loop for (_property value) on declarations by #'cddr
-           never (tp-computed-p value)))
+           never (or (tp-computed-p value)
+                     (ecss-declaration-value-tagged-p value))))
 
 (defvar ebox-style-stylesheet (ebox-style--create-stylesheet)
   "Isolated ECSS stylesheet containing Ebox layout and paint rules.")
@@ -1583,8 +1584,12 @@ not affect declaration compilation and are intentionally excluded."
            for schema = (ebox-style--property property)
            for validator = (and schema (plist-get schema :validator))
            for axis = (ebox-style--size-axis schema tag)
-           when (or (ebox-style--static-invalid-declaration-p validator value)
-                    (not (ebox-style--size-value-valid-p schema value tag)))
+           unless (ecss-declaration-value-valid-p
+                   value
+                   (lambda (concrete)
+                     (and (not (ebox-style--static-invalid-declaration-p
+                                validator concrete))
+                          (ebox-style--size-value-valid-p schema concrete tag))))
            do (if axis
                   (signal 'ebox-size-error
                           (list
@@ -1679,13 +1684,15 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
   (let ((seen (make-hash-table :test #'eq)))
     (cl-loop for (id _value) on declarations by #'cddr
              for property = (ebox-style--property id)
-             unless (and property (eq id (plist-get property :id)))
+             unless (or (ebox-style--custom-property-p id)
+                        (and property (eq id (plist-get property :id))))
              do (error "Ebox declaration is not a canonical property ID: %S"
                        id)
              do (when (gethash id seen)
                   (error "Duplicate canonical Ebox declaration: %S" id))
              do (puthash id t seen)
-             unless (ebox-style--form-property-allowed-p tag property)
+             unless (or (ebox-style--custom-property-p id)
+                        (ebox-style--form-property-allowed-p tag property))
              do (error "Ebox %S does not accept %S"
                        tag (plist-get property :name))))
   (ebox-style--validate-declaration-values declarations tag)
@@ -1714,12 +1721,27 @@ author value unless the public grammar is boolean or an optional anchor."
    (ebox-style-compile-declarations
     (ebox-style--validate-author-values plist) t)))
 
+(defun ebox-style--deferred-declarations-p (declarations)
+  "Return whether DECLARATIONS need ECSS before engine projection."
+  (cl-loop for (property value) on declarations by #'cddr
+           thereis (or (ebox-style--custom-property-p property)
+                       (ecss-declaration-value-tagged-p value))))
+
+(defun ebox-style--concrete-declarations (declarations)
+  "Return DECLARATIONS that are safe for provisional engine fields.
+Source records retain the complete input for authoritative ECSS computation."
+  (cl-loop for (property value) on declarations by #'cddr
+           unless (or (ebox-style--custom-property-p property)
+                      (ecss-declaration-value-tagged-p value))
+           append (list property value)))
+
 (defun ebox-style-declaration-properties (declarations predicate)
   "Return canonical author properties in DECLARATIONS matching PREDICATE."
   (cl-loop for (id value) on declarations by #'cddr
            for property = (or (ebox-style--property id)
-                              (error "Unknown canonical Ebox property: %S" id))
-           when (funcall predicate property)
+                              (unless (ebox-style--custom-property-p id)
+                                (error "Unknown canonical Ebox property: %S" id)))
+           when (and property (funcall predicate property))
            append (list (plist-get property :name) value)))
 
 (defun ebox-style-declarations-require-projection-p
@@ -1727,8 +1749,9 @@ author value unless the public grammar is boolean or an optional anchor."
   "Return non-nil when DECLARATIONS include facts outside PREDICATE."
   (cl-loop for (id _value) on declarations by #'cddr
            for property = (or (ebox-style--property id)
-                              (error "Unknown canonical Ebox property: %S" id))
-           thereis (not (funcall predicate property))))
+                              (unless (ebox-style--custom-property-p id)
+                                (error "Unknown canonical Ebox property: %S" id)))
+           thereis (or (null property) (not (funcall predicate property)))))
 
 (defun ebox-style-merge-declarations (base overrides)
   "Merge canonical BASE and OVERRIDES through ECSS property schemas."
@@ -1857,6 +1880,8 @@ inherited parent fingerprint must be unchanged.  In that case only the
 computed values and winner metadata for those properties change.  Any other
 shape returns nil so the caller uses the full ECSS computation."
   (when (and (ecss-computed-style-p style)
+             (not (ebox-style--deferred-declarations-p old-declarations))
+             (not (ebox-style--deferred-declarations-p new-declarations))
              (ebox-style--theme-declarations-equivalent-p
               old-declarations new-declarations))
     (let ((changed-p
@@ -1911,6 +1936,7 @@ NEW-PARENT-STYLE must have identical non-color inherited fingerprints; any
 provenance or parent-shape mismatch returns nil for normal ECSS computation."
   (when (and (ecss-computed-style-p style)
              (proper-list-p declarations)
+             (not (ebox-style--deferred-declarations-p declarations))
              (ecss-computed-style-p old-parent-style)
              (ecss-computed-style-p new-parent-style)
              (equal
@@ -2621,6 +2647,8 @@ does not materialize these box-only placement facts.")
 Ordinary properties remain change-local.  Border width/style pairs are
 completed from FULL-DECLARATIONS and CURRENT-STYLE before deriving their used
 engine pixels."
+  (setq declarations (ebox-style--concrete-declarations declarations)
+        full-declarations (ebox-style--concrete-declarations full-declarations))
   (let (ordinary affected-sides)
     (cl-loop for (id value) on declarations by #'cddr
              for definition = (ebox-style--property id)

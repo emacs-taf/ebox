@@ -40,7 +40,7 @@
   (unless (and (proper-list-p plist) (zerop (% (length plist) 2)))
     (error "%s properties must be an even plist: %S" context plist))
   (cl-loop for key in plist by #'cddr
-           unless (keywordp key)
+           unless (or (keywordp key) (ebox-style--custom-property-p key))
            do (error "%s property name must be a keyword: %S" context key))
   plist)
 
@@ -99,7 +99,7 @@
              (lambda (definition)
                (eq (plist-get definition :normalizer) 'color)))
          by #'cddr
-         unless (stringp value)
+         unless (ecss-declaration-value-valid-p value #'stringp)
          do (error "Standalone Ebox %S requires a CSS color string: %S"
                    property value))
         declarations)
@@ -145,7 +145,9 @@ function."
                  (ebox-dsl--optional-field
                   properties :outer context)))
            (outer (and (not (eq tag 'text))
-                       (if outer-field (cdr outer-field) 'block)))
+                       (if (and outer-field
+                                (not (ecss-declaration-value-tagged-p (cdr outer-field))))
+                           (cdr outer-field) 'block)))
          (ecss-field (ebox-dsl--optional-field properties :ecss context))
          (ecss-file-field (ebox-dsl--optional-field properties :ecss-file context))
          (_ (when (and (or ecss-field ecss-file-field) (eq tag 'text))
@@ -185,7 +187,7 @@ function."
        :outer outer
        :layout
        (ebox-dsl--layout-config
-        tag declarations context)
+        tag (ebox-style--concrete-declarations declarations) context)
        :declarations declarations
        :owned-facts
        (ebox-canonical-facts-from-declarations tag declarations interactions)))))
@@ -206,7 +208,7 @@ function."
   (let (result)
     (while items
       (let ((item (pop items)))
-        (if (keywordp item)
+        (if (or (keywordp item) (ebox-style--custom-property-p item))
             (progn
               (unless items
                 (error "Ebox build: missing value for %S" item))
@@ -220,7 +222,7 @@ function."
   (let (properties children)
     (while items
       (let ((item (pop items)))
-        (if (keywordp item)
+        (if (or (keywordp item) (ebox-style--custom-property-p item))
             (progn
               (unless items
                 (error "Ebox build: missing value for %S" item))

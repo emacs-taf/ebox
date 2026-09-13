@@ -169,7 +169,7 @@
 ;;;###autoload (autoload 'ebox-canonical-facts-from-declarations "ebox" nil nil)
 ;; Return immutable node-owned facts for TAG from DECLARATIONS.
 ;; Source declarations stay behind the source handle; the returned value contains
-;; only the current canonical-node projection needed before G4c separates paint.
+;; provisional concrete node properties. Tagged values require ECSS computation.
 ;; INTERACTIONS is a plist of fixed node capabilities, separate from CSS.
 ;;
 ;; Function: ebox-canonical-input-create (nodes source-index &optional range-anchors)
@@ -556,7 +556,8 @@
 ;; Update the node identified by HANDLE with PROPS.
 ;; HANDLE is an opaque handle from `ebox-region-resolve' or an Ebox selector,
 ;; or a semantic ID (string, non-nil symbol or integer) in the current buffer.
-;; PROPS accepts mutable content, style, interaction and scroll keywords;
+;; PROPS accepts mutable content, style, interaction and scroll keywords plus
+;; ECSS custom property symbols named --NAME;
 ;; `:content' replaces a Text node's string or a Box's sole direct Text child.
 ;; It does not add children or mutate selector metadata.  The update builds an
 ;; isolated candidate, runs the Ebox owner planner, and publishes once through the

@@ -666,7 +666,8 @@ continues to own its inline text directly."
 (defun ebox-surface--inline-inheritance-required-p (root source-index)
   "Return non-nil when ROOT in SOURCE-INDEX requires an ECSS cascade.
 An empty stylesheet still needs a cascade when an inherited declaration can
-reach a descendant that does not declare the same property.  Other inline
+reach a descendant that does not declare the same property, or when tagged
+values and custom properties need contextual computation.  Other inline
 declarations are already projected into the candidate engine fields at node
 construction time and can use the static projection path."
   (let ((pending (list (cons root nil)))
@@ -677,11 +678,12 @@ construction time and can use the static projection path."
              (inherited (cdr entry))
              (declarations
               (ebox-style-node-declarations source-index node)))
-        (when (cl-some (lambda (property)
-                         (and (ebox-surface--inherited-style-consumer-p node)
-                              (memq property inherited)
-                              (not (plist-member declarations property))))
-                       ebox-surface--inherited-style-properties)
+        (when (or (ebox-style--deferred-declarations-p declarations)
+                  (cl-some (lambda (property)
+                             (and (ebox-surface--inherited-style-consumer-p node)
+                                  (memq property inherited)
+                                  (not (plist-member declarations property))))
+                           ebox-surface--inherited-style-properties))
           (setq required t))
         (unless required
           (let ((next (copy-sequence inherited)))

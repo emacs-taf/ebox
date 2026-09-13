@@ -14,6 +14,13 @@ This document defines the low-level publication contract. It is independent of E
 
 No layer may infer application state from visible buffer text. No public caller may mutate a published tree in place. Every public live-publication route, including `ebox-render-to-buffer`, its `ebox-display-buffer` display wrapper, and commit/update entry points, uses a retained TP surface; the public facade exposes no erase-and-evaluate-body buffer writer.
 
+ECSS-tagged declaration values and custom properties remain in source facts
+until cascade computation. Provisional canonical nodes materialize only concrete
+engine values; tagged dimensions never enter layout directly. Both full rendering
+and retained source updates request style computation for these declarations.
+Paint-only shortcuts require concrete input, since explicit `var()` or `inherit`
+values may depend on a parent even when the child declares the property itself.
+
 ## Commit lifecycle
 
 ```text

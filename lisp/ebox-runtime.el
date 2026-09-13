@@ -4333,7 +4333,13 @@ cannot be changed through the unpublished batch root."
                                   source-index old-handle)))))
           (setq candidate-source-index (car binding))
           (plist-put box :ebox-source-handle (cdr binding))))
-    (when (plist-member style-declarations 'ebox/outer)
+    (cl-loop for (property value) on style-declarations by #'cddr
+             when (or (ebox-style--custom-property-p property)
+                      (ecss-declaration-value-tagged-p value))
+             do (push (or (ebox-style-canonical-name property) property) changed-keys))
+    (when (and (plist-member style-declarations 'ebox/outer)
+               (not (ecss-declaration-value-tagged-p
+                     (plist-get style-declarations 'ebox/outer))))
       (let* ((outer (plist-get style-declarations 'ebox/outer))
              (display (plist-get box :display))
              (next (list outer (or (cadr display) 'flow))))
@@ -4342,7 +4348,7 @@ cannot be changed through the unpublished batch root."
           (push :outer changed-keys))))
     (setq changed-keys
           (nconc (ebox--region-update-layout-delta
-                  box style-declarations)
+                  box (ebox-style--concrete-declarations style-declarations))
                  changed-keys))
     (cl-loop for (key value) on expanded by #'cddr
              for target-key = (ebox--region-update-normalize-property key)
@@ -4702,7 +4708,8 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
   "Update the node identified by HANDLE with PROPS.
 HANDLE is an opaque handle from `ebox-region-resolve' or an Ebox selector,
 or a semantic ID (string, non-nil symbol or integer) in the current buffer.
-PROPS accepts mutable content, style, interaction and scroll keywords;
+PROPS accepts mutable content, style, interaction and scroll keywords plus
+ECSS custom property symbols named --NAME;
 `:content' replaces a Text node's string or a Box's sole direct Text child.
 It does not add children or mutate selector metadata.  The update builds an
 isolated candidate, runs the Ebox owner planner, and publishes once through the

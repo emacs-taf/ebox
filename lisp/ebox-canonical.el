@@ -282,19 +282,20 @@ and author TAG."
             (let ((facts
                    (list declarations
                          (ebox-style-declaration-properties
-                          declarations
+                          (ebox-style--concrete-declarations declarations)
                           (lambda (property)
                             (or (funcall predicate property)
                                 (eq (plist-get property :group) 'paint))))
-                         (ebox-style-declarations-require-projection-p
-                          declarations
-                          (lambda (property)
-                            (or (funcall predicate property)
-                                (eq (plist-get property :group) 'paint)
-                                (and (memq tag '(flex grid))
-                                     (memq tag
-                                           (plist-get property
-                                                      :contexts)))))))))
+                         (or (ebox-style--deferred-declarations-p declarations)
+                             (ebox-style-declarations-require-projection-p
+                              declarations
+                              (lambda (property)
+                                (or (funcall predicate property)
+                                    (eq (plist-get property :group) 'paint)
+                                    (and (memq tag '(flex grid))
+                                         (memq tag
+                                               (plist-get property
+                                                          :contexts))))))))))
               (setf (nth 1 facts)
                     (ebox-style--expand-engine-plist (nth 1 facts)))
               (puthash tag facts by-tag)
@@ -326,7 +327,7 @@ and author TAG."
 (defun ebox-canonical-facts-from-declarations (tag declarations &optional interactions)
   "Return immutable node-owned facts for TAG from DECLARATIONS.
 Source declarations stay behind the source handle; the returned value contains
-only the current canonical-node projection needed before G4c separates paint.
+provisional concrete node properties.  Tagged values require ECSS computation.
 INTERACTIONS is a plist of fixed node capabilities, separate from CSS."
   (let ((predicate
          (if (eq tag 'text)

@@ -14,6 +14,12 @@
 
 任何层都不能从可见 buffer 文本推断应用状态；公共调用者不能原地修改已经发布的树。每条公共 live 发布路径，包括 `ebox-render-to-buffer`、其展示包装 `ebox-display-buffer` 以及 commit/update 入口，都使用 retained TP surface；公共门面不再提供擦除 buffer 后执行任意 BODY 的 writer。
 
+带 ECSS 语义标记的声明值及 custom property 保留在 source facts 中，直到
+层叠计算。候选规范节点只填入具体 engine 值，带标记的尺寸不直接进入布局。
+完整渲染和保留的 source 更新都会为这类声明请求样式计算。仅绘制变化的
+快捷路径要求具体输入；子节点即使显式声明了属性，其中的 `var()` 或
+`inherit` 仍可能依赖父节点。
+
 ## Commit 生命周期
 
 ```text

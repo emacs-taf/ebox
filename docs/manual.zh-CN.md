@@ -572,3 +572,23 @@ modified 标志；已被销毁的 buffer 不会被复活。提交接受后的观
 字面量列表。文件规则先于行内 `:ecss` 规则。Ebox 通过 ECSS 与自己的属性
 schema 校验选择器和声明。规范输入构造者调用 `ebox-style-compile-rules`，
 将结果传给 `ebox-source-builder-bind` 的 `:ecss` 字段，与 DSL 使用同一路径。
+
+## 需要计算的声明值
+
+程序构造的样式可使用 `ecss-important`、`ecss-wide-value` 和 `ecss-var`。
+Longhand 值在绘制和布局前计算；importance 也保留已支持的 shorthand 展开。
+在 Elisp 中构造这些值：
+
+```elisp
+(ebox-render
+ (ebox-build
+  (list 'box '--accent "#334155"
+        (list 'text :color (ecss-var '--accent "#000000") "Accent"))))
+```
+
+Custom property 在规则列表、行内声明及 `ebox-region-update` 中均使用
+`--name` 符号，其继承值可以影响绘制或几何。修改 custom property 会重新
+计算保留的消费者；行内与规则的 important 声明参与 ECSS 优先级计算。非法
+具体值仍在发布前被拒绝。变量解析和非法计算值遵循 ECSS 的 schema 回退
+约定。静态 `.ecss` 文件仍只读数据，不调用这些构造函数。上下文相关的
+shorthand 值请显式写成 longhand；当前接口尚未实现延迟的多值 shorthand 替换。

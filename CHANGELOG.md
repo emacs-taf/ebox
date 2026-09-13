@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Programmatic ECSS importance, CSS-wide longhand values and variable
+  references reach paint and layout through cascade computation. Inline custom
+  properties and retained updates now propagate to paint and geometry consumers.
+
 - Local file and DSL styles share the ECSS rule-list reader and strict Ebox
   schema. Remove the outer quote in `.ecss` files. Canonical producers can use
   `ebox-style-compile-rules` for the same validation and compilation.

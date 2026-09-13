@@ -668,3 +668,25 @@ lists normally. File rules precede inline `:ecss` rules. Ebox validates selector
 and declarations through ECSS and its own property schema. Canonical input
 producers call `ebox-style-compile-rules` and pass its result to the `:ecss` field
 of `ebox-source-builder-bind`, so programmatic and DSL rules use the same path.
+
+## Computed declaration values
+
+Programmatic style inputs can use `ecss-important`, `ecss-wide-value`, and
+`ecss-var`. Longhand values are computed before paint and layout; importance
+also preserves supported shorthand expansion. Construct these values in Elisp:
+
+```elisp
+(ebox-render
+ (ebox-build
+  (list 'box '--accent "#334155"
+        (list 'text :color (ecss-var '--accent "#000000") "Accent"))))
+```
+
+Custom property names use `--name` symbols in rule lists, inline declarations
+and `ebox-region-update`. Their inherited values may affect paint or geometry.
+Updating a custom property recomputes retained consumers; important inline and
+rule declarations participate in ECSS precedence. Concrete invalid values still
+fail before publication. Variable resolution and invalid computed values follow
+ECSS's schema fallback contract. Static `.ecss` files remain inert and never call
+these constructors. Use explicit longhands for context-dependent shorthand values;
+this interface does not implement deferred multi-value shorthand substitution.
