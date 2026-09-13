@@ -79,7 +79,7 @@ release-native-check:
 	$(PYTHON) scripts/ebox-release.py verify --directory "$(RELEASE_DIR)" --emacs "$(EMACS)" --build-native
 
 release-tool-tests:
-	$(PYTHON) -m unittest discover -s scripts/tests -p 'test_ebox_release.py'
+	$(PYTHON) -m unittest discover -s tests/tools -p 'test_ebox_release.py'
 
 check: structure-check compile acceptance
 
