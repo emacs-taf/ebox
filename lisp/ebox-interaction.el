@@ -179,6 +179,34 @@ an explicit nil on a descendant blocks an ancestor's declaration."
                            (list 'keymap map) (list 'keymap (cadr entry)))
                           node-id)))))))))
 
+;;;###autoload
+(defun ebox-activate (&optional position noerror)
+  "Invoke the live Ebox RET binding at POSITION, defaulting to point.
+Only visible, accessible text belonging to a committed node keymap is eligible.
+Inherited maps use their declaring owner; an explicit nil keymap blocks it.
+Buffer and overlay maps do not supply activation targets.  This function does
+not move point or select a window.  The command runs in the current buffer
+with RET as `last-input-event'; its result or error is returned unchanged.
+An absent target or RET command signals `user-error', or returns nil when
+NOERROR is non-nil.  NOERROR does not suppress command errors."
+  (interactive)
+  (setq position (or position (point)))
+  (let* ((eligible
+          (and (ebox-surface-buffer-mounted-p (current-buffer))
+               (integer-or-marker-p position)
+               (or (integerp position) (eq (marker-buffer position) (current-buffer)))
+               (<= (point-min) position) (< position (point-max))
+               (not (eq (char-after position) ?\n))
+               (not (invisible-p position))
+               (not (equal (get-text-property position 'display) ""))))
+         (state (and eligible (ebox-surface--buffer-client-state (current-buffer))))
+         (owner (and state (ebox-interaction--navigation-owner position state)))
+         (map (and owner (get-text-property position 'keymap)))
+         (command (and map (lookup-key map (kbd "RET")))))
+    (if (commandp command)
+        (let ((last-input-event ?\r)) (command-execute command))
+      (unless noerror (user-error "No live Ebox RET command at position")))))
+
 (defun ebox-interaction--move (count)
   "Move by COUNT interaction stops in the accessible live Ebox surface.
 Resolve every stop from current rendered properties; keep no navigation state."

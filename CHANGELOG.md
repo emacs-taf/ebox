@@ -41,6 +41,10 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- `ebox-activate` invokes the current committed node's RET binding, with optional
+  explicit position and quiet handling of missing targets. It respects native
+  keymap ownership, nil barriers, visibility, retained updates and unmount.
+
 - Explicit native node capabilities `:help-echo`, `:pointer`, `:hover-style`,
   and `:keymap`, including callback adapters `ebox-help-create` and
   `ebox-keymap-create`, nested overrides, explicit-nil blocking, and retained

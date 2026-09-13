@@ -813,5 +813,80 @@
     (ebox-commit (current-buffer) (ebox-build '(text "no interactions")))
     (should-error (ebox-next-interaction) :type 'user-error)))
 
+(ert-deftest ebox-activate-uses-live-node-ownership ()
+  "Activation respects nested native maps and explicit nil without moving point."
+  (let (events)
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        (list 'column :keymap (ebox-keymap-create :activate (lambda () (push 'parent events) 'parent-result))
+              '(text "Parent")
+              (list 'text :keymap (ebox-keymap-create :activate (lambda () (push 'child events) 'child-result)) "Child")
+              '(text :keymap nil "Blocked"))))
+      (goto-char (point-max))
+      (let ((origin (point)) (window (selected-window)))
+        (dolist (case '(("Parent" parent-result) ("Child" child-result)))
+          (let ((position (+ (point-min) (string-match (car case) (buffer-string)))))
+            (should (eq (cadr case) (ebox-activate position)))))
+        (should (= origin (point)))
+        (should (eq window (selected-window))))
+      (should (equal events '(child parent)))
+      (let ((position (+ (point-min) (string-match "Blocked" (buffer-string)))))
+        (should-error (ebox-activate position) :type 'user-error))
+      (should (equal events '(child parent))))))
+
+(ert-deftest ebox-activate-follows-publication-and-unmount ()
+  "Replaced and rejected callbacks follow the committed surface, then disappear on unmount."
+  (with-temp-buffer
+    (let ((value nil))
+      (cl-labels ((input (next)
+                    (ebox-build (list 'text :keymap
+                                      (ebox-keymap-create :activate (lambda () (setq value next)))
+                                      "Action"))))
+        (ebox-render-to-buffer (current-buffer) (input 'first))
+        (ebox-activate (point-min))
+        (should (eq value 'first))
+        (ebox-commit (current-buffer) (input 'second))
+        (should-error (ebox-commit (current-buffer) (input 'rejected)
+                                  (lambda (_report) (error "Reject activation candidate"))))
+        (ebox-activate (point-min))
+        (should (eq value 'second))
+        (ebox-unmount-buffer (current-buffer))
+        (should-error (ebox-activate (point-min)) :type 'user-error)))))
+
+(ert-deftest ebox-activate-rejects-unowned-and-inaccessible-positions ()
+  "Global and overlay maps, line breaks, foreign markers and narrowing create no target."
+  (with-temp-buffer
+    (should-error (ebox-activate) :type 'user-error)
+    (should-not (ebox-activate nil t))
+    (let ((map (ebox-keymap-create :activate (lambda () (ert-fail "Unowned callback")))))
+      (ebox-render-to-buffer (current-buffer) (ebox-build '(column (text "One") (text "Two"))))
+      (use-local-map map)
+      (let ((overlay (make-overlay (point-min) (point-max))))
+        (unwind-protect
+            (progn (overlay-put overlay 'keymap map)
+                   (should-error (ebox-activate (point-min)) :type 'user-error))
+          (delete-overlay overlay))))
+    (ebox-commit (current-buffer)
+                 (ebox-build (list 'column :keymap (ebox-keymap-create :activate (lambda () 'ok))
+                                   '(text "One") '(text "Two"))))
+    (should-error (ebox-activate (point-max)) :type 'user-error)
+    (let ((newline (save-excursion (goto-char (point-min)) (search-forward "\n") (1- (point)))))
+      (should-error (ebox-activate newline) :type 'user-error))
+    (let ((outside (copy-marker (point-min))))
+      (unwind-protect
+          (save-restriction
+            (narrow-to-region (1+ (point-min)) (point-max))
+            (should-error (ebox-activate outside) :type 'user-error))
+        (set-marker outside nil)))
+    (let ((foreign (with-temp-buffer (point-marker))))
+      (should-error (ebox-activate foreign) :type 'user-error))
+    (ebox-commit (current-buffer)
+                 (ebox-build (list 'text :keymap
+                                   (ebox-keymap-create :activate (lambda () (user-error "Callback failed")))
+                                   "Failure")))
+    (should-error (ebox-activate (point-min) t) :type 'user-error)))
+
 (provide 'ebox-interaction-tests)
 ;;; ebox-interaction-tests.el ends here

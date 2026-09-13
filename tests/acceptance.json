@@ -645,6 +645,21 @@
       "name": "ebox-shared-scopes-select-rules-per-root-revision",
       "file": "tests/ebox-shared-scope-tests.el",
       "purpose": "Separate roots select immutable rule revisions and explicit ECSS origins for shared member identities."
+    },
+    {
+      "name": "ebox-activate-uses-live-node-ownership",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Activation uses committed native node keymaps, respects nested nil barriers and leaves point/window selection unchanged."
+    },
+    {
+      "name": "ebox-activate-follows-publication-and-unmount",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Activation follows accepted callback replacement, preserves rejected publication and stops after unmount."
+    },
+    {
+      "name": "ebox-activate-rejects-unowned-and-inaccessible-positions",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Overlay/global maps and inaccessible or structural positions cannot supply an activation target."
     }
   ]
 }

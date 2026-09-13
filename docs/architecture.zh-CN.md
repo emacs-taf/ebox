@@ -175,7 +175,9 @@ Ebox 支持显式 `px`、`%`、`vw`、`vh`、`ch`、`lh` 尺寸、padding、marg
 
 可选交互导航在当前渲染的 keymap owner 之间移动 point，读取已提交 surface，尊重
 narrowing 与不可见性，不安装按键绑定、焦点注册表或应用状态。action 与状态仍属于
-调用方。
+调用方。原生激活同样读取已提交 surface 与绘制祖先中的 keymap owner，显式 nil
+阻止祖先激活。不可访问、不可见和结构文本不能成为目标；归属校验后才执行命令，
+回调错误保持可观察，不另建目标注册表。
 
 横向 `:overflow hidden` 在内容组合后、自身 padding 和 border 添加前执行。它选取
 测量后能容纳的完整受支持文本簇前缀，再用空白补齐剩余像素。固定 display space 可以

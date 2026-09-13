@@ -129,6 +129,12 @@ parity and distinguishes cached motion from actual prefix extension.
 
 Keys are local to a sibling collection. Declarative source trees never own live TP objects, markers, or buffer coordinates. A live logical `:id` resolves through `ebox-region-resolve` to an opaque handle tied to one TP surface object; mounting the same source in two buffers therefore yields distinct handles. Region and host-ref positions are generation-bound; after a buffer mutation, callers must obtain fresh positions from the public accessor. Buffer markers, display spans, and text properties are publication facts, not source-tree identity.
 
+Native activation and optional interaction navigation resolve declaring keymap
+owners from the committed surface and paint ancestry. Explicit nil stops inherited
+activation. They keep no target registry or focus state; inaccessible, invisible
+and structural text cannot become activation targets. Commands run only after
+ownership validation, and callback errors remain observable.
+
 ## Verification
 
 Every update path must prove:

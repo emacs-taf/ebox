@@ -435,6 +435,19 @@
 ;;;###autoload (autoload 'ebox-incremental-prepare-viewport-commit "ebox" nil nil)
 ;; Prepare BUFFER for VIEWPORT-WIDTH, VIEWPORT-HEIGHT, AXES, and DISPLAY-SIGNATURE.
 ;;
+;; Function: ebox-activate (&optional position noerror)
+;;;###autoload (autoload 'ebox-activate "ebox" nil t)
+;; Invoke the committed node keymap's RET command at POSITION (default point)
+;; in the current buffer. POSITION is an accessible integer or current-buffer
+;; marker on visible non-newline text. Inherited keymaps resolve to their owner;
+;; explicit nil blocks ancestor activation. Overlay and buffer maps are ignored.
+;; Missing surface, target or RET command signals user-error, or returns nil
+;; when NOERROR is non-nil. Command errors still propagate. The framework
+;; leaves point and window selection unchanged; commands may change them.
+;; Commands see RET as last-input-event and their result/errors propagate.
+;; No callback is cached between calls: retained updates and unmount take effect
+;; immediately. This entry does not add focus, state or event propagation.
+;;
 ;; Function: ebox-keymap-create (&rest options)
 ;;;###autoload (autoload 'ebox-keymap-create "ebox" nil nil)
 ;; Create an ordinary native keymap from OPTIONS.

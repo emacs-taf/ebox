@@ -379,6 +379,12 @@ margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 
 `(ebox-region-update "action" :help-echo "Activated")`。
 显式绑定可以覆盖连击、按下和拖动事件的默认行为。
 
+使用 `M-x ebox-activate` 调用当前节点的 RET 命令，或通过 `(ebox-activate position)`
+指定可访问位置。它只使用已提交节点的 keymap，遵循继承与显式 nil 屏蔽；overlay/global
+map、结构换行和不可见文本不构成目标。框架不移动 point 或选择窗口。目标缺失时报
+`user-error`；`(ebox-activate position t)` 在无目标时返回 nil，但不吞掉回调错误。
+每次调用读取最新发布状态，替换、回滚和卸载无需另建激活注册表。
+
 使用键盘绑定时，先把 point 移到交互范围内。可选命令 `ebox-next-interaction` 与
 `ebox-previous-interaction` 在当前渲染了可用 keymap 的声明节点之间移动。每个 owner
 只有一个停靠点，即使其 map 覆盖 padding 或多行；显式子 map 单独形成停靠点。

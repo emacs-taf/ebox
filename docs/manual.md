@@ -448,6 +448,15 @@ buffer for mouse callbacks, so a callback can directly update a semantic ID
 with `(ebox-region-update "action" :help-echo "Activated")`.
 Explicit bindings can override the repeated-click, press and drag defaults.
 
+Use `M-x ebox-activate` to invoke the current node's RET command, or call
+`(ebox-activate position)` at an explicit accessible position. This uses only
+the committed node keymap, including inherited maps and explicit nil barriers;
+overlay/global maps, structural newlines and invisible text are not targets.
+The framework does not move point or select a window. Missing targets signal
+`user-error`; `(ebox-activate position t)` quietly returns nil for a missing
+target, while callback errors still propagate. Each invocation reads the latest
+publication, so replacement, rollback and unmount need no activation registry.
+
 Move point into the surface to use keyboard bindings. Optional commands
 `ebox-next-interaction` and `ebox-previous-interaction` move between declaring
 nodes that currently render a usable keymap. Each owner contributes one stop,
