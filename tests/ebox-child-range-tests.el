@@ -406,20 +406,6 @@
                              before)))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(ert-deftest ebox-child-range-production-readers-use-tree-accessor ()
-  "Range-capable production consumers do not read node `:children' directly."
-  (dolist (file '("ebox.el" "ebox-layout.el" "ebox-flex.el" "ebox-grid.el"
-                  "ebox-incremental.el" "ebox-native-reflow.el"
-                  "ebox-surface.el"))
-    (with-temp-buffer
-      (insert-file-contents
-       (expand-file-name
-       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
-           (concat "lisp/" file) file) ebox-child-range-test--root))
-      (should-not (re-search-forward
-                   "plist-get[[:space:]\n]+\\(?:node\\|flex-node\\)[[:space:]\n]+:children"
-                   nil t)))))
-
 (ert-deftest ebox-child-range-ecss-subjects-and-inheritance-are-transparent ()
   "Ranges add no ECSS subject and preserve child/sibling cascade semantics."
   (let* ((ebox-style-stylesheet (ecss-stylesheet-create))

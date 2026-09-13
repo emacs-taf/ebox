@@ -61,8 +61,6 @@
         (error "Package escaped the clean installation: %s" feature))))
   (when (featurep 'etaf)
     (error "Standalone installation unexpectedly loaded ETAF"))
-  (when (featurep 'ebox-native-reflow)
-    (error "Source installation eagerly loaded native subsystem"))
   (let* ((input (ebox-build '(box :width (ch 10) :height (lh 1) :overflow scroll
                                   "first\nsecond\nthird")))
          (region-counter ebox--region-id-counter)

@@ -28,17 +28,6 @@
     (insert-file-contents (expand-file-name relative-path ebox-docs-test--root))
     (buffer-string)))
 
-(ert-deftest ebox-docs-public-api-reference-covers-facade ()
-  "The bilingual API references should name every facade entry point."
-  (require 'ebox)
-  (dolist (file '("docs/manual.md"
-                  "docs/manual.zh-CN.md"))
-    (let ((source (ebox-docs-test--read file)))
-      (dolist (entry ebox-public-api)
-        (should (string-match-p
-                 (regexp-quote (format "`%s`" entry))
-                 source))))))
-
 (ert-deftest ebox-docs-do-not-present-legacy-source-as-active ()
   "The standalone package documentation must not claim ETAF source ownership."
   (dolist (file ebox-docs-test--current-docs)

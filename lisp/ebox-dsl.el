@@ -14,7 +14,7 @@
 (require 'ebox-canonical)
 (require 'ebox-flex)
 (require 'ebox-grid)
-(require 'ecss-file)
+(require 'ecss)
 
 (cl-defstruct
     (ebox-dsl--properties

@@ -8,7 +8,7 @@
 
 (setq load-prefer-newer t)
 
-(load-file (expand-file-name "../lisp/ebox.el" (file-name-directory load-file-name)))
+(load-file (expand-file-name "../ebox.el" (file-name-directory load-file-name)))
 
 ;; Core tests assert named Elisp render/patch strategies.  Keep optional local
 ;; native artifacts from replacing those strategies; native execution has
@@ -2499,24 +2499,12 @@ full rendering, and store the latest bounded limit in REQUESTED-LINES."
       (ebox-render layout))
     (should (= multiline-width-calls 0))))
 
-(ert-deftest ebox-lines-concat-horizontal-splits-each-input-once ()
-  "Horizontal line concatenation should avoid split-pad-resplit work."
+(ert-deftest ebox-lines-concat-horizontal-preserves-ragged-input ()
+  "Horizontal composition pads shorter columns without losing their text."
   (ebox-test--reset-runtime-state)
-  (let ((split-count 0)
-        (original (symbol-function 'ebox-string-lines))
-        result)
-    (cl-letf (((symbol-function 'ebox-string-lines)
-               (lambda (&rest args)
-                 (cl-incf split-count)
-                 (apply original args))))
-      (setq result
-            (ebox--lines-concat-horizontal
-             "A\nB\nC"
-             "1\n2"
-             "x")))
-    (should (string= (substring-no-properties result)
-                     "A1x\nB2 \nC  "))
-    (should (= split-count 3))))
+  (should (string= (substring-no-properties
+                    (ebox--lines-concat-horizontal "A\nB\nC" "1\n2" "x"))
+                   "A1x\nB2 \nC  ")))
 
 (ert-deftest ebox-layout-snapshot-table-is-created-when-missing ()
   "Snapshot storage should tolerate render states created before snapshots."

@@ -17,7 +17,8 @@
   "Return repository FILE as text."
   (with-temp-buffer
     (insert-file-contents (expand-file-name
-       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
+       (if (and (not (equal file "ebox.el"))
+                (string-suffix-p ".el" file) (not (file-name-directory file)))
            (concat "lisp/" file) file) ebox-spi-test--root))
     (buffer-string)))
 

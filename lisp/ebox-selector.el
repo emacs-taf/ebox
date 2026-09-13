@@ -9,10 +9,10 @@
 
 (require 'cl-lib)
 (require 'subr-x)
-(require 'ecss-selector)
+(require 'ecss)
 (require 'ebox-buffer-backend)
 (require 'ebox-tree)
-(require 'tp-surface)
+(require 'tp)
 
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--ensure-region-id "ebox" (box))

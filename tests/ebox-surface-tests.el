@@ -11,9 +11,9 @@
 (setq ebox-native-reflow-module-path
       (getenv "EBOX_NATIVE_REFLOW_MODULE_PATH"))
 
-(load-file (expand-file-name "../lisp/ebox.el"
+(load-file (expand-file-name "../ebox.el"
                             (file-name-directory load-file-name)))
-(require 'tp-surface)
+(require 'tp)
 (require 'ebox-native-reflow)
 
 (defmacro ebox-surface-test--with-elisp-backend (&rest body)

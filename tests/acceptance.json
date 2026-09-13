@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "load_path": [
-    "lisp",
+    ".",
     "tests",
-    "../ecss/lisp",
-    "../tp/lisp",
-    "../ekp/lisp"
+    "../ecss",
+    "../tp",
+    "../ekp"
   ],
   "support": [
     "tests/ebox-fixtures.el"

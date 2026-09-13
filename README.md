@@ -1,8 +1,8 @@
 # Ebox
 
-Source layout: runtime code lives in `lisp/`; add that directory to `load-path`
-when using a checkout. Update older checkout configurations from the repository
-root to its `lisp/` subdirectory.
+Source layout: add the repository root to `load-path` and use
+`(require 'ebox)`. The supported API and usage notes are in
+[`ebox.el`](ebox.el); implementation modules live in `lisp/`.
 
 Ebox is a standalone Text/Box layout engine for Emacs. It owns text
 measurement, box geometry, row/column/flex/Grid layout, retained rendering,
@@ -27,9 +27,9 @@ ordinary `word`, `char`, and `none` wrapping does not need it. For sibling sourc
 checkouts, add the required directories to `load-path`, then load Ebox:
 
 ```elisp
-(add-to-list 'load-path "/path/to/ecss/lisp")
-(add-to-list 'load-path "/path/to/tp/lisp")
-(add-to-list 'load-path "/path/to/ebox/lisp")
+(add-to-list 'load-path "/path/to/ecss")
+(add-to-list 'load-path "/path/to/tp")
+(add-to-list 'load-path "/path/to/ebox")
 (require 'ebox)
 ```
 
@@ -39,7 +39,7 @@ For Knuth–Plass paragraph layout, also add the EKP source directory to
 `load-path`, or install its package, before rendering a Box with `:wrap-mode kp`:
 
 ```elisp
-(add-to-list 'load-path "/path/to/ekp/lisp")
+(add-to-list 'load-path "/path/to/ekp")
 (ebox-render
  (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
                    "A paragraph laid out with Knuth–Plass line breaking.")))
@@ -61,7 +61,7 @@ make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0
 
 This fetches the exact dependency commits in
 [`release-dependencies.json`](release-dependencies.json), builds deterministic
-`package.el` source archives (flattening `lisp/` into the installed package root),
+`package.el` source archives (preserving the root entry and `lisp/` implementations),
 and installs them into a temporary clean profile
 to exercise rendering, updates, and selectors. It preserves the archive
 directory and `manifest.json`, including checksums and source revision/dirty
@@ -261,3 +261,10 @@ After cloning, run `make setup-hooks`. Before submitting a change, run `make che
 [docs/manual.md](docs/manual.md) · [docs/architecture.md](docs/architecture.md) · [CHANGELOG.md](CHANGELOG.md)
 
 `make check` runs structure checks, compilation and the public acceptance scenarios listed in [tests/acceptance.json](tests/acceptance.json). `make test` runs the broader regression suite; GUI and performance checks remain explicit targets. The acceptance inventory is selected by user-visible contracts, not by current pass/fail status.
+
+## Source layout migration
+
+Replace checkout paths ending in `/ebox/lisp` with `/ebox` and require
+`ebox`. Package archives must preserve the root entry and `lisp/` directory.
+Use only the public interfaces documented in the entry Commentary; internal
+feature imports and the former entry locations are removed.

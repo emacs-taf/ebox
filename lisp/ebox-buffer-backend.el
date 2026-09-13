@@ -26,7 +26,7 @@
 (require 'subr-x)
 (require 'ebox-measure)
 (require 'ebox-font)
-(require 'tp-style)
+(require 'tp)
 
 (defvar ebox--propertize-private-content-line-p nil
   "Non-nil allows ownership to be added to fresh content lines in place.")

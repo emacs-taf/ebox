@@ -130,7 +130,7 @@ Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过
 
 ## 公共边界
 
-使用 `docs/manual.zh-CN.md` 中的函数与 property；门面清单是 `ebox-public-api`。应用和同级包不得调用 `ebox--*` 私有名称。更高层的 Component、响应式、behavior、data 和 control 概念属于 ETAF。
+使用 `docs/manual.zh-CN.md` 中的函数与 property；公共 API 清单位于根目录 `ebox.el` 的 Commentary。应用和同级包只能调用清单内的接口。更高层的 Component、响应式、behavior、data 和 control 概念属于 ETAF。
 
 ECSS 与 TP 是必需的包依赖，即使作者没有写选择器或样式表也需要。EKP 是独立的可选
 排版依赖：选择 `:wrap-mode kp` 时需要它的公开段落排版 API。EKP 不可用或不兼容时

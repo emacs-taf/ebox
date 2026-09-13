@@ -1,9 +1,7 @@
-;;; ebox.el --- Pixel-perfect box model renderer -*- lexical-binding: t -*-
+;;; ebox-runtime.el --- Pixel-perfect box model renderer -*- lexical-binding: t -*-
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ebox contributors
-;; Version: 3.0.0
-;; Package-Requires: ((emacs "29.1") (ecss "0.1.0") (tp "2.0.0"))
 ;; Keywords: ui, graphics, convenience
 ;; URL: https://gitea.gklazycat.heiyu.space/geekinney/ebox
 
@@ -18,9 +16,8 @@
 ;; It renders text content with padding, borders, margins, and background colors
 ;; using pixel-precise alignment.
 ;;
-;; This file is the public facade and current implementation host.  Internal
-;; model modules are loaded here first; behavior moves into them through staged
-;; extraction commits while this feature name remains the user-facing entry.
+;; Internal runtime orchestration and rendering implementation. Consumers load
+;; the root ebox.el entry and use its documented public interfaces.
 
 ;;; Code:
 
@@ -40,8 +37,8 @@
     "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
     "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
     "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
-    "ebox-dsl.el" "ebox-selector.el" "ebox-file.el" "ebox-spi.el" "ebox.el"
-    "ebox-native-reflow.el")
+    "ebox-dsl.el" "ebox-selector.el" "ebox-file.el" "ebox-spi.el" "ebox-runtime.el"
+    "ebox-native-reflow.el" "../ebox.el")
   "Active Ebox Lisp sources compiled by `ebox-byte-compile'.")
 
 (add-to-list 'load-path ebox--directory)
@@ -5264,71 +5261,6 @@ apply and this function does not select the displayed window."
         (ebox--window-size-change (window-frame window))))
     buffer))
 
-(defconst ebox-public-api
-  '(ebox-buffer-mode
-    ebox-buffer-set-observer
-    ebox-buffer-update-report
-    ebox-build
-    ebox-byte-compile
-    ebox-call-with-render-burst
-    ebox-candidate-begin
-    ebox-child-range
-    ebox-candidate-replace
-    ebox-candidate-replace-range-ref
-    ebox-candidate-replace-root
-    ebox-candidate-replace-host-ref
-    ebox-candidate-patch-host-paint
-    ebox-clear-cache
-    ebox-column-layout-create
-    ebox-normal-layout-create
-    ebox-row-layout-create
-    ebox-text-create
-    ebox-box-create
-    ebox-commit
-    ebox-display-buffer
-    ebox-display-signature
-    ebox-flex-layout-create
-    ebox-grid-layout-create
-    ebox-host-ref-bounds
-    ebox-host-ref-position
-    ebox-help-create
-    ebox-keymap-create
-    ebox-next-interaction
-    ebox-previous-interaction
-    ebox-native-build
-    ebox-native-status
-    ebox-region-ids
-    ebox-region-resolve
-    ebox-region-update
-    ebox-render
-    ebox-render-burst-begin
-    ebox-render-burst-end
-    ebox-render-to-buffer
-    ebox-rerender-buffer-with-context
-    ebox-scroll-down
-    ebox-scroll-map
-    ebox-scroll-page-down
-    ebox-scroll-page-up
-    ebox-scroll-state
-    ebox-scroll-up
-    ebox-select-all
-    ebox-selector-match-node-p
-    ebox-selector-parse
-    ebox-selector-query-all
-    ebox-selector-query-buffer
-    ebox-selector-update-buffer
-    ebox-string-pixel-width
-    ebox-update-selector
-    ebox-unmount-buffer
-    ebox-viewport-window-width
-    ebox-wheel-scroll-down
-    ebox-wheel-scroll-up)
-  "Stable core Ebox entry points available to applications and tooling.
-This inventory includes the public autoloaded constructors, render/update
-commands, selector/scroll helpers, measurement accessors, Grid helpers, and
-optional native workflow commands.  Style-rule helpers live in `ebox-style.el'
-and are documented separately in the public API reference.")
-
 (defconst ebox-feature-families
   '(box-model
     declarative-commit
@@ -5354,57 +5286,5 @@ and are documented separately in the public API reference.")
 
 (require 'ebox-spi)
 
-(provide 'ebox)
-;;; ============================================================
-;;; Public API Summary
-;;; ============================================================
-;; The complete facade inventory is `ebox-public-api'.  Style-rule entry points
-;; are defined in `ebox-style.el' and the user-facing inventory is maintained
-;; in `docs/manual.md` and its Chinese counterpart.
-;; All other ebox-- prefixed functions are internal implementation details.
-;;
-;; ── Creation ──────────────────────────────────────────────────
-;;   ebox-text-create :value string &rest canonical-measurement-props
-;;       Create one typed canonical TextNode.
-;;   ebox-normal-layout-create
-;;       Create the typed Normal LayoutConfig.
-;;   ebox-box-create :layout config :children nodes &rest geometry-props
-;;       Create one typed canonical BoxNode.
-;;   ebox-build dsl
-;;       Compile String/text/box/row/column/flex/grid author forms into
-;;       typed TextNode/BoxNode values.
-;;
-;; ── Rendering ─────────────────────────────────────────────────
-;;   ebox-render box              → propertized string (no buffer side-effect)
-;;   ebox-render-to-buffer buf box → insert into buffer, returns buffer
-;;   ebox-commit buf next-root     → atomically publish a declarative root
-;;   ebox-candidate-begin buf      → begin a one-shot logical transaction
-;;   ebox-candidate-replace cand id root &optional old-key new-key
-;;                                → replace one runtime node logically
-;;   ebox-candidate-replace-host-ref cand ref root &optional old-key new-key
-;;                                → replace one semantic host boundary
-;;   ebox-candidate-patch-host-paint cand ref old-root new-root
-;;                                → patch paint without replacing its subtree
-;;   ebox-display-buffer buf box   → render through TP and display the buffer
-;;   ebox-host-ref-position buf ref → first live position for :host-ref
-;;   ebox-host-ref-bounds buf ref   → live (START . END) bounds for :host-ref
-;;
-;; ── Region IDs ────────────────────────────────────────────────
-;;   ebox-region-ids layout       → list of region-ids in document order
-;;                                   call BEFORE render-to-buffer
-;;
-;; ── Dynamic Updates (call inside with-current-buffer + inhibit-read-only) ──
-;;   ebox-region-update handle &rest props
-;;       Single entry-point for all dynamic changes.  HANDLE comes from
-;;       ebox-region-resolve or a selector match's :region-handle field;
-;;       numeric region ids are not update handles.
-;;
-;; ── Scroll ────────────────────────────────────────────────────
-;;   ebox-scroll-up   &optional n
-;;   ebox-scroll-down &optional n
-;;   ebox-scroll-map  (keymap, bind to buffer local map)
-;;
-;; ── Cache ─────────────────────────────────────────────────────
-;;   ebox-clear-cache
-
-;;; ebox.el ends here
+(provide 'ebox-runtime)
+;;; ebox-runtime.el ends here

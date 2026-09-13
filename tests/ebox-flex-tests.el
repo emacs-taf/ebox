@@ -3,7 +3,7 @@
 (require 'cl-lib)
 (require 'ert)
 
-(load-file (expand-file-name "../lisp/ebox.el" (file-name-directory (or load-file-name buffer-file-name))))
+(load-file (expand-file-name "../ebox.el" (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ebox-native-reflow)
 
 (defun ebox-flex-test--render (node)

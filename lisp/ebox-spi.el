@@ -14,7 +14,7 @@
 (require 'cl-lib)
 (require 'ebox-canonical)
 (require 'ebox-surface)
-(require 'tp-transaction)
+(require 'tp)
 
 (defconst ebox-framework-spi-required-tp-version "2.0.0"
   "Minimum TP package version required by Ebox framework SPI v2.")

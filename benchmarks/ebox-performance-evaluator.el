@@ -3,7 +3,7 @@
 ;;; Commentary:
 ;; Batch entry point for the repository-local performance contract.
 ;;
-;;   emacs -Q -L lisp -L ../ecss/lisp -L ../tp/lisp \
+;;   emacs -Q -L lisp -L ../ecss -L ../tp \
 ;;     -l benchmarks/ebox-performance-evaluator.el \
 ;;     -f ebox-performance-evaluator-batch
 
@@ -21,7 +21,7 @@
 
 (require 'ebox)
 (require 'ebox-selector)
-(require 'tp-surface)
+(require 'tp)
 
 (defconst ebox-performance-evaluator--stage-specs
   '((candidate-preparation

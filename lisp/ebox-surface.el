@@ -19,8 +19,8 @@
 (require 'ebox-layout)
 (require 'ebox-incremental)
 (require 'ebox-runtime-index)
-(require 'tp-reactive)
-(require 'tp-surface)
+(require 'tp)
+(require 'tp)
 (require 'tp)
 
 (defvar ebox-region-types)

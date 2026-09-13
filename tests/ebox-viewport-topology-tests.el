@@ -4,9 +4,9 @@
 (require 'ert)
 
 (setq load-prefer-newer t)
-(load-file (expand-file-name "../lisp/ebox.el"
+(load-file (expand-file-name "../ebox.el"
                             (file-name-directory load-file-name)))
-(require 'tp-surface)
+(require 'tp)
 
 (defun ebox-viewport-topology-test--nested-scroll (map &optional count)
   "Build one ordinary nested scroll owner with interactive MAP content."

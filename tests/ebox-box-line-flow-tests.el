@@ -3,7 +3,7 @@
 (require 'cl-lib)
 (require 'ert)
 (setq load-prefer-newer t)
-(load-file (expand-file-name "../lisp/ebox.el"
+(load-file (expand-file-name "../ebox.el"
                             (file-name-directory load-file-name)))
 
 (defun ebox-box-line-test--previous-pad (string height &optional offset padding)

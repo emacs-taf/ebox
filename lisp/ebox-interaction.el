@@ -7,8 +7,8 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'tp-core)
-(require 'tp-style)
+(require 'tp)
+(require 'tp)
 
 (declare-function ebox-style-compile-form "ebox-style" (tag plist))
 (declare-function ebox-style-declaration-properties "ebox-style"

@@ -10,7 +10,7 @@
 (require 'cl-lib)
 
 (require 'subr-x)
-(require 'ecss-selector)
+(require 'ecss)
 (require 'ebox-source)
 (require 'ebox-style)
 (require 'ebox-node-factory)

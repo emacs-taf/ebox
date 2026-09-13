@@ -11,7 +11,7 @@ RELEASE_DEPS_DIR ?= /tmp/ebox-release-deps
 RELEASE_OPTIONS ?=
 NATIVE_MODULE ?=
 
-EMACS_BATCH = $(EMACS) -Q --batch -L lisp -L benchmarks -L $(ECSS_DIR)/lisp -L $(TP_DIR)/lisp $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
+EMACS_BATCH = $(EMACS) -Q --batch -L . -L lisp -L benchmarks -L $(ECSS_DIR) -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
 EMACS_TEST = $(EMACS_BATCH) -L tests -l tests/ebox-fixtures.el
 NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l lisp/ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
@@ -81,16 +81,16 @@ release-native-check:
 release-tool-tests:
 	$(PYTHON) -m unittest discover -s tests/tools -p 'test_ebox_release.py'
 
-check: structure-check compile acceptance
+check: structure-check compile acceptance api-check
 
 ci: checkdoc load compile test visual-check diff-check
 
 load:
-	$(EMACS_BATCH) -l lisp/ebox.el --eval '(princ "ebox load OK\n")'
+	$(EMACS_BATCH) -l ebox.el --eval '(princ "ebox load OK\n")'
 
 compile:
-	rm -f lisp/*.elc tests/*.elc scripts/*.elc benchmarks/*.elc
-	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l lisp/ebox.el --eval '(ebox-byte-compile)'
+	rm -f *.elc lisp/*.elc tests/*.elc scripts/*.elc benchmarks/*.elc
+	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l ebox.el --eval '(ebox-byte-compile)'
 
 test: size-tests runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests node-memo-generation-tests state-contract-tests layout-boundary-tests patch-plan-tests style-schema-tests spi-tests docs-contract-tests
 
@@ -208,7 +208,7 @@ diff-check:
 	git diff --check
 
 clean:
-	rm -f lisp/*.elc tests/*.elc scripts/*.elc benchmarks/*.elc
+	rm -f *.elc lisp/*.elc tests/*.elc scripts/*.elc benchmarks/*.elc
 	rm -rf native/target
 
 .PHONY: structure-check setup-hooks
@@ -220,3 +220,8 @@ setup-hooks:
 .PHONY: acceptance
 acceptance:
 	python3 scripts/run-acceptance.py --emacs "$(EMACS)"
+
+.PHONY: api-check
+api-check:
+	$(EMACS) -Q --batch -L . $(API_PROVIDER_PATH) --eval '(setq load-prefer-newer t)' -l scripts/check-api.el
+API_PROVIDER_PATH = -L ../ecss -L ../tp -L ../ekp -L ../etaf -L ../etaf-ui -L ../etaf-db -L ../ebox-playground -L ../etaf-playground

@@ -4,6 +4,14 @@ All notable changes to Ebox are documented here.
 
 ## 3.0.0 (Unreleased)
 
+### Changed
+
+- Expose the package entry at the repository root, document supported APIs in
+  its Commentary and retain implementations under `lisp/`. Source consumers add
+  the repository root to `load-path` and require the package entry; internal
+  feature imports are unsupported. Archives retain this same directory layout.
+
+
 ### Added
 
 - Explicit native node capabilities `:help-echo`, `:pointer`, `:hover-style`,

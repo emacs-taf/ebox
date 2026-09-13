@@ -37,7 +37,7 @@ Otherwise, skip cleanly if package-lint is not already available."
   "Run package-lint against ebox.el in batch mode."
   (ebox-package-lint--ensure-package)
   (let ((command-line-args-left
-         (list (expand-file-name "lisp/ebox.el" ebox-package-lint--root))))
+         (list (expand-file-name "ebox.el" ebox-package-lint--root))))
     (package-lint-batch-and-exit)))
 
 (provide 'ebox-package-lint)

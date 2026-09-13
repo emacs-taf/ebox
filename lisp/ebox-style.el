@@ -9,7 +9,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'ecss)
-(require 'tp-style)
+(require 'tp)
 (require 'ebox-source)
 (require 'ebox-layout-config)
 (require 'ebox-size)
