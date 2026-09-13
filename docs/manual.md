@@ -475,8 +475,9 @@ again. Publish both inputs through ordinary `ebox-region-update` or canonical
 commits. The same disabled fact derives `:disabled` for selector queries and
 cascade, including descendant and sibling rules. Disabling a parent does not
 mark its children disabled. Authored `:states` (or typed `:selector-state`)
-accept custom states, but reject `disabled`; declare `:disabled t` instead.
-Focus, hover and pressed state integration into the cascade remains pending.
+accept custom states, but reject `disabled` and `focus`. Declare `:disabled t`
+and use mounted focus operations respectively. Hover and pressed state
+integration into the cascade remains pending.
 
 Use `ebox-focus-next` / `ebox-focus-previous` for logical navigation. The optional
 second argument enables cycling. `ebox-focus-first` selects the first eligible
@@ -501,6 +502,18 @@ The complete signatures and error contracts are in [ebox.el](../ebox.el).
     (ebox-focus-next 1 t)
     (ebox-focus first)))
 ```
+
+A focus change publishes the `:focus` selector state with its computed paint
+and layout. For example, local rules `(("box:focus" :color "#ff0000"))` style
+only the focused Box; descendant and sibling selectors use the same cascade.
+The state belongs to the mounted buffer: pure rendering and another mount of
+the same input have no focus until explicitly focused. Author state tokens
+cannot supply `focus`. A rule that makes a newly requested target hidden or
+fully clipped rejects that focus operation and preserves the old view. Ordinary
+updates that hide or clip a retained target clear focus and recompute without
+its focus state before publication. A rejected update restores the old state
+and paint together. Clearing focus preserves numeric point, clamped if the
+new layout is shorter. Publication observers may react to focus changes.
 
 Focus first follows an existing explicit source identity. An expired reference
 can continue only through a retained node with the same non-nil sibling key; an

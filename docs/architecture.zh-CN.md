@@ -184,7 +184,12 @@ TP 事务，只有发布内部 participant 可以协调候选焦点并在拒绝�
 回调可以发起新的焦点操作，只读查询仍可使用。发布后的 source interaction facts
 提供 tab 顺序与禁用状态。Source record 分别保存作者状态与交互事实，subject 构造从
 交互事实派生 `disabled`。查询、cascade 和增量失效读取同一派生视图；rebind 保留原始
-作者状态，禁用变化会使 subject 失效。焦点、悬停和按下状态接入 cascade 仍待完成。
+作者状态，禁用变化会使 subject 失效。挂载焦点在候选 source record 中形成不可变
+派生视图，作者不能声明此状态。焦点请求绑定发起时的已提交代，观察回调中的新提交
+不会重放旧请求。候选阶段通过 ECSS 检查目标与祖先，最终渲染再校验绘制归属；裁剪
+使已有焦点不可用时，复用同一 TP 对象清除状态并重算，之后才进行一次接受发布。
+新请求的目标不可访问时原子拒绝。纯输入不保留挂载焦点。悬停和按下状态接入 cascade
+仍待完成。
 每次发布后延迟重建导航向量与 rank
 索引，使用时检查可见性；每次导航不再扫描、排序全部 Host。稳定 runtime identity
 加上非 nil 兄弟 key，连接 keyed DSL commit 中新生成的 source handle；仍存在的显式

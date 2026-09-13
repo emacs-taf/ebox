@@ -144,7 +144,14 @@ Published source interaction facts supply tab order and disabled status. Source
 records keep authored states separate; subject construction derives `disabled` from the interaction fact.
 Queries, cascade and incremental invalidation consume that same derived view;
 rebinding retains raw authored states and invalidates subjects when disabled changes.
-Focus, hover and pressed state integration into the cascade remains pending.
+Mounted focus adds an immutable candidate projection to the source record;
+callers cannot author that token. Focus requests are tied to their committed
+base generation, so observer commits cannot replay an earlier request.
+Candidate validation uses ECSS to check focused ancestry. Final rendering also
+checks painted ownership; clipping clears retained focus and recomputes styles
+using the same TP objects before a single accepted publication. Newly requested
+inaccessible targets reject atomically. Pure inputs retain no mounted focus.
+Hover and pressed state integration into the cascade remains pending.
 A lazily built navigation vector and rank index are derived
 once per publication, with visibility checked at use. Navigation does not
 rescan and sort every Host on each key. New publication invalidates the derived

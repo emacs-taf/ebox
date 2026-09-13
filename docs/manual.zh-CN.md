@@ -407,8 +407,16 @@ map、结构换行和不可见文本不构成目标。框架不移动 point 或�
 启用的 keymap。用 `:disabled nil` 恢复原来声明的 keymap，通过普通 `ebox-region-update`
 或 canonical commit 发布。同一禁用事实派生供选择器查询与 cascade 使用的 `:disabled`，
 包括后代与兄弟规则；禁用父节点不会将子节点标记为禁用。作者 `:states`（typed 输入的
-`:selector-state`）可以声明自定义状态，但拒绝 `disabled`，应改用 `:disabled t`。
-焦点、悬停与按下状态接入 cascade 仍待完成。
+`:selector-state`）可以声明自定义状态，但拒绝 `disabled` 与 `focus`，分别应使用
+`:disabled t` 和挂载后的焦点操作。悬停与按下状态接入 cascade 仍待完成。
+
+焦点变更在同一次事务中发布 `:focus` 选择器状态、绘制与布局。局部规则
+`(("box:focus" :color "#ff0000"))` 只匹配获得焦点的 Box，后代与兄弟选择器也使用同一
+cascade。焦点属于具体 buffer；同一输入的纯渲染和其他挂载不会继承它。作者状态
+不能声明 `focus`。焦点规则让新请求的目标隐藏或完全被裁剪时，设置失败并保留旧画面。
+普通更新隐藏或裁剪已有焦点时，在发布前清除焦点并重新计算样式；拒绝更新则恢复旧状态
+与绘制。清空焦点保留数值 point，新布局变短时限制到可访问范围。发布观察者也会收到
+焦点变更的报告。
 
 `ebox-focus-next` / `ebox-focus-previous` 操作逻辑焦点，第二个可选参数允许循环。
 `ebox-focus-first` 选择第一个有效停靠点；没有停靠点时保持原焦点和 point。

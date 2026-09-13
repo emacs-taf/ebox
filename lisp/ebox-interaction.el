@@ -3,7 +3,7 @@
 ;;; Commentary:
 ;; Validates finite node interaction inputs, projects native text properties,
 ;; and owns mounted focus and navigation through publication and rollback.
-;; These node facts do not yet participate in CSS cascade or geometry.
+;; Disabled and mounted focus feed the shared selector and cascade semantics.
 
 ;;; Code:
 
@@ -236,6 +236,61 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
           (command-execute command))
       (unless noerror (user-error "No live Ebox RET command at position")))))
 
+(defvar ebox-interaction--focus-request nil
+  "Dynamic (BUFFER HOST-REF BASE-STATE) for one focus publication.")
+
+(defun ebox-interaction--focus-request-for (buffer state)
+  "Return the focus request belonging to BUFFER and committed base STATE."
+  (and (eq buffer (car ebox-interaction--focus-request))
+       (eq state (nth 2 ebox-interaction--focus-request))
+       ebox-interaction--focus-request))
+
+(defun ebox-interaction--resolve-focus-owner (state source ref owner key)
+  "Resolve REF in STATE SOURCE, then retain OWNER only through matching KEY."
+  (or (and ref (gethash ref (ebox-source--index-host-ref-table source)))
+      (and key (equal key (ebox-interaction--focus-key state owner)) owner)))
+
+(defun ebox-interaction--candidate-focus-source (buffer old-state index source root)
+  "Project BUFFER's requested or retained focus into candidate INDEX SOURCE."
+  (with-current-buffer buffer
+    (if (and (null ebox-interaction--focus-owner)
+             (not (ebox-interaction--focus-request-for buffer old-state)))
+        source
+      (let* ((request (ebox-interaction--focus-request-for buffer old-state))
+             (ref (if request (cadr request)
+                    (ebox-interaction--focus-ref old-state ebox-interaction--focus-owner)))
+             (owner (ebox-interaction--resolve-focus-owner
+                     index source ref ebox-interaction--focus-owner
+                     (unless request
+                       (ebox-interaction--focus-key old-state ebox-interaction--focus-owner))))
+             (node (and owner (ebox-interaction--focus-node index owner)))
+             (handle (and node (ebox-tree-node-source-handle node))))
+	(when (or (and handle (plist-get (ebox-source-index-interactions source handle) :disabled))
+                  (and owner (not (ebox-interaction--focus-visible-p index owner)))
+                  (and (not request) ebox-interaction--focus-owner
+                       (not (ebox-interaction--focus-position old-state ebox-interaction--focus-owner))))
+          (setq handle nil))
+	(let ((projected (ebox-source--with-focus source handle)))
+          (when handle
+            (let* ((subjects (ebox-tree-source-index root t nil projected))
+                   (ebox-style--scopes (ebox-style-source-scopes subjects))
+                   (current owner) chain parent-style hidden)
+              (while current
+		(push (ebox-interaction--focus-node index current) chain)
+		(setq current (ebox-runtime-index-get current (plist-get index :parent-table))))
+              (dolist (ancestor chain)
+		(setq parent-style
+                      (ebox-style-compute-subject
+                       (ebox-tree-node-subject subjects ancestor)
+                       (ebox-style-node-declarations subjects ancestor) parent-style))
+		(when (eq (ebox-style-computed-value parent-style :visibility) 'hidden)
+                  (setq hidden t)))
+              (when hidden
+		(if (and request (cadr request))
+                    (user-error "Focus styles removed the enabled visible target: %S" (cadr request))
+                  (setq projected (ebox-source--with-focus projected nil))))))
+          projected)))))
+
 (defvar-local ebox-interaction--focus-owner nil
   "Runtime node identity owning this buffer's logical focus.")
 
@@ -337,7 +392,10 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
 Return the current opaque Host reference and move point to its first accessible
 visible painted character, without selecting a window.  Any enabled visible
 node may receive explicit focus, including a negative or absent `:tab-index'.
-Nil HOST-REF clears focus without moving point.  Missing, disabled, hidden or
+Nil HOST-REF clears focus and preserves numeric point, clamped after layout.
+Focus changes publish the focus selector state and its computed styles together.
+Styles that make a newly requested target inaccessible reject the operation.
+Missing, disabled, hidden or
 inaccessible targets signal `user-error' without changing focus or point.
 Focus follows retained identity through publication.  Removal, hiding and
 disabling clear it without choosing a replacement; navigation can then restart.
@@ -347,15 +405,21 @@ changes cannot join an outer transaction or expose provisional targets."
   (when (tp-transaction-active-p)
     (error "Ebox focus changes require an accepted transaction boundary"))
   (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
-    (if (null host-ref)
-        (setq ebox-interaction--focus-owner nil)
-      (let* ((state (ebox-surface--buffer-client-state (current-buffer)))
-             (owner (gethash host-ref (ebox--buffer-host-ref-table (current-buffer))))
-             (position (and owner (ebox-interaction--focus-position state owner))))
-        (unless position (user-error "No enabled visible Ebox focus target: %S" host-ref))
-        (setq ebox-interaction--focus-owner owner)
-        (goto-char position)
-        (ebox-source--copy-data (ebox-interaction--focus-ref state owner))))))
+    (let* ((state (ebox-surface--buffer-client-state (current-buffer)))
+           (owner (and host-ref (gethash host-ref (ebox--buffer-host-ref-table (current-buffer)))))
+           (position (and owner (ebox-interaction--focus-position state owner))))
+      (when (and host-ref (not position))
+        (user-error "No enabled visible Ebox focus target: %S" host-ref))
+      (if (equal owner ebox-interaction--focus-owner)
+          (when position (goto-char position))
+        (let ((ebox-interaction--focus-request (list (current-buffer) host-ref state)))
+          (save-restriction
+            (widen)
+            (ebox-commit
+             (current-buffer)
+             (ebox-canonical-input-create (list (plist-get state :root-node))
+                                          (plist-get state :source-index))))))
+      (ebox-focused-host-ref))))
 
 ;;;###autoload
 (defun ebox-focused-host-ref (&optional buffer-or-name)
@@ -381,31 +445,42 @@ following the target until point is moved back to that target's first character.
             (and state (ebox-interaction--focus-ref
                         state ebox-interaction--focus-owner))
             (and state (ebox-interaction--focus-key
-                        state ebox-interaction--focus-owner))))))
+                        state ebox-interaction--focus-owner))
+            state))))
 
 (defun ebox-interaction--focus-publish (buffer snapshot)
   "Reconcile BUFFER's focus from SNAPSHOT against the published candidate."
   (with-current-buffer buffer
     (setq ebox-interaction--focus-order nil)
     (let* ((state (ebox-surface--buffer-client-state buffer))
-           (owner (or (and (nth 3 snapshot)
-                           (gethash (nth 3 snapshot) (ebox--buffer-host-ref-table buffer)))
-                      (and (nth 4 snapshot)
-                           (equal (nth 4 snapshot)
-                                  (ebox-interaction--focus-key state (car snapshot)))
-                           (car snapshot))))
+           (request (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
+           (owner (ebox-interaction--resolve-focus-owner
+                   state (plist-get state :source-index)
+                   (if request (cadr request) (nth 3 snapshot))
+                   (car snapshot) (unless request (nth 4 snapshot))))
+           (owner (and owner
+                       (when-let* ((node (ebox-interaction--focus-node state owner))
+                                   (record (ebox-source--index-record
+                                            (plist-get state :source-index)
+                                            (ebox-tree-node-source-handle node))))
+                         (and (ebox-source-record-focus-p record) owner))))
            (position (and owner (ebox-interaction--focus-position state owner))))
+      (when (and request (cadr request) (not position))
+        (user-error "Focus styles removed the enabled visible target: %S" (cadr request)))
       (setq ebox-interaction--focus-owner (and position owner))
-      (when (car snapshot)
-        (goto-char (if (and position (nth 2 snapshot)) position
+      (when (or request (car snapshot))
+        (goto-char (if (and position (or request (nth 2 snapshot))) position
                      (min (point-max) (max (point-min) (nth 1 snapshot)))))))))
 
 (defun ebox-interaction--focus-settle (buffer snapshot state)
   "Apply BUFFER's focus point after TP restores its native view for STATE."
-  (when (and (car snapshot) (buffer-live-p buffer)
+  (when (and (or (car snapshot)
+                 (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
+             (buffer-live-p buffer)
              (eq state (ebox-surface--buffer-client-state buffer)))
     (with-current-buffer buffer
-      (let ((position (and (nth 2 snapshot)
+      (let ((position (and (or (nth 2 snapshot)
+                               (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
                            (ebox-interaction--focus-position
                             state ebox-interaction--focus-owner))))
         (goto-char (or position

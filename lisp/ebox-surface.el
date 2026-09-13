@@ -1851,11 +1851,13 @@ PREVIOUS-STATE's node-object table."
     objects-by-node))
 
 (defun ebox-surface--complete-projection
-    (context root source-index style-required-p projection)
+    (context root source-index style-required-p projection &optional node-objects)
   "Complete a retained PROJECTION for ROOT after a local proof miss.
 The local attempt already owns the surface and node-root identities in
 CONTEXT, so full fallback must populate those same objects instead of creating
-the projection roots a second time."
+the projection roots a second time. NODE-OBJECTS, when non-nil, reuses a
+complete object map for style recomputation without allocating positional
+children again."
   (when (and style-required-p
              (ebox-source--index-derived-stale-p source-index))
     ;; Local subject deltas can retain a child's old parent object.  The full
@@ -1892,7 +1894,7 @@ the projection roots a second time."
      bindings-by-subject states-by-subject style-state-table
      stylesheet-signature
      selector-tree-token stylesheet-subject-local-p
-     ebox--render-root-parent-kind)
+     ebox--render-root-parent-kind nil node-objects)
     (when (> (ebox-tree-author-style-count root) 0)
       (ebox-tree-clear-author-style-pending root))
     projection))
@@ -3149,14 +3151,18 @@ dependencies, or any malformed index conservatively preserves root planning."
     (context parent node source-index table subject-table bindings-by-subject
              states-by-subject style-state-table stylesheet-signature
              selector-tree-token stylesheet-subject-local-p
-             &optional parent-kind positional-p)
-  "Ensure styled NODE descendants below PARENT in CONTEXT and fill TABLE."
+             &optional parent-kind positional-p node-objects)
+  "Ensure styled NODE descendants below PARENT in CONTEXT and fill TABLE.
+NODE-OBJECTS reuses already ensured identities for a same-context style pass."
   (ebox--ensure-node-id node)
   (let ((object
-         (tp-object-ensure context parent
-                           (ebox-surface--node-key
-                            source-index node positional-p)
-                           (ebox-surface--node-kind node))))
+         (if node-objects
+             (or (gethash (plist-get node :node-id) node-objects)
+                 (error "Ebox focus reprojection lost a retained node"))
+           (tp-object-ensure context parent
+                             (ebox-surface--node-key
+                              source-index node positional-p)
+                             (ebox-surface--node-kind node)))))
     (tp-object-retain context object)
     (plist-put node :surface-object object)
     (puthash node object table)
@@ -3176,7 +3182,7 @@ dependencies, or any malformed index conservatively preserves root planning."
           bindings-by-subject
           states-by-subject style-state-table stylesheet-signature
           selector-tree-token stylesheet-subject-local-p
-          child-kind (and (plist-get node :ebox-child-sequence) t)))))
+          child-kind (and (plist-get node :ebox-child-sequence) t) node-objects))))
     (when subject-table
       (ebox-tree--validate-node-parent-participation
        node parent-kind 'computed))
@@ -5630,7 +5636,9 @@ than replaying old coordinates, properties or revision authority."
                    (equal display (plist-get prepared :display-signature))
                    (equal width (plist-get prepared :viewport-width))
                    (equal height (plist-get prepared :viewport-height))
-                   (equal scroll expected-offsets))
+                   (equal scroll expected-offsets)
+                   (not (and ebox-interaction--focus-owner
+                             (ebox-surface--unpainted-focus-p prepared rendered))))
               (ebox-surface--scroll-viewport-result
                context base prepared rendered prepared-batch)
             (ebox-surface--project
@@ -6979,6 +6987,35 @@ but cannot introduce or remove a viewport expression or node identity."
       (ebox-surface--apply-scroll-offsets root scroll-offsets))
     state))
 
+(defun ebox-surface--unpainted-focus-p (state rendered)
+  "Return non-nil if STATE projects focus without an accessible painted target."
+  (let ((source (plist-get state :source-index)) owner)
+    (ebox-runtime-index-map
+     (lambda (id node)
+       (when-let* ((handle (ebox-tree-node-source-handle node))
+                   (record (ebox-source--index-record source handle)))
+         (when (ebox-source-record-focus-p record) (setq owner id))))
+     (plist-get state :node-table))
+    (and owner
+         (not
+          (and (ebox-interaction--focus-visible-p state owner)
+               (catch 'painted
+                 (let ((position 0) (limit (length rendered))
+                       (ebox-surface--paint-node-chain-cache nil))
+                   (while (< position limit)
+                     (let ((end (next-property-change position rendered limit)))
+                       (while (and (< position end) (eq (aref rendered position) ?\n))
+                         (setq position (1+ position)))
+                       (when (and (< position end)
+                                  (not (invisible-p
+                                        (ensure-list (get-text-property position 'invisible rendered))))
+                                  (not (equal (get-text-property position 'display rendered) ""))
+                                  (member owner
+                                          (ebox-surface--paint-node-chain
+                                           state (ebox-surface--role-ids-at rendered position))))
+                         (throw 'painted t))
+                       (setq position end))))))))))
+
 (defun ebox-surface--project
     (context source previous-state preserve-identities-p state-overrides
              signals projection-kind source-isolated-p source-path-copied-p)
@@ -7400,6 +7437,45 @@ published runtime and must be consumed without clearing those shared nodes."
                        (ebox-surface--render-candidate state)))
                   (t
                    (ebox-surface--render-candidate state)))))
+            (when (and signals
+                       (or ebox-interaction--focus-owner
+                           (cadr (ebox-interaction--focus-request-for
+                                  (ebox-surface--signals-buffer signals) previous-state)))
+                       (ebox-surface--unpainted-focus-p state rendered))
+              (when (cadr (ebox-interaction--focus-request-for
+                           (ebox-surface--signals-buffer signals) previous-state))
+                (user-error "Focus layout removed the enabled visible target"))
+              ;; Geometry can remove a focus target after selector computation.
+              ;; Rebuild the candidate in the same producer context with focus
+              ;; cleared, before TP can publish either its text or source facts.
+              (setq root (ebox-tree-copy-node-structure root)
+                    source-index (ebox-source--with-focus (plist-get state :source-index) nil)
+                    projection (ebox-surface--complete-projection
+                                context root source-index t projection
+                                (ebox-surface--node-object-table
+                                 (plist-get projection :objects-by-node)))
+                    source-index (plist-get projection :source-index)
+                    projection-kind nil
+                    state (ebox-surface--projection-state
+                           root previous-state
+                           (cl-loop for key in '(:viewport-width :viewport-height
+                                                 :display-signature :runtime-revision
+                                                 :scroll-state-table :detached-identity-history)
+                                    append (list key (plist-get state key)))
+                           nil stylesheet-active-p t axes
+                           viewport-width viewport-height surface-display-signature
+                           scroll-offsets))
+              (plist-put state :source-index source-index)
+              (plist-put state :style-binding-states
+                         (plist-get projection :style-binding-states))
+              (plist-put state :selector-tree-snapshot
+                         (plist-get projection :selector-tree-snapshot))
+              (plist-put state :selector-tree-token
+                         (plist-get projection :selector-tree-token))
+              (plist-put state :stylesheet-signature
+                         (plist-get projection :stylesheet-signature))
+              (plist-put state :region-box-table (make-hash-table :test 'equal))
+              (setq rendered (ebox-surface--render-candidate state)))
             (when (and (eq projection-kind 'native-frame)
                        (not (eq (plist-get state :projection-kind)
                                 'native-frame)))

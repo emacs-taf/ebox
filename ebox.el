@@ -98,7 +98,8 @@
 ;;;###autoload (autoload 'ebox-build "ebox" nil nil)
 ;; Compile an Ebox author form into one opaque canonical input.
 ;; :disabled t derives the disabled selector state. Author :states may contain
-;; custom states, but declaring disabled there signals an error.
+;; custom states, but declaring disabled or focus there signals an error.
+;; Focus state is derived only for mounted buffers through ebox-focus.
 ;;
 ;; Function: ebox-byte-compile ()
 ;;;###autoload (autoload 'ebox-byte-compile "ebox" nil t)
@@ -452,8 +453,13 @@
 ;; Return the current opaque Host reference and move point to its first accessible
 ;; visible painted character, without selecting a window.  Any enabled visible
 ;; node may receive explicit focus, including a negative or absent `:tab-index'.
-;; Nil HOST-REF clears focus without moving point.  Missing, disabled, hidden or
-;; inaccessible targets signal `user-error' without changing focus or point.
+;; Nil HOST-REF clears focus and preserves numeric point, clamped after layout.
+;; A changed target publishes :focus queries, computed styles and geometry in
+;; the same transaction. The input remains unchanged for pure rendering and
+;; other mounts. Styles that make a newly requested target inaccessible signal
+;; user-error and preserve the prior focus, text and point.
+;; Missing, disabled, hidden or inaccessible targets signal user-error without
+;; changing focus or point.
 ;; If point was manually moved off the focus position, publication preserves
 ;; its numeric position clamped to the accessible range.
 ;; Focus follows retained identity through publication.  Removal, hiding and
@@ -818,8 +824,9 @@
 ;; Bind normalized source facts in BUILDER and return an opaque handle.
 ;; The returned handle contains identity only; all facts are owned by BUILDER
 ;; until `ebox-source-builder-finish' seals them into a source index.
-;; SELECTOR-STATE contains authored state tokens. The disabled token is reserved:
-;; supply :disabled t in INTERACTIONS instead; authored disabled signals an error.
+;; SELECTOR-STATE contains authored tokens. Disabled and focus are reserved:
+;; use :disabled t in INTERACTIONS and mounted ebox-focus operations respectively.
+;; Authoring either token signals an error.
 ;; Interaction-derived states participate in queries and cascade in each candidate.
 ;; ECSS-TARGETS is t (default) for all descendants or a proper list of source
 ;; identities eligible for this source's ECSS rules.  nil selects none.  The

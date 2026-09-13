@@ -6,6 +6,13 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Mounted focus now drives `:focus` selectors, paint and layout in the same
+  publication. Clearing focus can shrink layout and clamps numeric point.
+  Invalid focus styles reject the selection; hiding or clipping a retained
+  target clears its state before publication. Focus changes notify observers.
+  Replace authored `:states focus` or typed `:selector-state '(focus)` with
+  mounted focus operations; authored focus tokens now signal an error.
+
 - Focus setting, clearing and navigation reject active TP transactions before
   mutation. Move such calls to accepted `after-commit` callbacks; outer rollback
   no longer risks leaving an uncommitted focus change. Queries remain available.

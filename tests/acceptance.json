@@ -740,6 +740,61 @@
       "name": "ebox-focus-rejects-unaccepted-transaction-changes",
       "file": "tests/ebox-focus-tests.el",
       "purpose": "Outer transactions cannot leak focus selection, clearing or navigation; accepted callbacks may set focus."
+    },
+    {
+      "name": "ebox-focus-state-shares-selectors-paint-and-layout",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Setting and clearing focus recompute shared rules and preserve manual point."
+    },
+    {
+      "name": "ebox-focus-state-isolates-shared-input-mounts-and-pure-render",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "One canonical input supplies independent mounted states and stateless pure output."
+    },
+    {
+      "name": "ebox-focus-state-follows-reorder-and-rejected-publication",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Retained focus styles follow keyed reorder, roll back and clear on disable."
+    },
+    {
+      "name": "ebox-focus-state-follows-region-updates",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Local content, disabling and hiding updates keep focus facts and paint aligned."
+    },
+    {
+      "name": "ebox-focus-state-rejects-inaccessible-styled-target",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "A focus rule that removes the target rejects selection and restores the view."
+    },
+    {
+      "name": "ebox-focus-state-clears-when-cascade-hides-retained-target",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "A committed hiding rule clears retained focus and removes its selector state."
+    },
+    {
+      "name": "ebox-focus-state-clears-when-layout-clips-retained-target",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "A layout update that clips the focused row removes both focus and its selector state."
+    },
+    {
+      "name": "ebox-focus-state-rejects-authored-focus-tokens",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Author input cannot supply the selector state owned by mounted logical focus."
+    },
+    {
+      "name": "ebox-focus-state-observer-commit-uses-accepted-generation",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "An observer commit preserves accepted focus without replaying an older focus request."
+    },
+    {
+      "name": "ebox-focus-state-clears-when-scrolling-hides-target",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Scrolling a focused row out of view clears its style state before acceptance."
+    },
+    {
+      "name": "ebox-focus-state-clears-invisible-target-during-sibling-update",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "An unrelated local update clears inaccessible focus and restores its base paint."
     }
   ]
 }

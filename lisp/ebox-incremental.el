@@ -7311,6 +7311,12 @@ certificate."
             (or (plist-get candidate-index :source-index)
                 (plist-get local-preparation :source-index)
                 (ebox-tree-source-index candidate-root)))
+           (_focus-source
+            (let ((projected (ebox-interaction--candidate-focus-source
+                              buffer old-state candidate-index candidate-source-index candidate-root)))
+              (unless (eq projected candidate-source-index)
+                (setq candidate-source-index
+                      (ebox-tree-source-index candidate-root t nil projected)))))
            (_source-index
             (progn
               (plist-put candidate-index :source-index
