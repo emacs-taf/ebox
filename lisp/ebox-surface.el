@@ -90,10 +90,10 @@
   (ebox-surface--validate-tp-v2-capability (tp-runtime-manifest))
   "Non-nil after the loaded TP manifest passes the required v2 contract.")
 
-(defun ebox-surface--transaction-participate (key stage rollback)
+(defun ebox-surface--transaction-participate (key stage rollback &optional after-commit)
   "Register KEY with paired STAGE and ROLLBACK through TP v2."
   (tp-transaction-participate-v2
-   :key key :stage stage :rollback rollback))
+   :key key :stage stage :rollback rollback :after-commit after-commit))
 
 (defvar ebox-surface--inline-style-value-cache nil
   "Per-projection cache for selector-free computed inline styles.")
@@ -1242,7 +1242,8 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
 REPORT-BASE requests an Ebox commit report.  AFTER-PUBLICATION, when non-nil,
 runs after TP and Ebox point at the same candidate generation.
 FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
-  (let (new-state region-snapshot scroll-snapshot
+  (let ((focus-snapshot (ebox-interaction--focus-capture buffer))
+        new-state region-snapshot scroll-snapshot
         old-surface old-mirror region-keys scroll-keys)
     (ebox-surface--transaction-participate
      (list 'ebox/runtime buffer)
@@ -1338,6 +1339,7 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
        (ebox-incremental--replace-hash-entries
         ebox--scroll-global-state scroll-keys
         (plist-get new-state :scroll-state-table))
+       (ebox-interaction--focus-publish buffer focus-snapshot)
        (if framework-participant
            (plist-put
             new-state :last-update-report
@@ -1353,6 +1355,7 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
        (unwind-protect
            (progn
              (ebox-surface--participant-run-rollback framework-participant)
+             (ebox-interaction--focus-rollback buffer focus-snapshot)
              (when observation-context
                (ebox-surface--observation-discard observation-context)))
          (if (buffer-live-p buffer)
@@ -1373,7 +1376,9 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
              (remhash region-id ebox--region-box-table))
            (dolist (region-id scroll-keys)
              (ebox--scroll-clear-state region-id)
-             (ebox--smooth-scroll-stop region-id))))))))
+             (ebox--smooth-scroll-stop region-id)))))
+     (lambda ()
+       (ebox-interaction--focus-settle buffer focus-snapshot new-state)))))
 
 (defun ebox-surface-mount-buffer
     (buffer source &optional report-base after-publication

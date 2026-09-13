@@ -41,6 +41,12 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Buffer-local logical focus with explicit setting, querying, ordered navigation
+  and optional cycling. Retained updates preserve focus and point, while rejected
+  publication restores them; removal, hiding, disabling and unmount clear focus.
+  Nodes accept local `:tab-index` and `:disabled` capabilities. Disabled nodes
+  suppress their declared or inherited keymap until reenabled.
+
 - `ebox-activate` invokes the current committed node's RET binding, with optional
   explicit position and quiet handling of missing targets. It respects native
   keymap ownership, nil barriers, visibility, retained updates and unmount.

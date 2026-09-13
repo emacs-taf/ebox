@@ -225,7 +225,7 @@ space 可以缩短到精确的剩余像素宽度，被裁字形的剩余空隙�
 份额；Grid 放置索引、Flex grow/shrink 因子仍是无量纲数字。
 
 Text 的样式声明只接受字体、前景/背景和文本装饰 property；此外，Text 还接受下文
-介绍的四种原生节点能力。padding、margin、border、
+介绍的原生节点能力。padding、margin、border、
 尺寸、`:outer`、overflow、可见性和换行策略只属于 Box。Box 上的字体与颜色可以
 作为其 Text 子树的继承来源，但不会让 Text 获得 Box 几何。
 
@@ -330,7 +330,8 @@ Ebox 的文本簇处理会保留常见组合音标、变体选择符、Emoji 修
 ### 原生节点交互
 
 Text 与所有 Box form 都接受 `:help-echo`、`:pointer`、`:hover-style` 和
-`:keymap`。它们是 CSS cascade 之外的显式节点能力。例如，下面的 Box 组合了
+`:keymap`，以及节点自身的焦点输入 `:tab-index` 和 `:disabled`。它们是 CSS cascade
+之外的显式节点能力。例如，下面的 Box 组合了
 动态帮助、手形指针、悬停绘制，以及供鼠标和键盘激活共用的回调：
 
 ```elisp
@@ -398,7 +399,39 @@ map、结构换行和不可见文本不构成目标。框架不移动 point 或�
 ```
 
 仍可直接传入原生 keymap，其鼠标命令需要自行处理事件的目标 buffer。Ebox 使用原生
-命令分派，不创建应用状态或焦点管理系统。单独设置手形指针不会绑定点击命令。
+命令分派，不创建应用状态。单独设置手形指针不会绑定点击命令。
+
+`:tab-index` 的非负整数值声明逻辑焦点导航停靠点，按数值、buffer 起点和终点升序排列。
+负整数允许显式设置焦点，但跳过导航；nil 或省略不创建停靠点。`:disabled t` 排除该节点
+的焦点，并阻断自身或继承的 keymap。两个输入仅约束声明节点；子节点仍可独立声明
+启用的 keymap。用 `:disabled nil` 恢复原来声明的 keymap，通过普通 `ebox-region-update`
+或 canonical commit 发布。这些输入暂不产生 selector 伪状态。
+
+`ebox-focus-next` / `ebox-focus-previous` 操作逻辑焦点，第二个可选参数允许循环。
+它们返回不透明 Host 引用，供 `ebox-focus` 和 `ebox-focused-host-ref` 使用；框架也可以
+传入自己的 source-builder identity。`ebox-focus` 接受 nil 清空焦点；显式设置允许任何
+已启用且可见的节点，不要求 tab index 或 keymap。完整签名和错误约束见
+[ebox.el](../ebox.el)。
+
+```elisp
+(ebox-render-to-buffer
+ "*Ebox Focus*"
+ (ebox-build '(column (text :key first :tab-index 0 "First")
+                     (text :key second :tab-index 0 "Second"))))
+(with-current-buffer "*Ebox Focus*"
+  (let ((first (ebox-focus-next)))
+    (ebox-focus-next 1 t)
+    (ebox-focus first)))
+```
+
+焦点属于已挂载 buffer，不选择窗口，也不为同一个 buffer 的每个窗口维护独立焦点。
+Keyed 重排跟随保留节点，即使新输入给出新的 source handle；发布后应查询当前引用，
+不要继续使用上一代自动生成的引用。point 仍位于焦点节点首个可见字符时，发布跟随它
+的新位置；手动移开 point 后，保留其数值位置，并限制在当前可访问范围内。发布删除、
+隐藏或禁用会清空焦点并保留这个受限位置，随后导航从首个／末个有效停靠点开始。
+发布被拒绝时恢复原焦点和 point；卸载和 buffer 关闭释放焦点。导航和显式设置还检查
+narrowing 与不可见 overlay。原生激活仍执行节点 keymap 的动作；逻辑焦点暂不把重叠
+子节点的原生 keymap 重定向到获得焦点的父节点。
 
 Playground 的[交互实验室](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)
 把业务函数与状态放在 `interaction-reference.el`，把布局放在

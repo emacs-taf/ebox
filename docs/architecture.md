@@ -131,9 +131,23 @@ Keys are local to a sibling collection. Declarative source trees never own live 
 
 Native activation and optional interaction navigation resolve declaring keymap
 owners from the committed surface and paint ancestry. Explicit nil stops inherited
-activation. They keep no target registry or focus state; inaccessible, invisible
+activation. They keep no activation target registry; inaccessible, invisible
 and structural text cannot become activation targets. Commands run only after
 ownership validation, and callback errors remain observable.
+
+Logical focus has one buffer-local retained node owner. Published source
+interaction facts supply tab order and disabled status; they do not yet feed
+selector states. A lazily built navigation vector and rank index are derived
+once per publication, with visibility checked at use. Navigation does not
+rescan and sort every Host on each key. New publication invalidates the derived
+index. Stable runtime identity bridges new source handles in keyed DSL commits.
+
+The rollback-capable Ebox participant promotes focus together with the candidate
+and restores it on rejection. TP restores native view markers at final accept,
+so Ebox reapplies the chosen point in its contained after-commit callback only
+if that candidate is still current. Manual point movement preserves a clamped
+numeric position. Unmount clears focus and the derived index. This state does
+not own application values or select windows.
 
 ## Verification
 

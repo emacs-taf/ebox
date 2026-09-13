@@ -660,6 +660,41 @@
       "name": "ebox-activate-rejects-unowned-and-inaccessible-positions",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Overlay/global maps and inaccessible or structural positions cannot supply an activation target."
+    },
+    {
+      "name": "ebox-focus-orders-declared-stops-and-controls-cycling",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Navigation shares declared order, skips disabled nodes and fails atomically."
+    },
+    {
+      "name": "ebox-focus-follows-publication-and-preserves-manual-point",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Layout and keyed reorder retain focus, while manual point movement is respected."
+    },
+    {
+      "name": "ebox-focus-rejection-removal-and-unmount-release-ownership",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Rejected publication retains focus and point; removal or disable clears it."
+    },
+    {
+      "name": "ebox-focus-respects-accessibility-and-buffer-isolation",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Narrowing and invisible overlays affect navigation without changing other buffers."
+    },
+    {
+      "name": "ebox-disabled-node-blocks-native-activation-and-navigation",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Disabled capability blocks own and inherited maps until a committed reenable."
+    },
+    {
+      "name": "ebox-focus-retains-keyed-dsl-nodes-and-clears-hidden-focus",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Fresh source handles preserve keyed focus until published visibility hides it."
+    },
+    {
+      "name": "ebox-focus-returns-owned-references-and-restores-rejected-reorder",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Returned reference data cannot corrupt ownership, and reorder rejection restores point."
     }
   ]
 }

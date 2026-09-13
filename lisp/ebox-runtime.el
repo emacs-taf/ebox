@@ -4124,6 +4124,7 @@ With prefix ARG, scroll by that many content lines."
 Defaults to the current buffer."
   (let* ((buffer (or buffer (current-buffer)))
          (state (ebox--buffer-render-state buffer)))
+    (with-current-buffer buffer (ebox-interaction--focus-reset))
     (ebox--cancel-buffer-runtime-prewarm buffer)
     (when-let* ((root (plist-get state :root-node)))
       (ebox--clear-region-runtime-caches

@@ -179,6 +179,16 @@ narrowing 与不可见性，不安装按键绑定、焦点注册表或应用状�
 阻止祖先激活。不可访问、不可见和结构文本不能成为目标；归属校验后才执行命令，
 回调错误保持可观察，不另建目标注册表。
 
+逻辑焦点只有一个 buffer-local retained node owner。发布后的 source interaction facts
+提供 tab 顺序与禁用状态，暂不进入 selector states。每次发布后延迟重建导航向量与 rank
+索引，使用时检查可见性；每次导航不再扫描、排序全部 Host。稳定 runtime identity
+连接 keyed DSL commit 中新生成的 source handle。
+
+Ebox 的可回滚 participant 随候选提升焦点，拒绝时恢复。TP 在 final accept 恢复原生
+视图 marker，因此 Ebox 在受控 after-commit 回调中重新应用 point，且只作用于仍为
+当前代的候选。手动 point 保留受可访问范围限制的数值位置。卸载清理焦点与派生索引；
+该状态不管理应用值，也不选择窗口。
+
 横向 `:overflow hidden` 在内容组合后、自身 padding 和 border 添加前执行。它选取
 测量后能容纳的完整受支持文本簇前缀，再用空白补齐剩余像素。固定 display space 可以
 缩短，字形与图像不做局部位图裁剪；裁掉的子节点属性不会残留在中性填充上。

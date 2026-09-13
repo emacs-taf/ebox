@@ -180,7 +180,12 @@
 ;; Return immutable node-owned facts for TAG from DECLARATIONS.
 ;; Source declarations stay behind the source handle; the returned value contains
 ;; provisional concrete node properties. Tagged values require ECSS computation.
-;; INTERACTIONS is a plist of fixed node capabilities, separate from CSS.
+;; INTERACTIONS is a plist of fixed node capabilities, separate from CSS:
+;; :help-echo, :pointer, :hover-style, :keymap, :tab-index and :disabled.
+;; Tab index is nil or an integer; nonnegative values create navigation stops.
+;; Disabled is nil or t; t excludes focus and blocks this node's own or inherited
+;; keymap. Both inputs are local to the node; explicit child capabilities remain
+;; independent. Pass the same interactions to its source-builder binding.
 ;;
 ;; Function: ebox-canonical-input-create (nodes source-index &optional range-anchors)
 ;;;###autoload (autoload 'ebox-canonical-input-create "ebox" nil nil)
@@ -434,6 +439,45 @@
 ;; Function: ebox-incremental-prepare-viewport-commit (buffer viewport-width viewport-height axes display-signature style-context-stable-p)
 ;;;###autoload (autoload 'ebox-incremental-prepare-viewport-commit "ebox" nil nil)
 ;; Prepare BUFFER for VIEWPORT-WIDTH, VIEWPORT-HEIGHT, AXES, and DISPLAY-SIGNATURE.
+;;
+;; Function: ebox-focus (host-ref &optional buffer-or-name)
+;;;###autoload (autoload 'ebox-focus "ebox" nil nil)
+;; Focus HOST-REF in BUFFER-OR-NAME, defaulting to the current buffer.
+;; Return the current opaque Host reference and move point to its first accessible
+;; visible painted character, without selecting a window.  Any enabled visible
+;; node may receive explicit focus, including a negative or absent `:tab-index'.
+;; Nil HOST-REF clears focus without moving point.  Missing, disabled, hidden or
+;; inaccessible targets signal `user-error' without changing focus or point.
+;; If point was manually moved off the focus position, publication preserves
+;; its numeric position clamped to the accessible range.
+;; Focus follows retained identity through publication.  Removal, hiding and
+;; disabling clear it without choosing a replacement; navigation can then restart.
+;; Failed publication restores focus.  Unmount and buffer death release it.
+;;
+;; Function: ebox-focused-host-ref (&optional buffer-or-name)
+;;;###autoload (autoload 'ebox-focused-host-ref "ebox" nil nil)
+;; Return the logical focus Host reference in BUFFER-OR-NAME, or nil.
+;; Default to the current buffer.  Dead or unmounted buffers return nil.
+;; Manual point movement does not clear logical focus; it stops publication from
+;; following the target until point is moved back to that target's first character.
+;;
+;; Function: ebox-focus-next (&optional count cycle buffer-or-name)
+;;;###autoload (autoload 'ebox-focus-next "ebox" nil t)
+;; Move logical focus COUNT stops forward in BUFFER-OR-NAME and return its ref.
+;; Defaults are one stop and the current buffer.  Negative COUNT moves backward;
+;; zero returns current focus.  CYCLE non-nil wraps at a boundary; otherwise a
+;; missing stop signals `user-error' without changing focus or point.
+;; Only nodes declaring a nonnegative integer `:tab-index' are navigation stops.
+;; Order is ascending tab index, buffer start, then end; exact ties use retained
+;; node identity.  Disabled, hidden and inaccessible nodes are skipped.  Navigation
+;; starts at the first (or backward last) stop when there is no eligible focus.
+;; No window is selected and no key bindings are installed.
+;;
+;; Function: ebox-focus-previous (&optional count cycle buffer-or-name)
+;;;###autoload (autoload 'ebox-focus-previous "ebox" nil t)
+;; Move logical focus COUNT stops backward in BUFFER-OR-NAME.
+;; COUNT defaults to one; negative COUNT moves forward.  See `ebox-focus-next'
+;; for navigation order, CYCLE, visibility and failure semantics.
 ;;
 ;; Function: ebox-activate (&optional position noerror)
 ;;;###autoload (autoload 'ebox-activate "ebox" nil t)

@@ -141,6 +141,9 @@ padding 和 border，不包含该 Box 的 margin 和结构性换行符。悬停�
 [交互指南](docs/manual.zh-CN.md#native-node-interaction)和 Playground 的
 [交互实验室](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)。
 
+节点可以声明 `:tab-index` 与 `:disabled`；`ebox-focus` 系列接口由 Ebox 管理 buffer
+逻辑焦点、可选循环导航、更新保持与回滚。point 和生命周期规则见交互指南。
+
 ## 渲染与更新
 
 - `ebox-render` 返回带属性文本，不发布 live buffer；

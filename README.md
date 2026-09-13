@@ -162,6 +162,10 @@ Application state and command behavior remain the author's responsibility.
 See the [interaction guide](docs/manual.md#native-node-interaction)
 and the Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md#native-interaction-lab).
 
+Nodes can declare `:tab-index` and `:disabled`. Ebox owns buffer-local logical
+focus, optional cyclic navigation, update retention and rollback through the
+`ebox-focus` family. See the interaction guide for point and lifetime rules.
+
 ## Render and update
 
 - `ebox-render` returns propertized text without publishing a live buffer.

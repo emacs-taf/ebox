@@ -261,7 +261,7 @@ axis-appropriate unit: `(px 0)` inline or `(lh 0)` block. Grid `(fr n)` remains 
 Flex growth/shrink factors remain dimensionless numbers.
 
 Text style declarations accept only font, foreground/background, and
-text-decoration properties. Text also accepts the four native node capabilities
+text-decoration properties. Text also accepts the native node capabilities
 described below.
 Padding, margin,
 border, size, `:outer`, overflow, visibility, and wrapping policy belong only
@@ -391,7 +391,8 @@ Emacs, the selected fonts, and the window system.
 ### Native node interaction
 
 Text and every Box form accept `:help-echo`, `:pointer`, `:hover-style`, and
-`:keymap`. These are explicit node capabilities outside the CSS cascade.
+`:keymap`, plus node-local `:tab-index` and `:disabled` focus inputs. These are
+explicit node capabilities outside the CSS cascade.
 For example, render a Box with dynamic help, a hand pointer, hover paint, and
 one callback for both mouse and keyboard activation:
 
@@ -457,6 +458,48 @@ The framework does not move point or select a window. Missing targets signal
 target, while callback errors still propagate. Each invocation reads the latest
 publication, so replacement, rollback and unmount need no activation registry.
 
+Declare `:tab-index 0` to make a node a logical focus navigation stop; any
+nonnegative integer participates, in ascending numeric order followed by buffer
+start and end. Negative integers permit explicit focus but skip navigation;
+nil or an omitted index does not create a stop. `:disabled t` excludes the node
+from focus and suppresses its own or inherited keymap. These two inputs are
+local to the declaring node; a child may declare an enabled map independently.
+Reenable with `:disabled nil`; the original declared keymap becomes effective
+again. Publish both inputs through ordinary `ebox-region-update` or canonical
+commits. Disabled and focus inputs do not yet produce selector pseudo-states.
+
+Use `ebox-focus-next` / `ebox-focus-previous` for logical navigation. The optional
+second argument enables cycling. They return an opaque Host reference for
+`ebox-focus` and `ebox-focused-host-ref`; frameworks may also use their explicit
+source-builder identities. `ebox-focus` accepts nil to clear focus. It may
+explicitly focus any enabled visible node, even without a tab index or keymap.
+The complete signatures and error contracts are in [ebox.el](../ebox.el).
+
+```elisp
+(ebox-render-to-buffer
+ "*Ebox Focus*"
+ (ebox-build '(column (text :key first :tab-index 0 "First")
+                     (text :key second :tab-index 0 "Second"))))
+(with-current-buffer "*Ebox Focus*"
+  (let ((first (ebox-focus-next)))
+    (ebox-focus-next 1 t)
+    (ebox-focus first)))
+```
+
+Focus belongs to the mounted buffer, without selecting a window or maintaining
+separate focus per window. Keyed reorder follows the retained node, even when a
+new input supplies a fresh source handle. Query the current reference after
+publication rather than retaining an old generation's automatically generated
+reference. If point is still on the focused node's first visible character,
+publication follows its new position. If point was moved manually, publication
+preserves its numeric position, clamped to the accessible buffer. Published
+removal, hiding or disabling clears focus and preserves that clamped position;
+the next navigation starts at the first/last eligible stop. Rejected publication
+restores the previous focus and point. Unmount and buffer death release focus.
+Narrowing and invisible overlays are checked when navigating or setting focus.
+Native activation remains the node keymap's action; logical focus does not yet
+redirect an overlapping child's native keymap to its focused parent.
+
 Move point into the surface to use keyboard bindings. Optional commands
 `ebox-next-interaction` and `ebox-previous-interaction` move between declaring
 nodes that currently render a usable keymap. Each owner contributes one stop,
@@ -474,7 +517,7 @@ For example, opt in for buffers using `ebox-buffer-mode`:
 
 Raw native keymaps are also accepted; their mouse commands must handle the
 event's target buffer themselves. Ebox uses native command dispatch and does
-not create an application state or focus-management system. A hand pointer
+not create application state. A hand pointer
 alone does not bind a click command.
 
 The Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md#native-interaction-lab)

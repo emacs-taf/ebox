@@ -1,8 +1,9 @@
 ;;; ebox-interaction.el --- Fixed native node capabilities -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Validates Ebox's finite interaction inputs and projects them to native text
-;; properties.  These node facts do not participate in CSS cascade or geometry.
+;; Validates finite node interaction inputs, projects native text properties,
+;; and owns mounted focus and navigation through publication and rollback.
+;; These node facts do not yet participate in CSS cascade or geometry.
 
 ;;; Code:
 
@@ -23,11 +24,18 @@
 (declare-function ebox-surface-buffer-mounted-p "ebox-surface" (buffer))
 (declare-function ebox-surface--buffer-client-state "ebox-surface" (buffer))
 (declare-function ebox-surface--paint-node-chain "ebox-surface" (state role-ids))
+(declare-function ebox--buffer-host-ref-table "ebox-incremental" (buffer))
+(declare-function ebox--host-ref-node "ebox-runtime" (buffer host-ref))
+(declare-function ebox-host-ref-bounds "ebox-runtime" (buffer-or-name host-ref))
+(declare-function ebox-source--copy-data "ebox-source" (value))
+(declare-function ebox-source--index-record "ebox-source" (index handle))
+(declare-function ebox-source-record-interactions "ebox-source" (record))
+(declare-function ebox-source--handle-id-view "ebox-source" (handle))
 (defvar ebox-region-types)
 (defvar ebox-buffer--decoration-style-map)
 
 (defconst ebox-interaction-properties
-  '(:help-echo :pointer :hover-style :keymap)
+  '(:help-echo :pointer :hover-style :keymap :tab-index :disabled)
   "Fixed node capabilities accepted outside the Ebox style schema.")
 
 (defconst ebox-interaction--hover-properties
@@ -207,6 +215,229 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
         (let ((last-input-event ?\r)) (command-execute command))
       (unless noerror (user-error "No live Ebox RET command at position")))))
 
+(defvar-local ebox-interaction--focus-owner nil
+  "Runtime node identity owning this buffer's logical focus.")
+
+(defvar-local ebox-interaction--focus-order nil
+  "Derived navigation index for the current published state.")
+
+(defun ebox-interaction--focus-reset ()
+  "Release the current buffer's focus and derived navigation index."
+  (setq ebox-interaction--focus-owner nil
+        ebox-interaction--focus-order nil))
+
+(defun ebox-interaction--focus-node (state owner)
+  "Return OWNER's runtime node in STATE."
+  (and owner (ebox-runtime-index-get owner (plist-get state :node-table))))
+
+(defun ebox-interaction--focus-ref (state owner)
+  "Return OWNER's current source identity in STATE."
+  (when-let* ((node (ebox-interaction--focus-node state owner))
+              (handle (plist-get node :ebox-source-handle)))
+    (ebox-source--handle-id-view handle)))
+
+(defun ebox-interaction--focus-properties (state owner)
+  "Return OWNER's committed interaction facts in STATE."
+  (when-let* ((node (ebox-interaction--focus-node state owner))
+              (record (ebox-source--index-record
+                       (plist-get state :source-index)
+                       (plist-get node :ebox-source-handle))))
+    (ebox-source-record-interactions record)))
+
+(defun ebox-interaction--focus-visible-p (state owner)
+  "Return non-nil when OWNER is outside every hidden visibility boundary."
+  (let ((current owner) (visible t))
+    (while (and current visible)
+      (when (eq (ebox-get (ebox-interaction--focus-node state current) :visibility) 'hidden)
+        (setq visible nil))
+      (setq current (ebox-runtime-index-get current (plist-get state :parent-table))))
+    visible))
+
+(defun ebox-interaction--focus-position (state owner)
+  "Return OWNER's first accessible visible painted position in STATE."
+  (when (and (not (plist-get (ebox-interaction--focus-properties state owner) :disabled))
+             (ebox-interaction--focus-visible-p state owner))
+    (when-let* ((ref (ebox-interaction--focus-ref state owner))
+                (bounds (ebox-host-ref-bounds (current-buffer) ref)))
+      (let ((position (max (point-min) (car bounds)))
+            (limit (min (point-max) (cdr bounds))))
+        (catch 'position
+          (while (< position limit)
+            (let ((end (next-char-property-change position limit)))
+              (while (and (< position end) (eq (char-after position) ?\n))
+                (setq position (1+ position)))
+              (when (and (< position end) (not (invisible-p position))
+                         (not (equal (get-text-property position 'display) ""))
+                         (member owner
+                                 (ebox-surface--paint-node-chain
+                                  state
+                                  (cl-loop for (role . property) in ebox-region-types
+                                           for region = (get-text-property position property)
+                                           when region collect (cons role region)))))
+                (throw 'position position))
+              (setq position end))))))))
+
+(defun ebox-interaction--focus-buffer (buffer-or-name)
+  "Resolve BUFFER-OR-NAME to a mounted buffer, defaulting to current buffer."
+  (let ((buffer (if buffer-or-name (get-buffer buffer-or-name) (current-buffer))))
+    (unless (and (buffer-live-p buffer) (ebox-surface-buffer-mounted-p buffer))
+      (user-error "Buffer has no live Ebox surface"))
+    buffer))
+
+;;;###autoload
+(defun ebox-focus (host-ref &optional buffer-or-name)
+  "Focus HOST-REF in BUFFER-OR-NAME, defaulting to the current buffer.
+Return the current opaque Host reference and move point to its first accessible
+visible painted character, without selecting a window.  Any enabled visible
+node may receive explicit focus, including a negative or absent `:tab-index'.
+Nil HOST-REF clears focus without moving point.  Missing, disabled, hidden or
+inaccessible targets signal `user-error' without changing focus or point.
+Focus follows retained identity through publication.  Removal, hiding and
+disabling clear it without choosing a replacement; navigation can then restart.
+Failed publication restores focus.  Unmount and buffer death release it."
+  (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
+    (if (null host-ref)
+        (setq ebox-interaction--focus-owner nil)
+      (let* ((state (ebox-surface--buffer-client-state (current-buffer)))
+             (owner (gethash host-ref (ebox--buffer-host-ref-table (current-buffer))))
+             (position (and owner (ebox-interaction--focus-position state owner))))
+        (unless position (user-error "No enabled visible Ebox focus target: %S" host-ref))
+        (setq ebox-interaction--focus-owner owner)
+        (goto-char position)
+        (ebox-source--copy-data (ebox-interaction--focus-ref state owner))))))
+
+;;;###autoload
+(defun ebox-focused-host-ref (&optional buffer-or-name)
+  "Return the logical focus Host reference in BUFFER-OR-NAME, or nil.
+Default to the current buffer.  Dead or unmounted buffers return nil.
+Manual point movement does not clear logical focus; it stops publication from
+following the target until point is moved back to that target's first character."
+  (let ((buffer (if buffer-or-name (get-buffer buffer-or-name) (current-buffer))))
+    (when (and (buffer-live-p buffer) (ebox-surface-buffer-mounted-p buffer))
+      (with-current-buffer buffer
+        (ebox-source--copy-data
+         (ebox-interaction--focus-ref
+          (ebox-surface--buffer-client-state buffer) ebox-interaction--focus-owner))))))
+
+(defun ebox-interaction--focus-capture (buffer)
+  "Capture BUFFER's focus and point before staged text publication."
+  (with-current-buffer buffer
+    (let ((state (ebox-surface--buffer-client-state buffer)))
+      (list ebox-interaction--focus-owner (point)
+            (and state ebox-interaction--focus-owner
+                 (equal (point) (ebox-interaction--focus-position
+                                 state ebox-interaction--focus-owner)))
+            (and state (ebox-interaction--focus-ref
+                        state ebox-interaction--focus-owner))))))
+
+(defun ebox-interaction--focus-publish (buffer snapshot)
+  "Reconcile BUFFER's focus from SNAPSHOT against the published candidate."
+  (with-current-buffer buffer
+    (setq ebox-interaction--focus-order nil)
+    (let* ((state (ebox-surface--buffer-client-state buffer))
+           (owner (or (and (ebox-interaction--focus-node state (car snapshot))
+                           (car snapshot))
+                      (and (nth 3 snapshot)
+                           (gethash (nth 3 snapshot) (ebox--buffer-host-ref-table buffer)))))
+           (position (and owner (ebox-interaction--focus-position state owner))))
+      (setq ebox-interaction--focus-owner (and position owner))
+      (when (car snapshot)
+        (goto-char (if (and position (nth 2 snapshot)) position
+                     (min (point-max) (max (point-min) (nth 1 snapshot)))))))))
+
+(defun ebox-interaction--focus-settle (buffer snapshot state)
+  "Apply BUFFER's focus point after TP restores its native view for STATE."
+  (when (and (car snapshot) (buffer-live-p buffer)
+             (eq state (ebox-surface--buffer-client-state buffer)))
+    (with-current-buffer buffer
+      (let ((position (and (nth 2 snapshot)
+                           (ebox-interaction--focus-position
+                            state ebox-interaction--focus-owner))))
+        (goto-char (or position
+                       (min (point-max) (max (point-min) (nth 1 snapshot)))))))))
+
+(defun ebox-interaction--focus-rollback (buffer snapshot)
+  "Restore BUFFER's logical focus from SNAPSHOT after publication rejection."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq ebox-interaction--focus-owner (car snapshot)
+            ebox-interaction--focus-order nil))))
+
+(defun ebox-interaction--focus-index (state)
+  "Return a cached navigation vector and owner ranks for published STATE."
+  (unless (eq state (car ebox-interaction--focus-order))
+    (let (entries)
+      (maphash
+       (lambda (ref owner)
+         (let ((index (plist-get (ebox-interaction--focus-properties state owner) :tab-index)))
+           (when (and (integerp index) (>= index 0))
+             (let ((bounds (ebox-host-ref-bounds (current-buffer) ref)))
+               (push (list index (or (car bounds) most-positive-fixnum)
+                           (or (cdr bounds) most-positive-fixnum) owner) entries)))))
+       (ebox--buffer-host-ref-table (current-buffer)))
+      (setq entries
+            (sort entries
+                  (lambda (left right)
+                    (or (< (nth 0 left) (nth 0 right))
+                        (and (= (nth 0 left) (nth 0 right))
+                             (or (< (nth 1 left) (nth 1 right))
+                                 (and (= (nth 1 left) (nth 1 right))
+                                      (or (< (nth 2 left) (nth 2 right))
+                                          (and (= (nth 2 left) (nth 2 right))
+                                               (string< (prin1-to-string (nth 3 left))
+                                                        (prin1-to-string (nth 3 right))))))))))))
+      (let ((owners (vconcat (mapcar (lambda (entry) (nth 3 entry)) entries)))
+            (ranks (make-hash-table :test #'equal)))
+        (dotimes (rank (length owners)) (puthash (aref owners rank) rank ranks))
+        (setq ebox-interaction--focus-order (list state owners ranks)))))
+  (cdr ebox-interaction--focus-order))
+
+;;;###autoload
+(defun ebox-focus-next (&optional count cycle buffer-or-name)
+  "Move logical focus COUNT stops forward in BUFFER-OR-NAME and return its ref.
+Defaults are one stop and the current buffer.  Negative COUNT moves backward;
+zero returns current focus.  CYCLE non-nil wraps at a boundary; otherwise a
+missing stop signals `user-error' without changing focus or point.
+Only nodes declaring a nonnegative integer `:tab-index' are navigation stops.
+Order is ascending tab index, buffer start, then end; exact ties use retained
+node identity.  Disabled, hidden and inaccessible nodes are skipped.  Navigation
+starts at the first (or backward last) stop when there is no eligible focus.
+No window is selected and no key bindings are installed."
+  (interactive "p")
+  (setq count (or count 1))
+  (unless (integerp count) (signal 'wrong-type-argument (list 'integerp count)))
+  (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
+    (if (zerop count) (ebox-focused-host-ref)
+      (let* ((state (ebox-surface--buffer-client-state (current-buffer)))
+             (index (ebox-interaction--focus-index state))
+             (owners (car index))
+             (size (length owners))
+             (step (if (> count 0) 1 -1))
+             (rank (and (ebox-interaction--focus-position state ebox-interaction--focus-owner)
+                        (gethash ebox-interaction--focus-owner (cadr index))))
+             (rank (or rank (if (> step 0) -1 size)))
+             owner)
+        (dotimes (_ (abs count))
+          (setq owner nil)
+          (let ((visited 0))
+            (while (and (not owner) (< visited size))
+              (setq rank (+ rank step) visited (1+ visited))
+              (when cycle (setq rank (mod rank size)))
+              (if (not (< -1 rank size))
+                  (setq visited size)
+                (when (ebox-interaction--focus-position state (aref owners rank))
+                  (setq owner (aref owners rank)))))
+            (unless owner (user-error "No eligible Ebox focus stop"))))
+        (ebox-focus (ebox-interaction--focus-ref state owner))))))
+
+;;;###autoload
+(defun ebox-focus-previous (&optional count cycle buffer-or-name)
+  "Move logical focus COUNT stops backward in BUFFER-OR-NAME.
+COUNT defaults to one; negative COUNT moves forward.  See `ebox-focus-next'
+for navigation order, CYCLE, visibility and failure semantics."
+  (interactive "p")
+  (ebox-focus-next (- (or count 1)) cycle buffer-or-name))
+
 (defun ebox-interaction--move (count)
   "Move by COUNT interaction stops in the accessible live Ebox surface.
 Resolve every stop from current rendered properties; keep no navigation state."
@@ -379,7 +610,8 @@ callback environments retain their identities.  Sharing and cycles survive."
 
 (defun ebox-interaction-normalize (properties)
   "Return an owned, validated copy of node interaction PROPERTIES.
-Absent keys inherit enclosing surface values; explicit nil blocks them.
+Absent surface capabilities inherit enclosing values; explicit nil blocks them.
+Tab index and disabled status are node-local and do not inherit.
 Callback values remain literal functions.  Mutable keymaps are snapshotted;
 replace the property to publish subsequent binding changes."
   (unless (and (proper-list-p properties)
@@ -401,6 +633,12 @@ replace the property to publish subsequent binding changes."
                (:keymap
                 (unless (or (null value) (keymapp value))
                   (error "Ebox :keymap requires nil or a native keymap")))
+               (:tab-index
+                (unless (or (null value) (integerp value))
+                  (error "Ebox :tab-index requires nil or an integer")))
+               (:disabled
+                (unless (memq value '(nil t))
+                  (error "Ebox :disabled requires nil or t")))
                (:hover-style (ebox-interaction--hover-face value))
                (_ (error "Ebox has no interaction property %S" key)))))
   (let ((owned (tp-property-value-copy properties)))
@@ -412,7 +650,11 @@ replace the property to publish subsequent binding changes."
 
 (defun ebox-interaction-surface-properties (properties)
   "Project normalized node PROPERTIES to native surface facts."
-  (cl-loop for (key value) on properties by #'cddr
+  (append
+   (when (plist-get properties :disabled) '(keymap nil))
+   (cl-loop for (key value) on properties by #'cddr
+           unless (or (memq key '(:tab-index :disabled))
+                      (and (eq key :keymap) (plist-get properties :disabled)))
            append (if (eq key :hover-style)
                       (let* ((face (ebox-interaction--hover-face value))
                              (decoration
@@ -433,7 +675,7 @@ replace the property to publish subsequent binding changes."
                               'mouse-face face))
                     (list (pcase key
                             (:help-echo 'help-echo) (:pointer 'pointer)
-                            (:keymap 'keymap)) value))))
+                            (:keymap 'keymap)) value)))))
 
 (defun ebox-interaction--face-attribute (face attribute)
   "Return FACE's explicit ATTRIBUTE entry, following native face precedence."
