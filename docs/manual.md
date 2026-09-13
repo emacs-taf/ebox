@@ -353,7 +353,7 @@ Publication remains a TP transaction, including hidden-node updates and
 rollback. Fixed-footprint local changes can recompose only the affected host;
 geometry changes and root-layer dependencies may require broader work. No
 per-update latency or universal local-update guarantee is implied. Run
-`make layer-tests` for the focused contract. The separate `ebox-playground`
+`make test` for the focused contract. The separate `ebox-playground`
 package provides `layer-minimal.ebox` and `layer-reference.ebox`; batch tests
 do not establish GUI visual parity or remote CI success.
 
@@ -614,9 +614,7 @@ of naming. This manual explains workflows and integration contracts.
 ```sh
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make dsl-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make test EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```
 
@@ -658,5 +656,5 @@ and propagate failure; they must not select a second writer as a fallback.
     (kill-buffer buffer)))
 ```
 
-`tests/ebox-spi-tests.el` verifies paired publication, rollback and public teardown.
+`tests/acceptance.json` lists the maintained public API acceptance scenarios.
 Consumers link to this contract instead of maintaining another copy of its ordering.

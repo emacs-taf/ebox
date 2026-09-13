@@ -299,7 +299,7 @@ space 可以缩短。不提供 alpha 混合、半字形遮罩或 child frame。n
 
 包括隐藏节点更新和 rollback 在内的发布仍通过 TP transaction。固定外部尺寸的
 局部修改可以只重新合成受影响的宿主；几何变化或根图层依赖可能需要扩大范围。
-不保证每次更新的耗时或所有更新都保持局部。用 `make layer-tests` 运行聚焦契约。
+不保证每次更新的耗时或所有更新都保持局部。用 `make test` 运行聚焦契约。
 独立的 `ebox-playground` 包提供 `layer-minimal.ebox`、`layer-reference.ebox`；
 batch 测试不证明 GUI 视觉一致性或远程 CI 成功。
 
@@ -523,9 +523,7 @@ viewport，横向以像素、纵向以行为单位：
 ```sh
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make dsl-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make test EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```
 
@@ -564,5 +562,5 @@ modified 标志；已被销毁的 buffer 不会被复活。提交接受后的观
     (kill-buffer buffer)))
 ```
 
-`tests/ebox-spi-tests.el` 验证成对发布、回滚及公共 teardown。消费方链接到本契约，
+`tests/acceptance.json` 列出当前保留的公共 API 验收场景。消费方链接到本契约，
 不再复制一份回调时序说明。

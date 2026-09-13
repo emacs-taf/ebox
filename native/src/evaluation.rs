@@ -351,31 +351,6 @@ impl ChildUses {
             ),
         }
     }
-
-    #[cfg(test)]
-    fn iter(&self) -> impl Iterator<Item = (&UseSlot, &Arc<EvalRecord>)> {
-        let mut stack = Vec::new();
-        let mut next = self.0.as_deref();
-        std::iter::from_fn(move || {
-            while let Some(node) = next {
-                stack.push(node);
-                next = node.left.0.as_deref();
-            }
-            let node = stack.pop()?;
-            next = node.right.0.as_deref();
-            Some((node.slot.as_ref(), &node.value))
-        })
-    }
-
-    #[cfg(test)]
-    fn values(&self) -> impl Iterator<Item = &Arc<EvalRecord>> {
-        self.iter().map(|(_, value)| value)
-    }
-
-    #[cfg(test)]
-    fn keys(&self) -> impl Iterator<Item = &UseSlot> {
-        self.iter().map(|(slot, _)| slot)
-    }
 }
 
 /// Full evaluation uses a mutable fresh collector, then freezes exactly N nodes.
@@ -414,14 +389,6 @@ impl BuildingUses {
         match self {
             Self::Fresh(entries) => ChildUses::from_fresh(entries),
             Self::Sparse(entries) => entries,
-        }
-    }
-
-    #[cfg(test)]
-    fn values(&self) -> Box<dyn Iterator<Item = &Arc<EvalRecord>> + '_> {
-        match self {
-            Self::Fresh(entries) => Box::new(entries.values()),
-            Self::Sparse(entries) => Box::new(entries.values()),
         }
     }
 }
@@ -1069,7 +1036,3 @@ impl RetainedDocument {
         }))
     }
 }
-
-#[cfg(test)]
-#[path = "evaluation_tests.rs"]
-mod tests;

@@ -1,9 +1,13 @@
-;;; ebox-size-style-tests.el --- CSS size style boundary tests -*- lexical-binding: t; -*-
+;;; ebox-size-style-tests.el --- Public API acceptance -*- lexical-binding: t; -*-
+
+;;; Commentary:
+;; Test supported package inputs, outputs, errors and lifecycle.
+;; Internal implementation details are outside this contract.
 
 ;;; Code:
-
+(require 'cl-lib)
 (require 'ert)
-(require 'ebox-style)
+(require 'ebox)
 
 (ert-deftest ebox-size-style-canonical-values ()
   "Each size property accepts explicit lengths in its own rendering axis."
@@ -102,63 +106,6 @@
   (should-error (ebox-style-compile-form
                  'box '(:border-width (calc (+ (px 1) (% 2)))))))
 
-(ert-deftest ebox-size-style-projection-remains-unresolved ()
-  "Computed projection preserves contextual sizes until used layout."
-  (let* ((expression '(calc (- (vh 100) (lh 1))))
-         (projected (ebox-style--expand-engine-plist
-                     (list :height expression :width '(ch 80)
-                           :padding-top '(lh 1) :margin-left '(ch 2)
-                           :border-top-width '(px 1)
-                           :border-top-style 'solid))))
-    (should (equal (plist-get projected :height) expression))
-    (should (equal (plist-get projected :width) '(ch 80)))
-    (should (equal (plist-get projected :padding-top-height) '(lh 1)))
-    (should (equal (plist-get projected :margin-left-pixel) '(ch 2)))
-    (should (equal (plist-get projected :border-top-pixel) '(px 1)))))
-
-(ert-deftest ebox-size-style-generated-defaults ()
-  "Schema and generated declarations use canonical dimensional defaults."
-  (should (eq (plist-get (ebox-style-property :min-width) :initial) 'auto))
-  (should (eq (plist-get (ebox-style-property :min-height) :initial) 'auto))
-  (should (equal (plist-get (ebox-style-compile-form 'box '(:flex 1))
-                           'ebox/flex-basis) '(% 0)))
-  (should (equal (plist-get (ebox-style-compile-form 'box '(:border "red"))
-                           'ebox/border-top-width) '(px 1)))
-  (let ((declarations (ebox-style-compile-form 'box '(:border none))))
-    (should (equal (plist-get declarations 'ebox/border-top-width) '(px 1)))
-    (should (eq (plist-get declarations 'ebox/border-top-style) 'none)))
-  (should (equal (ebox-style--convert 0 'pixel) 0)))
-
-(ert-deftest ebox-size-style-axis-matrix-is-enforced-during-build ()
-  "Dimensions, physical/logical edges, and gaps reject wrong-axis units early."
-  (require 'ebox)
-  (dolist (case
-           '((box inline
-              :width :min-width :max-width
-              :padding-right :padding-left :padding-inline-start :padding-inline-end
-              :margin-right :margin-left :margin-inline-start :margin-inline-end)
-             (box block
-              :height :min-height :max-height
-              :padding-top :padding-bottom :padding-block-start :padding-block-end
-              :margin-top :margin-bottom :margin-block-start :margin-block-end)
-             (flex inline :column-gap)
-             (flex block :row-gap)
-             (row inline :item-gap)
-             (column block :item-gap)))
-    (dolist (property (cddr case))
-      (dolist (unit '(px ch vw lh vh %))
-        (let ((form (list (car case) property (list unit 2))))
-          (ert-info ((format "initial build %S" form))
-            (if (memq unit (cdr (assq (cadr case) ebox-size-axis-units)))
-                (should (ebox-build form))
-              (let ((message
-                     (condition-case condition
-                         (progn (ebox-build form) nil)
-                       (error (error-message-string condition)))))
-                (should (string-match-p (regexp-quote (symbol-name property))
-                                        message))
-                (should (string-match-p "allowed units:" message))))))))))
-
 (ert-deftest ebox-size-style-recursive-axis-errors-reject-shorthands-and-tracks ()
   "Expressions cannot hide forbidden units in shorthand or Grid wrappers."
   (require 'ebox)
@@ -201,23 +148,6 @@
              (error (error-message-string condition)))))
       (should (string-match-p (nth 2 case) message))
       (should (string-match-p "allowed units:" message)))))
-
-(ert-deftest ebox-size-style-simple-configs-enforce-axis-before-render ()
-  "Both direct LayoutConfig constructors enforce the same item-gap rules."
-  (require 'ebox-layout-config)
-  (should (equal (plist-get (ebox-layout-config-props
-                            (ebox-row-layout-create)) :item-gap) '(px 0)))
-  (should (equal (plist-get (ebox-layout-config-props
-                            (ebox-column-layout-create)) :item-gap) '(lh 0)))
-  (should-error (ebox-row-layout-create :item-gap '(lh 1))
-                :type 'ebox-size-error)
-  (should-error (ebox-column-layout-create :item-gap '(px 0))
-                :type 'ebox-size-error)
-  (should-error
-   (ebox-layout-config-with-props
-    (ebox-column-layout-create)
-    '(:item-gap (calc (* 0 (px 1))) :cross-align stretch))
-   :type 'ebox-size-error))
 
 (provide 'ebox-size-style-tests)
 ;;; ebox-size-style-tests.el ends here

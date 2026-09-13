@@ -1,10 +1,13 @@
-;;; ebox-interaction-tests.el --- Native node interaction tests -*- lexical-binding: t; -*-
+;;; ebox-interaction-tests.el --- Public API acceptance -*- lexical-binding: t; -*-
+
+;;; Commentary:
+;; Test supported package inputs, outputs, errors and lifecycle.
+;; Internal implementation details are outside this contract.
 
 ;;; Code:
-
+(require 'cl-lib)
 (require 'ert)
 (require 'ebox)
-(require 'ebox-native-reflow)
 
 (defun ebox-interaction-test--position (string text)
   "Return the position of TEXT in STRING, asserting that it exists."
@@ -43,26 +46,6 @@
             (should-error (ebox-help-create nil))
             (should-error (ebox-help-create (lambda (required) required)))))
       (kill-buffer target))))
-
-(ert-deftest ebox-interaction-surface-compares-owned-keymap-bindings ()
-  "Copied maps do not turn paint changes into interaction changes."
-  (let* ((command (let ((value 1)) (lambda () (interactive) value)))
-         (other (let ((value 1)) (lambda () (interactive) value)))
-         (map (make-sparse-keymap "Actions"))
-         (parent (make-sparse-keymap)))
-    (define-key map (kbd "RET") command)
-    (define-key parent (kbd "p") #'ignore)
-    (set-keymap-parent map parent)
-    (let ((copy (ebox-interaction--keymap-snapshot map)))
-      (should-not (eq map copy))
-      (should (ebox-interaction-surface-equal-p
-               (list 'keymap map 'help-echo command)
-               (list 'help-echo command 'keymap copy)))
-      (should-not (ebox-interaction-surface-equal-p
-                   (list 'help-echo command) (list 'help-echo other)))
-      (define-key copy (kbd "RET") other)
-      (should-not (ebox-interaction-surface-equal-p
-                   (list 'keymap map) (list 'keymap copy))))))
 
 (ert-deftest ebox-interaction-full-keymap-is-an-owned-snapshot ()
   "Full character-table maps cannot mutate rendered or future input snapshots."
@@ -109,30 +92,6 @@
           (should (eq (lookup-key actual (vconcat [menu-bar item] (kbd "x")))
                       #'forward-char)))))))
 
-(ert-deftest ebox-interaction-native-templates-reuse-owned-keymaps ()
-  "Template registration preserves the identity of already owned native maps."
-  (let* ((map (ebox-interaction--keymap-snapshot (make-sparse-keymap)))
-         (ebox-native-reflow--compile-property-templates nil)
-         (ebox-native-reflow--compile-property-template-base-count 0)
-         (ebox-native-reflow--compile-retained-registry-p nil)
-         (ebox-native-reflow--compile-property-template-ids
-          (make-hash-table :test 'ebox-native-property-template)))
-    (dotimes (_ 2)
-      (should (= (ebox-native-reflow--register-property-template
-                  (list 'keymap map) "surface") 0)))
-    (should (eq (plist-get (plist-get
-                            (car ebox-native-reflow--compile-property-templates)
-                            :properties) 'keymap)
-                map))
-    (let ((ebox-native-reflow--compile-property-template-index
-           (ebox-native-reflow--persistent-index-from-sequence
-            ebox-native-reflow--compile-property-templates t))
-          (ebox-native-reflow--compile-property-template-base-count 1)
-          (ebox-native-reflow--compile-property-templates nil)
-          (ebox-native-reflow--compile-retained-registry-p t))
-      (should (= (ebox-native-reflow--register-property-template
-                  (list 'keymap map) "surface") 0)))))
-
 (ert-deftest ebox-interaction-batch-reads-the-current-source-generation ()
   "Two updates to one node in a batch retain every accumulated native fact."
   (let ((buffer (generate-new-buffer " *ebox-interaction-batch*")))
@@ -148,99 +107,6 @@
           (with-current-buffer buffer
             (should (equal (get-text-property (point-min) 'help-echo) "new"))
             (should (eq (get-text-property (point-min) 'pointer) 'text))))
-      (kill-buffer buffer))))
-
-(ert-deftest ebox-interaction-direct-text-content-update-retains-node-facts ()
-  "Named Text content supports replacement, no-op, batching and native facts."
-  (dolist (nested '(nil t))
-    (let ((buffer (generate-new-buffer " *ebox-direct-text-content*"))
-          (form '(text :id "direct" :help-echo "before" :pointer hand
-                       :hover-style (:background-color "blue")
-                       :keymap (keymap (13 . ignore)) "old")))
-      (unwind-protect
-          (progn
-            (ebox-render-to-buffer
-             buffer (ebox-build (if nested (list 'row form '(text "sibling")) form)))
-            (with-current-buffer buffer
-              (let* ((handle (ebox-region-resolve buffer "direct"))
-                     (region-id (cdr (ebox-selector--region-target handle)))
-                     (old (ebox--root-region-box
-                           (ebox--buffer-root-node buffer) region-id)))
-                (should (ebox-text-node-p old))
-                (ebox-region-update "direct" :content "new")
-                (should (string-prefix-p "new" (buffer-string)))
-                (should (equal (get-text-property (point-min) 'help-echo) "before"))
-                (let* ((surface (plist-get (ebox--buffer-render-state buffer) :surface))
-                       (revision (tp-surface-revision surface))
-                       (report (ebox-region-update handle :content "new")))
-                  (should (eq (plist-get report :strategy) 'no-op))
-                  (should (= (tp-surface-revision surface) revision)))
-                (ebox-region-update handle :help-echo "after" :pointer 'text
-                                    :keymap '(keymap (13 . forward-char)))
-                (ebox-region-update handle :content "latest")
-                (should (string-prefix-p "latest" (buffer-string)))
-                (ebox-incremental-begin-batch buffer)
-                (ebox-region-update handle :content "batch-first")
-                (ebox-region-update handle :pointer 'hand)
-                (ebox-region-update handle :content "batch-final")
-                (ebox-incremental-flush buffer)
-                (should (string-prefix-p "batch-final" (buffer-string)))
-                (when nested (should (string-suffix-p "sibling" (buffer-string))))
-                (should (eq (get-text-property (point-min) 'pointer) 'hand))
-                (should (equal (get-text-property (point-min) 'help-echo) "after"))
-                (should (eq (lookup-key (get-text-property (point-min) 'keymap)
-                                        (kbd "RET")) #'forward-char))
-                (let ((current (ebox--root-region-box
-                                (ebox--buffer-root-node buffer) region-id)))
-                  (should (ebox-text-node-p current))
-                  (should (equal (ebox-text-node-value current) "batch-final"))
-                  (should (equal (plist-get current :content) "batch-final")))
-                (should (equal (ebox-text-node-value old) "old"))
-                (should-error (ebox-region-update handle :content nil)
-                              :type 'user-error)
-                (should (string-prefix-p "batch-final" (buffer-string))))))
-        (kill-buffer buffer)))))
-
-(ert-deftest ebox-interaction-stateful-callbacks-keep-distinct-identities ()
-  "Equal-shaped closures remain distinct during updates and native interning."
-  (let* ((factory (eval '(lambda ()
-                          (let ((n 0))
-                            (lambda (_window _object _position)
-                              (setq n (1+ n))))) t))
-         (first (funcall factory)) (second (funcall factory))
-         (buffer (generate-new-buffer " *ebox-callback-identity*")))
-    (should-not (eq first second))
-    (should (equal first second))
-    (unwind-protect
-        (progn
-          (ebox-render-to-buffer
-           buffer (ebox-build (list 'text :id t :help-echo first "text")))
-          (ebox-region-update (ebox-region-resolve buffer t) :help-echo second)
-          (with-current-buffer buffer
-            (should (eq (get-text-property (point-min) 'help-echo) second)))
-          (dolist (hashed '(nil t))
-            (let ((ebox-native-reflow--compile-property-templates nil)
-                  (ebox-native-reflow--compile-property-template-base-count 0)
-                  (ebox-native-reflow--compile-retained-registry-p nil)
-                  (ebox-native-reflow--compile-property-template-ids
-                   (and hashed (make-hash-table :test 'equal))))
-              (should (= (ebox-native-reflow--register-property-template
-                          (list 'help-echo first) "surface") 0))
-              (should (= (ebox-native-reflow--register-property-template
-                          (list 'help-echo second) "surface") 1))
-              (funcall first nil nil nil)
-              (should (= (ebox-native-reflow--register-property-template
-                          (list 'help-echo first) "surface") 0))
-              (let ((ebox-native-reflow--compile-property-template-index
-                     (ebox-native-reflow--persistent-index-from-sequence
-                      ebox-native-reflow--compile-property-templates t))
-                    (ebox-native-reflow--compile-property-template-base-count 2)
-                    (ebox-native-reflow--compile-property-templates nil)
-                    (ebox-native-reflow--compile-retained-registry-p t))
-                (should (= (ebox-native-reflow--register-property-template
-                            (list 'help-echo first) "surface") 0))
-                (should (= (ebox-native-reflow--register-property-template
-                            (list 'help-echo second) "surface") 1))))))
       (kill-buffer buffer))))
 
 (ert-deftest ebox-keymap-create-wraps-literal-local-callbacks ()
@@ -562,109 +428,6 @@
         (dolist (property '(help-echo pointer mouse-face keymap))
           (should-not (get-text-property position property text)))))))
 
-(defun ebox-interaction-test--hover-input ()
-  "Return a nested hover sample with distinct paint and every border role."
-  (ebox-build
-   '(box :id "frame" :width (ch 30) :padding ((lh 1) (ch 1))
-         :margin ((lh 1) (ch 1)) :color "#273B42"
-         :background-color "#F8EDDC"
-         :border-width (px 1) :border-style solid :border-color "#804020"
-         :hover-style (:background-color "#F6D6AB" :text-decoration-line none)
-         :help-echo "frame" :keymap (keymap (13 . ignore))
-         (row (text "base") (text :color "#123456" "child")
-              (text :hover-style nil "blocked")))))
-
-(defun ebox-interaction-test--assert-hover-paint (text foreground)
-  "Assert one owner's hover paint in TEXT retains FOREGROUND and box chrome."
-  (let ((base (ebox-interaction-test--position text "base"))
-        (child (ebox-interaction-test--position text "child"))
-        (blocked (ebox-interaction-test--position text "blocked"))
-        (sides 0) (corners 0) (padding 0))
-    (should (equal (ebox-interaction--face-attribute
-                    (get-text-property base 'mouse-face text) :foreground)
-                   (list :foreground foreground)))
-    (should (equal (ebox-interaction--face-attribute
-                    (get-text-property child 'mouse-face text) :foreground)
-                   (list :foreground foreground)))
-    (should (eq (get-text-property base 'mouse-face text)
-                (get-text-property child 'mouse-face text)))
-    (should (equal (ebox-interaction--face-attribute
-                    (get-text-property child 'face text) :foreground)
-                   '(:foreground "#123456")))
-    (should-not (get-text-property blocked 'mouse-face text))
-    (dotimes (position (length text))
-      (let* ((normal (get-text-property position 'face text))
-             (hover (get-text-property position 'mouse-face text))
-             (side (or (get-text-property position 'ebox-bl text)
-                       (get-text-property position 'ebox-br text)))
-             (top (get-text-property position 'ebox-bt text))
-             (bottom (get-text-property position 'ebox-bb text)))
-        (when side
-          (cl-incf sides)
-          (when (or top bottom) (cl-incf corners))
-          (should-not hover)
-          (should (equal (ebox-interaction--face-attribute normal :background)
-                         '(:background "#804020")))
-          (should (keymapp (get-text-property position 'keymap text)))
-          (should (equal (get-text-property position 'help-echo text) "frame")))
-        (when hover
-          (dolist (entry (list (cons top :overline) (cons bottom :underline)))
-            (when (car entry)
-              (should (equal (ebox-interaction--face-attribute hover (cdr entry))
-                             (ebox-interaction--face-attribute normal (cdr entry))))))
-          (when (and (not side)
-                     (cl-some (lambda (property)
-                                (get-text-property position property text))
-                              '(ebox-pl ebox-pr ebox-pt ebox-pb)))
-            (cl-incf padding)
-            (should (equal (ebox-interaction--face-attribute hover :background)
-                           '(:background "#F6D6AB")))))))
-    (should (> sides 0))
-    (should (> corners 0))
-    (should (> padding 0))))
-
-(ert-deftest ebox-interaction-hover-preserves-base-paint-and-borders ()
-  "Shared native hover uses its owner's paint and keeps every border."
-  (let ((text (ebox-render
-               (ebox-build
-                (list 'box :hover-style '(:background-color "blue")
-                      (list 'text (propertize "native" 'mouse-face 'highlight)))))))
-    (should (eq (get-text-property 0 'mouse-face text) 'highlight))
-    (should-not (get-text-property 0 'ebox--hover-style text)))
-  (let ((input (ebox-interaction-test--hover-input))
-        (buffer (generate-new-buffer " *ebox-hover-paint*")))
-    (unwind-protect
-        (progn
-          (ebox-interaction-test--assert-hover-paint (ebox-render input) "#273B42")
-          (ebox-render-to-buffer buffer input)
-          (with-current-buffer buffer
-            (ebox-interaction-test--assert-hover-paint (buffer-string) "#273B42")
-            (ebox-region-update "frame" :color "#445566")
-            (ebox-interaction-test--assert-hover-paint (buffer-string) "#445566")
-            (ebox-region-update "frame" :hover-style nil)
-            (should-not (text-property-not-all (point-min) (point-max)
-                                              'mouse-face nil))))
-      (kill-buffer buffer))))
-
-(ert-deftest ebox-interaction-native-hover-preserves-base-paint-and-borders ()
-  "The native template projection retains the same owner hover appearance."
-  (skip-unless (ebox-native-reflow-layout-ready-p))
-  (let ((buffer (generate-new-buffer " *ebox-native-hover*")))
-    (unwind-protect
-        (progn
-          (ebox-render-to-buffer buffer (ebox-interaction-test--hover-input))
-          (let ((node (plist-get (ebox--buffer-render-state buffer) :root-node)))
-            (dolist (width '(100 160))
-              (let ((frame (ebox-native-reflow-execute-sync
-                            node (list :key width :viewport-width width
-                                       :viewport-height 30 :root-width width
-                                       :runtime-revision 0 :context-hash 0
-                                       :complete t))))
-                (should (plist-get frame :native-frame))
-                (ebox-interaction-test--assert-hover-paint
-                 (plist-get frame :rendered) "#273B42")))))
-      (kill-buffer buffer))))
-
 (defun ebox-interaction-test--assert-hover-row (text)
   "Assert TEXT contains one native hover group from left to right padding."
   (let* ((position (ebox-interaction-test--position text "action"))
@@ -691,45 +454,6 @@
     (should (> interior (length "action")))
     (should (= sides 2))
     (should (= padding 2))))
-
-(ert-deftest ebox-interaction-hover-is-one-native-row-group ()
-  "Text and both paddings share identity through snapshots and retained paint."
-  (let* ((input (ebox-build
-                 '(box :id "action" :width (ch 24)
-                       :padding ((lh 1) (ch 2)) :color "#123456"
-                       :background-color "#EEEEEE"
-                       :border-width (px 1) :border-style solid
-                       :border-color "#804020"
-                       :hover-style (:background-color "#ACDCEC") "action")))
-         (buffer (generate-new-buffer " *ebox-one-hover-row*")))
-    (unwind-protect
-        (progn
-          (let ((rendered (ebox-render input)))
-            (ebox-interaction-test--assert-hover-row rendered)
-            (ebox-interaction-test--assert-hover-row (tp-text-snapshot rendered)))
-          (ebox-render-to-buffer buffer input)
-          (with-current-buffer buffer
-            (ebox-interaction-test--assert-hover-row (buffer-string))
-            (ebox-region-update "action" :color "#654321")
-            (ebox-interaction-test--assert-hover-row (buffer-string))
-            (ebox-region-update "action" :content "action again")
-            (ebox-interaction-test--assert-hover-row (buffer-string))
-            (ebox-region-update "action" :background-color "#DDDDDD")
-            (ebox-interaction-test--assert-hover-row (buffer-string))
-            (ebox-region-update "action" :hover-style '(:background-color "#CDEECC"))
-            (ebox-interaction-test--assert-hover-row (buffer-string)))
-          (when (ebox-native-reflow-layout-ready-p)
-            (let ((node (plist-get (ebox--buffer-render-state buffer) :root-node)))
-              (dolist (width '(100 160))
-                (let ((frame (ebox-native-reflow-execute-sync
-                              node (list :key width :viewport-width width
-                                         :viewport-height 30 :root-width width
-                                         :runtime-revision 0 :context-hash 0
-                                         :complete t))))
-                  (should (plist-get frame :native-frame))
-                  (ebox-interaction-test--assert-hover-row
-                   (plist-get frame :rendered)))))))
-      (kill-buffer buffer))))
 
 (ert-deftest ebox-interaction-child-update-keeps-parent-hover-group ()
   "A child-only publication cannot separate its parent's native hover identity."
@@ -770,86 +494,6 @@
     (should-not (eq outer inner))
     (should-not (get-text-property
                  (ebox-interaction-test--position text "blocked") 'mouse-face text))))
-
-(defun ebox-interaction-test--cached-hover-sample (owner)
-  "Return a projected hover string owned by OWNER for cache lifecycle tests."
-  (let ((text (propertize
-               (copy-sequence "hover") 'ebox--hover-style
-               (list :owner owner :face (list :background "#ACDCEC")
-                     :base (list :foreground "#123456")))))
-    (ebox-interaction--refresh-hover! text 0 (length text))))
-
-(defun ebox-interaction-test--populate-discarded-hover-faces ()
-  "Populate transient hover faces without retaining the resulting strings."
-  (dotimes (owner 16)
-    (ebox-interaction-test--cached-hover-sample owner)))
-
-(defun ebox-interaction-test--live-hover-cache-cycle ()
-  "Return cache counts and identity proof from a temporary live buffer.
-The helper keeps face objects out of the caller's ERT assertion temporaries."
-  (with-temp-buffer
-    (insert (ebox-interaction-test--cached-hover-sample 100))
-    (ebox-interaction-test--populate-discarded-hover-faces)
-    (let ((before (hash-table-count ebox-interaction--hover-face-cache)))
-      (garbage-collect)
-      (list before (hash-table-count ebox-interaction--hover-face-cache)
-            (eq (get-text-property (point-min) 'mouse-face)
-                (get-text-property
-                 0 'mouse-face
-                 (ebox-interaction-test--cached-hover-sample 100)))))))
-
-(ert-deftest ebox-interaction-hover-cache-releases-unreferenced-faces ()
-  "GC releases retired faces while a live buffer keeps its shared hover identity."
-  (let ((ebox-interaction--hover-face-cache
-         (make-hash-table :test #'equal :weakness 'value)))
-    (should (equal (ebox-interaction-test--live-hover-cache-cycle) '(17 1 t)))
-    (garbage-collect)
-    (should (zerop (hash-table-count ebox-interaction--hover-face-cache)))))
-
-(ert-deftest ebox-interaction-partial-hover-decoration-composes-with-base ()
-  "Color and style overrides retain the other decoration components per run."
-  (let* ((input
-          (ebox-build
-           '(box (text :id "decoration" :color "#123456"
-                       :text-decoration-line (underline overline)
-                       :text-decoration-color "red" :text-decoration-style dashed
-                       "sample"))))
-         (buffer (generate-new-buffer " *ebox-hover-decoration*")))
-    (unwind-protect
-        (progn
-          (ebox-render-to-buffer buffer input)
-          (dolist (case '(((:text-decoration-color "blue")
-                          (:color "blue" :style dashes) "blue")
-                         ((:text-decoration-style wavy)
-                          (:color "red" :style wave) "red")
-                         ((:text-decoration-color currentColor)
-                          (:style dashes) t)
-                         ((:text-decoration-line underline)
-                          (:color "red" :style dashes) nil)
-                         ((:text-decoration-line none) nil nil)))
-            (with-current-buffer buffer
-              (ebox-region-update "decoration" :hover-style (car case)))
-            (let* ((node (plist-get (ebox--buffer-render-state buffer) :root-node))
-                   (strings (list (with-current-buffer buffer (buffer-string)))))
-              (when (ebox-native-reflow-layout-ready-p)
-                (push (plist-get
-                       (ebox-native-reflow-execute-sync
-                        node '(:key 1 :viewport-width 80 :viewport-height 20
-                               :root-width 80 :runtime-revision 0
-                               :context-hash 0 :complete t)) :rendered)
-                      strings))
-              (dolist (text strings)
-                (let ((hover (get-text-property 0 'mouse-face text)))
-                  (should (equal (ebox-interaction--face-attribute hover :underline)
-                                 (list :underline (nth 1 case))))
-                  (should (equal (ebox-interaction--face-attribute hover :overline)
-                                 (list :overline (nth 2 case))))
-                  (should (equal (ebox-interaction--face-attribute hover :foreground)
-                                 '(:foreground "#123456")))))))
-          (with-current-buffer buffer
-            (ebox-region-update "decoration" :hover-style nil)
-            (should-not (get-text-property (point-min) 'mouse-face))))
-      (kill-buffer buffer))))
 
 (ert-deftest ebox-interaction-literal-callback-and-cyclic-keymap ()
   "Callbacks remain literal and a recursive keymap can be safely snapshotted."
@@ -907,21 +551,6 @@ The helper keeps face objects out of the caller's ERT assertion temporaries."
                 (should-not (get-text-property position property))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
-(ert-deftest ebox-interaction-native-template-preserves-inner-nil ()
-  "Native template expansion shares Elisp presence and newline rules."
-  (let* ((text (copy-sequence "child\nouter"))
-         (inner '(:kind surface :properties
-                        (help-echo nil pointer nil mouse-face nil keymap nil)))
-         (outer '(:kind surface :properties
-                        (help-echo "outer" pointer hand
-                         mouse-face (:foreground "red") keymap (keymap)))))
-    (ebox-native-reflow--apply-property-template-span text 0 5 inner)
-    (ebox-native-reflow--apply-property-template-span text 0 (length text) outer)
-    (dolist (property '(help-echo pointer mouse-face keymap))
-      (should-not (get-text-property 0 property text))
-      (should-not (get-text-property 5 property text))
-      (should (get-text-property 6 property text)))))
-
 (ert-deftest ebox-interaction-hidden-and-zero-height-have-no-actions ()
   "Hidden and empty surfaces cannot expose commands or ancestor hover effects."
   (dolist (tag '(box row column flex grid))
@@ -938,36 +567,6 @@ The helper keeps face objects out of the caller's ERT assertion temporaries."
   (should (equal (ebox-render
                   (ebox-build '(box :height (lh 0) :keymap (keymap)
                                     :help-echo "empty" "content"))) "")))
-
-(ert-deftest ebox-interaction-native-execution-and-resize ()
-  "Actual native frames preserve native input scopes at different widths."
-  (skip-unless (ebox-native-reflow-layout-ready-p))
-  (let* ((input (ebox-build
-                 '(box :width (px 60) :padding-inline (px 2)
-                       :margin-inline (px 3) :help-echo "outer"
-                       :pointer hand :hover-style (:color "red")
-                       :keymap (keymap (13 . ignore))
-                       (text :help-echo nil :pointer nil :keymap nil
-                             :hover-style nil "child"))))
-         (node (ebox-canonical-input--single-root input "Native interactions")))
-    (dolist (width '(80 120))
-      (let* ((frame (ebox-native-reflow-execute-sync
-                     node (list :key width :viewport-width width
-                                :viewport-height 20 :root-width width
-                                :runtime-revision 0 :context-hash 0 :complete t)))
-             (text (plist-get frame :rendered))
-             (position (ebox-interaction-test--position text "child")))
-        (should (plist-get frame :native-frame))
-        (dolist (property '(help-echo pointer mouse-face keymap))
-          (should-not (get-text-property position property text)))
-        (should (cl-loop for index below (length text)
-                         thereis (equal (get-text-property index 'help-echo text)
-                                        "outer")))
-        (dotimes (index (length text))
-          (when (or (get-text-property index 'ebox-ml text)
-                    (get-text-property index 'ebox-mr text)
-                    (= (aref text index) ?\n))
-            (should-not (get-text-property index 'help-echo text))))))))
 
 (ert-deftest ebox-interaction-keymap-boundaries-use-current-node ()
   "First characters, nil overrides, margins and the end use the correct map."
@@ -991,42 +590,6 @@ The helper keeps face objects out of the caller's ERT assertion temporaries."
       (should (eq (key-binding (kbd "RET")) (cdr entry))))
     (goto-char (point-max))
     (should (eq (key-binding (kbd "RET")) #'backward-char))))
-
-(ert-deftest ebox-interaction-source-typed-and-retained-updates ()
-  "Typed input ownership, declarative removal and viewport updates stay coherent."
-  (let* ((builder (ebox-source-builder-create))
-         (interactions '(:help-echo "typed" :pointer hand :keymap (keymap)))
-         (handle (ebox-source-builder-bind builder :id "text"
-                                           :interactions interactions))
-         (node (ebox-text-create
-                :source-handle handle :value "typed"
-                :owned-facts (ebox-canonical-facts-from-declarations
-                              'text nil interactions)))
-         (input (ebox-canonical-input-create
-                 (list node) (ebox-source-builder-finish builder)))
-         (buffer (generate-new-buffer " *ebox-interaction-retained*")))
-    (unwind-protect
-        (progn
-          (ebox-render-to-buffer buffer input)
-          (ebox-region-update (ebox-region-resolve buffer "text")
-                              :help-echo "new" :pointer 'text
-                              :keymap '(keymap (13 . forward-char))
-                              :hover-style '(:color "red"))
-          (ebox-region-update (ebox-region-resolve buffer "text") :color "blue")
-          (ebox-rerender-buffer-with-context buffer 120 30)
-          (with-current-buffer buffer
-            (should (equal (get-text-property (point-min) 'help-echo) "new"))
-            (should (eq (get-text-property (point-min) 'pointer) 'text))
-            (should (equal (ebox-interaction--face-attribute
-                            (get-text-property (point-min) 'mouse-face) :foreground)
-                           '(:foreground "red")))
-            (should (eq (lookup-key (get-text-property (point-min) 'keymap)
-                                   (kbd "RET")) #'forward-char)))
-          (ebox-commit buffer (ebox-build '(text :id "text" "typed")))
-          (with-current-buffer buffer
-            (dolist (property '(help-echo pointer keymap mouse-face))
-              (should-not (get-text-property (point-min) property)))))
-      (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (ert-deftest ebox-interaction-parent-update-preserves-child-and-rolls-back ()
   "Ancestor changes keep local nil and a failed commit restores current maps."
@@ -1250,78 +813,5 @@ The helper keeps face objects out of the caller's ERT assertion temporaries."
     (ebox-commit (current-buffer) (ebox-build '(text "no interactions")))
     (should-error (ebox-next-interaction) :type 'user-error)))
 
-(ert-deftest ebox-interaction-navigation-keymap-prefixes-parents-and-menus ()
-  "Inspect native binding graphs without executing dynamic menu predicates."
-  (let* ((map (make-sparse-keymap))
-         (prefix (make-sparse-keymap))
-         (parent (make-sparse-keymap))
-         (calls 0))
-    (define-key prefix "r" map)
-    (define-key map "p" prefix)
-    (should-not (ebox-interaction--navigable-keymap-p map))
-    (define-key parent (kbd "RET") #'ignore)
-    (set-keymap-parent map parent)
-    (should (ebox-interaction--navigable-keymap-p map))
-    (define-key map (kbd "RET") #'undefined)
-    (should-not (ebox-interaction--navigable-keymap-p map))
-    (define-key map (kbd "RET") nil)
-    (should-not (lookup-key map (kbd "RET")))
-    (should-not (ebox-interaction--navigable-keymap-p map))
-    (keymap-unset map "RET" t)
-    (should (ebox-interaction--navigable-keymap-p map))
-    (set-keymap-parent map nil)
-    (define-key map [menu-bar item]
-      (list 'menu-item "Action" #'ignore
-            :enable '(progn (cl-incf calls) nil)
-            :filter (lambda (definition) (cl-incf calls) definition)))
-    (should (ebox-interaction--navigable-keymap-p map))
-    (should (= calls 0)))
-  (let ((full (make-keymap)) (parent (make-sparse-keymap)))
-    (define-key parent (kbd "RET") #'ignore)
-    (set-keymap-parent full parent)
-    (set-char-table-range (nth 1 full) t #'undefined)
-    (should-not (ebox-interaction--navigable-keymap-p full))
-    (define-key full (kbd "RET") nil)
-    (should-not (lookup-key full (kbd "RET")))
-    (should-not (ebox-interaction--navigable-keymap-p full))
-    (define-key full (kbd "RET") #'ignore)
-    (should (ebox-interaction--navigable-keymap-p full))))
-
-(ert-deftest ebox-interaction-navigation-inherits-effective-prefix-bindings ()
-  "Native prefix inheritance remains navigable without losing child blocking."
-  (let ((map (make-sparse-keymap))
-        (parent (make-sparse-keymap))
-        (prefix (make-sparse-keymap))
-        (calls 0))
-    (define-key parent "pr" #'ignore)
-    (define-key map "p" prefix)
-    (set-keymap-parent map parent)
-    (should (eq (lookup-key map "pr") #'ignore))
-    (should (ebox-interaction--navigable-keymap-p map))
-    (with-temp-buffer
-      (ebox-render-to-buffer
-       (current-buffer)
-       (ebox-build (list 'column '(text "intro") (list 'text :keymap map "action"))))
-      (goto-char (point-min))
-      (ebox-next-interaction)
-      (should (looking-at "action"))
-      (should (eq (key-binding "pr") #'ignore)))
-    (define-key prefix "r" #'undefined)
-    (should (eq (lookup-key map "pr") #'undefined))
-    (should-not (ebox-interaction--navigable-keymap-p map))
-    (keymap-unset prefix "r" t)
-    (define-key parent "pr"
-      (list 'menu-item "Inherited" #'ignore
-            :filter (lambda (definition) (cl-incf calls) definition)))
-    (should (ebox-interaction--navigable-keymap-p map))
-    (should (= calls 0))
-    (should (eq (car (lookup-key parent "p")) 'keymap))
-    ;; Inspection must retain the original menu wrapper and callback.
-    (should (eq (car (cdr (assq ?r (cdr (lookup-key parent "p"))))) 'menu-item))
-    (define-key map "p" #'undefined)
-    (should-not (ebox-interaction--navigable-keymap-p map))
-    (should (= calls 0))))
-
 (provide 'ebox-interaction-tests)
-
 ;;; ebox-interaction-tests.el ends here

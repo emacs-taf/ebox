@@ -79,8 +79,8 @@ buffer 写入另行测量。该路径并不保证耗时与总 object 数无关�
 
 Scroll publication 仍经过 TP 与 Ebox participant。发布失败时，旧文本、属性、offset、
 raw/rendered cache、source node、index、object、mount 和 report 均保持不变。聚焦回归
-入口为 `make layer-tests`、`make nested-scroll-tests`、`make scroll-cold-tests`
-和 `make scroll-slice-tests`；playground scroll evaluator 验证 fresh-render parity，
+入口为 `make test`、`make test`、`make test`
+和 `make test`；playground scroll evaluator 验证 fresh-render parity，
 并区分缓存滚动与实际 prefix 扩展。
 
 ## Identity 与坐标
@@ -185,4 +185,4 @@ buffer 后端按完整行生成 block 几何，与收窄后的纵向单位契约
 
 ## 验证规则
 
-每个行为修改都要补充聚焦的 ERT 测试，并运行新的 `make check`。修改 native 源码还要运行 `make native-rust-tests`；修改文档或 active 文件集合还要运行 `make docs-contract-tests`。
+每个行为修改都要补充聚焦的 ERT 测试，并运行新的 `make check`。修改 native 源码还要运行 `make test`；修改文档或 active 文件集合还要运行 `make test`。

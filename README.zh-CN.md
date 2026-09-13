@@ -198,11 +198,9 @@ fallback。Ebox 加载时不会自动构建它。
 ```sh
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make c1b-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make test EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make native-rust-tests
+make test
 ```
 
 继续阅读[用户指南](docs/manual.zh-CN.md)、[公共 API
@@ -220,4 +218,4 @@ Ebox 自有代码按 GPL-3.0-or-later 分发，详见 [LICENSE](LICENSE)。第�
 
 [docs/manual.zh-CN.md](docs/manual.zh-CN.md) · [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md) · [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
 
-`make check` 运行规范检查、编译及 [tests/acceptance.json](tests/acceptance.json) 中的公共验收场景。`make test` 运行更全面的回归测试；GUI 与性能验收使用独立入口。验收清单依据对外契约选择，不按当前能否通过筛选。
+`make check` 运行规范检查、编译及 [tests/acceptance.json](tests/acceptance.json) 中的公共验收场景。`make test` 运行同一套公共 API 测试。清单涵盖全部保留的 Lisp 测试；内部实现测试直接删除。GUI 与性能验收使用独立入口。

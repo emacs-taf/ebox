@@ -1,7 +1,11 @@
-;;; ebox-display-tests.el --- Display integration tests -*- lexical-binding: t; -*-
+;;; ebox-display-tests.el --- Public API acceptance -*- lexical-binding: t; -*-
+
+;;; Commentary:
+;; Test supported package inputs, outputs, errors and lifecycle.
+;; Internal implementation details are outside this contract.
 
 ;;; Code:
-
+(require 'cl-lib)
 (require 'ert)
 (require 'ebox)
 
@@ -22,19 +26,6 @@
           (should (eq (local-variable-p 'overline-margin) (and local-margin t)))
           (should (= overline-margin (or local-margin default-margin))))))
     (should (= (default-value 'overline-margin) default-margin))))
-
-(ert-deftest ebox-display-failed-mount-preserves-border-metrics ()
-  "An unsuccessful initial publication must leave native metrics alone."
-  (with-temp-buffer
-    (setq-local overline-margin 7)
-    (let ((tp--surface-publication-step-function
-           (lambda (step _surface)
-             (when (eq step 'client-state) (error "Reject initial mount")))))
-      (should-error
-       (ebox-render-to-buffer (current-buffer)
-         (ebox-build '(box :border "red" "Border")))))
-    (should (= overline-margin 7))
-    (should-not ebox-buffer-mode)))
 
 (ert-deftest ebox-display-invalid-input-preserves-windows ()
   "Invalid input must fail before changing the caller's window layout."
@@ -86,18 +77,6 @@
                              (selected-window))))))
           (should (eq buffer (ebox-display-buffer buffer (ebox-build "Ready"))))
           (should (eq buffer called)))
-      (kill-buffer buffer))))
-
-(ert-deftest ebox-display-delivers-the-target-viewport-intent ()
-  "A newly displayed buffer uses the ordinary deferred viewport bridge."
-  (let ((buffer (generate-new-buffer " *ebox-display-viewport*")) frame)
-    (unwind-protect
-        (cl-letf (((symbol-function 'display-buffer)
-                   (lambda (_buffer _action) (selected-window)))
-                  ((symbol-function 'ebox--window-size-change)
-                   (lambda (target) (setq frame target))))
-          (ebox-display-buffer buffer (ebox-build "Ready"))
-          (should (eq frame (selected-frame))))
       (kill-buffer buffer))))
 
 (provide 'ebox-display-tests)

@@ -219,25 +219,6 @@ impl Metrics {
         }
     }
 
-    #[cfg(test)]
-    pub fn get(&self, index: usize) -> Option<LineMetric> {
-        let node = self.0.as_ref()?;
-        record(LinePlanWork {
-            metric_nodes_visited: 1,
-            ..LinePlanWork::default()
-        });
-        match &node.kind {
-            Kind::Leaf(lines) => lines.get(index).copied(),
-            Kind::Branch(left, right) => {
-                if index < left.summary().count {
-                    left.get(index)
-                } else {
-                    right.get(index - left.summary().count)
-                }
-            }
-        }
-    }
-
     pub fn slice(&self, range: Range<usize>) -> Self {
         assert!(range.start <= range.end && range.end <= self.summary().count);
         if range.is_empty() {

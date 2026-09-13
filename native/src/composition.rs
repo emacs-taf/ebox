@@ -408,20 +408,6 @@ pub(super) struct ColumnState {
     lines: LinePlan,
 }
 
-#[cfg(test)]
-impl ColumnState {
-    pub(super) fn shares_slot(&self, other: &Self, index: usize) -> bool {
-        Arc::ptr_eq(
-            self.root.as_ref().unwrap().slot(index),
-            other.root.as_ref().unwrap().slot(index),
-        )
-    }
-
-    pub(super) fn shares_shape(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.shape, &other.shape)
-    }
-}
-
 fn target_width(context: LayoutContext, intrinsic: bool, maximum: i64) -> i64 {
     if intrinsic || context.inline_auto_width_intrinsic || !context.viewport_width_known {
         maximum

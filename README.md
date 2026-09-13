@@ -229,11 +229,9 @@ are explicit local Make targets; consult actual results for platform support.
 ```sh
 make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make c1b-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make test EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
-make native-rust-tests
+make test
 ```
 
 See the [user guide](docs/manual.md), the [public API
@@ -260,7 +258,7 @@ After cloning, run `make setup-hooks`. Before submitting a change, run `make che
 
 [docs/manual.md](docs/manual.md) · [docs/architecture.md](docs/architecture.md) · [CHANGELOG.md](CHANGELOG.md)
 
-`make check` runs structure checks, compilation and the public acceptance scenarios listed in [tests/acceptance.json](tests/acceptance.json). `make test` runs the broader regression suite; GUI and performance checks remain explicit targets. The acceptance inventory is selected by user-visible contracts, not by current pass/fail status.
+`make check` runs structure checks, compilation and the public acceptance scenarios listed in [tests/acceptance.json](tests/acceptance.json). `make test` runs the same public API suite. The inventory covers every maintained Lisp test; private implementation tests are deleted. GUI and performance checks use separate targets.
 
 ## Source layout migration
 

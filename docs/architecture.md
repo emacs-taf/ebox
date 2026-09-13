@@ -89,8 +89,8 @@ write time; this path does not establish constant cost in total object count.
 Scroll publication still goes through TP and the Ebox participant. Rejection
 preserves the old text, properties, offsets, raw and rendered caches, source
 nodes, indexes, objects, mounts and report. The focused regression targets are
-`make layer-tests`, `make nested-scroll-tests`, `make scroll-cold-tests`
-and `make scroll-slice-tests`; the playground scroll evaluator checks fresh-render
+`make test`, `make test`, `make test`
+and `make test`; the playground scroll evaluator checks fresh-render
 parity and distinguishes cached motion from actual prefix extension.
 
 ## Identity and coordinates
