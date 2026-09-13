@@ -6971,7 +6971,11 @@ Each immutable source record is resolved once for this node pair."
         (record-change
          :ecss
          (and old-record (ebox-source-record-ecss old-record))
-         (and new-record (ebox-source-record-ecss new-record)))))
+         (and new-record (ebox-source-record-ecss new-record)))
+        (record-change
+         :ecss-targets
+         (and old-record (ebox-source-record-ecss-targets old-record))
+         (and new-record (ebox-source-record-ecss-targets new-record)))))
     (setq changed (nconc changed (nreverse source-changed)))
     (let ((old-declarations
            (ebox-style--node-declarations-from-record old old-record))

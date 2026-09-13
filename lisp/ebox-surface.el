@@ -600,7 +600,7 @@ owned; no per-fragment substring is allocated."
   (list (ecss-stylesheet-rules ebox-style-stylesheet)
         (ecss-stylesheet-layers ebox-style-stylesheet)
         (mapcar (lambda (scope)
-                  (ecss-stylesheet-rules (ecss-scope-stylesheet scope)))
+                  (gethash scope ebox-style--scope-source-signatures))
                 ebox-style--scopes)))
 
 (defun ebox-surface--subject-signature (subject)

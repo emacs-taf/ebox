@@ -1382,6 +1382,9 @@ Grid track wrappers are traversed after their structural validator succeeds."
 (defvar ebox-style--scope-cache (make-hash-table :test 'eq :weakness 'key)
   "Source-index keyed mounted scope snapshots.")
 
+(defvar ebox-style--scope-source-signatures (make-hash-table :test 'eq :weakness 'key)
+  "Immutable source identity, rule, and membership facts per mounted scope.")
+
 (defun ebox-style-source-scopes (source-index &optional root)
   "Mount SOURCE-INDEX local styles on its canonical selector subjects."
   (when (and source-index (or (ebox-source--index-subjects source-index) root))
@@ -1418,7 +1421,11 @@ Grid track wrappers are traversed after their structural validator succeeds."
                               (or (gethash identity subjects)
                                   (error "Ebox ECSS target is absent: %S" identity)))
                             targets))))
-                      scopes))))
+                      scopes)
+                (puthash (car scopes)
+                         (list (ebox-source--handle-id-view handle)
+                               rules (ebox-source-record-ecss-targets record))
+                         ebox-style--scope-source-signatures))))
           (setq scopes (nreverse scopes))
           (puthash source-index scopes ebox-style--scope-cache)
           scopes)))))

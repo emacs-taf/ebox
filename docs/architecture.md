@@ -28,6 +28,10 @@ exports preserve target facts; scope caches are keyed by candidate source index.
 Author ownership is therefore independent of physical parentage and live buffer
 coordinates. ECSS continues to own structural matching and inheritance.
 
+Cascade reuse compares mounting source identity, rules, and target membership.
+Metadata-only publication can retain lazy selector views; tree queries rebuild
+stale views from current source facts before matching.
+
 ## Commit lifecycle
 
 ```text

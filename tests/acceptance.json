@@ -595,6 +595,11 @@
       "name": "ebox-scope-targets-snapshot-remounts-independently",
       "file": "tests/ebox-scope-ownership-tests.el",
       "purpose": "Exported author ownership survives replacement and disposal of the original mount."
+    },
+    {
+      "name": "ebox-selector-canonical-metadata-commit-refreshes-tree-queries",
+      "file": "tests/ebox-selector-tests.el",
+      "purpose": "Tree queries observe accepted canonical attribute/state changes after metadata-only commits."
     }
   ]
 }

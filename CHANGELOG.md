@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Tree selector queries refresh stale subject views after canonical metadata
+  commits. Changing only a local stylesheet's target identities now invalidates
+  its computed output as well.
+
 - Canonical source bindings accept `:ecss-targets` to preserve author ownership
   across nested component content. Targets are resolved per candidate; invalid
   target identities fail without replacing committed output.

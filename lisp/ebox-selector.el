@@ -151,6 +151,8 @@
 
 (defun ebox-selector--matching-subject-entries (root ast &optional source-index)
   "Return semantic ROOT entries in SOURCE-INDEX whose subjects match AST."
+  (when (and source-index (ebox-source--index-derived-stale-p source-index))
+    (setq source-index (ebox-tree-source-index root t nil source-index)))
   (cl-remove-if-not
    (lambda (entry)
      (ecss-selector-match-p ast (plist-get entry :subject)))

@@ -81,7 +81,11 @@ REVERSE reverses their physical order without changing author identities."
     (with-temp-buffer
       (ebox-render-to-buffer (current-buffer) (ebox-scope-test-input '(slot)))
       (setq snapshot (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))
-      (ebox-commit (current-buffer) (ebox-scope-test-input nil)))
+      (ebox-commit (current-buffer) (ebox-scope-test-input nil))
+      (should-not (member (ebox-scope-test-color (buffer-string) "slot")
+                          '("#00ff00" "#ff0000")))
+      (ebox-commit (current-buffer) (ebox-scope-test-input '(slot)))
+      (should (equal "#00ff00" (ebox-scope-test-color (buffer-string) "slot"))))
     (let ((text (ebox-render snapshot)))
       (should (equal "#00ff00" (ebox-scope-test-color text "slot")))
       (should (equal "#0000ff" (ebox-scope-test-color text "fallback"))))))
