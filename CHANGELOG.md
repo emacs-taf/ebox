@@ -83,9 +83,8 @@ All notable changes to Ebox are documented here.
 
 - Replace legacy geometry literals with explicit units: for example,
   `:width 80` becomes `:width (ch 80)`, `:width (240)` becomes
-  `:width (px 240)`, and `:height 3` becomes `:height (lh 3)`. Use
-  `python3 scripts/migrate-css-sizes.py PATH...` to preview supported literal
-  rewrites; review reported dynamic or ambiguous values before adding `--write`.
+  `:width (px 240)`, and `:height 3` becomes `:height (lh 3)`.
+  Choose units for dynamic values explicitly at their producer.
   Vertical geometry rejects `px`, and `fit-content` is now a bare keyword.
 - Callers requiring selected or exclusive display must choose that window
   policy explicitly; ordinary `ebox-display-buffer` follows native display

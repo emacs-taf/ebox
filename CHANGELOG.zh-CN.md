@@ -68,8 +68,7 @@ Ebox 的重要变化记录在这里。
 
 - 将旧几何字面量改为显式单位：例如 `:width 80` 改为 `:width (ch 80)`，
   `:width (240)` 改为 `:width (px 240)`，`:height 3` 改为 `:height (lh 3)`。
-  先用 `python3 scripts/migrate-css-sizes.py PATH...` 预览支持的字面量迁移，检查
-  动态或歧义报告后再加 `--write`。纵向几何不接受 `px`，`fit-content` 只使用裸关键词。
+  动态值在产生处明确单位。纵向几何不接受 `px`，`fit-content` 只使用裸关键词。
 - 需要选中或独占显示的调用方应显式选择相应窗口策略；普通 `ebox-display-buffer`
   遵循原生显示规则。只渲染不显示时仍使用 `ebox-render-to-buffer`。
 - 仅在使用 `:wrap-mode kp` 时安装 EKP 1.0.0 或更高版本；其可选 native 加速器与

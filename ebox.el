@@ -5360,7 +5360,7 @@ and are documented separately in the public API reference.")
 ;;; ============================================================
 ;; The complete facade inventory is `ebox-public-api'.  Style-rule entry points
 ;; are defined in `ebox-style.el' and the user-facing inventory is maintained
-;; in `docs/user/ebox-api-reference.en.md` and its Chinese counterpart.
+;; in `docs/manual.md` and its Chinese counterpart.
 ;; All other ebox-- prefixed functions are internal implementation details.
 ;;
 ;; ── Creation ──────────────────────────────────────────────────

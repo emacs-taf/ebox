@@ -1,13 +1,21 @@
+# Generated files and local editor state.
 *.elc
+*.eln
+*.pyc
+__pycache__/
 .DS_Store
-__pycache__
-scripts/ebox-scroll-profile.el
+*~
+\#*\#
+.#*
+*.o
+*.so
+*.dylib
+*.dll
 native/target/
 native/core/target/
-native/core/Cargo.lock
-
-# Local oh-my-codex runtime state/logs.
 .omx/
-
-# Local isolated implementation worktrees.
 .worktrees/
+
+# Package-specific local files.
+scripts/ebox-scroll-profile.el
+native/core/Cargo.lock

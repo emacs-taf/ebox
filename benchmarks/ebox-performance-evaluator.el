@@ -4,7 +4,7 @@
 ;; Batch entry point for the repository-local performance contract.
 ;;
 ;;   emacs -Q -L . -L ../new-architecture/ecss -L ../tp \
-;;     -l scripts/ebox-performance-evaluator.el \
+;;     -l benchmarks/ebox-performance-evaluator.el \
 ;;     -f ebox-performance-evaluator-batch
 
 ;;; Code:

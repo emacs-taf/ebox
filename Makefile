@@ -1,3 +1,5 @@
+.DEFAULT_GOAL := check
+.NOTPARALLEL:
 EMACS ?= emacs
 CARGO ?= cargo
 PYTHON ?= python3
@@ -9,13 +11,13 @@ RELEASE_DEPS_DIR ?= /tmp/ebox-release-deps
 RELEASE_OPTIONS ?=
 NATIVE_MODULE ?=
 
-EMACS_BATCH = $(EMACS) -Q --batch -L . -L $(ECSS_DIR) -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
+EMACS_BATCH = $(EMACS) -Q --batch -L . -L benchmarks -L $(ECSS_DIR) -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
 EMACS_TEST = $(EMACS_BATCH) -L tests -l tests/ebox-fixtures.el
 NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
 NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
-.PHONY: all check ci load compile test checkdoc runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests state-contract-tests layout-boundary-tests layout-boundary-performance patch-plan-tests patch-plan-performance style-schema-tests style-schema-performance spi-tests spi-performance c1b-contract-tests docs-contract-tests ci-contract-tests performance-evaluator visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
+.PHONY: all check ci load compile test checkdoc runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests state-contract-tests layout-boundary-tests layout-boundary-performance patch-plan-tests patch-plan-performance style-schema-tests style-schema-performance spi-tests spi-performance c1b-contract-tests docs-contract-tests performance-evaluator visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
 
 .PHONY: node-memo-generation-tests
 .PHONY: interaction-tests
@@ -77,9 +79,9 @@ release-native-check:
 	$(PYTHON) scripts/ebox-release.py verify --directory "$(RELEASE_DIR)" --emacs "$(EMACS)" --build-native
 
 release-tool-tests:
-	$(PYTHON) -m unittest discover -s scripts -p 'test_ebox_release.py'
+	$(PYTHON) -m unittest discover -s tests -p 'test_ebox_release.py'
 
-check: ci
+check: structure-check compile acceptance
 
 ci: checkdoc load compile test visual-check diff-check
 
@@ -87,17 +89,14 @@ load:
 	$(EMACS_BATCH) -l ebox.el --eval '(princ "ebox load OK\n")'
 
 compile:
-	rm -f *.elc tests/*.elc scripts/*.elc
+	rm -f *.elc tests/*.elc scripts/*.elc benchmarks/*.elc
 	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l ebox.el --eval '(ebox-byte-compile)'
 
-test: size-tests runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests node-memo-generation-tests state-contract-tests layout-boundary-tests patch-plan-tests style-schema-tests spi-tests docs-contract-tests ci-contract-tests
+test: size-tests runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests node-memo-generation-tests state-contract-tests layout-boundary-tests patch-plan-tests style-schema-tests spi-tests docs-contract-tests
 
-.PHONY: size-tests size-migration-tests
-size-tests: size-migration-tests
+.PHONY: size-tests
+size-tests:
 	$(EMACS_BATCH) -L tests -l tests/ebox-size-tests.el -l tests/ebox-size-style-tests.el -l tests/ebox-css-layout-tests.el -l tests/ebox-css-flex-grid-tests.el -l tests/ebox-css-viewport-tests.el -l tests/ebox-size-native-tests.el -l tests/ebox-zero-height-tests.el -f ert-run-tests-batch-and-exit
-
-size-migration-tests:
-	python3 -m unittest discover -s scripts -p 'test_migrate_css_sizes.py'
 
 runtime-index-tests:
 	$(EMACS_BATCH) -l tests/ebox-runtime-index-tests.el -f ert-run-tests-batch-and-exit
@@ -157,7 +156,7 @@ layout-boundary-tests:
 	$(EMACS_TEST) -l tests/ebox-layout-boundary-tests.el -f ert-run-tests-batch-and-exit
 
 layout-boundary-performance:
-	$(EMACS_BATCH) -l scripts/ebox-performance-evaluator.el -f ebox-performance-evaluator-layout-boundary-batch
+	$(EMACS_BATCH) -l benchmarks/ebox-performance-evaluator.el -f ebox-performance-evaluator-layout-boundary-batch
 
 patch-plan-tests:
 	$(EMACS_TEST) -l tests/ebox-patch-plan-tests.el -f ert-run-tests-batch-and-exit
@@ -180,13 +179,10 @@ spi-performance:
 	$(EMACS_TEST) -l tests/ebox-spi-tests.el --eval "(ert-run-tests-batch-and-exit 'ebox-spi-performance-builds-bounded-provider-snapshots)"
 
 performance-evaluator: surface-tests ebox-commit-tests
-	$(EMACS_BATCH) -l scripts/ebox-performance-evaluator.el -f ebox-performance-evaluator-batch
+	$(EMACS_BATCH) -l benchmarks/ebox-performance-evaluator.el -f ebox-performance-evaluator-batch
 
 docs-contract-tests:
 	$(EMACS_BATCH) -l tests/ebox-docs-contract-tests.el -f ert-run-tests-batch-and-exit
-
-ci-contract-tests:
-	$(EMACS_BATCH) -l tests/ebox-ci-contract-tests.el -f ert-run-tests-batch-and-exit
 
 visual-check:
 	$(EMACS_BATCH) -l scripts/ebox-visual-check.el -f ebox-visual-check-batch
@@ -212,5 +208,15 @@ diff-check:
 	git diff --check
 
 clean:
-	rm -f *.elc tests/*.elc scripts/*.elc
+	rm -f *.elc tests/*.elc scripts/*.elc benchmarks/*.elc
 	rm -rf native/target
+
+.PHONY: structure-check setup-hooks
+structure-check:
+	python3 scripts/check-repository.py
+setup-hooks:
+	git config --local core.hooksPath .githooks
+
+.PHONY: acceptance
+acceptance:
+	python3 scripts/run-acceptance.py --emacs "$(EMACS)"

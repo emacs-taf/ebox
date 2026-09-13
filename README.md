@@ -76,8 +76,7 @@ be used as a local package archive:
 ;; (package-install 'ekp)
 ```
 
-Tool inputs, cleanup, offline reuse, and native verification are documented in
-the [maintainer guide](docs/maintainer/ebox-current-implementation-reference.en.md#source-package-distribution).
+Use `python3 scripts/ebox-release.py --help` for release-tool options.
 
 ## First render
 
@@ -129,7 +128,7 @@ For example, `:width (ch 80)` and `:height (calc (- (vh 100) (lh 1)))` mean an
 and bare `fit-content` stay symbols. Old bare lengths, singleton pixel lists,
 and viewport keywords are rejected. Units are checked against the property axis
 at construction, including every branch of a size function. See the [shared
-unit-constraint table](docs/user/ebox-user-guide.en.md#size-unit-constraints)
+unit-constraint table](docs/manual.md#size-unit-constraints)
 for the allowed combinations, keyword defaults, percentage references, and
 vertical line quantization. An empty Box has zero automatic content height;
 use `(box :height (lh 1))` to reserve a blank line.
@@ -155,8 +154,8 @@ Native keymaps support independent Ebox interactions. Optional
 `ebox-next-interaction` and `ebox-previous-interaction` commands move point
 between rendered keymap owners without adding default key bindings.
 Application state and command behavior remain the author's responsibility.
-See the [interaction guide](docs/user/ebox-user-guide.en.md#native-node-interaction)
-and the Playground's [interaction lab](../ebox-playground/README.md#native-interaction-lab).
+See the [interaction guide](docs/manual.md#native-node-interaction)
+and the Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md#native-interaction-lab).
 
 ## Render and update
 
@@ -217,11 +216,8 @@ height, preserving its padding and borders. Horizontal clipping keeps whole
 supported text clusters and fills unused pixels with space; it does not render
 partial glyphs or insert an ellipsis. `scroll` remains vertical scrolling.
 
-The CI configuration covers Emacs 29.1 and 30.2 on Linux, and source-package
-installation plus native-module loading/execution on Linux, macOS, and Windows
-with Emacs 30.2. Those jobs define the verification matrix; they are not a claim
-that every platform's GUI rendering has been visually verified. Consult the
-workflow results for the particular revision being installed.
+The repository includes a structural CI gate. Runtime and native verification
+are explicit local Make targets; consult actual results for platform support.
 
 ## Verification
 
@@ -235,9 +231,9 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make native-rust-tests
 ```
 
-See the [user guide](docs/user/ebox-user-guide.en.md), the [public API
-reference](docs/user/ebox-api-reference.en.md), and the sibling
-[ebox-playground](../ebox-playground/README.md) examples.
+See the [user guide](docs/manual.md), the [public API
+reference](docs/manual.md), and the sibling
+[ebox-playground](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md) examples.
 
 ## License
 
@@ -252,3 +248,11 @@ the core optionally loads `name.el` first for lexical business functions and
 then `name.ecss` as rules on the root Box's local ECSS scope.  Nested Box
 styles remain inline `:ecss` scopes; all rules use the same ECSS matcher,
 cascade, inheritance, and incremental update path.
+
+## Development
+
+After cloning, run `make setup-hooks`. Before submitting a change, run `make check`; `make structure-check` is the fast organization gate. The shared rules are in [AGENTS.md](AGENTS.md).
+
+[docs/manual.md](docs/manual.md) · [docs/architecture.md](docs/architecture.md) · [CHANGELOG.md](CHANGELOG.md)
+
+`make check` runs structure checks, compilation and the public acceptance scenarios listed in [tests/acceptance.json](tests/acceptance.json). `make test` runs the broader regression suite; GUI and performance checks remain explicit targets. The acceptance inventory is selected by user-visible contracts, not by current pass/fail status.

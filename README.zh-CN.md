@@ -67,8 +67,7 @@ make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0
 ;; (package-install 'ekp)
 ```
 
-工具输入、清理、离线复用与 native 验证见
-[维护者指南](docs/maintainer/ebox-current-implementation-reference.zh.md#源码包分发)。
+发布工具选项见 `python3 scripts/ebox-release.py --help`。
 
 ## 第一次渲染
 
@@ -115,7 +114,7 @@ Box 几何统一写成 `(单位 数值)`，支持 `px`、`%`、`vw`、`vh`、`ch
 `calc`、`min`、`max`、`clamp` 在布局时组合长度；`auto`、裸 `fit-content` 等
 尺寸关键词仍直接写符号。旧的裸长度、单元素像素列表和视口关键词会报错。
 构造时按属性方向检查单位，包括尺寸函数的所有分支。允许的组合、关键词默认值、
-百分比参照及纵向行粒度限制见[统一单位约束表](docs/user/ebox-user-guide.zh.md#size-unit-constraints)。
+百分比参照及纵向行粒度限制见[统一单位约束表](docs/manual.zh-CN.md#size-unit-constraints)。
 空 Box 的自动内容高度为零；需要一行空白时写 `(box :height (lh 1))`。
 
 ## 原生交互
@@ -134,8 +133,8 @@ padding 和 border，不包含该 Box 的 margin 和结构性换行符。悬停�
 独立的 Ebox 交互；可选的 `ebox-next-interaction`、`ebox-previous-interaction` 命令
 在渲染后的 keymap owner 之间移动 point，不添加默认按键绑定。应用状态与命令行为
 由作者管理。参见
-[交互指南](docs/user/ebox-user-guide.zh.md#native-node-interaction)和 Playground 的
-[交互实验室](../ebox-playground/README.zh-CN.md#native-interaction-lab)。
+[交互指南](docs/manual.zh-CN.md#native-node-interaction)和 Playground 的
+[交互实验室](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)。
 
 ## 渲染与更新
 
@@ -186,9 +185,8 @@ fallback。Ebox 加载时不会自动构建它。
 边框。横向裁剪保留完整的受支持文本簇，用空白补齐剩余像素，不显示半个字形，也不
 添加省略号。`scroll` 仍是纵向滚动。
 
-CI 配置覆盖 Linux 上的 Emacs 29.1、30.2，以及 Linux、macOS、Windows 上使用
-Emacs 30.2 的源码包安装和 native 模块加载、执行。这些任务定义验证矩阵，不代表
-所有平台的 GUI 渲染都已做视觉实测；请查看待安装提交对应的 workflow 结果。
+仓库提供结构检查 CI 配置。运行时与 native 验证使用本地 Make 入口；
+平台支持情况应以实际验证结果为准。
 
 ## 验证
 
@@ -202,11 +200,19 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make native-rust-tests
 ```
 
-继续阅读[用户指南](docs/user/ebox-user-guide.zh.md)、[公共 API
-参考](docs/user/ebox-api-reference.zh.md)，以及同级
-[ebox-playground](../ebox-playground/README.md) 示例。
+继续阅读[用户指南](docs/manual.zh-CN.md)、[公共 API
+参考](docs/manual.zh-CN.md)，以及同级
+[ebox-playground](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md) 示例。
 
 ## 许可证
 
 Ebox 自有代码按 GPL-3.0-or-later 分发，详见 [LICENSE](LICENSE)。第三方文件保留各自的
 许可证声明。
+
+## 开发
+
+克隆后运行 `make setup-hooks`。提交变更前运行 `make check`；`make structure-check` 用于快速检查目录、命名和引用。统一开发规则见 [AGENTS.md](AGENTS.md)。
+
+[docs/manual.zh-CN.md](docs/manual.zh-CN.md) · [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md) · [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)
+
+`make check` 运行规范检查、编译及 [tests/acceptance.json](tests/acceptance.json) 中的公共验收场景。`make test` 运行更全面的回归测试；GUI 与性能验收使用独立入口。验收清单依据对外契约选择，不按当前能否通过筛选。

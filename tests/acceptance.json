@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "load_path": [
+    ".",
+    "tests",
+    "../ecss",
+    "../tp",
+    "../ekp"
+  ],
+  "support": [
+    "tests/ebox-fixtures.el"
+  ],
+  "cases": [
+    {
+      "name": "ebox-local-ecss-renders-nested-scopes",
+      "file": "tests/ebox-dsl-tests.el",
+      "purpose": "local ecss renders nested scopes"
+    },
+    {
+      "name": "ebox-dsl-rejects-malformed-selector-state-metadata",
+      "file": "tests/ebox-dsl-tests.el",
+      "purpose": "dsl rejects malformed selector state metadata"
+    },
+    {
+      "name": "ebox-canonical-text-constructor-is-renderable-and-typed",
+      "file": "tests/ebox-dsl-tests.el",
+      "purpose": "canonical text constructor is renderable and typed"
+    },
+    {
+      "name": "ebox-normal-single-text-preserves-genuine-narrow-wrap",
+      "file": "tests/ebox-core-render-tests.el",
+      "purpose": "normal single text preserves genuine narrow wrap"
+    },
+    {
+      "name": "ebox-root-background-covers-transparent-layout-wrappers",
+      "file": "tests/ebox-core-render-tests.el",
+      "purpose": "root background covers transparent layout wrappers"
+    },
+    {
+      "name": "ebox-production-render-consumes-isolated-ecss-cascade",
+      "file": "tests/ebox-core-render-tests.el",
+      "purpose": "production render consumes isolated ecss cascade"
+    },
+    {
+      "name": "ebox-commit-disjoint-scroll-rolls-back-with-local-content",
+      "file": "tests/ebox-commit-tests.el",
+      "purpose": "commit disjoint scroll rolls back with local content"
+    },
+    {
+      "name": "ebox-commit-inherited-text-rolls-back-properties-and-retries",
+      "file": "tests/ebox-commit-tests.el",
+      "purpose": "commit inherited text rolls back properties and retries"
+    },
+    {
+      "name": "ebox-spi-public-unmount-allows-a-fresh-initial-generation",
+      "file": "tests/ebox-spi-tests.el",
+      "purpose": "Public framework mount, teardown and remount preserve usable output"
+    },
+    {
+      "name": "ebox-spi-initial-failure-restores-exact-editor-custody",
+      "file": "tests/ebox-spi-tests.el",
+      "purpose": "A failed framework mount restores observable editor state"
+    }
+  ]
+}

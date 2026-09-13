@@ -1,10 +1,10 @@
-# Ebox user guide
+# ebox Manual
 
-[中文](ebox-user-guide.zh.md)
+[中文](manual.zh-CN.md)
 
 Ebox is the low-level Text/Box layout and buffer-rendering package. This guide
 uses one public author grammar and keeps framework-integration details separate.
-See the [API reference](ebox-api-reference.en.md) for the complete function
+See the [API reference](manual.md) for the complete function
 inventory.
 
 ## 1. Load Ebox
@@ -427,7 +427,7 @@ and padding share a native `mouse-face`, with unspecified attributes taken from
 that node's base style. Differently colored child text covered by this hover
 uses the same hover base. Physical left/right borders are excluded from hover;
 horizontal border strokes remain intact. Font metrics and geometry do not change.
-The [API reference](ebox-api-reference.en.md#native-node-capabilities)
+The [API reference](manual.md)
 defines the accepted values. Ebox compiles this plist to native `mouse-face`;
 there is no arbitrary native-property passthrough.
 
@@ -468,7 +468,7 @@ event's target buffer themselves. Ebox uses native command dispatch and does
 not create an application state or focus-management system. A hand pointer
 alone does not bind a click command.
 
-The Playground's [interaction lab](../../../ebox-playground/README.md#native-interaction-lab)
+The Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md#native-interaction-lab)
 keeps its business functions and state in `interaction-reference.el`, with its
 layout in `interaction-reference.ebox`. It demonstrates callbacks, nested
 overrides, and replacing or removing all four capabilities through public
@@ -574,9 +574,7 @@ and the helper returns `ready` here. It flushes its own nonempty batch once;
 inside an existing batch it leaves the flush to the outer owner. A nonlocal
 exit restores the pending state from before this call, and a failed owned
 flush preserves the last committed surface. This does not undo arbitrary
-business side effects in the callback. See the [batch API
-contract](ebox-api-reference.en.md#grouping-region-updates) for nesting, no-op,
-and explicit lifecycle behavior.
+business side effects in the callback.
 
 ## 7. Resize and scroll
 
@@ -673,14 +671,51 @@ becomes `:width (px ,(+ 200 40))` inside a backquoted layout. Bare structural fo
 are no longer interpreted as DSL automatically; there is no legacy-format
 auto-detection.
 
-## 9. Typed integration API
+## 10. Optional native reflow and verification
 
-Frameworks that already normalize author input may bypass the list DSL. This
-is an integration API, not a second author grammar. One source builder owns
-the complete source generation. Each TextNode or BoxNode receives an opaque
-handle from that builder and node-owned facts projected from the same
-normalized declarations. The framework then seals the builder and transports
-the forest and source index together as one `CanonicalEboxInput`.
+The Rust module is optional and Ebox never builds it while loading:
+
+```elisp
+(ebox-native-status)
+(ebox-native-build)
+```
+
+From the repository root:
+
+```sh
+make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make dsl-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+```
+
+
+## Interface reference
+
+[中文](manual.zh-CN.md)
+
+This reference describes the current public boundary of the standalone Ebox
+package. It separates the ordinary author path from the evaluated typed API
+used by framework integrations. Names beginning with `ebox--` are private.
+
+Ebox requires Emacs 29.1 or newer, ECSS 0.1.0 or newer, and TP 2.0.0 or newer.
+EKP 1.0.0 or newer is an optional dependency required for `:wrap-mode kp`;
+`word`, `char`, and `none` do not load it. Missing or incompatible EKP signals
+an actionable error instead of silently changing the wrapping algorithm.
+See [installation](../README.md#install) for source loading and dependency roles.
+
+```elisp
+(require 'ebox)
+```
+
+## 2. Evaluated typed construction
+
+Frameworks that already own author parsing can use the evaluated integration
+API. This API is not a second author grammar. One `ebox-source-builder` owns
+the complete source generation; every typed node carries a handle from that
+builder and node-owned facts projected from the same normalized declarations.
+The final `CanonicalEboxInput` transports the forest and sealed source index as
+one value:
 
 ```elisp
 (let* ((builder (ebox-source-builder-create))
@@ -724,27 +759,286 @@ the forest and source index together as one `CanonicalEboxInput`.
    (ebox-source-builder-finish builder)))
 ```
 
-`ebox-source-builder-create`, `ebox-source-builder-bind`,
-`ebox-source-builder-finish`, `ebox-canonical-facts-from-declarations`, the
-typed node/layout constructors, and `ebox-canonical-input-create` belong to
-this integration boundary. Here `:layout`, `:children`, `:source-handle`, and
-`:owned-facts` are evaluated constructor fields. They are not author
-properties and do not extend the seven-entry grammar.
+- `ebox-source-builder-create` begins exactly one mutable source assembly.
+- `ebox-source-builder-bind` stores normalized source facts and returns an
+  identity-only opaque handle.
+- `ebox-source-builder-finish` detaches and seals the builder's immutable fact
+  index. A sealed builder rejects further mutation.
+- `ebox-canonical-facts-from-declarations` projects the node-owned facts from
+  the same normalized declarations passed to the source builder.
+- `ebox-text-create` requires `:value`, `:source-handle`, and `:owned-facts`.
+- `ebox-normal-layout-create` creates Normal LayoutConfig.
+- `ebox-row-layout-create` and `ebox-column-layout-create` accept
+  `:item-gap` and `:cross-align`.
+- `ebox-flex-layout-create` creates a validated Flex LayoutConfig.
+- `ebox-grid-layout-create` creates a validated Grid LayoutConfig.
+- `ebox-box-create` requires `:layout`, `:source-handle`, and `:owned-facts`;
+  it accepts a `:children` list of typed nodes.
+- `ebox-canonical-input-create` combines an ordered node forest with the one
+  source index that owns every referenced handle; this boundary validates the
+  exact set and seals source order from the forest's final preorder, independent
+  of bottom-up construction order.
+- `ebox-canonical-input-root-host-ref` returns the detached publication address
+  of a validated single-root input without exposing its source handle.
+- `ebox-canonical-input-roots` returns a shallow, read-only copy of the exact
+  top-level roots. It does not import source facts into another candidate.
+- `ebox-canonical-input-import-roots` accepts only exact, unique top-level roots
+  from that input and an open source builder. It imports facts only for the
+  selected subtrees, preserves their node, source-handle, and immutable-record
+  identities, and never adopts facts from unselected roots.
+- `ebox-canonical-input-equal-p` compares the complete canonical forest, Range
+  anchors, source identities, and immutable source facts for no-op proofs.
 
-## 10. Optional native reflow and verification
+These source builders, fact/input constructors, and typed node/layout
+constructors belong only to the evaluated integration contract. Their fields
+are not author properties or alternate DSL syntax.
 
-The Rust module is optional and Ebox never builds it while loading:
+Node inspection functions are `ebox-node-kind`, `ebox-text-node-p`,
+`ebox-box-node-p`, `ebox-node-source-handle`, `ebox-text-node-value`,
+`ebox-box-node-layout`, `ebox-box-node-children`, and
+`ebox-box-node-range-anchors`. They are public from the typed module even
+though the facade inventory below focuses on application entry points.
 
-```elisp
-(ebox-native-status)
-(ebox-native-build)
-```
+## 3. Rendering and retained publication
 
-From the repository root:
+| Function | Contract |
+| --- | --- |
+| `ebox-render` | Accept a single-root `CanonicalEboxInput` and return a propertized string without publishing a live buffer. |
+| `ebox-render-to-buffer` | Accept a single-root `CanonicalEboxInput`, mount a retained TP surface, enable `ebox-buffer-mode`, and return the buffer. Its optional plist accepts only `:observer FUNCTION`. |
+| `ebox-unmount-buffer` | Release a mounted Ebox/TP surface, observers, retained indexes, and runtime authority from a live buffer. |
+| `ebox-display-buffer` | `(BUFFER-OR-NAME INPUT &optional ACTION)` renders a single-root `CanonicalEboxInput`, then calls native `display-buffer` with `ACTION` and returns the buffer. Ebox does not delete other windows or select the result. |
+| `ebox-commit` | Atomically publish a single-root `CanonicalEboxInput` or a one-shot logical candidate returned by `ebox-candidate-begin`. |
+| `ebox-buffer-set-observer` | Set or remove one function-valued observer on an already mounted buffer. |
+| `ebox-buffer-update-report` | Return a defensive copy of the last successful update report. |
+| `ebox-rerender-buffer-with-context` | Apply explicit viewport width and optional height while retaining identity. |
+| `ebox-viewport-window-width` | Return Ebox's display-safe pixel width for a window. |
+
+`ebox-display-buffer` respects `display-buffer-alist` and native action
+precedence. Rendering failure occurs before any display call. Window placement
+belongs to the selected Emacs display action; Ebox does not roll back a
+successfully published buffer if a caller-supplied display action fails.
+
+Each mounted buffer has one viewport layout, shared by all windows showing it.
+Independent window widths require separate mounted buffers. Explicit viewport
+updates change that buffer's shared layout.
+
+`ebox-commit` accepts optional framework publish and rollback callbacks. They
+join the existing atomic publication; failures restore the previous buffer,
+surface, runtime state, and successful report.
+
+Every public Ebox publication owns its TP transaction. Calling mount, commit,
+viewport, region, selector, batch, or TP-backed scroll publication from inside
+an already active outer TP transaction is rejected before Ebox mutation.
+
+Observation is an optional read-only boundary, not transaction authority. An
+observer has the signature `(OBSERVER BUFFER REPORT)`. After one accepted TP
+publication and all Ebox finalization complete, it receives two defensive flat
+reports in order: TP first, then Ebox. Both carry the same `:correlation-id`,
+derived from the TP transaction id. Ebox stages are `mount`, `commit`,
+`viewport`, `region`, `selector`, `batch`, and `scroll`. Nested public calls
+reuse the outer operation, so a multi-match selector or explicit batch still
+emits one pair. No-op operations and native-window scrolls that publish no TP
+surface emit no pair. Observer errors are contained after acceptance and
+cannot roll back rendering.
+
+Pass `:observer` to `ebox-render-to-buffer` when the initial mount must be
+included. That mount report is transient: observed and unobserved mounts both
+leave `ebox-buffer-update-report` nil. Use `ebox-buffer-set-observer` to replace
+or remove observation later; passing nil detaches the TP bridge. With no
+observer, Ebox creates no observation context, timestamps, GC snapshots, or
+report decoration.
+
+`ebox-call-with-render-burst` is the exception-safe allocation/GC boundary for
+a framework callback. `ebox-render-burst-begin` and `ebox-render-burst-end`
+provide the lower-level token form and must be paired with `unwind-protect`.
+They do not publish by themselves.
+
+## 4. Identity, direct updates, and logical candidates
+
+| Function | Contract |
+| --- | --- |
+| `ebox-region-ids` | Return current low-level region ids in document order. |
+| `ebox-region-resolve` | Resolve one logical `:id` in a mounted buffer to an opaque surface-scoped handle. |
+| `ebox-region-update` | Apply supported mutable style, scroll, or native node capability properties through one retained transaction. Accept an opaque region handle or a semantic `:id` in the current mounted buffer. |
+| `ebox-call-with-update-batch` | `(CALLBACK &optional BUFFER)` runs a zero-argument callback in the target buffer and groups its queued region updates; return the callback's value. |
+| `ebox-child-range` | Framework integration only: build a nonvisual, addressable child Range descriptor while assembling a typed canonical input. |
+| `ebox-candidate-begin` | Capture the exact current mounted generation in a one-shot candidate. |
+| `ebox-candidate-replace` | Replace one candidate node address from a single-root `CanonicalEboxInput`. |
+| `ebox-candidate-replace-range-ref` | Replace one transparent child Range payload from a forest-valued `CanonicalEboxInput`. |
+| `ebox-candidate-replace-root` | Replace the candidate's private root address from a single-root `CanonicalEboxInput`. |
+| `ebox-candidate-replace-host-ref` | Replace one framework-owned opaque host reference from a single-root `CanonicalEboxInput`. |
+| `ebox-candidate-patch-host-paint` | Compare previous and next single-root canonical inputs; record a proven paint-only host patch or return nil when replacement is required. |
+| `ebox-host-ref-bounds` | Return current margin-free bounds for an opaque host reference. |
+| `ebox-host-ref-position` | Return its first current position. |
+
+Handles and reported positions belong to one live publication generation.
+Resolve them again after their object is removed. A candidate is sealed by
+commit and cannot be reused.
+
+Within a callback for the target mounted buffer, a direct update can use the
+semantic ID: `(ebox-region-update "action" :help-echo "Updated help")`.
+Semantic IDs accept strings, non-`nil` symbols, and integers; an integer author
+`:id` is distinct from Ebox's diagnostic numeric region metadata.
+Use `ebox-region-resolve` with an explicit buffer when addressing another
+mounted buffer, then pass that handle to `ebox-region-update`.
+
+`ebox-region-update` accepts `:help-echo`, `:pointer`, `:hover-style`, and
+`:keymap` on Text and Box regions, with the same validation as construction.
+Passing a new value replaces that capability; passing `nil` clears it and
+blocks an enclosing value. Omitted properties are unchanged. Replace the
+`:keymap` property when publishing new bindings: Ebox snapshots keymaps, so
+later caller-side mutations do not update a mounted surface. Clearing it removes that
+node's keymap; ordinary Emacs buffer and global bindings still apply.
+
+### Grouping region updates
+
+`ebox-call-with-update-batch` defaults `BUFFER` to the current buffer and runs
+`CALLBACK` there. If it starts the batch, it flushes once after a normal return
+when changes are pending. An empty or unchanged callback publishes nothing and
+preserves the last successful update report. The helper returns the callback's
+value unchanged after a successful flush.
+
+If a batch is already active in that buffer, the helper joins it without
+flushing; the outer owner decides when to publish. On an error, quit, or other
+nonlocal exit, the helper discards its own queued changes and restores the
+outer batch's pending state as it was on entry. A failed flush of a batch owned
+by this helper discards its unpublished changes; the existing TP transaction
+restores the previously committed buffer, runtime, revision, and report.
+
+The rollback scope is the queued `ebox-region-update` work in `BUFFER`.
+Assignments to application variables, file writes, and other business side
+effects in the callback are not reverted. Keep explicit
+`ebox-incremental-begin-batch` / `ebox-incremental-flush` lifecycle calls outside
+the callback; those lower-level calls retain their own retry semantics.
+
+The author DSL has no Range form. Ordinary authors compose direct Text/Box
+children and never call `ebox-child-range`; Range addresses exist only for
+frameworks that already own semantic child ranges and candidate updates.
+
+## 5. Selectors
+
+ECSS is the sole selector parser and matcher. Ebox supplies logical tree
+relations and mounted indexes.
+
+| Function | Contract |
+| --- | --- |
+| `ebox-selector-parse` | Compile a CSS-like selector to the ECSS AST. |
+| `ebox-selector-match-node-p` | Match one built node against a selector or AST. |
+| `ebox-selector-query-all` | Query an unmounted built tree in document order. |
+| `ebox-selector-query-buffer` | Query one mounted runtime. |
+| `ebox-selector-update-buffer` | Update all editable mounted matches and return a structured report. |
+| `ebox-select-all` | Alias of `ebox-selector-query-buffer`. |
+| `ebox-update-selector` | Alias of `ebox-selector-update-buffer`. |
+
+## 6. Scrolling
+
+`ebox-buffer-mode` installs `ebox-scroll-map`. The map routes line, page, and
+wheel intent through the innermost semantic scroll owner before ordinary Emacs
+scrolling.
+
+The public commands are `ebox-scroll-down`, `ebox-scroll-up`,
+`ebox-scroll-page-down`, `ebox-scroll-page-up`, `ebox-wheel-scroll-down`, and
+`ebox-wheel-scroll-up`. `ebox-scroll-state` returns a read-only snapshot for a
+numeric region id.
+
+## 7. Measurement, cache, and build tools
+
+| Function | Contract |
+| --- | --- |
+| `ebox-string-pixel-width` | Measure the first-line display width of a string. |
+| `ebox-display-signature` | Return display inputs used for measurement-cache invalidation. |
+| `ebox-clear-cache` | Clear Ebox measurement/render caches. |
+| `ebox-byte-compile` | Compile active Ebox Elisp sources; restart Emacs to load the new bytecode. |
+| `ebox-native-status` | Report native toolchain, module, ABI, and load status. |
+| `ebox-native-build` | Build and install the optional native module asynchronously. |
+
+The native module is an accelerator, never a correctness requirement. Ebox
+does not build it during package load.
+
+## 8. Facade inventory
+
+`ebox-public-api` contains the stable facade entries. The following grouping
+names every entry:
+
+- Construction: `ebox-build`, `ebox-text-create`,
+  `ebox-normal-layout-create`, `ebox-row-layout-create`,
+  `ebox-column-layout-create`, `ebox-flex-layout-create`,
+  `ebox-grid-layout-create`, `ebox-box-create`.
+- Interaction: `ebox-help-create`, `ebox-keymap-create`,
+  `ebox-next-interaction`, `ebox-previous-interaction`.
+- Render/publication: `ebox-render`, `ebox-render-to-buffer`,
+  `ebox-unmount-buffer`, `ebox-display-buffer`, `ebox-commit`,
+  `ebox-buffer-set-observer`,
+  `ebox-buffer-update-report`,
+  `ebox-rerender-buffer-with-context`, `ebox-viewport-window-width`,
+  `ebox-call-with-render-burst`, `ebox-render-burst-begin`,
+  `ebox-render-burst-end`.
+- Candidate/identity: `ebox-candidate-begin`, `ebox-candidate-replace`,
+  `ebox-candidate-replace-range-ref`, `ebox-candidate-replace-root`,
+  `ebox-candidate-replace-host-ref`, `ebox-candidate-patch-host-paint`,
+  `ebox-child-range`,
+  `ebox-region-ids`, `ebox-region-resolve`, `ebox-region-update`,
+  `ebox-call-with-update-batch`,
+  `ebox-host-ref-bounds`, `ebox-host-ref-position`.
+- Selectors: `ebox-selector-parse`, `ebox-selector-match-node-p`,
+  `ebox-selector-query-all`, `ebox-selector-query-buffer`,
+  `ebox-selector-update-buffer`, `ebox-select-all`, `ebox-update-selector`.
+- Scroll: `ebox-buffer-mode`, `ebox-scroll-map`, `ebox-scroll-down`,
+  `ebox-scroll-up`, `ebox-scroll-page-down`, `ebox-scroll-page-up`,
+  `ebox-wheel-scroll-down`, `ebox-wheel-scroll-up`, `ebox-scroll-state`.
+- Measurement/build: `ebox-string-pixel-width`, `ebox-display-signature`,
+  `ebox-clear-cache`, `ebox-byte-compile`, `ebox-native-status`,
+  `ebox-native-build`.
+
+## 9. Verification
 
 ```sh
+make load EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
+make compile EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make docs-contract-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make interaction-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make dsl-tests EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 ```
+
+## Framework integration contract
+
+Ebox provides framework SPI v2 through `(require 'ebox-spi)`. This interface is
+for framework implementers such as ETAF; application code normally uses the
+render/update API described above. Query `ebox-framework-spi-capabilities` and
+validate the immutable provider with `ebox-framework-spi-validate-provider` before
+retaining its public operation descriptors. Do not read private provider fields.
+
+| Operation | Input and result |
+| --- | --- |
+| `ebox-framework-spi-initial` | An unmounted buffer, canonical input and a stage/rollback callback pair; returns the completed report also supplied to the callbacks. It cannot join an outer TP transaction. |
+| `ebox-framework-spi-update` | A mounted buffer, canonical input or candidate, and a stage/rollback pair; returns the same report object observed by the stage callback. |
+| `ebox-unmount-buffer` | Releases the retained mount so a fresh initial generation can be created. |
+
+The framework owns application state; Ebox owns layout/runtime indexes; TP owns
+buffer publication and the transaction. Stage callbacks run after provisional TP
+and Ebox state agree. Rollback runs framework rollback, then Ebox state restoration,
+then TP restoration. A failed initial mount restores editor custody, including text,
+point, mark, narrowing, overlays, undo and modified state. Killing the buffer remains
+authoritative. Post-accept observer/retirement failures are diagnostics, not a reason
+to pretend a committed publication rolled back. Callers must supply both callbacks
+and propagate failure; they must not select a second writer as a fallback.
+
+```elisp
+(require 'ebox)
+(require 'ebox-spi)
+(let ((buffer (generate-new-buffer " *framework-example*")))
+  (unwind-protect
+      (progn
+        (ebox-framework-spi-validate-provider (ebox-framework-spi-capabilities))
+        (ebox-framework-spi-initial buffer (ebox-build '(box "Initial"))
+                                    #'ignore #'ignore)
+        (ebox-framework-spi-update buffer (ebox-build '(box "Updated"))
+                                   #'ignore #'ignore)
+        (with-current-buffer buffer (buffer-string)))
+    (ebox-unmount-buffer buffer)
+    (kill-buffer buffer)))
+```
+
+`tests/ebox-spi-tests.el` verifies paired publication, rollback and public teardown.
+Consumers link to this contract instead of maintaining another copy of its ordering.
