@@ -718,11 +718,17 @@
 ;; Invalid Ebox size
 ;; Catch this condition with condition-case; failed calls do not return a value.
 ;;
-;; Function: ebox-source-builder-bind (builder &key identity key id class selector-attributes selector-state declarations provenance interactions ecss)
+;; Function: ebox-source-builder-bind (builder &key identity key id class selector-attributes selector-state declarations provenance interactions ecss (ecss-targets t))
 ;;;###autoload (autoload 'ebox-source-builder-bind "ebox" nil nil)
 ;; Bind normalized source facts in BUILDER and return an opaque handle.
 ;; The returned handle contains identity only; all facts are owned by BUILDER
 ;; until `ebox-source-builder-finish' seals them into a source index.
+;; ECSS-TARGETS is t (default) for all descendants or a proper list of source
+;; identities eligible for this source's ECSS rules.  nil selects none.  The
+;; identities use equal and are snapshotted.  Non-list input signals
+;; wrong-type-argument.  Rendering resolves targets in the candidate input;
+;; an absent identity is an error.  Targets outside the source's subtree do
+;; not match.  Structural selectors and inheritance retain the canonical tree.
 ;;
 ;; Function: ebox-source-builder-create ()
 ;;;###autoload (autoload 'ebox-source-builder-create "ebox" nil nil)

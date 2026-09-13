@@ -21,6 +21,13 @@ and retained source updates request style computation for these declarations.
 Paint-only shortcuts require concrete input, since explicit `var()` or `inherit`
 values may depend on a parent even when the child declares the property itself.
 
+Local stylesheet facts can carry explicit source identity targets. Candidate
+source indexes resolve these identities to their own selector subjects and pass
+membership snapshots to ECSS scopes. Retained source rebinding and canonical
+exports preserve target facts; scope caches are keyed by candidate source index.
+Author ownership is therefore independent of physical parentage and live buffer
+coordinates. ECSS continues to own structural matching and inheritance.
+
 ## Commit lifecycle
 
 ```text

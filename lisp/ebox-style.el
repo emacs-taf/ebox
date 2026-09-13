@@ -1392,7 +1392,7 @@ Grid track wrappers are traversed after their structural validator succeeds."
     (let* ((missing (make-symbol "missing"))
            (cached (gethash source-index ebox-style--scope-cache missing)))
       (if (not (eq cached missing)) cached
-        (let (scopes)
+        (let (subjects scopes)
           (dolist (handle (ebox-source-index-handles source-index))
             (when-let* ((record (ebox-source--index-record source-index handle))
                         (rules (ebox-source-record-ecss record)))
@@ -1402,7 +1402,23 @@ Grid track wrappers are traversed after their structural validator succeeds."
                 (dolist (rule rules)
                   (ecss-stylesheet-add-rule
                    sheet ebox-style-schemas (car rule) (cdr rule)))
-                (push (ecss-scope-create subject sheet) scopes))))
+                (push (ecss-scope-create
+                       subject sheet
+                       :subjects
+                       (let ((targets (ebox-source-record-ecss-targets record)))
+                         (if (eq targets t) t
+                           (when (and targets (null subjects))
+                             (setq subjects (make-hash-table :test #'equal))
+                             (dolist (target (ebox-source-index-handles source-index))
+                               (puthash (ebox-source--handle-id-view target)
+                                        (ebox-source--index-subject source-index target)
+                                        subjects)))
+                           (mapcar
+                            (lambda (identity)
+                              (or (gethash identity subjects)
+                                  (error "Ebox ECSS target is absent: %S" identity)))
+                            targets))))
+                      scopes))))
           (setq scopes (nreverse scopes))
           (puthash source-index scopes ebox-style--scope-cache)
           scopes)))))

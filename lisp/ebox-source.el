@@ -14,7 +14,7 @@
 (cl-defstruct (ebox-source-record
                (:constructor ebox-source--make-record))
   "Immutable facts supplied by one author source."
-  key id classes attributes states declarations provenance interactions ecss)
+  key id classes attributes states declarations provenance interactions ecss ecss-targets)
 
 (cl-defstruct (ebox-source-handle
                (:constructor ebox-source--make-handle)
@@ -346,10 +346,15 @@ Functions and records are opaque values and retain identity."
 
 (cl-defun ebox-source-builder-bind
     (builder &key identity key id class selector-attributes selector-state
-             declarations provenance interactions ecss)
+             declarations provenance interactions ecss (ecss-targets t))
   "Bind normalized source facts in BUILDER and return an opaque handle.
 The returned handle contains identity only; all facts are owned by BUILDER
-until `ebox-source-builder-finish' seals them into a source index."
+until `ebox-source-builder-finish' seals them into a source index.
+ECSS-TARGETS is t for all descendants or a proper list of source identities
+eligible for this source's ECSS rules.  nil selects none.  Identities use
+`equal'; the list is snapshotted and resolved within each candidate input."
+  (unless (or (eq ecss-targets t) (proper-list-p ecss-targets))
+    (signal 'wrong-type-argument (list 'listp ecss-targets)))
   (when (and key (not (ebox-source-stable-key-p key)))
     (error "Ebox source key must be a non-nil symbol, string, or integer: %S"
            key))
@@ -379,7 +384,8 @@ until `ebox-source-builder-finish' seals them into a source index."
           :declarations (ebox-source--declarations declarations)
           :provenance (ebox-source--copy-data provenance)
           :interactions (ebox-interaction-normalize interactions)
-          :ecss (ebox-source--copy-data ecss))))
+          :ecss (ebox-source--copy-data ecss)
+          :ecss-targets (ebox-source--copy-data ecss-targets))))
     (ebox-source--builder-add-record builder handle record)))
 
 (defun ebox-source--builder-record (builder handle)
@@ -408,6 +414,7 @@ error because one canonical forest cannot contain the same source twice."
            (selector-state nil states-p)
            (declarations nil declarations-p)
            (ecss nil ecss-p)
+           (ecss-targets nil ecss-targets-p)
            (interactions nil interactions-p)
            (provenance nil provenance-p))
   "Return `(NEW-INDEX . NEW-HANDLE)' after rebinding HANDLE in INDEX.
@@ -434,6 +441,8 @@ facts on the canonical node."
                                declarations
                              (ebox-source-record-declarations record))
              :ecss (if ecss-p ecss (ebox-source-record-ecss record))
+             :ecss-targets (if ecss-targets-p ecss-targets
+                             (ebox-source-record-ecss-targets record))
              :interactions (if interactions-p interactions
                              (ebox-source-record-interactions record))
              :provenance
@@ -766,6 +775,8 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
   (and record
        (ebox-source--make-record
         :ecss (ebox-source--copy-data (ebox-source-record-ecss record))
+        :ecss-targets (ebox-source--copy-data
+                       (ebox-source-record-ecss-targets record))
         :key (ebox-source--copy-data (ebox-source-record-key record))
         :id (ebox-source--copy-data (ebox-source-record-id record))
         :classes (ebox-source--copy-data

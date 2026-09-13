@@ -573,6 +573,18 @@ modified 标志；已被销毁的 buffer 不会被复活。提交接受后的观
 schema 校验选择器和声明。规范输入构造者调用 `ebox-style-compile-rules`，
 将结果传给 `ebox-source-builder-bind` 的 `:ecss` 字段，与 DSL 使用同一路径。
 
+规范输入生产者还可在该 source binding 中传入 `:ecss-targets`。默认 t 允许
+所有后代；proper list 按 `equal` 比较 source 的 `:identity`，限定规则目标；
+nil 禁用该作用域的规则。绑定时保存列表快照，渲染时在候选 source index 中
+解析身份，缺失目标在发布前报错。不在挂载 source 子树内的目标不会匹配。
+例如根绑定使用 `:ecss-targets '(slot)` 和 `.title` 规则时，可以样式化子组件
+之下身份为 `slot` 的 source，同时排除其他匹配后代。生产者必须把该身份绑定在
+同一规范输入中。这属于规范集成元数据，不是新增 DSL 字段。
+
+目标集合只限定规则接收者，不改变结构选择器关系或计算值继承。所有权变化时
+构造新规范输入；候选失败保留已提交的所有权和显示。导出的规范快照保留目标集合，
+可以独立重新挂载。
+
 ## 需要计算的声明值
 
 程序构造的样式可使用 `ecss-important`、`ecss-wide-value` 和 `ecss-var`。

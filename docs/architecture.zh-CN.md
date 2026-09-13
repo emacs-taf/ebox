@@ -20,6 +20,11 @@
 快捷路径要求具体输入；子节点即使显式声明了属性，其中的 `var()` 或
 `inherit` 仍可能依赖父节点。
 
+局部 stylesheet facts 可以携带明确的 source 身份目标集合。候选 source index
+把身份解析为自身的选择器 subject，作为集合快照传给 ECSS 作用域。保留的 source
+重绑定和规范导出保留目标事实，作用域缓存以候选 source index 为键。因此样式
+所有权独立于物理父子关系和 live buffer 坐标；ECSS 继续拥有结构匹配与继承。
+
 ## Commit 生命周期
 
 ```text

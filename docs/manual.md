@@ -669,6 +669,22 @@ and declarations through ECSS and its own property schema. Canonical input
 producers call `ebox-style-compile-rules` and pass its result to the `:ecss` field
 of `ebox-source-builder-bind`, so programmatic and DSL rules use the same path.
 
+Canonical producers may also pass `:ecss-targets` to the same source binding.
+The default t permits all descendants; a proper list restricts rule targets to
+source `:identity` values compared with `equal`, and nil disables that scope's
+rules. The list is snapshotted when bound. Rendering resolves identities against
+that candidate's source index; missing targets fail before publication. Targets
+outside the mounting source's subtree cannot match. For example, a root binding
+with `:ecss-targets '(slot)` and rules for `.title` styles the source whose
+`:identity` is `slot`, even beneath a child component, while excluding other
+matching descendants. The producer must bind that identity in the same canonical
+input. This is canonical integration metadata, not an additional DSL field.
+
+Targets select recipients of rules; they do not change structural selector
+relationships or inherited computed values. Create a new canonical input when
+ownership changes. A failed candidate leaves committed ownership and output intact.
+Exported canonical snapshots retain their targets for independent remounting.
+
 ## Computed declaration values
 
 Programmatic style inputs can use `ecss-important`, `ecss-wide-value`, and

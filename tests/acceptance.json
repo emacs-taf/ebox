@@ -575,6 +575,26 @@
       "name": "ebox-cascade-values-update-inherited-geometry",
       "file": "tests/ebox-cascade-values-tests.el",
       "purpose": "Inherited custom lengths and important width updates match freshly computed display geometry."
+    },
+    {
+      "name": "ebox-scope-targets-separate-ownership-from-structure",
+      "file": "tests/ebox-scope-ownership-tests.el",
+      "purpose": "Canonical scopes snapshot author target identities while preserving actual sibling selectors."
+    },
+    {
+      "name": "ebox-scope-targets-retain-committed-ownership-on-failure",
+      "file": "tests/ebox-scope-ownership-tests.el",
+      "purpose": "Retained updates and reorder preserve ownership, and absent target errors preserve published output."
+    },
+    {
+      "name": "ebox-scope-targets-empty-and-invalid-input",
+      "file": "tests/ebox-scope-ownership-tests.el",
+      "purpose": "Empty target sets disable their rules; malformed target input is rejected."
+    },
+    {
+      "name": "ebox-scope-targets-snapshot-remounts-independently",
+      "file": "tests/ebox-scope-ownership-tests.el",
+      "purpose": "Exported author ownership survives replacement and disposal of the original mount."
     }
   ]
 }

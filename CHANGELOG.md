@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Canonical source bindings accept `:ecss-targets` to preserve author ownership
+  across nested component content. Targets are resolved per candidate; invalid
+  target identities fail without replacing committed output.
+
 - Programmatic ECSS importance, CSS-wide longhand values and variable
   references reach paint and layout through cascade computation. Inline custom
   properties and retained updates now propagate to paint and geometry consumers.
