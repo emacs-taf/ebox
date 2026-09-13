@@ -7259,6 +7259,19 @@ fn render_node_body(
             let mut child_change = None;
             let mut child_rendered = if let Some(child) = child {
                 let child_scope = scope.child(LocalStep::BoxChild, child);
+                // A Box's child Flex is its formatting context.  A definite
+                // content height (including a parent's allocated flex size)
+                // constrains that context, not just the outer frame.  Keep an
+                // auto height indefinite instead of inheriting viewport height.
+                let child_size_override =
+                    if matches!(child_scope.resolve()?.view.node, LayoutNode::Flex { .. }) {
+                        definite_content_height.map(|height| BoxOverride {
+                            content_height: Some(height),
+                            ..BoxOverride::default()
+                        })
+                    } else {
+                        None
+                    };
                 let child_context = LayoutContext {
                     viewport_width: if intrinsic_child {
                         0
@@ -7294,7 +7307,7 @@ fn render_node_body(
                         let evaluated = child_scope.render_with_change(
                             child_context,
                             intrinsic || intrinsic_child,
-                            None,
+                            child_size_override,
                         )?;
                         child_change = evaluated.change;
                         Some(evaluated.rendered)
@@ -7303,7 +7316,7 @@ fn render_node_body(
                     let evaluated = child_scope.render_with_change(
                         child_context,
                         intrinsic || intrinsic_child,
-                        None,
+                        child_size_override,
                     )?;
                     child_change = evaluated.change;
                     Some(evaluated.rendered)
@@ -7949,21 +7962,26 @@ fn render_node_body(
             column_gap,
             items,
             ..
-        } => render_flex(
-            *direction,
-            *wrap,
-            *justify,
-            *align_items,
-            *align_content,
-            width,
-            height,
-            *row_gap,
-            *column_gap,
-            items,
-            scope,
-            context,
-            intrinsic,
-        ),
+        } => {
+            let assigned_height = size_override
+                .and_then(|assigned| assigned.content_height)
+                .map(|value| Size::Lines { value });
+            render_flex(
+                *direction,
+                *wrap,
+                *justify,
+                *align_items,
+                *align_content,
+                width,
+                assigned_height.as_ref().unwrap_or(height),
+                *row_gap,
+                *column_gap,
+                items,
+                scope,
+                context,
+                intrinsic,
+            )
+        }
     }
 }
 

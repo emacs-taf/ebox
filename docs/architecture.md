@@ -46,6 +46,11 @@ its immutable stylesheet. Cascade signatures include description identity, style
 mounting source and member identities. Unanchored descriptions remain inert until
 composed with a root.
 
+A native Box passes its resolved definite content height, including a parent Flex
+allocation and height clamps, to its inner Flex formatting context. The child
+evaluation retains that allocation as part of its request. An indefinite auto
+height stays content-driven; the ambient viewport height is not an allocation.
+
 ## Commit lifecycle
 
 ```text

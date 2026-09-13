@@ -822,9 +822,9 @@
       "purpose": "Independent nested scroll owners preserve offsets after rejected removal, clamp on shorter content and clear state on unmount, including optional native fallback."
     },
     {
-      "name": "ebox-grid-stretched-row-preserves-cell-paint-through-updates",
+      "name": "ebox-stretched-row-preserves-cell-paint-through-updates",
       "file": "tests/ebox-css-flex-grid-tests.el",
-      "purpose": "A fixed Grid row stretched by Flex preserves clipped track widths and background coverage after content, height and viewport updates."
+      "purpose": "Grid and nested Flex rows preserve clipped cell widths and background coverage after content, assigned or automatic height, and viewport updates."
     }
   ]
 }

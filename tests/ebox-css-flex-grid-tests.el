@@ -112,45 +112,56 @@
                           "Alpha  \nBravo \nCharlie \nDelta ")
                          (t "Alpha  \nCharlie \n \n "))))))))))))
 
-(ert-deftest ebox-grid-stretched-row-preserves-cell-paint-through-updates ()
-  "Fixed Grid tracks retain clipping and cell paint at an assigned row height."
+(ert-deftest ebox-stretched-row-preserves-cell-paint-through-updates ()
+  "Grid and nested Flex retain clipping and cell paint at an assigned height."
   (let ((ebox-viewport-width 80)
         (ebox-viewport-height 20))
-    (with-temp-buffer
-      (ebox-render-to-buffer
-       (current-buffer)
-       (ebox-build
-        '(flex :id frame :width (px 20) :height (lh 4) :align-items stretch
-               (grid :width (px 20)
-                     :grid-template-columns ((ch 5) (ch 7)) :column-gap (ch 1)
-                     (box :id a :width stretch :overflow hidden :wrap-mode none
-                          :background-color "red" "Alphabet")
-                     (box :width stretch :overflow hidden :wrap-mode none
-                          :background-color "blue" "CharlieDelta")))))
-      (cl-labels
-          ((check-rows
-            (height prefix)
-            (let ((lines (split-string (buffer-string) "\n" nil)))
-              (should (= (length lines) height))
-              (should (string-prefix-p prefix (car lines)))
-              (dolist (line lines)
-                (should (= (ebox-string-pixel-width line) 20))
-                (dolist (paint '(("red" . 5) ("blue" . 7)))
-                  (let ((width 0))
-                    (dotimes (index (length line))
-                      (when (equal (plist-get (get-text-property index 'face line)
-                                              :background)
-                                   (car paint))
-                        (setq width (+ width (ebox-string-pixel-width
-                                             (substring line index (1+ index)))))))
-                    (should (= width (cdr paint)))))))))
-        (check-rows 4 "Alpha Charlie")
-        (ebox-region-update "a" :content "OtherText")
-        (check-rows 4 "Other Charlie")
-        (ebox-region-update "frame" :height '(lh 2))
-        (check-rows 2 "Other Charlie")
-        (ebox-rerender-buffer-with-context (current-buffer) 40 10)
-        (check-rows 2 "Other Charlie")))))
+    (dolist (configuration '((grid row) (grid column) (flex row) (flex column)))
+      (let ((layout (car configuration))
+            (direction (cadr configuration)))
+        (with-temp-buffer
+          (ebox-render-to-buffer
+           (current-buffer)
+           (ebox-build
+            `(flex :id frame :width (px 20) :height (lh 4) :align-items stretch
+                   :flex-direction ,direction
+                   (,layout :width (px 20) :column-gap (ch 1) :flex-grow 1
+                            ,@(when (eq layout 'grid)
+                                '(:grid-template-columns ((ch 5) (ch 7))))
+                            (box :id a :width ,(if (eq layout 'grid) 'stretch '(ch 5))
+                                 ,@(when (eq layout 'flex) '(:flex-shrink 0))
+                                 :overflow hidden :wrap-mode none
+                                 :background-color "red" "Alphabet")
+                            (box :width ,(if (eq layout 'grid) 'stretch '(ch 7))
+                                 ,@(when (eq layout 'flex) '(:flex-shrink 0))
+                                 :overflow hidden :wrap-mode none
+                                 :background-color "blue" "CharlieDelta")))))
+          (cl-labels
+              ((check-rows
+                 (height prefix)
+                 (let ((lines (split-string (buffer-string) "\n" nil)))
+                   (should (= (length lines) height))
+                   (should (string-prefix-p prefix (car lines)))
+                   (dolist (line lines)
+                     (should (= (ebox-string-pixel-width line) 20))
+                     (dolist (paint '(("red" . 5) ("blue" . 7)))
+                       (let ((width 0))
+                         (dotimes (index (length line))
+                           (when (equal (plist-get (get-text-property index 'face line)
+                                                   :background)
+                                        (car paint))
+                             (setq width (+ width (ebox-string-pixel-width
+                                                   (substring line index (1+ index)))))))
+                         (should (= width (cdr paint)))))))))
+            (check-rows 4 "Alpha Charlie")
+            (ebox-region-update "a" :content "OtherText")
+            (check-rows 4 "Other Charlie")
+            (ebox-region-update "frame" :height '(lh 2))
+            (check-rows 2 "Other Charlie")
+            (ebox-rerender-buffer-with-context (current-buffer) 40 10)
+            (check-rows 2 "Other Charlie")
+            (ebox-region-update "frame" :height 'auto)
+            (check-rows 1 "Other Charlie")))))))
 
 (provide 'ebox-css-flex-grid-tests)
 ;;; ebox-css-flex-grid-tests.el ends here
