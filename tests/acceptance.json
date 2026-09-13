@@ -545,6 +545,11 @@
       "name": "ebox-zero-height-retained-surface-transition-rollback",
       "file": "tests/ebox-zero-height-tests.el",
       "purpose": "ebox zero height retained surface transition rollback"
+    },
+    {
+      "name": "ebox-compiled-rules-use-canonical-source-pipeline",
+      "file": "tests/ebox-file-tests.el",
+      "purpose": "Compiled rule data in canonical source facts matches DSL paint and rejects invalid declarations."
     }
   ]
 }

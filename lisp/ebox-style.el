@@ -1734,6 +1734,17 @@ author value unless the public grammar is boolean or an optional anchor."
   "Merge canonical BASE and OVERRIDES through ECSS property schemas."
   (ecss-merge-declarations ebox-style-schemas base overrides))
 
+(defun ebox-style-compile-rules (rules)
+  "Compile ordered RULES through ECSS syntax and the strict Ebox schema.
+Return detached (SELECTOR-AST . DECLARATIONS) rules suitable for the :ecss
+field of `ebox-source-builder-bind'.  RULES uses (SELECTOR PROPERTY VALUE ...)
+entries, with string selectors and inert declaration values.  This function
+mutates no input or stylesheet and evaluates no declaration values."
+  (mapcar (lambda (rule)
+            (cons (ecss-selector-parse (car rule))
+                  (ebox-style-compile-declarations (cdr rule) t)))
+          (ecss-validate-rules rules)))
+
 (cl-defun ebox-style-add-rule
     (selector declarations &key (origin 'author) layer scope)
   "Add SELECTOR rule with Ebox DECLARATIONS to the isolated stylesheet.

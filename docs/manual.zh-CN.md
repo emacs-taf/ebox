@@ -564,3 +564,11 @@ modified 标志；已被销毁的 buffer 不会被复活。提交接受后的观
 
 `tests/acceptance.json` 列出当前保留的公共 API 验收场景。消费方链接到本契约，
 不再复制一份回调时序说明。
+
+## 局部规则输入
+
+`:ecss` 接受有序规则列表，`:ecss-file` 按 ECSS 的[静态数据契约](https://gitea.gklazycat.heiyu.space/geekinney/ecss/src/branch/main/docs/manual.zh-CN.md#静态规则数据)
+从文件读取同一列表。文件不加 quote 包装；普通 Elisp 表达式仍正常引用
+字面量列表。文件规则先于行内 `:ecss` 规则。Ebox 通过 ECSS 与自己的属性
+schema 校验选择器和声明。规范输入构造者调用 `ebox-style-compile-rules`，
+将结果传给 `ebox-source-builder-bind` 的 `:ecss` 字段，与 DSL 使用同一路径。

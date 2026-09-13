@@ -658,3 +658,13 @@ and propagate failure; they must not select a second writer as a fallback.
 
 `tests/acceptance.json` lists the maintained public API acceptance scenarios.
 Consumers link to this contract instead of maintaining another copy of its ordering.
+
+## Local rule input
+
+`:ecss` accepts an ordered rule list and `:ecss-file` reads that same list from a
+file using ECSS's [static data contract](https://gitea.gklazycat.heiyu.space/geekinney/ecss/src/branch/main/docs/manual.md#static-rule-data).
+File contents have no quote wrapper; ordinary Elisp expressions quote literal
+lists normally. File rules precede inline `:ecss` rules. Ebox validates selectors
+and declarations through ECSS and its own property schema. Canonical input
+producers call `ebox-style-compile-rules` and pass its result to the `:ecss` field
+of `ebox-source-builder-bind`, so programmatic and DSL rules use the same path.

@@ -87,20 +87,6 @@
         (error "%s rejected %S value: %S" context field (cdr present)))))
   properties)
 
-(defun ebox-dsl--compile-ecss (value context)
-  "Validate local ECSS VALUE for CONTEXT and return detached rule data."
-  (when value
-    (unless (proper-list-p value)
-      (error "%s :ecss must be a proper list" context))
-    (mapcar
-     (lambda (rule)
-       (unless (and (proper-list-p rule) (stringp (car rule))
-                    (zerop (% (length (cdr rule)) 2)))
-         (error "%s has invalid :ecss rule: %S" context rule))
-       (cons (ecss-selector-parse (car rule))
-             (ebox-style-compile-declarations (cdr rule) t)))
-     value)))
-
 (defun ebox-dsl--compile-style (tag properties context)
   "Compile and validate TAG author PROPERTIES for CONTEXT."
   (condition-case err
@@ -166,10 +152,9 @@ function."
               (error "Ebox :ecss requires a Box form")))
          (_ (when (and ecss-file-field (not (stringp (cdr ecss-file-field))))
               (error "%s :ecss-file must be a string" context)))
-         (ecss (ebox-dsl--compile-ecss
+         (ecss (ebox-style-compile-rules
                 (append (and ecss-file-field (ecss-file-read (cdr ecss-file-field)))
-                        (and ecss-field (cdr ecss-field)))
-                context))
+                        (and ecss-field (cdr ecss-field)))))
          (style-properties
           (ebox-dsl--without-keys
              properties (append '(:ecss :ecss-file) ebox-dsl--source-fields

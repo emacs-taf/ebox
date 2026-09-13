@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Local file and DSL styles share the ECSS rule-list reader and strict Ebox
+  schema. Remove the outer quote in `.ecss` files. Canonical producers can use
+  `ebox-style-compile-rules` for the same validation and compilation.
+
 - Expose the package entry at the repository root, document supported APIs in
   its Commentary and retain implementations under `lisp/`. Source consumers add
   the repository root to `load-path` and require the package entry; internal

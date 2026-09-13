@@ -757,6 +757,13 @@
 ;; Compile Ebox PLIST aliases to ECSS schema declarations.
 ;; When STRICT is non-nil, reject properties outside the Ebox style domain.
 ;;
+;; Function: ebox-style-compile-rules (rules)
+;;;###autoload (autoload 'ebox-style-compile-rules "ebox" nil nil)
+;; Compile ordered (SELECTOR PROPERTY VALUE ...) RULES through ECSS syntax
+;; and strict Ebox property schemas. Return detached selector-AST/declaration
+;; pairs for the :ecss field of `ebox-source-builder-bind`. This neither mutates
+;; input/stylesheet state nor evaluates values; invalid rules signal an error.
+;;
 ;; Function: ebox-style-compile-form (tag plist)
 ;;;###autoload (autoload 'ebox-style-compile-form "ebox" nil nil)
 ;; Compile evaluated author PLIST once and validate it for TAG.
