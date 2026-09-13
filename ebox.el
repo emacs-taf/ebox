@@ -459,6 +459,9 @@
 ;; Focus follows retained identity through publication.  Removal, hiding and
 ;; disabling clear it without choosing a replacement; navigation can then restart.
 ;; Failed publication restores focus.  Unmount and buffer death release it.
+;; Changing or clearing focus during an active TP transaction signals error
+;; without mutation. Invoke focus after acceptance, including from after-commit
+;; callbacks; it cannot join an outer transaction or target provisional state.
 ;;
 ;; Function: ebox-focused-host-ref (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-focused-host-ref "ebox" nil nil)
@@ -473,6 +476,7 @@
 ;; Default to the current buffer. Use the tab order and visibility rules of
 ;; ebox-focus-next, independently of current focus. No stop signals user-error
 ;; without changing focus or point. No window is selected.
+;; Active TP transactions reject focus changes; see ebox-focus.
 ;;
 ;; Function: ebox-focus-next (&optional count cycle buffer-or-name)
 ;;;###autoload (autoload 'ebox-focus-next "ebox" nil t)
@@ -484,7 +488,9 @@
 ;; Order is ascending tab index, buffer start, then end; exact ties use retained
 ;; node identity.  Disabled, hidden and inaccessible nodes are skipped.  Navigation
 ;; starts at the first (or backward last) stop when there is no eligible focus.
-;; No window is selected and no key bindings are installed.
+;; No window is selected and no key bindings are installed. Nonzero moves
+;; during an active TP transaction signal error without mutation. Zero remains
+;; a read-only query; see ebox-focus.
 ;;
 ;; Function: ebox-focus-previous (&optional count cycle buffer-or-name)
 ;;;###autoload (autoload 'ebox-focus-previous "ebox" nil t)

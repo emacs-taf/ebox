@@ -6,6 +6,7 @@
 ;;; Code:
 (require 'ert)
 (require 'ebox)
+(require 'tp)
 
 (defun ebox-focus-test--input (rows &optional unkeyed)
   "Build ROWS of (IDENTITY TEXT INTERACTIONS); UNKEYED omits sibling keys."
@@ -352,6 +353,33 @@
        "a" :keymap (ebox-keymap-create :activate (lambda () (push 'replacement events))))
       (let ((last-input-event ?\r)) (call-interactively (key-binding (kbd "RET"))))
       (should (equal events '(replacement b))))))
+
+(ert-deftest ebox-focus-rejects-unaccepted-transaction-changes ()
+  "Outer transactions cannot leak focus selection, clearing or navigation."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-focus-test--input '((a "AAA" (:tab-index 0)) (b "BBB" (:tab-index 0)))))
+    (ebox-focus 'b)
+    (let ((before (point)))
+      (dolist (operation (list (lambda () (ebox-focus 'a))
+                              (lambda () (ebox-focus nil))
+                              (lambda () (ebox-focus-first))
+                              (lambda () (ebox-focus-next 1 t))
+                              (lambda () (ebox-focus-previous))))
+        (should-error (tp-with-transaction (funcall operation)))
+        (should (eq (ebox-focused-host-ref) 'b))
+        (should (= (point) before))))
+    (should (eq (tp-with-transaction (ebox-focused-host-ref)) 'b))
+    (should (eq (tp-with-transaction (ebox-focus-next 0)) 'b))
+    (let (accepted)
+      (tp-with-transaction
+        (tp-transaction-participate-v2
+         :key 'accepted-focus :stage #'ignore :rollback #'ignore
+         :after-commit (lambda () (setq accepted (ebox-focus 'a)))))
+      (should (eq accepted 'a))
+      (should (eq (ebox-focused-host-ref) 'a))
+      (should (looking-at "AAA")))))
 
 (provide 'ebox-focus-tests)
 ;;; ebox-focus-tests.el ends here

@@ -179,7 +179,9 @@ narrowing 与不可见性，不安装按键绑定、焦点注册表或应用状�
 阻止祖先激活。不可访问、不可见和结构文本不能成为目标；归属校验后才执行命令，
 回调错误保持可观察，不另建目标注册表。
 
-逻辑焦点只有一个 buffer-local retained node owner。发布后的 source interaction facts
+逻辑焦点只有一个 buffer-local retained node owner。公共焦点变更拒绝加入活动中的
+TP 事务，只有发布内部 participant 可以协调候选焦点并在拒绝时恢复。事务接受后的
+回调可以发起新的焦点操作，只读查询仍可使用。发布后的 source interaction facts
 提供 tab 顺序与禁用状态。Source record 分别保存作者状态与交互事实，subject 构造从
 交互事实派生 `disabled`。查询、cascade 和增量失效读取同一派生视图；rebind 保留原始
 作者状态，禁用变化会使 subject 失效。焦点、悬停和按下状态接入 cascade 仍待完成。

@@ -341,7 +341,11 @@ Nil HOST-REF clears focus without moving point.  Missing, disabled, hidden or
 inaccessible targets signal `user-error' without changing focus or point.
 Focus follows retained identity through publication.  Removal, hiding and
 disabling clear it without choosing a replacement; navigation can then restart.
-Failed publication restores focus.  Unmount and buffer death release it."
+Failed publication restores focus.  Unmount and buffer death release it.
+An active TP transaction is an error: call after acceptance instead. Focus
+changes cannot join an outer transaction or expose provisional targets."
+  (when (tp-transaction-active-p)
+    (error "Ebox focus changes require an accepted transaction boundary"))
   (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
     (if (null host-ref)
         (setq ebox-interaction--focus-owner nil)
@@ -453,7 +457,8 @@ Only nodes declaring a nonnegative integer `:tab-index' are navigation stops.
 Order is ascending tab index, buffer start, then end; exact ties use retained
 node identity.  Disabled, hidden and inaccessible nodes are skipped.  Navigation
 starts at the first (or backward last) stop when there is no eligible focus.
-No window is selected and no key bindings are installed."
+No window is selected and no key bindings are installed. Nonzero moves reject
+active TP transactions; zero remains a read-only query. See `ebox-focus'."
   (interactive "p")
   (ebox-interaction--focus-move (or count 1) cycle buffer-or-name nil))
 

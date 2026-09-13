@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Focus setting, clearing and navigation reject active TP transactions before
+  mutation. Move such calls to accepted `after-commit` callbacks; outer rollback
+  no longer risks leaving an uncommitted focus change. Queries remain available.
+
 - `:disabled` now supplies both interaction protection and the `:disabled`
   selector state, including retained cascade updates and rejected publication.
   Move authored `:states disabled` or `:selector-state '(disabled)` to the

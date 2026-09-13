@@ -735,6 +735,11 @@
       "name": "ebox-disabled-state-rejects-authored-duplicates",
       "file": "tests/ebox-selector-tests.el",
       "purpose": "Only interaction input may declare disabled in DSL and typed input."
+    },
+    {
+      "name": "ebox-focus-rejects-unaccepted-transaction-changes",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Outer transactions cannot leak focus selection, clearing or navigation; accepted callbacks may set focus."
     }
   ]
 }

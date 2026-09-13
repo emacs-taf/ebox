@@ -484,6 +484,11 @@ stop without clearing the existing focus if no stop exists. They return an opaqu
 `ebox-focus` and `ebox-focused-host-ref`; frameworks may also use their explicit
 source-builder identities. `ebox-focus` accepts nil to clear focus. It may
 explicitly focus any enabled visible node, even without a tab index or keymap.
+Focus changes cannot join an active TP transaction: setting, clearing or moving
+focus signals an error before changing focus or point. Invoke them after the
+transaction accepts, including from an `after-commit` callback. Read-only
+`ebox-focused-host-ref` and zero-count navigation remain available. This prevents
+an outer rollback from leaving a focus change that was never accepted.
 The complete signatures and error contracts are in [ebox.el](../ebox.el).
 
 ```elisp

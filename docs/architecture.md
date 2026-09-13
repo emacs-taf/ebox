@@ -135,9 +135,13 @@ activation. They keep no activation target registry; inaccessible, invisible
 and structural text cannot become activation targets. Commands run only after
 ownership validation, and callback errors remain observable.
 
-Logical focus has one buffer-local retained node owner. Published source
-interaction facts supply tab order and disabled status. Source records keep authored
-states separate; subject construction derives `disabled` from the interaction fact.
+Logical focus has one buffer-local retained node owner. Public focus changes
+reject active TP transactions; only publication's internal participant may
+reconcile provisional focus and restore it on rollback. Accepted callbacks may
+start a new focus operation, while read-only queries remain available.
+
+Published source interaction facts supply tab order and disabled status. Source
+records keep authored states separate; subject construction derives `disabled` from the interaction fact.
 Queries, cascade and incremental invalidation consume that same derived view;
 rebinding retains raw authored states and invalidates subjects when disabled changes.
 Focus, hover and pressed state integration into the cascade remains pending.

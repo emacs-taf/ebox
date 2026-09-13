@@ -412,6 +412,9 @@ map、结构换行和不可见文本不构成目标。框架不移动 point 或�
 
 `ebox-focus-next` / `ebox-focus-previous` 操作逻辑焦点，第二个可选参数允许循环。
 `ebox-focus-first` 选择第一个有效停靠点；没有停靠点时保持原焦点和 point。
+焦点变更不能加入尚未接受的 TP 事务：设置、清空或移动焦点会在修改焦点与 point 前
+抛出错误。应在事务接受后调用，也可使用 `after-commit` 回调。只读的
+`ebox-focused-host-ref` 和零步导航仍可使用，避免外层回滚遗留未被接受的焦点变更。
 它们返回不透明 Host 引用，供 `ebox-focus` 和 `ebox-focused-host-ref` 使用；框架也可以
 传入自己的 source-builder identity。`ebox-focus` 接受 nil 清空焦点；显式设置允许任何
 已启用且可见的节点，不要求 tab index 或 keymap。完整签名和错误约束见
