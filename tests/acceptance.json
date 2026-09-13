@@ -825,6 +825,11 @@
       "name": "ebox-stretched-row-preserves-cell-paint-through-updates",
       "file": "tests/ebox-css-flex-grid-tests.el",
       "purpose": "Grid and nested Flex rows preserve clipped cell widths and background coverage after content, assigned or automatic height, and viewport updates."
+    },
+    {
+      "name": "ebox-grid-fixed-row-preserves-tracks-and-paint-through-updates",
+      "file": "tests/ebox-grid-tests.el",
+      "purpose": "Fixed Grid rows preserve clipping, cell paint and box sizing after padding, track and cell-width changes, including native publication when available and fallback when sizing changes."
     }
   ]
 }

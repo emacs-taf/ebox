@@ -96,6 +96,10 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Fixed single-row Grids with stretched clipped cells can publish native frames.
+  Cell chrome and box sizing participate in track allocation; updates that leave
+  this subset use the ordinary Grid renderer.
+
 - `ebox-focus-first` selects the first eligible tab stop independently of current
   focus, leaving focus and point unchanged when no stop is available.
 

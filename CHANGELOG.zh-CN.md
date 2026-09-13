@@ -27,6 +27,9 @@ Ebox 的重要变化记录在这里。
 
 ### 新增
 
+- 固定单行 Grid 的拉伸、裁剪单元格可通过原生 frame 发布。轨道分配包含
+  单元格边框、内边距与 box sizing；更新后超出此子集时使用普通 Grid 渲染。
+
 - 显式原生节点能力 `:help-echo`、`:pointer`、`:hover-style` 与 `:keymap`，包含回调
   适配器 `ebox-help-create`、`ebox-keymap-create`、嵌套覆盖、显式 nil 阻断和 retained
   更新。不需要 ETAF 或任意文本属性逃生入口。

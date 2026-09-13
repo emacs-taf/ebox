@@ -51,6 +51,13 @@ allocation and height clamps, to its inner Flex formatting context. The child
 evaluation retains that allocation as part of its request. An indefinite auto
 height stays content-driven; the ambient viewport height is not an allocation.
 
+Auto-height, fixed single-row Grid layouts can compile to native fixed Flex
+allocations when tracks are static, cells fill and clip their tracks, placement is automatic,
+and stretch alignment has no competing cell constraints or margins. The
+compiler accounts for cell chrome and box sizing in each basis without changing
+source ownership. Grid-owner or cell changes rebuild the parent allocation;
+unsupported configurations retain the complete Elisp Grid implementation.
+
 ## Commit lifecycle
 
 ```text
