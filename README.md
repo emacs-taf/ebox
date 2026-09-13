@@ -243,3 +243,12 @@ reference](docs/user/ebox-api-reference.en.md), and the sibling
 
 Ebox-owned code is distributed under GPL-3.0-or-later; see [LICENSE](LICENSE).
 Third-party files retain their own license notices.
+## File organization
+
+Ebox owns the `.ebox` file boundary.  Loading `ebox.el` installs
+`ebox-dsl-mode` and its `C-c C-c` command, which evaluates one DSL expression
+and displays a preview without requiring `ebox-playground`.  For `name.ebox`,
+the core optionally loads `name.el` first for lexical business functions and
+then `name.ecss` as rules on the root Box's local ECSS scope.  Nested Box
+styles remain inline `:ecss` scopes; all rules use the same ECSS matcher,
+cascade, inheritance, and incremental update path.

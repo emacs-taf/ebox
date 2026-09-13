@@ -2220,6 +2220,7 @@ also pass a pre-rendered string while an active surface owns runtime facts."
              (ebox--render-layout node)
            (if (and (not (stringp node))
                     (not (ebox-style-cascade-active-p))
+                    (null (ebox-style-source-scopes source-index))
                     (zerop (ebox-tree-author-style-count node))
                     (or
                      ;; A retained node already carries its ancestor cascade.

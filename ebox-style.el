@@ -1375,12 +1375,44 @@ Grid track wrappers are traversed after their structural validator succeeds."
 (defvar ebox-style-stylesheet (ebox-style--create-stylesheet)
   "Isolated ECSS stylesheet containing Ebox layout and paint rules.")
 
+(defvar ebox-style--scopes nil
+  "Mounted ECSS scopes for the current candidate or retained computation.")
+
+(defvar ebox-style--scope-cache (make-hash-table :test 'eq :weakness 'key)
+  "Source-index keyed mounted scope snapshots.")
+
+(defun ebox-style-source-scopes (source-index &optional root)
+  "Mount SOURCE-INDEX local styles on its canonical selector subjects."
+  (when (and source-index (or (ebox-source--index-subjects source-index) root))
+    (when (and root (or (null (ebox-source--index-subjects source-index))
+                        (ebox-source--index-derived-stale-p source-index)))
+      (setq source-index
+            (ebox-tree-source-index root t nil source-index)))
+    (let* ((missing (make-symbol "missing"))
+           (cached (gethash source-index ebox-style--scope-cache missing)))
+      (if (not (eq cached missing)) cached
+        (let (scopes)
+          (dolist (handle (ebox-source-index-handles source-index))
+            (when-let* ((record (ebox-source--index-record source-index handle))
+                        (rules (ebox-source-record-ecss record)))
+              (let ((sheet (ecss-stylesheet-create))
+                    (subject (ebox-source--index-subject source-index handle)))
+                (unless subject (error "Local ECSS requires indexed subjects"))
+                (dolist (rule rules)
+                  (ecss-stylesheet-add-rule
+                   sheet ebox-style-schemas (car rule) (cdr rule)))
+                (push (ecss-scope-create subject sheet) scopes))))
+          (setq scopes (nreverse scopes))
+          (puthash source-index scopes ebox-style--scope-cache)
+          scopes)))))
+
 (defun ebox-style-cascade-active-p ()
   "Return non-nil when the Ebox stylesheet contains cascade rules.
 Inline declarations are compiled into Ebox engine properties while nodes are
 created, so a surface with no stylesheet rules does not need a per-node ECSS
 cascade pass during its initial static projection."
-  (not (null (ecss-stylesheet-rules ebox-style-stylesheet))))
+  (or ebox-style--scopes
+      (not (null (ecss-stylesheet-rules ebox-style-stylesheet)))))
 
 (defun ebox-style-reset-rules ()
   "Clear all rules and cascade layers in `ebox-style-stylesheet'."
@@ -1727,6 +1759,7 @@ ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
              (ecss-compute-style
               ebox-style-schemas subject :declarations declarations
               :stylesheet ebox-style-stylesheet :parent-style parent-style
+              :scopes ebox-style--scopes
               :value-resolver #'tp-resolve-value)))
         (when key
           (when (>= (hash-table-count ebox-style--closed-computed-cache)

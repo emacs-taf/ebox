@@ -14,6 +14,7 @@
 (require 'ebox-canonical)
 (require 'ebox-flex)
 (require 'ebox-grid)
+(require 'ecss-file)
 
 (cl-defstruct
     (ebox-dsl--properties
@@ -31,7 +32,7 @@
   "Author tags that construct one canonical BoxNode.")
 
 (defconst ebox-dsl--source-fields
-  '(:key :class :id)
+  '(:key :class :id :attributes :states)
   "Shared source metadata accepted by Ebox author surfaces.")
 
 (defun ebox-dsl--validate-plist (plist context)
@@ -77,12 +78,28 @@
   "Validate shared source metadata in PROPERTIES for CONTEXT."
   (dolist (entry `((:key . ,#'ebox-source-stable-key-p)
                    (:class . ,#'ebox-source-class-list-p)
-                   (:id . ,#'ebox-source-semantic-id-p)))
+                   (:id . ,#'ebox-source-semantic-id-p)
+                   (:attributes . ,#'ebox-source-selector-attributes-p)
+                   (:states . ,#'ebox-source-selector-states-p)))
     (when-let* ((field (car entry))
                 (present (ebox-dsl--optional-field properties field context)))
       (unless (funcall (cdr entry) (cdr present))
         (error "%s rejected %S value: %S" context field (cdr present)))))
   properties)
+
+(defun ebox-dsl--compile-ecss (value context)
+  "Validate local ECSS VALUE for CONTEXT and return detached rule data."
+  (when value
+    (unless (proper-list-p value)
+      (error "%s :ecss must be a proper list" context))
+    (mapcar
+     (lambda (rule)
+       (unless (and (proper-list-p rule) (stringp (car rule))
+                    (zerop (% (length (cdr rule)) 2)))
+         (error "%s has invalid :ecss rule: %S" context rule))
+       (cons (ecss-selector-parse (car rule))
+             (ebox-style-compile-declarations (cdr rule) t)))
+     value)))
 
 (defun ebox-dsl--compile-style (tag properties context)
   "Compile and validate TAG author PROPERTIES for CONTEXT."
@@ -143,9 +160,19 @@ function."
                   properties :outer context)))
            (outer (and (not (eq tag 'text))
                        (if outer-field (cdr outer-field) 'block)))
-           (style-properties
-            (ebox-dsl--without-keys
-             properties (append ebox-dsl--source-fields
+         (ecss-field (ebox-dsl--optional-field properties :ecss context))
+         (ecss-file-field (ebox-dsl--optional-field properties :ecss-file context))
+         (_ (when (and (or ecss-field ecss-file-field) (eq tag 'text))
+              (error "Ebox :ecss requires a Box form")))
+         (_ (when (and ecss-file-field (not (stringp (cdr ecss-file-field))))
+              (error "%s :ecss-file must be a string" context)))
+         (ecss (ebox-dsl--compile-ecss
+                (append (and ecss-file-field (ecss-file-read (cdr ecss-file-field)))
+                        (and ecss-field (cdr ecss-field)))
+                context))
+         (style-properties
+          (ebox-dsl--without-keys
+             properties (append '(:ecss :ecss-file) ebox-dsl--source-fields
                                 ebox-interaction-properties)))
            (interactions
             (ebox-interaction-normalize
@@ -161,8 +188,13 @@ function."
         :key (ebox-dsl--source-field properties :key context)
         :id (ebox-dsl--source-field properties :id context)
         :class (ebox-dsl--source-field properties :class context)
+        :selector-attributes
+        (ebox-dsl--source-field properties :attributes context)
+        :selector-state
+        (ebox-dsl--source-field properties :states context)
         :declarations declarations
         :interactions interactions
+        :ecss ecss
         :provenance (list :adapter 'ebox-dsl :tag tag
                           :source-present-p (not (null source))))
        :outer outer
@@ -250,6 +282,9 @@ function."
                         :owned-facts (ebox-dsl--properties-owned-facts plan)
                         :source-handle
                         (ebox-dsl--properties-source-handle plan))))))
+    (when (or (plist-get properties :ecss) (plist-get properties :ecss-file))
+      (ebox-tree--set-author-style-count
+       node (1+ (ebox-tree-author-style-count node))))
     node))
 
 (defun ebox-dsl-build (dsl source-builder)

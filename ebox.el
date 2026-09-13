@@ -40,7 +40,7 @@
     "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
     "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
     "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
-    "ebox-dsl.el" "ebox-selector.el" "ebox-spi.el" "ebox.el"
+    "ebox-dsl.el" "ebox-selector.el" "ebox-file.el" "ebox-spi.el" "ebox.el"
     "ebox-native-reflow.el")
   "Active Ebox Lisp sources compiled by `ebox-byte-compile'.")
 
@@ -74,6 +74,7 @@
 (require 'ebox-viewport)
 (require 'ebox-dsl)
 (require 'ebox-selector)
+(require 'ebox-file)
 
 (defconst ebox--default-layout-context-port
   (ebox-render-context-create-layout-port

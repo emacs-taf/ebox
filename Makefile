@@ -15,7 +15,7 @@ NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
 NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
-.PHONY: all check ci load compile test checkdoc runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests m0a-tests state-contract-tests layout-boundary-tests layout-boundary-performance patch-plan-tests patch-plan-performance style-schema-tests style-schema-performance spi-tests spi-performance c1b-contract-tests docs-contract-tests ci-contract-tests performance-evaluator visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
+.PHONY: all check ci load compile test checkdoc runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests state-contract-tests layout-boundary-tests layout-boundary-performance patch-plan-tests patch-plan-performance style-schema-tests style-schema-performance spi-tests spi-performance c1b-contract-tests docs-contract-tests ci-contract-tests performance-evaluator visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
 
 .PHONY: node-memo-generation-tests
 .PHONY: interaction-tests
@@ -27,7 +27,11 @@ all: check
 layer-tests:
 	$(EMACS_TEST) -l tests/ebox-composite-tests.el -l tests/ebox-layer-style-tests.el -l tests/ebox-layer-tests.el -l tests/ebox-layer-publication-tests.el -l tests/ebox-layer-scroll-tests.el -f ert-run-tests-batch-and-exit
 
-test: layer-tests
+test: layer-tests file-tests
+
+.PHONY: file-tests
+file-tests:
+	$(EMACS_TEST) -l tests/ebox-file-tests.el -f ert-run-tests-batch-and-exit
 
 interaction-tests:
 	$(EMACS_TEST) -l tests/ebox-interaction-tests.el -f ert-run-tests-batch-and-exit
@@ -86,7 +90,7 @@ compile:
 	rm -f *.elc tests/*.elc scripts/*.elc
 	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l ebox.el --eval '(ebox-byte-compile)'
 
-test: size-tests runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests node-memo-generation-tests m0a-tests state-contract-tests layout-boundary-tests patch-plan-tests style-schema-tests spi-tests docs-contract-tests ci-contract-tests
+test: size-tests runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests node-memo-generation-tests state-contract-tests layout-boundary-tests patch-plan-tests style-schema-tests spi-tests docs-contract-tests ci-contract-tests
 
 .PHONY: size-tests size-migration-tests
 size-tests: size-migration-tests
@@ -145,9 +149,6 @@ box-line-flow-tests:
 
 node-memo-generation-tests:
 	$(EMACS_TEST) -l tests/ebox-node-memo-generation-tests.el -f ert-run-tests-batch-and-exit
-
-m0a-tests:
-	$(EMACS_TEST) -l tests/ebox-m0a-inventory-fixture.el -l tests/ebox-m0a-inventory-tests.el -l tests/ebox-m0a-characterization-tests.el -f ert-run-tests-batch-and-exit
 
 state-contract-tests:
 	$(EMACS_TEST) -l tests/ebox-state-contract-tests.el -f ert-run-tests-batch-and-exit

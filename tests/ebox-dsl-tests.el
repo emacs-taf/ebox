@@ -2,6 +2,44 @@
 
 (require 'ert)
 
+(ert-deftest ebox-local-ecss-renders-nested-scopes ()
+  "Actual publication consumes local rules and keeps outside nodes isolated."
+  (let* ((input (ebox-build
+                 '(box
+                   (box :ecss (("&" :color "#111111")
+                               (".item" :color "#223344")
+                               (".item.active" :color "#00aa00"))
+                        (box :class "item" "outer")
+                        (box :ecss ((".item" :color "#aa0000"))
+                             (box :class "item" "inner")
+                             (box :class '("item" "active") "active")))
+                   (box :color "#777777" :class '("item" "active") "outside"))))
+         (text (ebox-render input)))
+    (let (colors)
+      (dotimes (position (length text))
+        (when-let* ((face (get-text-property position 'face text))
+                    (color (plist-get face :foreground)))
+          (cl-pushnew color colors :test #'equal)))
+      (dolist (color '("#223344" "#aa0000" "#00aa00" "#777777"))
+        (should (member color colors))))))
+
+(ert-deftest ebox-dsl-exposes-selector-states-to-ecss ()
+  "Public DSL state metadata reaches the generic ECSS subject adapter."
+  (let* ((input (ebox-build '(box :states '(checked emphasized) "Checked")))
+         (node (ebox-canonical-input--single-root input "state test"))
+         (index (ebox-tree-source-index
+                 node nil nil (ebox-canonical-input--source-index input)))
+         (subject (ebox-tree-node-subject
+                   index node)))
+    (should (equal (ecss-subject-states subject)
+                   '("checked" "emphasized")))
+    (should (ecss-selector-match-p ":checked" subject))
+    (should-not (ecss-selector-match-p ":disabled" subject))))
+
+(ert-deftest ebox-dsl-rejects-malformed-selector-state-metadata ()
+  "Selector state metadata remains a token list at the author boundary."
+  (should-error (ebox-build '(box :states '((checked)) "Invalid"))))
+
 (load-file (expand-file-name "../ebox.el" (file-name-directory (or load-file-name buffer-file-name))))
 (load-file (expand-file-name "ebox-fixtures.el"
                              (file-name-directory (or load-file-name

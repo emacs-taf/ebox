@@ -6134,6 +6134,11 @@ Return the same pure surface-input shape as
                    changed-keys))
     'paint)
    ((memq :display changed-keys) 'structure)
+   ;; A local ECSS sheet can change paint, typography, geometry, or a
+   ;; descendant selector match.  Treat its source mutation conservatively as
+   ;; geometry so the normal owner planner recomputes the complete affected
+   ;; subtree through the shared cascade path.
+   ((memq :ecss changed-keys) 'geometry)
    (t 'geometry)))
 
 (defun ebox-incremental--candidate-region-box-table (state)
@@ -6962,7 +6967,11 @@ Each immutable source record is resolved once for this node pair."
         (record-change
          :selector-state
          (and old-record (ebox-source-record-states old-record))
-         (and new-record (ebox-source-record-states new-record)))))
+         (and new-record (ebox-source-record-states new-record)))
+        (record-change
+         :ecss
+         (and old-record (ebox-source-record-ecss old-record))
+         (and new-record (ebox-source-record-ecss new-record)))))
     (setq changed (nconc changed (nreverse source-changed)))
     (let ((old-declarations
            (ebox-style--node-declarations-from-record old old-record))

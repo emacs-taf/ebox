@@ -14,7 +14,7 @@
 (cl-defstruct (ebox-source-record
                (:constructor ebox-source--make-record))
   "Immutable facts supplied by one author source."
-  key id classes attributes states declarations provenance interactions)
+  key id classes attributes states declarations provenance interactions ecss)
 
 (cl-defstruct (ebox-source-handle
                (:constructor ebox-source--make-handle)
@@ -253,6 +253,10 @@ Functions and records are opaque values and retain identity."
                        (or (symbolp token) (stringp token)))
                      value))))
 
+(defun ebox-source-selector-states-p (value)
+  "Return non-nil when VALUE is a public selector-state token list."
+  (ebox-source-class-list-p value))
+
 (defun ebox-source--metadata-string (value)
   "Return VALUE normalized to a selector metadata string."
   (cond
@@ -277,9 +281,19 @@ Functions and records are opaque values and retain identity."
     (intern (if (string-prefix-p ":" key) key (concat ":" key))))
    (t (error "Ebox source attribute name is invalid: %S" key))))
 
+(defun ebox-source-selector-attributes-p (value)
+  "Return non-nil when VALUE is a valid selector attribute alist."
+  (and (or (null value) (proper-list-p value))
+       (cl-every (lambda (entry)
+                   (and (consp entry)
+                        (or (stringp (car entry))
+                            (symbolp (car entry))
+                            (keywordp (car entry)))))
+                 value)))
+
 (defun ebox-source--attributes (attributes)
   "Return detached canonical selector ATTRIBUTES."
-  (unless (or (null attributes) (proper-list-p attributes))
+  (unless (ebox-source-selector-attributes-p attributes)
     (error "Ebox source attributes must be an alist: %S" attributes))
   (mapcar
    (lambda (attribute)
@@ -332,7 +346,7 @@ Functions and records are opaque values and retain identity."
 
 (cl-defun ebox-source-builder-bind
     (builder &key identity key id class selector-attributes selector-state
-             declarations provenance interactions)
+             declarations provenance interactions ecss)
   "Bind normalized source facts in BUILDER and return an opaque handle.
 The returned handle contains identity only; all facts are owned by BUILDER
 until `ebox-source-builder-finish' seals them into a source index."
@@ -345,6 +359,12 @@ until `ebox-source-builder-finish' seals them into a source index."
   (unless (ebox-source-class-list-p class)
     (error "Ebox source class must be a token or proper token list: %S"
            class))
+  (unless (ebox-source-selector-states-p selector-state)
+    (error "Ebox source selector state must be a token or proper token list: %S"
+           selector-state))
+  (unless (ebox-source-selector-attributes-p selector-attributes)
+    (error "Ebox source selector attributes must be an alist: %S"
+           selector-attributes))
   (let ((handle
          (ebox-source--make-handle
           :identity (ebox-source--copy-data
@@ -358,7 +378,8 @@ until `ebox-source-builder-finish' seals them into a source index."
           :states (ebox-source--metadata-tokens selector-state)
           :declarations (ebox-source--declarations declarations)
           :provenance (ebox-source--copy-data provenance)
-          :interactions (ebox-interaction-normalize interactions))))
+          :interactions (ebox-interaction-normalize interactions)
+          :ecss (ebox-source--copy-data ecss))))
     (ebox-source--builder-add-record builder handle record)))
 
 (defun ebox-source--builder-record (builder handle)
@@ -386,6 +407,7 @@ error because one canonical forest cannot contain the same source twice."
            (selector-attributes nil attributes-p)
            (selector-state nil states-p)
            (declarations nil declarations-p)
+           (ecss nil ecss-p)
            (interactions nil interactions-p)
            (provenance nil provenance-p))
   "Return `(NEW-INDEX . NEW-HANDLE)' after rebinding HANDLE in INDEX.
@@ -411,6 +433,7 @@ facts on the canonical node."
              :declarations (if declarations-p
                                declarations
                              (ebox-source-record-declarations record))
+             :ecss (if ecss-p ecss (ebox-source-record-ecss record))
              :interactions (if interactions-p interactions
                              (ebox-source-record-interactions record))
              :provenance
@@ -742,6 +765,7 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
   "Return a detached copy of source RECORD."
   (and record
        (ebox-source--make-record
+        :ecss (ebox-source--copy-data (ebox-source-record-ecss record))
         :key (ebox-source--copy-data (ebox-source-record-key record))
         :id (ebox-source--copy-data (ebox-source-record-id record))
         :classes (ebox-source--copy-data

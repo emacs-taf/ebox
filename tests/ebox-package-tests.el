@@ -168,7 +168,7 @@
             "ebox-buffer-backend.el" "ebox-patch-plan.el"
             "ebox-incremental.el"
             "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
-            "ebox-dsl.el" "ebox-selector.el" "ebox-spi.el" "ebox.el"
+            "ebox-dsl.el" "ebox-selector.el" "ebox-file.el" "ebox-spi.el" "ebox.el"
             "ebox-native-reflow.el"))))
 
 (ert-deftest ebox-surface-depends-only-on-public-tp-api ()
