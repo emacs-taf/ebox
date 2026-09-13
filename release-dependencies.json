@@ -3,17 +3,17 @@
   "dependencies": {
     "tp": {
       "url": "https://gitea.gklazycat.heiyu.space/geekinney/tp.git",
-      "revision": "aea62ff83ab965cf44ebba91081caf46e9da623b"
+      "revision": "716ed2475e34a0dcf6f981a724b983b73a648760"
     },
     "ecss": {
       "url": "https://gitea.gklazycat.heiyu.space/geekinney/ecss.git",
-      "revision": "65bdf2f785c4173b4eba3a781c4f0f13f0eb2c84"
+      "revision": "5706fa6fca68cfae1d3a732dcdae1f5b40cdfac9"
     }
   },
   "optional": {
     "ekp": {
-      "url": "https://github.com/Kinneyzhang/emacs-kp.git",
-      "revision": "c34bc211e68c8cad3feaa94a4adbd76bf3df7bf6"
+      "url": "https://gitea.gklazycat.heiyu.space/geekinney/ekp.git",
+      "revision": "5adfbc51dc5fea110182c19f85f271121e884594"
     }
   }
 }

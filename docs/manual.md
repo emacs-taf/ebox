@@ -362,7 +362,7 @@ do not establish GUI visual parity or remote CI success.
 `:wrap-mode word` wraps ordinary words and permits character breaks for CJK;
 `char` breaks at the common text-cluster boundaries supported by Ebox; `none`
 keeps explicit newlines without adding soft line breaks. `kp` delegates
-paragraph layout to the independent [EKP package](https://github.com/Kinneyzhang/emacs-kp)
+paragraph layout to the independent [EKP package](https://gitea.gklazycat.heiyu.space/geekinney/ekp)
 using the Knuth–Plass algorithm. The mode belongs to a Box and is inherited by
 its text content.
 

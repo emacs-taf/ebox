@@ -20,7 +20,7 @@ package archive or stable release tag.
 | Emacs 29.1 or newer | All Ebox use. |
 | ECSS 0.1.0 or newer | Style computation and selector semantics; required even without a stylesheet. |
 | TP 2.0.0 or newer | Retained publication, native property policies, and transactions; required when loading Ebox. |
-| [EKP 1.0.0 or newer](https://github.com/Kinneyzhang/emacs-kp) | Optional; required only when using `:wrap-mode kp`. |
+| [EKP 1.0.0 or newer](https://gitea.gklazycat.heiyu.space/geekinney/ekp) | Optional; required only when using `:wrap-mode kp`. |
 
 ECSS and TP are declared package dependencies. EKP is deliberately optional:
 ordinary `word`, `char`, and `none` wrapping does not need it. For sibling source

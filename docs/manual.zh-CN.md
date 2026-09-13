@@ -307,7 +307,7 @@ batch 测试不证明 GUI 视觉一致性或远程 CI 成功。
 
 `:wrap-mode word` 按普通单词换行，并允许 CJK 字符换行；`char` 按 Ebox 支持的常见
 文本簇边界换行；`none` 保留显式换行符，不添加软换行。`kp` 将段落交给独立的
-[EKP 包](https://github.com/Kinneyzhang/emacs-kp)，使用 Knuth–Plass 算法排版。
+[EKP 包](https://gitea.gklazycat.heiyu.space/geekinney/ekp)，使用 Knuth–Plass 算法排版。
 换行模式属于 Box，并由其中的文本继承。
 
 使用 `:wrap-mode kp` 前，安装 EKP 1.0.0 或更高版本，或将其源码目录加入 `load-path`。

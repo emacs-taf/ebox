@@ -19,7 +19,7 @@ Component、响应式状态、behavior 或生命周期时，使用同级 ETAF �
 | Emacs 29.1 或更高版本 | 所有 Ebox 使用场景。 |
 | ECSS 0.1.0 或更高版本 | 样式计算和选择器语义；即使不使用样式表也需要。 |
 | TP 2.0.0 或更高版本 | retained 发布、原生属性策略与事务；加载 Ebox 时需要。 |
-| [EKP 1.0.0 或更高版本](https://github.com/Kinneyzhang/emacs-kp) | 可选，仅使用 `:wrap-mode kp` 时需要。 |
+| [EKP 1.0.0 或更高版本](https://gitea.gklazycat.heiyu.space/geekinney/ekp) | 可选，仅使用 `:wrap-mode kp` 时需要。 |
 
 ECSS 与 TP 是包声明的必需依赖。EKP 保持可选，普通 `word`、`char`、`none` 换行不需要它。
 使用同级源码 checkout 时，把必需的目录加入 `load-path` 后加载 Ebox：
