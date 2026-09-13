@@ -2220,22 +2220,24 @@ also pass a pre-rendered string while an active surface owns runtime facts."
              (ebox--render-layout node)
            (if (and (not (stringp node))
                     (not (ebox-style-cascade-active-p))
-                    (null (ebox-style-source-scopes source-index))
                     (zerop (ebox-tree-author-style-count node))
                     (or
                      ;; A retained node already carries its ancestor cascade.
                      ;; Probe an isolated copy of those computed facts instead
                      ;; of publishing the detached subtree with a whole-tree
-                     ;; source index.  Explicit input and active stylesheets
+                     ;; source index.  Its scopes may be rooted outside this
+                     ;; subtree, so do not remount them on detached subjects.
+                     ;; Explicit input and active stylesheets
                      ;; still use the complete canonical projection boundary.
                      (and source-state
                           (eq base-source-index
                               (plist-get source-state :source-index))
                           (ecss-computed-style-p
                            (plist-get node :ebox-computed-style)))
-                     (not
-                      (ebox-render-context-inline-inheritance-required-p
-                       node source-index))))
+                     (and (null (ebox-style-source-scopes source-index))
+                          (not
+                           (ebox-render-context-inline-inheritance-required-p
+                            node source-index)))))
                (let ((ebox--region-id-counter ebox--region-id-counter)
                      (ebox--runtime-node-id-counter ebox--runtime-node-id-counter))
                  (ebox--render-ephemeral-static node))

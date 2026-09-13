@@ -4,6 +4,12 @@ All notable changes to Ebox are documented here.
 
 ## 3.0.0 (Unreleased)
 
+### Fixed
+
+- Retained intrinsic-size measurements preserve already computed scoped styles.
+  Updating a scoped application no longer attempts to remount an ancestor scope
+  on a detached subtree, which could fail during pagination.
+
 ### Changed
 
 - Mounted focus now drives `:focus` selectors, paint and layout in the same
