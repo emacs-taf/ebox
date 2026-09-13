@@ -2,10 +2,10 @@
 
 ;; Usage:
 ;;   Batch/property report:
-;;     emacs -Q -L . -l scripts/ebox-visual-check.el -f ebox-visual-check-batch
+;;     emacs -Q -L lisp -l scripts/ebox-visual-check.el -f ebox-visual-check-batch
 ;;
 ;;   GUI inspection:
-;;     emacs -Q -L . -l scripts/ebox-visual-check.el \
+;;     emacs -Q -L lisp -l scripts/ebox-visual-check.el \
 ;;       --eval '(ebox-visual-check-run t)'
 
 (require 'cl-lib)

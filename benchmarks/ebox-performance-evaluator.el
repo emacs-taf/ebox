@@ -3,7 +3,7 @@
 ;;; Commentary:
 ;; Batch entry point for the repository-local performance contract.
 ;;
-;;   emacs -Q -L . -L ../new-architecture/ecss -L ../tp \
+;;   emacs -Q -L lisp -L ../ecss/lisp -L ../tp/lisp \
 ;;     -l benchmarks/ebox-performance-evaluator.el \
 ;;     -f ebox-performance-evaluator-batch
 

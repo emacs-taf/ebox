@@ -27,19 +27,20 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work) / "source"
             root.mkdir()
+            (root / "lisp").mkdir()
             subprocess.run(["git", "init", "-q", str(root)], check=True)
-            (root / "ebox.el").write_text(';;; ebox.el --- Test -*- lexical-binding: t -*-\n;; Version: 3.0.0\n;; Package-Requires: ((emacs "29.1"))\n')
+            (root / "lisp/ebox.el").write_text(';;; ebox.el --- Test -*- lexical-binding: t -*-\n;; Version: 3.0.0\n;; Package-Requires: ((emacs "29.1"))\n')
             (root / "LICENSE").write_text("license")
             (root / "native/src").mkdir(parents=True)
             (root / "native/src/lib.rs").write_text("native source")
             (root / "native/target/release").mkdir(parents=True)
             (root / "native/target/release/private.log").write_text("exclude")
-            (root / "ebox.elc").write_text("stale bytecode")
+            (root / "lisp/ebox.elc").write_text("stale bytecode")
             first, second = Path(work) / "first", Path(work) / "second"
             first.mkdir()
             second.mkdir()
             one = RELEASE.write_package(first, root, "ebox")
-            (root / "ebox.el").touch()
+            (root / "lisp/ebox.el").touch()
             two = RELEASE.write_package(second, root, "ebox")
             self.assertEqual(one["sha256"], two["sha256"])
             with tarfile.open(first / one["file"]) as archive:
@@ -47,6 +48,8 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn("ebox-3.0.0/LICENSE", names)
                 self.assertIn("ebox-3.0.0/native/src/lib.rs", names)
                 self.assertIn("ebox-3.0.0/ebox-pkg.el", names)
+                self.assertIn("ebox-3.0.0/ebox.el", names)
+                self.assertFalse(any("/lisp/" in name for name in names))
                 self.assertFalse(any("target/" in name or name.endswith(".elc") for name in names))
                 self.assertTrue(all(member.mtime == 0 for member in archive.getmembers()))
 

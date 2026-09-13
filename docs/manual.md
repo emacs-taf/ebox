@@ -375,7 +375,7 @@ reflow module are separate optional modules; enabling one does not install the
 other.
 
 ```elisp
-(add-to-list 'load-path "/path/to/ekp")
+(add-to-list 'load-path "/path/to/ekp/lisp")
 (ebox-render
  (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
                    "Knuth–Plass considers the paragraph when choosing line breaks.")))

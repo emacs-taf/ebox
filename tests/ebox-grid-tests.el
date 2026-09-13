@@ -3,7 +3,7 @@
 (require 'ert)
 (require 'seq)
 
-(load-file (expand-file-name "../ebox.el"
+(load-file (expand-file-name "../lisp/ebox.el"
                             (file-name-directory (or load-file-name
                                                      buffer-file-name))))
 

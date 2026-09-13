@@ -11,10 +11,10 @@ RELEASE_DEPS_DIR ?= /tmp/ebox-release-deps
 RELEASE_OPTIONS ?=
 NATIVE_MODULE ?=
 
-EMACS_BATCH = $(EMACS) -Q --batch -L . -L benchmarks -L $(ECSS_DIR) -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
+EMACS_BATCH = $(EMACS) -Q --batch -L lisp -L benchmarks -L $(ECSS_DIR)/lisp -L $(TP_DIR)/lisp $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
 EMACS_TEST = $(EMACS_BATCH) -L tests -l tests/ebox-fixtures.el
 NATIVE_MANIFEST = native/Cargo.toml
-NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
+NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l lisp/ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
 NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
 .PHONY: all check ci load compile test checkdoc runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests state-contract-tests layout-boundary-tests layout-boundary-performance patch-plan-tests patch-plan-performance style-schema-tests style-schema-performance spi-tests spi-performance c1b-contract-tests docs-contract-tests performance-evaluator visual-check native-rust-tests native-build diff-check clean package-lint package-lint-install
@@ -86,11 +86,11 @@ check: structure-check compile acceptance
 ci: checkdoc load compile test visual-check diff-check
 
 load:
-	$(EMACS_BATCH) -l ebox.el --eval '(princ "ebox load OK\n")'
+	$(EMACS_BATCH) -l lisp/ebox.el --eval '(princ "ebox load OK\n")'
 
 compile:
-	rm -f *.elc tests/*.elc scripts/*.elc benchmarks/*.elc
-	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l ebox.el --eval '(ebox-byte-compile)'
+	rm -f lisp/*.elc tests/*.elc scripts/*.elc benchmarks/*.elc
+	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l lisp/ebox.el --eval '(ebox-byte-compile)'
 
 test: size-tests runtime-index-tests source-tests font-tests core-tests child-range-tests grid-tests ebox-commit-tests surface-tests visual-check-tests package-tests selector-tests dsl-tests flex-tests viewport-topology-tests vertical-materialization-tests box-line-flow-tests node-memo-generation-tests state-contract-tests layout-boundary-tests patch-plan-tests style-schema-tests spi-tests docs-contract-tests
 
@@ -202,13 +202,13 @@ package-lint-install:
 	EBOX_PACKAGE_LINT_INSTALL=1 $(MAKE) package-lint EMACS="$(EMACS)"
 
 checkdoc:
-	$(EMACS) -Q --batch --eval '(progn (require (quote checkdoc)) (dolist (file (directory-files "." t)) (when (string-suffix-p ".el" file) (checkdoc-file file))))'
+	$(EMACS) -Q --batch --eval '(progn (require (quote checkdoc)) (dolist (file (directory-files "lisp" t)) (when (string-suffix-p ".el" file) (checkdoc-file file))))'
 
 diff-check:
 	git diff --check
 
 clean:
-	rm -f *.elc tests/*.elc scripts/*.elc benchmarks/*.elc
+	rm -f lisp/*.elc tests/*.elc scripts/*.elc benchmarks/*.elc
 	rm -rf native/target
 
 .PHONY: structure-check setup-hooks

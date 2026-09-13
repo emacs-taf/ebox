@@ -316,7 +316,7 @@ EKP 时，会提示安装或更新；请安装 EKP，或显式选择其他换行
 EKP 加速器与 Ebox Rust reflow 模块是两个独立的可选模块，启用一个不会安装另一个。
 
 ```elisp
-(add-to-list 'load-path "/path/to/ekp")
+(add-to-list 'load-path "/path/to/ekp/lisp")
 (ebox-render
  (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
                    "Knuth–Plass considers the paragraph when choosing line breaks.")))

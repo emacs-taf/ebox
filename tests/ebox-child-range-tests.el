@@ -413,7 +413,9 @@
                   "ebox-surface.el"))
     (with-temp-buffer
       (insert-file-contents
-       (expand-file-name file ebox-child-range-test--root))
+       (expand-file-name
+       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
+           (concat "lisp/" file) file) ebox-child-range-test--root))
       (should-not (re-search-forward
                    "plist-get[[:space:]\n]+\\(?:node\\|flex-node\\)[[:space:]\n]+:children"
                    nil t)))))

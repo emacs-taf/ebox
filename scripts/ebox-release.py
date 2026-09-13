@@ -93,7 +93,7 @@ def validate_dependencies(directory, entries):
 
 def package_metadata(root, name):
     """Read package.el metadata from the package's main Lisp header."""
-    source = (root / f"{name}.el").read_text()
+    source = (root / "lisp" / f"{name}.el").read_text()
     version = re.search(r"^;; Version: ([0-9]+(?:\.[0-9]+)*)$", source, re.M)
     requirements = re.search(r"^;; Package-Requires: (.+)$", source, re.M)
     if not version or not requirements:
@@ -115,12 +115,13 @@ def package_files(root, name):
                 or path.suffix in (".elc", ".eln", ".so", ".dylib", ".dll", ".o", ".a")):
             continue
         top_file = len(parts) == 1
-        include = (top_file and (path.suffix == ".el" or
-                   path.name.startswith(("README", "LICENSE", "COPYING", "NOTICE", "CHANGELOG"))))
+        include = (top_file and path.name.startswith(("README", "LICENSE", "COPYING", "NOTICE", "CHANGELOG")))
+        include = include or (len(parts) == 2 and parts[0] == "lisp" and path.suffix == ".el")
         include = include or (name == "ebox" and parts[0] in ("native", "docs"))
-        include = include or (name == "ekp" and parts[0] in ("dictionaries", "ekp_c"))
+        include = include or (name == "ekp" and parts[0] in ("dictionaries", "native"))
         if include and not path.name.endswith("-pkg.el"):
-            result[relative.as_posix()] = path.read_bytes()
+            archive_path = path.name if parts[0] == "lisp" else relative.as_posix()
+            result[archive_path] = path.read_bytes()
     if f"{name}.el" not in result:
         raise ValueError(f"{name}: package entry missing")
     return result

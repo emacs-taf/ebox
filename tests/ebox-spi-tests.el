@@ -16,7 +16,9 @@
 (defun ebox-spi-test--source (file)
   "Return repository FILE as text."
   (with-temp-buffer
-    (insert-file-contents (expand-file-name file ebox-spi-test--root))
+    (insert-file-contents (expand-file-name
+       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
+           (concat "lisp/" file) file) ebox-spi-test--root))
     (buffer-string)))
 
 (defun ebox-spi-test--reset-runtime-state ()

@@ -1,5 +1,9 @@
 # Ebox
 
+Source layout: runtime code lives in `lisp/`; add that directory to `load-path`
+when using a checkout. Update older checkout configurations from the repository
+root to its `lisp/` subdirectory.
+
 Ebox is a standalone Text/Box layout engine for Emacs. It owns text
 measurement, box geometry, row/column/flex/Grid layout, retained rendering,
 and incremental buffer publication. Use the sibling ETAF package when an
@@ -23,9 +27,9 @@ ordinary `word`, `char`, and `none` wrapping does not need it. For sibling sourc
 checkouts, add the required directories to `load-path`, then load Ebox:
 
 ```elisp
-(add-to-list 'load-path "/path/to/ecss")
-(add-to-list 'load-path "/path/to/tp")
-(add-to-list 'load-path "/path/to/ebox")
+(add-to-list 'load-path "/path/to/ecss/lisp")
+(add-to-list 'load-path "/path/to/tp/lisp")
+(add-to-list 'load-path "/path/to/ebox/lisp")
 (require 'ebox)
 ```
 
@@ -35,7 +39,7 @@ For Knuth–Plass paragraph layout, also add the EKP source directory to
 `load-path`, or install its package, before rendering a Box with `:wrap-mode kp`:
 
 ```elisp
-(add-to-list 'load-path "/path/to/ekp")
+(add-to-list 'load-path "/path/to/ekp/lisp")
 (ebox-render
  (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
                    "A paragraph laid out with Knuth–Plass line breaking.")))
@@ -57,7 +61,8 @@ make release-check EMACS=emacs RELEASE_DIR=/tmp/ebox-release-3.0.0
 
 This fetches the exact dependency commits in
 [`release-dependencies.json`](release-dependencies.json), builds deterministic
-`package.el` source archives, and installs them into a temporary clean profile
+`package.el` source archives (flattening `lisp/` into the installed package root),
+and installs them into a temporary clean profile
 to exercise rendering, updates, and selectors. It preserves the archive
 directory and `manifest.json`, including checksums and source revision/dirty
 status; it does not publish or change your Emacs profile. Choose a new output

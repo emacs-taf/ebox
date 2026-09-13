@@ -7,7 +7,7 @@
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name)))
   "Repository root used by package contract tests.")
 
-(load-file (expand-file-name "ebox.el" ebox-test--root))
+(load-file (expand-file-name "lisp/ebox.el" ebox-test--root))
 
 (defconst ebox-test--autoload-source-files
   '("ebox.el"
@@ -27,14 +27,16 @@
   "Return combined source text for files that own public autoloads."
   (with-temp-buffer
     (dolist (file ebox-test--autoload-source-files)
-      (insert-file-contents (expand-file-name file ebox-test--root))
+      (insert-file-contents (expand-file-name
+       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
+           (concat "lisp/" file) file) ebox-test--root))
       (insert "\n"))
     (buffer-string)))
 
 (defun ebox-test--production-lisp-text ()
   "Return all package-root Ebox Lisp production source as text."
   (with-temp-buffer
-    (dolist (file (directory-files ebox-test--root t "\\`ebox.*\\.el\\'"))
+    (dolist (file (directory-files (expand-file-name "lisp" ebox-test--root) t "\\`ebox.*\\.el\\'"))
       (insert-file-contents file)
       (insert "\n"))
     (buffer-string)))
@@ -43,7 +45,7 @@
   "Ebox 3 requires structured TP and contains no executable v1 bridge."
   (let ((facade
          (with-temp-buffer
-           (insert-file-contents (expand-file-name "ebox.el" ebox-test--root))
+           (insert-file-contents (expand-file-name "lisp/ebox.el" ebox-test--root))
            (buffer-string)))
         (source (ebox-test--production-lisp-text)))
     (should (string-match-p "Version: 3.0.0" facade))
@@ -99,7 +101,7 @@
         (process-file
          emacs nil (current-buffer) nil
          "-Q" "--batch"
-         "-L" ebox-test--root "-L" ecss "-L" tp
+         "-L" (expand-file-name "lisp" ebox-test--root) "-L" ecss "-L" tp
          "--eval" "(setq load-prefer-newer t)"
          "--eval"
          (concat
@@ -135,7 +137,7 @@
         (process-file
          emacs nil (current-buffer) nil
          "-Q" "--batch"
-         "-L" ebox-test--root "-L" ecss "-L" tp
+         "-L" (expand-file-name "lisp" ebox-test--root) "-L" ecss "-L" tp
          "--eval" "(setq load-prefer-newer t)"
          "--eval"
          (concat
@@ -176,7 +178,7 @@
   (let ((source
          (with-temp-buffer
            (insert-file-contents
-            (expand-file-name "ebox-surface.el" ebox-test--root))
+            (expand-file-name "lisp/ebox-surface.el" ebox-test--root))
            (buffer-string))))
     (should-not (string-match-p "\\_<tp--" source))))
 
@@ -185,7 +187,9 @@
   (let ((source
          (with-temp-buffer
            (dolist (file '("ebox-style.el" "ebox-tree.el" "ebox-selector.el"))
-             (insert-file-contents (expand-file-name file ebox-test--root))
+             (insert-file-contents (expand-file-name
+       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
+           (concat "lisp/" file) file) ebox-test--root))
              (insert "\n"))
            (buffer-string))))
     (should-not
@@ -218,7 +222,9 @@
                   "native/src/layout.rs"
                   "native/c/ebox_module.c"
                   "native/vendor/emacs-30/emacs-module.h"))
-    (should (file-readable-p (expand-file-name file ebox-test--root)))))
+    (should (file-readable-p (expand-file-name
+       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
+           (concat "lisp/" file) file) ebox-test--root)))))
 
 (ert-deftest ebox-public-entry-points-have-autoload-cookies ()
   "Stable public entry points should be discoverable by package autoloads."
@@ -327,7 +333,7 @@
     (should-not (memq entry ebox-public-api)))
   (let ((source
          (with-temp-buffer
-           (insert-file-contents (expand-file-name "ebox.el" ebox-test--root))
+           (insert-file-contents (expand-file-name "lisp/ebox.el" ebox-test--root))
            (buffer-string))))
     (dolist (definition '("ebox--to-buffer"
                           "ebox-pop-to-buffer"

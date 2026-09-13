@@ -40,7 +40,7 @@
   "Selector state metadata remains a token list at the author boundary."
   (should-error (ebox-build '(box :states '((checked)) "Invalid"))))
 
-(load-file (expand-file-name "../ebox.el" (file-name-directory (or load-file-name buffer-file-name))))
+(load-file (expand-file-name "../lisp/ebox.el" (file-name-directory (or load-file-name buffer-file-name))))
 (load-file (expand-file-name "ebox-fixtures.el"
                              (file-name-directory (or load-file-name
                                                       buffer-file-name))))

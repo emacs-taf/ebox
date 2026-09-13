@@ -8,7 +8,7 @@
 
 (setq load-prefer-newer t)
 
-(load-file (expand-file-name "../ebox.el" (file-name-directory load-file-name)))
+(load-file (expand-file-name "../lisp/ebox.el" (file-name-directory load-file-name)))
 
 ;; Core tests assert named Elisp render/patch strategies.  Keep optional local
 ;; native artifacts from replacing those strategies; native execution has

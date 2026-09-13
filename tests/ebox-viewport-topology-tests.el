@@ -4,7 +4,7 @@
 (require 'ert)
 
 (setq load-prefer-newer t)
-(load-file (expand-file-name "../ebox.el"
+(load-file (expand-file-name "../lisp/ebox.el"
                             (file-name-directory load-file-name)))
 (require 'tp-surface)
 

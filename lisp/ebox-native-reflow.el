@@ -535,7 +535,12 @@ fails after moving the current module aside, restore that previous module."
 
 (defun ebox-native-reflow--source-directory ()
   "Return the bundled native module source directory."
-  (expand-file-name "native" ebox-native-reflow--library-directory))
+  (expand-file-name
+   "native"
+   (if (equal (file-name-nondirectory
+               (directory-file-name ebox-native-reflow--library-directory)) "lisp")
+       (expand-file-name ".." ebox-native-reflow--library-directory)
+     ebox-native-reflow--library-directory)))
 
 (defun ebox-native-reflow--build-directory ()
   "Return the private Cargo build directory for the current Emacs target."

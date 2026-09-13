@@ -1,5 +1,10 @@
 # Ebox
 
+发布工具将 `lisp/` 中的源码放入 `package.el` 安装包根目录；原生资源随包保留。
+
+源码布局：运行时代码位于 `lisp/`；从源码使用时，将该目录加入 `load-path`。
+升级旧 checkout 配置时，将原来的仓库加载路径改为其 `lisp/` 子目录。
+
 Ebox 是一个独立的 Emacs Text/Box 布局引擎，负责文本测量、Box 几何、
 row/column/flex/Grid 布局、retained 渲染和增量 buffer 发布。应用还需要
 Component、响应式状态、behavior 或生命周期时，使用同级 ETAF 包。
@@ -20,9 +25,9 @@ ECSS 与 TP 是包声明的必需依赖。EKP 保持可选，普通 `word`、`ch
 使用同级源码 checkout 时，把必需的目录加入 `load-path` 后加载 Ebox：
 
 ```elisp
-(add-to-list 'load-path "/path/to/ecss")
-(add-to-list 'load-path "/path/to/tp")
-(add-to-list 'load-path "/path/to/ebox")
+(add-to-list 'load-path "/path/to/ecss/lisp")
+(add-to-list 'load-path "/path/to/tp/lisp")
+(add-to-list 'load-path "/path/to/ebox/lisp")
 (require 'ebox)
 ```
 
@@ -32,7 +37,7 @@ ECSS 与 TP 是包声明的必需依赖。EKP 保持可选，普通 `word`、`ch
 然后在 Box 上设置 `:wrap-mode kp`：
 
 ```elisp
-(add-to-list 'load-path "/path/to/ekp")
+(add-to-list 'load-path "/path/to/ekp/lisp")
 (ebox-render
  (ebox-build '(box :width (ch 40) :wrap-mode kp :overflow hidden
                    "A paragraph laid out with Knuth–Plass line breaking.")))

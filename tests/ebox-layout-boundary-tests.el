@@ -15,7 +15,9 @@
   "Return repository FILE as text."
   (with-temp-buffer
     (insert-file-contents
-     (expand-file-name file ebox-layout-boundary-test--root))
+     (expand-file-name
+       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
+           (concat "lisp/" file) file) ebox-layout-boundary-test--root))
     (buffer-string)))
 
 (defun ebox-layout-boundary-test--legacy-static-render (node)

@@ -16,7 +16,9 @@
 (defun ebox-patch-plan-test--read-forms (file)
   "Read and return every top-level form in repository FILE."
   (with-temp-buffer
-    (insert-file-contents (expand-file-name file ebox-patch-plan-test--root))
+    (insert-file-contents (expand-file-name
+       (if (and (string-suffix-p ".el" file) (not (file-name-directory file)))
+           (concat "lisp/" file) file) ebox-patch-plan-test--root))
     (let (forms form)
       (condition-case nil
           (while t
