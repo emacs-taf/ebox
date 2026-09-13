@@ -366,8 +366,10 @@ declaring membership and independent roots.  Both lists are snapshotted."
   (dolist (scopes (list ecss-scopes ecss-scope-roots))
     (unless (and (proper-list-p scopes)
                  (cl-every #'ebox-style-scope-p scopes)
-                 (= (length scopes) (length (delete-dups (copy-sequence scopes)))))
-      (error "Ebox shared scopes must be a list of distinct scope objects")))
+                 (= (length scopes)
+                    (length (delete-dups
+                             (mapcar #'ebox-style-scope-identity scopes)))))
+      (error "Ebox shared scopes must be a list of distinct scope identities")))
   (when (and key (not (ebox-source-stable-key-p key)))
     (error "Ebox source key must be a non-nil symbol, string, or integer: %S"
            key))

@@ -32,10 +32,11 @@
 字段。该投影排除延迟值并缓存具体配置，不取得 source 声明所有权；完整声明仍是
 层叠计算输入。
 
-共享样式描述是不可变 stylesheet 快照。Source record 携带成员与根标记，候选
-source index 将标记归并为 ECSS 挂载；多根无需合成可见节点。成员归属属于候选
-版本，slot 插入与移除通过普通 source delta 改变归属。层叠签名包含描述身份、
-挂载 source 和成员身份；没有根的描述在组合到根之前不贡献规则。
+共享样式描述是不可变 stylesheet 快照。规则更新保留成员身份，各根选择自身的
+规则版本，旧输入保持不变。Source record 携带成员与根标记，候选 source index
+将标记归并为 ECSS 挂载；多根无需合成可见节点。成员归属属于候选版本，slot
+插入与移除通过普通 source delta 改变归属。层叠签名包含描述身份、stylesheet
+版本、挂载 source 和成员身份；没有根的描述在组合到根之前不贡献规则。
 
 ## Commit 生命周期
 

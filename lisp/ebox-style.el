@@ -1399,6 +1399,17 @@ only members within that root can receive rules.  No roots means no rules."
     (ebox-style--make-scope :identity (make-symbol "ebox-style-scope")
                             :stylesheet sheet)))
 
+(cl-defun ebox-style-scope-with-rules (scope rules &key (origin 'author))
+  "Return a new RULES snapshot preserving SCOPE's membership identity.
+ORIGIN follows `ebox-style-scope-create'.  Install the returned description
+on roots; existing members need no rebinding.  Each root uses its own rule
+snapshot.  Neither SCOPE nor previously constructed inputs are modified."
+  (unless (ebox-style-scope-p scope)
+    (error "Expected an Ebox shared style scope"))
+  (let ((next (ebox-style-scope-create rules :origin origin)))
+    (setf (ebox-style-scope-identity next) (ebox-style-scope-identity scope))
+    next))
+
 (defun ebox-style--shared-source-scopes (source-index)
   "Mount shared scope roots and memberships from SOURCE-INDEX."
   (let ((roots (make-hash-table :test #'eq))
@@ -1407,12 +1418,12 @@ only members within that root can receive rules.  No roots means no rules."
     (dolist (handle (ebox-source-index-handles source-index))
       (let ((record (ebox-source--index-record source-index handle)))
         (dolist (scope (ebox-source-record-ecss-scopes record))
-          (push handle (gethash scope members)))
+          (push handle (gethash (ebox-style-scope-identity scope) members)))
         (dolist (scope (ebox-source-record-ecss-scope-roots record))
           (unless (gethash scope roots) (push scope order))
           (push handle (gethash scope roots)))))
     (dolist (description (nreverse order))
-      (let* ((targets (nreverse (gethash description members)))
+      (let* ((targets (reverse (gethash (ebox-style-scope-identity description) members)))
              (subjects (mapcar (lambda (handle)
                                  (ebox-source--index-subject source-index handle))
                                targets))
@@ -1424,6 +1435,7 @@ only members within that root can receive rules.  No roots means no rules."
                         :subjects subjects)))
             (puthash scope
                      (list (ebox-style-scope-identity description)
+                           (ebox-style-scope-stylesheet description)
                            (ebox-source--handle-id-view handle) identities)
                      ebox-style--scope-source-signatures)
             (push scope scopes)))))

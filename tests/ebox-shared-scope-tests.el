@@ -126,5 +126,55 @@ TRANSFER assigns the slot to CHILD; REVERSE reverses the physical root order."
     (should-error (ebox-source-builder-bind (ebox-source-builder-create)
                                             :ecss-scope-roots '(invalid)))))
 
+(ert-deftest ebox-shared-scopes-revise-rules-with-retained-members ()
+  "Root revisions restyle imported members while old inputs and failed updates stay intact."
+  (let* ((old (ebox-style-scope-create '(("text" :color "#ff0000"))))
+         (next (ebox-style-scope-with-rules old '(("text" :color "#0000ff")))))
+    (cl-labels
+        ((input (revision)
+           (let* ((builder (ebox-source-builder-create))
+                  (child (ebox-shared-scope-test-text builder 'Child (list old)))
+                  (slice (ebox-canonical-input-create
+                          (list child) (ebox-source-builder-finish builder)))
+                  (target (ebox-source-builder-create))
+                  (children (ebox-canonical-input-import-roots
+                             slice (ebox-canonical-input-roots slice) target))
+                  (root (ebox-shared-scope-test-box target 'parent children (list revision))))
+             (ebox-canonical-input-create (list root) (ebox-source-builder-finish target)))))
+      (let ((before (input old)) (after (input next)))
+        (with-temp-buffer
+          (ebox-render-to-buffer (current-buffer) before)
+          (ebox-commit (current-buffer) after)
+          (should (equal "#0000ff" (ebox-shared-scope-test-color (buffer-string) "Child")))
+          (should-error (ebox-style-scope-with-rules next '(("[" :color "red"))))
+          (should (equal "#0000ff" (ebox-shared-scope-test-color (buffer-string) "Child")))
+          (ebox-commit (current-buffer) before)
+          (should (equal "#ff0000" (ebox-shared-scope-test-color (buffer-string) "Child"))))
+        (should (equal "#ff0000" (ebox-shared-scope-test-color (ebox-render before) "Child")))
+        (should (equal "#0000ff" (ebox-shared-scope-test-color (ebox-render after) "Child")))))
+    (dolist (field '(:ecss-scopes :ecss-scope-roots))
+      (should-error (apply #'ebox-source-builder-bind (ebox-source-builder-create)
+                          (list field (list old next)))))
+    (should-error (ebox-style-scope-with-rules 'invalid nil))
+    (should-error (ebox-style-scope-with-rules old nil :origin 'invalid))))
+
+(ert-deftest ebox-shared-scopes-select-rules-per-root-revision ()
+  "Roots select their own rule revisions and origins for the same member identity."
+  (let* ((old (ebox-style-scope-create '(("&" :color "#ff0000")) :origin 'ua))
+         (next (ebox-style-scope-with-rules old '(("&" :color "#0000ff"))))
+         (ua (ebox-style-scope-with-rules next '(("&" :color "#00ff00")) :origin 'ua))
+         (author (ebox-style-scope-create '(("&" :color "#aabbcc"))))
+         (builder (ebox-source-builder-create))
+         (nodes
+          (list (ebox-shared-scope-test-text builder 'Old (list next) (list old))
+                (ebox-shared-scope-test-text builder 'New (list old) (list next))
+                (ebox-shared-scope-test-text builder 'Default (list old author) (list author ua))))
+         (root (ebox-shared-scope-test-box builder 'app nodes nil))
+         (input (ebox-canonical-input-create (list root) (ebox-source-builder-finish builder)))
+         (text (ebox-render input)))
+    (should (equal "#ff0000" (ebox-shared-scope-test-color text "Old")))
+    (should (equal "#0000ff" (ebox-shared-scope-test-color text "New")))
+    (should (equal "#aabbcc" (ebox-shared-scope-test-color text "Default")))))
+
 (provide 'ebox-shared-scope-tests)
 ;;; ebox-shared-scope-tests.el ends here

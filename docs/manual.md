@@ -719,10 +719,15 @@ The input is the same ordered rule list as other style entries; optional `:origi
 uses ECSS origins, so a theme may provide UA defaults while component rules remain
 author declarations. Invalid rules or origins signal errors without modifying
 existing descriptions. Descriptions own no buffers or runtime resources and need
-no disposal. Use a new description to change rules; source data is snapshotted.
+no disposal. Source data is snapshotted. To update rules for retained members,
+use `(ebox-style-scope-with-rules scope rules :origin 'author)` and bind the
+result to roots. It keeps the membership identity: existing members may carry
+any revision. Each root uses its own rules, and old inputs stay unchanged.
+Invalid revisions signal errors without modifying prior descriptions. The origin
+defaults to author; specify it again when revising UA defaults.
 
 Each canonical source lists its memberships in `:ecss-scopes` and its mounting
-roots in `:ecss-scope-roots`. Both accept proper lists of distinct descriptions;
+roots in `:ecss-scope-roots`. Both accept proper lists of distinct scope identities;
 invalid lists fail during binding. Roots and members are independent. A member
 receives rules only within a marked root's subtree; the root itself must also be
 a member to receive `&` or `:scope` rules. Ordinary selectors address strict

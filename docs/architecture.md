@@ -41,8 +41,10 @@ Shared author descriptions are immutable stylesheet snapshots. Source records
 carry member and root markers; the candidate source index groups those markers
 into ECSS mounts. Multiple roots do not require synthetic visual nodes. Membership
 is candidate-local, so slot insertion and removal change ownership through ordinary
-source deltas. Cascade signatures include description identity, mounting source and
-member identities. Unanchored descriptions remain inert until composed with a root.
+source deltas. Rule revisions preserve membership identity while each root selects
+its immutable stylesheet. Cascade signatures include description identity, stylesheet revision,
+mounting source and member identities. Unanchored descriptions remain inert until
+composed with a root.
 
 ## Commit lifecycle
 

@@ -635,6 +635,16 @@
       "name": "ebox-shared-scopes-compose-unanchored-fragments",
       "file": "tests/ebox-shared-scope-tests.el",
       "purpose": "Canonical fragment import preserves membership until composition supplies an enclosing scope root."
+    },
+    {
+      "name": "ebox-shared-scopes-revise-rules-with-retained-members",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Root rule revisions restyle retained imported members, reject invalid updates, and preserve old canonical snapshots."
+    },
+    {
+      "name": "ebox-shared-scopes-select-rules-per-root-revision",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Separate roots select immutable rule revisions and explicit ECSS origins for shared member identities."
     }
   ]
 }

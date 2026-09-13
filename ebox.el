@@ -739,8 +739,8 @@
 ;; wrong-type-argument.  Rendering resolves targets in the candidate input;
 ;; an absent identity is an error.  Targets outside the source's subtree do
 ;; not match.  Structural selectors and inheritance retain the canonical tree.
-;; ECSS-SCOPES and ECSS-SCOPE-ROOTS are snapshotted proper lists of distinct
-;; ebox-style-scope-create results, declaring this source's membership and
+;; ECSS-SCOPES and ECSS-SCOPE-ROOTS are snapshotted proper lists of scope
+;; descriptions with distinct identities, declaring this source's membership and
 ;; mounting roots respectively. Invalid lists are errors. A root need not be
 ;; a member. Shared scopes follow local :ecss scopes in cascade source order;
 ;; shared scopes follow the first root's document and declaration-list order.
@@ -791,6 +791,16 @@
 ;; &/:scope address each marked root; ordinary selectors address descendants.
 ;; Without a root in the input, the scope contributes no rules. Tree relations
 ;; and inheritance remain unchanged. See the manual for composition examples.
+;;
+;; Function: ebox-style-scope-with-rules (scope rules &key (origin 'author))
+;;;###autoload (autoload 'ebox-style-scope-with-rules "ebox" nil nil)
+;; Return an immutable rule revision retaining SCOPE's membership identity.
+;; Rules and origin follow ebox-style-scope-create; invalid input signals an
+;; error without mutation. Rebind roots to this revision while retained members
+;; keep any revision of the same identity. Each root applies its own snapshot;
+;; older canonical inputs remain unchanged. Membership/root lists must contain
+;; distinct identities, so two revisions cannot occur in the same list.
+;; ORIGIN defaults to author, including when SCOPE used another origin.
 ;;
 ;; Function: ebox-style-compile-rules (rules)
 ;;;###autoload (autoload 'ebox-style-compile-rules "ebox" nil nil)

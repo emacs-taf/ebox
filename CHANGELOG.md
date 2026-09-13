@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- `ebox-style-scope-with-rules` updates root rules while retaining scope
+  membership across imported fragments. Old canonical snapshots stay unchanged.
+
 - Shared immutable style scopes can mark multiple canonical roots and explicit
   source memberships, preserving projected content ownership without visual
   wrappers. Rules support ECSS origins and follow retained source publication.
