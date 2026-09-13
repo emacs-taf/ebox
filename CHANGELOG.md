@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Viewport updates of visible-overflow Flex layouts no longer consult an absent
+  measurement cache during uncached geometry probes.
+
 - Native Boxes pass definite content height to their inner Flex layout, including
   main-axis and cross-axis allocations from a parent Flex. Stretched nested cells
   keep their full background coverage; auto heights remain content-driven.
@@ -19,7 +22,7 @@ All notable changes to Ebox are documented here.
 
 - Native Flex layout accepts supported explicit main-axis minima, including
   zero, and follows the same overflow-dependent automatic minimum and size
-  caps as Elisp. Rebuild the optional module for ABI `17:7:12` and restart Emacs; older modules
+  caps as Elisp. Rebuild the optional module for ABI `18:8:12` and restart Emacs; older modules
   cannot supply the corrected semantics. Unsupported scene features still use
   ordinary rendering.
 
@@ -95,6 +98,11 @@ All notable changes to Ebox are documented here.
 
 
 ### Added
+
+- Native Box widths, minimum/maximum widths and row Flex bases accept `vw`
+  lengths against the original frame viewport. Resize resolves them again;
+  nonintegral results fall back. Composed viewport expressions, gaps and other
+  relative units continue through ordinary rendering.
 
 - Fixed single-row Grids with stretched clipped cells can publish native frames.
   Cell chrome and box sizing participate in track allocation; updates that leave

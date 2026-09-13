@@ -829,7 +829,8 @@ be recalculated against the smaller viewport assigned to the item itself."
 
 (defun ebox--flex-measure-cacheable-p (source props)
   "Return non-nil when SOURCE and PROPS have stable flex measurements."
-  (and (or (ebox--flex-natural-measurement-source-p source)
+  (and ebox--render-cache-table
+       (or (ebox--flex-natural-measurement-source-p source)
            (ebox--render-cacheable-node-p source))
        (not (ebox--viewport-dependent-size-value-p
              (plist-get props :flex-basis)))))

@@ -47,6 +47,10 @@
 编译器在 basis 中计入单元格边框、内边距与 box sizing，不改变 source 所有权。
 Grid 所有者或单元格更新会重建父布局分配；其余配置保留完整 Elisp Grid 实现。
 
+原生布局上下文独立保留原始 frame viewport 宽度，不随包含块或 Flex 元素分配
+而改变。`vw` 宽度与行向 basis 在 IR 中保留相对值，每个 frame（包括保留请求）
+重新解析。小数或越界结果在发布前拒绝原生候选，由普通布局路径处理。
+
 ## Commit 生命周期
 
 ```text

@@ -107,7 +107,7 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "17:7:12"
+(defconst ebox-native-reflow-abi-version "18:8:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -1776,6 +1776,9 @@ vertically.  Preserve exact values only; other geometry uses the Elisp path."
 (defun ebox-native-reflow--compile-size (value axis nil-kind &optional box)
   "Compile size VALUE for AXIS in BOX, using NIL-KIND when absent."
   (cond
+   ((and (eq axis 'horizontal) (ebox-size-value-p value)
+         (eq (car value) 'vw))
+    (list :kind "css-viewport-width" :value (cadr value)))
    ((ebox-size-value-p value)
     (list :kind (if (eq axis 'horizontal) "pixels" "lines")
           :value (ebox-native-reflow--compile-fixed-size value axis box)))

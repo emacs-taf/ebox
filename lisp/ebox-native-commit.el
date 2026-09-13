@@ -36,6 +36,7 @@
                   (value &optional box axis percent-base))
 (declare-function ebox-size-value-p "ebox-size" (value &optional allow-negative allow-percent))
 (declare-function ebox-size-dependencies "ebox-size" (value))
+(declare-function ebox-size-resolve "ebox-size" (value context))
 (declare-function ebox-get "ebox" (box key))
 (declare-function ebox-put "ebox" (box key value))
 (declare-function ebox--scroll-set-state "ebox" (region-id state))
@@ -534,12 +535,14 @@ new session with the same bounded configuration used by retained frames."
     table))
 
 (defun ebox-native-commit--root-frame-width (box viewport-width)
-  "Resolve BOX's declared static width in its font context for one frame.
+  "Resolve BOX's declared width in its font and viewport context for one frame.
 This is execution geometry, not a proof that the width is font-independent."
   (let* ((width (and box (ebox-get box :width)))
          (resolved
           (cond
            ((numberp width) width)
+           ((and (ebox-size-value-p width) (eq (car width) 'vw))
+            (ebox-size-resolve width (list :viewport-width viewport-width)))
            ((and (ebox-size-value-p width)
                  (not (cl-intersection
                        '(percent viewport-width viewport-height)

@@ -1143,6 +1143,9 @@ fn same_scalar_source<T: PartialEq>(base: &T, target: &T, _: &mut SourceChangeWo
 fn same_size_source(base: &Size, target: &Size, work: &mut SourceChangeWork) -> bool {
     work.size_nodes_compared += 1;
     match (base, target) {
+        (Size::CssViewportWidth { value: left }, Size::CssViewportWidth { value: right }) => {
+            left == right
+        }
         (Size::Pixels { value: left }, Size::Pixels { value: right })
         | (Size::Lines { value: left }, Size::Lines { value: right }) => left == right,
         (Size::FitContent { limit: left }, Size::FitContent { limit: right }) => {
@@ -1723,6 +1726,9 @@ enum Size {
     },
     Viewport,
     ViewportHeight,
+    CssViewportWidth {
+        value: f64,
+    },
     MinContent,
     MaxContent,
     FitContent {
@@ -1861,6 +1867,7 @@ struct MeasuredCluster {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutContext {
     pub viewport_width: i64,
+    pub css_viewport_width: i64,
     pub viewport_width_known: bool,
     pub viewport_height: i64,
     pub inline_auto_width_intrinsic: bool,
@@ -4778,6 +4785,15 @@ fn validate_size_at_depth(name: &str, size: &Size, depth: usize) -> Result<(), S
     }
     match size {
         Size::Pixels { value } | Size::Lines { value } => validate_dimension(name, *value),
+        Size::CssViewportWidth { value } => {
+            if value.is_finite() && *value >= 0.0 && *value <= MAX_LAYOUT_DIMENSION as f64 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Native layout {name} has an invalid viewport percentage"
+                ))
+            }
+        }
         Size::FitContent { limit: Some(limit) } => validate_size_at_depth(name, limit, depth + 1),
         Size::Add { values } | Size::Subtract { values } => {
             if values.0.is_empty() {
@@ -5101,6 +5117,33 @@ fn box_sizing_content_height(
     }
 }
 
+// The native geometry domain is integral. Decline a frame before publication
+// when a viewport length cannot be represented exactly; Elisp owns its rounding.
+fn css_viewport_width(percentage: f64, context: LayoutContext) -> Option<i64> {
+    let value = context.css_viewport_width as f64 * (percentage / 100.0);
+    (value.is_finite()
+        && value >= 0.0
+        && value <= MAX_LAYOUT_DIMENSION as f64
+        && value.fract() == 0.0)
+        .then_some(value as i64)
+}
+
+fn validate_inline_context_size(size: &Size, context: LayoutContext) -> Result<(), String> {
+    match size {
+        Size::CssViewportWidth { value } if css_viewport_width(*value, context).is_none() => {
+            Err("Native viewport width requires bounded integral geometry".to_owned())
+        }
+        Size::FitContent { limit: Some(limit) } => validate_inline_context_size(limit, context),
+        Size::Add { values } | Size::Subtract { values } => {
+            for value in &values.0 {
+                validate_inline_context_size(value, context)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_width(
     size: &Size,
@@ -5130,6 +5173,7 @@ fn resolve_width(
         Size::Content => Some(max_content),
         Size::None => None,
         Size::Pixels { value } => Some(convert(*value)),
+        Size::CssViewportWidth { value } => css_viewport_width(*value, context).map(convert),
         Size::Viewport => context
             .viewport_width_known
             .then(|| convert(context.viewport_width))
@@ -5188,6 +5232,7 @@ fn resolve_definite_width(
     };
     match size {
         Size::Pixels { value } => Some(convert(*value)),
+        Size::CssViewportWidth { value } => css_viewport_width(*value, context).map(convert),
         Size::Viewport => context
             .viewport_width_known
             .then(|| convert(context.viewport_width)),
@@ -5663,6 +5708,7 @@ fn flex_horizontal_size(size: &Size, context: LayoutContext) -> Option<i64> {
             .viewport_width_known
             .then_some(context.viewport_width.max(0)),
         Size::Pixels { value } | Size::Lines { value } => Some(*value),
+        Size::CssViewportWidth { value } => css_viewport_width(*value, context),
         Size::Viewport => context
             .viewport_width_known
             .then_some(context.viewport_width.max(0)),
@@ -5895,7 +5941,7 @@ fn flex_min_main(
     };
     let preferred = if horizontal { width } else { height };
     let definite = match preferred {
-        Size::Pixels { .. } | Size::Lines { .. } => {
+        Size::Pixels { .. } | Size::Lines { .. } | Size::CssViewportWidth { .. } => {
             if horizontal {
                 flex_box_resolve_width(source, preferred, None, scope, context)?
             } else {
@@ -5953,6 +5999,7 @@ fn flex_max_main(
 fn flex_horizontal_basis_value(size: &Size, context: LayoutContext) -> i64 {
     match size {
         Size::Pixels { value } | Size::Lines { value } => *value,
+        Size::CssViewportWidth { value } => css_viewport_width(*value, context).unwrap_or(0),
         Size::Viewport => context.viewport_width.max(0),
         Size::Stretch | Size::Contain => context.viewport_width.max(0),
         _ => 0,
@@ -6048,6 +6095,7 @@ fn measure_flex_item<'a>(
         },
         viewport_width_known: uses_inline_viewport && inline_viewport.is_some(),
         viewport_height: context.viewport_height,
+        css_viewport_width: context.css_viewport_width,
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let rendered =
@@ -6426,6 +6474,7 @@ fn render_flex_sized_entry(
             item_viewport.is_some() || context.viewport_width_known
         },
         viewport_height: context.viewport_height,
+        css_viewport_width: context.css_viewport_width,
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let override_size = box_override_for_flex(item.source, axis, main, cross, stretch);
@@ -7116,6 +7165,26 @@ fn render_node_body(
     let resolver = scope.resolver;
 
     match node {
+        LayoutNode::Box {
+            width,
+            min_width,
+            max_width,
+            ..
+        } => {
+            for size in [width, min_width, max_width] {
+                validate_inline_context_size(size, context)?;
+            }
+        }
+        LayoutNode::Flex { width, items, .. } => {
+            validate_inline_context_size(width, context)?;
+            for item in items.iter() {
+                validate_inline_context_size(&item.basis, context)?;
+            }
+        }
+        _ => {}
+    }
+
+    match node {
         LayoutNode::NodeRef { .. } => Err("Native unresolved retained node reference".to_owned()),
         LayoutNode::Box {
             region_id,
@@ -7281,6 +7350,7 @@ fn render_node_body(
                     viewport_width_known: !intrinsic_child
                         && (preliminary_child_width.is_some() || context.viewport_width_known),
                     viewport_height: preliminary_child_height.unwrap_or(context.viewport_height),
+                    css_viewport_width: context.css_viewport_width,
                     inline_auto_width_intrinsic: context.inline_auto_width_intrinsic
                         && matches!(effective_width, Size::Auto),
                 };

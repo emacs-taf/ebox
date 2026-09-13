@@ -58,6 +58,12 @@ compiler accounts for cell chrome and box sizing in each basis without changing
 source ownership. Grid-owner or cell changes rebuild the parent allocation;
 unsupported configurations retain the complete Elisp Grid implementation.
 
+Native layout contexts retain the original frame viewport width separately from
+containing-block and Flex item allocations. Literal `vw` widths and row bases
+remain relative in the IR and resolve for every frame, including retained
+requests. A fractional or out-of-range result rejects the native candidate
+before publication and uses the ordinary layout path.
+
 ## Commit lifecycle
 
 ```text

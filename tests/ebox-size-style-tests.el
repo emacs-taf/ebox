@@ -169,5 +169,72 @@
           (ebox-region-update "root" :width (list 'ch columns))
           (should (= (* columns unit) (ebox-string-pixel-width (buffer-string)))))))))
 
+(ert-deftest ebox-viewport-width-keeps-frame-reference-through-updates ()
+  "Viewport lengths retain their original frame reference at every depth."
+  (let ((ebox-viewport-width 80)
+        (ebox-viewport-height 20)
+        (native-ready (ebox-native-reflow-layout-ready-p)))
+    (dolist (nested '(nil t))
+      (with-temp-buffer
+        (let (projection)
+          (ebox-render-to-buffer
+           (current-buffer)
+           (ebox-build
+            (if nested
+                '(box :id parent :width (px 8) :overflow visible :wrap-mode none
+                      (box :id cell :width (vw 25) "A"))
+              '(box :id cell :width (vw 25) "A")))
+           (list :observer
+                 (lambda (_buffer report)
+                   (when (eq (plist-get report :provider) 'ebox)
+                     (setq projection (plist-get report :projection-kind))))))
+          (when native-ready (should (eq projection 'native-frame))))
+        (should (= (ebox-string-pixel-width (buffer-string)) 20))
+        (when nested
+          (ebox-region-update "parent" :width '(px 4))
+          (should (= (ebox-string-pixel-width (buffer-string)) 20)))
+        (dolist (case '((40 . 10) (81 . 20) (80 . 20)))
+          (ebox-rerender-buffer-with-context (current-buffer) (car case) 20)
+          (should (= (ebox-string-pixel-width (buffer-string)) (cdr case))))
+        (ebox-region-update "cell" :width '(vw 50) :content "B")
+        (should (string-prefix-p "B" (buffer-string)))
+        (should (= (ebox-string-pixel-width (buffer-string)) 40))))))
+
+(ert-deftest ebox-viewport-width-constrains-flex-minima-maxima-and-basis ()
+  "Flex constraints resolve viewport units outside the item allocation."
+  (let ((ebox-viewport-width 80)
+        (ebox-viewport-height 20)
+        projection)
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(flex :id parent :width (px 60) :overflow visible :wrap-mode none
+               (box :width (px 1) :min-width (vw 25) :flex-shrink 0
+                    :background-color "red" "A")
+               (box :width (px 30) :max-width (vw 12.5) :flex-shrink 0
+                    :background-color "blue" "B")
+               (box :width (px 1) :min-width (px 0) :flex-basis (vw 12.5)
+                    :flex-shrink 0 :background-color "green" "C")))
+       (list :observer
+             (lambda (_buffer report)
+               (when (eq (plist-get report :provider) 'ebox)
+                 (setq projection (plist-get report :projection-kind))))))
+      (when (ebox-native-reflow-layout-ready-p)
+        (should (eq projection 'native-frame)))
+      (dolist (viewport '(80 160 40))
+        (ebox-rerender-buffer-with-context (current-buffer) viewport 20)
+        (dolist (paint `(("red" . ,(/ viewport 4))
+                         ("blue" . ,(/ viewport 8))
+                         ("green" . ,(/ viewport 8))))
+          (let ((width 0))
+            (dotimes (index (buffer-size))
+              (let ((position (1+ index)))
+                (when (equal (plist-get (get-text-property position 'face) :background)
+                             (car paint))
+                  (setq width (+ width (ebox-string-pixel-width
+                                        (buffer-substring position (1+ position))))))))
+            (should (= width (cdr paint)))))))))
+
 (provide 'ebox-size-style-tests)
 ;;; ebox-size-style-tests.el ends here

@@ -830,6 +830,16 @@
       "name": "ebox-grid-fixed-row-preserves-tracks-and-paint-through-updates",
       "file": "tests/ebox-grid-tests.el",
       "purpose": "Fixed Grid rows preserve clipping, cell paint and box sizing after padding, track and cell-width changes, including native publication when available and fallback when sizing changes."
+    },
+    {
+      "name": "ebox-viewport-width-keeps-frame-reference-through-updates",
+      "file": "tests/ebox-size-style-tests.el",
+      "purpose": "Root and nested vw widths preserve the frame reference through parent, viewport, fractional-geometry fallback and content updates."
+    },
+    {
+      "name": "ebox-viewport-width-constrains-flex-minima-maxima-and-basis",
+      "file": "tests/ebox-size-style-tests.el",
+      "purpose": "Flex item vw minima, maxima and bases track the frame viewport rather than their containing allocation."
     }
   ]
 }
