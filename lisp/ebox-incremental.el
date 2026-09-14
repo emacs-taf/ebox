@@ -9469,8 +9469,8 @@ complete published ancestor slot chain remains identical."
     (buffer entry candidate-state)
   "Return strict evidence that an auto-width content owner is local.
 The owner may have no declared width when its nearest unchanged formatting
-context has a stable allocated slot.  A column parent is safe when its own
-layout facts and child topology are unchanged; a row parent is accepted only
+context has a content-independent allocated slot.  A column parent also keeps
+its layout facts and child topology unchanged; a row parent is accepted only
 for the final child, so changing that child's intrinsic width cannot shift a
 following sibling.  Multiline content additionally requires a definite,
 unchanged height in a normal Column slot.  The surface footprint validator
@@ -9513,6 +9513,11 @@ remains the final gate."
          (equal (ebox-get old-parent :width) (ebox-get new-parent :width))
          (equal (ebox-get old-parent :height) (ebox-get new-parent :height))
          (memq parent-kind '(row column))
+         ;; Unchanged declarations do not fix an intrinsic parent allocation.
+         ;; A shorter child can shrink the parent's width and change sibling
+         ;; filler outside the child's published spans.
+         (ebox-incremental--content-independent-allocation-p old-state parent-id)
+         (ebox-incremental--content-independent-allocation-p candidate-state parent-id)
          (or (eq parent-kind 'column)
              (and (integerp position)
                   (= position (1- (length old-children)))

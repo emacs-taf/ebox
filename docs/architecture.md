@@ -14,6 +14,11 @@ This document defines the low-level publication contract. It is independent of E
 
 No layer may infer application state from visible buffer text. No public caller may mutate a published tree in place. Every public live-publication route, including `ebox-render-to-buffer`, its `ebox-display-buffer` display wrapper, and commit/update entry points, uses a retained TP surface; the public facade exposes no erase-and-evaluate-body buffer writer.
 
+Local content-slot reuse requires a parent allocation independent of the changed
+content. Equal parent declarations and retained coordinates alone do not establish
+that condition: intrinsic width can shrink or grow and alter sibling alignment
+and filler. Such updates promote to the containing layout before publication.
+
 ECSS-tagged declaration values and custom properties remain in source facts
 until cascade computation. Provisional canonical nodes materialize only concrete
 engine values; tagged dimensions never enter layout directly. Both full rendering

@@ -15,6 +15,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Text updates in content-sized layouts recompute affected sibling geometry.
+  Shrinking content after a retained-node update no longer rejects a valid
+  publication because sibling filler fell outside a local content span.
+
 - Retained nodes keep their editable handles and rendering objects when siblings
   are inserted or reordered. Surface publication now follows Ebox's reconciled
   node identity, including unkeyed nodes and child ranges.

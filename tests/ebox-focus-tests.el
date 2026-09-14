@@ -317,12 +317,21 @@
        (ebox-focus-test--input '((b "BBB" (:tab-index 0)) (a "AAA" (:tab-index 0))) t))
       (should (eq (ebox-focused-host-ref) 'a))
       (should (looking-at "AAA"))
-      (ebox-region-update handle :content "AXA")
-      (should (looking-at "AXA"))
+      (ebox-region-update handle :content "Updated A")
+      (should (looking-at "Updated A"))
       (should (string-match-p "BBB" (buffer-string))))
     (ebox-commit
      (current-buffer)
      (ebox-focus-test--input '((b "BBB" (:tab-index 0)) (c "CCC" (:tab-index 0))) t))
+    (let* ((actual (buffer-string))
+           (expected (ebox-render
+                      (ebox-focus-test--input
+                       '((b "BBB" (:tab-index 0)) (c "CCC" (:tab-index 0))) t))))
+      (should (equal (substring-no-properties actual)
+                     (substring-no-properties expected)))
+      (dotimes (index (length actual))
+        (should (equal (get-text-property index 'display actual)
+                       (get-text-property index 'display expected)))))
     (should-not (ebox-focused-host-ref))
     (should (eq (ebox-focus-first) 'b))))
 
