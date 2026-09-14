@@ -31,7 +31,7 @@
                (:constructor ebox-source--make-index)
                (:conc-name ebox-source--index-))
   "Immutable candidate-local mapping from source handles to records."
-  records handle-records order subjects node-subjects entries root-subject
+  records handle-records order subjects node-subjects entries root-subject selector-view selector-topology
   selector-id-table selector-class-table selector-type-table host-ref-table
   derived-stale-p)
 
@@ -509,6 +509,8 @@ facts on the canonical node."
                     (ebox-source--table-size node-subjects))
                    :entries (ebox-source--index-entries index)
                    :root-subject (ebox-source--index-root-subject index)
+                   :selector-topology (ebox-source--index-selector-topology index)
+                   :selector-view (ebox-source--index-selector-view index)
                    :selector-id-table
                    (ebox-source--index-selector-id-table index)
                    :selector-class-table
@@ -554,7 +556,7 @@ facts on the canonical node."
   (ebox-source--handle-identity handle))
 
 (cl-defun ebox-source--with-derived
-    (index &key subjects node-subjects entries root-subject
+    (index &key subjects node-subjects entries root-subject selector-view selector-topology
            selector-id-table selector-class-table selector-type-table
            host-ref-table derived-stale-p)
   "Return INDEX completed with immutable tree-derived query facts."
@@ -567,6 +569,8 @@ facts on the canonical node."
    :subjects (ebox-source--table-seal subjects #'equal)
    :node-subjects (ebox-source--table-seal node-subjects #'eq)
    :entries entries :root-subject root-subject
+   :selector-view (and selector-view (ebox-source--table-seal selector-view #'eq))
+   :selector-topology selector-topology
    :selector-id-table selector-id-table
    :selector-class-table selector-class-table
    :selector-type-table selector-type-table
@@ -589,6 +593,8 @@ facts on the canonical node."
                  :handles (copy-sequence handles)
                  :local-handles local-handles :depth 0)
               (copy-sequence handles))
+     :selector-topology (ebox-source--index-selector-topology index)
+     :selector-view (ebox-source--index-selector-view index)
      :subjects (ebox-source--index-subjects index)
      :node-subjects (ebox-source--index-node-subjects index)
      :entries (ebox-source--index-entries index)
@@ -607,6 +613,8 @@ facts on the canonical node."
    :records (ebox-source--index-records index)
    :handle-records (ebox-source--index-handle-records index)
    :order (ebox-source--index-order index)
+   :selector-topology (ebox-source--index-selector-topology index)
+   :selector-view (ebox-source--index-selector-view index)
    :subjects (ebox-source--index-subjects index)
    :node-subjects (ebox-source--index-node-subjects index)
    :entries (ebox-source--index-entries index)

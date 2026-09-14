@@ -120,5 +120,89 @@
                        (ebox-build '(text :disabled t :states checked "Valid"))
                        "text:disabled:checked")))))
 
+(ert-deftest ebox-selector-candidates-preserve-relations-and-rollback ()
+  "Repeated subtree changes keep ancestry, siblings and old snapshots coherent."
+  (let ((rules '(("&" :color "#111111")
+                 ("&:has(.ready)" :color "#222222")
+                 ("#flag.ready + #sibling" :color "#333333")
+                 ("#flag > text:nth-child(2)" :color "#444444"))))
+    (cl-labels
+        ((branch (ready extra)
+           `(column :id flag :key flag :class ,(if ready 'ready 'idle)
+                    (text :id first :key first "First")
+                    ,@(when extra '((text :id second :key second "Second")))))
+         (input (ready extra)
+           (ebox-build `(column :width (ch 30) :ecss ,rules
+                                ,(branch ready extra)
+                                (text :id sibling :key sibling "Sibling"))))
+         (shape (text)
+           (list (substring-no-properties text)
+                 (cl-loop for position below (length text)
+                          collect (list (get-text-property position 'display text)
+                                        (get-text-property position 'face text))))))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (input nil nil))
+        (let* ((id (plist-get (car (ebox-selector-query-buffer
+                                   (current-buffer) "#flag")) :node-id))
+               (snapshot (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))
+               (initial (shape (ebox-render snapshot))))
+          ;; Resolve once: later commits must work without intervening queries.
+          (dotimes (index 12)
+            (let* ((ready (= (% index 2) 0))
+                   (extra (= (% index 3) 0))
+                   (candidate (ebox-candidate-begin (current-buffer)))
+                   (before (shape (buffer-string))))
+              (ebox-candidate-replace candidate id (ebox-build (branch ready extra)))
+              (when (= index 4)
+                (should-error
+                 (ebox-commit (current-buffer) candidate
+                              (lambda (_report) (error "Reject candidate"))))
+                (should (equal before (shape (buffer-string))))
+                (setq candidate (ebox-candidate-begin (current-buffer)))
+                (ebox-candidate-replace candidate id (ebox-build (branch ready extra))))
+              (ebox-commit (current-buffer) candidate)
+              (should (equal (shape (buffer-string))
+                             (shape (ebox-render (input ready extra)))))
+              (should (equal initial (shape (ebox-render snapshot))))))
+          (should (= 1 (length (ebox-selector-query-buffer
+                               (current-buffer) "#flag.idle + #sibling"))))
+          (should-not (ebox-selector-query-buffer (current-buffer) "#second")))))))
+
+(ert-deftest ebox-scoped-candidates-combine-content-and-selector-paint ()
+  "A paint-only class change and adjacent text publish one coherent result."
+  (cl-labels
+      ((nodes (active)
+         (list `(box :id content :class value ,(if active "After!" "Before"))
+               `(box :id control :class ,(if active '(control active) '(control inactive))
+                     "Control")))
+       (input (active)
+         (ebox-build
+          `(column :width (ch 40)
+                   :ecss ((".value" :width (ch 8))
+                          (".control" :width (ch 10))
+                          (".control.inactive" :color "#777777")
+                          (".control.active" :color "#2255aa"))
+                   (row :width (ch 40) ,@(nodes active))
+                   (text "Untouched"))))
+       (visible (text)
+         (list (substring-no-properties text)
+               (cl-loop for position below (length text)
+                        collect (list (get-text-property position 'display text)
+                                      (get-text-property position 'face text))))))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (input nil))
+      (let ((ids (mapcar (lambda (selector)
+                          (plist-get (car (ebox-selector-query-buffer
+                                           (current-buffer) selector)) :node-id))
+                        '("#content" "#control"))))
+        (dolist (active '(t nil t nil))
+          (let ((candidate (ebox-candidate-begin (current-buffer))))
+            (cl-mapc (lambda (id node)
+                       (ebox-candidate-replace candidate id (ebox-build node)))
+                     ids (nodes active))
+            (ebox-commit (current-buffer) candidate))
+          (should (equal (visible (buffer-string))
+                         (visible (ebox-render (input active))))))))))
+
 (provide 'ebox-selector-tests)
 ;;; ebox-selector-tests.el ends here

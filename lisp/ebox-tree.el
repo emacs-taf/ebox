@@ -12,6 +12,7 @@
 (require 'subr-x)
 (require 'ecss)
 (require 'ebox-source)
+(require 'ebox-selector-view)
 (require 'ebox-style)
 (require 'ebox-node-factory)
 (require 'ebox-child-range)
@@ -1056,9 +1057,10 @@ candidate runtime index agree."
     ('grid (ebox-tree-layout-children node))
     (_ (ebox-tree-children node))))
 
-(defun ebox-tree--subject-from-record (node record)
+(defun ebox-tree--subject-from-record (node record &optional token)
   "Return one ECSS selector subject for NODE and source RECORD."
-  (ecss-subject-create
+  (ebox-selector-subject-create
+   :token (or token (make-symbol "ebox-selector-node"))
    :type (ebox-tree-metadata-string (ebox-tree-node-selector-type node))
    :id (ebox-source-record-id record)
    :classes (ebox-source-record-classes record)
@@ -1120,7 +1122,8 @@ index transported with the canonical input; records are never recovered from
 opaque handles on that path."
   (when (ebox-child-range--descriptor-p root)
     (error "Ebox child Range descriptor cannot be the root"))
-  (let ((subjects (make-hash-table :test #'equal))
+  (let ((view (make-hash-table :test #'eq))
+        (subjects (make-hash-table :test #'equal))
         (node-subjects (make-hash-table :test #'eq))
         (id-table (make-hash-table :test #'equal))
         (class-table (make-hash-table :test #'equal))
@@ -1253,6 +1256,7 @@ opaque handles on that path."
                    (validate-participation node record parent-kind)
                    (when (gethash identity subjects)
                      (error "Ebox source identity is not unique: %S" identity))
+                   (puthash (ebox-selector-subject-token subject) subject view)
                    (puthash identity subject subjects)
                    (puthash handle subject node-subjects)
                    (push (list :node node :path current-path :subject subject
@@ -1264,8 +1268,12 @@ opaque handles on that path."
                      (prepend class-table class entry))
                    (when-let* ((type (ebox-tree-node-selector-type node)))
                      (prepend type-table type entry))
-                   (ecss-subject-set-children
-                    subject (visit-children node current-path parent-kind))
+                   (let ((children (visit-children node current-path parent-kind)))
+                     (setf (ebox-selector-subject-children subject)
+                           (mapcar #'ebox-selector-subject-token children))
+                     (dolist (child children)
+                       (setf (ebox-selector-subject-parent child)
+                             (ebox-selector-subject-token subject))))
                    (remhash node active)
                    (list subject)))))))
       (let* ((root-subjects (visit root nil root-parent-kind))
@@ -1284,7 +1292,8 @@ opaque handles on that path."
         (ebox-source--with-derived
          (or base-source-index
              (ebox-source-builder-finish (ebox-source-builder-create)))
-         :subjects subjects :node-subjects node-subjects
+         :subjects subjects :node-subjects node-subjects :selector-view view
+         :selector-topology (make-symbol "ebox-selector-topology")
          :entries (nreverse entries)
          :root-subject root-subject
          :selector-id-table id-table
@@ -1345,94 +1354,130 @@ opaque handles on that path."
   "Return a candidate source index from OLD-INDEX and local tree changes.
 TOUCHED entries are `(OLD NEW PARENT-ID CHILDREN-CHANGED)'.  REMOVED contains
 retired nodes.  NODE-TABLE and PARENT-TABLE describe the final candidate.
-Records update in O(changed); selector/document-order views remain explicitly
-stale until a query or full projection materializes them."
-      (let* ((structural-p
-              (or removed
-                  (cl-some (lambda (entry)
-                             (or (null (car entry)) (nth 3 entry)))
-                           touched)))
-             (final-order
-              (and structural-p (ebox-tree-source-handle-order root)))
-             (index
-              (ebox-tree-source-fact-index-delta
-               old-index touched removed ebox-tree--incoming-source-indexes
-               final-order))
-             (base-subjects
-              (or (ebox-source--index-subjects old-index)
-                  (ebox-source--flat-table
-                   (make-hash-table :test #'equal) #'equal)))
-             (base-node-subjects
-              (or (ebox-source--index-node-subjects old-index)
-                  (ebox-source--flat-table
-                   (make-hash-table :test #'eq) #'eq)))
-             (removed-identities (make-hash-table :test #'equal))
-             (removed-handles (make-hash-table :test #'eq))
-             (added-subjects (make-hash-table :test #'equal))
-             (added-node-subjects (make-hash-table :test #'eq)))
-        (cl-labels
-            ((remove-node
-              (node)
-              (when-let* ((handle (ebox-tree-node-source-handle node)))
-                (puthash handle t removed-handles)
-                (puthash (ebox-source--handle-id-view handle) t
-                         removed-identities)))
-             (node-subject
-              (handle)
-              (or (gethash handle added-node-subjects)
-                  (and (not (gethash handle removed-handles))
-                       (ebox-source--table-value
-                        base-node-subjects handle)))))
-          (dolist (node removed) (remove-node node))
-          (dolist (entry touched)
-            (when-let* ((old (car entry))) (remove-node old)))
+Records and selector relationships update through persistent deltas.
+Query entries and document-order lookup views remain stale until queried."
+  (let* ((structural-p
+          (or removed
+              (cl-some (lambda (entry)
+                         (or (null (car entry)) (nth 3 entry)))
+                       touched)))
+         (final-order
+          (and structural-p (ebox-tree-source-handle-order root)))
+         (index
+          (ebox-tree-source-fact-index-delta
+           old-index touched removed ebox-tree--incoming-source-indexes
+           final-order))
+         (base-view (ebox-source--index-selector-view old-index))
+         (removed-tokens (make-hash-table :test #'eq))
+         (added-view (make-hash-table :test #'eq))
+         (base-subjects
+          (or (ebox-source--index-subjects old-index)
+              (ebox-source--flat-table
+               (make-hash-table :test #'equal) #'equal)))
+         (base-node-subjects
+          (or (ebox-source--index-node-subjects old-index)
+              (ebox-source--flat-table
+               (make-hash-table :test #'eq) #'eq)))
+         (removed-identities (make-hash-table :test #'equal))
+         (removed-handles (make-hash-table :test #'eq))
+         (added-subjects (make-hash-table :test #'equal))
+         (added-node-subjects (make-hash-table :test #'eq)))
+    (if (null base-view)
+        ;; Fact-only generations cannot seed a coherent relationship delta.
+        (ebox-tree-source-index root t nil index)
+      (cl-labels
+          ((remove-node
+             (node)
+             (when-let* ((handle (ebox-tree-node-source-handle node)))
+               (when-let* ((subject (ebox-source--index-node-subject old-index node)))
+                 (puthash (ebox-selector-subject-token subject) t removed-tokens))
+               (puthash handle t removed-handles)
+               (puthash (ebox-source--handle-id-view handle) t
+                        removed-identities)))
+           (node-subject
+             (handle)
+             (or (gethash handle added-node-subjects)
+                 (and (not (gethash handle removed-handles))
+                      (ebox-source--table-value
+                       base-node-subjects handle)))))
+        (dolist (node removed) (remove-node node))
+        (dolist (entry touched)
+          (when-let* ((old (car entry))) (remove-node old)))
         ;; TOUCHED is preorder, so a copied parent subject is installed before
         ;; its child and local inheritance can bind without a tree scan.
+        (dolist (entry touched)
+          (let* ((node (nth 1 entry))
+                 (handle (ebox-tree-node-source-handle node)))
+            (when handle
+              (let* ((record (or (ebox-source--index-record index handle)
+                                 (error "Ebox candidate source is absent")))
+                     (old-subject (and (car entry)
+                                       (ebox-source--index-node-subject old-index (car entry))))
+                     (subject (ebox-tree--subject-from-record
+                               node record (and old-subject (ebox-selector-subject-token old-subject))))
+                     (parent-id (nth 2 entry))
+                     parent-subject)
+                (while (and parent-id (null parent-subject))
+                  (when-let* ((parent (ebox-runtime-index-get parent-id node-table)))
+                    (when-let* ((parent-handle
+                                 (ebox-tree-node-source-handle parent)))
+                      (setq parent-subject (node-subject parent-handle))))
+                  (unless parent-subject
+                    (setq parent-id (ebox-runtime-index-get parent-id parent-table))))
+                (setf (ebox-selector-subject-parent subject)
+                      (and parent-subject (ebox-selector-subject-token parent-subject)))
+                (puthash (ebox-selector-subject-token subject) subject added-view)
+                (puthash (ebox-source--handle-id-view handle)
+                         subject added-subjects)
+                (puthash handle subject added-node-subjects)))))
+        (cl-labels ((semantic-children (node)
+                      (let (result)
+                        (ebox-tree-for-each-direct-child
+                         node
+                         (lambda (child)
+                           (if-let* ((handle (ebox-tree-node-source-handle child))
+                                     (subject (node-subject handle)))
+                               (push (ebox-selector-subject-token subject) result)
+                             (setq result (nconc (reverse (semantic-children child)) result)))))
+                        (nreverse result))))
           (dolist (entry touched)
             (let* ((node (nth 1 entry))
-                   (handle (ebox-tree-node-source-handle node)))
-              (when handle
-                (let* ((record (or (ebox-source--index-record index handle)
-                                   (error "Ebox candidate source is absent")))
-                       (subject (ebox-tree--subject-from-record node record))
-                       (parent-id (nth 2 entry))
-                       parent-subject)
-                  (while (and parent-id (null parent-subject))
-                    (when-let* ((parent (ebox-runtime-index-get parent-id node-table)))
-                      (when-let* ((parent-handle
-                                  (ebox-tree-node-source-handle parent)))
-                        (setq parent-subject (node-subject parent-handle))))
-                    (unless parent-subject
-                      (setq parent-id (ebox-runtime-index-get parent-id parent-table))))
-                  (setf (ecss-subject-parent subject) parent-subject)
-                  (puthash (ebox-source--handle-id-view handle)
-                           subject added-subjects)
-                  (puthash handle subject added-node-subjects)))))
-          (let* ((subjects
-                  (ebox-source--table-overlay
-                   base-subjects added-subjects removed-identities
-                   (+ (- (ebox-source--table-size base-subjects)
-                         (hash-table-count removed-identities))
-                      (hash-table-count added-subjects))))
-                 (node-subjects
-                  (ebox-source--table-overlay
-                   base-node-subjects added-node-subjects removed-handles
-                   (+ (- (ebox-source--table-size base-node-subjects)
-                         (hash-table-count removed-handles))
-                      (hash-table-count added-node-subjects)))))
-            (ebox-source--with-derived
-             index
-             :subjects subjects :node-subjects node-subjects
-             :entries (ebox-source--index-entries old-index)
-             :root-subject
-             (when-let* ((root-handle (ebox-tree-node-source-handle root)))
-               (ebox-source--table-value node-subjects root-handle))
-             :selector-id-table (ebox-source--index-selector-id-table old-index)
-             :selector-class-table
-             (ebox-source--index-selector-class-table old-index)
-             :selector-type-table
-             (ebox-source--index-selector-type-table old-index)
-             :derived-stale-p t)))))
+                   (subject (node-subject (ebox-tree-node-source-handle node))))
+              (when subject
+                (setf (ebox-selector-subject-children subject) (semantic-children node))))))
+        (let* ((view (ebox-source--table-overlay
+                      base-view added-view removed-tokens
+                      (+ (- (ebox-source--table-size base-view) (hash-table-count removed-tokens))
+                         (hash-table-count added-view))))
+               (subjects
+                (ebox-source--table-overlay
+                 base-subjects added-subjects removed-identities
+                 (+ (- (ebox-source--table-size base-subjects)
+                       (hash-table-count removed-identities))
+                    (hash-table-count added-subjects))))
+               (node-subjects
+                (ebox-source--table-overlay
+                 base-node-subjects added-node-subjects removed-handles
+                 (+ (- (ebox-source--table-size base-node-subjects)
+                       (hash-table-count removed-handles))
+                    (hash-table-count added-node-subjects)))))
+          (ebox-source--with-derived
+           index
+           :subjects subjects :node-subjects node-subjects :selector-view view
+           :selector-topology
+           (if (ebox-selector-view-topology-stable-p base-view added-view removed-tokens)
+               (ebox-source--index-selector-topology old-index)
+             (make-symbol "ebox-selector-topology"))
+           :entries (ebox-source--index-entries old-index)
+           :root-subject
+           (when-let* ((root-handle (ebox-tree-node-source-handle root)))
+             (ebox-source--table-value node-subjects root-handle))
+           :selector-id-table (ebox-source--index-selector-id-table old-index)
+           :selector-class-table
+           (ebox-source--index-selector-class-table old-index)
+           :selector-type-table
+           (ebox-source--index-selector-type-table old-index)
+           :derived-stale-p t))))))
 
 (defun ebox-tree-selector-index (root)
   "Return derived selector views over ROOT's unique source index."
@@ -1444,6 +1489,18 @@ stale until a query or full projection materializes them."
           (ebox-source--index-selector-table index 'class)
           :selector-type-table
           (ebox-source--index-selector-table index 'type))))
+
+(defun ebox-tree-selector-match-p (source-index selector subject)
+  "Match SELECTOR against SUBJECT using SOURCE-INDEX's immutable view."
+  (let ((ebox-selector-view--current (ebox-source--index-selector-view source-index)))
+    (ecss-selector-match-p selector subject ebox-selector-view-adapter)))
+
+(defun ebox-tree-style-source-index (root source-index &optional parent-kind)
+  "Return SOURCE-INDEX when its selector relationships are already coherent.
+Lazy query entries may remain stale; they do not invalidate the style view."
+  (if (and source-index (ebox-source--index-selector-view source-index))
+      source-index
+    (ebox-tree-source-index root t parent-kind source-index)))
 
 (defun ebox-tree-subject-index (root &optional source-index)
   "Return ECSS subject views over ROOT's SOURCE-INDEX.

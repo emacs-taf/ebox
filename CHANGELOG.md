@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Repeated candidate subtree updates evaluate structural selectors against the
+  complete candidate context. Added children, affected siblings and rejected
+  publications retain the same styles as a fresh render. Local publications
+  preserve scope evidence for subsequent updates instead of discarding it.
+
 - Local content updates under scoped styles preserve eligible local publication.
   Candidate scope checks include mounted rules and membership, and unchanged
   keymap snapshots no longer force complete rendering. Changed bindings still

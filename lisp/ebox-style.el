@@ -11,6 +11,7 @@
 (require 'ecss)
 (require 'tp)
 (require 'ebox-source)
+(require 'ebox-selector-view)
 (require 'ebox-layout-config)
 (require 'ebox-size)
 
@@ -1444,8 +1445,7 @@ snapshot.  Neither SCOPE nor previously constructed inputs are modified."
 (defun ebox-style-source-scopes (source-index &optional root)
   "Mount SOURCE-INDEX local styles on its canonical selector subjects."
   (when (and source-index (or (ebox-source--index-subjects source-index) root))
-    (when (and root (or (null (ebox-source--index-subjects source-index))
-                        (ebox-source--index-derived-stale-p source-index)))
+    (when (and root (null (ebox-source--index-selector-view source-index)))
       (setq source-index
             (ebox-tree-source-index root t nil source-index)))
     (let* ((missing (make-symbol "missing"))
@@ -1876,7 +1876,7 @@ ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
              (ecss-compute-style
               ebox-style-schemas subject :declarations declarations
               :stylesheet ebox-style-stylesheet :parent-style parent-style
-              :scopes ebox-style--scopes
+              :scopes ebox-style--scopes :adapter ebox-selector-view-adapter
               :value-resolver #'tp-resolve-value)))
         (when key
           (when (>= (hash-table-count ebox-style--closed-computed-cache)

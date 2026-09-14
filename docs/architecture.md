@@ -28,9 +28,28 @@ exports preserve target facts; scope caches are keyed by candidate source index.
 Author ownership is therefore independent of physical parentage and live buffer
 coordinates. ECSS continues to own structural matching and inheritance.
 
-Cascade reuse compares mounting source identity, rules, and target membership.
-Metadata-only publication can retain lazy selector views; tree queries rebuild
-stale views from current source facts before matching.
+Selector subjects store immutable local metadata and stable parent/child keys.
+Each source generation resolves those keys through its own persistent index and
+ECSS subject adapter. Candidate path copying updates affected subjects without
+repairing backreferences in unchanged children or mutating the published tree.
+Query entries and lookup tables may remain lazy; style evaluation already has
+coherent candidate relationships and does not rebuild them merely for a query cache.
+
+Cascade reuse compares mounting source identity, rules, target membership and
+inherited values. Local scoped selectors additionally require unchanged subject
+metadata and parent/child topology. ECSS classifies the selector dependencies;
+Ebox proves the host relationships and scope facts. Structural selectors retain
+full invalidation. This reduces repeated style work during ordinary projection;
+it does not make every native-property or mixed update a local projection.
+
+Local style preparation reads the candidate's mounted scopes and compares them
+with the published context before reusing styles. Tree-dependent matching defers
+to complete projection. A pending author-style transition selects that boundary
+before local geometry probes can render a detached subtree. Every successful
+local projection retains the complete stylesheet signature for the next update;
+the scope of computation does not reduce the published context. Retaining a style
+binding also checks selector facts on paint owners: a change classified as paint
+can still change the class or interaction state that selected its rules.
 
 Local owner proofs resolve scope signatures from the candidate source index,
 including immutable rule revisions and membership, rather than ambient render

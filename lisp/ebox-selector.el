@@ -138,8 +138,8 @@
                   node "ebox-selector-match-node-p"))
                 (source-index
                  (ebox-tree-source-index root nil nil source-index)))
-    (ecss-selector-match-p
-     selector (ebox-tree-node-subject source-index root))))
+    (ebox-tree-selector-match-p
+     source-index selector (ebox-tree-node-subject source-index root))))
 
 (defun ebox-selector--match-handle (node path selector)
   "Return a selector match handle for NODE on PATH."
@@ -155,7 +155,7 @@
     (setq source-index (ebox-tree-source-index root t nil source-index)))
   (cl-remove-if-not
    (lambda (entry)
-     (ecss-selector-match-p ast (plist-get entry :subject)))
+     (ebox-tree-selector-match-p source-index ast (plist-get entry :subject)))
    (plist-get (ebox-tree-subject-index root source-index) :entries)))
 
 (defun ebox-selector--subject-entry-handle (entry selector)
@@ -271,7 +271,7 @@
          (if (ebox-selector--relational-p ast)
              (ebox-tree-subject-for-path source-index (cdr entry))
            (ebox-tree-node-subject source-index (car entry)))))
-    (ecss-selector-match-p ast subject)))
+    (ebox-tree-selector-match-p source-index ast subject)))
 
 (defun ebox-selector--entries-to-buffer-handles (entries selector buffer)
   "Return selector match handles for ENTRIES annotated with BUFFER."

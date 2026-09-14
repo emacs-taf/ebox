@@ -845,6 +845,16 @@
       "name": "ebox-scoped-content-updates-retain-native-interaction",
       "file": "tests/ebox-shared-scope-tests.el",
       "purpose": "Local content retains scoped paint and native callbacks; replacement and failed keymap updates preserve accepted behavior."
+    },
+    {
+      "name": "ebox-selector-candidates-preserve-relations-and-rollback",
+      "file": "tests/ebox-selector-tests.el",
+      "purpose": "Repeated subtree changes preserve structural styles, rollback and exported snapshots."
+    },
+    {
+      "name": "ebox-scoped-candidates-combine-content-and-selector-paint",
+      "file": "tests/ebox-selector-tests.el",
+      "purpose": "Publish adjacent text and class-dependent paint changes with fresh-render equivalence."
     }
   ]
 }

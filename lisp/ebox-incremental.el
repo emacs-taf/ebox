@@ -10733,11 +10733,17 @@ role, and outside-complement compatibility before publication."
                                        'structure))
                               (plist-get entry :range-delta)))
                         (plist-get prepared :dirty-set))))))
+         (unprepared-style-p
+          (/= (ebox-tree-author-style-count (plist-get old-state :root-node))
+              (ebox-tree-author-style-count (plist-get candidate-state :root-node))))
+         ;; Resolve the mandatory cascade boundary before any local layout probe.
+         ;; Such probes cannot render detached nodes with pending author styles.
          (layer-owner-plan
-          (ebox-incremental--layer-owner-plan
-           buffer old-state candidate-state (plist-get prepared :dirty-set)))
+          (and (not unprepared-style-p)
+               (ebox-incremental--layer-owner-plan
+                buffer old-state candidate-state (plist-get prepared :dirty-set))))
          (formatting-proof
-          (and (not layer-owner-plan) (not native-program-p)
+          (and (not unprepared-style-p) (not layer-owner-plan) (not native-program-p)
                (not (cl-some
                      (lambda (entry)
                        (eq (plist-get entry :dirty-kind) 'paint))
@@ -10745,7 +10751,7 @@ role, and outside-complement compatibility before publication."
                (ebox-incremental--formatting-context-reflow-proof
                 buffer old-state candidate-state prepared)))
          (mixed-shape-p
-          (and (not layer-owner-plan) (not native-program-p)
+          (and (not unprepared-style-p) (not layer-owner-plan) (not native-program-p)
                (or (not structural-dirty-p) range-structural-p)
                (cl-some
                 (lambda (entry)
@@ -10782,13 +10788,10 @@ role, and outside-complement compatibility before publication."
                         (plist-get mixed-proof :paint-owner-ids)))))
          (owner-plan
           (cond
-           (layer-owner-plan layer-owner-plan)
-           ((/= (ebox-tree-author-style-count
-                 (plist-get old-state :root-node))
-                (ebox-tree-author-style-count
-                 (plist-get candidate-state :root-node)))
+           (unprepared-style-p
             (ebox-incremental--root-owner-plan
              buffer (plist-get prepared :dirty-set)))
+           (layer-owner-plan layer-owner-plan)
            (native-program-p
             (ebox-incremental--native-frame-plan
              buffer (plist-get prepared :dirty-set)))

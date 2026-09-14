@@ -8,6 +8,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(defvar ebox-selector-view--current)
 (require 'tp)
 (require 'tp)
 
@@ -273,6 +274,7 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
 	(let ((projected (ebox-source--with-focus source handle)))
           (when handle
             (let* ((subjects (ebox-tree-source-index root t nil projected))
+                   (ebox-selector-view--current (ebox-source--index-selector-view subjects))
                    (ebox-style--scopes (ebox-style-source-scopes subjects))
                    (current owner) chain parent-style hidden)
               (while current

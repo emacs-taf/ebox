@@ -607,32 +607,42 @@ owned; no per-fragment substring is allocated."
   "Return SUBJECT's complete selector subtree without retaining parent cycles."
   (cl-labels
       ((subtree (node)
-         (list (ecss-subject-type node) (ecss-subject-id node)
-               (ecss-subject-classes node)
-               (ecss-subject-attributes node)
-               (ecss-subject-states node)
-               (mapcar #'subtree (ecss-subject-children node)))))
+         (list (ebox-selector-subject-type node) (ebox-selector-subject-id node)
+               (ebox-selector-subject-classes node)
+               (ebox-selector-subject-attributes node)
+               (ebox-selector-subject-states node)
+               (mapcar #'subtree (ebox-selector-view-children node)))))
     (subtree subject)))
 
 (defun ebox-surface--subject-local-equal-p (left right)
   "Return non-nil when LEFT and RIGHT expose equal local selector fields."
   (and left right
-       (equal (ecss-subject-type left) (ecss-subject-type right))
-       (equal (ecss-subject-id left) (ecss-subject-id right))
-       (equal (ecss-subject-classes left) (ecss-subject-classes right))
-       (equal (ecss-subject-attributes left)
-              (ecss-subject-attributes right))
-       (equal (ecss-subject-states left) (ecss-subject-states right))))
+       (equal (ebox-selector-subject-type left) (ebox-selector-subject-type right))
+       (equal (ebox-selector-subject-id left) (ebox-selector-subject-id right))
+       (equal (ebox-selector-subject-classes left) (ebox-selector-subject-classes right))
+       (equal (ebox-selector-subject-attributes left)
+              (ebox-selector-subject-attributes right))
+       (equal (ebox-selector-subject-states left) (ebox-selector-subject-states right))))
 
-(defun ebox-surface--stylesheet-subject-local-p (stylesheet-signature)
-  "Return non-nil when STYLESHEET-SIGNATURE has only local selector rules.
-Scoped rules remain tree-dependent because scope distance reads ancestors."
-  (and (null (nth 2 stylesheet-signature))
+(defun ebox-surface--stylesheet-subject-local-p
+    (stylesheet-signature &optional fixed-scope-roots-p)
+  "Classify rules in STYLESHEET-SIGNATURE with FIXED-SCOPE-ROOTS-P.
+Scoped reuse also requires equal topology and scope signatures at each node."
+  (and (or fixed-scope-roots-p (null (nth 2 stylesheet-signature)))
        (cl-every
-   (lambda (rule)
-     (and (null (ecss-rule-scope rule))
-          (ecss-selector-subject-local-p (ecss-rule-selector rule))))
-   (car stylesheet-signature))))
+        (lambda (rule)
+          (and (null (ecss-rule-scope rule))
+               (ecss-selector-subject-local-p (ecss-rule-selector rule))))
+        (car stylesheet-signature))
+       (or (null (nth 2 stylesheet-signature))
+           (cl-every
+            (lambda (scope)
+              (cl-every
+               (lambda (rule)
+                 (and (null (ecss-rule-scope rule))
+                      (ecss-selector-subject-local-p (ecss-rule-selector rule) t)))
+               (ecss-stylesheet-rules (ecss-scope-stylesheet scope))))
+            ebox-style--scopes))))
 
 (defconst ebox-surface--root-key 'ebox/surface
   "Stable TP key for an Ebox surface projection root.")
@@ -1629,17 +1639,16 @@ PREVIOUS-STATE's node-object table."
                (make-hash-table :test 'equal)))
          (stylesheet-signature
           (and style-required-p
-               (if (or retained-span-style-p
-                       (and (memq projection-kind
-                                  '(owner-scoped scroll-patch
-                                    formatting-context-reflow mixed-owner-reflow))
-                            (not range-splice-p)))
-                   nil
+               (unless (or retained-span-style-p
+                           (and (memq projection-kind
+                                      '(owner-scoped scroll-patch
+                                        formatting-context-reflow mixed-owner-reflow))
+                                (not range-splice-p)))
                  (ebox-surface--stylesheet-signature))))
          (stylesheet-subject-local-p
           (and stylesheet-signature
                (ebox-surface--stylesheet-subject-local-p
-                stylesheet-signature)))
+                stylesheet-signature t)))
          (bindings-by-subject (make-hash-table :test 'eq))
          (states-by-subject (make-hash-table :test 'eq))
          (subjects-required-p
@@ -1654,31 +1663,11 @@ PREVIOUS-STATE's node-object table."
                                      mixed-owner-reflow))
                              (not range-splice-p))))))
          (_materialized-source-index
-          (when (and subjects-required-p
-                     (ebox-source--index-derived-stale-p source-index)
-                     (not
-                      (when-let* ((previous-index
-                                   (plist-get previous-state :source-index)))
-                        (and
-                         (ebox-source--index-node-subjects source-index)
-                         (not (ebox-source--index-derived-stale-p previous-index))
-                         (eq (ebox-source--index-subjects source-index)
-                             (ebox-source--index-subjects previous-index))))))
-            ;; A local delta copies touched subjects, while unchanged children
-            ;; can still reference their previous parent subjects.  A full
-            ;; style projection needs coherent ancestry for its eq-keyed
-            ;; bindings.  A declaration-only rebind instead shares an already
-            ;; validated subject tree and merely invalidates query entries;
-            ;; retain that persistent tree.  Never certify a previously stale
-            ;; tree from table identity alone.  Local projections above do not
-            ;; request subjects and retain their O(changed) source-index path.
+          (when subjects-required-p
             (setq source-index
-                  (ebox-tree-source-index
-                   root t ebox--render-root-parent-kind source-index))))
-         ;; Local ECSS scopes and the subject table must be built from the
-         ;; same materialized index.  Subject identity is eq-significant in
-         ;; the cascade, so rebuilding the index after SUBJECTS was created
-         ;; would make every scoped match miss its target.
+                  (ebox-tree-style-source-index root source-index ebox--render-root-parent-kind))))
+         (ebox-selector-view--current (ebox-source--index-selector-view source-index))
+         (ebox-selector-view--topology (ebox-source--index-selector-topology source-index))
          (subjects (when subjects-required-p
                      (ebox-tree-subject-index root source-index)))
          (ebox-style--scopes
@@ -1745,7 +1734,10 @@ PREVIOUS-STATE's node-object table."
           :source-index source-index
           :objects-by-node objects-by-node
           :style-binding-states style-state-table
-          :stylesheet-signature stylesheet-signature
+          ;; Local computation can omit style bindings, but publication must
+          ;; retain the complete context for subsequent candidate validation.
+          :stylesheet-signature (or stylesheet-signature
+                                    (ebox-surface--stylesheet-signature))
           :selector-tree-snapshot selector-tree-snapshot
           :selector-tree-token selector-tree-token
           :previous-layer-composition-cache
@@ -1862,14 +1854,12 @@ CONTEXT, so full fallback must populate those same objects instead of creating
 the projection roots a second time. NODE-OBJECTS, when non-nil, reuses a
 complete object map for style recomputation without allocating positional
 children again."
-  (when (and style-required-p
-             (ebox-source--index-derived-stale-p source-index))
-    ;; Local subject deltas can retain a child's old parent object.  The full
-    ;; style walk requires one coherent ancestry for its eq-keyed bindings.
+  (when style-required-p
     (setq source-index
-          (ebox-tree-source-index
-           root t ebox--render-root-parent-kind source-index)))
-  (let* ((node-root (plist-get projection :node-root))
+          (ebox-tree-style-source-index root source-index ebox--render-root-parent-kind)))
+  (let* ((ebox-selector-view--current (ebox-source--index-selector-view source-index))
+         (ebox-selector-view--topology (ebox-source--index-selector-topology source-index))
+         (node-root (plist-get projection :node-root))
          ;; The retained projection may share the published node-id table.
          ;; Full projection visits every node and writes node-keyed entries.
          (objects-by-node (make-hash-table :test 'eq))
@@ -1882,7 +1872,7 @@ children again."
          (stylesheet-subject-local-p
           (and stylesheet-signature
                (ebox-surface--stylesheet-subject-local-p
-                stylesheet-signature)))
+                stylesheet-signature t)))
          (selector-tree-token
           (plist-get projection :selector-tree-token))
          (bindings-by-subject (make-hash-table :test 'eq))
@@ -2621,7 +2611,7 @@ generation.  Node memos follow the source-copy policy in the projector."
             stylesheet-signature selector-tree-token
             stylesheet-subject-local-p &optional scopes)
   "Install and return NODE style binding on OBJECT for SUBJECT."
-  (let* ((parent (ecss-subject-parent subject))
+  (let* ((parent (ebox-selector-view-parent subject))
          (parent-binding (and parent (gethash parent bindings-by-subject)))
          (parent-style-state (and parent (gethash parent states-by-subject)))
          (declarations
@@ -2633,6 +2623,9 @@ generation.  Node memos follow the source-copy policy in the projector."
                (or (eq selector-tree-token
                        (plist-get old-state :selector-tree-token))
                    (and stylesheet-subject-local-p
+                        ebox-selector-view--topology
+                        (eq ebox-selector-view--topology
+                            (plist-get old-state :selector-topology))
                         (ebox-surface--subject-local-equal-p
                          subject (plist-get old-state :subject))))))
          (old-parent-style
@@ -2686,6 +2679,9 @@ generation.  Node memos follow the source-copy policy in the projector."
               (let ((reused-state (copy-sequence old-state)))
                 (plist-put reused-state :selector-tree-token
                            selector-tree-token)
+                (plist-put reused-state :selector-topology
+                           ebox-selector-view--topology)
+                (plist-put reused-state :selector-view ebox-selector-view--current)
                 (plist-put reused-state :subject subject)
                 (plist-put reused-state :node node)
                 (plist-put reused-state :parent-style-state
@@ -2705,6 +2701,8 @@ generation.  Node memos follow the source-copy policy in the projector."
                          :stylesheet-signature stylesheet-signature
                          :subject subject
                          :node node
+                         :selector-view ebox-selector-view--current
+                         :selector-topology ebox-selector-view--topology
                          :scopes scopes)))
               (plist-put
                new-state :compute
@@ -2729,7 +2727,8 @@ generation.  Node memos follow the source-copy policy in the projector."
                                 (ebox-surface--compute-node-style
                                  (plist-get captured :subject)
                                  (plist-get captured :declarations)
-                                 parent-style (plist-get captured :scopes))))
+                                 parent-style (plist-get captured :scopes)
+                                 (plist-get captured :selector-view))))
                          (setq last-parent-style parent-style)
                          last-style))
                    (lambda ()
@@ -2740,7 +2739,8 @@ generation.  Node memos follow the source-copy policy in the projector."
                           (and (plist-get captured :parent-binding)
                                (tp-binding-read
                                 (plist-get captured :parent-binding)))
-                          (plist-get captured :scopes)))))))
+                          (plist-get captured :scopes)
+                          (plist-get captured :selector-view)))))))
               new-state)))
          (precomputed-style
           (and (not reused-p)
@@ -2770,16 +2770,18 @@ generation.  Node memos follow the source-copy policy in the projector."
     binding))
 
 (cl-defun ebox-surface--compute-node-style
-    (subject declarations parent-style &optional (scopes ebox-style--scopes))
+    (subject declarations parent-style &optional (scopes ebox-style--scopes)
+             (view ebox-selector-view--current))
   "Compute one node style, reusing selector-free immutable results."
-  (let ((ebox-style--scopes scopes))
+  (let ((ebox-style--scopes scopes)
+        (ebox-selector-view--current view))
   (if (or scopes (not (hash-table-p ebox-surface--inline-style-value-cache)))
       (ebox-style-compute-subject subject declarations parent-style)
-    (let* ((key (list (ecss-subject-type subject)
-                      (ecss-subject-id subject)
-                      (ecss-subject-classes subject)
-                      (ecss-subject-attributes subject)
-                      (ecss-subject-states subject)
+    (let* ((key (list (ebox-selector-subject-type subject)
+                      (ebox-selector-subject-id subject)
+                      (ebox-selector-subject-classes subject)
+                      (ebox-selector-subject-attributes subject)
+                      (ebox-selector-subject-states subject)
                       declarations
                       (ebox-style--inherited-style-signature parent-style)))
            (missing (make-symbol "ebox-inline-style-cache-missing"))
@@ -2838,18 +2840,26 @@ style and never re-runs selector matching or cascade."
 
 (defun ebox-surface-prepare-inline-candidate-styles
     (old-state candidate-index node-ids)
-  "Prepare selector-free computed styles for candidate NODE-IDS.
+  "Prepare locally matched computed styles for candidate NODE-IDS.
 
 OLD-STATE supplies published immutable computed styles.  CANDIDATE-INDEX owns
 the unpublished node and parent tables.  Unchanged declaration/subject chains
 reuse their exact prior style; changed nodes compute once against the prepared
 candidate parent style.  Stylesheet rules deliberately disable this local
-path because selector scope may extend outside NODE-IDS.  Return the prepared
+path when matching can extend outside NODE-IDS.  Local scoped rules require
+unchanged mounting and membership facts; topology changes disable prior-style
+reuse for visited nodes.  Return the prepared
 source-handle-to-subject table when the requested local preparation completed."
-  (let ((stylesheet-signature (ebox-surface--stylesheet-signature)))
+  (let* ((source-index (plist-get candidate-index :source-index))
+         (ebox-selector-view--current
+          (ebox-source--index-selector-view source-index))
+         (ebox-style--scopes
+          (ebox-style-source-scopes source-index (plist-get candidate-index :root-node)))
+         (stylesheet-signature (ebox-surface--stylesheet-signature)))
     (when (and node-ids
+               (equal stylesheet-signature (plist-get old-state :stylesheet-signature))
                (ebox-surface--stylesheet-subject-local-p
-                stylesheet-signature))
+                stylesheet-signature t))
       (let ((old-nodes (plist-get old-state :node-table))
             (new-nodes (plist-get candidate-index :node-table))
             (parents (plist-get candidate-index :parent-table))
@@ -2875,8 +2885,6 @@ source-handle-to-subject table when the requested local preparation completed."
                          (old-node (ebox-runtime-index-get node-id old-nodes))
                          (parent-id (ebox-runtime-index-get node-id parents))
                          (parent-style (and parent-id (resolve parent-id)))
-                         (parent-subject
-                          (and parent-id (gethash parent-id subjects-by-id)))
                          (old-parent-id
                           (and old-node
                                (ebox-runtime-index-get node-id
@@ -2904,8 +2912,6 @@ source-handle-to-subject table when the requested local preparation completed."
                                    (let ((created
                                           (ebox-tree-node-subject
                                            new-source-index node)))
-                                     (setf (ecss-subject-parent created)
-                                           parent-subject)
                                      (puthash node-id created subjects-by-id)
                                      (puthash
                                       (ebox-tree-node-source-handle node)
@@ -2928,6 +2934,9 @@ source-handle-to-subject table when the requested local preparation completed."
                                  old-source-index old-node))))
                          (source-stable-p
                           (and old-node
+                               (or (null ebox-style--scopes)
+                                   (eq (ebox-source--index-selector-topology new-source-index)
+                                       (ebox-source--index-selector-topology old-source-index)))
                                (equal parent-id old-parent-id)
                                (eq parent-style old-parent-style)
                                (ebox-style-declarations-equal-p
@@ -2995,7 +3004,7 @@ source-handle-to-subject table when the requested local preparation completed."
   (when-let* ((subject
                (ebox-source--subject-table-get
                 subject-table (ebox-tree-node-source-handle node))))
-    (let* ((parent-subject (ecss-subject-parent subject))
+    (let* ((parent-subject (ebox-selector-view-parent subject))
            (parent-state (and parent-subject
                               (gethash parent-subject states-by-subject)))
            (parent-node (and parent-state (plist-get parent-state :node)))
@@ -3008,7 +3017,7 @@ source-handle-to-subject table when the requested local preparation completed."
       (if (and (hash-table-p ebox-surface--inline-style-value-cache)
                (not (ebox-surface--node-style-binding-required-p
                      source-index node)))
-        (when-let* ((parent (ecss-subject-parent subject))
+        (when-let* ((parent (ebox-selector-view-parent subject))
                     (binding (gethash parent bindings-by-subject)))
           (puthash subject binding bindings-by-subject)
           (when-let* ((state (gethash parent states-by-subject)))
@@ -3098,9 +3107,9 @@ dependencies, or any malformed index conservatively preserves root planning."
          dirty-set
          (cl-every
           (lambda (entry)
-            (if (eq (plist-get entry :dirty-kind) 'paint)
-                t
-              (let* ((node-id (plist-get entry :node-id))
+            ;; Paint can change selector state too.  Retaining its bindings
+            ;; needs the same subject/cascade proof as a geometry owner.
+            (let* ((node-id (plist-get entry :node-id))
                      (object (and node-id (gethash node-id objects)))
                      (style-state (and object (gethash object style-states)))
                      (candidate-node (and node-id
@@ -3124,13 +3133,13 @@ dependencies, or any malformed index conservatively preserves root planning."
                       (and candidate-node subject
                        (equal (ebox-tree-node-id
                                candidate-source-index candidate-node)
-                              (ecss-subject-id subject))
+                              (ebox-selector-subject-id subject))
                        (equal (ebox-tree-node-classes
                                candidate-source-index candidate-node)
-                              (ecss-subject-classes subject))
+                              (ebox-selector-subject-classes subject))
                        (equal (ebox-tree-metadata-string
                                (ebox-tree-node-selector-type candidate-node))
-                              (ecss-subject-type subject))
+                              (ebox-selector-subject-type subject))
                        (equal
                         (mapcar
                          (lambda (attribute)
@@ -3138,10 +3147,10 @@ dependencies, or any malformed index conservatively preserves root planning."
                                  (cdr attribute)))
                          (ebox-tree-node-attributes
                           candidate-source-index candidate-node))
-                        (ecss-subject-attributes subject))
+                        (ebox-selector-subject-attributes subject))
                        (equal (ebox-tree-node-state
                                candidate-source-index candidate-node)
-                              (ecss-subject-states subject)))))
+                              (ebox-selector-subject-states subject)))))
                 (and style-state candidate-node subject
                      (or selector-stable-p
                          (and locally-computed-p
@@ -3158,7 +3167,7 @@ dependencies, or any malformed index conservatively preserves root planning."
                           selector-stable-p))
                      (equal stylesheet-signature
                             (plist-get style-state :stylesheet-signature))
-                     (ebox-surface--static-style-state-p style-state)))))
+                     (ebox-surface--static-style-state-p style-state))))
           dirty-set))))
 
 (defun ebox-surface--ensure-node-tree
@@ -7155,11 +7164,14 @@ published runtime and must be consumed without clearing those shared nodes."
                 (cl-remf state-overrides :source-base-index)
                 (setq state-overrides
                       (plist-put state-overrides :source-index source-index))))
-             (ebox-style--scopes
-              (ebox-style-source-scopes
-               (setq source-index
-                     (ebox-tree-source-index
-                      root t ebox--render-root-parent-kind source-index))))
+             (_selector-view-index
+              (progn
+                (setq source-index
+                      (ebox-tree-style-source-index root source-index ebox--render-root-parent-kind))
+                (plist-put state-overrides :source-index source-index)))
+             (ebox-selector-view--current (ebox-source--index-selector-view source-index))
+         (ebox-selector-view--topology (ebox-source--index-selector-topology source-index))
+             (ebox-style--scopes (ebox-style-source-scopes source-index))
              (_local-cascade
               (when ebox-style--scopes
                 (setq stylesheet-active-p t)))

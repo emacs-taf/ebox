@@ -27,7 +27,7 @@
 
 (defconst ebox--compile-sources
   '("ebox-cache.el" "ebox-interaction.el" "ebox-source.el" "ebox-runtime-index.el"
-    "ebox-state-contract.el"
+    "ebox-state-contract.el" "ebox-selector-view.el"
     "ebox-font.el" "ebox-size.el" "ebox-style.el"
     "ebox-layout-config.el"
     "ebox-node-factory.el"
