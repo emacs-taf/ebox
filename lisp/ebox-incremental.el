@@ -7311,12 +7311,13 @@ certificate."
             (or (plist-get candidate-index :source-index)
                 (plist-get local-preparation :source-index)
                 (ebox-tree-source-index candidate-root)))
-           (_focus-source
+           (focus-source-changed-p
             (let ((projected (ebox-interaction--candidate-focus-source
                               buffer old-state candidate-index candidate-source-index candidate-root)))
               (unless (eq projected candidate-source-index)
                 (setq candidate-source-index
-                      (ebox-tree-source-index candidate-root t nil projected)))))
+                      (ebox-tree-source-index candidate-root t nil projected))
+                t)))
            (_source-index
             (progn
               (plist-put candidate-index :source-index
@@ -7333,8 +7334,11 @@ certificate."
            (candidate-region-box-table
             (plist-get candidate-index :region-box-table))
            (source-dirty-set
-            (if local-preparation
+            (if (and local-preparation (not focus-source-changed-p))
                 (plist-get local-preparation :dirty-set)
+              ;; Focus can clear on an externally hidden sibling while the
+              ;; caller updates a different owner.  Include that selector
+              ;; delta before deciding which retained styles are reusable.
               (ebox-incremental--declarative-dirty-set
                old-state candidate-root candidate-index)))
            (style-node-ids

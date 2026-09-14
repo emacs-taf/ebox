@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Local content updates under scoped styles preserve eligible local publication.
+  Candidate scope checks include mounted rules and membership, and unchanged
+  keymap snapshots no longer force complete rendering. Changed bindings still
+  publish through the ordinary transaction path.
+
 - Viewport updates of visible-overflow Flex layouts no longer consult an absent
   measurement cache during uncached geometry probes.
 

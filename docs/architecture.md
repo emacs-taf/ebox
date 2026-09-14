@@ -32,6 +32,12 @@ Cascade reuse compares mounting source identity, rules, and target membership.
 Metadata-only publication can retain lazy selector views; tree queries rebuild
 stale views from current source facts before matching.
 
+Local owner proofs resolve scope signatures from the candidate source index,
+including immutable rule revisions and membership, rather than ambient render
+bindings. Retaining enclosing native keymaps uses TP's property equality policy:
+defensive copies with identical bindings remain equivalent, while changed
+commands, prefix maps or inherited bindings require publication.
+
 Canonical producers and the DSL derive provisional LayoutConfig and outer
 fields through one Ebox-owned declaration projection. It filters deferred values
 and caches concrete configurations without taking ownership of source declarations.

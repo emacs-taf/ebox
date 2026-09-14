@@ -840,6 +840,11 @@
       "name": "ebox-viewport-width-constrains-flex-minima-maxima-and-basis",
       "file": "tests/ebox-size-style-tests.el",
       "purpose": "Flex item vw minima, maxima and bases track the frame viewport rather than their containing allocation."
+    },
+    {
+      "name": "ebox-scoped-content-updates-retain-native-interaction",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Local content retains scoped paint and native callbacks; replacement and failed keymap updates preserve accepted behavior."
     }
   ]
 }

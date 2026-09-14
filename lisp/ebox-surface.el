@@ -3068,20 +3068,29 @@ dependency is a dynamic TP source and prevents a local cascade proof."
 CANDIDATE-STATE supplies the declarative nodes before cascade projection.
 Missing binding state, changed declarations or selector metadata, dynamic TP
 dependencies, or any malformed index conservatively preserves root planning."
-  (let ((objects (plist-get state :surface-node-object-table))
-        (style-states (plist-get state :style-binding-states))
-        (candidate-nodes (plist-get candidate-state :node-table))
-        (candidate-source-index (plist-get candidate-state :source-index))
-        (stylesheet-signature
+  (let* ((objects (plist-get state :surface-node-object-table))
+         (style-states (plist-get state :style-binding-states))
+         (candidate-nodes (plist-get candidate-state :node-table))
+         (candidate-source-index (plist-get candidate-state :source-index))
+         (stylesheet-signature
          (let* ((cache ebox-incremental--allocated-slot-proof-cache)
                 (missing (make-symbol "ebox-stylesheet-proof-missing"))
                 (cached (and cache
                              (gethash 'stylesheet-signature cache missing))))
-           (if (and cached (not (eq cached missing)))
-               cached
-             (let ((signature (ebox-surface--stylesheet-signature)))
+           (if (and cached (not (eq cached missing))
+                    (eq (car cached) candidate-source-index))
+               (cdr cached)
+             (let* ((ebox-style--scopes
+                     ;; Planning runs outside the surface's cascade binding.
+                     ;; Compare the candidate's mounted scopes, not an empty
+                     ;; ambient scope list, with the published style closure.
+                     (ebox-style-source-scopes
+                      candidate-source-index
+                      (plist-get candidate-state :root-node)))
+                    (signature (ebox-surface--stylesheet-signature)))
                (when cache
-                 (puthash 'stylesheet-signature signature cache))
+                 (puthash 'stylesheet-signature
+                          (cons candidate-source-index signature) cache))
                signature)))))
     (and (hash-table-p objects)
          (hash-table-p style-states)
@@ -3136,7 +3145,8 @@ dependencies, or any malformed index conservatively preserves root planning."
                 (and style-state candidate-node subject
                      (or selector-stable-p
                          (and locally-computed-p
-                              (null (car stylesheet-signature))))
+                              (null (car stylesheet-signature))
+                              (null (nth 2 stylesheet-signature))))
                      (or locally-computed-p
                          (and
                           (or (ebox-style-declarations-equal-p
@@ -3778,7 +3788,8 @@ properties.  Its local renderer cannot prove equivalence for such an owner."
 
 (defun ebox-surface--retained-property-value-equal-p (left right)
   "Return non-nil when retaining LEFT instead of RIGHT preserves its value.
-Opaque payloads, including callbacks, keymaps and records, must keep identity.
+Callbacks and records must keep identity.  Native keymap snapshots use TP's
+property policy, which compares bindings while retaining callback identity.
 Render-created paint origins compare their baselines and paint source roles."
   (let ((seen (make-hash-table :test #'eq)))
     (cl-labels
@@ -3791,6 +3802,10 @@ Render-created paint origins compare their baselines and paint source roles."
                        (ebox--paint-origin-baseline new))
                  (same (ebox--paint-origin-source-roles old)
                        (ebox--paint-origin-source-roles new))))
+           ((and (keymapp old) (keymapp new))
+            (funcall (tp-property-policy-equality
+                      (tp-register-text-property 'keymap))
+                     old new))
            ((or (functionp old) (functionp new)
                 (keymapp old) (keymapp new)) nil)
            ((memq new (gethash old seen)) t)

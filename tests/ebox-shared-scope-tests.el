@@ -198,5 +198,46 @@ TRANSFER assigns the slot to CHILD; REVERSE reverses the physical root order."
           (should (equal "#ff0000"
                          (ebox-shared-scope-test-color (buffer-string) "Alpha"))))))))
 
+(ert-deftest ebox-scoped-content-updates-retain-native-interaction ()
+  "Local content keeps scoped paint and copied keymaps; changed bindings publish."
+  (let* ((hits 0)
+         (map (ebox-keymap-create :activate (lambda () (cl-incf hits))))
+         (rules '((".label" :color "#ff0000")))
+         (input (lambda (value keymap)
+                  (ebox-build
+                   `(column :id root :width (ch 40) :ecss ,rules
+                            (box :id button :keymap ,keymap :width (ch 10)
+                                 (text :id label :class label ,value))
+                            (text "Untouched"))))))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (funcall input "Alpha" map))
+      (let ((label (ebox-region-resolve (current-buffer) "label"))
+            (button (ebox-region-resolve (current-buffer) "button")))
+        (dolist (value '("Bravo" "Delta" "Alpha"))
+          (ebox-region-update label :content value)
+          (let ((report (ebox-buffer-update-report (current-buffer)))
+                (fresh (ebox-render (funcall input value map))))
+            (should (memq (plist-get report :projection-kind)
+                          '(span-patch owner-scoped)))
+            (should-not (plist-get report :tp-scope-fallback))
+            (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                           (substring-no-properties fresh)))
+            (should (equal "#ff0000"
+                           (ebox-shared-scope-test-color (buffer-string) value))))
+          (ebox-activate (point-min)))
+        (should (= hits 3))
+        (let ((replacement
+               (ebox-keymap-create :activate (lambda () (cl-incf hits 10)))))
+          (ebox-region-update button :keymap replacement)
+          (ebox-region-update label :content "Bravo")
+          (ebox-activate (point-min))
+          (should (= hits 13))
+          (let ((before (buffer-substring-no-properties (point-min) (point-max))))
+            (should-error (ebox-region-update button :keymap 'invalid-map))
+            (should (equal before
+                           (buffer-substring-no-properties (point-min) (point-max)))))
+          (ebox-activate (point-min))
+          (should (= hits 23)))))))
+
 (provide 'ebox-shared-scope-tests)
 ;;; ebox-shared-scope-tests.el ends here
