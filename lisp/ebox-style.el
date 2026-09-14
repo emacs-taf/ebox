@@ -1435,9 +1435,10 @@ snapshot.  Neither SCOPE nor previously constructed inputs are modified."
                         (ebox-style-scope-stylesheet description)
                         :subjects subjects)))
             (puthash scope
-                     (list (ebox-style-scope-identity description)
-                           (ebox-style-scope-stylesheet description)
-                           (ebox-source--handle-id-view handle) identities)
+                     (list :rules (list (ebox-style-scope-identity description)
+                                        (ebox-style-scope-stylesheet description))
+                           :root (ebox-source--handle-id-view handle)
+                           :targets identities)
                      ebox-style--scope-source-signatures)
             (push scope scopes)))))
     (nreverse scopes)))
@@ -1481,8 +1482,9 @@ snapshot.  Neither SCOPE nor previously constructed inputs are modified."
                               targets))))
                         scopes)
                   (puthash (car scopes)
-                           (list (ebox-source--handle-id-view handle)
-                                 rules (ebox-source-record-ecss-targets record))
+                           (list :rules rules
+                                 :root (ebox-source--handle-id-view handle)
+                                 :targets (ebox-source-record-ecss-targets record))
                            ebox-style--scope-source-signatures)))))
           (setq scopes (nconc (nreverse scopes)
                               (and shared-p

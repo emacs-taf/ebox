@@ -257,5 +257,53 @@ TRANSFER assigns the slot to CHILD; REVERSE reverses the physical root order."
           (ebox-activate (point-min))
           (should (= hits 23)))))))
 
+(ert-deftest ebox-shared-scopes-insertion-keeps-current-inheritance-and-membership ()
+  "Sibling changes preserve paint; later rule and membership changes still apply."
+  (let* ((scope (ebox-style-scope-create
+                 '(("&" :color "#ff0000") ("text" :background-color "#ffff00"))))
+         (revised (ebox-style-scope-with-rules
+                   scope '(("&" :color "#0000ff") ("text" :background-color "#ffff00")))))
+    (cl-labels
+        ((input (notice revision member outside)
+           (let* ((builder (ebox-source-builder-create))
+                  (target (ebox-shared-scope-test-text
+                           builder 'Target (and member (list scope))))
+                  (children
+                   (append (when notice
+                             (list (ebox-shared-scope-test-text builder 'Notice (list scope))))
+                           (unless outside (list target))))
+                  (root (ebox-box-create
+                         :layout (ebox-column-layout-create) :children children
+                         :source-handle
+                         (ebox-source-builder-bind
+                          builder :identity 'root :ecss-scopes (list scope)
+                          :ecss-scope-roots (list revision))
+                         :owned-facts (ebox-canonical-facts-from-declarations 'column nil)))
+                  (app (ebox-shared-scope-test-box
+                        builder 'app (append (list root) (when outside (list target))) nil)))
+             (ebox-canonical-input-create (list app) (ebox-source-builder-finish builder))))
+         (paint-value (text attribute)
+           (let ((face (get-text-property (string-match "Target" text) 'face text)))
+             (if (keywordp (car face)) (plist-get face attribute)
+               (cl-loop for entry in face
+                        when (plist-member entry attribute)
+                        return (plist-get entry attribute))))))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (input nil scope t nil))
+        (dolist (change (list (list t scope t nil) (list t revised t nil)
+                             (list nil revised t nil) (list t revised nil nil)
+                             (list t revised t t) (list nil scope t nil)))
+          (let* ((next (apply #'input change))
+                 (fresh (ebox-render next))
+                 (expected-color (unless (nth 3 change)
+                                   (if (eq (cadr change) scope) "#ff0000" "#0000ff")))
+                 (expected-background (and (nth 2 change) (not (nth 3 change)) "#ffff00")))
+            (ebox-commit (current-buffer) next)
+            (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                           (substring-no-properties fresh)))
+            (dolist (text (list fresh (buffer-string)))
+              (should (equal expected-color (paint-value text :foreground)))
+              (should (equal expected-background (paint-value text :background))))))))))
+
 (provide 'ebox-shared-scope-tests)
 ;;; ebox-shared-scope-tests.el ends here

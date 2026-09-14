@@ -33,6 +33,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Scoped style bindings retain their own rule, membership and ancestry context.
+  Inserting or removing another scope member no longer recomputes unaffected
+  subject-local styles. Rule changes, inheritance and structural selectors keep
+  their existing semantics.
+
 - Resizing an unused viewport axis after a scroll owner shrinks no longer
   unexpectedly republishes the surface. Returning to native layout after an
   ordinary update preserves independently scrolled regions.

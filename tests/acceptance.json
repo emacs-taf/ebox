@@ -937,6 +937,11 @@
       "purpose": "Nested and sibling scrolling containers compose in Column and Flex and retain independent visible content through updates and resize."
     },
     {
+      "name": "ebox-shared-scopes-insertion-keeps-current-inheritance-and-membership",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Sibling insertion preserves scoped paint while later rule, membership and ancestry changes update the visible result."
+    },
+    {
       "name": "ebox-drag-follows-keyed-owner-and-publishes-release",
       "file": "tests/ebox-drag-tests.el",
       "purpose": "Movement and release retain the keyed target across visible reordering."

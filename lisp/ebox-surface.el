@@ -623,6 +623,25 @@ owned; no per-fragment substring is allocated."
               (ebox-selector-subject-attributes right))
        (equal (ebox-selector-subject-states left) (ebox-selector-subject-states right))))
 
+(defun ebox-surface--subject-style-context (node subject stylesheet-signature)
+  "Snapshot NODE's local selector context for SUBJECT.
+Use only after ECSS classifies every selector as subject-local.  Keep the
+complete ancestor identity chain to prove scoped root relationships.  A scope
+can only contribute declarations to its declared targets; changes to other
+members do not alter this subject's ordered rule inputs.  Matching and cascade
+remain ECSS-owned.  Structural selectors never use this context."
+  (let ((identity (ebox-source--handle-id-view (ebox-tree-node-source-handle node)))
+        (ancestor subject) ancestors scopes)
+    (while ancestor
+      (push (ebox-selector-subject-token ancestor) ancestors)
+      (setq ancestor (ebox-selector-view-parent ancestor)))
+    (dolist (signature (nth 2 stylesheet-signature))
+      (let ((targets (plist-get signature :targets)))
+        (when (or (eq targets t) (member identity targets))
+          (push (list (plist-get signature :root) (plist-get signature :rules)) scopes))))
+    (list (car stylesheet-signature) (cadr stylesheet-signature)
+          ancestors (nreverse scopes))))
+
 (defun ebox-surface--stylesheet-subject-local-p
     (stylesheet-signature &optional fixed-scope-roots-p)
   "Classify rules in STYLESHEET-SIGNATURE with FIXED-SCOPE-ROOTS-P.
@@ -2642,14 +2661,23 @@ generation.  Node memos follow the source-copy policy in the projector."
           (ebox-tree-node-source-declarations source-index node))
          (old-state (gethash object style-state-table))
          (old-binding (and old-state (plist-get old-state :binding)))
+         (subject-style-context
+          (and stylesheet-subject-local-p
+               (ebox-surface--subject-style-context node subject stylesheet-signature)))
+         (local-context-stable-p
+          (and subject-style-context old-state
+               (equal subject-style-context
+                      (plist-get old-state :subject-style-context))))
+         (stylesheet-stable-p
+          (and old-state
+               (or local-context-stable-p
+                   (equal stylesheet-signature
+                          (plist-get old-state :stylesheet-signature)))))
          (selector-context-stable-p
           (and old-state
                (or (eq selector-tree-token
                        (plist-get old-state :selector-tree-token))
-                   (and stylesheet-subject-local-p
-                        ebox-selector-view--topology
-                        (eq ebox-selector-view--topology
-                            (plist-get old-state :selector-topology))
+                   (and local-context-stable-p
                         (ebox-surface--subject-local-equal-p
                          subject (plist-get old-state :subject))))))
          (old-parent-style
@@ -2662,8 +2690,7 @@ generation.  Node memos follow the source-copy policy in the projector."
          (theme-explicit-delta-style
           (and old-state old-binding
                selector-context-stable-p
-               (equal stylesheet-signature
-                      (plist-get old-state :stylesheet-signature))
+               stylesheet-stable-p
                (ebox-style--theme-delta-computed
                 (tp-binding-last-value old-binding)
                 (plist-get old-state :declarations)
@@ -2675,8 +2702,7 @@ generation.  Node memos follow the source-copy policy in the projector."
                (equal (plist-get old-state :declarations)
                       declarations)
                selector-context-stable-p
-               (equal stylesheet-signature
-                      (plist-get old-state :stylesheet-signature))
+               stylesheet-stable-p
                (ebox-style--theme-parent-delta-computed
                 (tp-binding-last-value old-binding)
                 declarations old-parent-style new-parent-style)))
@@ -2696,8 +2722,7 @@ generation.  Node memos follow the source-copy policy in the projector."
                   (or (plist-get old-state
                                  :inherited-dependency-count)
                       -1))
-               (equal stylesheet-signature
-                      (plist-get old-state :stylesheet-signature))))
+               stylesheet-stable-p))
          (state
           (if reused-p
               (let ((reused-state (copy-sequence old-state)))
@@ -2705,6 +2730,8 @@ generation.  Node memos follow the source-copy policy in the projector."
                            selector-tree-token)
                 (plist-put reused-state :selector-topology
                            ebox-selector-view--topology)
+                (plist-put reused-state :stylesheet-signature stylesheet-signature)
+                (plist-put reused-state :subject-style-context subject-style-context)
                 (plist-put reused-state :selector-view ebox-selector-view--current)
                 (plist-put reused-state :subject subject)
                 (plist-put reused-state :node node)
@@ -2713,6 +2740,7 @@ generation.  Node memos follow the source-copy policy in the projector."
                 reused-state)
             (let ((new-state
                    (list :selector-tree-token selector-tree-token
+                         :subject-style-context subject-style-context
                          :declarations (copy-tree declarations)
                          :parent-binding parent-binding
                          :parent-style-state parent-style-state

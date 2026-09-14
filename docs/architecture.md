@@ -41,11 +41,14 @@ Query entries and lookup tables may remain lazy; style evaluation already has
 coherent candidate relationships and does not rebuild them merely for a query cache.
 
 Cascade reuse compares mounting source identity, rules, target membership and
-inherited values. Local scoped selectors additionally require unchanged subject
-metadata and parent/child topology. ECSS classifies the selector dependencies;
-Ebox proves the host relationships and scope facts. Structural selectors retain
-full invalidation. This reduces repeated style work during ordinary projection;
-it does not make every native-property or mixed update a local projection.
+inherited values. For subject-local selectors, each binding retains its own
+ordered rule inputs, membership and ancestor identity chain. Adding or removing
+another member does not invalidate an unaffected binding. Subject metadata,
+scope roots, applicable rule revisions and inherited bindings still participate
+in reuse. ECSS classifies selector dependencies; Ebox proves host relationships
+and scope facts. Structural selectors retain full invalidation. This reduces
+repeated style work during ordinary projection; it does not make every
+native-property or mixed update a local projection.
 
 Native structural updates can retain display objects while requiring a complete
 style projection. In that case, the candidate rebuilds selector relationships
