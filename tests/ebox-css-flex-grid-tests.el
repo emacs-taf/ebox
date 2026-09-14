@@ -163,5 +163,39 @@
             (ebox-region-update "frame" :height 'auto)
             (check-rows 1 "Other Charlie")))))))
 
+(ert-deftest ebox-nested-flex-keeps-current-content-and-viewport ()
+  "Nested measurements preserve wrapping and sibling placement after updates."
+  (let ((ebox-viewport-width 30)
+        (ebox-viewport-height 20))
+    (cl-labels
+        ((input
+           (label)
+           (ebox-build
+            `(flex :width (vw 100) :flex-direction column
+                   (flex :width (% 100)
+                         (flex :flex-direction column :flex-grow 1
+                               :flex-basis (ch 0) :min-width (ch 0)
+                               (box :id label :wrap-mode char ,label))
+                         (box :width (ch 5) :flex-shrink 0 "Peer")))))
+         (check-output
+           (width label)
+           (let* ((ebox-viewport-width width)
+                  (actual (buffer-string))
+                  (expected (ebox-render (input label))))
+             (should (equal (substring-no-properties actual)
+                            (substring-no-properties expected)))
+             (should (string-match-p "Peer" actual))
+             (dolist (line (ebox-string-lines actual))
+               (should (= (ebox-string-pixel-width line) width))))))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (input "AlphabetSoup"))
+        (check-output 30 "AlphabetSoup")
+        (dolist (case '((12 "AlphabetSoup") (24 "NewContent")
+                        (10 "AnotherValue") (30 "AlphabetSoup")))
+          (pcase-let ((`(,width ,label) case))
+            (ebox-region-update "label" :content label)
+            (ebox-rerender-buffer-with-context (current-buffer) width 20)
+            (check-output width label)))))))
+
 (provide 'ebox-css-flex-grid-tests)
 ;;; ebox-css-flex-grid-tests.el ends here

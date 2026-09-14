@@ -146,7 +146,7 @@ struct UseSlot {
     occurrence: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct EvalRequest {
     context: LayoutContext,
     intrinsic: bool,
@@ -485,6 +485,7 @@ struct RenderTxn {
     same_shape: bool,
     stack: Vec<BuildingRecord>,
     root: Option<Arc<EvalRecord>>,
+    completed: BTreeMap<(SourceAddress, EvalRequest), Arc<EvalRecord>>,
     complete_scroll_effects: bool,
 }
 
@@ -526,6 +527,7 @@ impl RenderTxn {
                 self.previous.clone(),
             )
         };
+        let request_key = (source.clone(), request);
         if let Some(old) = previous.as_ref().filter(|old| {
             old.source == *source && old.request == request && !self.dirty.contains_key(source)
         }) {
@@ -538,7 +540,27 @@ impl RenderTxn {
                 change: Some(PlanChange::same(&old.rendered.lines)),
                 record: Some(Arc::clone(old)),
             };
+            self.completed.insert(request_key, Arc::clone(old));
             self.attach(slot, Arc::clone(old));
+            return Some(result);
+        }
+        // Measurements from different caller phases can ask for exactly the
+        // same source and constraints. The document is immutable for this
+        // transaction, so share the completed result and its relative child
+        // uses. Changes still compare against this caller's own previous use.
+        if let Some(current) = self.completed.get(&request_key).cloned() {
+            record(EvalWork {
+                hits: 1,
+                ..EvalWork::default()
+            });
+            let result = RenderedChange {
+                rendered: current.rendered.clone(),
+                change: previous.as_ref().map(|old| {
+                    PlanChange::replace_all(&old.rendered.lines, &current.rendered.lines)
+                }),
+                record: Some(Arc::clone(&current)),
+            };
+            self.attach(slot, current);
             return Some(result);
         }
         record(EvalWork {
@@ -587,6 +609,10 @@ impl RenderTxn {
             column: current.column,
             projections: current.projections,
         });
+        self.completed.insert(
+            (retained.source.clone(), retained.request),
+            Arc::clone(&retained),
+        );
         self.attach(current.slot, Arc::clone(&retained));
         Ok(RenderedChange {
             rendered,
@@ -1031,6 +1057,7 @@ impl RetainedDocument {
                 .is_some_and(|previous| Arc::ptr_eq(&previous.document.topology, &self.topology)),
             stack: Vec::new(),
             root: None,
+            completed: BTreeMap::new(),
         });
         let root = self
             .effective_node(self.root_id)

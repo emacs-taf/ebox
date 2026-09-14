@@ -960,6 +960,11 @@
       "name": "ebox-drag-releases-removed-owners-and-lost-windows",
       "file": "tests/ebox-drag-tests.el",
       "purpose": "Removed targets, unmount and switched windows release active tracking."
+    },
+    {
+      "name": "ebox-nested-flex-keeps-current-content-and-viewport",
+      "file": "tests/ebox-css-flex-grid-tests.el",
+      "purpose": "Nested Flex keeps current wrapping, sibling placement and output width through content updates and viewport changes."
     }
   ]
 }

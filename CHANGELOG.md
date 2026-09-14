@@ -33,6 +33,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Native nested Flex layout reuses identical completed measurements within a
+  frame, reducing repeated subtree work during rendering and resize. Rebuild
+  the optional native module and restart Emacs to use the optimization.
+
 - Scoped style bindings retain their own rule, membership and ancestry context.
   Inserting or removing another scope member no longer recomputes unaffected
   subject-local styles. Rule changes, inheritance and structural selectors keep

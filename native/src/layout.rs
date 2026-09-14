@@ -1910,7 +1910,7 @@ struct MeasuredCluster {
     source_template_id: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LayoutContext {
     pub viewport_width: i64,
     pub css_viewport_width: i64,
@@ -7363,7 +7363,7 @@ fn render_grid_row(
     Ok(concat_horizontal_sized(parts, height))
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct BoxOverride {
     content_width: Option<i64>,
     content_height: Option<i64>,

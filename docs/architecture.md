@@ -96,6 +96,15 @@ allocation and height clamps, to its inner Flex formatting context. The child
 evaluation retains that allocation as part of its request. An indefinite auto
 height stays content-driven; the ambient viewport height is not an allocation.
 
+Within one native frame, completed layout requests are shared by source address
+and exact constraints, including both viewport axes, intrinsic mode, size overrides
+and scroll-effect mode. Flex measurement phases can reuse the same completed
+subtree without repeating its layout. This memo belongs to the immutable frame
+transaction and is discarded afterward. Each caller retains its own use edge and
+compares changes against its own previous result; final scroll ownership remains
+distinct from measurement probes. Cross-frame reuse still uses source invalidation
+and the retained evaluation tree.
+
 Auto-height single-row Grid layouts have native fixed and fractional tracks.
 Cells are automatically placed Text or stretched, clipped Boxes without competing
 size constraints or margins. Native track allocation retains text minima,
