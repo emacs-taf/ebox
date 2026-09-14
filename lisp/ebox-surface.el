@@ -1511,7 +1511,16 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
     (unless (ebox-surface--signals-live-p signals)
       (error "Ebox mounted surface has no live context signals"))
     (tp-with-transaction
-      (ebox-surface--stage-signal-values signals values)
+      ;; This proof covers unused viewport axes, not a new scroll intent.
+      ;; Layout may have clamped or retired a scroll owner since its input
+      ;; signal was staged.  Restaging that derived scroll snapshot here would
+      ;; invalidate the producer and turn a viewport no-op into a publication.
+      (tp-signal-set (ebox-surface--signals-viewport-width signals)
+                     (plist-get values :viewport-width))
+      (tp-signal-set (ebox-surface--signals-viewport-height signals)
+                     (plist-get values :viewport-height))
+      (tp-signal-set (ebox-surface--signals-display signals)
+                     (plist-get values :display-signature))
       (ebox-surface--transaction-participate
        (list 'ebox/context-no-op buffer)
        (lambda ()

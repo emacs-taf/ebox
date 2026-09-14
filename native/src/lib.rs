@@ -372,7 +372,7 @@ struct ControlFrame {
     #[serde(default = "default_true")]
     root_metadata: bool,
     #[serde(default)]
-    root_scroll_producer: bool,
+    scroll_producers: bool,
     #[serde(default)]
     delay_ms: u64,
 }
@@ -393,7 +393,7 @@ enum JobPayload {
         context_hash: i64,
         complete: bool,
         root_metadata: bool,
-        root_scroll_producer: bool,
+        scroll_producers: bool,
         document_base_revision: u64,
         document_target_revision: u64,
         validation_resolver_lookups: u64,
@@ -438,7 +438,7 @@ impl LayoutSource {
         root_width: Option<i64>,
         previous: Option<&RetainedFrame>,
         changes: Option<&SourceChanges>,
-        root_scroll_producer: bool,
+        scroll_producers: bool,
     ) -> Result<(LayoutTape, Option<Arc<RetainedFrame>>), String> {
         match self {
             Self::Full(document) => {
@@ -448,9 +448,8 @@ impl LayoutSource {
                 Ok((document.layout_tape(context, root_width)?, None))
             }
             Self::Retained(document) => {
-                let frame = if root_scroll_producer {
-                    document
-                        .render_frame_with_root_scroll(previous, changes, context, root_width)?
+                let frame = if scroll_producers {
+                    document.render_frame_with_scroll(previous, changes, context, root_width)?
                 } else {
                     document.render_frame(previous, changes, context, root_width)?
                 };
@@ -1441,7 +1440,7 @@ fn prepare_layout_job(
     source_changes: Option<SourceChanges>,
 ) -> Result<PreparedJob, String> {
     layout::reset_resolver_lookups();
-    if frame.root_scroll_producer && !frame.complete {
+    if frame.scroll_producers && !frame.complete {
         return Err("Native root scroll producer requires complete properties".to_owned());
     }
     if frame.payload.is_some() {
@@ -1526,7 +1525,7 @@ fn prepare_layout_job(
             context_hash: frame.context_hash,
             complete: frame.complete,
             root_metadata: frame.root_metadata,
-            root_scroll_producer: frame.root_scroll_producer,
+            scroll_producers: frame.scroll_producers,
             document_base_revision,
             document_target_revision,
             validation_resolver_lookups: layout::resolver_lookups(),
@@ -1568,7 +1567,7 @@ fn render_layout_payload(
             context_hash,
             complete,
             root_metadata,
-            root_scroll_producer,
+            scroll_producers,
             document_base_revision,
             document_target_revision,
             validation_resolver_lookups,
@@ -1627,7 +1626,7 @@ fn render_layout_payload(
                             .as_ref()
                             .and_then(|baseline| baseline.retained_frame.as_deref()),
                         source_changes.as_ref(),
-                        root_scroll_producer,
+                        scroll_producers,
                     )
                 };
                 if let Some(base_context) = base_context {
@@ -1662,7 +1661,7 @@ fn render_layout_payload(
                             output.max_bytes,
                             retained_frame
                                 .as_ref()
-                                .and_then(|frame| frame.root_scroll()),
+                                .and_then(|frame| frame.scroll_plans()),
                         )?;
                         return Ok((bytes, target, target_styles, retained_frame, false, 0, 1));
                     }
@@ -1688,7 +1687,7 @@ fn render_layout_payload(
                         output.max_bytes,
                         retained_frame
                             .as_ref()
-                            .and_then(|frame| frame.root_scroll())
+                            .and_then(|frame| frame.scroll_plans())
                             .map(|scroll| {
                                 (
                                     scroll,
@@ -1696,7 +1695,7 @@ fn render_layout_payload(
                                         .as_ref()
                                         .filter(|_| baseline_hit)
                                         .and_then(|base| base.retained_frame.as_ref())
-                                        .and_then(|frame| frame.root_scroll()),
+                                        .and_then(|frame| frame.scroll_plans()),
                                 )
                             }),
                     )?;
@@ -1719,7 +1718,7 @@ fn render_layout_payload(
                         output.max_bytes,
                         retained_frame
                             .as_ref()
-                            .and_then(|frame| frame.root_scroll()),
+                            .and_then(|frame| frame.scroll_plans()),
                     )?;
                     Ok((bytes, target, target_styles, retained_frame, false, 0, 1))
                 }

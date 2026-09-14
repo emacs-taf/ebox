@@ -41,6 +41,10 @@
 (declare-function ebox-put "ebox" (box key value))
 (declare-function ebox--scroll-set-state "ebox" (region-id state))
 (declare-function ebox--scroll-clear-state "ebox" (region-id))
+(defvar ebox-incremental--candidate-path-copy-trace)
+(defvar ebox-incremental--candidate-path-copy-origin-table)
+(declare-function ebox-incremental--candidate-path-copy-one
+                  "ebox-incremental" (root node-id replacement index))
 (defvar ebox--scroll-global-state)
 (declare-function ebox-style-cascade-active-p "ebox-style" ())
 (declare-function ebox-style-property "ebox-style" (name))
@@ -304,7 +308,9 @@ the committed text/fragment bases, compiler postorder, and projection support."
   "Give CANDIDATE-STATE a private native session.
 Fork PREVIOUS-STATE's committed session when present; otherwise bootstrap a
 new session with the same bounded configuration used by retained frames."
-  (let ((source (plist-get previous-state :native-sync-session)))
+  (let ((source (and (eq (plist-get previous-state :projection-kind) 'native-frame)
+                     (plist-get previous-state :native-render-frame)
+                     (plist-get previous-state :native-sync-session))))
     (cl-remf candidate-state :native-session-setup-failure)
     (condition-case condition
         (when-let* ((private
@@ -412,97 +418,109 @@ new session with the same bounded configuration used by retained frames."
       ('box node)
       ('flex (plist-get node :box)))))
 
-(defun ebox-native-commit-root-scroll-continuation-p (state)
-  "Return non-nil for STATE's confirmed complete sole-root scroll producer."
-  (let ((producer (plist-get state :native-root-scroll-producer))
-        (box (ebox-native-commit--root-box (plist-get state :root-node))))
-    (and (vectorp producer) (= (length producer) 6) box
-         (equal (aref producer 0) (plist-get box :region-id))
+(defun ebox-native-commit-scroll-continuation-p (state &optional region)
+  "Return non-nil for STATE's confirmed complete scroll producers.
+When REGION is given, require its producer in the confirmed collection."
+  (let ((producers (plist-get state :native-scroll-producers)))
+    (and (hash-table-p producers)
+         (or (null region) (gethash region producers))
          (plist-get state :native-sync-session)
          (plist-get state :native-sync-confirmed-p))))
 
 (defun ebox-native-commit--region-index-safe-p (state)
-  "Return non-nil when STATE has an unambiguous, non-scrolling region index."
+  "Return non-nil when STATE maps every region to one current Box."
   (let ((counts (plist-get state :region-box-count-table))
-        (scroll (plist-get state :scroll-state-table))
-        (root-scroll (ebox-native-commit-root-scroll-continuation-p state))
-        (root-region (plist-get (ebox-native-commit--root-box
-                                (plist-get state :root-node)) :region-id))
-        safe)
-    (setq safe
-          (and (hash-table-p counts)
-               (or (null scroll)
-                   (and (hash-table-p scroll)
-                        (or (zerop (hash-table-count scroll))
-                            (and root-scroll (= (hash-table-count scroll) 1)
-                                 (gethash root-region scroll)))))))
-    (when safe
-      (maphash
-       (lambda (region-id count)
-         (let ((box (ebox-native-commit--region-box state region-id)))
-           (unless (and (= count 1) box
-                        (or (zerop (or (ebox-get box :scroll-offset) 0))
-                            (and root-scroll (equal region-id root-region))))
-             (setq safe nil))))
-       counts))
-    safe))
+        (safe t))
+    (and (hash-table-p counts)
+         (progn
+           (maphash
+            (lambda (region count)
+              (unless (and (= count 1)
+                           (ebox-native-commit--region-box state region))
+                (setq safe nil)))
+            counts)
+           safe))))
 
-(defun ebox-native-commit--install-root-scroll-producer (state producer)
-  "Install complete PRODUCER in STATE's isolated candidate scroll table."
-  (let* ((box (ebox-native-commit--root-box (plist-get state :root-node)))
-         (region (plist-get box :region-id))
-         (previous (plist-get state :native-root-scroll-producer))
-         (previous-scroll (gethash region ebox--scroll-global-state)))
-    (unless (and box (vectorp producer) (= (length producer) 6)
-                 (equal region (aref producer 0)))
-      (error "Native scroll producer does not own the actual root"))
-    (when (or (eq (aref producer 4) :reuse) (eq (aref producer 5) :reuse))
-      (unless (and (eq (aref producer 4) :reuse) (eq (aref producer 5) :reuse)
-                   (eq (plist-get state :native-frame-kind) 'patch)
-                   (ebox-native-commit-root-scroll-continuation-p state)
-                   (= (aref producer 1) (aref previous 1))
-                   (> (aref previous 1) (aref previous 2))
-                   (listp (aref previous 4)) (listp (aref previous 5)))
-        (error "Native scroll producer reuse has no confirmed complete base"))
-      (setq producer (copy-sequence producer))
-      (aset producer 4 (aref previous 4))
-      (aset producer 5 (aref previous 5)))
-    (unless (= (or (ebox-get box :scroll-offset) 0) (aref producer 3))
-      ;; Viewport candidates may share their unchanged root. Clamp only a new
-      ;; root spine, and compile that normalized offset on the next native job.
-      (let* ((root (copy-sequence (plist-get state :root-node)))
-             (root-id (plist-get root :node-id))
-             (nodes (plist-get state :node-table)))
-        (if (eq (plist-get root :ebox-type) 'flex)
-            (progn (setq box (copy-sequence (plist-get root :box)))
-                   (plist-put root :box box))
-          (setq box root))
-        (ebox-put box :scroll-offset (aref producer 3))
-        (plist-put state :root-node root)
-        (plist-put state :node-table
-                   (ebox-runtime-index-put root-id root
-                    (if (hash-table-p nodes) (copy-hash-table nodes) nodes)))
-        (let ((regions (copy-hash-table (plist-get state :region-box-table))))
-          (puthash region box regions)
-          (plist-put state :region-box-table regions))
-        (plist-put state :native-root-scroll-offset-dirty t)))
-    (plist-put state :native-root-scroll-producer producer)
-    (if (> (aref producer 1) (aref producer 2))
-        (if (and previous-scroll
-                 (eq (plist-get previous-scroll :content-lines) (aref producer 4))
-                 (eq (plist-get previous-scroll :rendered-content-lines) (aref producer 5)))
-            (let ((scroll-state (copy-sequence previous-scroll)))
-              (plist-put scroll-state :scroll-offset (aref producer 3))
-              (plist-put scroll-state :content-height (aref producer 2))
-              (plist-put scroll-state :box box)
-              (puthash region scroll-state ebox--scroll-global-state))
-          (ebox--scroll-set-state
-           region (list :scroll-offset (aref producer 3)
-                      :content-height (aref producer 2)
-                      :content-lines (aref producer 4)
-                      :rendered-content-lines (aref producer 5)
-                        :content-lines-complete-p t :box box)))
-      (ebox--scroll-clear-state region))))
+(defun ebox-native-commit--normalize-scroll-offset (state region offset)
+  "Path-copy REGION's used OFFSET into STATE and its current indexes."
+  (let* ((node-id (ebox-runtime-index-get region (plist-get state :region-node-table)))
+         (node (ebox-runtime-index-get node-id (plist-get state :node-table)))
+         (box (ebox-native-commit--region-box state region)))
+    (unless (= (or (ebox-get box :scroll-offset) 0) offset)
+      (let* ((copy (copy-sequence node))
+             (ebox-incremental--candidate-path-copy-trace (make-hash-table :test 'equal))
+             (ebox-incremental--candidate-path-copy-origin-table nil)
+             (nodes (plist-get state :node-table))
+             (regions (copy-hash-table (plist-get state :region-box-table))))
+        (if (eq (plist-get node :ebox-type) 'flex)
+            (let ((copy-box (copy-sequence box)))
+              (ebox-put copy-box :scroll-offset offset)
+              (plist-put copy :box copy-box))
+          (ebox-put copy :scroll-offset offset))
+        (plist-put state :root-node
+                   (ebox-incremental--candidate-path-copy-one
+                    (plist-get state :root-node) node-id copy state))
+        (when (hash-table-p nodes) (setq nodes (copy-hash-table nodes)))
+        (maphash
+         (lambda (id entry)
+           (let* ((current (plist-get entry :node))
+                  (current-box (ebox-native-commit--root-box current)))
+             (setq nodes (ebox-runtime-index-put id current nodes))
+             (when current-box
+               (puthash (plist-get current-box :region-id) current-box regions))))
+         ebox-incremental--candidate-path-copy-trace)
+        (plist-put state :node-table nodes)
+        (plist-put state :region-box-table regions)
+        (plist-put state :native-scroll-offset-dirty
+                   (cons node-id (plist-get state :native-scroll-offset-dirty)))))))
+
+(defun ebox-native-commit--install-scroll-producers (state producers)
+  "Install complete PRODUCERS into STATE's isolated scroll table."
+  (let ((previous (plist-get state :native-scroll-producers))
+        (installed (make-hash-table :test 'equal)))
+    (maphash
+     (lambda (region producer)
+       (let* ((box (ebox-native-commit--region-box state region))
+              (prior (and (hash-table-p previous) (gethash region previous)))
+              (previous-scroll (gethash region ebox--scroll-global-state)))
+         (unless box (error "Native scroll producer lost its owning Box"))
+         (when (or (eq (aref producer 4) :reuse) (eq (aref producer 5) :reuse))
+           (unless (and (eq (aref producer 4) :reuse) (eq (aref producer 5) :reuse)
+                        (eq (plist-get state :native-frame-kind) 'patch)
+                        (ebox-native-commit-scroll-continuation-p state region)
+                        (= (aref producer 1) (aref prior 1))
+                        (> (aref prior 1) (aref prior 2))
+                        (listp (aref prior 4)) (listp (aref prior 5)))
+             (error "Native scroll producer reuse has no confirmed complete base"))
+           (setq producer (copy-sequence producer))
+           (aset producer 4 (aref prior 4))
+           (aset producer 5 (aref prior 5)))
+         (ebox-native-commit--normalize-scroll-offset state region (aref producer 3))
+         (setq box (ebox-native-commit--region-box state region))
+         (puthash region producer installed)
+         (if (> (aref producer 1) (aref producer 2))
+             (if (and previous-scroll
+                      (eq (plist-get previous-scroll :content-lines) (aref producer 4))
+                      (eq (plist-get previous-scroll :rendered-content-lines) (aref producer 5)))
+                 (let ((scroll-state (copy-sequence previous-scroll)))
+                   (plist-put scroll-state :scroll-offset (aref producer 3))
+                   (plist-put scroll-state :content-height (aref producer 2))
+                   (plist-put scroll-state :box box)
+                   (puthash region scroll-state ebox--scroll-global-state))
+               (ebox--scroll-set-state
+                region (list :scroll-offset (aref producer 3)
+                             :content-height (aref producer 2)
+                             :content-lines (aref producer 4)
+                             :rendered-content-lines (aref producer 5)
+                             :content-lines-complete-p t :box box)))
+           (ebox--scroll-clear-state region))))
+     producers)
+    (when (hash-table-p previous)
+      (maphash (lambda (region _producer)
+                 (unless (gethash region installed)
+                   (ebox--scroll-clear-state region)))
+               previous))
+    (plist-put state :native-scroll-producers installed)))
 
 (defun ebox-native-commit--runtime-types-supported-p (state)
   "Return non-nil when STATE contains only executable native node types."
@@ -579,7 +597,7 @@ This is execution geometry, not a proof that the width is font-independent."
              ;; base while font/display changes invalidate it.
              (sxhash-equal (plist-get state :display-signature))
              :complete t
-             :root-scroll-producer t
+             :scroll-producers t
              :root-metadata nil)
        (when (and (plist-get state :native-sync-confirmed-p)
                   (plist-get state :native-topology-stable-p))
@@ -720,8 +738,8 @@ publication transaction can still roll back."
 
 (defconst ebox-native-commit--failed-render-state-keys
   '(:native-sync-session
-    :native-root-scroll-producer
-    :native-root-scroll-offset-dirty
+    :native-scroll-producers
+    :native-scroll-offset-dirty
     :native-sync-pending
     :native-sync-confirmed-p
     :native-render-p
@@ -773,31 +791,40 @@ projection so the caller may publish its existing Elisp fallback truthfully."
              (eq (plist-get state :projection-kind) 'native-frame)
              (ebox-native-commit--runtime-types-supported-p state)
              (ebox-native-commit--region-index-safe-p state))
+    ;; Scroll tables own the accepted offsets even when the previous window
+    ;; publication reused an ancestor's source tree.  Feed that same candidate
+    ;; context into native compilation, including independently scrolled peers.
+    (maphash
+     (lambda (region scroll)
+       (when (ebox-native-commit--region-box state region)
+         (ebox-native-commit--normalize-scroll-offset
+          state region (or (plist-get scroll :scroll-offset) 0))))
+     ebox--scroll-global-state)
+    (setq node (plist-get state :root-node))
     (when-let* ((frame-spec (ebox-native-commit--frame-spec state node)))
-      (when (plist-get state :native-root-scroll-offset-dirty)
-        (let ((root-id (plist-get node :node-id)))
+      (when (plist-get state :native-scroll-offset-dirty)
+        (dolist (node-id (plist-get state :native-scroll-offset-dirty))
           (plist-put state :native-touched-node-ids
-                     (cons root-id (remove root-id (plist-get state :native-touched-node-ids))))
+                     (cons node-id (remove node-id (plist-get state :native-touched-node-ids))))
           (plist-put state :native-local-dirty-entries
-                     (cons (list :node-id root-id :dirty-kind 'geometry
+                     (cons (list :node-id node-id :dirty-kind 'geometry
                                  :changed-keys '(:scroll-offset))
                            (plist-get state :native-local-dirty-entries))))
-        (cl-remf state :native-root-scroll-offset-dirty))
+        (cl-remf state :native-scroll-offset-dirty))
       (condition-case err
           (let* ((frame (ebox-native-commit--retained-frame
                          state node frame-spec))
                   (effects (plist-get frame :effect-tape))
                   (rendered (plist-get frame :rendered))
-                  (producer (plist-get effects :root-scroll-producer))
+                  (producers (plist-get effects :scroll-producers))
                   (fragment-template
-                   (and (or (not (plist-get effects :scroll-window-p)) producer)
+                   (and (or (not (plist-get effects :scroll-window-p)) (hash-table-p producers))
                        (plist-get effects :fragment-span-template))))
             (if (and (stringp rendered) (vectorp fragment-template))
                 (progn
-                  (if producer
-                      (ebox-native-commit--install-root-scroll-producer state producer)
-                    (cl-remf state :native-root-scroll-producer))
                   (ebox-native-commit--install-region-boxes state)
+                  (when (hash-table-p producers)
+                    (ebox-native-commit--install-scroll-producers state producers))
                   (plist-put state :render-owned-text-values
                              (make-hash-table :test #'eq))
                   (plist-put state :native-render-output rendered)

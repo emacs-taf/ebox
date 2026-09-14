@@ -151,7 +151,6 @@ struct EvalRequest {
     context: LayoutContext,
     intrinsic: bool,
     size_override: Option<BoxOverride>,
-    root_scroll_request: bool,
     complete_scroll_effects: bool,
 }
 
@@ -179,6 +178,7 @@ struct UseNode {
     height: u32,
     len: usize,
     scroll_owners: u8,
+    final_use: bool,
 }
 
 impl ChildUses {
@@ -229,6 +229,8 @@ impl ChildUses {
                         | Phase::FlexBasisWidth
                         | Phase::ContentIntrinsic
                         | Phase::FlexCrossProbe
+                        | Phase::GridIntrinsic
+                        | Phase::GridWidthProbe
                 )
             )
         });
@@ -254,6 +256,7 @@ impl ChildUses {
             height: 1 + left.height().max(right.height()),
             len: 1 + left.len() + right.len(),
             scroll_owners,
+            final_use,
             left,
             right,
         })))
@@ -356,6 +359,42 @@ impl ChildUses {
     }
 }
 
+impl EvalRecord {
+    fn collect_scroll_plans(&self, plans: &mut super::ScrollPlans) -> Result<(), String> {
+        if let Some(plan) = &self.rendered.scroll_plan {
+            if plans.insert(plan.region_id, Arc::clone(plan)).is_some() {
+                return Err("Native scroll owner has multiple final layout uses".to_owned());
+            }
+        } else if self.rendered.own_scroll_owner {
+            return Err("Native scroll container requires complete content geometry".to_owned());
+        }
+        self.children.collect_scroll_plans(plans)
+    }
+}
+
+impl ChildUses {
+    fn collect_scroll_plans(&self, plans: &mut super::ScrollPlans) -> Result<(), String> {
+        let Some(node) = self.0.as_ref().filter(|node| node.scroll_owners != 0) else {
+            return Ok(());
+        };
+        node.left.collect_scroll_plans(plans)?;
+        if node.final_use {
+            if node
+                .slot
+                .path
+                .iter()
+                .any(|step| matches!(step, UseStep::Phase(Phase::WindowChildPartial)))
+            {
+                return Err(
+                    "Native scroll layout requires complete child window effects".to_owned(),
+                );
+            }
+            node.value.collect_scroll_plans(plans)?;
+        }
+        node.right.collect_scroll_plans(plans)
+    }
+}
+
 /// Full evaluation uses a mutable fresh collector, then freezes exactly N nodes.
 /// A proven sparse Column starts from an immutable current root and path-copies.
 #[derive(Debug)]
@@ -408,11 +447,15 @@ pub(super) struct RenderedChange {
 pub(crate) struct RetainedFrame {
     document: Arc<RetainedDocument>,
     root: Arc<EvalRecord>,
+    scroll_plans: super::ScrollPlans,
 }
 
 impl RetainedFrame {
-    pub(crate) fn root_scroll(&self) -> Option<&super::RootScrollPlan> {
-        self.root.rendered.root_scroll.as_deref()
+    pub(crate) fn scroll_plans(&self) -> Option<&super::ScrollPlans> {
+        self.root
+            .request
+            .complete_scroll_effects
+            .then_some(&self.scroll_plans)
     }
     pub(crate) fn materialize_tape(&self) -> LayoutTape {
         self.root
@@ -521,10 +564,9 @@ impl RenderTxn {
         let mut rendered = rendered?;
         let children = current.children.finish();
         let child_owners = children.scroll_owners();
-        rendered.scroll_owners = (child_owners + u8::from(rendered.own_scroll_owner)).min(2);
-        if child_owners != 0 {
-            rendered.root_scroll = None;
-        }
+        rendered.scroll_owners = (child_owners
+            + u8::from(rendered.own_scroll_owner || rendered.scroll_plan.is_some()))
+        .min(2);
         let change = current.previous.as_ref().map(|previous| {
             current
                 .pending_change
@@ -696,8 +738,6 @@ impl<'a> RenderScope<'a> {
                 context,
                 intrinsic,
                 size_override,
-                root_scroll_request: transaction.borrow().complete_scroll_effects
-                    && transaction.borrow().stack.is_empty(),
                 complete_scroll_effects: transaction.borrow().complete_scroll_effects,
             };
             if let Some(rendered) =
@@ -728,22 +768,12 @@ impl<'a> RenderScope<'a> {
         self.transaction.is_some()
     }
 
-    pub(super) fn root_scroll_requested(&self) -> bool {
-        self.transaction.is_some_and(|transaction| {
-            transaction
-                .borrow()
-                .stack
-                .last()
-                .is_some_and(|record| record.request.root_scroll_request)
-        })
-    }
-
     pub(super) fn complete_scroll_effects_requested(&self) -> bool {
         self.transaction
             .is_some_and(|transaction| transaction.borrow().complete_scroll_effects)
     }
 
-    pub(super) fn previous_root_scroll(&self) -> Option<Arc<super::RootScrollPlan>> {
+    pub(super) fn previous_scroll_plan(&self) -> Option<Arc<super::ScrollPlan>> {
         let transaction = self.transaction?.borrow();
         let current = transaction.stack.last()?;
         current
@@ -751,7 +781,7 @@ impl<'a> RenderScope<'a> {
             .as_ref()
             .filter(|old| old.source == current.source)?
             .rendered
-            .root_scroll
+            .scroll_plan
             .clone()
     }
 
@@ -952,7 +982,7 @@ impl RetainedDocument {
         self.render_frame_mode(previous, changes, context, root_width_override, false)
     }
 
-    pub(crate) fn render_frame_with_root_scroll(
+    pub(crate) fn render_frame_with_scroll(
         self: &Arc<Self>,
         previous: Option<&RetainedFrame>,
         changes: Option<&SourceChanges>,
@@ -1033,9 +1063,14 @@ impl RetainedDocument {
             .into_inner()
             .root
             .expect("native retained root evaluation");
+        let mut scroll_plans = super::ScrollPlans::new();
+        if complete_scroll_effects {
+            root.collect_scroll_plans(&mut scroll_plans)?;
+        }
         Ok(Arc::new(RetainedFrame {
             document: Arc::clone(self),
             root,
+            scroll_plans,
         }))
     }
 }

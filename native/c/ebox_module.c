@@ -164,7 +164,7 @@ ebox_module_version(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   (void) nargs;
   (void) args;
   (void) data;
-  static const char version[] = "20:10:12";
+  static const char version[] = "21:10:13";
   return env->make_string(env, version, (ptrdiff_t) (sizeof version - 1));
 }
 
@@ -405,7 +405,7 @@ ebox_fragment_section(const unsigned char *bytes, size_t length,
   if (length < header_length
       || memcmp(bytes, "EBXT", 4) != 0
       || !ebox_read_u16(bytes, length, 4, &version)
-      || version != 12
+      || version != 13
       || !ebox_read_u16(bytes, length, 6, &flags)
       || !ebox_read_u32(bytes, length, 8, &encoded_header_length)
       || encoded_header_length != header_length

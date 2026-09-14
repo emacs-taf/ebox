@@ -930,6 +930,11 @@
       "name": "ebox-viewport-height-constrains-flex-minima-maxima-and-basis",
       "file": "tests/ebox-size-style-tests.el",
       "purpose": "Column Flex constraints retain their original viewport reference."
+    },
+    {
+      "name": "ebox-scroll-containers-compose-through-layout-and-updates",
+      "file": "tests/ebox-scroll-tests.el",
+      "purpose": "Nested and sibling scrolling containers compose in Column and Flex and retain independent visible content through updates and resize."
     }
   ]
 }

@@ -216,11 +216,15 @@ through another renderer. General preparation and surface-plan counters in the
 shared evaluator verify the bypass separately from TP bookkeeping and buffer
 write time; this path does not establish constant cost in total object count.
 
-Native frame publication currently installs one complete scroll producer owned
-by the actual root. Active nested scroll owners use the Elisp fallback before
-TP publication: visible fragment spans alone cannot supply their full content,
-effective offsets and independent scroll state. A loaded module therefore does
-not imply native publication for every scroll topology.
+Native frame publication carries complete scroll producers keyed by their owning
+regions, including sibling and nested containers. The retained evaluation tree
+collects final layout uses, excluding intrinsic and Flex/Grid measurement probes.
+Each producer retains its full content, visible height and effective offset;
+unchanged content plans can be reused independently. Ebox installs the collection
+into its ordinary scroll state and normalizes offsets through candidate path copies.
+Switching back from an ordinary publication rebuilds the native source baseline.
+Native producers currently require top alignment and no container chrome or surface
+template; unsupported geometry uses Elisp before publication.
 
 Scroll publication still goes through TP and the Ebox participant. Rejection
 preserves the old text, properties, offsets, raw and rendered caches, source

@@ -92,8 +92,8 @@
                   (old-state candidate-state prepared))
 (declare-function ebox-native-commit--root-box
                   "ebox-native-commit" (node))
-(declare-function ebox-native-commit-root-scroll-continuation-p
-                  "ebox-native-commit" (state))
+(declare-function ebox-native-commit-scroll-continuation-p
+                  "ebox-native-commit" (state &optional region))
 (declare-function ebox-native-commit-prepare-viewport-continuity
                   "ebox-native-commit"
                   (previous-state candidate-state))
@@ -10564,8 +10564,8 @@ role, and outside-complement compatibility before publication."
   "Return the retained native runtime facts owned by STATE."
   (list :native-buffer-scroll-p
         (plist-get state :native-buffer-scroll-p)
-        :native-root-scroll-producer (plist-get state :native-root-scroll-producer)
-        :native-root-scroll-offset-dirty (plist-get state :native-root-scroll-offset-dirty)
+        :native-scroll-producers (plist-get state :native-scroll-producers)
+        :native-scroll-offset-dirty (plist-get state :native-scroll-offset-dirty)
         :native-sync-session
         (plist-get state :native-sync-session)
         :native-sync-pending
@@ -11400,11 +11400,8 @@ runtime candidate whose identities already match the published root."
           ;; already staged window through the retained object scope.
           (setq projection-kind
                 (if (and (require 'ebox-native-commit nil t)
-                         (ebox-native-commit-root-scroll-continuation-p old-state)
-                         (equal (plist-get report-overrides :region-id)
-                                (plist-get (ebox-native-commit--root-box
-                                            (plist-get old-state :root-node))
-                                           :region-id))
+                         (ebox-native-commit-scroll-continuation-p
+                          old-state (plist-get report-overrides :region-id))
                          (ebox-native-commit-plan-eligible-p
                           old-state candidate-state prepared))
                     'native-frame

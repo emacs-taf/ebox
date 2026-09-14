@@ -171,9 +171,12 @@ Nested owner 在 allocation 不变且通过证明时，可以只替换自己的 
 通用准备与 surface-plan 计数分别验证这两项工作已跳过；TP bookkeeping 与实际
 buffer 写入另行测量。该路径并不保证耗时与总 object 数无关。
 
-原生 frame 发布目前安装一个由实际根节点拥有的完整 scroll producer。活动的嵌套
-滚动容器在 TP 发布前使用 Elisp 回退：只有可见片段的 span，不能提供各容器的完整
-内容、实际 offset 和独立滚动状态。因此，已加载原生模块不代表所有滚动拓扑均原生发布。
+原生 frame 按所属 region 交付完整 scroll producer 集合，支持并列和嵌套容器。
+保留求值树只收集最终布局使用，排除内在尺寸及 Flex/Grid 测量探测。各 producer
+保留完整内容、可见高度和实际 offset，未变化的内容计划可以分别复用。Ebox 将
+集合安装到普通滚动状态，通过候选路径复制修正 offset。从普通发布切回原生时
+重新建立原生 source 基线。原生 producer 目前要求顶部对齐、无容器边框内外边距
+及 surface template；其余几何在发布前使用 Elisp。
 
 Scroll publication 仍经过 TP 与 Ebox participant。发布失败时，旧文本、属性、offset、
 raw/rendered cache、source node、index、object、mount 和 report 均保持不变。

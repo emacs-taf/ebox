@@ -6,10 +6,13 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Native scrolling composes across ordinary wrappers, sibling containers and
+  nested containers. Each region retains its own complete content and offset.
+  Rebuild the optional module for ABI `21:10:13` and restart Emacs.
+
 - Native viewport heights support `vh` and height `calc` addition/subtraction,
   including nested Box constraints and column Flex bases. Window resize keeps
   the original viewport reference independently of parent allocations.
-  Rebuild the optional module for ABI `20:10:12` and restart Emacs.
 
 - Native single-row Grid supports fixed and fractional (`fr`) columns with
   automatic Text placement and stretched, clipped Box cells. Text minima,
@@ -24,6 +27,10 @@ All notable changes to Ebox are documented here.
   separate from its unobserved latency samples, with the same correctness checks.
 
 ### Fixed
+
+- Resizing an unused viewport axis after a scroll owner shrinks no longer
+  unexpectedly republishes the surface. Returning to native layout after an
+  ordinary update preserves independently scrolled regions.
 
 - Native structural updates retain current scoped colors and inherited styles
   when nodes move or change ownership. Reused display objects no longer bypass

@@ -88,7 +88,7 @@ pub(crate) fn resolver_lookups() -> u64 {
 }
 
 const LAYOUT_VERSION: u32 = 2;
-pub const TAPE_VERSION: u16 = 12;
+pub const TAPE_VERSION: u16 = 13;
 pub const TAPE_HEADER_LEN: usize = 112;
 pub const MIN_TAPE_BYTES: usize = TAPE_HEADER_LEN + 5;
 const TAPE_MAGIC: &[u8; 4] = b"EBXT";
@@ -2268,23 +2268,25 @@ struct Rendered {
     // A zero-height box still has an inline layout extent.  Text lines alone
     // cannot retain that fact for Row slots, Flex bases, or intrinsic Columns.
     empty_width: i64,
-    root_scroll: Option<Arc<RootScrollPlan>>,
+    scroll_plan: Option<Arc<ScrollPlan>>,
     own_scroll_owner: bool,
     scroll_owners: u8,
 }
 
+pub(crate) type ScrollPlans = BTreeMap<i64, Arc<ScrollPlan>>;
+
 #[derive(Debug)]
-pub(crate) struct RootScrollPlan {
+pub(crate) struct ScrollPlan {
     region_id: i64,
     full_content: LinePlan,
     rendered_content: LinePlan,
     visible_height: i64,
     effective_offset: i64,
-    text_input: Option<RootTextInput>,
+    text_input: Option<ScrollTextInput>,
 }
 
 #[derive(Debug)]
-struct RootTextInput {
+struct ScrollTextInput {
     source: Arc<MeasuredText>,
     width: i64,
     wrap: WrapMode,
@@ -2298,7 +2300,7 @@ impl Rendered {
         Self {
             lines: LinePlan::from_lines(lines),
             empty_width: 0,
-            root_scroll: None,
+            scroll_plan: None,
             own_scroll_owner: false,
             scroll_owners: 0,
         }
@@ -2308,7 +2310,7 @@ impl Rendered {
         Self {
             lines,
             empty_width: 0,
-            root_scroll: None,
+            scroll_plan: None,
             own_scroll_owner: false,
             scroll_owners: 0,
         }
@@ -3630,66 +3632,76 @@ struct RootMetadataPayload {
 
 fn append_scroll_metadata(
     payload: &mut Option<RootMetadataPayload>,
-    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
+    scroll: Option<(&ScrollPlans, Option<&ScrollPlans>)>,
     styles: &[CompiledStyle],
     style_count: u32,
     max_bytes: usize,
 ) -> Result<(), String> {
-    let (Some(payload), Some((scroll, base))) = (payload.as_mut(), scroll) else {
+    let (Some(payload), Some((plans, base_plans))) = (payload.as_mut(), scroll) else {
         return Ok(());
     };
-    let mut effect = format!(
-        " :root-scroll-producer [{} {} {} {} ",
-        scroll.region_id,
-        scroll.full_content.len(),
-        scroll.visible_height,
-        scroll.effective_offset
-    );
-    let inactive = scroll.full_content.len() as i64 <= scroll.visible_height;
-    let reused = !inactive
-        && base.is_some_and(|base| {
-            base.region_id == scroll.region_id
-                && base.full_content.len() as i64 > base.visible_height
-                && base.full_content.ptr_eq(&scroll.full_content)
-                && base.rendered_content.ptr_eq(&scroll.rendered_content)
-        });
-    if inactive {
-        // The receiver needs only geometry to retire its active scroll state.
-        // Keep the complete plans in this frame for a later clipped request.
-        effect.push_str(":inactive :inactive ");
-    } else if reused {
-        effect.push_str(":reuse :reuse ");
-        evaluation::record(EvalWork {
-            scroll_producer_reuses: 1,
-            ..EvalWork::default()
-        });
-    } else {
-        for plan in [&scroll.full_content, &scroll.rendered_content] {
+    let mut effect = String::from(" :scroll-producers [");
+    for scroll in plans.values() {
+        let base = base_plans.and_then(|plans| plans.get(&scroll.region_id));
+        effect.push_str(&format!(
+            "[{} {} {} {} ",
+            scroll.region_id,
+            scroll.full_content.len(),
+            scroll.visible_height,
+            scroll.effective_offset
+        ));
+        let inactive = scroll.full_content.len() as i64 <= scroll.visible_height;
+        let reused = !inactive
+            && base.is_some_and(|base| {
+                base.full_content.len() as i64 > base.visible_height
+                    && base.full_content.ptr_eq(&scroll.full_content)
+                    && base.rendered_content.ptr_eq(&scroll.rendered_content)
+            });
+        if inactive {
+            effect.push_str(":inactive :inactive ");
+        } else if reused {
+            effect.push_str(":reuse :reuse ");
             evaluation::record(EvalWork {
-                scroll_producer_lines_encoded: plan.len() as u64,
-                scroll_producer_chars_encoded: plan.prefix_chars(plan.len()),
+                scroll_producer_reuses: 1,
                 ..EvalWork::default()
             });
-            let tape = Rendered::from_line_plan(plan.clone()).into_tape(style_count);
-            let flat = flatten_layout_tape(tape, true)?;
-            let (text, spaces, properties) = tape_character_encoding_parts(&flat.characters)?;
-            let literal = encode_lisp_literal(
-                &text,
-                &spaces,
-                &properties,
-                styles,
-                flat.characters.len() as u64,
-                max_bytes,
-            )?;
-            // Each nested literal has its own read-circle label namespace.
-            push_lisp_string(&mut effect, &literal);
-            effect.push(' ');
+        } else {
+            for plan in [&scroll.full_content, &scroll.rendered_content] {
+                evaluation::record(EvalWork {
+                    scroll_producer_lines_encoded: plan.len() as u64,
+                    scroll_producer_chars_encoded: plan.prefix_chars(plan.len()),
+                    ..EvalWork::default()
+                });
+                let tape = Rendered::from_line_plan(plan.clone()).into_tape(style_count);
+                let flat = flatten_layout_tape(tape, true)?;
+                let (text, spaces, properties) = tape_character_encoding_parts(&flat.characters)?;
+                let literal = encode_lisp_literal(
+                    &text,
+                    &spaces,
+                    &properties,
+                    styles,
+                    flat.characters.len() as u64,
+                    max_bytes,
+                )?;
+                push_lisp_string(&mut effect, &literal);
+                effect.push(' ');
+            }
+        }
+        effect.push(']');
+        if payload
+            .literal
+            .len()
+            .saturating_add(effect.len())
+            .saturating_add(payload.fragment_bytes.len())
+            > max_bytes
+        {
+            return Err("Native scroll producers exceed their byte limit".to_owned());
         }
     }
     effect.push_str("])");
     payload.literal.pop();
     payload.literal.push_str(&effect);
-    payload.record_count += 1;
+    payload.record_count += plans.len();
     if payload
         .literal
         .len()
@@ -4154,7 +4166,7 @@ fn build_emacs_commit_batch(
     complete: bool,
     root_metadata: bool,
     max_bytes: usize,
-    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
+    scroll: Option<(&ScrollPlans, Option<&ScrollPlans>)>,
 ) -> Result<EmacsCommitBatch, String> {
     let core = tape_commit_batch(&old.characters, &target.characters);
     let publication_edits = coalesce_publication_edits(&core.semantic_edits);
@@ -4275,7 +4287,7 @@ pub(crate) fn encode_layout_patch_tape_with_scroll(
     identity: TapeIdentity,
     root_metadata: bool,
     max_bytes: usize,
-    scroll: Option<(&RootScrollPlan, Option<&RootScrollPlan>)>,
+    scroll: Option<(&ScrollPlans, Option<&ScrollPlans>)>,
 ) -> Result<Vec<u8>, String> {
     let old = flatten_layout_tape(old_tape, identity.complete)?;
     let target = flatten_layout_tape(target_tape, identity.complete)?;
@@ -4363,7 +4375,7 @@ pub(crate) fn encode_layout_tape_with_scroll(
     identity: TapeIdentity,
     root_metadata: bool,
     max_bytes: usize,
-    scroll: Option<&RootScrollPlan>,
+    scroll: Option<&ScrollPlans>,
 ) -> Result<Vec<u8>, String> {
     let line_count = count_u32(tape.lines.len(), "lines")?;
     if tape.style_count as usize != styles.len() {
@@ -7753,7 +7765,7 @@ fn render_node_body(
             if transparent_preformatted {
                 let mut rendered = child_rendered.take().expect("validated child");
                 rendered.empty_width = content_width;
-                rendered.root_scroll = None;
+                rendered.scroll_plan = None;
                 rendered.own_scroll_owner = false;
                 let mut ops = vec![LineOp::OwnContent {
                     region: *region_id,
@@ -7773,7 +7785,7 @@ fn render_node_body(
                 return Ok(rendered);
             }
 
-            let previous_scroll = scope.previous_root_scroll();
+            let previous_scroll = scope.previous_scroll_plan();
             let text_styles = [
                 *content_typography_style,
                 *content_foreground_style,
@@ -7832,8 +7844,8 @@ fn render_node_body(
                 };
                 rendered.lines
             };
-            let text_input = if scope.root_scroll_requested() {
-                content.as_ref().map(|text| RootTextInput {
+            let text_input = if scope.complete_scroll_effects_requested() {
+                content.as_ref().map(|text| ScrollTextInput {
                     source: Arc::clone(text),
                     width: content_width,
                     wrap: *wrap_mode,
@@ -7913,7 +7925,7 @@ fn render_node_body(
                 && border_bottom_style.is_none()
                 && *vertical == VerticalAlign::Top;
 
-            let root_scroll = if scope.root_scroll_requested()
+            let scroll_plan = if scope.complete_scroll_effects_requested()
                 && *overflow == Overflow::Scroll
                 && *padding_left == 0
                 && *padding_right == 0
@@ -7948,7 +7960,7 @@ fn render_node_body(
                     &mut change.clone(),
                     ops,
                 );
-                Some(Arc::new(RootScrollPlan {
+                Some(Arc::new(ScrollPlan {
                     region_id: *region_id,
                     full_content,
                     rendered_content,
@@ -8201,7 +8213,7 @@ fn render_node_body(
                     vec![LineOp::ScrollWindow(*region_id)],
                 );
             }
-            rendered.root_scroll = root_scroll;
+            rendered.scroll_plan = scroll_plan;
             if let Some(change) = change {
                 scope.publish_change(change);
             }
