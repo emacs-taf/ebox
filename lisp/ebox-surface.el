@@ -1708,6 +1708,16 @@ PREVIOUS-STATE's node-object table."
                           (plist-get previous-state :selector-tree-token))
                      (plist-get previous-state :selector-tree-token)
                    (cons 'ebox/selector-tree nil))))))
+    ;; Source-path invalidation cannot prove a memoized render signature when
+    ;; cascade projection can change inherited facts on untouched descendants.
+    ;; Recompute these derived signatures for this style generation; the output
+    ;; cache remains reusable under the resulting, current signatures.
+    (when subjects-required-p
+      (dolist (key '(:render-signature-cache
+                     :viewport-height-dependent-subtree-cache
+                     :flex-content-min-widths))
+        (when (plist-member state-overrides key)
+          (plist-put state-overrides key (make-hash-table :test 'eq)))))
     (cond
      ((eq projection-kind 'native-frame)
         (ebox-surface--project-node-delta

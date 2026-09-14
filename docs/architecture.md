@@ -57,6 +57,12 @@ bindings. Retaining enclosing native keymaps uses TP's property equality policy:
 defensive copies with identical bindings remain equivalent, while changed
 commands, prefix maps or inherited bindings require publication.
 
+Complete cascade projection starts a new generation of render-signature,
+viewport-height and intrinsic-width memos. Source-path invalidation alone cannot
+authenticate these derived facts: inherited styles can change a descendant whose
+source is unchanged. Rendered output remains cached by its newly computed
+signature. Proven local projections retain their prepared cache invalidation.
+
 Canonical producers and the DSL derive provisional LayoutConfig and outer
 fields through one Ebox-owned declaration projection. It filters deferred values
 and caches concrete configurations without taking ownership of source declarations.

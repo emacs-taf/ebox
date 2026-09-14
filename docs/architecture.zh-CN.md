@@ -107,6 +107,10 @@ Runtime 身份转移保留节点与 region 身份，不复制子序列坐标。�
 
 ## Patch 顺序
 
+完整层叠投影重新建立渲染签名、viewport 高度依赖与内在宽度的派生缓存。
+仅按源修改路径失效不足以证明这些缓存有效：源未变的后代仍可能继承新样式。
+渲染输出继续按新计算的签名复用；已证明的局部投影保留其准备阶段的缓存失效结果。
+
 规划器优先使用 `paint-patch`，再使用 `span-patch`、`owner-rerender`，最后在几何或 identity 使小操作不安全时使用 `root-rerender`。incremental adapter 从 live generation fact 推导 tentative owner；pure patch port 随后只接收这些 artifact 与不可变 parent table。这些名称描述的是 Ebox 的语义 owner 范围；只有 TP 负责计算并执行物理文本/属性 diff。Patch 不得静默扩大语义范围。报告保留 Ebox strategy 与 planned scope，同时单独记录 TP 的实际 surface operation 和 revision。
 
 span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，producer 先重建普通 candidate state，再渲染完整 root。被拒绝的尝试留下的临时坐标、fragment 和 paint layer 不能授权发布。报告保留 planned strategy 与 scope；普通 fallback 的 `:projection-kind` 为 `nil`。因此，planned mixed strategy 不能证明计算始终局限在局部。

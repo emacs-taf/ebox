@@ -15,6 +15,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Complete style projection refreshes inherited text paint and font geometry
+  without reusing stale render signatures. Later scoped updates no longer reject
+  valid input because an earlier update left old descendant rendering visible.
+
 - Unkeyed children with stable source identities remain targetable when
   conditional siblings appear or disappear, including nested Host updates.
 
