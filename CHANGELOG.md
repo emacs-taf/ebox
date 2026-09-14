@@ -13,6 +13,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Combining inherited parent paint with child content replacements now keeps
+  subsequent edits and exported snapshots consistent. Later updates no longer
+  restore text from an earlier publication through stale descendant indexes.
+
 - Incremental updates avoid repeatedly copying unchanged mounted ranges while
   planning local projection candidates.
 

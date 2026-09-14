@@ -855,6 +855,11 @@
       "name": "ebox-scoped-candidates-combine-content-and-selector-paint",
       "file": "tests/ebox-selector-tests.el",
       "purpose": "Publish adjacent text and class-dependent paint with fresh-render equivalence; diagnostic reports remain defensive and preserve the last successful update after rejection."
+    },
+    {
+      "name": "ebox-inherited-paint-keeps-subsequent-content-and-snapshots",
+      "file": "tests/ebox-paint-content-tests.el",
+      "purpose": "Repeated inherited parent paint and child content updates retain matching output, styles and independently renderable canonical snapshots."
     }
   ]
 }

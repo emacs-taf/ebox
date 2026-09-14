@@ -5750,6 +5750,7 @@ style consumers; the Style Adapter computes their values exactly once later."
          (source-index (plist-get state :source-index))
          (patch-table (make-hash-table :test #'equal))
          (patch-paths (make-hash-table :test #'equal))
+         (painted-nodes (make-hash-table :test #'equal))
          patch-ids)
     (dolist (entry (ebox-candidate--paint-patches candidate))
       (let ((node-id
@@ -5822,12 +5823,19 @@ style consumers; the Style Adapter computes their values exactly once later."
                     (setq next
                           (ebox-tree-copy-with-direct-child-replacements
                            next (nreverse child-replacements)))))
+                ;; Inherited paint can copy a descendant that was already a
+                ;; replacement anchor.  Keep its trace on the final copy:
+                ;; indexing the earlier anchor would leave the committed node
+                ;; table pointing outside the tree used for this publication.
+                (when (and node-id
+                           (hash-table-p ebox-incremental--candidate-path-copy-trace)
+                           (gethash node-id ebox-incremental--candidate-path-copy-trace))
+                  (puthash node-id next painted-nodes))
                 next)))))
       (dolist
           (node-id
            (ebox-incremental--candidate-paint-top-anchors
-            state patch-table patch-ids)
-           root)
+            state patch-table patch-ids))
         (let ((current
                (ebox-incremental--candidate-current-node state node-id)))
           (unless current
@@ -5836,7 +5844,17 @@ style consumers; the Style Adapter computes their values exactly once later."
                 (ebox-incremental--candidate-path-copy-overlay
                  root node-id
                  (rewrite current nil)
-                 state nil)))))))
+                 state nil)))))
+    ;; Path copying above must still find the pre-paint child by identity in
+    ;; its parent.  Only after installing all painted roots can traces adopt
+    ;; the copies that the candidate index must publish.
+    (when (hash-table-p ebox-incremental--candidate-path-copy-trace)
+      (maphash
+       (lambda (node-id node)
+         (when-let* ((trace (gethash node-id ebox-incremental--candidate-path-copy-trace)))
+           (plist-put trace :node node)))
+       painted-nodes))
+    root))
 
 (defun ebox-incremental--candidate-logical-root
     (candidate &optional detached-history)
