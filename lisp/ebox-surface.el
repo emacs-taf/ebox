@@ -180,8 +180,6 @@ the winning client state; otherwise only the candidate is disposable."
           (release-loser candidate-session))))
     (nreverse diagnostics)))
 (declare-function tp-object-reuse "tp-surface" (context object))
-(declare-function tp-object-ensure-at
-                  "tp-surface" (context parent key kind position))
 (declare-function tp-bind-precomputed
                   "tp-reactive"
                   (owner key compute value dependencies &rest options))
@@ -1830,24 +1828,15 @@ PREVIOUS-STATE's node-object table."
         (let* ((node (ebox-runtime-index-get node-id nodes))
                (parent-id (and node (ebox-runtime-index-get node-id parents)))
                (old-object (and node (gethash node-id old-objects)))
-               (parent-node (and parent-id (ebox-runtime-index-get parent-id nodes)))
-               (position
-                (if parent-node
-                    (or (cl-position
-                         node (ebox-tree--children-raw parent-node) :test #'eq)
-                        (error "Ebox native projection lost child position"))
-                  0))
                (parent (if parent-id
                            (gethash parent-id objects-by-id)
                          node-root)))
           (unless (and node parent)
             (error "Ebox native projection has an unordered node delta"))
           (let ((object
-                 (tp-object-ensure-at context parent
-                                      (ebox-surface--node-key
-                                       source-index node)
-                                      (ebox-surface--node-kind node)
-                                      position)))
+                 (tp-object-ensure context parent
+                                   (ebox-surface--node-key node)
+                                   (ebox-surface--node-kind node))))
             (tp-object-retain context object)
             (if (eq object old-object)
                 (tp-object-reuse context object)
@@ -1910,7 +1899,7 @@ children again."
      bindings-by-subject states-by-subject style-state-table
      stylesheet-signature
      selector-tree-token stylesheet-subject-local-p
-     ebox--render-root-parent-kind nil node-objects)
+     ebox--render-root-parent-kind node-objects)
     (when (> (ebox-tree-author-style-count root) 0)
       (ebox-tree-clear-author-style-pending root))
     projection))
@@ -2616,12 +2605,11 @@ generation.  Node memos follow the source-copy policy in the projector."
       (not (ebox--runtime-region-id-conflict
             (ebox-surface--source-region-id-set source) buffer))))
 
-(defun ebox-surface--node-key (source-index node &optional positional-p)
-  "Return NODE's SOURCE-INDEX sibling key, or nil when positional."
-  (when-let* ((key (and (not positional-p)
-                        (not (plist-get node :ebox-sequence-location))
-                        (ebox-tree-node-author-key source-index node))))
-    (list 'ebox/key key)))
+(defun ebox-surface--node-key (node)
+  "Project NODE's reconciled Ebox identity into the TP sibling namespace."
+  (list 'ebox/node
+        (or (plist-get node :node-id)
+            (error "Ebox surface node has no reconciled identity"))))
 
 (defun ebox-surface--node-kind (node)
   "Return the TP kind discriminator for Ebox NODE."
@@ -3196,7 +3184,7 @@ dependencies, or any malformed index conservatively preserves root planning."
     (context parent node source-index table subject-table bindings-by-subject
              states-by-subject style-state-table stylesheet-signature
              selector-tree-token stylesheet-subject-local-p
-             &optional parent-kind positional-p node-objects)
+             &optional parent-kind node-objects)
   "Ensure styled NODE descendants below PARENT in CONTEXT and fill TABLE.
 NODE-OBJECTS reuses already ensured identities for a same-context style pass."
   (ebox--ensure-node-id node)
@@ -3205,8 +3193,7 @@ NODE-OBJECTS reuses already ensured identities for a same-context style pass."
              (or (gethash (plist-get node :node-id) node-objects)
                  (error "Ebox focus reprojection lost a retained node"))
            (tp-object-ensure context parent
-                             (ebox-surface--node-key
-                              source-index node positional-p)
+                             (ebox-surface--node-key node)
                              (ebox-surface--node-kind node)))))
     (tp-object-retain context object)
     (plist-put node :surface-object object)
@@ -3227,7 +3214,7 @@ NODE-OBJECTS reuses already ensured identities for a same-context style pass."
           bindings-by-subject
           states-by-subject style-state-table stylesheet-signature
           selector-tree-token stylesheet-subject-local-p
-          child-kind (and (plist-get node :ebox-child-sequence) t) node-objects))))
+          child-kind node-objects))))
     (when subject-table
       (ebox-tree--validate-node-parent-participation
        node parent-kind 'computed))

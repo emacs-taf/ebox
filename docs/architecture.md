@@ -140,6 +140,11 @@ for unkeyed nodes. Positional fallback excludes identities retained elsewhere in
 the new sibling list, preventing inserted content from taking a surviving node's
 identity and invalidating nested Host updates.
 
+Surface projection uses these reconciled runtime node identities as TP keys in
+both complete and delta projections. It does not reconcile author keys or sibling
+positions a second time. Inserting a status label therefore preserves the TP
+objects, style bindings and editable handles of retained following siblings.
+
 ## Patch order
 
 The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.

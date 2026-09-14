@@ -566,6 +566,9 @@ buffer，遵循 `display-buffer-alist`，并接受与原生 `display-buffer` 相
   (ebox-region-update handle :color "#166534"))
 ```
 
+节点仍保留在同一父节点下时，可以继续使用已有 handle；插入或重排兄弟节点不会
+使它失效。替换节点的逻辑身份、移除节点或重新挂载 buffer 后，应重新解析 handle。
+
 同一 API 可以替换 Text 或 Box region 的原生能力。对上面的交互示例：
 
 ```elisp

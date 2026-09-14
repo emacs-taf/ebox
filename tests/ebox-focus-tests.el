@@ -305,17 +305,21 @@
       (should (looking-at "BBB")))))
 
 (ert-deftest ebox-focus-prefers-source-identity-over-reused-layout-nodes ()
-  "Source identity follows unkeyed reorder, and a replacement cannot acquire focus."
+  "Unkeyed reorder retains focus and editable handles; replacement clears focus."
   (with-temp-buffer
     (ebox-render-to-buffer
      (current-buffer)
      (ebox-focus-test--input '((a "AAA" (:tab-index 0)) (b "BBB" (:tab-index 0))) t))
-    (ebox-focus 'a)
-    (ebox-commit
-     (current-buffer)
-     (ebox-focus-test--input '((b "BBB" (:tab-index 0)) (a "AAA" (:tab-index 0))) t))
-    (should (eq (ebox-focused-host-ref) 'a))
-    (should (looking-at "AAA"))
+    (let ((handle (ebox-region-resolve (current-buffer) 'a)))
+      (ebox-focus 'a)
+      (ebox-commit
+       (current-buffer)
+       (ebox-focus-test--input '((b "BBB" (:tab-index 0)) (a "AAA" (:tab-index 0))) t))
+      (should (eq (ebox-focused-host-ref) 'a))
+      (should (looking-at "AAA"))
+      (ebox-region-update handle :content "AXA")
+      (should (looking-at "AXA"))
+      (should (string-match-p "BBB" (buffer-string))))
     (ebox-commit
      (current-buffer)
      (ebox-focus-test--input '((b "BBB" (:tab-index 0)) (c "CCC" (:tab-index 0))) t))

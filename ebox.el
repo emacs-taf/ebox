@@ -668,6 +668,8 @@
 ;; Function: ebox-region-resolve (buffer-or-name logical-id)
 ;;;###autoload (autoload 'ebox-region-resolve "ebox" nil nil)
 ;; Resolve LOGICAL-ID in BUFFER-OR-NAME to an opaque editable region handle.
+;; A retained node keeps its handle across sibling insertion and reordering.
+;; Removal, replacement of its logical identity or unmounting invalidates it.
 ;;
 ;; Variable: ebox-region-types
 ;; Mapping from Ebox region roles to rendered text properties.

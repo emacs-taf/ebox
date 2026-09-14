@@ -699,7 +699,7 @@
     {
       "name": "ebox-focus-prefers-source-identity-over-reused-layout-nodes",
       "file": "tests/ebox-focus-tests.el",
-      "purpose": "Source identity follows unkeyed reorder, and a replacement cannot acquire focus."
+      "purpose": "Unkeyed reorder retains focus and editable handles; replacement clears focus."
     },
     {
       "name": "ebox-native-activation-shares-focus-with-position-and-mouse-selection",

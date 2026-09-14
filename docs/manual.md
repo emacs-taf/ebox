@@ -674,6 +674,10 @@ handle:
   (ebox-region-update handle :color "#166534"))
 ```
 
+Keep a handle while its node remains under the same parent: inserting or
+reordering siblings does not invalidate it. Resolve a new handle after replacing
+the node's logical identity, removing it or remounting the buffer.
+
 The same API replaces native capabilities on Text or Box regions. For the
 interaction example above:
 
