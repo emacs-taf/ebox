@@ -106,6 +106,11 @@ fresh root
 
 The candidate is either fully published or discarded. A failed render, TP write, Ebox participant, or publication callback preserves the previous buffer text, properties, TP revision, Ebox runtime identity, scroll state, and last successful report. If the target buffer is killed during publication, teardown is authoritative and rollback never resurrects it.
 
+Projection planning shares numeric TP mount snapshots across its local proofs.
+This read view exists only during one planning pass and is discarded before TP
+publishes coordinates. It neither replaces TP's authoritative mounts nor changes
+the defensive snapshots returned by public Ebox queries.
+
 ## Patch order
 
 The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.

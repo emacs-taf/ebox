@@ -145,12 +145,24 @@
     (ebox-incremental--require-context-port))
    buffer))
 
+(defvar ebox-incremental--mount-snapshot-cache nil
+  "Read-only TP mount snapshots shared within one publication planning pass.
+The planning pass ends before TP can publish new coordinates.")
+
 (defun ebox-incremental--region-mounts (buffer region-id &optional roles)
-  "Return BUFFER mounts for REGION-ID and optional ROLES through the port."
-  (funcall
-   (ebox-incremental-context-port-region-mounts
-    (ebox-incremental--require-context-port))
-   buffer region-id roles))
+  "Read BUFFER mounts for REGION-ID and ROLES from the current planning view.
+Private planning readers must not mutate the returned numeric snapshots."
+  (let* ((cache ebox-incremental--mount-snapshot-cache)
+         (key (and cache (list buffer region-id roles)))
+         (cached (and cache (gethash key cache 'ebox/missing-mount-snapshot))))
+    (if (and cache (not (eq cached 'ebox/missing-mount-snapshot))) cached
+      (let ((mounts
+             (funcall
+              (ebox-incremental-context-port-region-mounts
+               (ebox-incremental--require-context-port))
+              buffer region-id roles)))
+        (when cache (puthash key mounts cache))
+        mounts))))
 
 (defun ebox-incremental--cascade-local-owner-proof-p
     (state candidate-state dirty-set)
@@ -10669,7 +10681,8 @@ role, and outside-complement compatibility before publication."
 (defun ebox-incremental--surface-commit-input
     (buffer old-state prepared)
   "Return TP surface input for BUFFER from OLD-STATE and PREPARED runtime."
-  (let* ((ebox-incremental--allocated-slot-proof-cache
+  (let* ((ebox-incremental--mount-snapshot-cache (make-hash-table :test #'equal))
+         (ebox-incremental--allocated-slot-proof-cache
           (make-hash-table :test 'equal))
          (ebox--flex-slot-safety-cache (make-hash-table :test 'equal))
          (ebox--runtime-ancestor-cache (make-hash-table :test 'equal))

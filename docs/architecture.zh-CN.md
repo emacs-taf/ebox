@@ -86,6 +86,10 @@ Grid 所有者或单元格更新会重建父布局分配；其余配置保留完
 
 候选要么完整发布，要么丢弃。render、TP 写入、Ebox participant 或发布回调失败时，必须保留之前的 buffer 文本、属性、TP revision、Ebox runtime identity、滚动状态和最近一次成功报告。如果目标 buffer 在发布期间被 kill，teardown 是最终状态，rollback 绝不能把它复活。
 
+投影规划在多个局部证明之间共享 TP 挂载范围的数值快照。该只读视图只存在于
+一次规划过程，在 TP 发布新坐标之前丢弃；它不替代 TP 的权威挂载状态，也不
+改变 Ebox 公共查询返回防御性快照的契约。
+
 ## Patch 顺序
 
 规划器优先使用 `paint-patch`，再使用 `span-patch`、`owner-rerender`，最后在几何或 identity 使小操作不安全时使用 `root-rerender`。incremental adapter 从 live generation fact 推导 tentative owner；pure patch port 随后只接收这些 artifact 与不可变 parent table。这些名称描述的是 Ebox 的语义 owner 范围；只有 TP 负责计算并执行物理文本/属性 diff。Patch 不得静默扩大语义范围。报告保留 Ebox strategy 与 planned scope，同时单独记录 TP 的实际 surface operation 和 revision。

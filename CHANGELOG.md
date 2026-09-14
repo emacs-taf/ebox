@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Incremental updates avoid repeatedly copying unchanged mounted ranges while
+  planning local projection candidates.
+
 - Repeated candidate subtree updates evaluate structural selectors against the
   complete candidate context. Added children, affected siblings and rejected
   publications retain the same styles as a fresh render. Local publications
