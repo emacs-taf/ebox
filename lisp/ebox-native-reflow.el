@@ -107,7 +107,7 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "19:9:12"
+(defconst ebox-native-reflow-abi-version "20:10:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -1773,12 +1773,46 @@ vertically.  Preserve exact values only; other geometry uses the Elisp path."
           (ebox-native-reflow--exact-size-integer value source)
         (floor value)))))
 
+(defun ebox-native-reflow--compile-height-expression (value &optional box)
+  "Compile VALUE as signed line arithmetic in BOX's font context.
+Viewport height retains the original frame reference in native evaluation."
+  (let ((box (or box ebox-native-reflow--compile-size-node)))
+    (cond
+     ((eq (car-safe value) 'calc)
+      (ebox-native-reflow--compile-height-expression (cadr value) box))
+     ((memq (car-safe value) '(+ -))
+      (list :kind (if (eq (car value) '+) "add" "subtract")
+            :values (vconcat
+                     (mapcar (lambda (operand)
+                               (ebox-native-reflow--compile-height-expression
+                                operand box))
+                             (cdr value)))))
+     (t
+      (let* ((viewport-p (eq (car-safe value) 'vh))
+             (amount
+              (if viewport-p
+                  (* (cadr value) (/ (float (frame-char-height))
+                                    (ebox--size-line-height box)))
+                (ebox-native-reflow--require-static-size value)
+                (ebox-native-reflow--exact-size-integer
+                 (/ (ebox--size-pixels value box 'height)
+                    (float (ebox--size-line-height box)))
+                 value)))
+             (leaf (list :kind (if viewport-p "css-viewport-height" "lines")
+                         :value (abs amount))))
+        (if (< amount 0)
+            (list :kind "subtract" :values (vector leaf))
+          leaf))))))
+
 (defun ebox-native-reflow--compile-size (value axis nil-kind &optional box)
   "Compile size VALUE for AXIS in BOX, using NIL-KIND when absent."
   (cond
    ((and (eq axis 'horizontal) (ebox-size-value-p value)
          (eq (car value) 'vw))
     (list :kind "css-viewport-width" :value (cadr value)))
+   ((and (eq axis 'vertical) (ebox-size-value-p value)
+         (memq 'viewport-height (ebox-size-dependencies value)))
+    (ebox-native-reflow--compile-height-expression value box))
    ((ebox-size-value-p value)
     (list :kind (if (eq axis 'horizontal) "pixels" "lines")
           :value (ebox-native-reflow--compile-fixed-size value axis box)))
@@ -2470,7 +2504,15 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
     (_ (error "Native reflow unsupported node type: %S"
               (and (listp node) (plist-get node :ebox-type))))))
 
-(defun ebox-native-reflow--node-static-sizes-p (node)
+(defun ebox-native-reflow--height-expression-supported-p (value)
+  "Return non-nil if VALUE has a native height expression representation."
+  (or (ebox-native-reflow--static-size-p value)
+      (eq (car-safe value) 'vh)
+      (and (memq (car-safe value) '(calc + -))
+           (cl-every #'ebox-native-reflow--height-expression-supported-p
+                     (cdr value)))))
+
+(defun ebox-native-reflow--node-sizes-supported-p (node)
   "Return non-nil if NODE's own sizes can survive retained native resize."
   (let ((config (plist-get node :ebox-layout-config)))
     (cl-every
@@ -2491,7 +2533,12 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                                   :margin-left-pixel :margin-right-pixel
                                   :border-top-pixel :border-bottom-pixel
                                   :border-left-pixel :border-right-pixel)))
-                     (ebox-native-reflow--static-size-p value)))))
+                     (ebox-native-reflow--static-size-p value)
+                     (and (memq property '(:width :min-width :max-width :flex-basis))
+                          (eq (car-safe value) 'vw))
+                     (and (memq property '(:height :min-height :max-height :flex-basis))
+                          (ebox-native-reflow--height-expression-supported-p
+                           value))))))
      (list node (plist-get node :props)
            (and config (ebox-layout-config-props config))))))
 
@@ -2503,7 +2550,7 @@ Grid retains the ordinary two-dimensional renderer."
    ((or (null node) (stringp node) (not (listp node))) t)
    ((or (ebox-layer-host-p node) (ebox-layer-positioned-p node)) nil)
    ((eq (plist-get node :visibility) 'hidden) nil)
-   ((not (ebox-native-reflow--node-static-sizes-p node)) nil)
+   ((not (ebox-native-reflow--node-sizes-supported-p node)) nil)
    ((plist-get node :ebox-child-sequence) nil)
    ((eq (plist-get node :ebox-type) 'grid) nil)
    ((eq (plist-get node :ebox-type) 'box)

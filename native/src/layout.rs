@@ -1160,7 +1160,8 @@ fn same_scalar_source<T: PartialEq>(base: &T, target: &T, _: &mut SourceChangeWo
 fn same_size_source(base: &Size, target: &Size, work: &mut SourceChangeWork) -> bool {
     work.size_nodes_compared += 1;
     match (base, target) {
-        (Size::CssViewportWidth { value: left }, Size::CssViewportWidth { value: right }) => {
+        (Size::CssViewportWidth { value: left }, Size::CssViewportWidth { value: right })
+        | (Size::CssViewportHeight { value: left }, Size::CssViewportHeight { value: right }) => {
             left == right
         }
         (Size::Pixels { value: left }, Size::Pixels { value: right })
@@ -1272,9 +1273,9 @@ fn size_work(size: &Size) -> Result<usize, String> {
 
 fn context_size_occurrences(size: &Size) -> Result<usize, String> {
     let mut count = 0_usize;
-    visit_context_size_occurrences(size, &mut || {
+    visit_context_size_occurrences(size, &mut |weight| {
         count = count
-            .checked_add(1)
+            .checked_add(weight)
             .ok_or_else(|| "Native retained context summary invariant failed".to_owned())?;
         Ok(())
     })?;
@@ -1771,6 +1772,9 @@ enum Size {
     CssViewportWidth {
         value: f64,
     },
+    CssViewportHeight {
+        value: f64,
+    },
     MinContent,
     MaxContent,
     FitContent {
@@ -1910,6 +1914,7 @@ struct MeasuredCluster {
 pub struct LayoutContext {
     pub viewport_width: i64,
     pub css_viewport_width: i64,
+    pub css_viewport_height: i64,
     pub viewport_width_known: bool,
     pub viewport_height: i64,
     pub inline_auto_width_intrinsic: bool,
@@ -4733,11 +4738,12 @@ fn add_vertical_size_work(size: &Size, work_units: &mut usize) -> Result<(), Str
 
 fn visit_context_size_occurrences(
     size: &Size,
-    visit: &mut impl FnMut() -> Result<(), String>,
+    visit: &mut impl FnMut(usize) -> Result<(), String>,
 ) -> Result<(), String> {
     // Validation work adds every operand, including subtraction operands.
     match size {
-        Size::ViewportHeight => visit(),
+        Size::ViewportHeight => visit(1),
+        Size::CssViewportHeight { value } => visit((value / 100.0).ceil() as usize),
         Size::FitContent { limit: Some(limit) } => visit_context_size_occurrences(limit, visit),
         Size::Add { values } | Size::Subtract { values } => {
             for value in &values.0 {
@@ -4754,10 +4760,12 @@ fn add_context_size_work(
     context: LayoutContext,
     work_units: &mut usize,
 ) -> Result<(), String> {
-    visit_context_size_occurrences(size, &mut || {
+    visit_context_size_occurrences(size, &mut |weight| {
         add_work_units(
             work_units,
-            usize::try_from(context.viewport_height).unwrap_or(usize::MAX),
+            usize::try_from(context.viewport_height)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(weight),
         )
     })
 }
@@ -4829,7 +4837,7 @@ fn validate_size_at_depth(name: &str, size: &Size, depth: usize) -> Result<(), S
     }
     match size {
         Size::Pixels { value } | Size::Lines { value } => validate_dimension(name, *value),
-        Size::CssViewportWidth { value } => {
+        Size::CssViewportWidth { value } | Size::CssViewportHeight { value } => {
             if value.is_finite() && *value >= 0.0 && *value <= MAX_LAYOUT_DIMENSION as f64 {
                 Ok(())
             } else {
@@ -5199,15 +5207,27 @@ fn css_viewport_width(percentage: f64, context: LayoutContext) -> Option<i64> {
         .then_some(value as i64)
 }
 
-fn validate_inline_context_size(size: &Size, context: LayoutContext) -> Result<(), String> {
+fn css_viewport_height(percentage: f64, context: LayoutContext) -> Option<i64> {
+    let value = context.css_viewport_height as f64 * (percentage / 100.0);
+    (value.is_finite()
+        && value >= 0.0
+        && value <= MAX_LAYOUT_DIMENSION as f64
+        && value.fract() == 0.0)
+        .then_some(value as i64)
+}
+
+fn validate_context_size(size: &Size, context: LayoutContext) -> Result<(), String> {
     match size {
         Size::CssViewportWidth { value } if css_viewport_width(*value, context).is_none() => {
             Err("Native viewport width requires bounded integral geometry".to_owned())
         }
-        Size::FitContent { limit: Some(limit) } => validate_inline_context_size(limit, context),
+        Size::CssViewportHeight { value } if css_viewport_height(*value, context).is_none() => {
+            Err("Native viewport height requires bounded integral geometry".to_owned())
+        }
+        Size::FitContent { limit: Some(limit) } => validate_context_size(limit, context),
         Size::Add { values } | Size::Subtract { values } => {
             for value in &values.0 {
-                validate_inline_context_size(value, context)?;
+                validate_context_size(value, context)?;
             }
             Ok(())
         }
@@ -5274,9 +5294,11 @@ fn resolve_width(
             Some(min_content.max(max_content.min(available)))
         }
         Size::Stretch | Size::Contain => stretch.or(fallback),
-        Size::Lines { .. } | Size::ViewportHeight | Size::Add { .. } | Size::Subtract { .. } => {
-            fallback
-        }
+        Size::Lines { .. }
+        | Size::ViewportHeight
+        | Size::CssViewportHeight { .. }
+        | Size::Add { .. }
+        | Size::Subtract { .. } => fallback,
     }
 }
 
@@ -5364,6 +5386,9 @@ fn resolve_raw_height(size: &Size, context: LayoutContext) -> Option<i64> {
     fn resolve(size: &Size, context: LayoutContext) -> Option<i128> {
         match size {
             Size::Lines { value } | Size::Pixels { value } => Some(i128::from(*value)),
+            Size::CssViewportHeight { value } => {
+                css_viewport_height(*value, context).map(i128::from)
+            }
             Size::ViewportHeight => {
                 (context.viewport_height > 0).then_some(i128::from(context.viewport_height))
             }
@@ -5401,6 +5426,7 @@ fn resolve_height(
         Size::Lines { .. }
         | Size::Pixels { .. }
         | Size::ViewportHeight
+        | Size::CssViewportHeight { .. }
         | Size::Add { .. }
         | Size::Subtract { .. } => resolve_raw_height(size, context).map(|value| {
             box_sizing_content_height(value.max(0), sizing, padding_top, padding_bottom)
@@ -5787,7 +5813,10 @@ fn flex_horizontal_size(size: &Size, context: LayoutContext) -> Option<i64> {
         Size::MinContent | Size::MaxContent | Size::FitContent { .. } => context
             .viewport_width_known
             .then_some(context.viewport_width.max(0)),
-        Size::ViewportHeight | Size::Add { .. } | Size::Subtract { .. } => None,
+        Size::ViewportHeight
+        | Size::CssViewportHeight { .. }
+        | Size::Add { .. }
+        | Size::Subtract { .. } => None,
     }
 }
 
@@ -5796,6 +5825,7 @@ fn flex_vertical_size(size: &Size, context: LayoutContext) -> Option<i64> {
         Size::Lines { .. }
         | Size::Pixels { .. }
         | Size::ViewportHeight
+        | Size::CssViewportHeight { .. }
         | Size::Add { .. }
         | Size::Subtract { .. } => resolve_raw_height(size, context).map(|value| value.max(0)),
         _ => None,
@@ -6012,7 +6042,12 @@ fn flex_min_main(
     };
     let preferred = if horizontal { width } else { height };
     let definite = match preferred {
-        Size::Pixels { .. } | Size::Lines { .. } | Size::CssViewportWidth { .. } => {
+        Size::Pixels { .. }
+        | Size::Lines { .. }
+        | Size::CssViewportWidth { .. }
+        | Size::CssViewportHeight { .. }
+        | Size::Add { .. }
+        | Size::Subtract { .. } => {
             if horizontal {
                 flex_box_resolve_width(source, preferred, None, scope, context)?
             } else {
@@ -6077,11 +6112,8 @@ fn flex_horizontal_basis_value(size: &Size, context: LayoutContext) -> i64 {
     }
 }
 
-fn flex_vertical_basis_value(size: &Size) -> i64 {
-    match size {
-        Size::Pixels { value } | Size::Lines { value } => *value,
-        _ => 0,
-    }
+fn flex_vertical_basis_value(size: &Size, context: LayoutContext) -> i64 {
+    resolve_raw_height(size, context).unwrap_or(0).max(0)
 }
 
 fn flex_basis_main(
@@ -6124,7 +6156,7 @@ fn flex_basis_main(
     }
     Ok(match axis {
         FlexAxis::Row => flex_horizontal_basis_value(basis, context),
-        FlexAxis::Column => flex_vertical_basis_value(basis),
+        FlexAxis::Column => flex_vertical_basis_value(basis, context),
     })
 }
 
@@ -6167,6 +6199,7 @@ fn measure_flex_item<'a>(
         viewport_width_known: uses_inline_viewport && inline_viewport.is_some(),
         viewport_height: context.viewport_height,
         css_viewport_width: context.css_viewport_width,
+        css_viewport_height: context.css_viewport_height,
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let rendered =
@@ -6546,6 +6579,7 @@ fn render_flex_sized_entry(
         },
         viewport_height: context.viewport_height,
         css_viewport_width: context.css_viewport_width,
+        css_viewport_height: context.css_viewport_height,
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
     let override_size = box_override_for_flex(item.source, axis, main, cross, stretch);
@@ -7389,16 +7423,25 @@ fn render_node_body(
             width,
             min_width,
             max_width,
+            height,
+            min_height,
+            max_height,
             ..
         } => {
-            for size in [width, min_width, max_width] {
-                validate_inline_context_size(size, context)?;
+            for size in [width, min_width, max_width, height, min_height, max_height] {
+                validate_context_size(size, context)?;
             }
         }
-        LayoutNode::Flex { width, items, .. } => {
-            validate_inline_context_size(width, context)?;
+        LayoutNode::Flex {
+            width,
+            height,
+            items,
+            ..
+        } => {
+            validate_context_size(width, context)?;
+            validate_context_size(height, context)?;
             for item in items.iter() {
-                validate_inline_context_size(&item.basis, context)?;
+                validate_context_size(&item.basis, context)?;
             }
         }
         _ => {}
@@ -7573,6 +7616,7 @@ fn render_node_body(
                         && (preliminary_child_width.is_some() || context.viewport_width_known),
                     viewport_height: preliminary_child_height.unwrap_or(context.viewport_height),
                     css_viewport_width: context.css_viewport_width,
+                    css_viewport_height: context.css_viewport_height,
                     inline_auto_width_intrinsic: context.inline_auto_width_intrinsic
                         && matches!(effective_width, Size::Auto),
                 };

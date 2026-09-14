@@ -6,10 +6,15 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Native viewport heights support `vh` and height `calc` addition/subtraction,
+  including nested Box constraints and column Flex bases. Window resize keeps
+  the original viewport reference independently of parent allocations.
+  Rebuild the optional module for ABI `20:10:12` and restart Emacs.
+
 - Native single-row Grid supports fixed and fractional (`fr`) columns with
   automatic Text placement and stretched, clipped Box cells. Text minima,
   intrinsic sizing, cell paint and viewport changes follow ordinary Grid
-  behavior. Rebuild the optional module for ABI `19:9:12` and restart Emacs.
+  behavior.
 
 - Add a native input boundary that guards mounted target ownership and restores logical focus after acceptance, cancellation or reader failure.
 

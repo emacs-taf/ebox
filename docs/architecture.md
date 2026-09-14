@@ -102,11 +102,14 @@ behavior; changing content or the viewport recomputes their allocation through
 the same retained source/evaluation path. Unsupported Grid configurations retain
 the complete Elisp implementation.
 
-Native layout contexts retain the original frame viewport width separately from
-containing-block and Flex item allocations. Literal `vw` widths and row bases
-remain relative in the IR and resolve for every frame, including retained
-requests. A fractional or out-of-range result rejects the native candidate
-before publication and uses the ordinary layout path.
+Native layout contexts retain both original frame viewport axes separately from
+containing-block and Flex item allocations. Literal `vw` widths and row bases,
+and `vh` heights, bounds and column bases remain relative in the IR and resolve
+for every frame, including retained requests. Height `calc` addition and
+subtraction preserve signed operands; font metrics convert viewport pixels to
+the owning node's line domain. A fractional or out-of-range operand rejects the
+native candidate before publication and uses the ordinary layout path. Other
+context-dependent expressions retain the complete Elisp implementation.
 
 ## Commit lifecycle
 

@@ -1401,6 +1401,7 @@ fn checked_layout_context(
     let context = LayoutContext {
         viewport_width,
         css_viewport_width: viewport_width,
+        css_viewport_height: viewport_height,
         viewport_width_known,
         viewport_height,
         inline_auto_width_intrinsic: false,

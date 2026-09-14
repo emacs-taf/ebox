@@ -920,6 +920,16 @@
       "name": "ebox-shared-scopes-reorder-keeps-current-colors",
       "file": "tests/ebox-shared-scope-tests.el",
       "purpose": "Reordering retained nodes preserves current slot and fallback colors."
+    },
+    {
+      "name": "ebox-viewport-height-keeps-frame-reference-through-updates",
+      "file": "tests/ebox-size-style-tests.el",
+      "purpose": "Nested viewport heights and arithmetic follow frame resize and retained updates."
+    },
+    {
+      "name": "ebox-viewport-height-constrains-flex-minima-maxima-and-basis",
+      "file": "tests/ebox-size-style-tests.el",
+      "purpose": "Column Flex constraints retain their original viewport reference."
     }
   ]
 }

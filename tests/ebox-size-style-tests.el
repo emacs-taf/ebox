@@ -236,5 +236,77 @@
                                         (buffer-substring position (1+ position))))))))
             (should (= width (cdr paint)))))))))
 
+(ert-deftest ebox-viewport-height-keeps-frame-reference-through-updates ()
+  "Nested heights and arithmetic retain the original frame across updates."
+  (let ((ebox-viewport-width 80)
+        (ebox-viewport-height 20)
+        (native-ready (ebox-native-reflow-layout-ready-p)))
+    (dolist (case '(((vh 50) . 0)
+                    ((calc (- (vh 50) (lh 1))) . 1)
+                    ((calc (+ (vh 50) (lh -1))) . 1)))
+      (dolist (nested '(nil t))
+        (with-temp-buffer
+          (let* ((cell `(box :id cell :width (px 8) :height ,(car case)
+                            :overflow hidden :background-color "red" "A"))
+                 projection)
+            (ebox-render-to-buffer
+             (current-buffer)
+             (ebox-build
+              (if nested
+                  `(box :id parent :height (lh 2) :overflow visible
+                        :wrap-mode none ,cell)
+                cell))
+             (list :observer
+                   (lambda (_buffer report)
+                     (setq projection (plist-get report :projection-kind)))))
+            (when native-ready (should (eq projection 'native-frame))))
+          (should (= (length (split-string (buffer-string) "\n")) (- 10 (cdr case))))
+          (when nested
+            (ebox-region-update "parent" :height '(lh 1))
+            (should (= (length (split-string (buffer-string) "\n")) (- 10 (cdr case)))))
+          (dolist (viewport '(12 21 20))
+            (ebox-rerender-buffer-with-context (current-buffer) 80 viewport)
+            (should (= (length (split-string (buffer-string) "\n"))
+                       (- (/ viewport 2) (cdr case)))))
+          (ebox-region-update "cell" :height '(vh 75) :content "B")
+          (should (string-prefix-p "B" (buffer-string)))
+          (should (= (length (split-string (buffer-string) "\n")) 15)))))))
+
+(ert-deftest ebox-viewport-height-constrains-flex-minima-maxima-and-basis ()
+  "Column item constraints use the frame height, not the parent allocation."
+  (let ((ebox-viewport-width 80)
+        (ebox-viewport-height 16)
+        projection)
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(flex :flex-direction column :height (lh 8) :width (px 8)
+               :overflow visible :wrap-mode none
+               (box :height (lh 1) :min-height (vh 25) :flex-shrink 0
+                    :background-color "red" "A")
+               (box :height (lh 30) :max-height (vh 12.5) :flex-shrink 0
+                    :background-color "blue" "B")
+               (box :height (lh 1) :min-height (lh 0) :flex-basis (vh 12.5)
+                    :flex-shrink 0 :background-color "green" "C")))
+       (list :observer
+             (lambda (_buffer report)
+               (setq projection (plist-get report :projection-kind)))))
+      (when (ebox-native-reflow-layout-ready-p)
+        (should (eq projection 'native-frame)))
+      (dolist (viewport '(16 32 8))
+        (ebox-rerender-buffer-with-context (current-buffer) 80 viewport)
+        (dolist (paint `(("red" . ,(/ viewport 4))
+                         ("blue" . ,(/ viewport 8))
+                         ("green" . ,(/ viewport 8))))
+          (let ((rows 0))
+            (dolist (line (split-string (buffer-string) "\n"))
+              (when (and (> (length line) 0)
+                         (equal (plist-get (get-text-property 0 'face line)
+                                           :background)
+                                (car paint)))
+                (cl-incf rows)))
+            (should (= rows (cdr paint)))))))))
+
 (provide 'ebox-size-style-tests)
 ;;; ebox-size-style-tests.el ends here
