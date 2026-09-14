@@ -6589,8 +6589,14 @@ candidate isolation contracts."
                        (visit-new child node-id)))))))
           (dolist (delta range-index-deltas)
             (let* ((old-parent (plist-get delta :old-parent))
-                   (new-parent (plist-get delta :new-parent))
-                   (parent-id (plist-get delta :parent-id)))
+                   (parent-id (plist-get delta :parent-id))
+                   ;; A later descendant Range update may copy this parent
+                   ;; again.  Index its final candidate object, not the
+                   ;; intermediate object captured by this Range delta.
+                   (new-parent
+                    (or (and path-copy-trace
+                             (plist-get (gethash parent-id path-copy-trace) :node))
+                        (plist-get delta :new-parent))))
               (puthash parent-id t visited-new)
               (record-touched old-parent new-parent
                               (ebox-runtime-index-get parent-id
@@ -6652,7 +6658,8 @@ candidate isolation contracts."
                    (ebox-tree-source-fact-index-delta
                     (plist-get old-state :source-index)
                     touched removed
-                    ebox-incremental--candidate-incoming-source-indexes)))
+                    ebox-incremental--candidate-incoming-source-indexes
+                    (ebox-tree-source-handle-order candidate-root))))
               (ebox-incremental--candidate-full-index-preparation
                old-state candidate-root touched removed))
           (progn

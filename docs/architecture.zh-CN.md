@@ -94,6 +94,10 @@ Grid 所有者或单元格更新会重建父布局分配；其余配置保留完
 复制中间路径，会覆盖该祖先对兄弟内容的修改。查询仅覆盖受影响路径，未变
 子树继续共享；拒绝发布时保留已提交代和焦点。
 
+Range delta 描述受影响的内容，owner 则从最终路径复制记录中进入索引；后续
+后代更新可能再次复制该 owner。大范围索引重建同时接收最终源节点先序，包含
+插入和删除。两条准备路径都发布相互匹配的树与索引代。
+
 ## Patch 顺序
 
 规划器优先使用 `paint-patch`，再使用 `span-patch`、`owner-rerender`，最后在几何或 identity 使小操作不安全时使用 `root-rerender`。incremental adapter 从 live generation fact 推导 tentative owner；pure patch port 随后只接收这些 artifact 与不可变 parent table。这些名称描述的是 Ebox 的语义 owner 范围；只有 TP 负责计算并执行物理文本/属性 diff。Patch 不得静默扩大语义范围。报告保留 Ebox strategy 与 planned scope，同时单独记录 TP 的实际 surface operation 和 revision。

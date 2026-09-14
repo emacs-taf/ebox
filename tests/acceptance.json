@@ -880,6 +880,16 @@
       "name": "ebox-overlapping-replacements-retain-parent-text-and-child-state",
       "file": "tests/ebox-candidate-overlap-tests.el",
       "purpose": "Same-length text changes survive a subsequent retained child replacement."
+    },
+    {
+      "name": "ebox-nested-range-updates-preserve-later-host-replacements",
+      "file": "tests/ebox-candidate-overlap-tests.el",
+      "purpose": "Nested Range updates preserve visible content and subsequent Host replacement."
+    },
+    {
+      "name": "ebox-large-candidate-removal-preserves-source-order-and-rollback",
+      "file": "tests/ebox-candidate-overlap-tests.el",
+      "purpose": "Large keyed list removals and insertions match fresh rendering and reject atomically."
     }
   ]
 }

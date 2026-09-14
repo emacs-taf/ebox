@@ -15,6 +15,8 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Nested Range updates keep runtime indexes attached to the final candidate tree, so later Host updates remain valid. Large subtree replacements preserve source order when records are added or removed, including rejected publications.
+
 - A candidate replacing an ancestor and then a deeper child preserves the
   ancestor's changes to siblings along the intervening path. Nested input forms
   no longer restore old captions while updating save/cancel controls.

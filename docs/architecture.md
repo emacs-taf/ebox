@@ -117,6 +117,12 @@ committed tree would overwrite that ancestor's sibling changes. The lookup is
 limited to affected paths and shares unchanged subtrees; rejection retains the
 published generation and focus.
 
+Range deltas describe affected payloads; their owner is indexed from the final
+path-copy trace because a descendant update may have copied that owner again.
+Broad index reconstruction also receives the final source preorder, including
+insertions and removals. Both preparation paths publish one matching tree and
+index generation.
+
 ## Patch order
 
 The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.

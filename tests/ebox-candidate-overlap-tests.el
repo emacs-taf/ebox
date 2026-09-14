@@ -72,5 +72,95 @@ CHILD-ONLY t returns just the control; `frame' wraps the panel with a sibling."
       (should (equal before (buffer-substring-no-properties (point-min) (point-max))))
       (should (eq (ebox-focused-host-ref) 'title-entry)))))
 
+(defun ebox-overlap-test--range-input (title value &optional part)
+  "Build nested Range owners with TITLE and VALUE, or just PART's input."
+  (let ((builder (ebox-source-builder-create)))
+    (cl-labels
+        ((text-node (id text)
+           (ebox-text-create
+            :value text
+            :source-handle (ebox-source-builder-bind builder :identity id :key id)
+            :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))
+         (box-node (id children)
+           (ebox-box-create
+            :source-builder builder
+            :source-handle (ebox-source-builder-bind builder :identity id :key id)
+            :layout (ebox-column-layout-create)
+            :owned-facts (ebox-canonical-facts-from-declarations 'column nil)
+            :children children))
+         (body ()
+           (box-node 'body (list (ebox-child-range 'body-items (text-node 'value value))))))
+      (let ((node (pcase part
+                    ('title (text-node 'title title))
+                    ('value (text-node 'value value))
+                    (_ (box-node 'root
+                                 (list (ebox-child-range 'heading (text-node 'title title))
+                                       (body) (text-node 'tail "Unchanged")))))))
+        (unless part
+          (setq node (box-node 'frame (list (text-node 'aside "Other content") node))))
+        (ebox-canonical-input-create (list node) (ebox-source-builder-finish builder))))))
+
+(ert-deftest ebox-nested-range-updates-preserve-later-host-replacements ()
+  "Ancestor and descendant Range updates leave both Hosts usable afterwards."
+  (with-temp-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-overlap-test--range-input "Title A" "Value A"))
+    (dolist (value '("Value B" "Value C"))
+      (let ((candidate (ebox-candidate-begin (current-buffer))))
+        (ebox-candidate-replace-range-ref
+         candidate 'heading (ebox-overlap-test--range-input "Title B" value 'title))
+        (ebox-candidate-replace-range-ref
+         candidate 'body-items (ebox-overlap-test--range-input "Title B" value 'value))
+        (ebox-commit (current-buffer) candidate))
+      (should (string-match-p "Title B" (buffer-string)))
+      (should (string-match-p value (buffer-string)))
+      (let ((candidate (ebox-candidate-begin (current-buffer))))
+        (ebox-candidate-replace-host-ref
+         candidate 'value (ebox-overlap-test--range-input "Title B" "Next value" 'value))
+        (ebox-commit (current-buffer) candidate))
+      (should (string-match-p "Next value" (buffer-string)))
+      (should (string-match-p "Unchanged" (buffer-string))))))
+
+(defun ebox-overlap-test--list-input (count &optional embedded)
+  "Build COUNT keyed records, EMBEDDED beside independent content when non-nil."
+  (let* ((builder (ebox-source-builder-create))
+         (children
+          (cl-loop for id from 1 to count collect
+                   (ebox-text-create
+                    :value (format "Record %03d" id)
+                    :source-handle (ebox-source-builder-bind builder :identity (list 'record id) :key id)
+                    :owned-facts (ebox-canonical-facts-from-declarations 'text nil))))
+         (node (ebox-box-create
+                :source-handle (ebox-source-builder-bind builder :identity 'records)
+                :layout (ebox-column-layout-create)
+                :owned-facts (ebox-canonical-facts-from-declarations 'column nil)
+                :children children)))
+    (when embedded
+      (setq node (ebox-box-create
+                  :source-handle (ebox-source-builder-bind builder :identity 'frame)
+                  :layout (ebox-column-layout-create)
+                  :owned-facts (ebox-canonical-facts-from-declarations 'column nil)
+                  :children (list (ebox-text-create
+                                   :value "Independent content"
+                                   :source-handle (ebox-source-builder-bind builder :identity 'aside)
+                                   :owned-facts (ebox-canonical-facts-from-declarations 'text nil))
+                                  node))))
+    (ebox-canonical-input-create (list node) (ebox-source-builder-finish builder))))
+
+(ert-deftest ebox-large-candidate-removal-preserves-source-order-and-rollback ()
+  "Replacing a large list keeps final source order, later updates and rejection."
+  (with-temp-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-overlap-test--list-input 100 t))
+    (dolist (count '(90 95))
+      (let ((candidate (ebox-candidate-begin (current-buffer))))
+        (ebox-candidate-replace-host-ref candidate 'records (ebox-overlap-test--list-input count))
+        (ebox-commit (current-buffer) candidate))
+      (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                     (substring-no-properties (ebox-render (ebox-overlap-test--list-input count t))))))
+    (let ((before (buffer-substring-no-properties (point-min) (point-max)))
+          (candidate (ebox-candidate-begin (current-buffer))))
+      (ebox-candidate-replace-host-ref candidate 'records (ebox-overlap-test--list-input 80))
+      (should-error (ebox-commit (current-buffer) candidate (lambda (_report) (error "Reject"))))
+      (should (equal before (buffer-substring-no-properties (point-min) (point-max)))))))
+
 (provide 'ebox-candidate-overlap-tests)
 ;;; ebox-candidate-overlap-tests.el ends here
