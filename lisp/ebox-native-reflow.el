@@ -107,7 +107,7 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "18:8:12"
+(defconst ebox-native-reflow-abi-version "19:9:12"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -1997,8 +1997,8 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                   kind child cross-align)))
          children compiled-children))))))
 
-(defun ebox-native-reflow--fixed-grid-row-p (box)
-  "Return non-nil when BOX has an equivalent fixed native row allocation."
+(defun ebox-native-reflow--grid-row-p (box)
+  "Return non-nil when BOX has a native fixed/fractional row allocation."
   (let* ((config (plist-get box :ebox-layout-config))
          (props (and config (ebox-layout-config-props config)))
          (columns (plist-get props :grid-template-columns))
@@ -2016,20 +2016,22 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
          (memq (ebox-get box :min-height) '(nil auto))
          (memq (ebox-get box :max-height) '(nil none))
          (cl-every (lambda (track)
-                     (and (eq (plist-get track :kind) 'fixed)
-                          (ebox-native-reflow--static-size-p (plist-get track :size))))
+                     (or (eq (plist-get track :kind) 'fr)
+                         (and (eq (plist-get track :kind) 'fixed)
+                              (ebox-native-reflow--static-size-p (plist-get track :size)))))
                    columns)
          (cl-every
           (lambda (child)
-            (and (eq (plist-get child :ebox-kind) 'box)
-                 (memq (ebox-get child :position) '(nil static))
-                 (eq (ebox-get child :width) 'stretch)
-                 (eq (ebox-get child :overflow) 'hidden)
-                 (memq (ebox-get child :min-width) '(nil auto))
-                 (memq (ebox-get child :max-width) '(nil none))
-                 (memq (ebox-get child :height) '(nil auto))
-                 (memq (ebox-get child :min-height) '(nil auto))
-                 (memq (ebox-get child :max-height) '(nil none))
+            (and (or (eq (plist-get child :ebox-kind) 'text)
+                     (and (eq (plist-get child :ebox-kind) 'box)
+                          (memq (ebox-get child :position) '(nil static))
+                          (eq (ebox-get child :width) 'stretch)
+                          (eq (ebox-get child :overflow) 'hidden)
+                          (memq (ebox-get child :min-width) '(nil auto))
+                          (memq (ebox-get child :max-width) '(nil none))
+                          (memq (ebox-get child :height) '(nil auto))
+                          (memq (ebox-get child :min-height) '(nil auto))
+                          (memq (ebox-get child :max-height) '(nil none))))
                  (null (plist-get child :grid-row))
                  (null (plist-get child :grid-column))
                  (memq (plist-get child :justify-self) '(nil auto stretch))
@@ -2037,41 +2039,38 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                  (zerop (or (plist-get child :order) 0))))
           children))))
 
-(defun ebox-native-reflow--compile-fixed-grid-row (box &optional fragments)
-  "Compile BOX's fixed Grid row without changing author layout or ownership."
-  (unless (ebox-native-reflow--fixed-grid-row-p box)
-    (error "Native reflow requires a fixed single-row Grid with stretched clipped cells"))
+(defun ebox-native-reflow--compile-grid-row (box &optional fragments)
+  "Compile BOX's fixed/fractional Grid row with unchanged source ownership."
+  (unless (ebox-native-reflow--grid-row-p box)
+    (error "Native reflow requires a fixed/fractional single-row Grid with Text or stretched clipped Box cells"))
   (let* ((ebox-native-reflow--compile-size-node box)
          (props (ebox-layout-config-props (plist-get box :ebox-layout-config)))
-         (items
-          (cl-mapcar
-           (lambda (track child)
-             (let* ((compiled (if fragments
-                                  (ebox-native-reflow--compiled-scene-child fragments child)
-                                (ebox-native-reflow--compile-node child)))
-                    (width (ebox-native-reflow--compile-fixed-size
-                            (plist-get track :size) 'horizontal box))
-                    (side (+ (plist-get compiled :padding-left)
-                             (plist-get compiled :padding-right)
-                             (plist-get compiled :border-left)
-                             (plist-get compiled :border-right))))
-               (unless (and (>= width side)
-                            (cl-every (lambda (key) (zerop (plist-get compiled key)))
-                                      '(:margin-left :margin-right :margin-top :margin-bottom)))
-                 (error "Native fixed Grid row requires cells contained by their tracks"))
-               (list :node compiled :order 0 :grow 0 :shrink 0
-                     :basis (list :kind "pixels"
-                                  :value (if (equal (plist-get compiled :box-sizing) "border-box")
-                                             width (- width side)))
-                     :align-self "stretch")))
-           (plist-get props :grid-template-columns)
+         (children
+          (mapcar
+           (lambda (child)
+             (let ((compiled (if fragments
+                                 (ebox-native-reflow--compiled-scene-child fragments child)
+                               (ebox-native-reflow--compile-node child))))
+               (unless (or (equal (plist-get compiled :type) "text")
+                           (cl-every (lambda (key) (zerop (plist-get compiled key)))
+                                     '(:margin-left :margin-right :margin-top :margin-bottom)))
+                 (error "Native Grid row requires cells without margins"))
+               compiled))
            (ebox-tree-node-children box))))
-    (list :type "flex" :direction "row" :wrap "nowrap"
-          :justify "flex-start" :align-items "stretch" :align-content "stretch"
-          :width (list :kind "stretch") :height (list :kind "auto")
-          :row-gap 0 :column-gap (ebox-native-reflow--compile-gap
-                                 (plist-get props :column-gap) 'horizontal)
-          :items (vconcat items))))
+    (list :type "grid-row"
+          :columns
+          (vconcat
+           (mapcar
+            (lambda (track)
+              (if (eq (plist-get track :kind) 'fr)
+                  (list :kind "fraction" :value (plist-get track :factor))
+                (list :kind "fixed"
+                      :value (ebox-native-reflow--compile-fixed-size
+                              (plist-get track :size) 'horizontal box))))
+            (plist-get props :grid-template-columns)))
+          :column-gap (ebox-native-reflow--compile-gap
+                       (plist-get props :column-gap) 'horizontal)
+          :children (vconcat children))))
 
 (defun ebox-native-reflow--compile-typed-box-child (box)
   "Compile canonical BOX's typed child layout, or return nil."
@@ -2093,7 +2092,7 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
       ('flex
        (ebox-native-reflow--compile-flex-inner
         (copy-sequence (ebox-layout-config-props config)) children))
-      ('grid (ebox-native-reflow--compile-fixed-grid-row box))
+      ('grid (ebox-native-reflow--compile-grid-row box))
       (_ (error "Native reflow unsupported LayoutConfig: %S" kind)))))
 
 (defun ebox-native-reflow--compile-text-node (node)
@@ -2498,7 +2497,7 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
 
 (defun ebox-native-reflow--native-node-supported-p (node)
   "Return non-nil when NODE contains only native-supported layout nodes.
-Only a proven fixed Grid row is lowered to native allocation; general
+Only a proven fixed/fractional Grid row uses native allocation; general
 Grid retains the ordinary two-dimensional renderer."
   (cond
    ((or (null node) (stringp node) (not (listp node))) t)
@@ -2518,7 +2517,7 @@ Grid retains the ordinary two-dimensional renderer."
              ((or 'row 'column)
               t)
              ('flex t)
-             ('grid (ebox-native-reflow--fixed-grid-row-p node))
+             ('grid (ebox-native-reflow--grid-row-p node))
              (_ nil))
            (cl-every #'ebox-native-reflow--native-node-supported-p children)))
       (and (not (plist-member node :children))
@@ -2553,7 +2552,7 @@ Grid retains the ordinary two-dimensional renderer."
        (ebox-native-reflow--compile-flex-inner
         (copy-sequence (ebox-layout-config-props config))
         children fragments flex-content-min-widths))
-      ('grid (ebox-native-reflow--compile-fixed-grid-row box fragments))
+      ('grid (ebox-native-reflow--compile-grid-row box fragments))
       (_ (error "Native reflow unsupported typed scene LayoutConfig: %S"
                 kind)))))
 

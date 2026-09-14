@@ -8,6 +8,7 @@ pub(super) enum LocalStep {
     BoxChild,
     RowChild(usize),
     ColumnChild(usize),
+    GridChild(usize),
     FlexItem(usize),
 }
 

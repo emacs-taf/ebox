@@ -905,6 +905,16 @@
       "name": "ebox-explicit-host-identity-survives-sibling-changes-without-keys",
       "file": "tests/ebox-candidate-overlap-tests.el",
       "purpose": "An unkeyed Host with stable source identity retains focus and nested updates across conditional sibling changes."
+    },
+    {
+      "name": "ebox-grid-fractional-row-fills-tracks-through-resize-and-updates",
+      "file": "tests/ebox-grid-tests.el",
+      "purpose": "Fractional cells retain their allocation, paint and content when resized."
+    },
+    {
+      "name": "ebox-grid-text-row-preserves-intrinsic-minima",
+      "file": "tests/ebox-grid-tests.el",
+      "purpose": "Text tracks keep unbreakable minima in definite and intrinsic layouts."
     }
   ]
 }

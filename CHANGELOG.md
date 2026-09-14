@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Native single-row Grid supports fixed and fractional (`fr`) columns with
+  automatic Text placement and stretched, clipped Box cells. Text minima,
+  intrinsic sizing, cell paint and viewport changes follow ordinary Grid
+  behavior. Rebuild the optional module for ABI `19:9:12` and restart Emacs.
+
 - Add a native input boundary that guards mounted target ownership and restores logical focus after acceptance, cancellation or reader failure.
 
 - Observed update reports expose recorded local projection refusals, including mixed
@@ -73,7 +78,7 @@ All notable changes to Ebox are documented here.
 
 - Native Flex layout accepts supported explicit main-axis minima, including
   zero, and follows the same overflow-dependent automatic minimum and size
-  caps as Elisp. Rebuild the optional module for ABI `18:8:12` and restart Emacs; older modules
+  caps as Elisp. Rebuild the optional module for the current ABI and restart Emacs; older modules
   cannot supply the corrected semantics. Unsupported scene features still use
   ordinary rendering.
 

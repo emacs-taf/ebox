@@ -211,6 +211,7 @@ pub(crate) enum LocalField {
     AlignContent,
     RowGap,
     ColumnGap,
+    GridColumns,
 }
 
 #[derive(Debug)]
@@ -489,6 +490,7 @@ impl LayoutNode {
             | Self::Text { node_id, .. }
             | Self::Row { node_id, .. }
             | Self::Column { node_id, .. }
+            | Self::GridRow { node_id, .. }
             | Self::Flex { node_id, .. } => *node_id,
             Self::NodeRef { node_id } => Some(*node_id),
         }
@@ -500,6 +502,7 @@ impl LayoutNode {
             | Self::Text { node_revision, .. }
             | Self::Row { node_revision, .. }
             | Self::Column { node_revision, .. }
+            | Self::GridRow { node_revision, .. }
             | Self::Flex { node_revision, .. } => *node_revision,
             Self::NodeRef { .. } => None,
         }
@@ -513,7 +516,7 @@ fn visit_layout_children(node: &LayoutNode, mut visit: impl FnMut(&LayoutNode)) 
                 visit(child);
             }
         }
-        LayoutNode::Row { children, .. } => {
+        LayoutNode::Row { children, .. } | LayoutNode::GridRow { children, .. } => {
             for child in children.iter() {
                 visit(child);
             }
@@ -578,6 +581,7 @@ impl RetainedDocument {
                 Ok(())
             })?;
             let column = matches!(node, LayoutNode::Column { .. });
+            let grid = matches!(node, LayoutNode::GridRow { .. });
             match node {
                 LayoutNode::Box { child, .. } => {
                     if let Some(old) = child.take() {
@@ -591,13 +595,17 @@ impl RetainedDocument {
                         )?));
                     }
                 }
-                LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+                LayoutNode::Row { children, .. }
+                | LayoutNode::Column { children, .. }
+                | LayoutNode::GridRow { children, .. } => {
                     let old = std::mem::take(children);
                     let old = Arc::try_unwrap(old).unwrap_or_else(|value| (*value).clone());
                     let mut localized = Vec::with_capacity(old.len());
                     for (index, child) in old.into_iter().enumerate() {
                         let slot = if column {
                             LocalStep::ColumnChild(index)
+                        } else if grid {
+                            LocalStep::GridChild(index)
                         } else {
                             LocalStep::RowChild(index)
                         };
@@ -1122,6 +1130,15 @@ fn patch_local_node<'a>(
                 "column-gap" => assign!(Flex, column_gap, ColumnGap),
                 _ => return Err(format!("Unsupported native retained flex field {name}")),
             },
+            LayoutNode::GridRow {
+                columns,
+                column_gap,
+                ..
+            } => match name.as_str() {
+                "columns" => assign!(GridRow, columns, GridColumns),
+                "column-gap" => assign!(GridRow, column_gap, ColumnGap),
+                _ => return Err(format!("Unsupported native retained Grid field {name}")),
+            },
             LayoutNode::Row { .. } | LayoutNode::Column { .. } => {
                 return Err("Native retained axis slots have no local scalar fields".to_owned());
             }
@@ -1538,6 +1555,14 @@ fn validate_changed_fields(
                 validate_dimension("flex column gap", *column_gap)?;
             }
         }
+        LayoutNode::GridRow {
+            columns,
+            column_gap,
+            children,
+            ..
+        } => {
+            validate_grid_row(columns, *column_gap, children.len())?;
+        }
         LayoutNode::Row { .. } | LayoutNode::Column { .. } | LayoutNode::NodeRef { .. } => {}
     }
     Ok(())
@@ -1693,6 +1718,16 @@ enum LayoutNode {
         #[serde(default, deserialize_with = "deserialize_arc_vec", skip_serializing)]
         children: Arc<Vec<LayoutNode>>,
     },
+    GridRow {
+        #[serde(default)]
+        node_id: Option<u64>,
+        #[serde(default)]
+        node_revision: Option<u64>,
+        columns: Vec<GridTrack>,
+        column_gap: i64,
+        #[serde(default, deserialize_with = "deserialize_arc_vec", skip_serializing)]
+        children: Arc<Vec<LayoutNode>>,
+    },
     Flex {
         #[serde(default)]
         node_id: Option<u64>,
@@ -1710,6 +1745,13 @@ enum LayoutNode {
         #[serde(default, deserialize_with = "deserialize_arc_vec", skip_serializing)]
         items: Arc<Vec<FlexItem>>,
     },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+enum GridTrack {
+    Fixed { value: i64 },
+    Fraction { value: f64 },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -4763,7 +4805,9 @@ fn add_context_work(
                 add_context_work(child, context, work_units)?;
             }
         }
-        LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+        LayoutNode::Row { children, .. }
+        | LayoutNode::Column { children, .. }
+        | LayoutNode::GridRow { children, .. } => {
             for child in children.iter() {
                 add_context_work(child, context, work_units)?;
             }
@@ -4810,6 +4854,23 @@ fn validate_size_at_depth(name: &str, size: &Size, depth: usize) -> Result<(), S
 
 fn validate_size(name: &str, size: &Size) -> Result<(), String> {
     validate_size_at_depth(name, size, 0)
+}
+
+fn validate_grid_row(columns: &[GridTrack], gap: i64, children: usize) -> Result<(), String> {
+    validate_dimension("Grid column gap", gap)?;
+    if children == 0 || columns.len() != children {
+        return Err("Native Grid row requires one cell per track".to_owned());
+    }
+    for track in columns {
+        match track {
+            GridTrack::Fixed { value } => validate_dimension("Grid track", *value)?,
+            GridTrack::Fraction { value } if !value.is_finite() || *value <= 0.0 => {
+                return Err("Native Grid fraction must be finite and positive".to_owned());
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn validate_node(
@@ -5029,9 +5090,19 @@ fn validate_node(
                 )?;
             }
         }
-        LayoutNode::Row { children, .. } | LayoutNode::Column { children, .. } => {
+        LayoutNode::Row { children, .. }
+        | LayoutNode::Column { children, .. }
+        | LayoutNode::GridRow { children, .. } => {
             if children.is_empty() {
                 return Err("Native layout container must contain a child".to_owned());
+            }
+            if let LayoutNode::GridRow {
+                columns,
+                column_gap,
+                ..
+            } = node
+            {
+                validate_grid_row(columns, *column_gap, children.len())?;
             }
             for child in children.iter() {
                 validate_node(
@@ -6626,7 +6697,7 @@ fn exact_rendered_height(
             .try_fold(0_i64, |total, height| {
                 height.and_then(|height| total.checked_add(height))
             }),
-        LayoutNode::Flex { .. } => None,
+        LayoutNode::Flex { .. } | LayoutNode::GridRow { .. } => None,
     }
 }
 
@@ -7097,6 +7168,155 @@ fn render_flex<'a>(
     }
 }
 
+// The compiler admits automatically placed Text and stretched, clipped Boxes.
+// Grid fractions respect intrinsic minima and quantize cumulative boundaries;
+// they are independent of Flex basis/chrome distribution.
+fn render_grid_row(
+    columns: &[GridTrack],
+    gap: i64,
+    children: &[LayoutNode],
+    scope: &RenderScope<'_>,
+    context: LayoutContext,
+    intrinsic: bool,
+    assigned_height: Option<i64>,
+) -> Result<Rendered, String> {
+    let context = LayoutContext {
+        viewport_width_known: context.viewport_width_known && !context.inline_auto_width_intrinsic,
+        ..context
+    };
+    let cells = children
+        .iter()
+        .enumerate()
+        .map(|(index, child)| scope.child(LocalStep::GridChild(index), child).resolve())
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut fixed = 0.0;
+    let mut fraction: f64 = 0.0;
+    let independent = context.viewport_width_known
+        && context.viewport_width > 0
+        && cells
+            .iter()
+            .all(|cell| matches!(cell.view.node, LayoutNode::Box { .. }));
+    let mut sizes = vec![0.0; columns.len()];
+    let mut flexible = Vec::new();
+    for (index, (track, cell)) in columns.iter().zip(&cells).enumerate() {
+        match track {
+            GridTrack::Fixed { value } => {
+                fixed += *value as f64;
+                sizes[index] = *value as f64;
+            }
+            GridTrack::Fraction { value } => {
+                flexible.push((index, *value));
+                if !independent {
+                    sizes[index] = match cell.view.node {
+                        LayoutNode::Text { content, .. } => {
+                            measured_min_width(content, WrapMode::Word)
+                        }
+                        source => box_horizontal_side(source).unwrap_or(0),
+                    } as f64;
+                }
+                if !context.viewport_width_known {
+                    let rendered = cell.phase(Phase::GridIntrinsic).render(
+                        LayoutContext {
+                            viewport_width: 0,
+                            viewport_width_known: false,
+                            ..context
+                        },
+                        true,
+                        None,
+                    )?;
+                    fraction = fraction
+                        .max(sizes[index].max(rendered.max_width() as f64) / value.max(1.0));
+                }
+            }
+        }
+    }
+    if context.viewport_width_known {
+        let mut remaining = context.viewport_width as f64
+            - fixed
+            - gap as f64 * columns.len().saturating_sub(1) as f64;
+        while !flexible.is_empty() {
+            let factors: f64 = flexible.iter().map(|(_, factor)| factor).sum();
+            if !factors.is_finite() {
+                return Err("Native Grid fractions exceed the numeric limit".to_owned());
+            }
+            fraction = remaining.max(0.0) / factors.max(1.0);
+            let mut frozen = false;
+            flexible.retain(|(index, factor)| {
+                if sizes[*index] > fraction * factor {
+                    remaining -= sizes[*index];
+                    frozen = true;
+                    false
+                } else {
+                    true
+                }
+            });
+            if !frozen {
+                for (index, factor) in &flexible {
+                    sizes[*index] = fraction * factor;
+                }
+                break;
+            }
+        }
+    } else {
+        for (index, factor) in flexible {
+            sizes[index] = fraction * factor;
+        }
+    }
+    let mut position = 0.0;
+    let mut previous = 0;
+    let mut widths = Vec::with_capacity(columns.len());
+    for size in sizes {
+        position += size;
+        if !position.is_finite() || position > MAX_LAYOUT_DIMENSION as f64 {
+            return Err("Native Grid width exceeds the dimension limit".to_owned());
+        }
+        let boundary = (position + 1e-9).floor() as i64;
+        widths.push(boundary - previous);
+        previous = boundary;
+    }
+    let render_cell = |cell: &RenderScope<'_>, width: i64, height: Option<i64>, phase| {
+        let source = cell.view.node;
+        let horizontal = box_horizontal_side(source).unwrap_or(0);
+        let vertical = box_vertical_side(source).unwrap_or(0);
+        cell.phase(phase).render(
+            LayoutContext {
+                viewport_width: width,
+                viewport_width_known: true,
+                inline_auto_width_intrinsic: false,
+                ..context
+            },
+            intrinsic,
+            matches!(source, LayoutNode::Box { .. }).then_some(BoxOverride {
+                content_width: Some((width - horizontal).max(0)),
+                content_height: height.map(|height| (height - vertical).max(0)),
+                declared_width: None,
+            }),
+        )
+    };
+    let mut probes = Vec::with_capacity(cells.len());
+    let mut height = assigned_height.unwrap_or(0);
+    for (cell, width) in cells.iter().zip(&widths) {
+        let rendered = render_cell(cell, *width, None, Phase::GridWidthProbe)?;
+        height = height.max(rendered.height());
+        probes.push(rendered);
+    }
+    let mut parts = Vec::with_capacity(cells.len() * 2);
+    for (index, ((cell, width), probe)) in cells.iter().zip(&widths).zip(probes).enumerate() {
+        let rendered = if probe.height() == height {
+            probe
+        } else {
+            render_cell(cell, *width, Some(height), Phase::GridFinal)?
+        };
+        let rendered = pad_rendered_width(rendered, *width, FlexAlign::FlexStart);
+        let painted_width = rendered.max_width().max(*width);
+        parts.push((rendered, painted_width));
+        if index + 1 < cells.len() && gap > 0 {
+            parts.push((Rendered::from_line_plan(LinePlan::default()), gap));
+        }
+    }
+    Ok(concat_horizontal_sized(parts, height))
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct BoxOverride {
     content_width: Option<i64>,
@@ -7332,15 +7552,17 @@ fn render_node_body(
                 // content height (including a parent's allocated flex size)
                 // constrains that context, not just the outer frame.  Keep an
                 // auto height indefinite instead of inheriting viewport height.
-                let child_size_override =
-                    if matches!(child_scope.resolve()?.view.node, LayoutNode::Flex { .. }) {
-                        definite_content_height.map(|height| BoxOverride {
-                            content_height: Some(height),
-                            ..BoxOverride::default()
-                        })
-                    } else {
-                        None
-                    };
+                let child_size_override = if matches!(
+                    child_scope.resolve()?.view.node,
+                    LayoutNode::Flex { .. } | LayoutNode::GridRow { .. }
+                ) {
+                    definite_content_height.map(|height| BoxOverride {
+                        content_height: Some(height),
+                        ..BoxOverride::default()
+                    })
+                } else {
+                    None
+                };
                 let child_context = LayoutContext {
                     viewport_width: if intrinsic_child {
                         0
@@ -7554,6 +7776,7 @@ fn render_node_body(
                         LayoutNode::Flex { .. }
                             | LayoutNode::Row { .. }
                             | LayoutNode::Column { .. }
+                            | LayoutNode::GridRow { .. }
                     )
                 });
                 let rendered = if *wrap_mode != WrapMode::None && !uniform_width && !composed_layout
@@ -8020,6 +8243,20 @@ fn render_node_body(
             }
             Ok(stack_vertical(parts))
         }
+        LayoutNode::GridRow {
+            columns,
+            column_gap,
+            children,
+            ..
+        } => render_grid_row(
+            columns,
+            *column_gap,
+            children,
+            scope,
+            context,
+            intrinsic,
+            size_override.and_then(|assigned| assigned.content_height),
+        ),
         LayoutNode::Flex {
             direction,
             wrap,

@@ -87,12 +87,14 @@ allocation and height clamps, to its inner Flex formatting context. The child
 evaluation retains that allocation as part of its request. An indefinite auto
 height stays content-driven; the ambient viewport height is not an allocation.
 
-Auto-height, fixed single-row Grid layouts can compile to native fixed Flex
-allocations when tracks are static, cells fill and clip their tracks, placement is automatic,
-and stretch alignment has no competing cell constraints or margins. The
-compiler accounts for cell chrome and box sizing in each basis without changing
-source ownership. Grid-owner or cell changes rebuild the parent allocation;
-unsupported configurations retain the complete Elisp Grid implementation.
+Auto-height single-row Grid layouts have native fixed and fractional tracks.
+Cells are automatically placed Text or stretched, clipped Boxes without competing
+size constraints or margins. Native track allocation retains text minima,
+measures indefinite fractional tracks from content, and rounds cumulative pixel
+boundaries. Cells retain their source ownership, chrome, paint and overflow
+behavior; changing content or the viewport recomputes their allocation through
+the same retained source/evaluation path. Unsupported Grid configurations retain
+the complete Elisp implementation.
 
 Native layout contexts retain the original frame viewport width separately from
 containing-block and Flex item allocations. Literal `vw` widths and row bases
