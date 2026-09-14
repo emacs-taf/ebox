@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- `ebox-keymap-create :drag` delivers shared primary-button gesture phases and
+  window-relative pixel deltas while retaining the published target. Consumers
+  no longer need their own mouse-reading loop. With `:drag`, `:activate` remains
+  available for keyboard activation.
+
 - Native scrolling composes across ordinary wrappers, sibling containers and
   nested containers. Each region retains its own complete content and offset.
   Rebuild the optional module for ABI `21:10:13` and restart Emacs.

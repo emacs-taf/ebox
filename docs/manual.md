@@ -449,6 +449,36 @@ buffer for mouse callbacks, so a callback can directly update a semantic ID
 with `(ebox-region-update "action" :help-echo "Activated")`.
 Explicit bindings can override the repeated-click, press and drag defaults.
 
+For direct manipulation, supply `:drag` to the same keymap factory. This example
+keeps ordinary Elisp application state and moves the retained Box horizontally:
+
+```elisp
+(let ((x 0) (origin 0))
+  (ebox-render-to-buffer
+   "*Ebox drag*"
+   (ebox-build
+    `(column :width (ch 60)
+      (box :id "handle" :position relative :left (px 0)
+           :keymap ,(ebox-keymap-create
+                     :drag (lambda (gesture)
+                             (pcase (plist-get gesture :phase)
+                               ('start (setq origin x))
+                               ((or 'move 'end)
+                                (setq x (+ origin (car (plist-get gesture :delta))))
+                                (ebox-region-update "handle" :left (list 'px x))))))
+           "Drag horizontally")))))
+```
+
+Ebox keeps the initial target through keyed reorder and checks its current
+published ownership before each event. The callback completes and Emacs
+redisplays before more input is read. Release supplies the final position.
+Leaving the original text window or losing the target/window ends tracking;
+`C-g` cancels and propagates quit. Accepted positions remain application-owned.
+`:activate` may also provide keyboard activation; `:drag` owns the primary mouse
+sequence. The supported gesture fields and lifetime are documented in
+[the entry](../ebox.el). Same-window GUI dragging is the intended scope;
+cross-window/frame and terminal mouse dragging remain unverified.
+
 Use `M-x ebox-activate` to invoke the focus target's RET command when point
 remains at its first visible character, or otherwise the node at point. Call
 `(ebox-activate position)` at an explicit accessible position. This uses only

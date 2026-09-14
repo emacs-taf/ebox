@@ -407,6 +407,33 @@ margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 
 `(ebox-region-update "action" :help-echo "Activated")`。
 显式绑定可以覆盖连击、按下和拖动事件的默认行为。
 
+直接操纵界面时，在相同的 keymap 工厂上提供 `:drag`。下面使用普通 Elisp
+保存应用位置，并水平移动已挂载的 Box：
+
+```elisp
+(let ((x 0) (origin 0))
+  (ebox-render-to-buffer
+   "*Ebox drag*"
+   (ebox-build
+    `(column :width (ch 60)
+      (box :id "handle" :position relative :left (px 0)
+           :keymap ,(ebox-keymap-create
+                     :drag (lambda (gesture)
+                             (pcase (plist-get gesture :phase)
+                               ('start (setq origin x))
+                               ((or 'move 'end)
+                                (setq x (+ origin (car (plist-get gesture :delta))))
+                                (ebox-region-update "handle" :left (list 'px x))))))
+           "水平拖动")))))
+```
+
+Ebox 在 keyed 重排后保持初始目标，每次事件前检查当前已发布的归属。
+回调完成并 redisplay 后再读取输入，释放事件提供最终位置。离开原文本窗口、
+目标或窗口失效会结束跟踪；`C-g` 取消并继续传播 quit。已接受的位置仍由应用持有。
+可以同时提供 `:activate` 处理键盘激活，主鼠标按钮序列归 `:drag`。
+手势字段和生命周期见[入口文件](../ebox.el)。本接口面向同一 GUI 窗口，
+跨窗口／frame 和终端鼠标拖动尚未验证。
+
 使用 `M-x ebox-activate` 调用当前节点的 RET 命令，或通过 `(ebox-activate position)`
 指定可访问位置。它只使用已提交节点的 keymap，遵循继承与显式 nil 屏蔽；overlay/global
 map、结构换行和不可见文本不构成目标。框架不移动 point 或选择窗口。目标缺失时报

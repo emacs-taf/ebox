@@ -935,6 +935,26 @@
       "name": "ebox-scroll-containers-compose-through-layout-and-updates",
       "file": "tests/ebox-scroll-tests.el",
       "purpose": "Nested and sibling scrolling containers compose in Column and Flex and retain independent visible content through updates and resize."
+    },
+    {
+      "name": "ebox-drag-follows-keyed-owner-and-publishes-release",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Movement and release retain the keyed target across visible reordering."
+    },
+    {
+      "name": "ebox-drag-cancels-disabled-target-and-preserves-unrelated-input",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Disabling the target ends tracking; unrelated input returns to Emacs."
+    },
+    {
+      "name": "ebox-drag-cancels-when-leaving-the-original-window",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Leaving the original text window cancels the gesture."
+    },
+    {
+      "name": "ebox-drag-releases-removed-owners-and-lost-windows",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Removed targets, unmount and switched windows release active tracking."
     }
   ]
 }

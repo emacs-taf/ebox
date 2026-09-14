@@ -79,7 +79,10 @@
 `:activate' is an optional zero-argument callback for RET, return, SPC and
 the primary mouse button.  Repeated clicks each activate once; primary-button
 press and drag events do nothing, so they do not start native text selection.
-Nil omits these activation bindings.  `:bindings' is an alist of string key
+Nil omits these activation bindings.  `:drag' accepts a one-argument callback
+for start/move/end/cancel gesture plists.  It owns primary-button tracking;
+when both options are supplied, activation remains keyboard-only.
+`:bindings' is an alist of string key
 descriptions or key vectors paired with zero-argument callbacks.  Explicit
 bindings override the repeated-click, press and drag defaults.
 Callbacks are not invoked until a generated command runs.  Keyboard commands
@@ -93,18 +96,27 @@ This function does not install navigation bindings or event propagation."
     (error "Ebox keymap options must be an even plist"))
   (let ((map (make-sparse-keymap)) seen keys)
     (cl-loop for (key _value) on options by #'cddr do
-             (unless (memq key '(:activate :bindings))
+             (unless (memq key '(:activate :bindings :drag))
                (error "Unknown Ebox keymap option: %S" key))
              (when (memq key seen)
                (error "Repeated Ebox keymap option: %S" key))
              (push key seen))
     (let ((activate (plist-get options :activate))
+          (drag (plist-get options :drag))
           (bindings (plist-get options :bindings)))
+      (when drag
+        (unless (and (functionp drag)
+                     (or (autoloadp (indirect-function drag))
+                         (let ((arity (func-arity drag)))
+                           (and (<= (car arity) 1)
+                                (or (eq (cdr arity) 'many) (>= (cdr arity) 1))))))
+          (error "Ebox :drag callback must accept one gesture argument")))
       (unless (proper-list-p bindings)
         (error "Ebox keymap :bindings must be an alist"))
       (when activate
         (setq bindings (append (mapcar (lambda (key) (cons key activate))
-                                      '("RET" [return] "SPC" [mouse-1]))
+                                      (if drag '("RET" [return] "SPC")
+                                        '("RET" [return] "SPC" [mouse-1])))
                                bindings)))
       (dolist (entry bindings)
         (unless (and (consp entry) (functionp (cdr entry)))
@@ -129,20 +141,126 @@ This function does not install navigation bindings or event propagation."
                       (ebox-interaction--command
                        callback (and activate (member key '([13] [return] [32] [mouse-1])))))
           (push key keys)))
-      (when activate
+      (when (or activate drag)
         ;; A release-only map lets the preceding press enter mouse-drag-region;
         ;; double/triple clicks can then select words or whole lines.  Claim
         ;; the primary-button sequence locally, preserving explicit handlers.
-        (dolist (event '(double-mouse-1 triple-mouse-1
+        (dolist (event '(mouse-1 double-mouse-1 triple-mouse-1
                                       down-mouse-1 double-down-mouse-1
                                       triple-down-mouse-1 drag-mouse-1
                                       double-drag-mouse-1 triple-drag-mouse-1))
           (unless (lookup-key map (vector event))
             (define-key map (vector event)
-                        (if (memq event '(double-mouse-1 triple-mouse-1))
-                            (lookup-key map [mouse-1])
-                          #'ignore))))))
+                        (cond
+                         ((and drag (memq 'down (event-modifiers event)))
+                          (lambda (press)
+                            (interactive (list last-input-event))
+                            (ebox-interaction--track-drag press drag)))
+                         ((and activate (not drag)
+                               (memq event '(double-mouse-1 triple-mouse-1)))
+                          (lookup-key map [mouse-1]))
+                         (t #'ignore)))))))
     map))
+
+(defvar ebox-interaction--drag-active nil
+  "Non-nil inside the native primary-button tracking boundary.")
+
+(defun ebox-interaction--drag-position (position window)
+  "Return POSITION's text-area pixels inside WINDOW, or nil."
+  (let ((xy (posn-x-y position)) (edges (window-inside-pixel-edges window)))
+    (when (and (eq (posn-window position) window) (null (posn-area position))
+               (consp xy) (numberp (car xy)) (numberp (cdr xy))
+               (<= 0 (car xy)) (< (car xy) (- (nth 2 edges) (nth 0 edges)))
+               (<= 0 (cdr xy)) (< (cdr xy) (- (nth 3 edges) (nth 1 edges))))
+      (cons (car xy) (cdr xy)))))
+
+(defun ebox-interaction--track-drag (event callback)
+  "Track EVENT's committed owner and deliver gesture phases to CALLBACK."
+  (when ebox-interaction--drag-active
+    (user-error "An Ebox drag is already active"))
+  (unless (and (mouse-event-p event) (eq (event-basic-type event) 'mouse-1)
+               (memq 'down (event-modifiers event)))
+    (user-error "Ebox drag requires a primary-button press"))
+  (let* ((press (event-start event)) (window (posn-window press)))
+    (unless (and (window-live-p window) (null (posn-area press)))
+      (user-error "Ebox drag requires a live text window"))
+    (let* ((buffer (window-buffer window))
+           (start (ebox-interaction--drag-position press window))
+           (point (posn-point press)))
+      (unless (and start (integer-or-marker-p point))
+        (user-error "Ebox drag requires a text position"))
+      (with-current-buffer (ebox-interaction--focus-buffer buffer)
+        (let* ((state (ebox-surface--buffer-client-state buffer))
+               (surface (ebox-surface--live-buffer-surface buffer))
+               (owner (ebox-interaction--navigation-owner point state))
+               (identity (ebox-interaction--focus-ref state owner))
+               (key (ebox-interaction--focus-key state owner))
+               (button (event-basic-type event))
+               (position start) (last-event event) (reason 'input)
+               (ebox-interaction--drag-active t)
+               (mouse-fine-grained-tracking t)
+               started finished)
+          (cl-labels
+              ((available ()
+                 (and (window-live-p window) (buffer-live-p buffer)
+                      (eq (window-buffer window) buffer)
+                      (eq surface (ebox-surface--live-buffer-surface buffer))
+                      (let ((current (ebox-surface--buffer-client-state buffer)))
+                        (and (equal owner (ebox-interaction--resolve-focus-owner
+                                           current (plist-get current :source-index) identity owner key))
+                             (with-current-buffer buffer
+                               (when (ebox-interaction--focus-position current owner)
+                                 (setq identity (ebox-interaction--focus-ref current owner))))))))
+               (emit (phase)
+                 (with-current-buffer (if (buffer-live-p buffer) buffer (current-buffer))
+                   (funcall callback
+                          (list :phase phase :event last-event
+                                :host-ref (ebox-source--copy-data identity)
+                                :window window :buffer buffer
+                                :start (cons (car start) (cdr start))
+                                :position (cons (car position) (cdr position))
+                                :delta (cons (- (car position) (car start))
+                                             (- (cdr position) (cdr start)))
+                                :reason (and (eq phase 'cancel) reason))))))
+            (unless (and owner identity (available))
+              (user-error "No enabled Ebox drag target at the press position"))
+            (unwind-protect
+                (condition-case problem
+                    (progn
+                      (setq started t)
+                      (emit 'start)
+                      (redisplay t)
+                      (track-mouse
+                        (let ((track-mouse 'dragging) done)
+                          (while (and (not done) (available))
+                            ;; A timeout lets ordinary Emacs timers invalidate a
+                            ;; removed owner or window even while the mouse rests.
+                            (when-let* ((next (read-event nil nil 0.05)))
+                              (setq last-event next)
+                              (let* ((release (and (eq (event-basic-type next) button)
+                                                   (not (memq 'down (event-modifiers next)))))
+                                     (motion (mouse-movement-p next)))
+                                (cond
+                                 ((or release motion)
+                                  (let ((xy (and (available)
+                                                 (ebox-interaction--drag-position
+                                                  (if release (event-end next) (event-start next)) window))))
+                                    (cond
+                                     ((null xy) (setq reason 'window-left done t))
+                                     (release
+                                      (setq position xy finished t done t)
+                                      (emit 'end))
+                                     ((not (equal xy position))
+                                      (setq position xy)
+                                      (emit 'move)))
+                                    (redisplay t)))
+                                 (t (push next unread-command-events)
+                                    (setq reason 'input done t))))))
+                          (unless (available) (setq reason 'target-unavailable)))))
+                  ((error quit)
+                   (setq reason (if (eq (car problem) 'quit) 'quit 'error))
+                   (signal (car problem) (cdr problem))))
+              (when (and started (not finished)) (emit 'cancel)))))))))
 
 (defun ebox-interaction--navigable-keymap-p (map)
   "Return non-nil when MAP contains a command, including inherited bindings.

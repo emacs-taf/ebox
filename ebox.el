@@ -559,6 +559,21 @@
 ;; including an overlapping parent. Mouse commands use the clicked binding.
 ;; Explicit custom bindings and raw native maps retain their native behavior.
 ;; This helper does not install navigation bindings or event propagation.
+;; `:drag' supplies a one-argument callback for a GUI primary-button gesture.
+;; It owns press/motion/release; with both options, :activate is keyboard-only.
+;; The callback receives a plist: :phase is start, move, end or cancel;
+;; :start and :position are (X . Y) pixels in the original window's text area,
+;; :delta is displacement from the press, :event preserves the native event,
+;; and :window, :buffer and the current :host-ref identify the retained target.
+;; Each callback completes and redisplay runs before the next input;
+;; end includes the release endpoint.
+;; The selected callback owns the gesture through keyed reorders. Cancel has
+;; :reason input, quit, error, window-left or target-unavailable. Leaving the
+;; original text window, hiding/disabling/removing the target, unmount or window
+;; loss ends tracking. Unrelated input is returned to Emacs. End/cancel releases
+;; tracking and does not undo already accepted application changes. No second
+;; gesture may start during a callback. Cross-window/frame and terminal dragging
+;; are not certified. Explicit primary-button bindings override these defaults.
 ;;
 ;; Function: ebox-layout-config-for-form (tag properties)
 ;;;###autoload (autoload 'ebox-layout-config-for-form "ebox" nil nil)

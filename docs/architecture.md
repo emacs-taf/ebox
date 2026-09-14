@@ -290,6 +290,15 @@ index and focus visibility checks before accepting a result and restoring focus.
 It adds no target registry, editing state or text writer. Native Emacs owns the
 input session; consumers apply accepted values after the boundary returns.
 
+Primary-button drag tracking also lives in Ebox. Generated keymaps retain the
+declaring node at press time and reuse the same source identity/key resolution
+as focus when publication moves it. The native tracking loop delivers one
+start, changed motion positions, and one terminal end/cancel callback. It has
+no application position state, target registry or publication path of its own.
+Each consumer callback updates through ordinary public rendering operations.
+The native reader periodically checks target and window lifetime while idle;
+unrelated input returns to Emacs's command loop.
+
 ## Verification
 
 Every update path must prove:
