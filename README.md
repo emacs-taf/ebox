@@ -241,6 +241,30 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make test
 ```
 
+For incremental-update diagnostics in a sibling source checkout, run:
+
+```sh
+EBOX_UPDATE_EFFECTS_OUTPUT=/tmp/ebox-effects.json make update-effects-performance
+```
+
+This checks all 15 combinations of content, color, native interaction and width
+changes with inline and local scoped styles. Each candidate replaces two adjacent
+controls, including an unchanged neighbor. Fresh rendering validates the fixture;
+every update checks text, display geometry, color, keymaps and activation outside
+the timed interval. The JSON records raw build-through-commit samples, p50/p95/max,
+projection counts and source/evaluator identity. `ordinary` means no local projection
+kind was reported; it does not prove that a local attempt failed.
+
+Defaults are 20 and 100 untouched siblings, three warmups and ten samples per case.
+Override `EBOX_UPDATE_EFFECTS_SIZES=20,100`, `EBOX_UPDATE_EFFECTS_WARMUPS=3` and
+`EBOX_UPDATE_EFFECTS_SAMPLES=10` as needed. Use a new output path each time.
+The evaluator acquires the shared performance host slot, fails if occupied, and
+releases its own slot on exit. Correctness failures are recorded per case; the
+remaining combinations still run and the command exits nonzero. `completed` means
+the checks completed successfully, not that a latency budget or GUI acceptance passed.
+Compare equivalent workloads and environments; keep application and GUI acceptance
+as separate checks.
+
 See the [user guide](docs/manual.md), the [public API
 reference](docs/manual.md), and the sibling
 [ebox-playground](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md) examples.

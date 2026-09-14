@@ -17,7 +17,7 @@ NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l lisp/ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
 NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
-.PHONY: all check ci load compile checkdoc layout-boundary-performance performance-evaluator visual-check native-build diff-check clean package-lint package-lint-install
+.PHONY: all check ci load compile checkdoc layout-boundary-performance performance-evaluator update-effects-performance visual-check native-build diff-check clean package-lint package-lint-install
 
 .PHONY: release-deps release-build release-check release-tool-tests native-integration release-native-check
 
@@ -41,7 +41,7 @@ release-native-check:
 release-tool-tests:
 	$(PYTHON) -m unittest discover -s tests/tools -p 'test_ebox_release.py'
 
-check: structure-check compile acceptance api-check release-tool-tests
+check: structure-check compile acceptance api-check release-tool-tests update-effects-tool-tests
 
 ci: check checkdoc load visual-check diff-check
 
@@ -57,6 +57,9 @@ layout-boundary-performance:
 
 performance-evaluator:
 	$(EMACS_BATCH) -l benchmarks/ebox-performance-evaluator.el -f ebox-performance-evaluator-batch
+
+update-effects-performance:
+	$(EMACS_BATCH) -l benchmarks/benchmark-update-effects.el -f ebox-update-effects-batch
 
 visual-check:
 	$(EMACS_BATCH) -l scripts/ebox-visual-check.el -f ebox-visual-check-batch
@@ -97,3 +100,7 @@ API_PROVIDER_PATH = -L ../ecss -L ../tp -L ../ekp -L ../etaf -L ../etaf-ui -L ..
 
 .PHONY: test
 test: acceptance
+
+.PHONY: update-effects-tool-tests
+update-effects-tool-tests:
+	EBOX_TOOL_TEST_EMACS="$(EMACS)" $(PYTHON) -m unittest discover -s tests/tools -p 'test_update_effects.py'

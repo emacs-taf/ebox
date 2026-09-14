@@ -208,6 +208,25 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 make test
 ```
 
+在同级源码检出环境中，用以下命令诊断增量更新：
+
+```sh
+EBOX_UPDATE_EFFECTS_OUTPUT=/tmp/ebox-effects.json make update-effects-performance
+```
+
+工具覆盖文本、颜色、原生交互与宽度变化的全部 15 种组合，分别使用内联和局部作用域样式。
+每个候选替换两个相邻控件，包括未变化的邻居。先用全新渲染校验输入，再在每次计时之外
+检查文本、显示几何、颜色、keymap 和激活行为。JSON 记录候选构建至提交的原始样本、
+p50/p95/max、投影种类计数，以及源码和评估器身份。`ordinary` 表示没有报告局部投影种类，
+不能据此认定曾尝试局部投影并失败。
+
+默认分别保留 20、100 个不变兄弟节点，每组预热三次、采样十次。可设置
+`EBOX_UPDATE_EFFECTS_SIZES=20,100`、`EBOX_UPDATE_EFFECTS_WARMUPS=3` 和
+`EBOX_UPDATE_EFFECTS_SAMPLES=10`。每次使用新的输出路径。工具获取共享性能测试锁，
+锁被占用时立即失败，退出时释放自己获取的锁。单组功能失败会记录到报告，继续运行
+其余组合，最终以非零状态退出。`completed` 只表示检查成功完成，不代表满足耗时门槛
+或通过 GUI 验收。比较时保持负载和环境一致；应用和 GUI 验收仍需分别执行。
+
 继续阅读[用户指南](docs/manual.zh-CN.md)、[公共 API
 参考](docs/manual.zh-CN.md)，以及同级
 [ebox-playground](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md) 示例。
