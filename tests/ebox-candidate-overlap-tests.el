@@ -158,18 +158,18 @@ CHILD-ONLY t returns just the control; `frame' wraps the panel with a sibling."
     (should (string-match-p "Unchanged" (buffer-string)))
     (should-error (ebox-focus 'value) :type 'user-error)))
 
-(defun ebox-overlap-test--shifted-input (notice value &optional part)
-  "Build a keyed field after optional NOTICE, or just PART of that tree."
+(defun ebox-overlap-test--shifted-input (notice value &optional part unkeyed)
+  "Build a field after NOTICE, or just PART; UNKEYED omits author keys."
   (let ((builder (ebox-source-builder-create)))
     (cl-labels
         ((text-node (id text)
            (ebox-text-create
-            :value text :source-handle (ebox-source-builder-bind builder :identity id :key id)
+            :value text :source-handle (ebox-source-builder-bind builder :identity id :key (unless unkeyed id))
             :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))
          (box-node (id children)
            (ebox-box-create
             :source-builder builder
-            :source-handle (ebox-source-builder-bind builder :identity id :key id)
+            :source-handle (ebox-source-builder-bind builder :identity id :key (unless unkeyed id))
             :layout (ebox-column-layout-create)
             :owned-facts (ebox-canonical-facts-from-declarations 'column nil)
             :children children)))
@@ -183,31 +183,39 @@ CHILD-ONLY t returns just the control; `frame' wraps the panel with a sibling."
         (unless part (setq root (box-node 'frame (list root (text-node 'aside "Aside")))))
         (ebox-canonical-input-create (list root) (ebox-source-builder-finish builder))))))
 
-(ert-deftest ebox-keyed-range-child-moves-before-a-nested-host-update ()
-  "A retained field uses its current position after a notice is inserted or removed."
+(defun ebox-overlap-test--shifted-workflow (unkeyed)
+  "Check nested field changes and rejection, omitting author keys if UNKEYED."
   (with-temp-buffer
-    (ebox-render-to-buffer (current-buffer) (ebox-overlap-test--shifted-input nil "A"))
+    (ebox-render-to-buffer (current-buffer) (ebox-overlap-test--shifted-input nil "A" nil unkeyed))
     (ebox-focus 'field)
     (dolist (notice '("Busy" nil))
       (let ((candidate (ebox-candidate-begin (current-buffer))))
         (ebox-candidate-replace-host-ref candidate 'panel
-                                         (ebox-overlap-test--shifted-input notice "A" 'panel))
+                                         (ebox-overlap-test--shifted-input notice "A" 'panel unkeyed))
         (ebox-candidate-replace-host-ref candidate 'field
-                                         (ebox-overlap-test--shifted-input notice "B" 'field))
+                                         (ebox-overlap-test--shifted-input notice "B" 'field unkeyed))
         (ebox-commit (current-buffer) candidate))
       (should (eq 'field (ebox-focused-host-ref)))
       (should (equal (buffer-substring-no-properties (point-min) (point-max))
                      (substring-no-properties
-                      (ebox-render (ebox-overlap-test--shifted-input notice "B"))))))
+                      (ebox-render (ebox-overlap-test--shifted-input notice "B" nil unkeyed))))))
     (let ((candidate (ebox-candidate-begin (current-buffer)))
           (before (buffer-substring-no-properties (point-min) (point-max))))
       (ebox-candidate-replace-host-ref candidate 'panel
-                                       (ebox-overlap-test--shifted-input "Rejected" "B" 'panel))
+                                       (ebox-overlap-test--shifted-input "Rejected" "B" 'panel unkeyed))
       (ebox-candidate-replace-host-ref candidate 'field
-                                       (ebox-overlap-test--shifted-input nil "Rejected" 'field))
+                                       (ebox-overlap-test--shifted-input nil "Rejected" 'field unkeyed))
       (should-error (ebox-commit (current-buffer) candidate (lambda (_) (error "Reject"))))
       (should (equal before (buffer-substring-no-properties (point-min) (point-max))))
       (should (eq 'field (ebox-focused-host-ref))))))
+
+(ert-deftest ebox-keyed-range-child-moves-before-a-nested-host-update ()
+  "A retained field uses its current position after a notice is inserted or removed."
+  (ebox-overlap-test--shifted-workflow nil))
+
+(ert-deftest ebox-explicit-host-identity-survives-sibling-changes-without-keys ()
+  "An explicit Host identity remains targetable after conditional siblings move."
+  (ebox-overlap-test--shifted-workflow t))
 
 (defun ebox-overlap-test--list-input (count &optional embedded)
   "Build COUNT keyed records, EMBEDDED beside independent content when non-nil."

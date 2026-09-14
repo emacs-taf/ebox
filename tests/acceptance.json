@@ -900,6 +900,11 @@
       "name": "ebox-keyed-range-child-moves-before-a-nested-host-update",
       "file": "tests/ebox-candidate-overlap-tests.el",
       "purpose": "A keyed field retains focus and remains updatable after sibling insertion or removal, with atomic rejection."
+    },
+    {
+      "name": "ebox-explicit-host-identity-survives-sibling-changes-without-keys",
+      "file": "tests/ebox-candidate-overlap-tests.el",
+      "purpose": "An unkeyed Host with stable source identity retains focus and nested updates across conditional sibling changes."
     }
   ]
 }

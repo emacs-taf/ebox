@@ -15,6 +15,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Unkeyed children with stable source identities remain targetable when
+  conditional siblings appear or disappear, including nested Host updates.
+
 - Overlapping Range writes resolve the final candidate payload in either
   recording order. Keyed children no longer inherit stale sequence positions
   when sibling insertion or removal accompanies a nested Host update.

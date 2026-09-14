@@ -847,6 +847,9 @@
 ;; Bind normalized source facts in BUILDER and return an opaque handle.
 ;; The returned handle contains identity only; all facts are owned by BUILDER
 ;; until `ebox-source-builder-finish' seals them into a source index.
+;; Retained sibling matching uses author KEY first, then matching IDENTITY for
+;; unkeyed nodes, before positional fallback. A sibling retaining its identity
+;; cannot donate that runtime node to a newly inserted sibling.
 ;; SELECTOR-STATE contains authored tokens. Disabled and focus are reserved:
 ;; use :disabled t in INTERACTIONS and mounted ebox-focus operations respectively.
 ;; Authoring either token signals an error.

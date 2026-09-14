@@ -998,14 +998,22 @@ candidate runtime index agree."
             (when-let* ((key (node-key source-index child)))
               (puthash key child table)))))
        (match-child
-        (old-children old-keyed new-child index)
+        (old-children old-keyed old-identities new-identities new-child index)
         (if-let* ((key (node-key new-source-index new-child)))
             (let ((old-child (gethash key old-keyed)))
               (and (same-type-p old-child new-child) old-child))
-          (let ((old-child (nth index old-children)))
-            (and (not (node-key old-source-index old-child))
-                 (same-type-p old-child new-child)
-                 old-child))))
+          (or (let* ((identity (ebox-tree-node-source-identity new-child))
+                     (old-child (and identity (gethash identity old-identities))))
+                (and (not (node-key old-source-index old-child))
+                     (same-type-p old-child new-child) old-child))
+              (let ((old-child (nth index old-children)))
+                (and (not (node-key old-source-index old-child))
+                     ;; An inserted sibling cannot take the identity of a
+                     ;; retained sibling that appears later in the new tree.
+                     (not (gethash (ebox-tree-node-source-identity old-child)
+                                   new-identities))
+                     (same-type-p old-child new-child)
+                     old-child)))))
        (reconcile
         (old-node new-node)
         (when (and (listp new-node) (not (stringp new-node)))
@@ -1013,13 +1021,22 @@ candidate runtime index agree."
           (let* ((old-children
                   (and old-node (ebox-tree--children-raw old-node)))
                  (new-children (ebox-tree--children-raw new-node))
+                 (old-identities (make-hash-table :test #'equal))
+                 (new-identities (make-hash-table :test #'equal))
                  (old-keyed
                   (keyed-children old-source-index old-children)))
+            (dolist (child old-children)
+              (when-let* ((identity (ebox-tree-node-source-identity child)))
+                (puthash identity child old-identities)))
+            (dolist (child new-children)
+              (when-let* ((identity (ebox-tree-node-source-identity child)))
+                (puthash identity t new-identities)))
             (cl-loop for new-child in new-children
                      for index from 0
                      do (reconcile
                          (match-child
-                          old-children old-keyed new-child index)
+                          old-children old-keyed old-identities new-identities
+                          new-child index)
                          new-child))))))
     (reconcile old new))
   new)
