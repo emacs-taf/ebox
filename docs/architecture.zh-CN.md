@@ -90,6 +90,10 @@ Grid 所有者或单元格更新会重建父布局分配；其余配置保留完
 一次规划过程，在 TP 发布新坐标之前丢弃；它不替代 TP 的权威挂载状态，也不
 改变 Ebox 公共查询返回防御性快照的契约。
 
+重叠替换在合并后代写入前，先从最近的候选祖先解析中间节点。若从已提交树
+复制中间路径，会覆盖该祖先对兄弟内容的修改。查询仅覆盖受影响路径，未变
+子树继续共享；拒绝发布时保留已提交代和焦点。
+
 ## Patch 顺序
 
 规划器优先使用 `paint-patch`，再使用 `span-patch`、`owner-rerender`，最后在几何或 identity 使小操作不安全时使用 `root-rerender`。incremental adapter 从 live generation fact 推导 tentative owner；pure patch port 随后只接收这些 artifact 与不可变 parent table。这些名称描述的是 Ebox 的语义 owner 范围；只有 TP 负责计算并执行物理文本/属性 diff。Patch 不得静默扩大语义范围。报告保留 Ebox strategy 与 planned scope，同时单独记录 TP 的实际 surface operation 和 revision。

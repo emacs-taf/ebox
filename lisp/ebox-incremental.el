@@ -4817,6 +4817,7 @@ shared with the published generation."
          (parent-table (plist-get index :parent-table))
          (affected (make-hash-table :test 'equal))
          (children (make-hash-table :test 'equal))
+         (candidate-nodes (make-hash-table :test 'equal))
          affected-ids)
     (maphash
      (lambda (node-id _replacement)
@@ -4847,10 +4848,37 @@ shared with the published generation."
               (sort affected-ids
                     (lambda (left right)
                       (> (depth left) (depth right)))))))
+    ;; Resolve intermediate paths from the nearest replacement ancestor.
+    ;; Copying such a path from NODE-TABLE would restore its old siblings and
+    ;; silently erase the ancestor's changes when a deeper write is merged.
+    ;; Memoize only the affected paths; unchanged subtrees remain shared.
+    (cl-labels
+        ((current-node
+          (node-id)
+          (or (gethash node-id candidate-nodes)
+              (let* ((old-node (ebox-runtime-index-get node-id node-table))
+                     (parent-id (ebox-runtime-index-get node-id parent-table))
+                     (node
+                      (or (gethash node-id replacements)
+                          (if (null parent-id) old-node
+                            (let ((parent (current-node parent-id)))
+                              (if (eq parent (ebox-runtime-index-get parent-id node-table))
+                                  old-node
+                                (let (found)
+                                  (ebox-tree-for-each-direct-child
+                                   parent
+                                   (lambda (child)
+                                     (when (equal node-id (plist-get child :node-id))
+                                       (setq found child))))
+                                  found)))))))
+                (unless node
+                  (error "Ebox candidate ancestor dropped nested anchor %S" node-id))
+                (puthash node-id node candidate-nodes)))))
+      (dolist (node-id affected-ids) (current-node node-id)))
     (let (result)
       (dolist (node-id affected-ids)
         (let* ((old-node (ebox-runtime-index-get node-id node-table))
-               (local (or (gethash node-id replacements) old-node))
+               (local (gethash node-id candidate-nodes))
                (child-replacements (gethash node-id children))
                (effective-child-replacements
                 (if (or (null child-replacements) (eq local old-node))

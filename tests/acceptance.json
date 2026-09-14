@@ -860,6 +860,11 @@
       "name": "ebox-inherited-paint-keeps-subsequent-content-and-snapshots",
       "file": "tests/ebox-paint-content-tests.el",
       "purpose": "Repeated inherited parent paint and child content updates retain matching output, styles and independently renderable canonical snapshots."
+    },
+    {
+      "name": "ebox-overlapping-replacements-retain-parent-text-and-child-state",
+      "file": "tests/ebox-candidate-overlap-tests.el",
+      "purpose": "Same-length text changes survive a subsequent retained child replacement."
     }
   ]
 }
