@@ -76,6 +76,24 @@ TRANSFER assigns the slot to CHILD; REVERSE reverses the physical root order."
       (should (equal "#ff0000" (ebox-shared-scope-test-color (buffer-string) "Slot"))))
     (should (equal "#ff0000" (ebox-shared-scope-test-color (ebox-render snapshot) "Slot")))))
 
+(ert-deftest ebox-shared-scopes-reorder-keeps-current-colors ()
+  "Reordering retained nodes preserves current slot and fallback colors."
+  (let ((parent (ebox-style-scope-create '(("text" :color "#ff0000"))))
+        (child (ebox-style-scope-create '(("text" :color "#0000ff")))))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-shared-scope-test-input parent child))
+      (dolist (change '((t nil) (nil t) (t t) (nil nil)))
+        (ebox-commit (current-buffer)
+                     (ebox-shared-scope-test-input parent child (car change) (cadr change)))
+        (ert-info ((format "transfer=%S reverse=%S" (car change) (cadr change)))
+          (let ((text (buffer-string)))
+            (dolist (word '("Alpha" "Beta"))
+              (should (equal "#ff0000" (ebox-shared-scope-test-color text word))))
+            (should (equal (if (car change) "#0000ff" "#ff0000")
+                           (ebox-shared-scope-test-color text "Slot")))
+            (should (equal "#0000ff" (ebox-shared-scope-test-color text "Fallback")))
+            (should-not (ebox-shared-scope-test-color text "Foreign"))))))))
+
 (ert-deftest ebox-shared-scopes-roots-and-membership-are-independent ()
   "Root matching requires membership, while unanchored slices contribute no rules."
   (let ((scope (ebox-style-scope-create '(("&" :color "#ff0000")))))

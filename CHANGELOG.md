@@ -20,6 +20,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Native structural updates retain current scoped colors and inherited styles
+  when nodes move or change ownership. Reused display objects no longer bypass
+  the candidate's required style computation.
+
 - Text updates in content-sized layouts recompute affected sibling geometry.
   Shrinking content after a retained-node update no longer rejects a valid
   publication because sibling filler fell outside a local content span.

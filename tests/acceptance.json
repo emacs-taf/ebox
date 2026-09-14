@@ -915,6 +915,11 @@
       "name": "ebox-grid-text-row-preserves-intrinsic-minima",
       "file": "tests/ebox-grid-tests.el",
       "purpose": "Text tracks keep unbreakable minima in definite and intrinsic layouts."
+    },
+    {
+      "name": "ebox-shared-scopes-reorder-keeps-current-colors",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Reordering retained nodes preserves current slot and fallback colors."
     }
   ]
 }

@@ -47,6 +47,12 @@ Ebox proves the host relationships and scope facts. Structural selectors retain
 full invalidation. This reduces repeated style work during ordinary projection;
 it does not make every native-property or mixed update a local projection.
 
+Native structural updates can retain display objects while requiring a complete
+style projection. In that case, the candidate rebuilds selector relationships
+and applies current styles to every node before native layout consumes it.
+Retained object identity alone never certifies style reuse; stable native
+updates still require the planner's prepared-style contract.
+
 Local style preparation reads the candidate's mounted scopes and compares them
 with the published context before reusing styles. Tree-dependent matching defers
 to complete projection. A pending author-style transition selects that boundary

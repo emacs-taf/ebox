@@ -1630,6 +1630,9 @@ PREVIOUS-STATE's node-object table."
                       (cl-every (lambda (proof)
                                   (plist-get proof :static-cascade-p))
                                 proofs)))))
+         (retained-native-style-p
+          (and (eq projection-kind 'native-frame)
+               (plist-get state-overrides :native-topology-stable-p)))
          (objects-by-node
           (if (memq projection-kind
                     '(span-patch owner-scoped scroll-patch
@@ -1663,9 +1666,7 @@ PREVIOUS-STATE's node-object table."
          (states-by-subject (make-hash-table :test 'eq))
          (subjects-required-p
           (and style-required-p
-               (not (and (eq projection-kind 'native-frame)
-                         (plist-get state-overrides
-                                    :native-topology-stable-p)))
+               (not retained-native-style-p)
                (not (or retained-span-style-p
                         (and (memq projection-kind
                                    '(owner-scoped scroll-patch
@@ -1684,10 +1685,10 @@ PREVIOUS-STATE's node-object table."
           (ebox-style-source-scopes source-index))
          (selector-tree-snapshot
           (if (or retained-span-style-p
+                  retained-native-style-p
                   (and (memq projection-kind
                              '(owner-scoped scroll-patch
-                               formatting-context-reflow mixed-owner-reflow
-                               native-frame))
+                               formatting-context-reflow mixed-owner-reflow))
                        (not range-splice-p)))
               (plist-get previous-state :selector-tree-snapshot)
             (and subjects
@@ -1695,8 +1696,9 @@ PREVIOUS-STATE's node-object table."
                   (plist-get subjects :root-subject)))))
          (selector-tree-token
           (if (or retained-span-style-p
+                  retained-native-style-p
                   (and (memq projection-kind
-                             '(owner-scoped scroll-patch native-frame))
+                             '(owner-scoped scroll-patch))
                        (not range-splice-p)))
               (plist-get previous-state :selector-tree-token)
             (and selector-tree-snapshot
@@ -1717,7 +1719,10 @@ PREVIOUS-STATE's node-object table."
         (when (plist-member state-overrides key)
           (plist-put state-overrides key (make-hash-table :test 'eq)))))
     (cond
-     ((eq projection-kind 'native-frame)
+     ;; Retained TP identity does not certify a node's candidate style.
+     ;; Topology changes with cascade work use the same complete projection as
+     ;; ordinary rendering before native layout consumes the styled nodes.
+     ((and (eq projection-kind 'native-frame) (not subjects-required-p))
         (ebox-surface--project-node-delta
          context root source-index previous-state state-overrides
          node-root objects-by-node
