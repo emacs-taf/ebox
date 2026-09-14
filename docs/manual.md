@@ -503,6 +503,34 @@ The complete signatures and error contracts are in [ebox.el](../ebox.el).
     (ebox-focus first)))
 ```
 
+Use `ebox-call-with-input` from a native activation callback to guard an
+editing or selection session. The reader runs in the mounted buffer and owns
+its native editing UI; it must not edit the rendered Ebox surface. Apply its
+result only after the call returns:
+
+```elisp
+(require 'ebox)
+(with-current-buffer (get-buffer-create "*ebox-input*")
+  (let ((map (ebox-keymap-create
+              :activate
+              (lambda ()
+                (interactive)
+                (let* ((target (ebox-focused-host-ref))
+                       (value (ebox-call-with-input
+                               target (lambda () (read-string "Title: ")))))
+                  (message "Accepted: %s" value))))))
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-build `(box :keymap ,map :tab-index 0 "Edit title")))
+    (ebox-focus-first)))
+```
+
+The boundary restores logical focus without selecting a window. It returns the
+reader's value only for the same mounted, enabled, accessible target; otherwise
+it signals `ebox-input-cancelled`, a subtype of `quit`. Keyed reorder retains
+the owner. Reader errors and user quit propagate, while focus is restored when
+possible. Call outside a TP transaction. Ebox owns neither application values
+nor the native input buffer, and does not implement another text editor.
+
 A focus change publishes the `:focus` selector state with its computed paint
 and layout. For example, local rules `(("box:focus" :color "#ff0000"))` style
 only the focused Box; descendant and sibling selectors use the same cascade.

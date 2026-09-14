@@ -329,6 +329,33 @@ Ebox 的文本簇处理会保留常见组合音标、变体选择符、Emoji 修
 <a id="native-node-interaction"></a>
 ### 原生节点交互
 
+原生编辑或选择回调可以用 `ebox-call-with-input` 包裹输入过程，再应用其返回值。
+reader 在所属挂载 buffer 中运行，但编辑由原生 minibuffer／编辑 buffer 持有，
+不能直接修改 Ebox 渲染内容：
+
+```elisp
+(require 'ebox)
+(with-current-buffer (get-buffer-create "*ebox-input*")
+  (let ((map (ebox-keymap-create
+              :activate
+              (lambda ()
+                (interactive)
+                (let* ((target (ebox-focused-host-ref))
+                       (value (ebox-call-with-input
+                               target (lambda () (read-string "标题：")))))
+                  (message "已接受：%s" value))))))
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-build `(box :keymap ,map :tab-index 0 "编辑标题")))
+    (ebox-focus-first)))
+```
+
+该边界不选择窗口；正常返回、错误或取消后，尽可能恢复存续入口的逻辑焦点。
+只有原挂载目标仍存在、启用且可访问时才返回 reader 的值，否则抛出 `quit`
+子类 `ebox-input-cancelled`。带 key 的重排保留目标；卸载、替换、删除、禁用或
+不可访问的入口不会接受结果。reader 错误与用户 quit 继续传播。调用必须在
+TP 事务之外；Ebox 不持有业务值或原生输入 buffer，也不实现第二套文本编辑器。
+
+
 Text 与所有 Box form 都接受 `:help-echo`、`:pointer`、`:hover-style` 和
 `:keymap`，以及节点自身的焦点输入 `:tab-index` 和 `:disabled`。它们是 CSS cascade
 之外的显式节点能力。例如，下面的 Box 组合了

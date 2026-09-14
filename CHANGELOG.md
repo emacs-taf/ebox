@@ -6,6 +6,8 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Add a native input boundary that guards mounted target ownership and restores logical focus after acceptance, cancellation or reader failure.
+
 - Observed update reports expose recorded local projection refusals, including mixed
   native-property composition and retained style closure boundaries. The
   update-effect evaluator collects these reasons in two additional updates,

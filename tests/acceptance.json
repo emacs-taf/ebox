@@ -862,6 +862,21 @@
       "purpose": "Repeated inherited parent paint and child content updates retain matching output, styles and independently renderable canonical snapshots."
     },
     {
+      "name": "ebox-native-input-restores-focus-through-reorder-and-errors",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Native input preserves results and restores the retained target after errors."
+    },
+    {
+      "name": "ebox-native-input-invalidates-disposed-or-disabled-targets",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "A completed reader cannot authorize input after its target loses ownership."
+    },
+    {
+      "name": "ebox-native-input-rejects-invalid-entry-and-unaccepted-transactions",
+      "file": "tests/ebox-focus-tests.el",
+      "purpose": "Readers cannot run for missing targets or within an unaccepted TP transaction."
+    },
+    {
       "name": "ebox-overlapping-replacements-retain-parent-text-and-child-state",
       "file": "tests/ebox-candidate-overlap-tests.el",
       "purpose": "Same-length text changes survive a subsequent retained child replacement."

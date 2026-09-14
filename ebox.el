@@ -526,6 +526,21 @@
 ;; No callback is cached between calls: retained updates and unmount take effect
 ;; immediately. It does not change focus or add event propagation.
 ;;
+;; Function: ebox-call-with-input (host-ref reader &optional buffer-or-name)
+;;;###autoload (autoload 'ebox-call-with-input "ebox" nil nil)
+;; Run zero-argument native READER for the visible, enabled HOST-REF in the
+;; mounted BUFFER-OR-NAME (default current buffer). Return its result only if
+;; the same target remains live. Restore its logical focus after success,
+;; errors or user quit. Reorder is allowed; replacement, deletion, hiding,
+;; disabling, unmount and remount invalidate input. Window selection is unchanged.
+;; The reader owns its native editing buffer and input methods; it must not
+;; edit Ebox-owned text. Call outside TP transactions. This function applies
+;; no application value; normal reader errors and quit propagate.
+;;
+;; Error: ebox-input-cancelled
+;; Native input lost its target before completion; parent condition is quit.
+;; Handle as cancelled input without committing the reader's value.
+;;
 ;; Function: ebox-keymap-create (&rest options)
 ;;;###autoload (autoload 'ebox-keymap-create "ebox" nil nil)
 ;; Create an ordinary native keymap from OPTIONS.

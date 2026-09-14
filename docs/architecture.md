@@ -236,6 +236,12 @@ selection after `ebox-activate` has already chosen the committed command.
 Custom native bindings remain native commands. No consumer focus or input
 mode is needed to activate overlapping controls correctly.
 
+The native input boundary holds only the current surface and retained target
+identity for the duration of a reader call. It reuses the committed ownership
+index and focus visibility checks before accepting a result and restoring focus.
+It adds no target registry, editing state or text writer. Native Emacs owns the
+input session; consumers apply accepted values after the boundary returns.
+
 ## Verification
 
 Every update path must prove:

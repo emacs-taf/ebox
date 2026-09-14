@@ -29,6 +29,71 @@
                 :owned-facts (ebox-canonical-facts-from-declarations 'column nil))))
     (ebox-canonical-input-create (list node) (ebox-source-builder-finish builder))))
 
+(ert-deftest ebox-native-input-restores-focus-through-reorder-and-errors ()
+  "Native input preserves results and restores the retained target after errors."
+  (with-temp-buffer
+    (ebox-render-to-buffer (current-buffer)
+                          (ebox-focus-test--input '((a "A" (:tab-index 0)) (b "B" (:tab-index 0)))))
+    (should
+     (equal "中文"
+            (ebox-call-with-input
+             'a (lambda ()
+                  (ebox-commit (current-buffer)
+                               (ebox-focus-test--input '((b "B" (:tab-index 0)) (a "A changed" (:tab-index 0)))))
+                  (ebox-focus 'b)
+                  "中文"))))
+    (should (eq 'a (ebox-focused-host-ref)))
+    (should (looking-at "A changed"))
+    (should-error (ebox-call-with-input 'a (lambda () (ebox-focus 'b) (error "reader failed"))))
+    (should (eq 'a (ebox-focused-host-ref)))
+    (should (eq 'quit
+                (condition-case condition
+                    (ebox-call-with-input 'a (lambda () (ebox-focus 'b) (signal 'quit nil)))
+                  (quit (car condition)))))
+    (should (eq 'a (ebox-focused-host-ref)))))
+
+(ert-deftest ebox-native-input-invalidates-disposed-or-disabled-targets ()
+  "A completed reader cannot authorize input after its target loses ownership."
+  (dolist (change '(disable hide delete replace reinsert remount kill))
+    (let ((buffer (generate-new-buffer " *ebox-native-input*")))
+      (unwind-protect
+          (with-current-buffer buffer
+            (ebox-render-to-buffer
+             buffer (ebox-focus-test--input '((a "A" (:tab-index 0)) (b "B" (:tab-index 0)))))
+            (should
+             (eq 'ebox-input-cancelled
+                 (condition-case condition
+                     (ebox-call-with-input
+                      'a (lambda ()
+                           (pcase change
+                             ('disable (ebox-region-update (ebox-region-resolve buffer "a") :disabled t))
+                             ('hide (let* ((bounds (ebox-host-ref-bounds buffer 'a))
+                                           (overlay (make-overlay (car bounds) (cdr bounds) buffer)))
+                                      (overlay-put overlay 'invisible t)))
+                             ('delete (ebox-commit buffer (ebox-focus-test--input '((b "B" (:tab-index 0))))))
+                             ('replace (ebox-commit buffer (ebox-focus-test--input '((a "New A" (:tab-index 0))) t)))
+                             ('reinsert (ebox-commit buffer (ebox-focus-test--input '((b "B" (:tab-index 0)))))
+                                        (ebox-commit buffer (ebox-focus-test--input '((a "New A" (:tab-index 0))))))
+                             ('remount (ebox-unmount-buffer buffer)
+                                       (ebox-render-to-buffer buffer (ebox-focus-test--input '((a "New A" (:tab-index 0))))))
+                             ('kill (kill-buffer buffer)))
+                           "discard"))
+                   (quit (car condition))))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest ebox-native-input-rejects-invalid-entry-and-unaccepted-transactions ()
+  "Readers cannot run for missing targets or within an unaccepted TP transaction."
+  (with-temp-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-focus-test--input '((a "A" (:tab-index 0)))))
+    (should-error (ebox-call-with-input 'a nil) :type 'wrong-type-argument)
+    (should (eq 'ebox-input-cancelled
+                (condition-case condition
+                    (ebox-call-with-input 'absent (lambda () (ert-fail "reader ran")))
+                  (quit (car condition)))))
+    (should-error
+     (tp-with-transaction
+       (ebox-call-with-input 'a (lambda () (ert-fail "reader ran")))))))
+
 (ert-deftest ebox-focus-orders-declared-stops-and-controls-cycling ()
   "Navigation shares declared order, skips disabled nodes and fails atomically."
   (with-temp-buffer

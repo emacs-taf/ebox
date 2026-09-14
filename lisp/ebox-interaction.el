@@ -24,6 +24,7 @@
 (declare-function ebox-fragment-style-source-node "ebox-fragment" (node))
 (declare-function ebox-surface-buffer-mounted-p "ebox-surface" (buffer))
 (declare-function ebox-surface--buffer-client-state "ebox-surface" (buffer))
+(declare-function ebox-surface--live-buffer-surface "ebox-surface" (buffer))
 (declare-function ebox-surface--paint-node-chain "ebox-surface" (state role-ids))
 (declare-function ebox--buffer-host-ref-table "ebox-incremental" (buffer))
 (declare-function ebox--host-ref-node "ebox-runtime" (buffer host-ref))
@@ -387,6 +388,55 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
     (unless (and (buffer-live-p buffer) (ebox-surface-buffer-mounted-p buffer))
       (user-error "Buffer has no live Ebox surface"))
     buffer))
+
+(define-error 'ebox-input-cancelled "Ebox input target is no longer available" 'quit)
+
+;;;###autoload
+(defun ebox-call-with-input (host-ref reader &optional buffer-or-name)
+  "Run native input READER for HOST-REF in BUFFER-OR-NAME.
+READER is a zero-argument function, for example a minibuffer read.  Return
+its result only while the same mounted target remains enabled and visible;
+otherwise signal `ebox-input-cancelled', a subtype of `quit'.  READER errors
+and user quits propagate.  No result is applied to application state here.
+Restore logical focus to the retained target on return, error or quit when
+it is still available.  Reorder and unrelated publication retain ownership;
+replacement, unmount, deletion, hiding and disabling invalidate it.
+This function changes no window selection and owns no input buffer.  Native
+Emacs readers own editing, input methods, selection and undo.  Call outside
+a TP transaction; it must not write native text into an Ebox-owned surface."
+  (unless (functionp reader)
+    (signal 'wrong-type-argument (list 'functionp reader)))
+  (when (tp-transaction-active-p)
+    (error "Ebox input requires an accepted transaction boundary"))
+  (let* ((buffer (ebox-interaction--focus-buffer buffer-or-name))
+         (surface (ebox-surface--live-buffer-surface buffer))
+         (owner (gethash host-ref (ebox--buffer-host-ref-table buffer)))
+         (state (ebox-surface--buffer-client-state buffer))
+         (key (and owner (ebox-interaction--focus-key state owner)))
+         result completed valid)
+    (cl-labels
+        ((available ()
+           (and (buffer-live-p buffer)
+                (eq surface (ebox-surface--live-buffer-surface buffer))
+                (equal owner (gethash host-ref (ebox--buffer-host-ref-table buffer)))
+                (let ((current (ebox-surface--buffer-client-state buffer)))
+                  (and (equal key (ebox-interaction--focus-key current owner))
+                       (with-current-buffer buffer
+                         (ebox-interaction--focus-position current owner)))))))
+      (unless (and owner (available))
+        (signal 'ebox-input-cancelled (list host-ref)))
+      (unwind-protect
+          (with-current-buffer buffer
+            (setq result (funcall reader) completed t))
+        (setq valid (available))
+        (when valid
+          (condition-case problem
+              (ebox-focus host-ref buffer)
+            ((error quit)
+             (setq valid nil)
+             (when completed (signal (car problem) (cdr problem)))))))
+      (unless valid (signal 'ebox-input-cancelled (list host-ref)))
+      result)))
 
 ;;;###autoload
 (defun ebox-focus (host-ref &optional buffer-or-name)

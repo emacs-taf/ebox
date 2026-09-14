@@ -153,6 +153,10 @@ playground scroll evaluator 验证 fresh-render parity，并区分缓存滚动�
 
 Key 只在同级兄弟集合内有效。声明式 source tree 不拥有 live TP object、marker 或 buffer 坐标。live 逻辑 `:id` 通过 `ebox-region-resolve` 解析为绑定某个 TP surface object 的不透明 handle；同一 source 挂载到两个 buffer 时会得到不同 handle。Region 与 host-ref 位置绑定于 generation；buffer 变更后调用者必须通过公共 accessor 重新获得位置。Buffer marker、display span 和 text property 是发布事实，不是 source tree identity。
 
+原生输入边界只在 reader 调用期间保留当前 surface 与目标身份，接受结果和恢复
+焦点时复用已提交的归属索引、可见性与焦点校验。它不增加目标注册表、编辑状态
+或文本写入方。原生 Emacs 持有输入过程，消费者在边界返回后应用已接受的值。
+
 ## 验证
 
 每条更新路径都要验证：
