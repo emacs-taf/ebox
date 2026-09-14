@@ -15,6 +15,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Overlapping Range writes resolve the final candidate payload in either
+  recording order. Keyed children no longer inherit stale sequence positions
+  when sibling insertion or removal accompanies a nested Host update.
+
 - Nested Range updates keep runtime indexes attached to the final candidate tree, so later Host updates remain valid. Large subtree replacements preserve source order when records are added or removed, including rejected publications.
 
 - A candidate replacing an ancestor and then a deeper child preserves the

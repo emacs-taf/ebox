@@ -890,6 +890,16 @@
       "name": "ebox-large-candidate-removal-preserves-source-order-and-rollback",
       "file": "tests/ebox-candidate-overlap-tests.el",
       "purpose": "Large keyed list removals and insertions match fresh rendering and reject atomically."
+    },
+    {
+      "name": "ebox-overlapping-ranges-preserve-followup-child-updates",
+      "file": "tests/ebox-candidate-overlap-tests.el",
+      "purpose": "Nested Range writes refine ancestor content in either recording order and preserve later Host updates."
+    },
+    {
+      "name": "ebox-keyed-range-child-moves-before-a-nested-host-update",
+      "file": "tests/ebox-candidate-overlap-tests.el",
+      "purpose": "A keyed field retains focus and remains updatable after sibling insertion or removal, with atomic rejection."
     }
   ]
 }

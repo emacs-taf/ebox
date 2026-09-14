@@ -960,9 +960,10 @@ candidate runtime index agree."
                (plist-get new :ebox-type)))
       (progn
         (plist-put new :node-id (ebox--ensure-node-id old))
-        (when (plist-member old :ebox-sequence-location)
-          (plist-put new :ebox-sequence-location
-                     (copy-sequence (plist-get old :ebox-sequence-location))))
+        ;; Sequence coordinates belong to the containing tree, not the
+        ;; retained identity.  A keyed child may have moved in its new parent.
+        (when (plist-member new :ebox-sequence-location)
+          (plist-put new :ebox-sequence-location nil))
         (when (eq (plist-get new :ebox-type) 'box)
           (plist-put new :region-id (ebox--ensure-region-id old))
           ;; Omitted scroll state is uncontrolled host state.  `ebox-create'

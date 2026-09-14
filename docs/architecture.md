@@ -117,11 +117,18 @@ committed tree would overwrite that ancestor's sibling changes. The lookup is
 limited to affected paths and shares unchanged subtrees; rejection retains the
 published generation and focus.
 
-Range deltas describe affected payloads; their owner is indexed from the final
-path-copy trace because a descendant update may have copied that owner again.
+Range writes resolve ancestors before descendants, independent of recording
+order. Descendant addresses resolve through the current candidate parent; a
+removed descendant is absorbed. Range deltas describe affected payloads; both
+owners and payload nodes are indexed from the final path-copy trace because a
+descendant update may have copied them again.
 Broad index reconstruction also receives the final source preorder, including
 insertions and removals. Both preparation paths publish one matching tree and
 index generation.
+
+Runtime identity transfer preserves node and region identity, but does not copy
+child-sequence coordinates. Those coordinates belong to a particular parent
+tree and are resolved or indexed again after keyed insertion and reordering.
 
 ## Patch order
 

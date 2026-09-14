@@ -89,13 +89,19 @@ CHILD-ONLY t returns just the control; `frame' wraps the panel with a sibling."
             :owned-facts (ebox-canonical-facts-from-declarations 'column nil)
             :children children))
          (body ()
-           (box-node 'body (list (ebox-child-range 'body-items (text-node 'value value))))))
+           (box-node 'body (list (ebox-child-range 'body-items (text-node 'value value)))))
+         (content ()
+           (box-node 'content
+                     (list (ebox-child-range 'heading (text-node 'title title))
+                           (body)))))
       (let ((node (pcase part
                     ('title (text-node 'title title))
                     ('value (text-node 'value value))
+                    ('content (content))
+                    ('empty-content (box-node 'content nil))
                     (_ (box-node 'root
-                                 (list (ebox-child-range 'heading (text-node 'title title))
-                                       (body) (text-node 'tail "Unchanged")))))))
+                                 (list (ebox-child-range 'content-items (content))
+                                       (text-node 'tail "Unchanged")))))))
         (unless part
           (setq node (box-node 'frame (list (text-node 'aside "Other content") node))))
         (ebox-canonical-input-create (list node) (ebox-source-builder-finish builder))))))
@@ -119,6 +125,89 @@ CHILD-ONLY t returns just the control; `frame' wraps the panel with a sibling."
         (ebox-commit (current-buffer) candidate))
       (should (string-match-p "Next value" (buffer-string)))
       (should (string-match-p "Unchanged" (buffer-string))))))
+
+(ert-deftest ebox-overlapping-ranges-preserve-followup-child-updates ()
+  "Nested replacements publish a tree whose child addresses remain usable."
+  (with-temp-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-overlap-test--range-input "Title A" "Value A"))
+    (dolist (value '("Value B" "Value C"))
+      (let ((candidate (ebox-candidate-begin (current-buffer))))
+        (dolist (ref (if (equal value "Value B")
+                         '(content-items body-items) '(body-items content-items)))
+          (ebox-candidate-replace-range-ref
+           candidate ref
+           (if (eq ref 'content-items)
+               (ebox-overlap-test--range-input "Title B" "Outer snapshot" 'content)
+             (ebox-overlap-test--range-input "Title B" value 'value))))
+        (ebox-commit (current-buffer) candidate))
+      (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                     (substring-no-properties
+                      (ebox-render (ebox-overlap-test--range-input "Title B" value)))))
+      (let ((candidate (ebox-candidate-begin (current-buffer))))
+        (ebox-candidate-replace-host-ref
+         candidate 'value (ebox-overlap-test--range-input "Title B" "Followup" 'value))
+        (ebox-commit (current-buffer) candidate))
+      (should (string-match-p "Followup" (buffer-string))))
+    (let ((candidate (ebox-candidate-begin (current-buffer))))
+      (ebox-candidate-replace-range-ref
+       candidate 'body-items (ebox-overlap-test--range-input "Title" "Removed" 'value))
+      (ebox-candidate-replace-range-ref
+       candidate 'content-items (ebox-overlap-test--range-input "Title" "Removed" 'empty-content))
+      (ebox-commit (current-buffer) candidate))
+    (should-not (string-match-p "Removed\\|Followup" (buffer-string)))
+    (should (string-match-p "Unchanged" (buffer-string)))
+    (should-error (ebox-focus 'value) :type 'user-error)))
+
+(defun ebox-overlap-test--shifted-input (notice value &optional part)
+  "Build a keyed field after optional NOTICE, or just PART of that tree."
+  (let ((builder (ebox-source-builder-create)))
+    (cl-labels
+        ((text-node (id text)
+           (ebox-text-create
+            :value text :source-handle (ebox-source-builder-bind builder :identity id :key id)
+            :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))
+         (box-node (id children)
+           (ebox-box-create
+            :source-builder builder
+            :source-handle (ebox-source-builder-bind builder :identity id :key id)
+            :layout (ebox-column-layout-create)
+            :owned-facts (ebox-canonical-facts-from-declarations 'column nil)
+            :children children)))
+      (let* ((field (box-node 'field (list (text-node 'value value))))
+             (root
+              (if (eq part 'field) field
+                (box-node 'panel
+                          (list (apply #'ebox-child-range 'fields
+                                       (append (when notice (list (text-node 'notice notice)))
+                                               (list field))))))))
+        (unless part (setq root (box-node 'frame (list root (text-node 'aside "Aside")))))
+        (ebox-canonical-input-create (list root) (ebox-source-builder-finish builder))))))
+
+(ert-deftest ebox-keyed-range-child-moves-before-a-nested-host-update ()
+  "A retained field uses its current position after a notice is inserted or removed."
+  (with-temp-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-overlap-test--shifted-input nil "A"))
+    (ebox-focus 'field)
+    (dolist (notice '("Busy" nil))
+      (let ((candidate (ebox-candidate-begin (current-buffer))))
+        (ebox-candidate-replace-host-ref candidate 'panel
+                                         (ebox-overlap-test--shifted-input notice "A" 'panel))
+        (ebox-candidate-replace-host-ref candidate 'field
+                                         (ebox-overlap-test--shifted-input notice "B" 'field))
+        (ebox-commit (current-buffer) candidate))
+      (should (eq 'field (ebox-focused-host-ref)))
+      (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                     (substring-no-properties
+                      (ebox-render (ebox-overlap-test--shifted-input notice "B"))))))
+    (let ((candidate (ebox-candidate-begin (current-buffer)))
+          (before (buffer-substring-no-properties (point-min) (point-max))))
+      (ebox-candidate-replace-host-ref candidate 'panel
+                                       (ebox-overlap-test--shifted-input "Rejected" "B" 'panel))
+      (ebox-candidate-replace-host-ref candidate 'field
+                                       (ebox-overlap-test--shifted-input nil "Rejected" 'field))
+      (should-error (ebox-commit (current-buffer) candidate (lambda (_) (error "Reject"))))
+      (should (equal before (buffer-substring-no-properties (point-min) (point-max))))
+      (should (eq 'field (ebox-focused-host-ref))))))
 
 (defun ebox-overlap-test--list-input (count &optional embedded)
   "Build COUNT keyed records, EMBEDDED beside independent content when non-nil."

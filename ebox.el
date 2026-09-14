@@ -168,6 +168,8 @@
 ;; Function: ebox-candidate-replace-range-ref (candidate range-ref input &optional reuse-map retain-item-identities-p)
 ;;;###autoload (autoload 'ebox-candidate-replace-range-ref "ebox" nil nil)
 ;; Replace RANGE-REF from canonical INPUT, retaining proven REUSE-MAP slots.
+;; Nested Range writes refine the ancestor replacement in either recording
+;; order. An ancestor that removes the inner Range absorbs that inner write.
 ;; When RETAIN-ITEM-IDENTITIES-P is non-nil, Ebox retains candidate-owned items
 ;; only after its strict ownership proof; otherwise it uses the normal copy path.
 ;;

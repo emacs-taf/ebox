@@ -5449,10 +5449,26 @@ but must re-enter the candidate indexes as a new object."
     (list (append result nil) (nreverse effective))))
 
 (defun ebox-incremental--candidate-current-node (state node-id)
-  "Return current candidate NODE-ID from path trace or base STATE."
+  "Resolve NODE-ID in the candidate tree over STATE.
+A replaced ancestor may contain a new object for an unchanged descendant id.
+Resolve that descendant through its actual candidate parent before using it
+as a path-copy anchor; the committed index describes only the base tree."
   (or (plist-get (gethash node-id ebox-incremental--candidate-path-copy-trace)
                  :node)
-      (ebox-runtime-index-get node-id (plist-get state :node-table))))
+      (let* ((nodes (plist-get state :node-table))
+             (old (ebox-runtime-index-get node-id nodes))
+             (parent-id (ebox-runtime-index-get node-id (plist-get state :parent-table)))
+             (parent (and parent-id
+                          (ebox-incremental--candidate-current-node state parent-id))))
+        (if (or (null parent-id) (eq parent (ebox-runtime-index-get parent-id nodes)))
+            old
+          (let (current)
+            (ebox-tree-for-each-direct-child
+             parent
+             (lambda (child)
+               (when (equal node-id (plist-get child :node-id))
+                 (setq current child))))
+            current)))))
 
 (defun ebox-incremental--candidate-range-ref-overlay (old-state path-trace)
   "Return Range ref table updated only for node anchors in PATH-TRACE."
@@ -5589,7 +5605,19 @@ but must re-enter the candidate indexes as a new object."
             (unless absorbed
               (unless (gethash parent-id groups) (push parent-id order))
               (push entry (gethash parent-id groups)))))
-        (dolist (parent-id (nreverse order))
+        ;; Descendant Range writes refine their ancestor's replacement even
+        ;; when callers record them first.  A removed descendant is absorbed.
+        (let ((depths (make-hash-table :test #'equal))
+              (parents (plist-get state :parent-table)))
+          (cl-labels ((depth (id)
+                        (if (null id) 0
+                          (or (gethash id depths)
+                              (puthash id
+                                       (1+ (depth (ebox-runtime-index-get id parents)))
+                                       depths)))))
+            (setq order (sort (nreverse order)
+                              (lambda (left right) (< (depth left) (depth right)))))))
+        (dolist (parent-id order)
           (let* ((parent (ebox-incremental--candidate-current-node
                           state parent-id))
                  (base-parent (ebox-runtime-index-get parent-id (plist-get state :node-table)))
@@ -6562,7 +6590,13 @@ candidate isolation contracts."
                 (push (list old-node new-node parent-id children-changed)
                       touched)))
              (visit-new (node parent-id)
-               (let* ((node-id (ebox--ensure-node-id node))
+               (let* ((node
+                       (or (and path-copy-trace
+                                (plist-get
+                                 (gethash (ebox--ensure-node-id node) path-copy-trace)
+                                 :node))
+                           node))
+                      (node-id (ebox--ensure-node-id node))
                       (old-node (ebox-runtime-index-get node-id old-node-table missing)))
                  (unless (or (gethash node-id visited-new)
                              (eq node old-node))
