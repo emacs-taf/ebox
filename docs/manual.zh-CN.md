@@ -502,6 +502,26 @@ buffer，遵循 `display-buffer-alist`，并接受与原生 `display-buffer` 相
 验证、渲染或发布失败时，旧 buffer 与 runtime 状态保持不变。
 `ebox-buffer-update-report` 返回最近一次成功更新报告的防御性副本。
 
+通过 `ebox-buffer-set-observer` 开启观察时，可选字段 `:projection-rejections` 以
+`(:projection KIND :reasons (REASON ...))` 记录局部尝试。目前覆盖混合局部规划，
+以及已选局部计划在生成输出时退回普通投影的情况：
+
+| 原因 | 拒绝该尝试的能力边界 |
+| --- | --- |
+| `geometry-allocation` | 没有可用的局部几何分配证明。 |
+| `native-property-composition` | 混合绘制合成器不能发布变化的原生 surface 属性。 |
+| `paint-composition` | 外部绘制 owner 不满足合成器约束。 |
+| `candidate-style-preparation` | 候选样式尚未完整准备，不能局部复用。 |
+| `retained-style-closure` | 已发布的样式绑定不能安全表达候选状态。 |
+| `overlapping-output` | 几何与绘制输出无法按支持的互不重叠方式组合。 |
+| `output-proof` | 已选局部计划无法生成经过证明的局部输出。 |
+
+一次尝试可以有多个独立拒绝原因。这不是完整的证明追踪，缺少记录不代表满足局部条件。
+其他局部路径仍可能成功；实际发布路径以最终 `:projection-kind` 为准。原因不表示耗时归因。
+`make update-effects-performance` 额外执行两次开启观察的更新，覆盖两个状态，
+将原因汇总为 `rejection_counts`。这两次执行相同的正确性检查，但不计入延迟样本和
+`projection_counts`；`diagnostic_updates` 记录其次数。普通更新不收集这些详细诊断。
+
 ## 6. 查询和更新 mounted surface
 
 `:id`、`:class` 与 `:key` 是 author metadata。Selector 使用 ECSS 语义。

@@ -93,6 +93,12 @@
 ;; buffer.  Signal `user-error' when the target is missing, dead, or has no Ebox
 ;; runtime.  A freshly rendered buffer returns nil until its first update
 ;; publication.
+;; When `ebox-buffer-set-observer' enables observation, optional
+;; :projection-rejections lists attempted local projections and their
+;; :reasons; entries contain :projection and :reasons symbols. These are recorded
+;; proof boundaries, not exhaustive causes or CPU costs. Another local route may
+;; succeed; :projection-kind describes the actual published route. See the manual
+;; for reason meanings and the update-effect evaluator for aggregate diagnostics.
 ;;
 ;; Function: ebox-build (dsl)
 ;;;###autoload (autoload 'ebox-build "ebox" nil nil)

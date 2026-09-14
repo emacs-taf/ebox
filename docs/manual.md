@@ -604,6 +604,30 @@ Validation, rendering, or publication failure leaves the previous buffer and
 runtime state intact. `ebox-buffer-update-report` returns a defensive copy of
 the last successful update report.
 
+When `ebox-buffer-set-observer` enables observation, the optional
+`:projection-rejections` field records local attempts as
+`(:projection KIND :reasons (REASON ...))`. It currently covers mixed local
+planning and accepted local plans that subsequently require ordinary output:
+
+| Reason | Boundary that declined the attempt |
+| --- | --- |
+| `geometry-allocation` | No supported local geometry allocation proof. |
+| `native-property-composition` | The mixed paint compositor cannot publish changed native surface properties. |
+| `paint-composition` | The external paint owners do not satisfy the compositor's constraints. |
+| `candidate-style-preparation` | Candidate styles were not completely prepared for local reuse. |
+| `retained-style-closure` | The published style bindings cannot safely represent the candidate. |
+| `overlapping-output` | Geometry and paint output do not have a supported disjoint composition. |
+| `output-proof` | A selected local plan could not produce proven local output. |
+
+Several independent reasons can apply to one attempt. Absence of a record does
+not certify eligibility: this is not an exhaustive proof trace. A different
+local route may succeed; read the final `:projection-kind` for the published
+route. Reasons do not attribute elapsed time. `make update-effects-performance`
+performs two additional observed updates, covering both states, and aggregates
+them as `rejection_counts`. These updates run the same correctness checks but
+are excluded from latency samples and `projection_counts`; `diagnostic_updates`
+records their count. Ordinary updates do not collect this detailed diagnostic.
+
 ## 6. Query and update a mounted surface
 
 `:id`, `:class`, and `:key` are author metadata. Selectors use ECSS semantics.

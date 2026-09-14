@@ -4,6 +4,13 @@ All notable changes to Ebox are documented here.
 
 ## 3.0.0 (Unreleased)
 
+### Added
+
+- Observed update reports expose recorded local projection refusals, including mixed
+  native-property composition and retained style closure boundaries. The
+  update-effect evaluator collects these reasons in two additional updates,
+  separate from its unobserved latency samples, with the same correctness checks.
+
 ### Fixed
 
 - Incremental updates avoid repeatedly copying unchanged mounted ranges while

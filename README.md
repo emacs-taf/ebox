@@ -254,6 +254,9 @@ every update checks text, display geometry, color, keymaps and activation outsid
 the timed interval. The JSON records raw build-through-commit samples, p50/p95/max,
 projection counts and source/evaluator identity. `ordinary` means no local projection
 kind was reported; it does not prove that a local attempt failed.
+Two additional observed updates, excluded from timed samples, produce
+`rejection_counts` grouped by projection and reason;
+see the [report semantics](docs/manual.md) before interpreting these partial diagnostics.
 
 Defaults are 20 and 100 untouched siblings, three warmups and ten samples per case.
 Override `EBOX_UPDATE_EFFECTS_SIZES=20,100`, `EBOX_UPDATE_EFFECTS_WARMUPS=3` and

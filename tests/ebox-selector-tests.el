@@ -196,13 +196,27 @@
                                            (current-buffer) selector)) :node-id))
                         '("#content" "#control"))))
         (dolist (active '(t nil t nil))
+          (ebox-buffer-set-observer (current-buffer) (and active #'ignore))
           (let ((candidate (ebox-candidate-begin (current-buffer))))
             (cl-mapc (lambda (id node)
                        (ebox-candidate-replace candidate id (ebox-build node)))
                      ids (nodes active))
             (ebox-commit (current-buffer) candidate))
           (should (equal (visible (buffer-string))
-                         (visible (ebox-render (input active))))))))))
+                         (visible (ebox-render (input active)))))
+          (let* ((report (ebox-buffer-update-report (current-buffer)))
+                 (saved (copy-tree report))
+                 (rejections (plist-get report :projection-rejections)))
+            (unless active (should-not rejections))
+            (dolist (attempt rejections)
+              (should (symbolp (plist-get attempt :projection)))
+              (should (cl-every #'symbolp (plist-get attempt :reasons))))
+            ;; Diagnostic values share the report's defensive-copy and
+            ;; last-successful-publication contract.
+            (when rejections (setcar rejections 'changed-by-reader))
+            (should (equal saved (ebox-buffer-update-report (current-buffer))))
+            (should-error (ebox-region-update 'control :width '(px -1)))
+            (should (equal saved (ebox-buffer-update-report (current-buffer))))))))))
 
 (provide 'ebox-selector-tests)
 ;;; ebox-selector-tests.el ends here

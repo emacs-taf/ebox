@@ -149,6 +149,12 @@
   "Read-only TP mount snapshots shared within one publication planning pass.
 The planning pass ends before TP can publish new coordinates.")
 
+(defvar ebox-incremental--projection-rejections nil
+  "Compact rejected local attempts in the current publication planning pass.")
+
+(defvar ebox-incremental--projection-rejections-enabled-p nil
+  "Non-nil while Surface has enabled detailed publication observation.")
+
 (defun ebox-incremental--region-mounts (buffer region-id &optional roles)
   "Read BUFFER mounts for REGION-ID and ROLES from the current planning view.
 Private planning readers must not mutate the returned numeric snapshots."
@@ -8179,6 +8185,29 @@ suppresses the ordinary fallback when any fact is missing."
                    (not (ebox-style-cascade-active-p)))
               (ebox-incremental--cascade-local-owner-proof-p
                old-state candidate-state dirty-set))))
+    (when (and ebox-incremental--projection-rejections-enabled-p
+               geometry-dirty paint-dirty)
+      ;; Record evaluated capability boundaries, not timing guesses or private
+      ;; runtime graphs.  Several independent boundaries can reject one union.
+      (let (reasons)
+        (unless geometry-proof (push 'geometry-allocation reasons))
+        (when (and geometry-proof (not paint-valid-p))
+          (push (if (cl-some
+                     (lambda (entry)
+                       (memq :surface-properties (plist-get entry :changed-keys)))
+                     external-paint-dirty)
+                    'native-property-composition
+                  'paint-composition)
+                reasons))
+        (unless (plist-get prepared :styles-prepared-p)
+          (push 'candidate-style-preparation reasons))
+        (unless cascade-safe-p (push 'retained-style-closure reasons))
+        (when (and geometry-owner-ids paint-owner-ids
+                   (not (and disjoint-p allocation-disjoint-p)))
+          (push 'overlapping-output reasons))
+        (when reasons
+          (push (list :projection 'mixed-owner-reflow :reasons (nreverse reasons))
+                ebox-incremental--projection-rejections))))
     (when (and geometry-span-proof
                (not (plist-get geometry-span-proof :owner-proofs)))
       ;; A detached single owner is rendered outside its ancestor wrappers.
@@ -10681,7 +10710,8 @@ role, and outside-complement compatibility before publication."
 (defun ebox-incremental--surface-commit-input
     (buffer old-state prepared)
   "Return TP surface input for BUFFER from OLD-STATE and PREPARED runtime."
-  (let* ((ebox-incremental--mount-snapshot-cache (make-hash-table :test #'equal))
+  (let* ((ebox-incremental--projection-rejections nil)
+         (ebox-incremental--mount-snapshot-cache (make-hash-table :test #'equal))
          (ebox-incremental--allocated-slot-proof-cache
           (make-hash-table :test 'equal))
          (ebox--flex-slot-safety-cache (make-hash-table :test 'equal))
@@ -10862,6 +10892,10 @@ role, and outside-complement compatibility before publication."
            (span-proof 'span-patch))))
     (when projection-kind
       (setq report (plist-put report :projection-kind projection-kind)))
+    (when ebox-incremental--projection-rejections
+      (setq report
+            (plist-put report :projection-rejections
+                       (nreverse ebox-incremental--projection-rejections))))
     (when layer-owner-plan
       (setq report (plist-put report :layer-recompose-p t)))
     (when mixed-proof
@@ -11056,7 +11090,8 @@ logical tree.  SKIP-SPAN-PROOF-P permits the retained scroll fast path;
 SCROLL-TRANSACTION-P and SCROLL-OWNER-ID identify the changing scroll owner.
 Return the intermediate candidate state, owner plan, projection proof, and
 whether NEXT-ROOT shares untouched published nodes."
-  (let* ((ebox-incremental--allocated-slot-proof-cache
+  (let* ((ebox-incremental--projection-rejections nil)
+         (ebox-incremental--allocated-slot-proof-cache
           (make-hash-table :test 'equal))
          (source-base-index
           (or ebox-incremental--source-base-index
@@ -11189,6 +11224,7 @@ whether NEXT-ROOT shares untouched published nodes."
     (when mixed-proof
       (setq prepared (plist-put prepared :mixed-owner-proof mixed-proof)))
     (list :prepared prepared
+          :projection-rejections (nreverse ebox-incremental--projection-rejections)
           :candidate-state candidate-state
           :owner-plan owner-plan
           :scope-node-ids scope-node-ids
@@ -11262,6 +11298,10 @@ runtime candidate whose identities already match the published root."
                (ebox-incremental--layout-owner-report
                 prepared owner-plan candidate-state)
                report-overrides)))
+        (when (plist-get candidate :projection-rejections)
+          (setq report
+                (plist-put report :projection-rejections
+                           (plist-get candidate :projection-rejections))))
         (when scroll-transaction-p
           ;; A complete native producer must advance its confirmed visible
           ;; frame on scroll as well.  Ordinary scroll states publish their

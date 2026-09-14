@@ -113,6 +113,7 @@
                        (ebox-update-effects--shape text)))
                    '(nil t))))
          (projection-counts (make-hash-table :test #'equal))
+         (rejection-counts (make-hash-table :test #'equal))
          active elapsed)
     (with-temp-buffer
       (ebox-render-to-buffer (current-buffer) initial)
@@ -120,7 +121,11 @@
       (let ((ids (mapcar (lambda (selector)
                           (plist-get (car (ebox-selector-query-buffer (current-buffer) selector)) :node-id))
                         '("#content" "#control"))))
-        (dotimes (index (+ samples warmups))
+        (dotimes (index (+ samples warmups 2))
+          ;; Observation is deliberately separate from latency measurement.
+          ;; Two extra updates exercise both states with the same checks.
+          (when (= index (+ samples warmups))
+            (ebox-buffer-set-observer (current-buffer) #'ignore))
           (setq active (not active))
           (let ((start (float-time))
                 (candidate (ebox-candidate-begin (current-buffer))))
@@ -128,7 +133,7 @@
                        (ebox-candidate-replace candidate id (ebox-build node)))
                      ids (ebox-update-effects--nodes scoped effects active keymap))
             (ebox-commit (current-buffer) candidate)
-            (when (>= index warmups)
+            (when (and (>= index warmups) (< index (+ samples warmups)))
               (push (* 1000.0 (- (float-time) start)) elapsed)))
           (unless (equal (aref expected (if active 1 0))
                          (ebox-update-effects--shape (buffer-string)))
@@ -151,9 +156,15 @@
             (unless (= hits (+ before (if enabled 1 0)))
               (error "Incorrect activation behavior: %S" effects)))
           (when (>= index warmups)
-            (let ((kind (or (plist-get (ebox-buffer-update-report (current-buffer)) :projection-kind)
-                            'ordinary)))
-              (cl-incf (gethash (symbol-name kind) projection-counts 0)))))))
+            (let* ((report (ebox-buffer-update-report (current-buffer)))
+                   (kind (or (plist-get report :projection-kind) 'ordinary)))
+              (if (< index (+ samples warmups))
+                  (cl-incf (gethash (symbol-name kind) projection-counts 0))
+                (dolist (attempt (plist-get report :projection-rejections))
+                  (dolist (reason (plist-get attempt :reasons))
+                    (cl-incf
+                     (gethash (format "%s/%s" (plist-get attempt :projection) reason)
+                              rejection-counts 0))))))))))
     (let ((ordered (sort (copy-sequence elapsed) #'<)))
       (list :untouched_nodes size :styles (if scoped "scoped" "inline")
             :effects (vconcat (mapcar #'symbol-name effects))
@@ -161,7 +172,9 @@
             :p50_ms (nth (min (1- samples) (floor (* 0.5 samples))) ordered)
             :p95_ms (nth (min (1- samples) (floor (* 0.95 samples))) ordered)
             :max_ms (car (last ordered))
-            :projection_counts projection-counts :correctness "passed"))))
+            :projection_counts projection-counts
+            :rejection_counts rejection-counts :diagnostic_updates 2
+            :correctness "passed"))))
 
 (defun ebox-update-effects--source (feature)
   "Describe FEATURE's checked-out source revision and uncommitted changes."
@@ -250,6 +263,14 @@ case.  Fifteen effect combinations run with inline and scoped styles."
                 (plist-put report :error "One or more effect combinations failed correctness"))
               (plist-put report :status (if (plist-get report :error) "failed" "completed"))
               (ebox-update-effects--write output report)
+              (let ((totals (make-hash-table :test #'equal)))
+                (dolist (result cases)
+                  (when-let* ((counts (plist-get result :rejection_counts)))
+                    (maphash (lambda (boundary count)
+                               (cl-incf (gethash boundary totals 0) count))
+                             counts)))
+                (dolist (boundary (sort (hash-table-keys totals) #'string<))
+                  (princ (format "rejected %s=%d\n" boundary (gethash boundary totals)))))
               (princ (format "%s %s\n" (plist-get report :status) output))
               (when (plist-get report :error) (error "%s" (plist-get report :error))))
           (when acquired

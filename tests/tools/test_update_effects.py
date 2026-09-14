@@ -96,9 +96,23 @@ class UpdateEffectsTests(unittest.TestCase):
             self.assertEqual(case["correctness"], "passed")
             self.assertEqual(len(case["samples_ms"]), 2)
             self.assertEqual(sum(case["projection_counts"].values()), 2)
+            self.assertIsInstance(case["rejection_counts"], dict)
+            self.assertEqual(case["diagnostic_updates"], 2)
+            for boundary, count in case["rejection_counts"].items():
+                self.assertEqual(len(boundary.split("/")), 2)
+                self.assertIsInstance(count, int)
+                self.assertGreater(count, 0)
+                self.assertLessEqual(count, 2)
             self.assertGreaterEqual(case["p50_ms"], 0)
             self.assertGreaterEqual(case["p95_ms"], case["p50_ms"])
             self.assertEqual(case["max_ms"], max(case["samples_ms"]))
+        native_rejections = [
+            case for case in report["cases"]
+            if "mixed-owner-reflow/native-property-composition" in case["rejection_counts"]
+        ]
+        self.assertTrue(native_rejections)
+        for case in native_rejections:
+            self.assertIn("interaction", case["effects"])
 
 
 if __name__ == "__main__":

@@ -219,6 +219,9 @@ EBOX_UPDATE_EFFECTS_OUTPUT=/tmp/ebox-effects.json make update-effects-performanc
 检查文本、显示几何、颜色、keymap 和激活行为。JSON 记录候选构建至提交的原始样本、
 p50/p95/max、投影种类计数，以及源码和评估器身份。`ordinary` 表示没有报告局部投影种类，
 不能据此认定曾尝试局部投影并失败。
+额外两次开启观察的更新不计入延迟样本；`rejection_counts` 按投影种类和原因
+汇总这两次记录的局部拒绝。它不是完整追踪，
+解释这些诊断前请参阅[报告语义](docs/manual.zh-CN.md)。
 
 默认分别保留 20、100 个不变兄弟节点，每组预热三次、采样十次。可设置
 `EBOX_UPDATE_EFFECTS_SIZES=20,100`、`EBOX_UPDATE_EFFECTS_WARMUPS=3` 和

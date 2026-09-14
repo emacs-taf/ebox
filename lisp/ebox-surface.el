@@ -463,8 +463,9 @@ the winning client state; otherwise only the candidate is disposable."
 
 (defun ebox-surface-call-with-observation (buffer stage function)
   "Call FUNCTION while observing BUFFER publication at STAGE."
-  (let ((current ebox-surface--observation-context)
-        (observer (ebox-surface-buffer-observer buffer)))
+  (let* ((current ebox-surface--observation-context)
+         (observer (ebox-surface-buffer-observer buffer))
+         (ebox-incremental--projection-rejections-enabled-p (and observer t)))
     (cond
      ((and current
            (not (ebox-surface--observation-finished-p current))
@@ -1031,6 +1032,7 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
           (or (plist-get tp-report :property-operations) 0))
          (patch-count (+ text-operations property-operations))
          (report (copy-sequence report-base))
+         (planned-projection (plist-get report-base :projection-kind))
          (native-fallback-reason
           (or (plist-get state :native-render-fallback)
               (plist-get state :native-session-setup-failure)))
@@ -1062,6 +1064,16 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
                (:removed-objects . ,(plist-get tp-report :removed-objects))
                (:moved-objects . ,(plist-get tp-report :moved-objects))))
       (setq report (plist-put report (car entry) (cdr entry))))
+    (when (and ebox-incremental--projection-rejections-enabled-p
+               (memq planned-projection
+                     '(span-patch owner-scoped formatting-context-reflow
+                       mixed-owner-reflow scroll-patch))
+               (null (plist-get state :projection-kind)))
+      (setq report
+            (plist-put report :projection-rejections
+                       (append (plist-get report :projection-rejections)
+                               (list (list :projection planned-projection
+                                           :reasons '(output-proof)))))))
     (when native-fallback-reason
       ;; Planner fields describe the rejected native attempt.  Replace them
       ;; with the ordinary full-surface publication that actually committed;
