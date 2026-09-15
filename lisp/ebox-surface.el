@@ -2519,11 +2519,16 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
                        (plist-get state-overrides :source-path-copied-p))))
                    success native-settled-p)
               (when (and (null on-mismatch)
-                         (or (plist-get state-overrides :owner-scoped-proofs)
+                         (or (null projection-kind)
+                             (plist-get state-overrides :owner-scoped-proofs)
                              (plist-get report-base :layer-recompose-p)
                              (plist-get state-overrides
                                         :scroll-state-transaction)
                              (> (length scope-node-ids) 1)))
+                ;; A complete projection can change intrinsic ancestor sizes
+                ;; outside the tentative layout owners.  TP already compares
+                ;; the actual output against their ranges before publication;
+                ;; let that same candidate publish the full surface when needed.
                 (setq on-mismatch 'root))
               (unwind-protect
                   (progn

@@ -1015,6 +1015,16 @@
       "name": "ebox-range-reorders-preserve-nested-updates-and-focus",
       "file": "tests/ebox-range-identity-tests.el",
       "purpose": "Keyed and unkeyed source identities preserve focus, published content and subsequent nested Range updates through reorder, insertion and removal."
+    },
+    {
+      "name": "ebox-focus-within-navigates-retained-subtrees",
+      "file": "tests/ebox-focus-within-tests.el",
+      "purpose": "Scoped focus navigates eligible controls, wraps within a panel and follows keyed reorder without changing global focus authority."
+    },
+    {
+      "name": "ebox-focus-within-rejects-unavailable-and-unaccepted-targets",
+      "file": "tests/ebox-focus-within-tests.el",
+      "purpose": "Invalid, hidden, unmounted and provisional focus roots reject movement while preserving accepted focus and point."
     }
   ]
 }

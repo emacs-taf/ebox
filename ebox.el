@@ -516,6 +516,17 @@
 ;; during an active TP transaction signal error without mutation. Zero remains
 ;; a read-only query; see ebox-focus.
 ;;
+;; Function: ebox-focus-within (host-ref &optional count cycle buffer-or-name)
+;;;###autoload (autoload 'ebox-focus-within "ebox" nil nil)
+;; Navigate only within HOST-REF's committed subtree in BUFFER-OR-NAME.
+;; Nil COUNT selects its first eligible stop; integer COUNT moves forward or
+;; backward, with CYCLE wrapping inside the subtree. Zero returns current focus
+;; only when inside the subtree. Use ebox-focus-next ordering and visibility.
+;; Invalid/inaccessible roots or missing stops signal user-error without changing
+;; focus or point. Nonzero movement rejects active TP transactions. This installs
+;; no keymap or persistent focus restriction: callers compose menu/dialog policy
+;; while Ebox remains the focus and painted-target authority.
+;;
 ;; Function: ebox-focus-previous (&optional count cycle buffer-or-name)
 ;;;###autoload (autoload 'ebox-focus-previous "ebox" nil t)
 ;; Move logical focus COUNT stops backward in BUFFER-OR-NAME.

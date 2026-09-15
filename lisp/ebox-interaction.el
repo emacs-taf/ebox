@@ -812,8 +812,18 @@ active TP transactions; zero remains a read-only query. See `ebox-focus'."
   (interactive "p")
   (ebox-interaction--focus-move (or count 1) cycle buffer-or-name nil))
 
-(defun ebox-interaction--focus-move (count cycle buffer-or-name restart)
-  "Move COUNT stops in BUFFER-OR-NAME; CYCLE wraps and RESTART ignores focus."
+(defun ebox-interaction--focus-within-p (state owner root)
+  "Return non-nil when OWNER is inside ROOT in committed STATE.
+Nil ROOT leaves navigation unrestricted."
+  (or (null root)
+      (let ((cursor owner))
+        (while (and cursor (not (equal cursor root)))
+          (setq cursor (ebox-runtime-index-get cursor (plist-get state :parent-table))))
+        cursor)))
+
+(defun ebox-interaction--focus-move (count cycle buffer-or-name restart &optional root)
+  "Move COUNT stops in BUFFER-OR-NAME within optional ROOT.
+CYCLE wraps and RESTART ignores focus."
   (setq count (or count 1))
   (unless (integerp count) (signal 'wrong-type-argument (list 'integerp count)))
   (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
@@ -823,7 +833,9 @@ active TP transactions; zero remains a read-only query. See `ebox-focus'."
              (owners (car index))
              (size (length owners))
              (step (if (> count 0) 1 -1))
-             (rank (and (not restart) (ebox-interaction--focus-position state ebox-interaction--focus-owner)
+             (rank (and (not restart)
+                        (ebox-interaction--focus-within-p state ebox-interaction--focus-owner root)
+                        (ebox-interaction--focus-position state ebox-interaction--focus-owner)
                         (gethash ebox-interaction--focus-owner (cadr index))))
              (rank (or rank (if (> step 0) -1 size)))
              owner)
@@ -835,10 +847,30 @@ active TP transactions; zero remains a read-only query. See `ebox-focus'."
               (when cycle (setq rank (mod rank size)))
               (if (not (< -1 rank size))
                   (setq visited size)
-                (when (ebox-interaction--focus-position state (aref owners rank))
+                (when (and (ebox-interaction--focus-within-p state (aref owners rank) root)
+                           (ebox-interaction--focus-position state (aref owners rank)))
                   (setq owner (aref owners rank)))))
             (unless owner (user-error "No eligible Ebox focus stop"))))
         (ebox-focus (ebox-interaction--focus-ref state owner))))))
+
+;;;###autoload
+(defun ebox-focus-within (host-ref &optional count cycle buffer-or-name)
+  "Navigate within HOST-REF's committed subtree in BUFFER-OR-NAME.
+Nil COUNT chooses the first eligible stop.  An integer moves that many stops;
+negative moves backward and CYCLE wraps within the subtree.  Zero returns the
+current focus only when it belongs to this subtree.  Invalid or inaccessible
+roots and missing stops signal `user-error' without changing focus or point.
+Use the same ordering, visibility and publication rules as `ebox-focus-next'.
+This installs no input bindings and does not restrict other focus operations."
+  (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
+    (let* ((state (ebox-surface--buffer-client-state (current-buffer)))
+           (root (gethash host-ref (ebox--buffer-host-ref-table (current-buffer)))))
+      (unless (and root (ebox-interaction--focus-position state root))
+        (user-error "No enabled visible Ebox navigation root: %S" host-ref))
+      (if (and (integerp count) (zerop count))
+          (when (ebox-interaction--focus-within-p state ebox-interaction--focus-owner root)
+            (ebox-focused-host-ref))
+        (ebox-interaction--focus-move count cycle (current-buffer) (null count) root)))))
 
 ;;;###autoload
 (defun ebox-focus-first (&optional buffer-or-name)

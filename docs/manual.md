@@ -541,6 +541,15 @@ The complete signatures and error contracts are in [ebox.el](../ebox.el).
     (ebox-focus first)))
 ```
 
+Menus and dialogs can use `ebox-focus-within` with their panel's Host reference.
+With no count it selects the first eligible stop in the committed subtree;
+`(ebox-focus-within panel 1 t)` and `(ebox-focus-within panel -1 t)` cycle
+forward and backward within it. Hidden, disabled and covered controls are
+skipped by the same painted-target checks as ordinary focus navigation. Zero
+queries whether current focus belongs to the panel. This is a navigation
+operation, not a persistent modal restriction: callers own opening, dismissal
+and keyboard bindings, and restore a retained trigger with `ebox-focus`.
+
 Use `ebox-call-with-input` from a native activation callback to guard an
 editing or selection session. The reader runs in the mounted buffer and owns
 its native editing UI; it must not edit the rendered Ebox surface. Apply its

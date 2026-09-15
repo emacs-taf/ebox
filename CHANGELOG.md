@@ -15,6 +15,10 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- `ebox-focus-within` navigates inside a committed subtree using the existing
+  focus order, painted visibility and retained identities. Menus and dialogs
+  can cycle within their panel without maintaining a separate target index.
+
 - Generated primary-button gestures publish `:active` through the ordinary
   cascade while held. Pressed state follows retained updates and clears before
   activation or when tracking ends. Release outside the retained target cancels.
