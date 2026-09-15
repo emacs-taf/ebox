@@ -977,66 +977,59 @@ candidate runtime index agree."
     (plist-put new :node-id (ebox--next-runtime-node-id)))
   new)
 
+(defun ebox-tree--runtime-child-matcher
+    (old-children old-source-index new-children &optional keyed-child)
+  "Return a sibling identity matcher for OLD-CHILDREN and NEW-CHILDREN.
+OLD-SOURCE-INDEX owns the old siblings.  Optional KEYED-CHILD looks up an old
+node by author key across the containing child sequence.  The returned function
+accepts a new child, its position and its source index.  Unkeyed source identity
+precedes positional fallback; inserted children cannot take a retained peer's
+runtime identity.  Tree and Range replacements share this rule."
+  (let ((old-keyed (make-hash-table :test #'equal))
+        (old-identities (make-hash-table :test #'equal))
+        (new-identities (make-hash-table :test #'equal)))
+    (dolist (child old-children)
+      (when-let* ((key (ebox-tree-node-author-key old-source-index child)))
+        (puthash key child old-keyed))
+      (when-let* ((identity (ebox-tree-node-source-identity child)))
+        (puthash identity child old-identities)))
+    (dolist (child new-children)
+      (when-let* ((identity (ebox-tree-node-source-identity child)))
+        (puthash identity t new-identities)))
+    (lambda (new-child position new-source-index)
+      (let* ((key (ebox-tree-node-author-key new-source-index new-child))
+             (identity (ebox-tree-node-source-identity new-child))
+             (old-child
+              (if key
+                  (if keyed-child (funcall keyed-child key) (gethash key old-keyed))
+                (or (let ((peer (and identity (gethash identity old-identities))))
+                      (and peer (not (ebox-tree-node-author-key old-source-index peer)) peer))
+                    (let ((peer (nth position old-children)))
+                      (and peer
+                           (not (ebox-tree-node-author-key old-source-index peer))
+                           (not (gethash (ebox-tree-node-source-identity peer) new-identities))
+                           peer))))))
+        (and old-child
+             (eq (plist-get old-child :ebox-type) (plist-get new-child :ebox-type))
+             old-child)))))
+
 (defun ebox-tree-reconcile-runtime
     (old old-source-index new new-source-index)
   "Transfer runtime identity from OLD to NEW using their source indexes."
   (cl-labels
-      ((node-key
-        (source-index node)
-        (and node
-             (ebox-tree-node-author-key source-index node)))
-       (same-type-p
-        (old-node new-node)
-        (and (listp old-node)
-             (listp new-node)
-             (eq (plist-get old-node :ebox-type)
-                 (plist-get new-node :ebox-type))))
-       (keyed-children
-        (source-index children)
-        (let ((table (make-hash-table :test 'equal)))
-          (dolist (child children table)
-            (when-let* ((key (node-key source-index child)))
-              (puthash key child table)))))
-       (match-child
-        (old-children old-keyed old-identities new-identities new-child index)
-        (if-let* ((key (node-key new-source-index new-child)))
-            (let ((old-child (gethash key old-keyed)))
-              (and (same-type-p old-child new-child) old-child))
-          (or (let* ((identity (ebox-tree-node-source-identity new-child))
-                     (old-child (and identity (gethash identity old-identities))))
-                (and (not (node-key old-source-index old-child))
-                     (same-type-p old-child new-child) old-child))
-              (let ((old-child (nth index old-children)))
-                (and (not (node-key old-source-index old-child))
-                     ;; An inserted sibling cannot take the identity of a
-                     ;; retained sibling that appears later in the new tree.
-                     (not (gethash (ebox-tree-node-source-identity old-child)
-                                   new-identities))
-                     (same-type-p old-child new-child)
-                     old-child)))))
-       (reconcile
+      ((reconcile
         (old-node new-node)
         (when (and (listp new-node) (not (stringp new-node)))
           (ebox-tree-transfer-runtime-identity old-node new-node)
           (let* ((old-children
                   (and old-node (ebox-tree--children-raw old-node)))
                  (new-children (ebox-tree--children-raw new-node))
-                 (old-identities (make-hash-table :test #'equal))
-                 (new-identities (make-hash-table :test #'equal))
-                 (old-keyed
-                  (keyed-children old-source-index old-children)))
-            (dolist (child old-children)
-              (when-let* ((identity (ebox-tree-node-source-identity child)))
-                (puthash identity child old-identities)))
-            (dolist (child new-children)
-              (when-let* ((identity (ebox-tree-node-source-identity child)))
-                (puthash identity t new-identities)))
+                 (match-child (ebox-tree--runtime-child-matcher
+                               old-children old-source-index new-children)))
             (cl-loop for new-child in new-children
                      for index from 0
                      do (reconcile
-                         (match-child
-                          old-children old-keyed old-identities new-identities
-                          new-child index)
+                         (funcall match-child new-child index new-source-index)
                          new-child))))))
     (reconcile old new))
   new)

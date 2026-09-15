@@ -5349,50 +5349,24 @@ DETACHED-HISTORY receives identity snapshots for semantic replacements."
     (sequence ref items old-source-index item-source-indexes)
   "Reconcile ITEMS against REF using explicit generation source indexes."
   (let* ((segment (ebox-child-range--lookup-ref sequence ref))
-         (old-payload (and segment (ebox-child-range--segment-payload segment)))
+         (old-items (and segment (append (ebox-child-range--segment-payload segment) nil)))
          (key-root (ebox-child-range--sequence-key-root sequence))
-         (hash-function (ebox-child-range--sequence-hash-function sequence)))
-    (cl-labels
-        ((item-key
-          (item)
-          (let ((index
-                 (gethash (ebox-tree-node-source-handle item)
-                          item-source-indexes)))
-            (unless index
-              (error "Ebox Range item has no candidate source index"))
-            (ebox-tree-node-author-key index item))))
-      (cl-loop for item in items for offset from 0 do
-             (let* ((key (item-key item))
-                    (location
-                     (and key
-                          (ebox-child-range--hash-lookup
-                           key-root key (funcall hash-function key))))
-                    (old
-                     (if location
-                         (let ((peer (ebox-child-range--segment-at
-                                      sequence (car location))))
-                           (aref (ebox-child-range--segment-payload peer)
-                                 (cdr location)))
-                       (and old-payload (< offset (length old-payload))
-                            (aref old-payload offset)))))
-               (let ((old-key
-                      (and old
-                           (ebox-tree-node-author-key
-                            old-source-index old))))
-                 (when (and old key (null old-key)) (setq old nil))
-                 (when (and old (null key) old-key) (setq old nil))
-               ;; Positional fallback is valid only for unkeyed peers.  A
-               ;; disappeared keyed item must never donate its runtime
-               ;; identity to a newly introduced key at the same offset;
-               ;; doing so leaves its old region properties in the candidate
-               ;; output while the new region index has already retired them.
-                 (when (and old key old-key (not (equal old-key key)))
-                   (setq old nil)))
+         (hash-function (ebox-child-range--sequence-hash-function sequence))
+         (match-child
+          (ebox-tree--runtime-child-matcher
+           old-items old-source-index items
+           (lambda (key)
+             (when-let* ((location (ebox-child-range--hash-lookup
+                                   key-root key (funcall hash-function key))))
+               (aref (ebox-child-range--segment-payload
+                      (ebox-child-range--segment-at sequence (car location)))
+                     (cdr location)))))))
+    (cl-loop for item in items for offset from 0 do
+             (let ((index (gethash (ebox-tree-node-source-handle item) item-source-indexes)))
+               (unless index (error "Ebox Range item has no candidate source index"))
                (ebox-tree-reconcile-runtime
-                old old-source-index item
-                (gethash (ebox-tree-node-source-handle item)
-                         item-source-indexes)))))
-    items))
+                (funcall match-child item offset index) old-source-index item index))))
+  items)
 
 (defun ebox-incremental--candidate-canonical-range-reuse
     (sequence ref items reuse-map parent-id segment-index)

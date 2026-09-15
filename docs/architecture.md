@@ -182,6 +182,7 @@ index generation.
 Runtime identity transfer preserves node and region identity, but does not copy
 child-sequence coordinates. Those coordinates belong to a particular parent
 tree and are resolved or indexed again after keyed insertion and reordering.
+Tree and Range replacements share one sibling identity matcher.
 Sibling reconciliation matches author keys first, then matching source identity
 for unkeyed nodes. Positional fallback excludes identities retained elsewhere in
 the new sibling list, preventing inserted content from taking a surviving node's

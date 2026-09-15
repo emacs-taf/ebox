@@ -175,6 +175,9 @@
 ;; Function: ebox-candidate-replace-range-ref (candidate range-ref input &optional reuse-map retain-item-identities-p)
 ;;;###autoload (autoload 'ebox-candidate-replace-range-ref "ebox" nil nil)
 ;; Replace RANGE-REF from canonical INPUT, retaining proven REUSE-MAP slots.
+;; Items match author keys first, then unkeyed source identities, as in subtree
+;; replacement. Reordering does not require a duplicate author key to preserve
+;; focus or subsequent descendant updates.
 ;; Nested Range writes refine the ancestor replacement in either recording
 ;; order. An ancestor that removes the inner Range absorbs that inner write.
 ;; When RETAIN-ITEM-IDENTITIES-P is non-nil, Ebox retains candidate-owned items

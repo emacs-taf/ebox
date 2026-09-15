@@ -760,6 +760,10 @@ modified 标志；已被销毁的 buffer 不会被复活。提交接受后的观
 引用、非法输入和已封存候选会报错；调用方不需要判断变化是否仅涉及绘制。
 提交只消费候选一次，发布失败也不能复用该候选。
 
+对于更新后仍然存在的节点，保持其 source identity 稳定。子树和 Range 替换
+都先匹配 author key，再匹配无 key 节点的 source identity；移动保留节点不需要
+在每一层额外添加 key。发布后，节点的焦点和后代 Range 地址仍然有效。
+
 ## 局部规则输入
 
 `:ecss` 接受有序规则列表，`:ecss-file` 按 ECSS 的[静态数据契约](https://gitea.gklazycat.heiyu.space/geekinney/ecss/src/branch/main/docs/manual.zh-CN.md#静态规则数据)

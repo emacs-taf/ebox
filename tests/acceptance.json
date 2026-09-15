@@ -1010,6 +1010,11 @@
       "name": "ebox-host-properties-update-selector-facts-and-rules",
       "file": "tests/ebox-host-property-tests.el",
       "purpose": "Class changes and rule replacement/removal restyle retained descendants through the shared cascade."
+    },
+    {
+      "name": "ebox-range-reorders-preserve-nested-updates-and-focus",
+      "file": "tests/ebox-range-identity-tests.el",
+      "purpose": "Keyed and unkeyed source identities preserve focus, published content and subsequent nested Range updates through reorder, insertion and removal."
     }
   ]
 }

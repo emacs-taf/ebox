@@ -890,6 +890,11 @@ change requires subtree replacement. Unknown base references, invalid inputs and
 sealed candidates signal errors; no paint-versus-layout fallback is requested of
 the caller. Commit consumes the candidate once, even when publication fails.
 
+Keep source identities stable for nodes that survive an update. Subtree and
+Range replacement both match author keys first, then unkeyed source identities;
+moving a retained node does not require adding a key at every nested level.
+Its focus and descendant Range addresses remain usable after publication.
+
 ## Local rule input
 
 `:ecss` accepts an ordered rule list and `:ecss-file` reads that same list from a

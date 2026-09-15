@@ -50,6 +50,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Unkeyed Range items preserve source identity through reordering, insertion
+  and removal. Subsequent nested updates reach the retained node and keep
+  focus. Range and subtree publication now share sibling matching rules;
+  frameworks need not add duplicate author keys to make local updates work.
+
 - Native incremental publication reuses the confirmed frame across consecutive
   commits and viewport changes. Selector-only updates prepare rule-based and
   inherited styles before choosing their publication path.
