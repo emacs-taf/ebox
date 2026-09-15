@@ -17,6 +17,11 @@
   ],
   "cases": [
     {
+      "name": "ebox-primary-press-retains-existing-focus",
+      "file": "tests/ebox-active-tests.el",
+      "purpose": "Pressed state and keyboard focus coexist on the same or different controls without losing retained Host identity."
+    },
+    {
       "name": "ebox-primary-press-publishes-active-style-and-activates-once",
       "file": "tests/ebox-active-tests.el",
       "purpose": "Native primary-button tracking publishes active selector and paint state, then clears it before exactly one activation."

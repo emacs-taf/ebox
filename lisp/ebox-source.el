@@ -802,7 +802,12 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
             (puthash (ebox-source--handle-id-view handle) copy records)
             (puthash handle copy handles)))))
     (if (zerop (hash-table-count handles)) index
-      (let ((copy (ebox-source--with-derived index :derived-stale-p t)))
+      ;; Interaction changes invalidate selector facts, not retained Host
+      ;; identity. Focus and active state are projected in sequence and both
+      ;; must resolve against the same runtime topology.
+      (let ((copy (ebox-source--with-derived
+                   index :host-ref-table (ebox-source--index-host-ref-table index)
+                   :derived-stale-p t)))
         (setf (ebox-source--index-records copy)
               (ebox-source--table-overlay
                (ebox-source--index-records index) records

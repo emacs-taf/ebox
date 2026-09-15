@@ -4,6 +4,11 @@ All notable changes to Ebox are documented here.
 
 ## 3.0.0 (Unreleased)
 
+### Fixed
+
+- Primary-button presses preserve existing keyboard focus when publishing
+  pressed state, including when focus belongs to another control.
+
 ### Changed
 
 - Replace `ebox-candidate-patch-host-paint` with

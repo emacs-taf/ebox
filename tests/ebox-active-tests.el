@@ -147,5 +147,38 @@
             (should-not (ebox-selector-query-buffer buffer ":active"))))
       (kill-buffer buffer))))
 
+(ert-deftest ebox-primary-press-retains-existing-focus ()
+  "Pressed state and keyboard focus coexist on the same or different controls."
+  (dolist (focused '("button" "peer"))
+    (let ((buffer (generate-new-buffer " *ebox-press-focus*")) (calls 0))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buffer)
+            (ebox-render-to-buffer
+             buffer
+             (ebox-build
+              `(column :width (ch 30)
+                 (text :id "button" :tab-index 0
+                       :keymap ,(ebox-keymap-create :activate (lambda () (cl-incf calls))) "Press")
+                 (text :id "peer" :tab-index 0 "Peer"))))
+            (with-current-buffer buffer
+              (ebox-focus-next (if (equal focused "button") 1 2))
+              (let* ((focus-ref (ebox-focused-host-ref buffer))
+                     (position (save-excursion (goto-char (point-min)) (search-forward "Press") (match-beginning 0)))
+                     (press (list 'down-mouse-1 (list (selected-window) position '(1 . 0) 0)))
+                     (release (list 'mouse-1 (list (selected-window) position '(1 . 0) 1)))
+                     (command (key-binding (vector press) nil nil position)))
+                (cl-letf (((symbol-function 'read-event)
+                           (lambda (&rest _)
+                             (should (equal focus-ref (ebox-focused-host-ref buffer)))
+                             (should (= 1 (length (ebox-selector-query-buffer buffer (concat "#" focused ":focus")))))
+                             (should (= 1 (length (ebox-selector-query-buffer buffer "#button:active"))))
+                             release)))
+                  (funcall command press))
+                (should (ebox-focused-host-ref buffer)))
+              (should (= calls 1))
+              (should-not (ebox-selector-query-buffer buffer ":active"))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
 (provide 'ebox-active-tests)
 ;;; ebox-active-tests.el ends here

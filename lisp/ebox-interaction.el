@@ -298,6 +298,14 @@ This function does not install navigation bindings or event propagation."
                               (ebox-interaction--navigation-owner position state))))
                (when (and owner (equal owner hit))
                  (ebox-interaction--set-active nil buffer)
+                 ;; A primary-button activation gives its target logical focus,
+                 ;; just like RET. Resolve the accepted binding only after the
+                 ;; release and focus publications have settled.
+                 ;; Events dispatched for an unselected window must retain
+                 ;; that window's point and selection; a click in the active
+                 ;; window follows normal focus semantics.
+                 (when (eq window (selected-window))
+                   (ebox-focus reference buffer))
                  ;; Resolve the accepted binding after release styles publish.
                  (let* ((current (ebox-surface--buffer-client-state buffer))
                         (owner (gethash reference (ebox--buffer-host-ref-table buffer)))
