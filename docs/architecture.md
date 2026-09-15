@@ -133,6 +133,17 @@ context-dependent expressions retain the complete Elisp implementation.
 
 ## Commit lifecycle
 
+Framework candidates distinguish local Host property updates from subtree and
+child Range replacements. Property inputs compare two authored generations;
+computed layout and inherited style values never serve as the previous input.
+The property operation preserves content and child topology, then joins Ebox's
+ordinary style, layout, impact classification and publication pipeline. Consumers
+do not classify paint-only changes or choose a subtree fallback.
+
+Property updates refine retained owners after structural composition. Removed
+owners receive no update, and complete root replacement absorbs all operations.
+The source index and final path-copy trace describe the same resulting tree.
+
 ```text
 fresh root
   -> validate and normalize

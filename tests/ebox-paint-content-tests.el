@@ -75,7 +75,7 @@ For a leaf, STATUS is its identity; otherwise it is the displayed status."
                '(message status count) (list (nth 1 step) (nth 2 step) (nth 3 step)))
               (unless (equal color previous)
                 (should
-                 (ebox-candidate-patch-host-paint
+                 (ebox-candidate-update-host-properties
                   candidate 'panel (input previous "Unused" "Unused" "0")
                   (input color "Unused" "Unused" "0"))))
               (ebox-commit (current-buffer) candidate)

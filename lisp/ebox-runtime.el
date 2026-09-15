@@ -5072,13 +5072,16 @@ Return CANDIDATE."
      old-semantic-key new-semantic-key)))
 
 ;;;###autoload
-(defun ebox-candidate-patch-host-paint
+(defun ebox-candidate-update-host-properties
     (candidate host-ref previous-input next-input)
-  "Patch HOST-REF paint from canonical PREVIOUS-INPUT/NEXT-INPUT in CANDIDATE.
-Only node-local paint fields may differ.  The Host's children and runtime
-identities are retained instead of being copied as a replacement subtree.
-Return CANDIDATE when accepted, or nil when the delta needs ordinary subtree
-replacement."
+  "Update HOST-REF properties from canonical PREVIOUS-INPUT/NEXT-INPUT.
+Compare authored properties, ignoring input content and children.  Retain the
+candidate's children, content and identity; Ebox owns layout and publication.
+PREVIOUS-INPUT describes the captured base, including on repeated calls.
+The last property update for an owner wins; structural removal absorbs its
+update, and root replacement absorbs all operations.  Inputs must contain the
+same node type and Host identity as CANDIDATE's captured base.  Unknown refs,
+type changes and sealed candidates signal errors.  Return CANDIDATE."
   (dolist (input (list previous-input next-input))
     (unless (ebox-canonical-input-p input)
       (signal 'wrong-type-argument (list 'ebox-canonical-input-p input))))
@@ -5086,12 +5089,12 @@ replacement."
          (ebox-canonical-input--source-index previous-input))
         (ebox-incremental--source-base-index
          (ebox-canonical-input--source-index next-input)))
-    (ebox-incremental-candidate-patch-host-paint
+    (ebox-incremental-candidate-update-host-properties
      candidate host-ref
      (ebox-canonical-input--single-root
-      previous-input "ebox-candidate-patch-host-paint previous input")
+      previous-input "ebox-candidate-update-host-properties previous input")
      (ebox-canonical-input--single-root
-      next-input "ebox-candidate-patch-host-paint next input"))))
+      next-input "ebox-candidate-update-host-properties next input"))))
 
 ;;;###autoload
 (defun ebox-candidate-replace-range-ref

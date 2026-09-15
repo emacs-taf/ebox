@@ -4,6 +4,15 @@ All notable changes to Ebox are documented here.
 
 ## 3.0.0 (Unreleased)
 
+### Changed
+
+- Replace `ebox-candidate-patch-host-paint` with
+  `ebox-candidate-update-host-properties`. Frameworks can submit geometry,
+  selector, style and interaction changes while retaining content and children.
+  Keep the previous/next canonical arguments; previous input describes the
+  captured base. The operation returns the candidate and no longer requests a
+  subtree fallback. Use subtree replacement for node type or structure changes.
+
 ### Added
 
 - Generated primary-button gestures publish `:active` through the ordinary

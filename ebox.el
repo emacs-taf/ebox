@@ -143,13 +143,19 @@
 ;;;###autoload (autoload 'ebox-candidate-begin "ebox" nil nil)
 ;; Begin a one-shot logical transaction from BUFFER-OR-NAME's exact runtime.
 ;;
-;; Function: ebox-candidate-patch-host-paint (candidate host-ref previous-input next-input)
-;;;###autoload (autoload 'ebox-candidate-patch-host-paint "ebox" nil nil)
-;; Patch HOST-REF paint from canonical PREVIOUS-INPUT/NEXT-INPUT in CANDIDATE.
-;; Only node-local paint fields may differ.  The Host's children and runtime
-;; identities are retained instead of being copied as a replacement subtree.
-;; Return CANDIDATE when accepted, or nil when the delta needs ordinary subtree
-;; replacement.
+;; Function: ebox-candidate-update-host-properties (candidate host-ref previous-input next-input)
+;;;###autoload (autoload 'ebox-candidate-update-host-properties "ebox" nil nil)
+;; Update HOST-REF's own properties from canonical PREVIOUS-INPUT/NEXT-INPUT.
+;; Inputs carry previous/next authored declarations, not computed runtime values;
+;; PREVIOUS-INPUT describes the captured base, including on repeated calls.
+;; Each must contain the same Text or Box Host.  Their content and children are
+;; ignored.  Ebox retains the candidate's content, children and runtime identity,
+;; computes layout/style/interaction effects and selects the publication strategy.
+;; Updates compose with descendant replacements.  The last property update for
+;; an owner wins; a structural removal absorbs that owner's update.  Root
+;; replacement absorbs all operations.  References resolve against the captured
+;; base; unknown references, node type changes and sealed candidates signal errors.
+;; Return CANDIDATE.  A commit consumes it once, including on failure.
 ;;
 ;; Function: ebox-candidate-replace (candidate node-id input &optional old-semantic-key new-semantic-key)
 ;;;###autoload (autoload 'ebox-candidate-replace "ebox" nil nil)

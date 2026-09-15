@@ -990,6 +990,26 @@
       "name": "ebox-primary-press-clears-active-when-target-is-clipped",
       "file": "tests/ebox-active-tests.el",
       "purpose": "Clipping a held target clears its selector state in the same visible publication and cancels activation."
+    },
+    {
+      "name": "ebox-host-properties-compose-layout-interaction-and-content",
+      "file": "tests/ebox-host-property-tests.el",
+      "purpose": "Layout and native interaction changes preserve child content updates, editable handles and snapshot parity."
+    },
+    {
+      "name": "ebox-host-properties-compose-with-range-reorder",
+      "file": "tests/ebox-host-property-tests.el",
+      "purpose": "Parent property changes compose with Range reordering in either order while retaining focus and editable child handles."
+    },
+    {
+      "name": "ebox-host-properties-preserve-text-and-structural-ownership",
+      "file": "tests/ebox-host-property-tests.el",
+      "purpose": "Property updates preserve text, refine retained structural replacements and do not resurrect removed owners."
+    },
+    {
+      "name": "ebox-host-properties-update-selector-facts-and-rules",
+      "file": "tests/ebox-host-property-tests.el",
+      "purpose": "Class changes and rule replacement/removal restyle retained descendants through the shared cascade."
     }
   ]
 }

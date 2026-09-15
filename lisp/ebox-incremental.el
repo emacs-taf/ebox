@@ -244,7 +244,7 @@ arguments.")
   "Transaction-local source facts transported by one canonical input.")
 
 (defvar ebox-incremental--previous-source-base-index nil
-  "Transaction-local previous source facts for one paired paint proof.")
+  "Transaction-local previous declarations for a Host property update.")
 
 (defvar ebox-incremental--candidate-incoming-source-indexes nil
   "Transaction-local handle to input-index map for one logical candidate.")
@@ -303,7 +303,7 @@ the published candidate base without scanning that base's full tree."
   base-revision
   base-buffer-tick
   replacements
-  paint-patches
+  property-updates
   range-replacements
   range-metrics
   sealed-p)
@@ -327,10 +327,10 @@ the published candidate base without scanning that base's full tree."
   ref items reuse-map source-indexes retain-item-identities-p)
 
 (cl-defstruct
-    (ebox-incremental--candidate-paint-patch
-     (:constructor ebox-incremental--make-candidate-paint-patch)
-     (:conc-name ebox-incremental--candidate-paint-patch-))
-  "One base-addressed Host paint update without subtree replacement."
+    (ebox-incremental--candidate-property-update
+     (:constructor ebox-incremental--make-candidate-property-update)
+     (:conc-name ebox-incremental--candidate-property-update-))
+  "One base-addressed Host property update without subtree replacement."
   anchor-id node source-index changed-keys)
 
 (cl-defstruct
@@ -4331,7 +4331,7 @@ during `ebox-incremental-flush'."
      :base-buffer-tick
      (with-current-buffer buffer (buffer-modified-tick))
      :replacements nil
-     :paint-patches nil
+     :property-updates nil
      :range-replacements nil
      :range-metrics nil
      :sealed-p nil)))
@@ -4576,18 +4576,18 @@ have the same optional detached-identity meaning as in
       (visit node))
     nil))
 
-(defun ebox-incremental-candidate-patch-host-paint
+(defun ebox-incremental-candidate-update-host-properties
     (candidate host-ref previous-subtree next-subtree)
-  "Patch HOST-REF paint from declarative OLD/NEW subtrees.
+  "Update HOST-REF properties from declarative OLD/NEW subtrees.
 
 PREVIOUS-SUBTREE and NEXT-SUBTREE may be complete Host outputs; only their
 local nodes owning HOST-REF are compared.  Comparing declarative peers avoids
-mistaking inherited/cascaded runtime values for explicit deltas.  The update
-is accepted only when every changed field is paint-only.  Children and runtime
-identities remain owned by the candidate base and are path-copied only along
-the patched Host's ancestor chain."
+mistaking inherited/cascaded runtime values for explicit deltas.  Text content,
+children and runtime identities remain owned by the candidate.  Layout and
+publication use the ordinary Ebox planner after these local changes compose
+with structural replacements."
   (unless (ebox-candidate-p candidate)
-    (error "Ebox Host paint patch requires an Ebox candidate"))
+    (error "Ebox Host property update requires an Ebox candidate"))
   (when (ebox-candidate--sealed-p candidate)
     (error "Ebox candidate is already sealed"))
   (let* ((state (ebox-candidate--base-state candidate))
@@ -4599,73 +4599,57 @@ the patched Host's ancestor chain."
                    missing)))
     (when (eq node-id missing)
       (error "Ebox candidate host ref does not exist: %S" host-ref))
-    (catch 'unsupported
-      (let* ((base-node (ebox-runtime-index-get node-id (plist-get state :node-table)))
-             (previous-node
-              (ebox-incremental--find-host-ref-node
-               previous-subtree host-ref))
-             (next-node
-              (ebox-incremental--find-host-ref-node next-subtree host-ref)))
-        (when
-            (cl-some
-             (lambda (replacement)
-               (let ((anchor
-                      (ebox-incremental--candidate-replacement-anchor-id
-                       replacement)))
-                 (or (equal anchor node-id)
-                     (ebox-incremental--candidate-ancestor-p
-                      candidate anchor node-id))))
-             (ebox-candidate--replacements candidate))
-          (throw 'unsupported nil))
-        (unless (and previous-node next-node)
-          (error "Ebox paint patch output lacks Host ref: %S" host-ref))
-        (unless (and (eq (plist-get base-node :ebox-type)
-                         (plist-get previous-node :ebox-type))
-                     (eq (plist-get previous-node :ebox-type)
-                         (plist-get next-node :ebox-type)))
-          (throw 'unsupported nil))
-        (let* ((previous-source-index
-               (ebox-tree-source-index
-                 previous-subtree nil nil
-                 ebox-incremental--previous-source-base-index))
-               (next-source-index
-                (ebox-tree-source-index
-                 next-subtree nil nil ebox-incremental--source-base-index))
-               (changed-keys
-                (ebox-incremental--candidate-local-changed-keys
-                 previous-node previous-source-index
-                 next-node next-source-index)))
-          (unless (cl-every
-                   (lambda (key)
-                     (memq key ebox--paint-style-signature-keys))
-                   changed-keys)
-            (throw 'unsupported nil))
-          (let ((patch
-                 (list :ebox-type (plist-get next-node :ebox-type)
-                       :ebox-source-handle
-                       (ebox-tree-node-source-handle next-node))))
-            (dolist (key changed-keys)
+    (let* ((base-node (ebox-runtime-index-get node-id (plist-get state :node-table)))
+           (previous-node
+            (ebox-incremental--find-host-ref-node
+             previous-subtree host-ref))
+           (next-node
+            (ebox-incremental--find-host-ref-node next-subtree host-ref)))
+      (unless (and previous-node next-node)
+        (error "Ebox property update input lacks Host ref: %S" host-ref))
+      (unless (and (eq (plist-get base-node :ebox-type)
+                       (plist-get previous-node :ebox-type))
+                   (eq (plist-get previous-node :ebox-type)
+                       (plist-get next-node :ebox-type)))
+        (error "Ebox property update cannot change node type: %S" host-ref))
+      (let* ((previous-source-index
+              (ebox-tree-source-index
+               previous-subtree nil nil
+               ebox-incremental--previous-source-base-index))
+             (next-source-index
+              (ebox-tree-source-index
+               next-subtree nil nil ebox-incremental--source-base-index))
+             (changed-keys
+              (remq :content
+                    (ebox-incremental--candidate-local-changed-keys
+                     previous-node previous-source-index
+                     next-node next-source-index))))
+        (let ((patch
+               (list :ebox-type (plist-get next-node :ebox-type)
+                     :ebox-source-handle
+                     (ebox-tree-node-source-handle next-node))))
+          (dolist (key changed-keys)
+            (setq patch
+                  (plist-put patch key
+                             (copy-tree (plist-get next-node key)))))
+          (dolist (key '(:ebox-style-overrides))
+            (when (plist-member next-node key)
               (setq patch
                     (plist-put patch key
-                               (copy-tree (plist-get next-node key)))))
-            (dolist (key '(:ebox-style-overrides))
-              (when (plist-member next-node key)
-                (setq patch
-                      (plist-put patch key
-                                 (copy-tree (plist-get next-node key))))))
-            (setf (ebox-candidate--paint-patches candidate)
-                  (append
-                   (cl-remove
-                    node-id (ebox-candidate--paint-patches candidate)
-                    :key
-                    #'ebox-incremental--candidate-paint-patch-anchor-id
-                    :test #'equal)
-                   (list
-                    (ebox-incremental--make-candidate-paint-patch
-                     :anchor-id node-id :node patch
-                     :source-index next-source-index
-                     :changed-keys changed-keys))))))
-        candidate))))
+                               (copy-tree (plist-get next-node key))))))
+          (setf (ebox-candidate--property-updates candidate)
+                (append
+                 (cl-remove
+                  node-id (ebox-candidate--property-updates candidate)
+                  :key
+                  #'ebox-incremental--candidate-property-update-anchor-id
+                  :test #'equal)
+                 (list
+                  (ebox-incremental--make-candidate-property-update
+                   :anchor-id node-id :node patch
+                   :source-index next-source-index
+                   :changed-keys changed-keys))))))
+      candidate)))
 
 (defun ebox-incremental--candidate-assert-current
     (candidate buffer old-state)
@@ -5785,7 +5769,7 @@ as a path-copy anchor; the committed index describes only the base tree."
     (setf (ebox-candidate--range-metrics candidate) (nreverse metrics))
     root))
 
-(defun ebox-incremental--candidate-paint-top-anchors
+(defun ebox-incremental--candidate-property-top-anchors
     (state patch-table patch-ids)
   "Return PATCH-IDS without a patched ancestor in STATE."
   (let ((parents (plist-get state :parent-table)) result)
@@ -5796,8 +5780,8 @@ as a path-copy anchor; the committed index describes only the base tree."
                 parent-id (and (not found) (ebox-runtime-index-get parent-id parents))))
         (unless found (push node-id result))))))
 
-(defun ebox-incremental--candidate-apply-paint-patches (candidate root)
-  "Apply CANDIDATE paint declarations and copy their dependency closure.
+(defun ebox-incremental--candidate-apply-property-updates (candidate root)
+  "Apply CANDIDATE property declarations and copy their dependency closure.
 The candidate owns source declarations only.  When a patch changes any
 schema-inherited or custom property, descendants are path-copied as pending
 style consumers; the Style Adapter computes their values exactly once later."
@@ -5806,11 +5790,11 @@ style consumers; the Style Adapter computes their values exactly once later."
          (source-index (plist-get state :source-index))
          (patch-table (make-hash-table :test #'equal))
          (patch-paths (make-hash-table :test #'equal))
-         (painted-nodes (make-hash-table :test #'equal))
+         (updated-nodes (make-hash-table :test #'equal))
          patch-ids)
-    (dolist (entry (ebox-candidate--paint-patches candidate))
+    (dolist (entry (ebox-candidate--property-updates candidate))
       (let ((node-id
-             (ebox-incremental--candidate-paint-patch-anchor-id entry)))
+             (ebox-incremental--candidate-property-update-anchor-id entry)))
         (puthash node-id entry patch-table)
         (push node-id patch-ids)))
     (dolist (node-id patch-ids)
@@ -5824,13 +5808,19 @@ style consumers; the Style Adapter computes their values exactly once later."
           (if (or (not (listp node)) (stringp node))
               node
             (let* ((node-id (plist-get node :node-id))
-                   (entry (and node-id (gethash node-id patch-table)))
+                   (entry
+                    (and node-id
+                         (equal (ebox-tree-node-source-identity node)
+                                (ebox-tree-node-source-identity
+                                 (ebox-runtime-index-get
+                                  node-id (plist-get state :node-table))))
+                         (gethash node-id patch-table)))
                    (patch (and entry
-                               (ebox-incremental--candidate-paint-patch-node
+                               (ebox-incremental--candidate-property-update-node
                                 entry)))
                    (changed-keys
                     (and entry
-                         (ebox-incremental--candidate-paint-patch-changed-keys
+                         (ebox-incremental--candidate-property-update-changed-keys
                           entry)))
                    (old-declarations
                     (ebox-style-node-declarations source-index node))
@@ -5855,7 +5845,7 @@ style consumers; the Style Adapter computes their values exactly once later."
               (let* ((new-declarations
                       (ebox-style-node-declarations
                        (if entry
-                           (ebox-incremental--candidate-paint-patch-source-index
+                           (ebox-incremental--candidate-property-update-source-index
                             entry)
                          source-index)
                        next))
@@ -5879,37 +5869,46 @@ style consumers; the Style Adapter computes their values exactly once later."
                     (setq next
                           (ebox-tree-copy-with-direct-child-replacements
                            next (nreverse child-replacements)))))
-                ;; Inherited paint can copy a descendant that was already a
+                ;; Inherited properties can copy a descendant that was already a
                 ;; replacement anchor.  Keep its trace on the final copy:
                 ;; indexing the earlier anchor would leave the committed node
                 ;; table pointing outside the tree used for this publication.
                 (when (and node-id
                            (hash-table-p ebox-incremental--candidate-path-copy-trace)
                            (gethash node-id ebox-incremental--candidate-path-copy-trace))
-                  (puthash node-id next painted-nodes))
+                  (puthash node-id next updated-nodes))
                 next)))))
       (dolist
           (node-id
-           (ebox-incremental--candidate-paint-top-anchors
+           (ebox-incremental--candidate-property-top-anchors
             state patch-table patch-ids))
         (let ((current
                (ebox-incremental--candidate-current-node state node-id)))
-          (unless current
-            (error "Ebox paint patch anchor is absent: %S" node-id))
-          (setq root
-                (ebox-incremental--candidate-path-copy-overlay
-                 root node-id
-                 (rewrite current nil)
-                 state nil)))))
-    ;; Path copying above must still find the pre-paint child by identity in
-    ;; its parent.  Only after installing all painted roots can traces adopt
+          ;; Structural changes can remove or replace a property owner.  Only
+          ;; the same retained source identity receives the property update.
+          (when (and current
+                     (equal (ebox-tree-node-source-identity current)
+                            (ebox-tree-node-source-identity
+                             (ebox-runtime-index-get
+                              node-id (plist-get state :node-table))))
+                     (eq (plist-get current :ebox-type)
+                         (plist-get (ebox-runtime-index-get
+                                     node-id (plist-get state :node-table))
+                                    :ebox-type)))
+            (setq root
+                  (ebox-incremental--candidate-path-copy-overlay
+                   root node-id
+                   (rewrite current nil)
+                   state nil))))))
+    ;; Path copying above must still find the previous child by identity in
+    ;; its parent.  Only after installing all updated roots can traces adopt
     ;; the copies that the candidate index must publish.
     (when (hash-table-p ebox-incremental--candidate-path-copy-trace)
       (maphash
        (lambda (node-id node)
          (when-let* ((trace (gethash node-id ebox-incremental--candidate-path-copy-trace)))
            (plist-put trace :node node)))
-       painted-nodes))
+       updated-nodes))
     root))
 
 (defun ebox-incremental--candidate-logical-root
@@ -5964,12 +5963,18 @@ style consumers; the Style Adapter computes their values exactly once later."
            original-nodes)
           (ebox-candidate--range-replacements candidate) surviving-ranges)
     (unwind-protect
-        (ebox-incremental--candidate-apply-paint-patches
-         candidate
-         (ebox-incremental--candidate-apply-range-replacements
-          candidate
-          (ebox-incremental--candidate-node-logical-root
-           candidate detached-history)))
+        (let ((root
+               (ebox-incremental--candidate-apply-range-replacements
+                candidate
+                (ebox-incremental--candidate-node-logical-root
+                 candidate detached-history))))
+          (if (cl-find
+               (plist-get (ebox-candidate--base-root candidate) :node-id)
+               original-nodes
+               :key #'ebox-incremental--candidate-replacement-anchor-id
+               :test #'equal)
+              root
+            (ebox-incremental--candidate-apply-property-updates candidate root)))
       (setf (ebox-candidate--replacements candidate) original-nodes
             (ebox-candidate--range-replacements candidate) original-ranges))))
 
@@ -7658,9 +7663,9 @@ certificate."
            (puthash handle index table)))
        (ebox-incremental--candidate-range-replacement-source-indexes
         replacement)))
-    (dolist (patch (ebox-candidate--paint-patches candidate))
+    (dolist (patch (ebox-candidate--property-updates candidate))
       (let ((index
-             (ebox-incremental--candidate-paint-patch-source-index patch)))
+             (ebox-incremental--candidate-property-update-source-index patch)))
         (when index
           (dolist (handle (ebox-source-index-handles index))
             (puthash handle index table)))))

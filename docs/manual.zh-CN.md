@@ -714,6 +714,52 @@ modified 标志；已被销毁的 buffer 不会被复活。提交接受后的观
 `tests/acceptance.json` 列出当前保留的公共 API 验收场景。消费方链接到本契约，
 不再复制一份回调时序说明。
 
+
+### 组合属性与结构更新
+
+框架在已有 Host 的自身声明变化时使用 `ebox-candidate-update-host-properties`。
+传入前后两代规范作者输入；旧输入描述候选捕获的已发布基线，重复调用也使用
+该基线。只有匹配 Host 的局部属性参与变化，输入中的文本与子节点被忽略，
+因此只构造该节点即可。Ebox 保留当前内容、子节点与身份，并决定样式、布局
+及交互影响。
+
+下面只改变面板宽度，保留原有标签：
+
+```elisp
+(require 'ebox)
+(cl-labels
+    ((panel (width &optional text)
+       (let* ((builder (ebox-source-builder-create))
+              (decls (ebox-style-compile-form 'column (list :width width)))
+              (handle (ebox-source-builder-bind builder :identity 'panel
+                                                :declarations decls))
+              (children
+               (when text
+                 (list (ebox-text-create
+                        :value text
+                        :source-handle (ebox-source-builder-bind builder :identity 'label)
+                        :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))))
+              (node (apply #'ebox-box-create
+                           (append (ebox-canonical-box-configuration 'column decls)
+                                   (list :source-handle handle :children children
+                                         :owned-facts
+                                         (ebox-canonical-facts-from-declarations 'column decls))))))
+         (ebox-canonical-input-create (list node) (ebox-source-builder-finish builder)))))
+  (let* ((buffer (get-buffer-create "*Ebox Properties*"))
+         (previous (panel '(ch 32) "Retained content"))
+         (next (panel '(ch 18))))
+    (ebox-render-to-buffer buffer previous)
+    (let ((candidate (ebox-candidate-begin buffer)))
+      (ebox-candidate-update-host-properties candidate 'panel previous next)
+      (ebox-commit buffer candidate))))
+```
+
+同一候选可以替换后代 Host 或子 Range。属性更新在结构操作后作用于保留的
+节点；移除节点吸收它的更新，完整根替换吸收全部操作。同一节点的重复属性
+更新使用最后一次提交的声明差异。节点类型变化必须使用子树替换。未知基线
+引用、非法输入和已封存候选会报错；调用方不需要判断变化是否仅涉及绘制。
+提交只消费候选一次，发布失败也不能复用该候选。
+
 ## 局部规则输入
 
 `:ecss` 接受有序规则列表，`:ecss-file` 按 ECSS 的[静态数据契约](https://gitea.gklazycat.heiyu.space/geekinney/ecss/src/branch/main/docs/manual.zh-CN.md#静态规则数据)

@@ -841,6 +841,55 @@ and propagate failure; they must not select a second writer as a fallback.
 `tests/acceptance.json` lists the maintained public API acceptance scenarios.
 Consumers link to this contract instead of maintaining another copy of its ordering.
 
+
+### Compose property and structural updates
+
+Frameworks use `ebox-candidate-update-host-properties` when an existing Host's
+own declarations change. Supply canonical previous and next authored inputs;
+the previous input describes the captured base, including on repeated calls.
+Only the matching Host's local properties participate. Input children and text
+are ignored, so a shallow input is sufficient. Ebox retains current content,
+children and identity and determines the style, layout and interaction effects.
+
+The example changes the panel width while keeping its existing label:
+
+```elisp
+(require 'ebox)
+(cl-labels
+    ((panel (width &optional text)
+       (let* ((builder (ebox-source-builder-create))
+              (decls (ebox-style-compile-form 'column (list :width width)))
+              (handle (ebox-source-builder-bind builder :identity 'panel
+                                                :declarations decls))
+              (children
+               (when text
+                 (list (ebox-text-create
+                        :value text
+                        :source-handle (ebox-source-builder-bind builder :identity 'label)
+                        :owned-facts (ebox-canonical-facts-from-declarations 'text nil)))))
+              (node (apply #'ebox-box-create
+                           (append (ebox-canonical-box-configuration 'column decls)
+                                   (list :source-handle handle :children children
+                                         :owned-facts
+                                         (ebox-canonical-facts-from-declarations 'column decls))))))
+         (ebox-canonical-input-create (list node) (ebox-source-builder-finish builder)))))
+  (let* ((buffer (get-buffer-create "*Ebox Properties*"))
+         (previous (panel '(ch 32) "Retained content"))
+         (next (panel '(ch 18))))
+    (ebox-render-to-buffer buffer previous)
+    (let ((candidate (ebox-candidate-begin buffer)))
+      (ebox-candidate-update-host-properties candidate 'panel previous next)
+      (ebox-commit buffer candidate))))
+```
+
+The same candidate can replace descendant Hosts or child Ranges. Property
+updates refine retained owners after those structural operations; removal of an
+owner absorbs its update, and complete root replacement absorbs all operations.
+Repeated property updates for one owner use the last supplied delta. A node type
+change requires subtree replacement. Unknown base references, invalid inputs and
+sealed candidates signal errors; no paint-versus-layout fallback is requested of
+the caller. Commit consumes the candidate once, even when publication fails.
+
 ## Local rule input
 
 `:ecss` accepts an ordered rule list and `:ecss-file` reads that same list from a
