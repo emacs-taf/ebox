@@ -56,6 +56,14 @@ and applies current styles to every node before native layout consumes it.
 Retained object identity alone never certifies style reuse; stable native
 updates still require the planner's prepared-style contract.
 
+Canonical selector-metadata changes prepare the complete candidate style tree,
+including nodes styled only by rules. Both renderers receive the complete computed
+effects before planning, including changed nodes outside the source delta.
+The check visits only nodes prepared by the Style Adapter. Native continuation
+uses the confirmed frame in the published fragment ledger and its root geometry;
+temporary render fields carry only the current unpublished result. A native plan
+requires an executable viewport before it can bypass ordinary projection.
+
 Local style preparation reads the candidate's mounted scopes and compares them
 with the published context before reusing styles. Tree-dependent matching defers
 to complete projection. A pending author-style transition selects that boundary

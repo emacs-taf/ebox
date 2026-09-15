@@ -33,6 +33,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Native incremental publication reuses the confirmed frame across consecutive
+  commits and viewport changes. Selector-only updates prepare rule-based and
+  inherited styles before choosing their publication path.
+
 - Native nested Flex layout reuses identical completed measurements within a
   frame, reducing repeated subtree work during rendering and resize. Rebuild
   the optional native module and restart Emacs to use the optimization.

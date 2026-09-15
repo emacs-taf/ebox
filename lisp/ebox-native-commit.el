@@ -309,7 +309,9 @@ the committed text/fragment bases, compiler postorder, and projection support."
 Fork PREVIOUS-STATE's committed session when present; otherwise bootstrap a
 new session with the same bounded configuration used by retained frames."
   (let ((source (and (eq (plist-get previous-state :projection-kind) 'native-frame)
-                     (plist-get previous-state :native-render-frame)
+                     (plist-get (plist-get previous-state :surface-fragments)
+                                :native-frame)
+                     (plist-get previous-state :native-sync-confirmed-p)
                      (plist-get previous-state :native-sync-session))))
     (cl-remf candidate-state :native-session-setup-failure)
     (condition-case condition
@@ -338,7 +340,8 @@ new session with the same bounded configuration used by retained frames."
     (plist-put state :native-base-viewport-height
                (plist-get previous-state :viewport-height))
     (plist-put state :native-base-root-width
-               (plist-get (plist-get previous-state :native-render-frame)
+               (plist-get (plist-get (plist-get previous-state :surface-fragments)
+                                    :native-frame)
                           :root-width)))
   state)
 
@@ -385,6 +388,8 @@ new session with the same bounded configuration used by retained frames."
                (not (ebox-style-cascade-active-p))
                (ebox-native-commit-projection-eligible-p
                 old-state state nil)
+               (ebox-native-commit--frame-spec
+                candidate-state (plist-get candidate-state :root-node))
                (ebox-native-commit--isolate-session
                 old-state candidate-state))
       (plist-put candidate-state :native-topology-stable-p stable)

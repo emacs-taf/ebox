@@ -2998,8 +2998,8 @@ source-handle-to-subject table when the requested local preparation completed."
                          (style
                           (or (and source-stable-p old-style)
                               (and node (not source-stable-p)
-                                   (or parent-style
-                                       declarations)
+                                   (or parent-style declarations
+                                       (ebox-style-cascade-active-p))
                                    (ebox-surface--compute-node-style
                                     subject declarations
                                     parent-style)))))

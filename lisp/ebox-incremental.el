@@ -7341,59 +7341,82 @@ must be recomputed in the next publication."
           :viewport-height-dependent-subtree-cache height-cache)))
 
 (defun ebox-incremental--computed-local-dirty-set
-    (old-state candidate-index dirty-set)
+    (old-state candidate-index dirty-set style-node-ids)
   "Return DIRTY-SET expressed as locally computed render effects.
 The Style Adapter has already consumed selector metadata and author
 declarations for nodes marked `:ebox-candidate-computed-style-p'.  For those
 nodes, retain ordinary source changes, record selector fields as metadata, and
-derive render changes from the computed fragment style signatures."
+derive render changes from the computed fragment style signatures.
+STYLE-NODE-IDS bounds the nodes prepared by the Style Adapter."
   (let ((old-nodes (plist-get old-state :node-table))
-        (new-nodes (plist-get candidate-index :node-table)))
-    (mapcar
-     (lambda (entry)
-       (let* ((node-id (plist-get entry :node-id))
-              (old-node (and node-id (ebox-runtime-index-get node-id old-nodes)))
-              (new-node (and node-id (ebox-runtime-index-get node-id new-nodes))))
-         (if (or (eq (plist-get entry :dirty-kind) 'structure)
-                 (not old-node)
-                 (not new-node)
-                 (not (plist-get new-node :ebox-candidate-computed-style-p)))
-             entry
-           (let* (;; Source-stage dirty planning already materialized this
-                  ;; exact node-local delta.  Computed projection consumes it;
-                  ;; it must not resolve the same generation facts again.
-                  (source-keys (plist-get entry :changed-keys))
-                  (metadata-keys
-                   (cl-remove-if-not
-                    (lambda (key)
-                      (memq key ebox-tree-metadata-source-keys))
-                    source-keys))
-                  (ordinary-keys
-                   (cl-remove-if
-                    (lambda (key)
-                      (or (ebox-style--property key)
-                          (memq key ebox-tree-metadata-source-keys)))
-                    source-keys))
-                  (style-keys
-                   (ebox-fragment-plist-changed-keys
-                    (ebox-fragment-node-style-signature old-node)
-                    (ebox-fragment-node-style-signature new-node)))
-                  (changed-keys
-                   (delete-dups (append ordinary-keys style-keys)))
-                  (next (copy-sequence entry)))
-             (plist-put next :changed-keys changed-keys)
-             (plist-put next :metadata-changed-keys metadata-keys)
-             (plist-put next :dirty-kind
-                        (if changed-keys
-                            (ebox-incremental--declarative-dirty-kind
-                             changed-keys)
-                          'metadata))
-             (plist-put next :old-signature
-                        (ebox-tree-node-local-source-signature old-node))
-             (plist-put next :new-signature
-                        (ebox-tree-node-local-source-signature new-node))
-             next))))
-     dirty-set)))
+        (new-nodes (plist-get candidate-index :node-table))
+        (source-dirty (make-hash-table :test 'equal))
+        computed-dirty)
+    (dolist (entry dirty-set)
+      (puthash (plist-get entry :node-id) t source-dirty))
+    ;; Matching and inheritance can change nodes whose authored input did not
+    ;; change. Include that complete computed closure in the same owner plan.
+    (dolist (node-id style-node-ids)
+      (let ((new-node (ebox-runtime-index-get node-id new-nodes)))
+        (when (and (not (gethash node-id source-dirty))
+                   (plist-get new-node :ebox-candidate-computed-style-p))
+          (when-let* ((old-node (ebox-runtime-index-get node-id old-nodes))
+                      (keys (ebox-fragment-plist-changed-keys
+                             (ebox-fragment-node-style-signature old-node)
+                             (ebox-fragment-node-style-signature new-node))))
+            (push (ebox--dirty-entry
+                   node-id (ebox-incremental--declarative-dirty-kind keys)
+                   :changed-keys keys
+                   :old-signature (ebox-tree-node-local-source-signature old-node)
+                   :new-signature (ebox-tree-node-local-source-signature new-node))
+                  computed-dirty)))))
+    (append
+     (mapcar
+      (lambda (entry)
+        (let* ((node-id (plist-get entry :node-id))
+               (old-node (and node-id (ebox-runtime-index-get node-id old-nodes)))
+               (new-node (and node-id (ebox-runtime-index-get node-id new-nodes))))
+          (if (or (eq (plist-get entry :dirty-kind) 'structure)
+                  (not old-node)
+                  (not new-node)
+                  (not (plist-get new-node :ebox-candidate-computed-style-p)))
+              entry
+            (let* (;; Source-stage dirty planning already materialized this
+                   ;; exact node-local delta.  Computed projection consumes it;
+                   ;; it must not resolve the same generation facts again.
+                   (source-keys (plist-get entry :changed-keys))
+                   (metadata-keys
+                    (cl-remove-if-not
+                     (lambda (key)
+                       (memq key ebox-tree-metadata-source-keys))
+                     source-keys))
+                   (ordinary-keys
+                    (cl-remove-if
+                     (lambda (key)
+                       (or (ebox-style--property key)
+                           (memq key ebox-tree-metadata-source-keys)))
+                     source-keys))
+                   (style-keys
+                    (ebox-fragment-plist-changed-keys
+                     (ebox-fragment-node-style-signature old-node)
+                     (ebox-fragment-node-style-signature new-node)))
+                   (changed-keys
+                    (delete-dups (append ordinary-keys style-keys)))
+                   (next (copy-sequence entry)))
+              (plist-put next :changed-keys changed-keys)
+              (plist-put next :metadata-changed-keys metadata-keys)
+              (plist-put next :dirty-kind
+                         (if changed-keys
+                             (ebox-incremental--declarative-dirty-kind
+                              changed-keys)
+                           'metadata))
+              (plist-put next :old-signature
+                         (ebox-tree-node-local-source-signature old-node))
+              (plist-put next :new-signature
+                         (ebox-tree-node-local-source-signature new-node))
+              next))))
+      dirty-set)
+     (nreverse computed-dirty))))
 
 (defun ebox-incremental--prepare-declarative-runtime
     (buffer old-state candidate-root &optional logical-candidate-p
@@ -7449,6 +7472,19 @@ certificate."
            (style-node-ids
             (or (plist-get local-preparation :touched-node-ids)
                 (and (or prepare-all-styles-p
+                         ;; A complete canonical replacement owns every node.
+                         ;; Resolve selector-only changes before choosing a
+                         ;; render route; metadata alone does not imply that
+                         ;; the published layout or paint changed.
+                         (and (not logical-candidate-p)
+                              (or (plist-get old-state :cascade-active-p)
+                                  (plist-get old-state :cascade-required-p)
+                                  (ebox-style-cascade-active-p))
+                              source-dirty-set
+                              (cl-every
+                               (lambda (entry)
+                                 (eq (plist-get entry :dirty-kind) 'metadata))
+                               source-dirty-set))
                          ;; A fully copied region batch has no touched-node
                          ;; index.  Mixed projection retains the style tree,
                          ;; so prepare inherited consumers before proving or
@@ -7563,6 +7599,7 @@ certificate."
                 (and (or local-preparation prepare-all-styles-p)
                      styles-prepared-p)
                 :styles-prepared-p styles-prepared-p
+                :style-node-ids style-node-ids
                 :index candidate-index
                 :dirty-set dirty-set
                 :display-signature current-display-signature
@@ -10834,27 +10871,25 @@ role, and outside-complement compatibility before publication."
                   (or (not (eq (plist-get entry :dirty-kind) 'structure))
                       (plist-get entry :range-delta)))
                 (plist-get prepared :dirty-set))))
-         (native-program-p
-          (and (or (eq (plist-get old-state :projection-kind) 'native-frame)
-                   (>= (length (plist-get prepared :dirty-set)) 3)
-                   structural-dirty-p
-                   (> (or (plist-get prepared :range-replacement-count) 0) 0))
-               (zerop (ebox-tree-author-style-count
-                       (plist-get old-state :root-node)))
-               (zerop (ebox-tree-author-style-count
-                       (plist-get candidate-state :root-node)))
-               (require 'ebox-native-commit nil t)
-               (ebox-native-commit-plan-eligible-p
-                old-state candidate-state prepared)))
+         (metadata-transition-p
+          (and (plist-get prepared :styles-prepared-p)
+               (plist-get prepared :dirty-set)
+               (cl-every
+                (lambda (entry)
+                  (eq (plist-get entry :dirty-kind) 'metadata))
+                (plist-get prepared :dirty-set))))
          (_normalize-local-dirty
-          (when (and (not native-program-p)
-                     (plist-get prepared :styles-prepared-p))
+          ;; Both renderers need the computed effects, including inherited
+          ;; paint selected by a metadata change.  Source keys alone cannot
+          ;; identify the descendants that the native compiler must refresh.
+          (when (plist-get prepared :styles-prepared-p)
             (setq prepared
                   (plist-put
                    prepared :dirty-set
                    (ebox-incremental--computed-local-dirty-set
                     old-state (plist-get prepared :index)
-                    (plist-get prepared :dirty-set))))
+                    (plist-get prepared :dirty-set)
+                    (plist-get prepared :style-node-ids))))
             (setq structural-dirty-p
                   (cl-some
                    (lambda (entry)
@@ -10868,6 +10903,19 @@ role, and outside-complement compatibility before publication."
                                        'structure))
                               (plist-get entry :range-delta)))
                         (plist-get prepared :dirty-set))))))
+         (native-program-p
+          (and (or (eq (plist-get old-state :projection-kind) 'native-frame)
+                   (>= (length (plist-get prepared :dirty-set)) 3)
+                   structural-dirty-p
+                   (> (or (plist-get prepared :range-replacement-count) 0) 0)
+                   metadata-transition-p)
+               (zerop (ebox-tree-author-style-count
+                       (plist-get old-state :root-node)))
+               (zerop (ebox-tree-author-style-count
+                       (plist-get candidate-state :root-node)))
+               (require 'ebox-native-commit nil t)
+               (ebox-native-commit-plan-eligible-p
+                old-state candidate-state prepared)))
          (unprepared-style-p
           (/= (ebox-tree-author-style-count (plist-get old-state :root-node))
               (ebox-tree-author-style-count (plist-get candidate-state :root-node))))
