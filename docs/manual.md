@@ -443,8 +443,10 @@ its `:activate` callback takes no arguments and handles `RET`, `[return]`, `SPC`
 and `[mouse-1]`. On a mounted surface, pressing consumes motion and release,
 with `:active` visible to selectors and styles while held. Release over the same
 retained owner clears the state and activates once; release elsewhere cancels.
-Rapid double and triple clicks each activate once. Point and selection remain
-unchanged. Pure rendered text keeps release activation without mounted state. Use `:bindings` for an alist
+Rapid double and triple clicks each activate once. Release in the selected
+window focuses the activated owner before its callback, so a panel opened by
+the callback can return to that entry. Events dispatched for other windows
+preserve their point and selection. Pure rendered text keeps release activation without mounted state. Use `:bindings` for an alist
 of key-description strings or event
 vectors paired with zero-argument callbacks. The helper uses the event window's
 buffer for mouse callbacks, so a callback can directly update a semantic ID

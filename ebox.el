@@ -570,15 +570,19 @@
 ;; `:activate' is an optional zero-argument callback for RET, return, SPC and
 ;; the primary mouse button. Mounted primary presses consume motion and release,
 ;; publish :active while held and clear it before activating once on release
-;; over the same retained owner. Releasing elsewhere cancels activation. Point
-;; and selection remain unchanged; repeated clicks each activate once. Pure
+;; over the same retained owner. Releasing elsewhere cancels activation. In the
+;; selected window, release focuses that owner before invoking its callback.
+;; Events for other windows preserve point and selection; repeated clicks each
+;; activate once. Pure
 ;; rendered text keeps native release activation without mounted state.
 ;; Nil omits these activation bindings.  `:bindings' is an alist of string key
 ;; descriptions or key vectors paired with zero-argument callbacks.  Explicit
 ;; bindings override the repeated-click, press and drag defaults.
 ;; Callbacks are not invoked until a generated command runs.  Keyboard commands
 ;; use the current buffer; mouse commands use the event window's buffer without
-;; selecting a window or moving point.  Duplicate or overlapping keys are errors.
+;; selecting a window. Mounted activation in the selected window moves point
+;; through ebox-focus; other generated callbacks preserve point.
+;; Duplicate or overlapping keys are errors.
 ;; Generated activation keys use logical focus when point still addresses it,
 ;; including an overlapping parent. Mouse commands use the clicked binding.
 ;; Explicit custom bindings and raw native maps retain their native behavior.

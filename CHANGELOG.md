@@ -11,6 +11,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Mounted primary-button activation in the selected window now focuses its
+  target before invoking the callback. Consumers should use that focus as the
+  return target for opened panels; events for other windows still preserve point.
+
 - Replace `ebox-candidate-patch-host-paint` with
   `ebox-candidate-update-host-properties`. Frameworks can submit geometry,
   selector, style and interaction changes while retaining content and children.
