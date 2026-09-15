@@ -77,8 +77,11 @@
 (defun ebox-keymap-create (&rest options)
   "Create an ordinary native keymap from OPTIONS.
 `:activate' is an optional zero-argument callback for RET, return, SPC and
-the primary mouse button.  Repeated clicks each activate once; primary-button
-press and drag events do nothing, so they do not start native text selection.
+the primary mouse button.  Mounted presses consume motion and release, publish
+:active while held, and clear it before activating once on release over the same
+owner.  Releasing elsewhere cancels activation.  Point and selection
+are preserved.
+Pure rendered text keeps release activation without mounted state.
 Nil omits these activation bindings.  `:drag' accepts a one-argument callback
 for start/move/end/cancel gesture plists.  It owns primary-button tracking;
 when both options are supplied, activation remains keyboard-only.
@@ -159,6 +162,10 @@ This function does not install navigation bindings or event propagation."
                          ((and activate (not drag)
                                (memq event '(double-mouse-1 triple-mouse-1)))
                           (lookup-key map [mouse-1]))
+                         ((and activate (memq 'down (event-modifiers event)))
+                          (lambda (press)
+                            (interactive (list last-input-event))
+                            (ebox-interaction--track-press press)))
                          (t #'ignore)))))))
     map))
 
@@ -227,6 +234,7 @@ This function does not install navigation bindings or event propagation."
             (unwind-protect
                 (condition-case problem
                     (progn
+                      (ebox-interaction--set-active identity buffer)
                       (setq started t)
                       (emit 'start)
                       (redisplay t)
@@ -260,7 +268,44 @@ This function does not install navigation bindings or event propagation."
                   ((error quit)
                    (setq reason (if (eq (car problem) 'quit) 'quit 'error))
                    (signal (car problem) (cdr problem))))
-              (when (and started (not finished)) (emit 'cancel)))))))))
+              (unwind-protect
+                  (when (and started (not finished)) (emit 'cancel))
+                (when (and (buffer-live-p buffer)
+                           (eq surface (ebox-surface--live-buffer-surface buffer)))
+                  (ebox-interaction--set-active nil buffer))))))))))
+
+(defun ebox-interaction--track-press (event)
+  "Track EVENT until release and activate its retained owner when still hit."
+  ;; Pure rendered text also carries these ordinary maps.  Without a mounted
+  ;; owner leave its release to Emacs; there is no retained state to publish.
+  (let* ((window (posn-window (event-start event)))
+         (buffer (and (window-live-p window) (window-buffer window)))
+         (release-key (cond ((memq 'triple (event-modifiers event)) [triple-mouse-1])
+                            ((memq 'double (event-modifiers event)) [double-mouse-1])
+                            (t [mouse-1]))))
+    (when (and buffer (ebox-surface--buffer-client-state buffer))
+      (ebox-interaction--track-drag
+         event
+         (lambda (gesture)
+           (when (eq (plist-get gesture :phase) 'end)
+             (let* ((buffer (plist-get gesture :buffer))
+                    (state (ebox-surface--buffer-client-state buffer))
+                    (reference (plist-get gesture :host-ref))
+                    (owner (gethash reference (ebox--buffer-host-ref-table buffer)))
+                    (position (posn-point (event-end (plist-get gesture :event))))
+                    (hit (and (integer-or-marker-p position)
+                              (<= (point-min) position) (< position (point-max))
+                              (ebox-interaction--navigation-owner position state))))
+               (when (and owner (equal owner hit))
+                 (ebox-interaction--set-active nil buffer)
+                 ;; Resolve the accepted binding after release styles publish.
+                 (let* ((current (ebox-surface--buffer-client-state buffer))
+                        (owner (gethash reference (ebox--buffer-host-ref-table buffer)))
+                        (map (and owner (ebox-interaction--owner-keymap current owner)))
+                        (command (and map (lookup-key map release-key)))
+                        (ebox-interaction--dispatching-activation t)
+                        (last-input-event (plist-get gesture :event)))
+                   (when (commandp command) (command-execute command)))))))))))
 
 (defun ebox-interaction--navigable-keymap-p (map)
   "Return non-nil when MAP contains a command, including inherited bindings.
@@ -370,9 +415,22 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
   (or (and ref (gethash ref (ebox-source--index-host-ref-table source)))
       (and key (equal key (ebox-interaction--focus-key state owner)) owner)))
 
-(defun ebox-interaction--candidate-focus-source (buffer old-state index source root)
-  "Project BUFFER's requested or retained focus into candidate INDEX SOURCE."
+(defun ebox-interaction--candidate-source (buffer old-state index source root)
+  "Project BUFFER's requested or retained interactions into INDEX SOURCE."
   (with-current-buffer buffer
+    (let* ((request (ebox-interaction--active-request-for buffer old-state))
+           (reference (if request (cadr request)
+                        (ebox-interaction--focus-ref old-state ebox-interaction--active-owner)))
+           (owner (ebox-interaction--resolve-focus-owner
+                   index source reference ebox-interaction--active-owner
+                   (unless request (ebox-interaction--focus-key old-state ebox-interaction--active-owner))))
+           (node (and owner (ebox-interaction--focus-node index owner)))
+           (handle (and node (ebox-tree-node-source-handle node))))
+      (when (or (and handle (plist-get (ebox-source-index-interactions source handle) :disabled))
+                (and owner (not (ebox-interaction--focus-visible-p index owner))))
+        (setq handle nil))
+      (when (or request ebox-interaction--active-owner)
+        (setq source (ebox-source--with-interaction-state source "active" handle))))
     (if (and (null ebox-interaction--focus-owner)
              (not (ebox-interaction--focus-request-for buffer old-state)))
         source
@@ -390,7 +448,7 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
                   (and (not request) ebox-interaction--focus-owner
                        (not (ebox-interaction--focus-position old-state ebox-interaction--focus-owner))))
           (setq handle nil))
-	(let ((projected (ebox-source--with-focus source handle)))
+	(let ((projected (ebox-source--with-interaction-state source "focus" handle)))
           (when handle
             (let* ((subjects (ebox-tree-source-index root t nil projected))
                    (ebox-selector-view--current (ebox-source--index-selector-view subjects))
@@ -409,7 +467,7 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
               (when hidden
 		(if (and request (cadr request))
                     (user-error "Focus styles removed the enabled visible target: %S" (cadr request))
-                  (setq projected (ebox-source--with-focus projected nil))))))
+                  (setq projected (ebox-source--with-interaction-state projected "focus" nil))))))
           projected)))))
 
 (defvar-local ebox-interaction--focus-owner nil
@@ -418,10 +476,38 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
 (defvar-local ebox-interaction--focus-order nil
   "Derived navigation index for the current published state.")
 
-(defun ebox-interaction--focus-reset ()
-  "Release the current buffer's focus and derived navigation index."
+(defvar-local ebox-interaction--active-owner nil
+  "Committed owner of the current primary-button gesture.")
+
+(defvar ebox-interaction--active-request nil
+  "Dynamic (BUFFER HOST-REF BASE-STATE) for one pressed-state publication.")
+
+(defun ebox-interaction--active-request-for (buffer state)
+  "Return the pressed-state request belonging to BUFFER and base STATE."
+  (and (eq buffer (car ebox-interaction--active-request))
+       (eq state (nth 2 ebox-interaction--active-request))
+       ebox-interaction--active-request))
+
+(defun ebox-interaction--reset ()
+  "Release this buffer's interaction owners and derived navigation index."
   (setq ebox-interaction--focus-owner nil
+        ebox-interaction--active-owner nil
         ebox-interaction--focus-order nil))
+
+(defun ebox-interaction--set-active (host-ref buffer)
+  "Publish HOST-REF as BUFFER's pressed owner, or clear it with nil."
+  (with-current-buffer (ebox-interaction--focus-buffer buffer)
+    (let* ((state (ebox-surface--buffer-client-state buffer))
+           (owner (and host-ref (gethash host-ref (ebox--buffer-host-ref-table buffer)))))
+      (when (and host-ref (not (and owner (ebox-interaction--focus-position state owner))))
+        (user-error "No enabled visible Ebox pressed target"))
+      (unless (equal owner ebox-interaction--active-owner)
+        (let ((ebox-interaction--active-request (list buffer host-ref state)))
+          (save-restriction
+            (widen)
+            (ebox-commit buffer
+                         (ebox-canonical-input-create (list (plist-get state :root-node))
+                                                      (plist-get state :source-index)))))))))
 
 (defun ebox-interaction--focus-node (state owner)
   "Return OWNER's runtime node in STATE."
@@ -604,8 +690,8 @@ following the target until point is moved back to that target's first character.
          (ebox-interaction--focus-ref
           (ebox-surface--buffer-client-state buffer) ebox-interaction--focus-owner))))))
 
-(defun ebox-interaction--focus-capture (buffer)
-  "Capture BUFFER's focus and point before staged text publication."
+(defun ebox-interaction--capture (buffer)
+  "Capture BUFFER's interaction owners and point before publication."
   (with-current-buffer buffer
     (let ((state (ebox-surface--buffer-client-state buffer)))
       (list ebox-interaction--focus-owner (point)
@@ -616,12 +702,30 @@ following the target until point is moved back to that target's first character.
                         state ebox-interaction--focus-owner))
             (and state (ebox-interaction--focus-key
                         state ebox-interaction--focus-owner))
-            state))))
+            state
+            ebox-interaction--active-owner
+            (and state (ebox-interaction--focus-ref state ebox-interaction--active-owner))
+            (and state (ebox-interaction--focus-key state ebox-interaction--active-owner))))))
 
-(defun ebox-interaction--focus-publish (buffer snapshot)
-  "Reconcile BUFFER's focus from SNAPSHOT against the published candidate."
+(defun ebox-interaction--publish (buffer snapshot)
+  "Reconcile BUFFER's interaction owners against the published candidate."
   (with-current-buffer buffer
     (setq ebox-interaction--focus-order nil)
+    (let* ((state (ebox-surface--buffer-client-state buffer))
+           (request (ebox-interaction--active-request-for buffer (nth 5 snapshot)))
+           (owner (ebox-interaction--resolve-focus-owner
+                   state (plist-get state :source-index)
+                   (if request (cadr request) (nth 7 snapshot))
+                   (nth 6 snapshot) (unless request (nth 8 snapshot))))
+           (record (and owner
+                        (ebox-source--index-record
+                         (plist-get state :source-index)
+                         (ebox-tree-node-source-handle (ebox-interaction--focus-node state owner)))))
+           (position (and record (member "active" (ebox-source-record-interaction-states record))
+                          (ebox-interaction--focus-position state owner))))
+      (when (and request (cadr request) (not position))
+        (user-error "Pressed styles removed the enabled visible target"))
+      (setq ebox-interaction--active-owner (and position owner)))
     (let* ((state (ebox-surface--buffer-client-state buffer))
            (request (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
            (owner (ebox-interaction--resolve-focus-owner
@@ -633,7 +737,7 @@ following the target until point is moved back to that target's first character.
                                    (record (ebox-source--index-record
                                             (plist-get state :source-index)
                                             (ebox-tree-node-source-handle node))))
-                         (and (ebox-source-record-focus-p record) owner))))
+                         (and (member "focus" (ebox-source-record-interaction-states record)) owner))))
            (position (and owner (ebox-interaction--focus-position state owner))))
       (when (and request (cadr request) (not position))
         (user-error "Focus styles removed the enabled visible target: %S" (cadr request)))
@@ -656,11 +760,12 @@ following the target until point is moved back to that target's first character.
         (goto-char (or position
                        (min (point-max) (max (point-min) (nth 1 snapshot)))))))))
 
-(defun ebox-interaction--focus-rollback (buffer snapshot)
-  "Restore BUFFER's logical focus from SNAPSHOT after publication rejection."
+(defun ebox-interaction--rollback (buffer snapshot)
+  "Restore BUFFER's interaction owners after publication rejection."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq ebox-interaction--focus-owner (car snapshot)
+            ebox-interaction--active-owner (nth 6 snapshot)
             ebox-interaction--focus-order nil))))
 
 (defun ebox-interaction--focus-index (state)

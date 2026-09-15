@@ -440,9 +440,11 @@ value; an omitted property leaves the enclosing surface coverage in place.
 
 `:keymap` accepts a native Emacs keymap or `nil`. Prefer `ebox-keymap-create`:
 its `:activate` callback takes no arguments and handles `RET`, `[return]`, `SPC`,
-and `[mouse-1]`. Rapid double and triple clicks each activate once per release;
-primary-button press and drag events do nothing, preserving point and selection
-instead of starting native word or line selection. Use `:bindings` for an alist
+and `[mouse-1]`. On a mounted surface, pressing consumes motion and release,
+with `:active` visible to selectors and styles while held. Release over the same
+retained owner clears the state and activates once; release elsewhere cancels.
+Rapid double and triple clicks each activate once. Point and selection remain
+unchanged. Pure rendered text keeps release activation without mounted state. Use `:bindings` for an alist
 of key-description strings or event
 vectors paired with zero-argument callbacks. The helper uses the event window's
 buffer for mouse callbacks, so a callback can directly update a semantic ID
@@ -505,9 +507,15 @@ again. Publish both inputs through ordinary `ebox-region-update` or canonical
 commits. The same disabled fact derives `:disabled` for selector queries and
 cascade, including descendant and sibling rules. Disabling a parent does not
 mark its children disabled. Authored `:states` (or typed `:selector-state`)
-accept custom states, but reject `disabled` and `focus`. Declare `:disabled t`
-and use mounted focus operations respectively. Hover and pressed state
-integration into the cascade remains pending.
+accept custom states, but reject `disabled`, `focus` and `active`. Declare
+`:disabled t`, use mounted focus operations, and use generated primary-button
+gestures respectively. A rule such as `("#action:active" :color "#ff0000")`
+uses the ordinary cascade. Pressed state follows retained updates and clears
+when tracking ends or the target becomes unavailable. Drag callbacks observe
+it while tracking; activation runs after it clears. A pressed style must leave
+the requested target visible and enabled, otherwise the press fails without
+changing the surface. Keyboard activation does not create this state. Hover
+state integration into the cascade remains pending.
 
 Use `ebox-focus-next` / `ebox-focus-previous` for logical navigation. The optional
 second argument enables cycling. `ebox-focus-first` selects the first eligible

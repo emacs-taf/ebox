@@ -6,6 +6,14 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Generated primary-button gestures publish `:active` through the ordinary
+  cascade while held. Pressed state follows retained updates and clears before
+  activation or when tracking ends. Release outside the retained target cancels.
+  `active` is now reserved alongside `focus` and `disabled`; replace authored
+  `:states active` with a custom token. Mounted activation maps consume the
+  release during their down command; input drivers must supply the complete
+  native sequence instead of separately replaying release activation.
+
 - `ebox-keymap-create :drag` delivers shared primary-button gesture phases and
   window-relative pixel deltas while retaining the published target. Consumers
   no longer need their own mouse-reading loop. With `:drag`, `:activate` remains

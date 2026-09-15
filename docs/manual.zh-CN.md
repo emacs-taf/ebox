@@ -400,8 +400,10 @@ margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 
 
 `:keymap` 接受原生 Emacs keymap 或 `nil`。推荐使用 `ebox-keymap-create`：
 `:activate` 的回调不带参数，处理 `RET`、`[return]`、`SPC` 和 `[mouse-1]`。
-快速双击、三击的每次释放也各激活一次；主按钮按下和拖动默认不执行操作，保留 point
-和选区，避免触发原生的选词或整行选择。
+挂载界面上的主按钮按下会接管移动与释放事件，按住时将 `:active` 发布给选择器与样式。
+在同一存续目标上释放时，先清除状态再激活一次；在其他目标释放则取消激活。
+快速双击、三击也各激活一次，保留 point 和选区。纯渲染文本仍通过原生释放事件激活，
+不产生挂载状态。
 `:bindings` 接受 alist，按键描述字符串或事件向量对应零参数回调。
 辅助函数让鼠标回调在事件窗口的 buffer 中运行，因此回调可以直接按语义 ID 更新：
 `(ebox-region-update "action" :help-echo "Activated")`。
@@ -461,8 +463,12 @@ map、结构换行和不可见文本不构成目标。框架不移动 point 或�
 启用的 keymap。用 `:disabled nil` 恢复原来声明的 keymap，通过普通 `ebox-region-update`
 或 canonical commit 发布。同一禁用事实派生供选择器查询与 cascade 使用的 `:disabled`，
 包括后代与兄弟规则；禁用父节点不会将子节点标记为禁用。作者 `:states`（typed 输入的
-`:selector-state`）可以声明自定义状态，但拒绝 `disabled` 与 `focus`，分别应使用
-`:disabled t` 和挂载后的焦点操作。悬停与按下状态接入 cascade 仍待完成。
+`:selector-state`）可以声明自定义状态，但拒绝 `disabled`、`focus` 与 `active`，分别
+应使用 `:disabled t`、挂载后的焦点操作和生成的主按钮手势。
+例如 `("#action:active" :color "#ff0000")` 使用普通 cascade。按下状态跟随存续目标
+的更新，跟踪结束或目标不可用时清除；拖动回调在跟踪期间可以观察它，激活回调在清除后
+运行。按下样式必须让新请求的目标保持可见且启用，否则按下失败并保留原画面。键盘
+激活不产生此状态。悬停状态接入 cascade 仍待完成。
 
 焦点变更在同一次事务中发布 `:focus` 选择器状态、绘制与布局。局部规则
 `(("box:focus" :color "#ff0000"))` 只匹配获得焦点的 Box，后代与兄弟选择器也使用同一

@@ -1281,7 +1281,7 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
 REPORT-BASE requests an Ebox commit report.  AFTER-PUBLICATION, when non-nil,
 runs after TP and Ebox point at the same candidate generation.
 FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
-  (let ((focus-snapshot (ebox-interaction--focus-capture buffer))
+  (let ((interaction-snapshot (ebox-interaction--capture buffer))
         new-state region-snapshot scroll-snapshot
         old-surface old-mirror region-keys scroll-keys)
     (ebox-surface--transaction-participate
@@ -1378,7 +1378,7 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
        (ebox-incremental--replace-hash-entries
         ebox--scroll-global-state scroll-keys
         (plist-get new-state :scroll-state-table))
-       (ebox-interaction--focus-publish buffer focus-snapshot)
+       (ebox-interaction--publish buffer interaction-snapshot)
        (if framework-participant
            (plist-put
             new-state :last-update-report
@@ -1394,7 +1394,7 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
        (unwind-protect
            (progn
              (ebox-surface--participant-run-rollback framework-participant)
-             (ebox-interaction--focus-rollback buffer focus-snapshot)
+             (ebox-interaction--rollback buffer interaction-snapshot)
              (when observation-context
                (ebox-surface--observation-discard observation-context)))
          (if (buffer-live-p buffer)
@@ -1417,7 +1417,7 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
              (ebox--scroll-clear-state region-id)
              (ebox--smooth-scroll-stop region-id)))))
      (lambda ()
-       (ebox-interaction--focus-settle buffer focus-snapshot new-state)))))
+       (ebox-interaction--focus-settle buffer interaction-snapshot new-state)))))
 
 (defun ebox-surface-mount-buffer
     (buffer source &optional report-base after-publication
@@ -5716,8 +5716,10 @@ than replaying old coordinates, properties or revision authority."
                    (equal width (plist-get prepared :viewport-width))
                    (equal height (plist-get prepared :viewport-height))
                    (equal scroll expected-offsets)
-                   (not (and ebox-interaction--focus-owner
-                             (ebox-surface--unpainted-focus-p prepared rendered))))
+                   (not (or (and ebox-interaction--focus-owner
+                                 (ebox-surface--unpainted-interaction-p prepared rendered "focus"))
+                            (and ebox-interaction--active-owner
+                                 (ebox-surface--unpainted-interaction-p prepared rendered "active")))))
               (ebox-surface--scroll-viewport-result
                context base prepared rendered prepared-batch)
             (ebox-surface--project
@@ -7066,14 +7068,14 @@ but cannot introduce or remove a viewport expression or node identity."
       (ebox-surface--apply-scroll-offsets root scroll-offsets))
     state))
 
-(defun ebox-surface--unpainted-focus-p (state rendered)
-  "Return non-nil if STATE projects focus without an accessible painted target."
+(defun ebox-surface--unpainted-interaction-p (state rendered interaction)
+  "Return whether STATE projects INTERACTION without accessible painted output."
   (let ((source (plist-get state :source-index)) owner)
     (ebox-runtime-index-map
      (lambda (id node)
        (when-let* ((handle (ebox-tree-node-source-handle node))
                    (record (ebox-source--index-record source handle)))
-         (when (ebox-source-record-focus-p record) (setq owner id))))
+         (when (member interaction (ebox-source-record-interaction-states record)) (setq owner id))))
      (plist-get state :node-table))
     (and owner
          (not
@@ -7519,45 +7521,51 @@ published runtime and must be consumed without clearing those shared nodes."
                        (ebox-surface--render-candidate state)))
                   (t
                    (ebox-surface--render-candidate state)))))
-            (when (and signals
-                       (or ebox-interaction--focus-owner
-                           (cadr (ebox-interaction--focus-request-for
-                                  (ebox-surface--signals-buffer signals) previous-state)))
-                       (ebox-surface--unpainted-focus-p state rendered))
-              (when (cadr (ebox-interaction--focus-request-for
-                           (ebox-surface--signals-buffer signals) previous-state))
-                (user-error "Focus layout removed the enabled visible target"))
-              ;; Geometry can remove a focus target after selector computation.
-              ;; Rebuild the candidate in the same producer context with focus
-              ;; cleared, before TP can publish either its text or source facts.
-              (setq root (ebox-tree-copy-node-structure root)
-                    source-index (ebox-source--with-focus (plist-get state :source-index) nil)
-                    projection (ebox-surface--complete-projection
-                                context root source-index t projection
-                                (ebox-surface--node-object-table
-                                 (plist-get projection :objects-by-node)))
-                    source-index (plist-get projection :source-index)
-                    projection-kind nil
-                    state (ebox-surface--projection-state
-                           root previous-state
-                           (cl-loop for key in '(:viewport-width :viewport-height
-                                                 :display-signature :runtime-revision
-                                                 :scroll-state-table :detached-identity-history)
-                                    append (list key (plist-get state key)))
-                           nil stylesheet-active-p t axes
-                           viewport-width viewport-height surface-display-signature
-                           scroll-offsets))
-              (plist-put state :source-index source-index)
-              (plist-put state :style-binding-states
-                         (plist-get projection :style-binding-states))
-              (plist-put state :selector-tree-snapshot
-                         (plist-get projection :selector-tree-snapshot))
-              (plist-put state :selector-tree-token
-                         (plist-get projection :selector-tree-token))
-              (plist-put state :stylesheet-signature
-                         (plist-get projection :stylesheet-signature))
-              (plist-put state :region-box-table (make-hash-table :test 'equal))
-              (setq rendered (ebox-surface--render-candidate state)))
+            (dolist (interaction '("focus" "active"))
+              (let* ((focus-p (equal interaction "focus"))
+                     (owner (if focus-p ebox-interaction--focus-owner
+                              ebox-interaction--active-owner))
+                     (request (and signals
+                                   (if focus-p
+                                       (ebox-interaction--focus-request-for
+                                        (ebox-surface--signals-buffer signals) previous-state)
+                                     (ebox-interaction--active-request-for
+                                      (ebox-surface--signals-buffer signals) previous-state)))))
+                (when (and signals (or owner (cadr request))
+                           (ebox-surface--unpainted-interaction-p state rendered interaction))
+                  (when (cadr request)
+                    (user-error "%s layout removed the enabled visible target" interaction))
+                  ;; Resolve geometry-dependent availability before publishing
+                  ;; either selector facts or paint, using the same TP objects.
+                  (setq root (ebox-tree-copy-node-structure root)
+                        source-index (ebox-source--with-interaction-state
+                                      (plist-get state :source-index) interaction nil)
+                        projection (ebox-surface--complete-projection
+                                    context root source-index t projection
+                                    (ebox-surface--node-object-table
+                                     (plist-get projection :objects-by-node)))
+                        source-index (plist-get projection :source-index)
+                        projection-kind nil
+                        state (ebox-surface--projection-state
+                               root previous-state
+                               (cl-loop for key in '(:viewport-width :viewport-height
+                                                     :display-signature :runtime-revision
+                                                     :scroll-state-table :detached-identity-history)
+                                        append (list key (plist-get state key)))
+                               nil stylesheet-active-p t axes
+                               viewport-width viewport-height surface-display-signature
+                               scroll-offsets))
+                  (plist-put state :source-index source-index)
+                  (plist-put state :style-binding-states
+                             (plist-get projection :style-binding-states))
+                  (plist-put state :selector-tree-snapshot
+                             (plist-get projection :selector-tree-snapshot))
+                  (plist-put state :selector-tree-token
+                             (plist-get projection :selector-tree-token))
+                  (plist-put state :stylesheet-signature
+                             (plist-get projection :stylesheet-signature))
+                  (plist-put state :region-box-table (make-hash-table :test 'equal))
+                  (setq rendered (ebox-surface--render-candidate state)))))
             (when (and (eq projection-kind 'native-frame)
                        (not (eq (plist-get state :projection-kind)
                                 'native-frame)))

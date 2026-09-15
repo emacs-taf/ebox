@@ -45,6 +45,8 @@
                  :drag
                  (lambda (gesture)
                    (push (plist-get gesture :phase) phases)
+                   (when (memq (plist-get gesture :phase) '(start move))
+                     (should (= 1 (length (ebox-selector-query-buffer buffer "#drag:active")))))
                    (let ((bounds (ebox-host-ref-bounds buffer (plist-get gesture :host-ref))))
                      (push (buffer-substring-no-properties (car bounds) (cdr bounds)) targets))
                    (when (eq (plist-get gesture :phase) 'move)
@@ -58,6 +60,7 @@
              buffer (list (ebox-drag-test--event 'mouse-movement window 1 '(4 . 3))
                           (ebox-drag-test--event 'drag-mouse-1 window 1 '(1 . 1) '(7 . 4)))))
           (should (equal (reverse phases) '(start move end)))
+          (should-not (ebox-selector-query-buffer buffer ":active"))
           (should (cl-every (lambda (text) (string-match-p "Drag" text)) targets))
           (with-current-buffer buffer
             (should (string-match-p "Peer.*\nDrag.*\n6" (buffer-string)))))

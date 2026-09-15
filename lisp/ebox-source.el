@@ -17,8 +17,8 @@
 
 (cl-defstruct (ebox-source-record
                (:constructor ebox-source--make-record))
-  "Immutable author facts and candidate-derived focus projection for one source."
-  key id classes attributes states focus-p declarations provenance interactions
+  "Immutable author facts and candidate-derived interaction states for one source."
+  key id classes attributes states interaction-states declarations provenance interactions
   ecss ecss-targets ecss-scopes ecss-scope-roots)
 
 (cl-defstruct (ebox-source-handle
@@ -356,9 +356,9 @@ Functions and records are opaque values and retain identity."
   "Bind normalized source facts in BUILDER and return an opaque handle.
 The returned handle contains identity only; all facts are owned by BUILDER
 until `ebox-source-builder-finish' seals them into a source index.
-SELECTOR-STATE accepts authored tokens except disabled and focus. Disabled is
-derived from INTERACTIONS :disabled; focus belongs to the mounted buffer.
-Declaring either as an authored state is an error.
+SELECTOR-STATE accepts authored tokens except disabled, focus and active.
+Disabled is derived from INTERACTIONS :disabled; focus and active belong to
+the mounted buffer. Declaring these as authored states is an error.
 ECSS-TARGETS is t for all descendants or a proper list of source identities
 eligible for this source's ECSS rules.  nil selects none.  Identities use
 `equal'; the list is snapshotted and resolved within each candidate input.
@@ -385,9 +385,9 @@ declaring membership and independent roots.  Both lists are snapshotted."
   (unless (ebox-source-selector-states-p selector-state)
     (error "Ebox source selector state must be a token or proper token list: %S"
            selector-state))
-  (when (cl-intersection '("disabled" "focus")
+  (when (cl-intersection '("disabled" "focus" "active")
                          (ebox-source--metadata-tokens selector-state) :test #'equal)
-    (error "Ebox disabled and focus selector states cannot be authored"))
+    (error "Ebox disabled, focus and active selector states cannot be authored"))
   (unless (ebox-source-selector-attributes-p selector-attributes)
     (error "Ebox source selector attributes must be an alist: %S"
            selector-attributes))
@@ -787,16 +787,18 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
   "Return HANDLE's detached selector states in candidate INDEX."
   (ebox-source--copy-data (ebox-source--index-states-view index handle)))
 
-(defun ebox-source--with-focus (index focused-handle)
-  "Return INDEX with a buffer-derived focus projection on FOCUSED-HANDLE."
+(defun ebox-source--with-interaction-state (index state target-handle)
+  "Return INDEX with buffer-derived STATE projected on TARGET-HANDLE."
   (let ((records (make-hash-table :test #'equal))
         (handles (make-hash-table :test #'eq)))
     (dolist (handle (ebox-source-index-handles index))
       (let* ((record (ebox-source--index-record index handle))
-             (focused (eq handle focused-handle)))
-        (unless (eq focused (ebox-source-record-focus-p record))
+             (enabled (eq handle target-handle))
+             (states (ebox-source-record-interaction-states record)))
+        (unless (eq enabled (not (null (member state states))))
           (let ((copy (copy-ebox-source-record record)))
-            (setf (ebox-source-record-focus-p copy) focused)
+            (setf (ebox-source-record-interaction-states copy)
+                  (if enabled (cons state states) (remove state states)))
             (puthash (ebox-source--handle-id-view handle) copy records)
             (puthash handle copy handles)))))
     (if (zerop (hash-table-count handles)) index
@@ -815,9 +817,8 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
 
 (defun ebox-source--record-selector-states (record)
   "Return authored and interaction-derived selector states for RECORD."
-  (let ((states (if (ebox-source-record-focus-p record)
-                    (cons "focus" (ebox-source-record-states record))
-                  (ebox-source-record-states record))))
+  (let ((states (append (ebox-source-record-interaction-states record)
+                        (ebox-source-record-states record))))
     (if (plist-get (ebox-source-record-interactions record) :disabled)
         (cons "disabled" states)
       states)))
@@ -862,7 +863,7 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
         :attributes (ebox-source--copy-data
                      (ebox-source-record-attributes record))
         :states (ebox-source--copy-data (ebox-source-record-states record))
-        :focus-p (ebox-source-record-focus-p record)
+        :interaction-states (copy-sequence (ebox-source-record-interaction-states record))
         :declarations (ebox-source--copy-data
                        (ebox-source-record-declarations record))
         :provenance (ebox-source--copy-data

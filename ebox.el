@@ -104,8 +104,9 @@
 ;;;###autoload (autoload 'ebox-build "ebox" nil nil)
 ;; Compile an Ebox author form into one opaque canonical input.
 ;; :disabled t derives the disabled selector state. Author :states may contain
-;; custom states, but declaring disabled or focus there signals an error.
-;; Focus state is derived only for mounted buffers through ebox-focus.
+;; custom states, but declaring disabled, focus or active there signals an error.
+;; Focus and active are derived only for mounted buffers, through ebox-focus and
+;; generated primary-button gestures respectively.
 ;;
 ;; Function: ebox-byte-compile ()
 ;;;###autoload (autoload 'ebox-byte-compile "ebox" nil t)
@@ -547,8 +548,11 @@
 ;;;###autoload (autoload 'ebox-keymap-create "ebox" nil nil)
 ;; Create an ordinary native keymap from OPTIONS.
 ;; `:activate' is an optional zero-argument callback for RET, return, SPC and
-;; the primary mouse button.  Repeated clicks each activate once; primary-button
-;; press and drag events do nothing, so they do not start native text selection.
+;; the primary mouse button. Mounted primary presses consume motion and release,
+;; publish :active while held and clear it before activating once on release
+;; over the same retained owner. Releasing elsewhere cancels activation. Point
+;; and selection remain unchanged; repeated clicks each activate once. Pure
+;; rendered text keeps native release activation without mounted state.
 ;; Nil omits these activation bindings.  `:bindings' is an alist of string key
 ;; descriptions or key vectors paired with zero-argument callbacks.  Explicit
 ;; bindings override the repeated-click, press and drag defaults.
@@ -566,7 +570,11 @@
 ;; :delta is displacement from the press, :event preserves the native event,
 ;; and :window, :buffer and the current :host-ref identify the retained target.
 ;; Each callback completes and redisplay runs before the next input;
-;; end includes the release endpoint.
+;; end includes the release endpoint. The target has derived :active state
+;; during tracking. State and styles publish together, survive retained updates,
+;; and clear when tracking ends or its target becomes unavailable. A requested
+;; :active style must leave the target visible and enabled; otherwise press fails
+;; without changing the surface. Keyboard activation has no held-pointer state.
 ;; The selected callback owns the gesture through keyed reorders. Cancel has
 ;; :reason input, quit, error, window-left or target-unavailable. Leaving the
 ;; original text window, hiding/disabling/removing the target, unmount or window
@@ -867,9 +875,9 @@
 ;; Retained sibling matching uses author KEY first, then matching IDENTITY for
 ;; unkeyed nodes, before positional fallback. A sibling retaining its identity
 ;; cannot donate that runtime node to a newly inserted sibling.
-;; SELECTOR-STATE contains authored tokens. Disabled and focus are reserved:
-;; use :disabled t in INTERACTIONS and mounted ebox-focus operations respectively.
-;; Authoring either token signals an error.
+;; SELECTOR-STATE contains authored tokens. Disabled, focus and active are reserved:
+;; use :disabled t in INTERACTIONS, mounted ebox-focus operations and generated
+;; primary-button gestures respectively. Authoring these tokens signals an error.
 ;; Interaction-derived states participate in queries and cascade in each candidate.
 ;; ECSS-TARGETS is t (default) for all descendants or a proper list of source
 ;; identities eligible for this source's ECSS rules.  nil selects none.  The

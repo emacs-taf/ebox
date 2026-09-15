@@ -279,7 +279,13 @@ Candidate validation uses ECSS to check focused ancestry. Final rendering also
 checks painted ownership; clipping clears retained focus and recomputes styles
 using the same TP objects before a single accepted publication. Newly requested
 inaccessible targets reject atomically. Pure inputs retain no mounted focus.
-Hover and pressed state integration into the cascade remains pending.
+Pressed ownership uses the same immutable source interaction-state projection
+and publication participant. Generated primary-button tracking sets `active`
+before callbacks and clears it on completion; ordinary updates reconcile the
+retained source identity and visibility. Selector queries and ECSS see the same
+state as rendered paint, without a consumer state mirror. Activation consumes
+the release and resolves its accepted native binding after clearing the state.
+Hover state integration into the cascade remains pending.
 A lazily built navigation vector and rank index are derived
 once per publication, with visibility checked at use. Navigation does not
 rescan and sort every Host on each key. New publication invalidates the derived

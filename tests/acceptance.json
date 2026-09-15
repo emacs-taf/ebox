@@ -17,6 +17,16 @@
   ],
   "cases": [
     {
+      "name": "ebox-primary-press-publishes-active-style-and-activates-once",
+      "file": "tests/ebox-active-tests.el",
+      "purpose": "Native primary-button tracking publishes active selector and paint state, then clears it before exactly one activation."
+    },
+    {
+      "name": "ebox-primary-press-cancels-outside-and-releases-unrelated-input",
+      "file": "tests/ebox-active-tests.el",
+      "purpose": "Release over another target or unrelated input clears held state without activation and preserves the unrelated event."
+    },
+    {
       "name": "ebox-commit-updates-selector-type-counts",
       "file": "tests/ebox-commit-tests.el",
       "purpose": "A structural candidate should publish exact author selector-type counts."
@@ -965,6 +975,21 @@
       "name": "ebox-nested-flex-keeps-current-content-and-viewport",
       "file": "tests/ebox-css-flex-grid-tests.el",
       "purpose": "Nested Flex keeps current wrapping, sibling placement and output width through content updates and viewport changes."
+    },
+    {
+      "name": "ebox-primary-press-uses-replaced-mouse-binding",
+      "file": "tests/ebox-active-tests.el",
+      "purpose": "A held retained target activates its newly accepted explicit mouse callback instead of a stale callback or keyboard binding."
+    },
+    {
+      "name": "ebox-primary-press-keeps-pure-text-activation",
+      "file": "tests/ebox-active-tests.el",
+      "purpose": "Generated maps remain usable on pure rendered text without mounting a retained surface."
+    },
+    {
+      "name": "ebox-primary-press-clears-active-when-target-is-clipped",
+      "file": "tests/ebox-active-tests.el",
+      "purpose": "Clipping a held target clears its selector state in the same visible publication and cancels activation."
     }
   ]
 }

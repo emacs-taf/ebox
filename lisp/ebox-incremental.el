@@ -7439,8 +7439,8 @@ certificate."
             (or (plist-get candidate-index :source-index)
                 (plist-get local-preparation :source-index)
                 (ebox-tree-source-index candidate-root)))
-           (focus-source-changed-p
-            (let ((projected (ebox-interaction--candidate-focus-source
+           (interaction-source-changed-p
+            (let ((projected (ebox-interaction--candidate-source
                               buffer old-state candidate-index candidate-source-index candidate-root)))
               (unless (eq projected candidate-source-index)
                 (setq candidate-source-index
@@ -7462,7 +7462,7 @@ certificate."
            (candidate-region-box-table
             (plist-get candidate-index :region-box-table))
            (source-dirty-set
-            (if (and local-preparation (not focus-source-changed-p))
+            (if (and local-preparation (not interaction-source-changed-p))
                 (plist-get local-preparation :dirty-set)
               ;; Focus can clear on an externally hidden sibling while the
               ;; caller updates a different owner.  Include that selector
