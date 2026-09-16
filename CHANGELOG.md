@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Focus and pressed-state transitions with unchanged computed styles reuse
+  retained output, including scroll and layer content. Selector state still
+  publishes normally and remains available to subsequent updates.
+
 - Primary-button presses preserve existing keyboard focus when publishing
   pressed state, including when focus belongs to another control.
 

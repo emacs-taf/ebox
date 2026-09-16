@@ -22,6 +22,34 @@
   "Return WORD's rendered foreground in TEXT."
   (plist-get (get-text-property (string-match word text) 'face text) :foreground))
 
+(ert-deftest ebox-focus-metadata-retains-scroll-content-and-later-style-updates ()
+  "A visually unchanged focus still drives selectors and future style changes."
+  (cl-labels
+      ((input (focused-color)
+         (ebox-build
+          `(column :width (ch 40) :height (lh 12) :overflow scroll
+                    :ecss (("#a" :color "#112233")
+                           ("#a:focus" :color ,focused-color))
+             (box :id a :key a :tab-index 0 "Alpha")
+             (box :id b :key b :tab-index 0 "Bravo")))))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer (current-buffer) (input "#112233"))
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (ebox-focus-first)
+              (should (ebox-selector-query-buffer (current-buffer) "#a:focus"))
+              (should (equal text (buffer-substring-no-properties (point-min) (point-max))))
+              (ebox-commit (current-buffer) (input "#ff0000"))
+              (should (ebox-selector-query-buffer (current-buffer) "#a:focus"))
+              (should (equal "#ff0000" (ebox-focus-style-test--color (buffer-string) "Alpha")))
+              (ebox-region-update "b" :content "Updated")
+              (should (string-match-p "Updated" (buffer-string)))
+              (ebox-focus-next)
+              (should (ebox-selector-query-buffer (current-buffer) "#b:focus"))
+              (should (equal "#112233" (ebox-focus-style-test--color (buffer-string) "Alpha")))))
+        (ebox-unmount-buffer (current-buffer))))))
+
 (ert-deftest ebox-focus-state-shares-selectors-paint-and-layout ()
   "Setting and clearing focus recompute shared rules and preserve manual point."
   (dolist (viewport '((nil nil) (160 20)))

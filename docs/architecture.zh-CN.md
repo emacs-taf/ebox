@@ -153,6 +153,11 @@ author key 或兄弟位置判断身份。因此，插入状态标签时，后续
 
 规划器优先使用 `paint-patch`，再使用 `span-patch`、`owner-rerender`，最后在几何或 identity 使小操作不安全时使用 `root-rerender`。incremental adapter 从 live generation fact 推导 tentative owner；pure patch port 随后只接收这些 artifact 与不可变 parent table。这些名称描述的是 Ebox 的语义 owner 范围；只有 TP 负责计算并执行物理文本/属性 diff。Patch 不得静默扩大语义范围。报告保留 Ebox strategy 与 planned scope，同时单独记录 TP 的实际 surface operation 和 revision。
 
+仅选择器状态变化时，完整计算样式闭包若证明没有绘制变化，且身份、父子关系和显示
+约束不变，可复用已有 paint 投影。这覆盖没有视觉规则命中的焦点和按下状态切换：
+状态仍经正常事务发布，滚动内容和覆盖层像素保留。任何计算样式中的绘制或几何变化
+继续使用普通增量规划。
+
 span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，producer 先重建普通 candidate state，再渲染完整 root。被拒绝的尝试留下的临时坐标、fragment 和 paint layer 不能授权发布。报告保留 planned strategy 与 scope；普通 fallback 的 `:projection-kind` 为 `nil`。因此，planned mixed strategy 不能证明计算始终局限在局部。
 
 ## 严格 retained viewport reflow

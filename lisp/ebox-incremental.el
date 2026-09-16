@@ -9072,6 +9072,57 @@ BUFFER, PREPARED and CANDIDATE-STATE prove independence from retained scroll."
                     (plist-get dirty :changed-keys)))
         (plist-get prepared :dirty-set))))
 
+(defun ebox-incremental--metadata-projection-p
+    (old-state prepared candidate-state)
+  "Prove that PREPARED changes selector facts without changing rendered output.
+The complete prepared style closure must have no remaining render effects.
+Identity, ancestry and display constraints must match OLD-STATE.  This proof
+permits retaining scroll and layer pixels because none of their inputs changed."
+  (and (plist-get prepared :styles-prepared-p)
+       (plist-get prepared :dirty-set)
+       ;; Prepared values cannot replace an independently reactive stylesheet
+       ;; binding that may still recompute during this publication.
+       (let ((states (plist-get old-state :style-binding-states))
+             (static t))
+         (and (hash-table-p states)
+              (progn
+                (maphash (lambda (_object state)
+                           (unless (ebox-surface--static-style-state-p state)
+                             (setq static nil)))
+                         states)
+                static)))
+       (not (plist-get prepared :scroll-state-transaction))
+       (not (plist-get prepared :scroll-patch-fast-p))
+       (equal (plist-get prepared :display-signature)
+              (plist-get old-state :display-signature))
+       (equal (plist-get (plist-get old-state :root-node) :node-id)
+              (plist-get (plist-get candidate-state :root-node) :node-id))
+       (ebox-runtime-index-key-set-equal-p
+        (plist-get old-state :node-table) (plist-get candidate-state :node-table))
+       (let ((parents (plist-get candidate-state :parent-table))
+             (valid t))
+         (ebox-runtime-index-map
+          (lambda (id parent)
+            (unless (equal parent (ebox-runtime-index-get id parents))
+              (setq valid nil)))
+          (plist-get old-state :parent-table))
+         valid)
+       (cl-every
+        (lambda (entry)
+          (and (eq (plist-get entry :dirty-kind) 'metadata)
+               (plist-get entry :metadata-changed-keys)
+               (null (plist-get entry :changed-keys))
+               ;; A deferred declaration can retain its old computed value
+               ;; until the binding is evaluated by Surface. Only selector
+               ;; metadata, not changed author declarations, qualifies here.
+               (let* ((id (plist-get entry :node-id))
+                      (old-node (ebox-runtime-index-get id (plist-get old-state :node-table)))
+                      (new-node (ebox-runtime-index-get id (plist-get candidate-state :node-table))))
+                 (ebox-style-declarations-equal-p
+                  (ebox-tree-node-source-declarations (plist-get old-state :source-index) old-node)
+                  (ebox-tree-node-source-declarations (plist-get candidate-state :source-index) new-node)))))
+        (plist-get prepared :dirty-set))))
+
 (defun ebox-incremental--hash-key-set-equal-p (left right)
   "Return non-nil when supported indexes LEFT and RIGHT have the same keys."
   (ebox-runtime-index-key-set-equal-p left right))
@@ -10882,8 +10933,11 @@ role, and outside-complement compatibility before publication."
                                        'structure))
                               (plist-get entry :range-delta)))
                         (plist-get prepared :dirty-set))))))
+         (metadata-only-p
+          (ebox-incremental--metadata-projection-p old-state prepared candidate-state))
          (native-program-p
-          (and (or (eq (plist-get old-state :projection-kind) 'native-frame)
+          (and (not metadata-only-p)
+               (or (eq (plist-get old-state :projection-kind) 'native-frame)
                    (>= (length (plist-get prepared :dirty-set)) 3)
                    structural-dirty-p
                    (> (or (plist-get prepared :range-replacement-count) 0) 0)
@@ -10950,6 +11004,7 @@ role, and outside-complement compatibility before publication."
                         (plist-get mixed-proof :paint-owner-ids)))))
          (owner-plan
           (cond
+           (metadata-only-p nil)
            (unprepared-style-p
             (ebox-incremental--root-owner-plan
              buffer (plist-get prepared :dirty-set)))
@@ -10989,9 +11044,10 @@ role, and outside-complement compatibility before publication."
           (ebox-incremental--layout-owner-report
            prepared owner-plan candidate-state))
          (paint-p
-          (and (not native-program-p)
+          (or metadata-only-p
+              (and (not native-program-p)
                (ebox-incremental--paint-projection-p
-                buffer old-state prepared candidate-state owner-plan)))
+                buffer old-state prepared candidate-state owner-plan))))
          (span-proof
           (unless (or native-program-p
                       (and structural-dirty-p (not layer-owner-plan))
@@ -11011,6 +11067,12 @@ role, and outside-complement compatibility before publication."
            (span-proof 'span-patch))))
     (when projection-kind
       (setq report (plist-put report :projection-kind projection-kind)))
+    (when metadata-only-p
+      (setq report
+            (ebox-incremental--plist-overlay
+             report
+             (list :strategy 'metadata-update :render-scope 'retained
+                   :patch-count 0 :patch-ops nil :rendered-owner-ids nil))))
     (when ebox-incremental--projection-rejections
       (setq report
             (plist-put report :projection-rejections

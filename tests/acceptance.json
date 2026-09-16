@@ -757,6 +757,11 @@
       "purpose": "Outer transactions cannot leak focus selection, clearing or navigation; accepted callbacks may set focus."
     },
     {
+      "name": "ebox-focus-metadata-retains-scroll-content-and-later-style-updates",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Visually unchanged focus preserves scroll content and still affects future selector and content updates."
+    },
+    {
       "name": "ebox-focus-state-shares-selectors-paint-and-layout",
       "file": "tests/ebox-focus-style-tests.el",
       "purpose": "Setting and clearing focus recompute shared rules and preserve manual point."

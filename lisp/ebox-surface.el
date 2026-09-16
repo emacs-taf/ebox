@@ -6945,10 +6945,23 @@ OLD-TEXT is a defensive snapshot of the published TP content."
           (ebox-surface--materialized-fragment-ledger old-state))))
     (unless fragments
       (error "Ebox paint projection has no published fragment topology"))
-    (ebox-surface--paint-border-topology fragments new-state dirty-set)
-    (mapcar (lambda (fragment)
-              (ebox-surface--repaint-fragment fragment old-state new-state))
-            fragments)))
+    (if (and dirty-set
+             (cl-every
+              (lambda (entry)
+                (and (eq (plist-get entry :dirty-kind) 'metadata)
+                     (null (plist-get entry :changed-keys))))
+              dirty-set))
+        ;; The planner admitted this route only after comparing the complete
+        ;; computed style closure. Selector facts still publish, but replaying
+        ;; ancestor paint contributions cannot change any fragment here.
+        (mapcar (lambda (fragment)
+                  (cl-remf fragment :old-paint-role-ids)
+                  fragment)
+                fragments)
+      (ebox-surface--paint-border-topology fragments new-state dirty-set)
+      (mapcar (lambda (fragment)
+                (ebox-surface--repaint-fragment fragment old-state new-state))
+              fragments))))
 
 (defun ebox-surface--refresh-paint-snapshots (state dirty-set)
   "Refresh paint-significant layout snapshots in STATE for DIRTY-SET."
