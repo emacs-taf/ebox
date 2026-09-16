@@ -9093,6 +9093,13 @@ permits retaining scroll and layer pixels because none of their inputs changed."
                 static)))
        (not (plist-get prepared :scroll-state-transaction))
        (not (plist-get prepared :scroll-patch-fast-p))
+       ;; A retained scroll surface may own a deliberately sparse candidate
+       ;; object context.  Keep its selector publication on the ordinary paint
+       ;; path until TP can prove the exact object set for a state-only batch.
+       (null (plist-get old-state :scroll-region-ids))
+       (or (not (hash-table-p (plist-get old-state :scroll-state-table)))
+           (zerop (hash-table-count (plist-get old-state :scroll-state-table))))
+       (not (eq (ebox-get (plist-get old-state :root-node) :overflow) 'scroll))
        (equal (plist-get prepared :display-signature)
               (plist-get old-state :display-signature))
        (equal (plist-get (plist-get old-state :root-node) :node-id)
@@ -11057,6 +11064,7 @@ role, and outside-complement compatibility before publication."
          (projection-kind
          (cond
            (native-program-p 'native-frame)
+           (metadata-only-p 'metadata)
            (mixed-proof 'mixed-owner-reflow)
            (formatting-proof 'formatting-context-reflow)
            (paint-p 'paint)

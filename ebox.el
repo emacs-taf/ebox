@@ -99,9 +99,10 @@
 ;; proof boundaries, not exhaustive causes or CPU costs. Another local route may
 ;; succeed; :projection-kind describes the actual published route. See the manual
 ;; for reason meanings and the update-effect evaluator for aggregate diagnostics.
-;; A metadata-update strategy with paint projection means selector facts were
-;; published after proving that the complete computed style closure and topology
-;; remain unchanged. Rendered text, geometry, scroll content and layers are reused.
+;; A metadata-update strategy means selector facts were published after proving
+;; that the complete computed style closure and topology remain unchanged. On a
+;; non-scroll surface Ebox submits an exact-coordinate empty TP batch, so the
+;; mounted object set and rendered text are retained without reconciliation.
 ;;
 ;; Function: ebox-build (dsl)
 ;;;###autoload (autoload 'ebox-build "ebox" nil nil)

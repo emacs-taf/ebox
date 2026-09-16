@@ -10,6 +10,10 @@ All notable changes to Ebox are documented here.
   retained output, including scroll and layer content. Selector state still
   publishes normally and remains available to subsequent updates.
 
+- Selector-only publications on non-scroll surfaces now use an exact-coordinate
+  empty TP batch. The retained object set and rendered text are promoted as
+  runtime state without a full surface reconciliation.
+
 - Primary-button presses preserve existing keyboard focus when publishing
   pressed state, including when focus belongs to another control.
 

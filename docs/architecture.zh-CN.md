@@ -155,8 +155,9 @@ author key 或兄弟位置判断身份。因此，插入状态标签时，后续
 
 仅选择器状态变化时，完整计算样式闭包若证明没有绘制变化，且身份、父子关系和显示
 约束不变，可复用已有 paint 投影。这覆盖没有视觉规则命中的焦点和按下状态切换：
-状态仍经正常事务发布，滚动内容和覆盖层像素保留。任何计算样式中的绘制或几何变化
-继续使用普通增量规划。
+非滚动 surface 会进一步提交坐标不变的空 TP batch，只提升 runtime 与选择器索引，
+不重新协调挂载对象；滚动或稀疏 candidate context 则保留普通 paint 投影。滚动内容
+和覆盖层像素仍被保留。任何计算样式中的绘制或几何变化继续使用普通增量规划。
 
 span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，producer 先重建普通 candidate state，再渲染完整 root。被拒绝的尝试留下的临时坐标、fragment 和 paint layer 不能授权发布。报告保留 planned strategy 与 scope；普通 fallback 的 `:projection-kind` 为 `nil`。因此，planned mixed strategy 不能证明计算始终局限在局部。
 

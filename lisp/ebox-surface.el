@@ -1989,7 +1989,8 @@ children again."
                    (plist-get state :region-surface-object-table))
               (ebox-surface--region-object-table state node-objects)))
          (property-contributions
-          (plist-get state :paint-property-contributions)))
+          (plist-get state :paint-property-contributions))
+         metadata-result)
     ;; Paint contributions belong to this one publication.  Keep them out of
     ;; the transferred client state so later paint cannot replay old layers.
     (cl-remf state :paint-property-contributions)
@@ -2004,7 +2005,26 @@ children again."
                  (plist-get state :logical-id-region-table))
       (plist-put state :logical-id-region-table
                  (ebox-surface--logical-id-region-table state region-objects)))
-    (or (and native-retained-p
+    (when (eq projection-kind 'metadata)
+      (let* ((buffer (plist-get state :metadata-buffer))
+             (surface (and buffer (ebox-surface--live-buffer-surface buffer)))
+             (extent (and buffer
+                          (with-current-buffer buffer
+                            (- (point-max) (point-min)))))
+             (revision (and surface (tp-surface-revision surface))))
+        (unless (and surface (integerp extent) (integerp revision))
+          (error "Ebox metadata projection lost its mounted surface"))
+        (cl-remf state :metadata-buffer)
+        (setq metadata-result
+              (tp-commit-batch-result-create
+               context
+               (tp-commit-batch-create
+                :base-revision revision :target-revision (1+ revision)
+                :base-extent extent :target-extent extent
+                :patches nil :coordinate-patches nil)
+               :client-state state :reuse-mount-projection t))))
+    (or metadata-result
+        (and native-retained-p
              (ebox-surface--native-patch-result
               context projection state output node-objects region-objects))
         (and (or (null property-contributions) retained-owned-ranges)
@@ -7394,7 +7414,18 @@ published runtime and must be consumed without clearing those shared nodes."
           (ebox-surface--attach-retained-node-objects state)
           (when (eq projection-kind 'owner-scoped)
             (ebox-surface--apply-retained-owner-styles state)))
-        (if (eq projection-kind 'paint)
+        (if (eq projection-kind 'metadata)
+            ;; Selector metadata changes update the Ebox runtime and selector
+            ;; indexes but do not alter rendered bytes or text properties.
+            ;; Feed TP an exact-coordinate empty batch so it can retain every
+            ;; mounted object without re-walking the surface.
+            (progn
+              (plist-put state :metadata-buffer
+                         (and signals (ebox-surface--signals-buffer signals)))
+              (setq state (ebox-surface--finish-runtime-state state))
+              (ebox-surface--projection-result
+               context projection state nil projection-kind))
+          (if (eq projection-kind 'paint)
             (let* ((dirty-set (plist-get state-overrides :paint-dirty-set))
                    (buffer (and signals
                                 (ebox-surface--signals-buffer signals)))
@@ -7418,7 +7449,7 @@ published runtime and must be consumed without clearing those shared nodes."
                context projection state
                (ebox-surface--paint-fragments
                 previous-state state dirty-set old-text)))
-          (cond
+            (cond
            ((memq projection-kind '(span-patch owner-scoped))
             ;; A local owner render visits only its own regions.  Keep the
             ;; complete candidate registry, including disjoint retained scroll
@@ -7429,7 +7460,7 @@ published runtime and must be consumed without clearing those shared nodes."
                        '(scroll-patch formatting-context-reflow
                          mixed-owner-reflow)))
             (plist-put state :region-box-table (make-hash-table :test 'equal))))
-          (let* ((_initial-native
+            (let* ((_initial-native
                   (when initial-native-p
                     ;; Initial mount has no incremental planner.  Surface owns
                     ;; the full candidate after style projection and runtime
@@ -7622,7 +7653,7 @@ published runtime and must be consumed without clearing those shared nodes."
               (cl-remf state :computed-participation-validated-p)
               (cl-remf state :candidate-subject-table)
               (cl-remf state :nested-scroll-patch-proof)
-              result)))))))
+              result))))))))
 
 (defun ebox-surface-producer
     (source &optional previous-state preserve-identities-p state-overrides
