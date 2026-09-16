@@ -7066,7 +7066,7 @@ but cannot introduce or remove a viewport expression or node identity."
   "Build candidate STATE with the mounted context values installed."
   (let ((state
          (ebox-surface--apply-state-overrides
-          (if (eq projection-kind 'paint)
+          (if (memq projection-kind '(paint metadata))
               (copy-sequence previous-state)
             (ebox--new-buffer-render-state root))
           (copy-sequence state-overrides))))
