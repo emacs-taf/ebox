@@ -22,6 +22,40 @@
   "Return WORD's rendered foreground in TEXT."
   (plist-get (get-text-property (string-match word text) 'face text) :foreground))
 
+(ert-deftest ebox-focus-retains-local-facts-and-structural-inheritance ()
+  "Repeated focus and content updates preserve scoped and relational rules."
+  (dolist (structural '(nil t))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             (current-buffer)
+             (ebox-build
+              `(column :width (ch 40) :color "#112233"
+                       :ecss ,(if structural
+                                  '(("#a:focus > text" :color "#cc0000")
+                                    ("#a:focus + #b" :color "#0000cc"))
+                                '(("#a:focus" :color "#cc0000")))
+                 (box :id a :tab-index 0 (text :id label "Alpha"))
+                 (box :id b :tab-index 1 "Bravo"))))
+            (dotimes (_ 3)
+              (ebox-focus-first)
+              (should (= 1 (length (ebox-selector-query-buffer
+                                   (current-buffer) "#a:focus > #label"))))
+              (should (equal "#cc0000"
+                             (ebox-focus-style-test--color (buffer-string) "Alpha")))
+              (should (equal (if structural "#0000cc" "#112233")
+                             (ebox-focus-style-test--color (buffer-string) "Bravo")))
+              (ebox-focus-next)
+              (should-not (ebox-selector-query-buffer (current-buffer) "#a:focus"))
+              (should (equal "#112233"
+                             (ebox-focus-style-test--color (buffer-string) "Alpha")))
+              (ebox-region-update "label" :content "Alpha updated")
+              (should (ebox-selector-query-buffer (current-buffer) "#b:focus"))
+              (should (equal "#112233"
+                             (ebox-focus-style-test--color (buffer-string) "Alpha")))))
+        (ebox-unmount-buffer (current-buffer))))))
+
 (ert-deftest ebox-focus-metadata-retains-scroll-content-and-later-style-updates ()
   "A visually unchanged focus still drives selectors and future style changes."
   (cl-labels

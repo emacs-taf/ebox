@@ -3002,19 +3002,10 @@ source-handle-to-subject table when the requested local preparation completed."
                                      created))))
                          (old-subject
                           (and old-node
-                               (or
-                                (when-let* ((object
-                                             (plist-get old-node
-                                                        :surface-object))
-                                            (state
-                                             (gethash
-                                              object
-                                              (plist-get
-                                               old-state
-                                               :style-binding-states))))
-                                  (plist-get state :subject))
-                                (ebox-tree-node-subject
-                                 old-source-index old-node))))
+                               ;; Metadata publications retain TP bindings.
+                               ;; Their captured subject may predate the last
+                               ;; selector transition; Source owns current facts.
+                               (ebox-tree-node-subject old-source-index old-node)))
                          (source-stable-p
                           (and old-node
                                (or (null ebox-style--scopes)
@@ -3034,6 +3025,12 @@ source-handle-to-subject table when the requested local preparation completed."
                                    (ebox-surface--compute-node-style
                                     subject declarations
                                     parent-style)))))
+                    ;; A local selector fact can change without changing the
+                    ;; cascade result. Preserve exact immutable style identity
+                    ;; so descendants do not treat an equal parent as a fresh
+                    ;; inheritance generation.
+                    (when (and old-style (equal style old-style))
+                      (setq style old-style))
                     (when (and node style (not (eq node old-node)))
                       (let ((snapshot
                              (ebox-style--computed-snapshot style t)))

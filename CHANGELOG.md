@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Focus and pressed-state changes preserve proven selector relationships during
+  source rebuilding. Unchanged scoped styles are reused, equal parent styles do
+  not invalidate descendants, and subsequent updates read current selector facts.
+
 - Focus and pressed-state transitions with unchanged computed styles reuse
   retained output, including scroll and layer content. Selector state still
   publishes normally and remains available to subsequent updates.

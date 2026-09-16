@@ -807,6 +807,11 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
       ;; must resolve against the same runtime topology.
       (let ((copy (ebox-source--with-derived
                    index :host-ref-table (ebox-source--index-host-ref-table index)
+                   ;; Retain the old relationship witness for Tree's rebuild.
+                   ;; Its subjects are not a current selector view: their
+                   ;; local state facts still belong to the previous index.
+                   :subjects (ebox-source--index-subjects index)
+                   :selector-topology (ebox-source--index-selector-topology index)
                    :derived-stale-p t)))
         (setf (ebox-source--index-records copy)
               (ebox-source--table-overlay

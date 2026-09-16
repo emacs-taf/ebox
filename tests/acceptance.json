@@ -1035,6 +1035,11 @@
       "name": "ebox-focus-within-rejects-unavailable-and-unaccepted-targets",
       "file": "tests/ebox-focus-within-tests.el",
       "purpose": "Invalid, hidden, unmounted and provisional focus roots reject movement while preserving accepted focus and point."
+    },
+    {
+      "name": "ebox-focus-retains-local-facts-and-structural-inheritance",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Repeated focus transitions and intervening content updates preserve current selector facts, inherited local paint and structural sibling/descendant rules."
     }
   ]
 }

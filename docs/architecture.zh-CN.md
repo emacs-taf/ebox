@@ -159,6 +159,12 @@ author key 或兄弟位置判断身份。因此，插入状态标签时，后续
 不重新协调已提交的挂载对象；TP 直接复用已提交的 object set。滚动内容和覆盖层像素
 仍被保留。任何计算样式中的绘制或几何变化继续使用普通增量规划。
 
+source index 重建按 source 身份保留 selector subject token；只有逐项比较身份、父节点
+及有序子节点均相同，才保留 topology token。因此焦点或按下状态本身不会使整个局部
+作用域的层叠失效。局部样式准备读取当前 source 代，而非旧绑定捕获的 subject；相等的
+计算样式保留身份，避免未变的继承继续向后代传播失效。结构选择器及真正的拓扑或作用域
+变化仍执行完整匹配。该路径仍校验重建的树，不承诺交互准备具有常数时间成本。
+
 span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，producer 先重建普通 candidate state，再渲染完整 root。被拒绝的尝试留下的临时坐标、fragment 和 paint layer 不能授权发布。报告保留 planned strategy 与 scope；普通 fallback 的 `:projection-kind` 为 `nil`。因此，planned mixed strategy 不能证明计算始终局限在局部。
 
 ## 严格 retained viewport reflow

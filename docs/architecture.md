@@ -197,12 +197,21 @@ objects, style bindings and editable handles of retained following siblings.
 
 The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.
 
-Selector-only changes can use the retained paint projection after the complete
-computed style closure proves no rendering changes and identity, ancestry and
-display constraints match. This includes focus and pressed-state transitions
-without a matching visual rule. They still publish selector and interaction
-state through the normal transaction, while retaining scroll content and layer
+Selector-only changes can use an exact-coordinate empty TP batch after the
+complete computed style closure proves no rendering changes and identity,
+ancestry and display constraints match. They publish selector and interaction
+state while retaining mounted objects, fragments, scroll content and layer
 pixels. Any computed paint or geometry change follows ordinary planning.
+
+Rebuilding a source index preserves selector subject tokens by source identity.
+The topology token is retained only after comparing every identity, parent and
+ordered child list. A focus/pressed-state fact alone therefore does not
+invalidate the whole scoped cascade. Local style preparation reads the current
+source generation, rather than subjects captured by older retained bindings;
+equal computed styles retain identity so unchanged inheritance does not spread
+the invalidation to descendants. Structural selectors and actual topology or
+scope changes keep their full matching requirements. This still validates the
+rebuilt tree; it does not claim constant-time interaction preparation.
 
 If span, owner-scoped, formatting-context, or mixed local output declines, the producer rebuilds ordinary candidate state before rendering the complete root. Temporary coordinates, fragments, and paint layers from the declined attempt cannot authorize publication. The report retains the planned strategy and scope; `:projection-kind` is `nil` for this ordinary fallback. A planned mixed strategy therefore does not prove that computation stayed local.
 

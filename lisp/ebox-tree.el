@@ -1260,8 +1260,13 @@ opaque handles on that path."
                      (remhash node active))
                  (let* ((record (record-for node))
                         (identity (ebox-source--handle-id-view handle))
+                        (old-subject
+                         (and base-source-index
+                              (ebox-source--index-subject base-source-index handle)))
                         (subject
-                         (ebox-tree--subject-from-record node record))
+                         (ebox-tree--subject-from-record
+                          node record
+                          (and old-subject (ebox-selector-subject-token old-subject))))
                         (entry (cons node current-path)))
                    (puthash handle t used-handles)
                    (validate-participation node record parent-kind)
@@ -1304,12 +1309,34 @@ opaque handles on that path."
          (or base-source-index
              (ebox-source-builder-finish (ebox-source-builder-create)))
          :subjects subjects :node-subjects node-subjects :selector-view view
-         :selector-topology (make-symbol "ebox-selector-topology")
+         :selector-topology
+         (ebox-tree--rebuilt-selector-topology base-source-index subjects)
          :entries (nreverse entries)
          :root-subject root-subject
          :selector-id-table id-table
          :selector-class-table class-table
          :selector-type-table type-table)))))
+
+(defun ebox-tree--rebuilt-selector-topology (base subjects)
+  "Reuse BASE's relationship token only when rebuilt SUBJECTS prove it.
+Local selector facts may change independently of parentage and sibling order.
+Compare every identity, parent and ordered child token; a move, insertion or
+removal gets a new topology token even when the node count is unchanged."
+  (let ((previous (and base (ebox-source--index-subjects base))))
+    (if (and previous (ebox-source--index-selector-topology base)
+             (= (ebox-source--table-size previous) (hash-table-count subjects))
+             (cl-loop for identity being the hash-keys of subjects
+                      using (hash-values subject)
+                      for old = (ebox-source--table-value previous identity)
+                      always (and old
+                                  (eq (ebox-selector-subject-token old)
+                                      (ebox-selector-subject-token subject))
+                                  (eq (ebox-selector-subject-parent old)
+                                      (ebox-selector-subject-parent subject))
+                                  (equal (ebox-selector-subject-children old)
+                                         (ebox-selector-subject-children subject)))))
+        (ebox-source--index-selector-topology base)
+      (make-symbol "ebox-selector-topology"))))
 
 (defun ebox-tree-source-handle-order (root)
   "Return canonical source handles below ROOT in document preorder."
