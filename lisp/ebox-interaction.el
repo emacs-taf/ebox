@@ -297,15 +297,15 @@ This function does not install navigation bindings or event propagation."
                               (<= (point-min) position) (< position (point-max))
                               (ebox-interaction--navigation-owner position state))))
                (when (and owner (equal owner hit))
-                 (ebox-interaction--set-active nil buffer)
                  ;; A primary-button activation gives its target logical focus,
                  ;; just like RET. Resolve the accepted binding only after the
                  ;; release and focus publications have settled.
                  ;; Events dispatched for an unselected window must retain
                  ;; that window's point and selection; a click in the active
                  ;; window follows normal focus semantics.
-                 (when (eq window (selected-window))
-                   (ebox-focus reference buffer))
+                 (if (eq window (selected-window))
+                     (ebox-interaction--release-active-and-focus reference buffer)
+                   (ebox-interaction--set-active nil buffer))
                  ;; Resolve the accepted binding after release styles publish.
                  (let* ((current (ebox-surface--buffer-client-state buffer))
                         (owner (gethash reference (ebox--buffer-host-ref-table buffer)))
@@ -515,7 +515,37 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
             (widen)
             (ebox-commit buffer
                          (ebox-canonical-input-create (list (plist-get state :root-node))
-                                                      (plist-get state :source-index)))))))))
+                                         (plist-get state :source-index)))))))))
+
+(defun ebox-interaction--release-active-and-focus (host-ref buffer)
+  "Clear the pressed state and focus HOST-REF in one publication.
+
+Mouse activation used to publish the release and the resulting logical focus
+as two independent Ebox commits.  Both requests are consumed by
+`ebox-interaction--candidate-source' against the same base state, so keeping
+them in one commit preserves selector ordering while avoiding a redundant
+full owner walk.  Callers that do not own the selected window continue to
+clear only the pressed state, matching native Emacs focus semantics."
+  (with-current-buffer (ebox-interaction--focus-buffer buffer)
+    (let* ((state (ebox-surface--buffer-client-state buffer))
+           (owner (and host-ref
+                       (gethash host-ref
+                                (ebox--buffer-host-ref-table buffer))))
+           (position (and owner (ebox-interaction--focus-position state owner))))
+      (unless (and owner position)
+        (user-error "No enabled visible Ebox focus target: %S" host-ref))
+      (if (or (not (eq (selected-window) (get-buffer-window buffer t)))
+              (equal owner ebox-interaction--focus-owner))
+          (ebox-interaction--set-active nil buffer)
+        (let ((ebox-interaction--active-request (list buffer nil state))
+              (ebox-interaction--focus-request (list buffer host-ref state)))
+          (save-restriction
+            (widen)
+            (ebox-commit
+             buffer
+             (ebox-canonical-input-create
+              (list (plist-get state :root-node))
+              (plist-get state :source-index)))))))))
 
 (defun ebox-interaction--focus-node (state owner)
   "Return OWNER's runtime node in STATE."
