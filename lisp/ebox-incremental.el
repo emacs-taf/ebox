@@ -9093,13 +9093,6 @@ permits retaining scroll and layer pixels because none of their inputs changed."
                 static)))
        (not (plist-get prepared :scroll-state-transaction))
        (not (plist-get prepared :scroll-patch-fast-p))
-       ;; A retained scroll surface may own a deliberately sparse candidate
-       ;; object context.  Keep its selector publication on the ordinary paint
-       ;; path until TP can prove the exact object set for a state-only batch.
-       (null (plist-get old-state :scroll-region-ids))
-       (or (not (hash-table-p (plist-get old-state :scroll-state-table)))
-           (zerop (hash-table-count (plist-get old-state :scroll-state-table))))
-       (not (eq (ebox-get (plist-get old-state :root-node) :overflow) 'scroll))
        (equal (plist-get prepared :display-signature)
               (plist-get old-state :display-signature))
        (equal (plist-get (plist-get old-state :root-node) :node-id)
@@ -10732,6 +10725,23 @@ role, and outside-complement compatibility before publication."
           (plist-put
            overrides :native-topology-stable-p
            (plist-get candidate-state :native-topology-stable-p)))
+    (when (eq projection-kind 'metadata)
+      ;; Metadata-only candidates retain the complete runtime index so Surface
+      ;; can reuse every mounted TP object instead of creating a sparse
+      ;; candidate object context.
+      (setq overrides
+            (append overrides
+                    (list :node-table (plist-get candidate-state :node-table)
+                          :parent-table (plist-get candidate-state :parent-table)
+                          :region-id-set (plist-get candidate-state :region-id-set)
+                          :region-node-table
+                          (plist-get candidate-state :region-node-table)
+                          :region-box-count-table
+                          (plist-get candidate-state :region-box-count-table)
+                          :region-box-table
+                          (plist-get candidate-state :region-box-table)
+                          :surface-node-object-table
+                          (plist-get old-state :surface-node-object-table)))))
     (if (and (not (memq projection-kind
                          '(paint span-patch owner-scoped scroll-patch
                            formatting-context-reflow mixed-owner-reflow

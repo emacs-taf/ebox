@@ -1663,7 +1663,7 @@ PREVIOUS-STATE's node-object table."
                (plist-get state-overrides :native-topology-stable-p)))
          (objects-by-node
           (if (memq projection-kind
-                    '(span-patch owner-scoped scroll-patch
+                    '(metadata span-patch owner-scoped scroll-patch
                       formatting-context-reflow mixed-owner-reflow
                       viewport-reflow viewport-reflow-mixed-scroll
                       native-frame))
@@ -1758,6 +1758,12 @@ PREVIOUS-STATE's node-object table."
          bindings-by-subject states-by-subject style-state-table
          stylesheet-signature selector-tree-token
          stylesheet-subject-local-p))
+     ((eq projection-kind 'metadata)
+      (ebox-surface--project-stable-node-table
+       context (plist-get state-overrides :node-table) node-root
+       (or (plist-get previous-state :surface-node-object-table)
+           (plist-get state-overrides :surface-node-object-table))
+       objects-by-node))
      (range-splice-p
       (ebox-surface--project-node-delta
        context root source-index previous-state state-overrides
