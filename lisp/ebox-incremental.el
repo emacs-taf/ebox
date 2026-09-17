@@ -114,10 +114,21 @@
   (buffer-state nil :read-only t)
   (region-mounts nil :read-only t)
   (cascade-owner-proof-p nil :read-only t)
-  (prepare-inline-styles nil :read-only t))
+  (prepare-inline-styles nil :read-only t)
+  (interaction-styles-unchanged-p nil :read-only t))
 
 (defvar ebox-incremental--context-port nil
   "Immutable host-query port installed by the Ebox orchestrator.")
+
+(defvar ebox-incremental--phase-observer nil
+  "Optional orchestrator callback receiving a phase and synchronous work.")
+
+(defmacro ebox-incremental--with-phase (phase &rest body)
+  "Evaluate BODY, attributing its work to PHASE when observation is enabled."
+  (declare (indent 1) (debug (form body)))
+  `(if ebox-incremental--phase-observer
+       (funcall ebox-incremental--phase-observer ,phase (lambda () ,@body))
+     (progn ,@body)))
 
 (defun ebox-incremental-install-context-port (port)
   "Install validated immutable incremental context PORT."
@@ -128,7 +139,8 @@
                  (ebox-incremental-context-port-buffer-state port)
                  (ebox-incremental-context-port-region-mounts port)
                  (ebox-incremental-context-port-cascade-owner-proof-p port)
-                 (ebox-incremental-context-port-prepare-inline-styles port))))
+                 (ebox-incremental-context-port-prepare-inline-styles port)
+                 (ebox-incremental-context-port-interaction-styles-unchanged-p port))))
     (signal 'wrong-type-argument
             (list 'ebox-incremental-context-port-p port)))
   (setq ebox-incremental--context-port port))
@@ -181,10 +193,11 @@ Private planning readers must not mutate the returned numeric snapshots."
 (defun ebox-incremental--prepare-inline-candidate-styles
     (old-state candidate-index node-ids)
   "Prepare NODE-IDS in CANDIDATE-INDEX using OLD-STATE through the port."
-  (funcall
-   (ebox-incremental-context-port-prepare-inline-styles
-    (ebox-incremental--require-context-port))
-   old-state candidate-index node-ids))
+  (ebox-incremental--with-phase 'style
+    (funcall
+     (ebox-incremental-context-port-prepare-inline-styles
+      (ebox-incremental--require-context-port))
+     old-state candidate-index node-ids)))
 
 (defvar ebox-viewport-width)
 (defvar ebox-viewport-height)
@@ -5989,10 +6002,11 @@ commit consumes it even when later preparation fails."
       (error "Ebox candidate commit requires a live buffer: %S"
              buffer-or-name))
     (ebox-incremental--candidate-assert-current candidate buffer old-state)
-    (ebox-incremental--surface-commit-input
-     buffer old-state
-     (ebox-incremental--prepare-logical-candidate
-      buffer old-state candidate))))
+    (let ((prepared (ebox-incremental--with-phase 'source
+                      (ebox-incremental--prepare-logical-candidate
+                       buffer old-state candidate))))
+      (ebox-incremental--with-phase 'plan
+        (ebox-incremental--surface-commit-input buffer old-state prepared)))))
 
 (defun ebox-incremental-prepare-root-commit (buffer-or-name next-root)
   "Prepare declarative NEXT-ROOT for TP publication in BUFFER-OR-NAME.
@@ -6005,10 +6019,69 @@ Return the same pure surface-input shape as
              buffer-or-name))
     (unless old-state
       (error "Ebox buffer has no rendered runtime: %S" buffer))
-    (ebox-incremental--surface-commit-input
-     buffer old-state
-     (ebox-incremental--prepare-declarative-root
-      buffer old-state next-root))))
+    (let ((prepared
+           (ebox-incremental--with-phase 'source
+             (or (and (eq next-root (plist-get old-state :root-node))
+                      ebox-incremental--source-base-index
+                      (eq (ebox-source--index-handle-records ebox-incremental--source-base-index)
+                          (ebox-source--index-handle-records (plist-get old-state :source-index)))
+                      (ebox-incremental--prepare-interaction-state buffer old-state))
+                 (ebox-incremental--prepare-declarative-root buffer old-state next-root)))))
+      (ebox-incremental--with-phase 'plan
+        (ebox-incremental--surface-commit-input buffer old-state prepared)))))
+
+(defun ebox-incremental--prepare-interaction-state (buffer old-state)
+  "Prepare requested interaction facts on BUFFER's unchanged mounted tree.
+Only a proof of identical computed output admits this retained candidate.
+All actual style effects and changed display constraints use normal planning."
+  (with-current-buffer buffer
+    (let* ((focus (ebox-interaction--focus-request-for buffer old-state))
+           (active (ebox-interaction--active-request-for buffer old-state))
+           (root (plist-get old-state :root-node))
+           (source (plist-get old-state :source-index))
+           (display (ebox--current-display-signature)))
+      (when (and (or focus active)
+                 (equal display (plist-get old-state :display-signature))
+                 (ebox-incremental--static-style-bindings-p old-state)
+                 (ebox-source--index-selector-view source))
+        (let* ((index (ebox-incremental--candidate-base-index old-state))
+               (next (ebox-interaction--candidate-source buffer old-state index source root t))
+               (owners (delete-dups
+                        (delq nil
+                              (list ebox-interaction--focus-owner ebox-interaction--active-owner
+                                    (and focus (gethash (cadr focus) (ebox--buffer-host-ref-table buffer)))
+                                    (and active (gethash (cadr active) (ebox--buffer-host-ref-table buffer)))))))
+               (changed
+                (cl-remove-if
+                 (lambda (id)
+                   (let ((handle (ebox-tree-node-source-handle
+                                  (ebox-runtime-index-get id (plist-get old-state :node-table)))))
+                     (equal (ebox-source--index-states-view source handle)
+                            (ebox-source--index-states-view next handle))))
+                 owners)))
+          (when (and changed
+                     (ebox-incremental--with-phase 'style
+                       (funcall
+                        (ebox-incremental-context-port-interaction-styles-unchanged-p
+                         (ebox-incremental--require-context-port))
+                        old-state next changed)))
+            (plist-put index :source-index next)
+            (plist-put index :selector-index-stale-p t)
+            (list :root root :index index :logical-candidate-p t
+                  :runtime-index-complete-p t :styles-prepared-p t
+                  :display-signature display :touched-node-ids changed
+                  :dirty-set
+                  (mapcar (lambda (id)
+                            (ebox--dirty-entry id 'metadata
+                                               :metadata-changed-keys '(:selector-state)))
+                          changed)
+                  :render-cache (plist-get old-state :render-cache)
+                  :render-signature-cache (plist-get old-state :render-signature-cache)
+                  :viewport-height-dependent-subtree-cache
+                  (plist-get old-state :viewport-height-dependent-subtree-cache)
+                  :layout-fragments (plist-get old-state :layout-fragments)
+                  :layout-snapshots (plist-get old-state :layout-snapshots)
+                  :scroll-state-table (plist-get old-state :scroll-state-table))))))))
 
 (defun ebox-incremental--hash-keys (table)
   "Return the keys currently present in supported TABLE."
@@ -9092,6 +9165,16 @@ BUFFER, PREPARED and CANDIDATE-STATE prove independence from retained scroll."
                     (plist-get dirty :changed-keys)))
         (plist-get prepared :dirty-set))))
 
+(defun ebox-incremental--static-style-bindings-p (state)
+  "Return non-nil when STATE has no independently reactive style binding."
+  (let ((states (plist-get state :style-binding-states)) (static t))
+    (and (hash-table-p states)
+         (progn
+           (maphash (lambda (_object value)
+                      (unless (ebox-surface--static-style-state-p value)
+                        (setq static nil))) states)
+           static))))
+
 (defun ebox-incremental--metadata-projection-p
     (old-state prepared candidate-state)
   "Prove that PREPARED changes selector facts without changing rendered output.
@@ -9102,15 +9185,7 @@ permits retaining scroll and layer pixels because none of their inputs changed."
        (plist-get prepared :dirty-set)
        ;; Prepared values cannot replace an independently reactive stylesheet
        ;; binding that may still recompute during this publication.
-       (let ((states (plist-get old-state :style-binding-states))
-             (static t))
-         (and (hash-table-p states)
-              (progn
-                (maphash (lambda (_object state)
-                           (unless (ebox-surface--static-style-state-p state)
-                             (setq static nil)))
-                         states)
-                static)))
+       (ebox-incremental--static-style-bindings-p old-state)
        (not (plist-get prepared :scroll-state-transaction))
        (not (plist-get prepared :scroll-patch-fast-p))
        (equal (plist-get prepared :display-signature)
@@ -9121,11 +9196,12 @@ permits retaining scroll and layer pixels because none of their inputs changed."
         (plist-get old-state :node-table) (plist-get candidate-state :node-table))
        (let ((parents (plist-get candidate-state :parent-table))
              (valid t))
-         (ebox-runtime-index-map
-          (lambda (id parent)
-            (unless (equal parent (ebox-runtime-index-get id parents))
-              (setq valid nil)))
-          (plist-get old-state :parent-table))
+         (unless (eq parents (plist-get old-state :parent-table))
+           (ebox-runtime-index-map
+            (lambda (id parent)
+              (unless (equal parent (ebox-runtime-index-get id parents))
+                (setq valid nil)))
+            (plist-get old-state :parent-table)))
          valid)
        (cl-every
         (lambda (entry)
@@ -11008,11 +11084,12 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
          ;; Resolve the mandatory cascade boundary before any local layout probe.
          ;; Such probes cannot render detached nodes with pending author styles.
          (layer-owner-plan
-          (and (not unprepared-style-p)
+          (and (not metadata-only-p) (not unprepared-style-p)
                (ebox-incremental--layer-owner-plan
                 buffer old-state candidate-state (plist-get prepared :dirty-set))))
          (formatting-proof
-          (and (not unprepared-style-p) (not layer-owner-plan) (not native-program-p)
+          (and (not metadata-only-p) (not unprepared-style-p)
+               (not layer-owner-plan) (not native-program-p)
                (not (cl-some
                      (lambda (entry)
                        (eq (plist-get entry :dirty-kind) 'paint))
@@ -11020,7 +11097,8 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                (ebox-incremental--formatting-context-reflow-proof
                 buffer old-state candidate-state prepared)))
          (mixed-shape-p
-          (and (not unprepared-style-p) (not layer-owner-plan) (not native-program-p)
+          (and (not metadata-only-p) (not unprepared-style-p)
+               (not layer-owner-plan) (not native-program-p)
                (or (not structural-dirty-p) range-structural-p)
                (cl-some
                 (lambda (entry)

@@ -682,6 +682,13 @@ runtime state intact. `ebox-buffer-update-report` returns a defensive copy of
 the last successful update report.
 
 When `ebox-buffer-set-observer` enables observation, the optional
+`:phase-duration-ms` plist attributes exclusive elapsed milliseconds to source,
+style, plan, layout, projection and transaction. Nested phases are counted once;
+their sum equals the observed Ebox duration. Transaction includes the remaining
+commit/TP work and overlaps TP's independent report. The workspace runner consumes
+these reports in its trace pass; CPU and allocation profiling run separately.
+
+The optional
 `:projection-rejections` field records local attempts as
 `(:projection KIND :reasons (REASON ...))`. It currently covers mixed local
 planning and accepted local plans that subsequently require ordinary output:

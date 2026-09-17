@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Visually unchanged focus and pressed-state updates retain their source tree,
+  selector relationships and viewport dependencies instead of revalidating and
+  preparing a complete author tree. Actual style effects retain normal planning.
+
 - Simultaneous text and descendant size changes can retain a stable Flex owner
   allocation, including fractional pixel layouts. Unchanged siblings preserve
   their geometry and paint while the owner rebuilds its interior output.
@@ -47,6 +51,9 @@ All notable changes to Ebox are documented here.
   subtree fallback. Use subtree replacement for node type or structure changes.
 
 ### Added
+
+- Public observer reports expose exclusive source, style, planning, layout,
+  projection and transaction timings for the shared workspace performance tool.
 
 - `ebox-focus-within` navigates inside a committed subtree using the existing
   focus order, painted visibility and retained identities. Menus and dialogs

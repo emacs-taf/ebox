@@ -787,11 +787,16 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
   "Return HANDLE's detached selector states in candidate INDEX."
   (ebox-source--copy-data (ebox-source--index-states-view index handle)))
 
-(defun ebox-source--with-interaction-state (index state target-handle)
-  "Return INDEX with buffer-derived STATE projected on TARGET-HANDLE."
+(defun ebox-source--with-interaction-state (index state target-handle &optional known-owners)
+  "Return INDEX with buffer-derived STATE projected on TARGET-HANDLE.
+KNOWN-OWNERS, when non-nil, lists the previous owners in an unchanged tree.
+A list containing nil certifies that no previous owner exists."
   (let ((records (make-hash-table :test #'equal))
         (handles (make-hash-table :test #'eq)))
-    (dolist (handle (ebox-source-index-handles index))
+    (dolist (handle (if known-owners
+                       (delete-dups (delq nil (cons target-handle
+                                                   (copy-sequence known-owners))))
+                     (ebox-source-index-handles index)))
       (let* ((record (ebox-source--index-record index handle))
              (enabled (eq handle target-handle))
              (states (ebox-source-record-interaction-states record)))

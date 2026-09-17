@@ -423,8 +423,9 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
   (or (and ref (gethash ref (ebox-source--index-host-ref-table source)))
       (and key (equal key (ebox-interaction--focus-key state owner)) owner)))
 
-(defun ebox-interaction--candidate-source (buffer old-state index source root)
-  "Project BUFFER's requested or retained interactions into INDEX SOURCE."
+(defun ebox-interaction--candidate-source (buffer old-state index source root &optional retained-topology-p)
+  "Project BUFFER's requested or retained interactions into INDEX SOURCE.
+RETAINED-TOPOLOGY-P certifies that ROOT and its source handles are unchanged."
   (with-current-buffer buffer
     (let* ((request (ebox-interaction--active-request-for buffer old-state))
            (reference (if request (cadr request)
@@ -438,7 +439,14 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
                 (and owner (not (ebox-interaction--focus-visible-p index owner))))
         (setq handle nil))
       (when (or request ebox-interaction--active-owner)
-        (setq source (ebox-source--with-interaction-state source "active" handle))))
+        (setq source
+              (if retained-topology-p
+                  (ebox-tree-source-interaction-state
+                   source "active" handle
+                   (when-let* ((previous (ebox-interaction--focus-node
+                                         old-state ebox-interaction--active-owner)))
+                     (ebox-tree-node-source-handle previous)))
+                (ebox-source--with-interaction-state source "active" handle)))))
     (if (and (null ebox-interaction--focus-owner)
              (not (ebox-interaction--focus-request-for buffer old-state)))
         source
@@ -456,9 +464,16 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
                   (and (not request) ebox-interaction--focus-owner
                        (not (ebox-interaction--focus-position old-state ebox-interaction--focus-owner))))
           (setq handle nil))
-	(let ((projected (ebox-source--with-interaction-state source "focus" handle)))
+	(let ((projected
+               (if retained-topology-p
+                   (ebox-tree-source-interaction-state
+                    source "focus" handle
+                    (when-let* ((previous (ebox-interaction--focus-node
+                                          old-state ebox-interaction--focus-owner)))
+                      (ebox-tree-node-source-handle previous)))
+                 (ebox-source--with-interaction-state source "focus" handle))))
           (when handle
-            (let* ((subjects (ebox-tree-source-index root t nil projected))
+            (let* ((subjects (ebox-tree-style-source-index root projected))
                    (ebox-selector-view--current (ebox-source--index-selector-view subjects))
                    (ebox-style--scopes (ebox-style-source-scopes subjects))
                    (current owner) chain parent-style hidden)
@@ -502,6 +517,17 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
         ebox-interaction--active-owner nil
         ebox-interaction--focus-order nil))
 
+(defun ebox-interaction--commit-state (buffer state)
+  "Publish an interaction request against BUFFER's accepted STATE.
+The mounted root already owns a validated source generation. Transport that
+generation directly instead of validating the whole author forest again."
+  (unless (eq state (ebox-surface--buffer-client-state buffer))
+    (error "Ebox interaction base is no longer current"))
+  (ebox-commit buffer
+               (ebox-canonical--make-input
+                :nodes (list (plist-get state :root-node))
+                :source-index (plist-get state :source-index))))
+
 (defun ebox-interaction--set-active (host-ref buffer)
   "Publish HOST-REF as BUFFER's pressed owner, or clear it with nil."
   (with-current-buffer (ebox-interaction--focus-buffer buffer)
@@ -513,9 +539,7 @@ NOERROR is non-nil.  NOERROR does not suppress command errors."
         (let ((ebox-interaction--active-request (list buffer host-ref state)))
           (save-restriction
             (widen)
-            (ebox-commit buffer
-                         (ebox-canonical-input-create (list (plist-get state :root-node))
-                                         (plist-get state :source-index)))))))))
+            (ebox-interaction--commit-state buffer state)))))))
 
 (defun ebox-interaction--release-active-and-focus (host-ref buffer)
   "Clear the pressed state and focus HOST-REF in one publication.
@@ -541,11 +565,7 @@ clear only the pressed state, matching native Emacs focus semantics."
               (ebox-interaction--focus-request (list buffer host-ref state)))
           (save-restriction
             (widen)
-            (ebox-commit
-             buffer
-             (ebox-canonical-input-create
-              (list (plist-get state :root-node))
-              (plist-get state :source-index)))))))))
+            (ebox-interaction--commit-state buffer state)))))))
 
 (defun ebox-interaction--focus-node (state owner)
   "Return OWNER's runtime node in STATE."
@@ -709,10 +729,7 @@ changes cannot join an outer transaction or expose provisional targets."
         (let ((ebox-interaction--focus-request (list (current-buffer) host-ref state)))
           (save-restriction
             (widen)
-            (ebox-commit
-             (current-buffer)
-             (ebox-canonical-input-create (list (plist-get state :root-node))
-                                          (plist-get state :source-index))))))
+            (ebox-interaction--commit-state (current-buffer) state))))
       (ebox-focused-host-ref))))
 
 ;;;###autoload

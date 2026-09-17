@@ -233,6 +233,22 @@ ancestry and display constraints match. They publish selector and interaction
 state while retaining mounted objects, fragments, scroll content and layer
 pixels. Any computed paint or geometry change follows ordinary planning.
 
+Focus and pressed-state requests carry the already accepted root and source
+generation. The interaction owner identifies the old and new targets; immutable
+record and selector-view overlays update those local facts without rebuilding
+relationships. Subject-local rules with identical computed styles prove that
+descendant inheritance is unchanged. This admits a retained metadata commit;
+relational rules, reactive style bindings and actual style effects use normal
+preparation. Metadata commits reuse viewport dependencies and avoid speculative
+layout planning. Their object attachment work never writes node keys into a
+published node-id table.
+
+Opt-in observation attributes elapsed time exclusively to source preparation,
+style preparation, owner planning, layout, projection and remaining transaction
+work. Incremental planning receives the observer callback through its existing
+orchestration boundary; it does not own clocks or public report delivery. Normal
+unobserved updates do not allocate timing callbacks.
+
 Rebuilding a source index preserves selector subject tokens by source identity.
 The topology token is retained only after comparing every identity, parent and
 ordered child list. A focus/pressed-state fact alone therefore does not

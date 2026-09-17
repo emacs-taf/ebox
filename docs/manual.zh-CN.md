@@ -570,7 +570,12 @@ buffer，遵循 `display-buffer-alist`，并接受与原生 `display-buffer` 相
 验证、渲染或发布失败时，旧 buffer 与 runtime 状态保持不变。
 `ebox-buffer-update-report` 返回最近一次成功更新报告的防御性副本。
 
-通过 `ebox-buffer-set-observer` 开启观察时，可选字段 `:projection-rejections` 以
+通过 `ebox-buffer-set-observer` 开启观察时，`:phase-duration-ms` 按 source、style、
+plan、layout、projection、transaction 给出独占毫秒数。嵌套阶段只记一次，总和等于
+Ebox 的观测总时长；transaction 包含其余提交／TP 工作，与 TP 的单独报告重叠。
+工作区通用工具在 trace pass 消费这些字段，CPU 与分配采样分别执行。
+
+可选字段 `:projection-rejections` 以
 `(:projection KIND :reasons (REASON ...))` 记录局部尝试。目前覆盖混合局部规划，
 以及已选局部计划在生成输出时退回普通投影的情况：
 

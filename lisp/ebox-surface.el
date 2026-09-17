@@ -273,7 +273,7 @@ the winning client state; otherwise only the candidate is disposable."
                (:constructor ebox-surface--make-observation))
   "Two-phase observation of one public Ebox publication."
   buffer observer stage started gc-start transaction-before correlation-id
-  tp-report ebox-report finished gc-end finished-p)
+  tp-report ebox-report finished gc-end finished-p phase phase-start phase-times)
 
 (cl-defstruct (ebox-surface--signals
                (:constructor ebox-surface--make-signals))
@@ -309,6 +309,29 @@ the winning client state; otherwise only the candidate is disposable."
   "Return the current observation clock in seconds."
   (float-time))
 
+(defun ebox-surface--observation-switch-phase (context phase now)
+  "Charge CONTEXT's current phase through NOW, then enter PHASE."
+  (when-let* ((previous (ebox-surface--observation-phase context))
+              (started (ebox-surface--observation-phase-start context)))
+    (let* ((times (ebox-surface--observation-phase-times context))
+           (entry (assq previous times)))
+      (if entry
+          (setcdr entry (+ (cdr entry) (- now started)))
+        (push (cons previous (- now started)) times))
+      (setf (ebox-surface--observation-phase-times context) times)))
+  (setf (ebox-surface--observation-phase context) phase
+        (ebox-surface--observation-phase-start context) now))
+
+(defun ebox-surface--observe-phase (phase function)
+  "Measure FUNCTION in PHASE, excluding its nested observed phases."
+  (let* ((context ebox-surface--observation-context)
+         (previous (ebox-surface--observation-phase context)))
+    (if (ebox-surface--observation-finished-p context)
+        (funcall function)
+      (ebox-surface--observation-switch-phase context phase (float-time))
+      (unwind-protect (funcall function)
+        (ebox-surface--observation-switch-phase context previous (float-time))))))
+
 (defun ebox-surface--observation-gc-snapshot ()
   "Return current GC count and elapsed seconds."
   (cons (if (boundp 'gcs-done) gcs-done 0)
@@ -341,6 +364,11 @@ the winning client state; otherwise only the candidate is disposable."
                (:gc-duration-ms . ,(* 1000.0 (- (cdr gc) (cdr gc-start))))
                (:tp-duration-ms . ,(plist-get tp-report :duration-ms))))
       (setq result (plist-put result (car entry) (cdr entry))))
+    (setq result
+          (plist-put result :phase-duration-ms
+                     (cl-loop for phase in '(source style plan layout projection transaction)
+                              append (list phase (* 1000.0 (or (cdr (assq phase
+                                                 (ebox-surface--observation-phase-times context))) 0.0))))))
     result))
 
 (defun ebox-surface--observation-mount-report (context)
@@ -403,6 +431,7 @@ the winning client state; otherwise only the candidate is disposable."
     (unless report
       (setq report (ebox-surface--observation-mount-report context)))
     (when report
+      (ebox-surface--observation-switch-phase context nil finished)
       (setf (ebox-surface--observation-ebox-report context)
             report
             (ebox-surface--observation-finished context) finished
@@ -482,9 +511,13 @@ the winning client state; otherwise only the candidate is disposable."
                :started (ebox-surface--observation-clock)
                :gc-start (ebox-surface--observation-gc-snapshot)
                :transaction-before (plist-get before-report :transaction-id))))
+        (setf (ebox-surface--observation-phase context) 'transaction
+              (ebox-surface--observation-phase-start context)
+              (ebox-surface--observation-started context))
         (with-current-buffer buffer
           (push context ebox-surface--observation-contexts))
         (let ((ebox-surface--observation-context context)
+              (ebox-incremental--phase-observer #'ebox-surface--observe-phase)
               result success)
           (unwind-protect
               (progn
@@ -1673,7 +1706,9 @@ PREVIOUS-STATE's node-object table."
                   (error "Ebox span projection has no retained node table")))
             (make-hash-table :test 'eq)))
          (style-state-table
-          (ebox-surface--style-state-table previous-state))
+          (if (eq projection-kind 'metadata)
+              (plist-get previous-state :style-binding-states)
+            (ebox-surface--style-state-table previous-state)))
          (ebox-surface--inline-style-value-cache
           (and style-required-p
                (not (ebox-style-cascade-active-p))
@@ -1694,6 +1729,7 @@ PREVIOUS-STATE's node-object table."
          (states-by-subject (make-hash-table :test 'eq))
          (subjects-required-p
           (and style-required-p
+               (not (eq projection-kind 'metadata))
                (not retained-native-style-p)
                (not (or retained-span-style-p
                         (and (memq projection-kind
@@ -1759,11 +1795,16 @@ PREVIOUS-STATE's node-object table."
          stylesheet-signature selector-tree-token
          stylesheet-subject-local-p))
      ((eq projection-kind 'metadata)
-      (ebox-surface--project-stable-node-table
-       context (plist-get state-overrides :node-table) node-root
-       (or (plist-get previous-state :surface-node-object-table)
-           (plist-get state-overrides :surface-node-object-table))
-       objects-by-node))
+      (tp-object-reuse-subtree context node-root)
+      ;; A retained source needs no attachment walk. Copied metadata nodes
+      ;; acquire their existing objects without mutating the published map.
+      (unless (eq root (plist-get previous-state :root-node))
+        (ebox-runtime-index-map
+         (lambda (id node)
+           (plist-put node :surface-object
+                      (or (gethash id objects-by-node)
+                          (error "Ebox metadata projection lost node %S" id))))
+         (plist-get state-overrides :node-table))))
      (range-splice-p
       (ebox-surface--project-node-delta
        context root source-index previous-state state-overrides
@@ -3063,6 +3104,32 @@ source-handle-to-subject table when the requested local preparation completed."
               (resolve node-id))))
         subjects-by-handle))))
 
+(defun ebox-surface-interaction-styles-unchanged-p (state source-index node-ids)
+  "Prove that local interaction facts leave STATE's computed output unchanged.
+SOURCE-INDEX has the same declarations and topology. Subject-local matching
+limits direct effects to NODE-IDS; equal complete styles also prove unchanged
+inheritance for their descendants. Relational rules require ordinary planning."
+  (let* ((ebox-selector-view--current (ebox-source--index-selector-view source-index))
+         (ebox-selector-view--topology (ebox-source--index-selector-topology source-index))
+         (ebox-style--scopes (ebox-style-source-scopes source-index (plist-get state :root-node)))
+         (signature (ebox-surface--stylesheet-signature))
+         (nodes (plist-get state :node-table))
+         (parents (plist-get state :parent-table)))
+    (and (equal signature (plist-get state :stylesheet-signature))
+         (ebox-surface--stylesheet-subject-local-p signature t)
+         (cl-every
+          (lambda (id)
+            (let* ((node (ebox-runtime-index-get id nodes))
+                   (parent (ebox-runtime-index-get (ebox-runtime-index-get id parents) nodes))
+                   (style (plist-get node :ebox-computed-style)))
+              (and style
+                   (equal style
+                          (ebox-surface--compute-node-style
+                           (ebox-tree-node-subject source-index node)
+                           (ebox-tree-node-source-declarations source-index node)
+                           (plist-get parent :ebox-computed-style))))))
+          node-ids))))
+
 (defun ebox-surface--node-style-binding-required-p (source-index node)
   "Return non-nil when NODE in SOURCE-INDEX needs its own style binding."
   (let ((declarations
@@ -3550,10 +3617,11 @@ COMPLETE-LINES-P requires a proven physical line origin for every output row."
                    (not (ebox-surface--runtime-index-ready-p state)))
           (setq state (ebox-surface--finish-runtime-state state)))
         (let ((rendered
-               (or (and (require 'ebox-native-commit nil t)
-                        (ebox-native-commit-render state node))
-                   (let ((ebox--surface-materialization-active t))
-                     (ebox--render-layout node)))))
+               (ebox-incremental--with-phase 'layout
+                 (or (and (require 'ebox-native-commit nil t)
+                          (ebox-native-commit-render state node))
+                     (let ((ebox--surface-materialization-active t))
+                       (ebox--render-layout node))))))
           (when (and complete-lines-p
                      (ebox--fractional-pixel-spaces-p rendered))
             ;; Untouched buffer rows are already quantized.  Their raw
@@ -7138,7 +7206,7 @@ but cannot introduce or remove a viewport expression or node identity."
            ((or 'span-patch 'owner-scoped)
             (and (plist-get state-overrides :owner-scoped-proofs)
                  (plist-get state-overrides :span-patch-dirty-set))))))
-    (and dirty-set
+    (and (or dirty-set (eq projection-kind 'metadata))
          (plist-get previous-state :viewport-dependent-node-ids-ready)
          (plist-member previous-state :viewport-dependent-node-id-axes)
          (cl-every
@@ -7290,7 +7358,7 @@ published runtime and must be consumed without clearing those shared nodes."
                    preserve-identities-p
                    (eq source (plist-get previous-state :root-node))
                    (or (memq projection-kind
-                             '(viewport-reflow
+                             '(metadata viewport-reflow
                                viewport-reflow-mixed-scroll))
                        (and (eq projection-kind 'native-frame)
                             (plist-get state-overrides
@@ -7772,15 +7840,16 @@ candidate and must not be copied or reconciled again.  SOURCE-PATH-COPIED-P
 means SOURCE shares untouched Ebox nodes with the published runtime and must
 also bypass candidate copying and reconciliation without clearing those nodes."
   (lambda (context)
-    (let ((buffer (and signals (ebox-surface--signals-buffer signals))))
-      (if (buffer-live-p buffer)
-          (with-current-buffer buffer
-            (ebox-surface--project
-             context source previous-state preserve-identities-p state-overrides
-             signals projection-kind source-isolated-p source-path-copied-p))
-        (ebox-surface--project
-         context source previous-state preserve-identities-p state-overrides
-         signals projection-kind source-isolated-p source-path-copied-p)))))
+    (ebox-incremental--with-phase 'projection
+      (let ((buffer (and signals (ebox-surface--signals-buffer signals))))
+        (if (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (ebox-surface--project
+               context source previous-state preserve-identities-p state-overrides
+               signals projection-kind source-isolated-p source-path-copied-p))
+          (ebox-surface--project
+           context source previous-state preserve-identities-p state-overrides
+           signals projection-kind source-isolated-p source-path-copied-p))))))
 
 (defun ebox-surface-materialize-ephemeral-string (source source-index)
   "Materialize SOURCE with optional SOURCE-INDEX through one ephemeral TP plan."
@@ -7799,7 +7868,8 @@ also bypass candidate copying and reconciliation without clearing those nodes."
   :buffer-state #'ebox-surface--buffer-client-state
   :region-mounts #'ebox-surface-region-mounts
   :cascade-owner-proof-p #'ebox-surface--cascade-local-owner-proof-p
-  :prepare-inline-styles #'ebox-surface-prepare-inline-candidate-styles))
+  :prepare-inline-styles #'ebox-surface-prepare-inline-candidate-styles
+  :interaction-styles-unchanged-p #'ebox-surface-interaction-styles-unchanged-p))
 
 (provide 'ebox-surface)
 

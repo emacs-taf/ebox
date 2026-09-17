@@ -101,6 +101,13 @@ API_PROVIDER_PATH = -L ../ecss -L ../tp -L ../ekp -L ../etaf -L ../etaf-ui -L ..
 .PHONY: test
 test: acceptance
 
+PERF_TOOL ?= ../scripts/performance.py
+.PHONY: perf-list perf-check
+perf-list:
+	$(PYTHON) "$(PERF_TOOL)" list --root . --scenario-file benchmarks/performance-scenarios.el --scenario 'ebox.*'
+perf-check:
+	$(PYTHON) "$(PERF_TOOL)" run --root . --scenario-file benchmarks/performance-scenarios.el --mode batch --scenario 'ebox.*' $(PERF_ARGS)
+
 .PHONY: update-effects-tool-tests
 update-effects-tool-tests:
 	EBOX_TOOL_TEST_EMACS="$(EMACS)" $(PYTHON) -m unittest discover -s tests/tools -p 'test_update_effects.py'

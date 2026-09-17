@@ -85,6 +85,12 @@
 ;; The observer receives BUFFER and one defensive flat report at a time after an
 ;; accepted publication.  TP's report is delivered first, followed by Ebox's
 ;; completed report.  Nil removes observation without affecting rendering.
+;; Ebox observer reports include :phase-duration-ms, a plist keyed by source,
+;; style, plan, layout, projection and transaction. Values are elapsed
+;; milliseconds, including GC, with nested phases charged only to the inner
+;; phase. Their sum is :duration-ms. Transaction is the remaining commit work,
+;; including TP preparation/publication and acceptance; TP's separate report
+;; overlaps it. Phase clocks run only while an observer is attached.
 ;;
 ;; Function: ebox-buffer-update-report (buffer-or-name)
 ;;;###autoload (autoload 'ebox-buffer-update-report "ebox" nil nil)

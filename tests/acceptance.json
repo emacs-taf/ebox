@@ -1055,6 +1055,11 @@
       "name": "ebox-flex-progress-updates-preserve-fractional-sibling-geometry",
       "file": "tests/ebox-flex-tests.el",
       "purpose": "Repeated simultaneous progress width and label updates retain sibling pixel geometry and enclosing paint, matching a fresh render after parent size and color changes."
+    },
+    {
+      "name": "ebox-focus-state-only-observation-keeps-independent-inputs",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Repeated state-only focus updates retain independent mounts and pure input while public exclusive phase timings account for the whole observed commit."
     }
   ]
 }

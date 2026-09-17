@@ -1517,6 +1517,45 @@ Query entries and document-order lookup views remain stale until queried."
            (ebox-source--index-selector-type-table old-index)
            :derived-stale-p t))))))
 
+(defun ebox-tree-source-interaction-state (index state target-handle old-handle)
+  "Project STATE between OLD-HANDLE and TARGET-HANDLE in retained INDEX.
+Only local selector facts change. Reuse immutable relationships and query
+indexes; document-order subject entries are refreshed lazily when queried."
+  (let ((next (ebox-source--with-interaction-state
+               index state target-handle (list old-handle))))
+    (if (eq next index) index
+      (let ((subjects (make-hash-table :test #'equal))
+            (node-subjects (make-hash-table :test #'eq))
+            (view (make-hash-table :test #'eq)))
+        (dolist (handle (delete-dups (delq nil (list old-handle target-handle))))
+          (when-let* ((old (ebox-source--table-value
+                           (ebox-source--index-node-subjects index) handle)))
+            (let ((subject (copy-ebox-selector-subject old)))
+              (setf (ebox-selector-subject-states subject)
+                    (ebox-source--index-states-view next handle))
+              (puthash (ebox-source--handle-id-view handle) subject subjects)
+              (puthash handle subject node-subjects)
+              (puthash (ebox-selector-subject-token subject) subject view))))
+        (cl-labels ((overlay (base changes test)
+                      (ebox-source--table-overlay
+                       base changes (make-hash-table :test test)
+                       (ebox-source--table-size base))))
+          (ebox-source--with-derived
+           next
+           :subjects (overlay (ebox-source--index-subjects index) subjects #'equal)
+           :node-subjects (overlay (ebox-source--index-node-subjects index) node-subjects #'eq)
+           :selector-view (overlay (ebox-source--index-selector-view index) view #'eq)
+           :selector-topology (ebox-source--index-selector-topology index)
+           :root-subject
+           (let ((root (ebox-source--index-root-subject index)))
+             (or (and root (gethash (ebox-selector-subject-token root) view)) root))
+           :entries (ebox-source--index-entries index)
+           :selector-id-table (ebox-source--index-selector-id-table index)
+           :selector-class-table (ebox-source--index-selector-class-table index)
+           :selector-type-table (ebox-source--index-selector-type-table index)
+           :host-ref-table (ebox-source--index-host-ref-table index)
+           :derived-stale-p t))))))
+
 (defun ebox-tree-selector-index (root)
   "Return derived selector views over ROOT's unique source index."
   (let ((index (ebox-tree-source-index root)))

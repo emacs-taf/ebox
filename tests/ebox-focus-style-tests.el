@@ -289,5 +289,39 @@
         (delete-overlay overlay))
       (should (equal "#111111" (ebox-focus-style-test--color (buffer-string) "Alpha"))))))
 
+(ert-deftest ebox-focus-state-only-observation-keeps-independent-inputs ()
+  "State-only updates preserve shared inputs and report exclusive stage times."
+  (let ((input (ebox-build '(column :color "#334155"
+                                    (box :id a :tab-index 0 "Alpha")
+                                    (box :id b :tab-index 0 "Bravo"))))
+        (first (generate-new-buffer " *focus-observed-first*"))
+        (second (generate-new-buffer " *focus-observed-second*")) reports)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer first input)
+          (ebox-render-to-buffer second input)
+          (ebox-buffer-set-observer first
+                                   (lambda (_buffer report)
+                                     (when (eq (plist-get report :provider) 'ebox) (push report reports))))
+          (dotimes (_ 4)
+            (ebox-focus-first first)
+            (should (= 1 (length (ebox-selector-query-buffer first "#a:focus"))))
+            (ebox-focus-next 1 nil first)
+            (should (= 1 (length (ebox-selector-query-buffer first "#b:focus"))))
+            (should-not (ebox-selector-query-buffer second ":focus"))
+            (should-not (ebox-selector-query-all input ":focus")))
+          (should reports)
+          (dolist (report reports)
+            (let ((phases (plist-get report :phase-duration-ms)) (sum 0))
+              (dolist (phase '(source style plan layout projection transaction))
+                (should (numberp (plist-get phases phase)))
+                (should (>= (plist-get phases phase) 0))
+                (setq sum (+ sum (plist-get phases phase))))
+              (should (< (abs (- sum (plist-get report :duration-ms))) .001)))))
+      (dolist (buffer (list first second))
+        (when (buffer-live-p buffer)
+          (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
+          (kill-buffer buffer))))))
+
 (provide 'ebox-focus-style-tests)
 ;;; ebox-focus-style-tests.el ends here
