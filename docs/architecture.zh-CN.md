@@ -178,6 +178,8 @@ author key 或兄弟位置判断身份。因此，插入状态标签时，后续
 字符坐标，但几何快照独立。取整只改显示宽度，继续复用 fragment 角色、绘制来源
 和未改变的祖先分配证明。纯绘制更新使原始输出缓存失效；证据不足或涉及滚动
 owner 时保留完整渲染回退。
+Metadata 和纯绘制交互候选保留完整挂载状态，不伪称拥有内容范围证明；只有候选挂载
+规格证明范围一致的内容与几何 patch 才使用 scoped 发布。
 
 完整层叠投影重新建立渲染签名、viewport 高度依赖与内在宽度的派生缓存。
 仅按源修改路径失效不足以证明这些缓存有效：源未变的后代仍可能继承新样式。
@@ -198,6 +200,12 @@ source index 重建按 source 身份保留 selector subject token；只有逐项
 变化仍执行完整匹配。该路径仍校验重建的树，不承诺交互准备具有常数时间成本。
 
 span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，producer 先重建普通 candidate state，再渲染完整 root。被拒绝的尝试留下的临时坐标、fragment 和 paint layer 不能授权发布。报告保留 planned strategy 与 scope；普通 fallback 的 `:projection-kind` 为 `nil`。因此，planned mixed strategy 不能证明计算始终局限在局部。
+
+片段账本把原始角色与换行数，与派生绘制地址、行内布局依赖和归属范围分开保存。
+局部替换只解析边界对齐的变化窗口；角色拓扑改变时重新计算目标归属，不重新扫描
+整页文本属性。合并阶段从保留事实更新坐标、绘制序号与跨窗口行依赖；角色变化时
+禁止仅凭旧坐标复用归属。角色缓存仅使用语义角色，不散列 keymap、回调闭包或完整
+文本属性。无法对齐的窗口仍走普通解析，并在观测中记录 `fragment-ledger` 拒绝原因。
 
 ## 严格 retained viewport reflow
 

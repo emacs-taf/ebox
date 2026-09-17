@@ -164,6 +164,21 @@ This read view exists only during one planning pass and is discarded before TP
 publishes coordinates. It neither replaces TP's authoritative mounts nor changes
 the defensive snapshots returned by public Ebox queries.
 
+The fragment ledger retains direct role facts and newline counts independently
+of derived paint addresses, layout dependencies and ownership ranges. A local
+replacement reparses its aligned fragment window; changed role topology requires
+fresh target ownership, not a full text/property scan. Ledger completion rebases
+offsets, paint occurrence ordinals and cross-window line dependencies from these
+facts. Coordinate-only ownership reuse is disabled when the roles change.
+Role extraction caches use semantic role keys, never native keymaps, callbacks
+or complete text-property plists. Unaligned or unsupported windows still use
+ordinary parsing and expose an observed `fragment-ledger` rejection reason.
+
+Metadata and paint-only interaction candidates retain complete mounted state
+and therefore do not claim a content-range scope proof. Content and geometry
+patches keep scoped publication only when their candidate mount specifications
+prove the same ranges.
+
 Overlapping replacements resolve intermediate nodes from the nearest candidate
 ancestor before merging descendant writes. Copying an intermediate path from the
 committed tree would overwrite that ancestor's sibling changes. The lookup is

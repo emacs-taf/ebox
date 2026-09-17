@@ -6,6 +6,15 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Local rich-text updates reuse unaffected fragment parsing even when the
+  changed interval gains or loses property runs. Paint addresses and target
+  ownership are rebuilt from exact semantic facts; callback/keymap graphs no
+  longer participate in role-cache hashing.
+
+- Metadata and paint-only interaction candidates no longer use content-range
+  scope proofs without candidate mount specs; they retain the complete mounted
+  state while content geometry keeps its scoped proof.
+
 - Local allocation proofs measure the changed owner's boundary and verify
   unchanged ancestor inputs, avoiding repeated mount snapshots and text
   measurements of unaffected ancestors. Final output checks remain required.

@@ -1070,6 +1070,16 @@
       "name": "ebox-layer-flow-z-order-can-cross-overlay",
       "file": "tests/ebox-layer-tests.el",
       "purpose": "Changing normal-flow z order across a positioned overlay preserves the correct visible winner through repeated commits."
+    },
+    {
+      "name": "ebox-flex-rich-local-updates-preserve-paint-and-targets",
+      "file": "tests/ebox-flex-tests.el",
+      "purpose": "Local rich-text and progress changes preserve fresh-render paint, live target bounds, cyclic native keymaps and callbacks through later enclosing paint updates."
+    },
+    {
+      "name": "ebox-row-disjoint-rich-updates-preserve-line-dependencies",
+      "file": "tests/ebox-flex-tests.el",
+      "purpose": "Two rich-text updates on shared physical lines retain sibling paint and both target bounds across changed newline placement and later parent paint."
     }
   ]
 }

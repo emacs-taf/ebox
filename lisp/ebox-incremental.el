@@ -11172,7 +11172,19 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
           (ebox-incremental--same-root-surface-identity-p
            old-state candidate-state))
          (scope-node-ids
-          (and same-root-identity-p
+          ;; Metadata-only interaction changes carry an exact empty TP batch,
+          ;; while paint-only owner plans repaint the complete retained output
+          ;; without candidate mounts for the logical owner.  Neither has
+          ;; candidate mount specs for an object-scoped range proof; routing
+          ;; them through the scoped surface path would compare old mounts with
+          ;; nil ranges and reject an otherwise exact focus/style update.
+          (and (not metadata-only-p)
+               (not (and owner-plan
+                         (cl-every
+                          (lambda (op)
+                            (eq (plist-get op :op) 'paint-patch))
+                          owner-plan)))
+               same-root-identity-p
                (delete-dups
                 (or (mapcar (lambda (op) (plist-get op :owner-id)) owner-plan)
                     (mapcar (lambda (entry) (plist-get entry :node-id))

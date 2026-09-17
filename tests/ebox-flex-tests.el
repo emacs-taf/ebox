@@ -215,5 +215,87 @@
             (ebox-unmount-buffer buffer))
           (kill-buffer buffer))))))
 
+(ert-deftest ebox-flex-rich-local-updates-preserve-paint-and-targets ()
+  "Changed property runs preserve sibling paint and live interaction bounds."
+  (let ((ebox-viewport-width 81) (ebox-viewport-height 20)
+        (live (generate-new-buffer " *rich-progress-live*"))
+        (reference (generate-new-buffer " *rich-progress-reference*"))
+        (keys (make-sparse-keymap)) (calls 0) ref)
+    (define-key keys (kbd "C-c") keys)
+    (define-key keys (kbd "x") (lambda () (interactive) (cl-incf calls)))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer live (ebox-flex-test--progress-scene 81 67 "X" "blue"))
+          (setq ref (ebox-focus-first live))
+          (dolist (value '(100 0 67 100))
+            (let ((label (propertize (format "X%d%%" value) 'keymap keys 'help-echo "Live label")))
+              (put-text-property 0 (if (= value 100) 2 1) 'face '(:foreground "yellow") label)
+              (with-current-buffer live
+                (ebox-call-with-update-batch
+                 (lambda ()
+                   (ebox-region-update "label" :content label)
+                   (ebox-region-update "fill" :width (list '% value)))))
+              ;; A later parent paint update must use the merged ledger,
+              ;; including caller paint underneath the changed role runs.
+              (dolist (background '("green" "blue"))
+                (with-current-buffer live (ebox-region-update "frame" :background-color background))
+                (ebox-render-to-buffer reference
+                                      (ebox-flex-test--progress-scene 81 value label background))
+                (let ((expected-ref (ebox-focus-first reference)))
+                  (should (equal (ebox-host-ref-bounds live ref)
+                                 (ebox-host-ref-bounds reference expected-ref))))
+                (should (equal (ebox-flex-test--visible-runs live)
+                               (ebox-flex-test--visible-runs reference))))
+              (with-current-buffer live
+                (save-excursion
+                  (goto-char (point-min)) (search-forward "X")
+                  (let ((keymap (get-text-property (1- (point)) 'keymap)))
+                    (should (equal (get-text-property (1- (point)) 'help-echo) "Live label"))
+                    (call-interactively (lookup-key keymap (kbd "x"))))))))
+          (should (= calls 4)))
+      (dolist (buffer (list live reference))
+        (when (buffer-live-p buffer)
+          (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
+          (kill-buffer buffer))))))
+
+(ert-deftest ebox-row-disjoint-rich-updates-preserve-line-dependencies ()
+  "Two changed windows retain their middle sibling and whole-line paint."
+  (let ((live (generate-new-buffer " *row-windows-live*"))
+        (reference (generate-new-buffer " *row-windows-reference*"))
+        (input (lambda (left right color)
+                 (ebox-build
+                  `(row :id frame :width (px 90) :height (lh 2) :wrap-mode none
+                        :background-color ,color
+                        (box :id left :key left :width (px 30) :height (lh 2) :tab-index 0 ,left)
+                        (box :key middle :width (px 30) :height (lh 2) "KEEP")
+                        (box :id right :key right :width (px 30) :height (lh 2) :tab-index 1 ,right)))))
+        left-ref right-ref)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer live (funcall input "A\nBB" "C\nDD" "blue"))
+          (setq left-ref (ebox-focus-first live) right-ref (ebox-focus-next 1 nil live))
+          (dolist (pair '(("AA\nB" "CCC\nD") ("A\nBBB" "CC\nDD") ("AAA\nB" "C\nDDD")))
+            (let ((left (propertize (car pair) 'face '(:foreground "yellow")))
+                  (right (copy-sequence (cadr pair))))
+              (put-text-property 0 1 'face '(:foreground "cyan") right)
+              (with-current-buffer live
+                (ebox-call-with-update-batch
+                 (lambda () (ebox-region-update "left" :content left)
+                            (ebox-region-update "right" :content right))))
+              (with-current-buffer live (ebox-region-update "frame" :background-color "green"))
+              (ebox-render-to-buffer reference (funcall input left right "green"))
+              (let* ((expected-left (ebox-focus-first reference))
+                     (expected-right (ebox-focus-next 1 nil reference)))
+                (should (equal (ebox-host-ref-bounds live left-ref)
+                               (ebox-host-ref-bounds reference expected-left)))
+                (should (equal (ebox-host-ref-bounds live right-ref)
+                               (ebox-host-ref-bounds reference expected-right))))
+              (should (equal (ebox-flex-test--visible-runs live)
+                             (ebox-flex-test--visible-runs reference))))))
+      (dolist (buffer (list live reference))
+        (when (buffer-live-p buffer)
+          (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
+          (kill-buffer buffer))))))
+
 (provide 'ebox-flex-tests)
 ;;; ebox-flex-tests.el ends here

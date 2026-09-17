@@ -693,6 +693,11 @@ The optional
 `(:projection KIND :reasons (REASON ...))`. It currently covers mixed local
 planning and accepted local plans that subsequently require ordinary output:
 
+`fragment-ledger` additionally records why a local replacement needed ordinary
+fragment parsing, such as unaligned boundaries, missing retained source facts
+or changed line topology. Role changes alone can retain parsing while rebuilding
+target ownership; they do not require a whole-output parsing fallback.
+
 | Reason | Boundary that declined the attempt |
 | --- | --- |
 | `geometry-allocation` | No supported local geometry allocation proof. |

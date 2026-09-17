@@ -1124,6 +1124,12 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
                        (append (plist-get report :projection-rejections)
                                (list (list :projection planned-projection
                                            :reasons '(output-proof)))))))
+    (when (and ebox-incremental--projection-rejections-enabled-p
+               (plist-get state :fragment-reuse-rejection))
+      (setq report (plist-put report :projection-rejections
+                              (append (plist-get report :projection-rejections)
+                                      (list (list :projection 'fragment-ledger
+                                                  :reasons (list (plist-get state :fragment-reuse-rejection))))))))
     (when native-fallback-reason
       ;; Planner fields describe the rejected native attempt.  Replace them
       ;; with the ordinary full-surface publication that actually committed;
@@ -2462,6 +2468,7 @@ RETAINED-OWNED-RANGES witnesses unchanged ownership when it is that snapshot."
                  ;; moving a single character.  Coordinates alone cannot
                  ;; retain its mounts; rebuild them from the new role runs.
                  (and (not (plist-get state :layer-recompose-p))
+                      (not (plist-get state :fragment-ownership-changed-p))
                       (if retained-origin
                           (cons t previous-owned-ranges)
                         (and (null property-contributions) previous-owned-ranges
@@ -4978,6 +4985,9 @@ STATE receives only the resulting character patches and final fragment ledger."
                                                 :max-line-pixel-width))
                           copy)) proofs))
           (when-let* ((output (ebox-surface--buffer-span-patch-output (current-buffer) base candidate)))
+            (when (plist-get candidate :fragment-reuse-rejection)
+              (plist-put state :fragment-reuse-rejection
+                         (plist-get candidate :fragment-reuse-rejection)))
             (let* ((ebox--render-owned-text-values (plist-get candidate :render-owned-text-values))
                    (fragments
                     (or (plist-get candidate :span-patch-fragment-data)
@@ -4987,6 +4997,8 @@ STATE receives only the resulting character patches and final fragment ledger."
               (plist-put state :fractional-pixel-output-p
                          (ebox--fractional-pixel-spaces-p output))
               (plist-put state :raw-layout-fragments fragments)
+              (plist-put state :fragment-ownership-changed-p
+                         (plist-get candidate :fragment-ownership-changed-p))
               (plist-put state :raw-layout-snapshots (plist-get candidate :layout-snapshots))
               (plist-put state :render-owned-text-values ebox--render-owned-text-values)
               (plist-put state :content-base-extent (length raw))
@@ -5959,44 +5971,24 @@ than replaying old coordinates, properties or revision authority."
   "Return namespaced Ebox role/id pairs from PROPERTIES."
   (ebox--render-role-ids-from-properties properties))
 
-(defun ebox-surface--role-ids-at (rendered position &optional cache)
-  "Return namespaced Ebox role/id pairs at POSITION in RENDERED.
-CACHE, when non-nil, reuses role extraction for equal property plists during
-one output projection."
-  (let* ((properties (text-properties-at position rendered))
-         (missing (make-symbol "ebox-role-cache-missing"))
-         (cached (and cache (gethash properties cache missing))))
-    (if (and cache (not (eq cached missing)))
-        cached
-      (let ((roles (ebox-surface--role-ids-from-properties properties)))
-        (when cache
-          (puthash properties roles cache))
-        roles))))
+(defun ebox-surface--role-ids-at (rendered position)
+  "Return semantic role facts at POSITION without hashing native properties."
+  (ebox-surface--role-ids-from-properties (text-properties-at position rendered)))
 
-(defun ebox-surface--paint-address-at
-    (rendered position role-cache ordinal-table &optional paint-source-roles)
-  "Return the semantic paint address at POSITION in RENDERED.
-ROLE-CACHE is the per-render role extraction cache and ORDINAL-TABLE tracks
-the first-to-last occurrence of an otherwise equal owner/content address.
-PAINT-SOURCE-ROLES identifies paint-only producers of clipped glyph fill.
-The result deliberately contains semantic owner/role facts only; it never
-uses a string, buffer, marker, or TP object identity as an address."
-  (let* ((properties (text-properties-at position rendered))
-         (roles (ebox-surface--role-ids-at rendered position role-cache))
-         (content-owner (plist-get properties 'ebox-content-owner))
-         (content-index (plist-get properties 'ebox-content-idx))
-         (prefix (and (or roles content-owner (integerp content-index)
-                          paint-source-roles)
-                      (append
-                       (list :roles (copy-tree roles)
-                             :content-owner content-owner
-                             :content-index content-index)
-                       (when paint-source-roles
-                         (list :paint-source-roles (copy-tree paint-source-roles))))))
-         (ordinal (and prefix (gethash prefix ordinal-table 0))))
-    (when prefix
-      (puthash prefix (1+ ordinal) ordinal-table)
-      (append prefix (list :ordinal ordinal)))))
+(defun ebox-surface--intern-role-ids (properties cache)
+  "Intern only semantic role facts from PROPERTIES in candidate CACHE.
+Faces, keymaps and callback environments are not role lookup dependencies."
+  (let ((roles (ebox-surface--role-ids-from-properties properties)))
+    (or (gethash roles cache) (puthash roles roles cache))))
+
+(defun ebox-surface--paint-address (properties roles &optional paint-source-roles)
+  "Return paint address facts from PROPERTIES and already resolved ROLES.
+The ledger assigns occurrence ordinals after changed and retained runs merge."
+  (let ((owner (plist-get properties 'ebox-content-owner))
+        (index (plist-get properties 'ebox-content-idx)))
+    (when (or roles owner (integerp index) paint-source-roles)
+      (append (list :roles roles :content-owner owner :content-index index)
+              (when paint-source-roles (list :paint-source-roles paint-source-roles))))))
 
 (defun ebox-surface--candidate-plan-text (rendered owned-values)
   "Return a private snapshot of RENDERED for an owned TP plan.
@@ -6100,221 +6092,184 @@ separate from semantic and paint ownership."
               (plist-put fragment :layout-region-ids
                          (plist-get entry :ids)))))))))
 
+(defun ebox-surface--finish-fragment-ledger (fragments rendered)
+  "Finish derived metadata in candidate FRAGMENTS without reparsing text.
+Only changed line groups recompute layout dependencies. Raw role facts and
+newline counts let retained runs participate without reading their properties."
+  (let ((line 0) (index 0) previous next group dirty
+        (ordinals (make-hash-table :test #'equal)))
+    (dolist (fragment fragments)
+      (plist-put fragment :role-ids (plist-get fragment :direct-role-ids))
+      (plist-put fragment :line line)
+      (plist-put fragment :key (cons 'ebox/fragment index))
+      (cl-incf index)
+      (when-let* ((address (plist-get fragment :paint-address)))
+        (let ((prefix (copy-sequence address)))
+          (cl-remf prefix :ordinal)
+          (let ((ordinal (gethash prefix ordinals 0)))
+            (puthash prefix (1+ ordinal) ordinals)
+            (plist-put fragment :paint-address (append prefix (list :ordinal ordinal))))))
+      (push fragment group)
+      (setq dirty (or dirty (plist-get fragment :layout-dirty-p)))
+      (cl-incf line (plist-get fragment :newline-count))
+      (when (> (plist-get fragment :newline-count) 0)
+        (when dirty
+          (dolist (item group) (plist-put item :layout-region-ids nil))
+          (ebox-surface--line-layout-dependencies group rendered))
+        (setq group nil dirty nil)))
+    (when (and group dirty)
+      (dolist (item group) (plist-put item :layout-region-ids nil))
+      (ebox-surface--line-layout-dependencies group rendered))
+    (dolist (fragment fragments)
+      (cl-remf fragment :layout-dirty-p)
+      (if-let* ((roles (plist-get fragment :direct-role-ids)))
+          (setq previous roles)
+        (plist-put fragment :previous-role-ids previous)))
+    (dolist (fragment (reverse (copy-sequence fragments)))
+      (if-let* ((roles (plist-get fragment :direct-role-ids)))
+          (setq next roles)
+        (plist-put fragment :role-ids
+                   (delete-dups (append (copy-sequence (plist-get fragment :previous-role-ids))
+                                        (copy-sequence next)))))
+      (cl-remf fragment :previous-role-ids))
+    fragments))
+
 (defun ebox-surface--rendered-fragments (rendered)
-  "Return an offset index of Ebox-owned property runs in RENDERED.
-The complete propertized string remains the sole text storage.  Runs keep
-START and END offsets into that string instead of allocating one substring
-per property interval; paint projection materializes its private copies only
-when it needs to mutate them."
-  (let ((position 0)
-        (limit (length rendered))
-        (line 0)
-        (role-cache (make-hash-table :test #'equal))
-        (ordinal-table (make-hash-table :test #'equal))
-        fragments line-fragments previous-role-ids next-role-ids)
+  "Parse RENDERED into an offset ledger with reusable source and paint facts."
+  (let ((position 0) (limit (length rendered))
+        (role-cache (make-hash-table :test #'equal)) fragments)
     (while (< position limit)
-      (let* ((next (or (next-property-change position rendered limit)
-                       limit))
-             (origin (get-text-property position
-                                         ebox--paint-origin-property
-                                         rendered))
-             (roles (ebox-surface--role-ids-at rendered position role-cache))
+      (let* ((next (or (next-property-change position rendered limit) limit))
+             (properties (text-properties-at position rendered))
+             (origin (plist-get properties ebox--paint-origin-property))
+             (roles (ebox-surface--intern-role-ids properties role-cache))
              (paint-roles
               (if (and origin (ebox--paint-origin-source-roles origin))
-                  (delete-dups
-                   (append (copy-sequence (ebox--paint-origin-source-roles origin))
-                           roles))
+                  (delete-dups (append (copy-sequence (ebox--paint-origin-source-roles origin)) roles))
                 roles))
-             (address
-              (ebox-surface--paint-address-at
-               rendered position role-cache ordinal-table
-               (cl-set-difference paint-roles roles :test #'equal)))
-             (baseline
-              (and origin
-                   (copy-tree
-                    (ebox--paint-origin-baseline origin)))))
-        (push (list :text rendered :text-source-p t
-                    :start position :end next
-                    :line line :paint-role-ids paint-roles
-                    :role-ids roles
-                    :paint-address address
-                    :paint-token
-                    (and address
-                         (list :baseline (copy-tree baseline)
-                               :roles (copy-tree paint-roles)
-                               :content-owner
-                               (plist-get address :content-owner)
-                               :content-index
-                               (plist-get address :content-index)))
-                    :face-baseline baseline
-                    :face-baseline-known-p (and origin t))
+             (address (ebox-surface--paint-address
+                       properties roles (cl-set-difference paint-roles roles :test #'equal)))
+             (baseline (and origin (copy-tree (ebox--paint-origin-baseline origin)))))
+        (push (list :text rendered :text-source-p t :start position :end next
+                    :newline-count (cl-count ?\n rendered :start position :end next)
+                    :direct-role-ids roles :role-ids roles :paint-role-ids paint-roles
+                    :layout-dirty-p t :paint-address address
+                    :paint-token (and address
+                                      (list :baseline (copy-tree baseline)
+                                            :roles (copy-tree paint-roles)
+                                            :content-owner (plist-get address :content-owner)
+                                            :content-index (plist-get address :content-index)))
+                    :face-baseline baseline :face-baseline-known-p (and origin t))
               fragments)
-        (push (car fragments) line-fragments)
         (when origin
-          (remove-text-properties
-           position next (list ebox--paint-origin-property nil) rendered))
-        (let ((line-count (cl-count ?\n rendered :start position :end next)))
-          (when (> line-count 0)
-            (ebox-surface--line-layout-dependencies line-fragments rendered)
-            (setq line-fragments nil))
-          (cl-incf line line-count))
+          (remove-text-properties position next (list ebox--paint-origin-property nil) rendered))
         (setq position (max next (1+ position)))))
-    (when line-fragments
-      (ebox-surface--line-layout-dependencies line-fragments rendered))
-    (setq fragments (nreverse fragments))
-    (dolist (fragment fragments)
-      (if-let* ((roles (plist-get fragment :role-ids)))
-          (setq previous-role-ids roles)
-        (plist-put fragment :previous-role-ids previous-role-ids)))
-    (dolist (fragment (reverse (copy-sequence fragments)))
-      (if-let* ((roles (plist-get fragment :role-ids)))
-          (setq next-role-ids roles)
-        (plist-put fragment :role-ids
-                   (delete-dups
-                    (append (copy-sequence
-                             (plist-get fragment :previous-role-ids))
-                            (copy-sequence next-role-ids))))))
-    (cl-loop for fragment in fragments for index from 0
-             do (plist-put fragment :key (cons 'ebox/fragment index))
-             do (cl-remf fragment :previous-role-ids)
-             collect fragment)))
+    (ebox-surface--finish-fragment-ledger (nreverse fragments) rendered)))
+
+(defun ebox-surface--fragment-reuse-miss (state reason)
+  "Decline fragment reuse for REASON, recording an observed proof boundary."
+  (when (and state ebox-incremental--projection-rejections-enabled-p)
+    (plist-put state :fragment-reuse-rejection reason))
+  (throw 'miss nil))
 
 (defun ebox-surface--incremental-patched-fragments
     (output old-fragments patches &optional state)
-  "Rebase OLD-FRAGMENTS through exact text PATCHES into OUTPUT.
-Return nil unless every patch is aligned to retained fragment boundaries and
-preserves the ordered role topology inside its replaced range.  On success,
-only replacement slices are scanned; unchanged fragment metadata is copied
-and shifted without inspecting its text properties.  STATE, when supplied,
-receives the proven fragment-boundary coordinate mapping so retained owner
-boundaries inside a replaced line can be rebased without guessing."
+  "Splice changed fragment windows into the retained ledger for OUTPUT.
+PATCHES must align with retained fragment boundaries. Role changes invalidate
+ownership rebasing, not unrelated fragment parsing. STATE receives refined
+coordinate evidence only when ordered roles and fragment boundaries agree."
+  (when state
+    (plist-put state :fragment-reuse-rejection nil)
+    (plist-put state :fragment-ownership-changed-p nil))
   (when (and (stringp output) old-fragments patches)
     (catch 'miss
-      (let ((remaining old-fragments)
-            (old-cursor 0)
-            (new-cursor 0)
-            (line-shift 0)
-            result new-origin-ranges coordinate-patches)
-        (dolist (patch patches)
-          (let ((old-start (plist-get patch :old-start))
-                (old-end (plist-get patch :old-end))
-                (new-start (plist-get patch :new-start))
-                (new-end (plist-get patch :new-end)))
-            (unless (and (integerp old-start) (integerp old-end)
-                         (integerp new-start) (integerp new-end)
-                         (<= old-cursor old-start old-end)
-                         (<= new-cursor new-start new-end)
-                         (= (- new-start new-cursor)
-                            (- old-start old-cursor))
-                         (<= new-end (length output)))
-              (throw 'miss nil))
-            (while (and remaining
-                        (<= (plist-get (car remaining) :end) old-start))
-              (let ((copy (copy-sequence (pop remaining))))
-                (unless (= (plist-get copy :start) old-cursor)
-                  (throw 'miss nil))
-                (let ((length (- (plist-get copy :end)
-                                 (plist-get copy :start))))
-                  (plist-put copy :start new-cursor)
-                  (plist-put copy :end (+ new-cursor length))
-                  (plist-put copy :line
-                             (+ line-shift (plist-get copy :line)))
-                  (plist-put copy :text output)
-                  (plist-put copy :text-source-p t)
-                  (push copy result)
-                  (setq old-cursor (+ old-cursor length)
-                        new-cursor (+ new-cursor length)))))
-            (unless (= old-cursor old-start) (throw 'miss nil))
-            (let (old-window)
-              (while (and remaining
-                          (< (plist-get (car remaining) :start) old-end))
-                (let ((fragment (pop remaining)))
-                  (unless (and (= (plist-get fragment :start) old-cursor)
-                               (<= (plist-get fragment :end) old-end))
-                    (throw 'miss nil))
-                  (push fragment old-window)
-                  (setq old-cursor (plist-get fragment :end))))
-              (unless (= old-cursor old-end) (throw 'miss nil))
-              (setq old-window (nreverse old-window))
-              (let* ((slice (substring output new-start new-end))
-                     (new-window (ebox-surface--rendered-fragments slice)))
-                (unless (and (= (length old-window) (length new-window))
-                             (cl-every
-                              (lambda (pair)
-                                (and (equal
-                                      (plist-get (car pair) :paint-role-ids)
-                                      (plist-get (cdr pair) :paint-role-ids))
-                                     (equal
-                                      (plist-get (car pair) :role-ids)
-                                      (plist-get (cdr pair) :role-ids))))
-                              (cl-mapcar #'cons old-window new-window)))
-                  (throw 'miss nil))
-                (let ((old-first-line
-                       (or (plist-get (car old-window) :line) 0))
-                      (new-first-line
-                       (or (plist-get (car new-window) :line) 0))
-                      (old-last-line
-                       (or (plist-get (car (last old-window)) :line) 0))
-                      (new-last-line
-                       (or (plist-get (car (last new-window)) :line) 0)))
-                  ;; Span-patch proofs retain the same line topology.  A
-                  ;; variable-line context uses the full fragment scanner.
-                  (unless (= (- old-last-line old-first-line)
-                             (- new-last-line new-first-line))
-                    (throw 'miss nil))
-                  (cl-mapc
-                   (lambda (old new)
-                     (let ((copy (copy-sequence new)))
-                       (plist-put copy :start
-                                  (+ new-start (plist-get new :start)))
-                       (plist-put copy :end
-                                  (+ new-start (plist-get new :end)))
-                       (plist-put copy :line
-                                  (+ line-shift old-first-line
-                                     (- (plist-get new :line)
-                                        new-first-line)))
-                       (plist-put copy :key (plist-get old :key))
-                       (plist-put copy :paint-address
-                                  (copy-tree
-                                   (plist-get old :paint-address)))
-                       (when-let* ((chain (plist-get old :paint-node-chain)))
-                         (plist-put copy :paint-node-chain
-                                    (copy-sequence chain)))
-                       (plist-put copy :text output)
-                       (plist-put copy :text-source-p t)
-                       (push (list :old-start (plist-get old :start)
-                                   :old-end (plist-get old :end)
-                                   :new-start (plist-get copy :start)
-                                   :new-end (plist-get copy :end))
-                             coordinate-patches)
-                       (push copy result)))
-                   old-window new-window)
-                  (push (cons new-start new-end) new-origin-ranges)))
-              (setq old-cursor old-end
-                    new-cursor new-end))))
-        (while remaining
-          (let ((copy (copy-sequence (pop remaining))))
-            (unless (= (plist-get copy :start) old-cursor)
-              (throw 'miss nil))
-            (let ((length (- (plist-get copy :end)
-                             (plist-get copy :start))))
-              (plist-put copy :start new-cursor)
-              (plist-put copy :end (+ new-cursor length))
-              (plist-put copy :line (+ line-shift (plist-get copy :line)))
-              (plist-put copy :text output)
-              (plist-put copy :text-source-p t)
-              (push copy result)
-              (setq old-cursor (+ old-cursor length)
-                    new-cursor (+ new-cursor length)))))
-        (unless (= new-cursor (length output)) (throw 'miss nil))
-        (dolist (range new-origin-ranges)
-          (remove-text-properties
-           (car range) (cdr range)
-           (list ebox--paint-origin-property nil) output))
+      (let ((remaining old-fragments) (old-cursor 0) (new-cursor 0)
+            result origins coordinates changed-roles dirty-next)
+        (cl-labels
+            ((keep ()
+               (let* ((copy (copy-sequence (pop remaining)))
+                      (length (- (plist-get copy :end) (plist-get copy :start))))
+                 (unless (= (plist-get copy :start) old-cursor)
+                   (ebox-surface--fragment-reuse-miss state 'fragment-gap))
+                 (plist-put copy :start new-cursor)
+                 (plist-put copy :end (+ new-cursor length))
+                 (plist-put copy :text output)
+                 (plist-put copy :text-source-p t)
+                 (when dirty-next (plist-put copy :layout-dirty-p t) (setq dirty-next nil))
+                 (push copy result)
+                 (setq old-cursor (+ old-cursor length) new-cursor (+ new-cursor length)))))
+          (dolist (patch patches)
+            (let ((old-start (plist-get patch :old-start)) (old-end (plist-get patch :old-end))
+                  (new-start (plist-get patch :new-start)) (new-end (plist-get patch :new-end)))
+              (unless (and (integerp old-start) (integerp old-end)
+                           (integerp new-start) (integerp new-end)
+                           (<= old-cursor old-start old-end) (<= new-cursor new-start new-end)
+                           (= (- new-start new-cursor) (- old-start old-cursor))
+                           (<= new-end (length output)))
+                (ebox-surface--fragment-reuse-miss state 'invalid-coordinates))
+              (while (and remaining (<= (plist-get (car remaining) :end) old-start)) (keep))
+              (unless (= old-cursor old-start)
+                (ebox-surface--fragment-reuse-miss state 'unaligned-start))
+              (when result (plist-put (car result) :layout-dirty-p t))
+              (let (old-window)
+                (while (and remaining (< (plist-get (car remaining) :start) old-end))
+                  (let ((fragment (pop remaining)))
+                    (unless (and (= (plist-get fragment :start) old-cursor)
+                                 (<= (plist-get fragment :end) old-end))
+                      (ebox-surface--fragment-reuse-miss state 'unaligned-end))
+                    (push fragment old-window)
+                    (setq old-cursor (plist-get fragment :end))))
+                (unless (= old-cursor old-end)
+                  (ebox-surface--fragment-reuse-miss state 'unaligned-end))
+                (setq old-window (nreverse old-window))
+                (let* ((slice (substring output new-start new-end))
+                       (new-window (ebox-surface--rendered-fragments slice))
+                       (same-roles
+                        (and (= (length old-window) (length new-window))
+                             (cl-every (lambda (pair)
+                                         (and (equal (plist-get (car pair) :paint-role-ids)
+                                                     (plist-get (cdr pair) :paint-role-ids))
+                                              (equal (plist-get (car pair) :direct-role-ids)
+                                                     (plist-get (cdr pair) :direct-role-ids))))
+                                       (cl-mapcar #'cons old-window new-window)))))
+                  (unless (cl-every (lambda (fragment)
+                                      (and (plist-member fragment :direct-role-ids)
+                                           (integerp (plist-get fragment :newline-count))))
+                                    old-window)
+                    (ebox-surface--fragment-reuse-miss state 'missing-source-facts))
+                  (unless (= (apply #'+ (mapcar (lambda (f) (plist-get f :newline-count)) old-window))
+                             (apply #'+ (mapcar (lambda (f) (plist-get f :newline-count)) new-window)))
+                    (ebox-surface--fragment-reuse-miss state 'line-topology))
+                  (unless same-roles (setq changed-roles t))
+                  (dolist (new new-window)
+                    (let ((old (pop old-window)))
+                      (plist-put new :start (+ new-start (plist-get new :start)))
+                      (plist-put new :end (+ new-start (plist-get new :end)))
+                      (plist-put new :text output)
+                      (plist-put new :layout-dirty-p t)
+                      (when same-roles
+                        (when-let* ((chain (plist-get old :paint-node-chain)))
+                          (plist-put new :paint-node-chain chain))
+                        (push (list :old-start (plist-get old :start) :old-end (plist-get old :end)
+                                    :new-start (plist-get new :start) :new-end (plist-get new :end))
+                              coordinates))
+                      (push new result)))
+                  (push (cons new-start new-end) origins)))
+              (setq old-cursor old-end new-cursor new-end dirty-next t)))
+          (while remaining (keep)))
+        (unless (= new-cursor (length output))
+          (ebox-surface--fragment-reuse-miss state 'incomplete-coverage))
+        ;; Native ledgers without raw role/newline facts use their ordinary
+        ;; materialization route; never guess these facts from derived roles.
+        (unless (cl-every (lambda (f) (and (plist-member f :direct-role-ids)
+                                          (integerp (plist-get f :newline-count)))) result)
+          (ebox-surface--fragment-reuse-miss state 'missing-source-facts))
+        (dolist (range origins)
+          (remove-text-properties (car range) (cdr range) (list ebox--paint-origin-property nil) output))
         (when state
-          (plist-put state :content-coordinate-patches
-                     (nreverse coordinate-patches)))
-        (nreverse result)))))
+          (plist-put state :fragment-ownership-changed-p changed-roles)
+          (unless changed-roles (plist-put state :content-coordinate-patches (nreverse coordinates))))
+        (ebox-surface--finish-fragment-ledger (nreverse result) output)))))
 
 (defun ebox-surface--rebase-coordinate (position patches)
   "Return POSITION rebased through PATCHES, or nil inside a replacement."
@@ -6668,6 +6623,7 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
                                 '(span-patch owner-scoped
                                   mixed-owner-reflow))
                           (not formatting-reflow-p)
+                          (not (plist-get state :fragment-ownership-changed-p))
                           (not (plist-get state :layer-recompose-p))
                           (plist-get state :previous-surface-owned-ranges)
                           (plist-get state :content-coordinate-patches)
@@ -6704,6 +6660,7 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
       (cl-remf state :native-render-fragments)
       (cl-remf state :native-render-fragment-template)
       (cl-remf state :previous-surface-owned-ranges)
+      (cl-remf state :fragment-ownership-changed-p)
     (let* ((plan-text
             (if (or transfer-text-p
                     (plist-get state :native-render-p)
@@ -7031,7 +6988,8 @@ relative face contributions and performs the final merge during prepare."
               (and enabled (equal (plist-get fragment :line) line)
                    (ebox-surface--fragment-has-region-role-p
                     fragment region-id ebox-surface--paint-base-roles)))
-             (pair (cons role region-id)))
+             (pair (cons role region-id))
+             (previous-roles (plist-get fragment :role-ids)))
         (dolist (key '(:paint-role-ids :role-ids))
           (let* ((roles (cl-remove pair (plist-get fragment key) :test #'equal))
                  (owned-p
@@ -7044,6 +7002,11 @@ relative face contributions and performs the final merge during prepare."
             (plist-put fragment key
                        (if (and anchor-p owned-p)
                            (append roles (list pair)) roles))))
+        (unless (equal previous-roles (plist-get fragment :role-ids))
+          ;; This painter changes ownership properties after parsing. Its
+          ;; derived roles remain authoritative for this paint publication;
+          ;; a later geometry splice must refresh the raw source facts.
+          (cl-remf fragment :direct-role-ids))
         (when (> (length (plist-get fragment :text)) 0)
           (if-let* ((owner
                     (cdr (cl-find role
@@ -7559,6 +7522,8 @@ published runtime and must be consumed without clearing those shared nodes."
                stylesheet-active-p cascade-required-p axes viewport-width
                viewport-height surface-display-signature scroll-offsets)))
         (plist-put state :source-index source-index)
+        (plist-put state :fragment-reuse-rejection nil)
+        (plist-put state :fragment-ownership-changed-p nil)
         (when reuse-context-axes-p
           (plist-put state :viewport-dependent-node-ids
                      (plist-get context-axis-facts
