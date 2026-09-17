@@ -3504,6 +3504,11 @@ COMPLETE-LINES-P requires a proven physical line origin for every output row."
                (plist-get state :layered-p)
              'unknown))
           (ebox--render-cache-table (plist-get state :render-cache))
+          ;; Responsive descendants are reusable under the exact containing
+          ;; and viewport constraints included in their render signature.
+          ;; Keeping this enabled avoids relayout of unrelated percentage-sized
+          ;; branches during an interaction update.
+          (ebox--render-cache-allow-viewport-dependent t)
           (ebox--layout-fragments-table
            (plist-get state :layout-fragments))
           (ebox--layout-fragments-reuse-p

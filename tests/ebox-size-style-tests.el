@@ -236,6 +236,67 @@
                                         (buffer-substring position (1+ position))))))))
             (should (= width (cdr paint)))))))))
 
+(ert-deftest ebox-responsive-cache-preserves-cyclic-native-keymaps ()
+  "Responsive caching preserves native cycles and follows keymap replacement."
+  (let ((ebox-viewport-width 80) (ebox-viewport-height 20)
+        (map (make-sparse-keymap)) (calls 0))
+    (define-key map [x] map)
+    (define-key map (kbd "RET") (lambda () (interactive) (cl-incf calls)))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             (current-buffer)
+             (ebox-build `(column :width (% 100)
+                                  (box :id control :width (% 50) :keymap ,map "Action")
+                                  (text :id status "Before"))))
+            (ebox-activate (point-min))
+            (should (= calls 1))
+            (ebox-region-update "status" :content "After")
+            (ebox-activate (point-min))
+            (should (= calls 2))
+            (ebox-region-update "control" :keymap
+                                (ebox-keymap-create :activate (lambda () (cl-incf calls 10))))
+            (ebox-activate (point-min))
+            (should (= calls 12))
+            (should (string-match-p "After" (buffer-string))))
+        (ebox-unmount-buffer (current-buffer))))))
+
+(ert-deftest ebox-responsive-cache-keeps-current-containing-size ()
+  "Responsive paint follows its parent size across unrelated publications."
+  (let ((ebox-viewport-width 80) (ebox-viewport-height 20))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             (current-buffer)
+             (ebox-build
+              '(column :width (px 80)
+                 (box :id frame :width (px 20) :height (lh 4) :overflow hidden
+                   (box :width (% 50) :height (% 50) :overflow hidden
+                        :background-color "red" "A"))
+                 (text :id status "Before"))))
+            (dolist (size '((20 4) (20 8) (12 8) (30 6) (30 4) (20 4)))
+              (ebox-call-with-update-batch
+               (lambda ()
+                 (ebox-region-update "frame" :width (list 'px (car size))
+                                     :height (list 'lh (cadr size)))))
+              (dolist (label '("Updated" "Again"))
+                (ebox-region-update "status" :content label)
+                (let (painted-widths)
+                  (dolist (line (split-string (buffer-string) "\n" nil))
+                    (let ((position 0) (width 0))
+                      (while (< position (length line))
+                        (let ((end (next-property-change position line (length line))))
+                          (when (equal (plist-get (get-text-property position 'face line) :background) "red")
+                            (setq width (+ width (ebox-string-pixel-width (substring line position end)))))
+                          (setq position end)))
+                      (when (> width 0) (push width painted-widths))))
+                  (should (= (length painted-widths) (/ (cadr size) 2)))
+                  (should (cl-every (lambda (width) (= width (/ (car size) 2))) painted-widths))
+                  (should (string-match-p label (buffer-string)))))))
+        (ebox-unmount-buffer (current-buffer))))))
+
 (ert-deftest ebox-viewport-height-keeps-frame-reference-through-updates ()
   "Nested heights and arithmetic retain the original frame across updates."
   (let ((ebox-viewport-width 80)

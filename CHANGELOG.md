@@ -6,6 +6,14 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Mounted responsive subtrees reuse rendered output under their exact viewport
+  and containing-size constraints. Unrelated interactions no longer disable
+  caches merely because a branch uses percentage or viewport-relative sizes;
+  percentage heights include the containing block height in the cache key.
+- Render cache keys preserve callback and keymap identity without traversing
+  captured environments or recursive native bindings. Replacing a keymap still
+  invalidates the affected output.
+
 - Focus and pressed-state changes preserve proven selector relationships during
   source rebuilding. Unchanged scoped styles are reused, equal parent styles do
   not invalidate descendants, and subsequent updates read current selector facts.

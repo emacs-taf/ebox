@@ -195,6 +195,20 @@ objects, style bindings and editable handles of retained following siblings.
 
 ## Patch order
 
+Mounted rendering permits cached responsive subtrees. Their signatures include
+the display context, relevant local and CSS viewport dimensions, containing
+block height for dependent heights, intrinsic-measurement mode and node input.
+A viewport-dependent declaration alone is not a reason to re-layout the branch.
+Changed constraints select a different cache entry; unchanged branches retain
+their output. Visible root portals still use fresh collection rather than
+replaying a cached string without its composition dependencies.
+
+Literal callback and native keymap values contribute opaque identity tokens to
+render signatures. Their captured state and recursive prefix graphs are not
+layout inputs. Source publication owns keymap snapshots; publishing a replacement
+changes its token. A weak identity table keeps this bookkeeping from retaining
+retired application callbacks.
+
 The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.
 
 Selector-only changes can use an exact-coordinate empty TP batch after the

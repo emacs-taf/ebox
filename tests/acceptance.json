@@ -1040,6 +1040,16 @@
       "name": "ebox-focus-retains-local-facts-and-structural-inheritance",
       "file": "tests/ebox-focus-style-tests.el",
       "purpose": "Repeated focus transitions and intervening content updates preserve current selector facts, inherited local paint and structural sibling/descendant rules."
+    },
+    {
+      "name": "ebox-responsive-cache-keeps-current-containing-size",
+      "file": "tests/ebox-size-style-tests.el",
+      "purpose": "Percentage-sized paint follows containing width and height across repeated resizes and unrelated content publications without stale cache reuse."
+    },
+    {
+      "name": "ebox-responsive-cache-preserves-cyclic-native-keymaps",
+      "file": "tests/ebox-size-style-tests.el",
+      "purpose": "Responsive subtrees mount with a recursive native keymap, retain activation across unrelated updates and use a newly published replacement binding."
     }
   ]
 }

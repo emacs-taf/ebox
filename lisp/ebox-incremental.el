@@ -557,9 +557,19 @@ Kept as a narrow predicate for callers that need box-only sizing semantics."
   (and (eq (and (listp node) (plist-get node :ebox-type)) 'box)
        (ebox--render-cacheable-node-p node)))
 
+(defvar ebox--render-cache-capability-tokens
+  (make-hash-table :test #'eq :weakness 'key)
+  "Opaque identities for literal callbacks and owned native keymaps.
+Render signatures must not traverse closure environments or keymap cycles.
+Source publication snapshots keymaps; replacing one supplies a new identity.")
+
 (defun ebox--render-cache-value-signature (value)
   "Return VALUE normalized for render cache signatures."
   (cond
+   ((or (functionp value) (keymapp value))
+    (or (gethash value ebox--render-cache-capability-tokens)
+        (puthash value (make-symbol "ebox-render-capability")
+                 ebox--render-cache-capability-tokens)))
    ((ebox-child-range--sequence-p value)
     (cons 'ebox-child-sequence
           (mapcar #'ebox--render-cache-value-signature
@@ -626,7 +636,7 @@ Kept as a narrow predicate for callers that need box-only sizing semantics."
                          node)))
           ebox-viewport-width)
         (when (ebox--viewport-height-dependent-subtree-p node)
-          ebox-viewport-height)
+          (list ebox-viewport-height ebox--css-containing-height))
         ebox--intrinsic-layout-measurement
         ebox--inline-auto-width-intrinsic-p
         (ebox--render-cache-node-body-signature node)))
