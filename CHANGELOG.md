@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Simultaneous text and descendant size changes can retain a stable Flex owner
+  allocation, including fractional pixel layouts. Unchanged siblings preserve
+  their geometry and paint while the owner rebuilds its interior output.
+
 - Mounted responsive subtrees reuse rendered output under their exact viewport
   and containing-size constraints. Unrelated interactions no longer disable
   caches merely because a branch uses percentage or viewport-relative sizes;

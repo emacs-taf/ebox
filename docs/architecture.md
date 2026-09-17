@@ -209,6 +209,22 @@ layout inputs. Source publication owns keymap snapshots; publishing a replacemen
 changes its token. A weak identity table keeps this bookkeeping from retaining
 retired application callbacks.
 
+Descendant text and dimension changes can reflow inside an unchanged allocated
+owner. The owner keeps its identity, child topology, own layout declarations and
+ancestor allocation; exact rendered extents, clipping and enclosing effects
+still determine whether local publication is admissible. Interior paint roles
+may change without invalidating that exterior. Geometry comparisons use exact
+numeric equality, including integral floats, without a rounding tolerance.
+
+For fractional pixel output, the retained generation also keeps pre-quantization
+layout text. An admitted owner patch uses that allocation and then quantizes the
+composed physical rows, preserving preceding siblings' fractional remainder.
+Raw and displayed text share character coordinates but have separate geometry
+snapshots. Fragment roles and paint provenance survive width quantization and
+are reused; unchanged ancestor allocation certificates are carried forward.
+A paint-only update invalidates this raw output cache. Missing evidence keeps
+the ordinary complete-render fallback, including scrolling owners.
+
 The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.
 
 Selector-only changes can use an exact-coordinate empty TP batch after the

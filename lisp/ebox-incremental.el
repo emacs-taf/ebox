@@ -2150,7 +2150,17 @@ If a line span would cross a foreign ebox region, return nil."
 
 (defun ebox--parent-slot-compatible-p (old new)
   "Return non-nil when OLD and NEW parent slots are equivalent."
-  (equal old new))
+  (ebox--geometry-equal-p old new))
+
+(defun ebox--geometry-equal-p (old new)
+  "Compare owned geometry facts by numeric value, not number representation.
+Used pixel extents may be integral floats after percentage allocation. They
+describe the same geometry as integer extents; no rounding tolerance is used."
+  (cond ((and (numberp old) (numberp new)) (= old new))
+        ((and (consp old) (consp new))
+         (and (ebox--geometry-equal-p (car old) (car new))
+              (ebox--geometry-equal-p (cdr old) (cdr new))))
+        (t (equal old new))))
 
 (defun ebox--role-topology-signature (region-ids)
   "Return the set of rendered region roles present for REGION-IDS."
@@ -2179,12 +2189,12 @@ If a line span would cross a foreign ebox region, return nil."
   (and old new
        (= (plist-get old :span-count)
           (plist-get new :span-count))
-       (equal (plist-get old :line-pixel-widths)
-              (plist-get new :line-pixel-widths))))
+       (ebox--geometry-equal-p (plist-get old :line-pixel-widths)
+                              (plist-get new :line-pixel-widths))))
 
 (defun ebox--external-footprint-compatible-p (old new)
   "Return non-nil when OLD and NEW parent-visible footprints match."
-  (equal old new))
+  (ebox--geometry-equal-p old new))
 
 (defun ebox--buffer-line-spans (buffer)
   "Return whole-line spans for BUFFER."
@@ -10246,13 +10256,15 @@ metadata; this predicate only authorizes the local attempt."
     valid))
 
 (defun ebox-incremental--grouped-owner-span-proof
-    (buffer old-state prepared candidate-state owner-plan)
+    (buffer old-state prepared candidate-state owner-plan &optional reflow-p)
   "Return a single-owner proof for grouped descendants in one stable slot.
 
 The layout owner plan may supply either a content-independent fixed Flex basis
 or a retained content-slot certificate.  The surface still renders the whole
 candidate owner into its published slot and verifies exact footprint, overflow,
-role, and outside-complement compatibility before publication."
+role, and outside-complement compatibility before publication.
+REFLOW-P permits descendant dimension changes inside the same allocated owner;
+Surface then rebuilds internal roles while checking its unchanged exterior."
   (when (and (= (length owner-plan) 1)
              (or (> (length (plist-get prepared :dirty-set)) 1)
                  ;; A single leaf may need its allocator's filler to change.
@@ -10371,6 +10383,9 @@ role, and outside-complement compatibility before publication."
                                   (memq key ebox--paint-style-signature-keys)
                                   (memq key
                                         ebox--typography-style-signature-keys)
+                                  (and reflow-p
+                                       (memq key '(:width :min-width :max-width
+                                                   :height :min-height :max-height)))
                                   (memq key '(:font-family :font-size
                                               :font-weight :font-style))))
                             (plist-get entry :changed-keys))))
@@ -10406,8 +10421,11 @@ role, and outside-complement compatibility before publication."
                         :changed-keys (copy-sequence changed-keys)
                         :snapshot snapshot
                         :allocated-width allocated-width
+                        :owner-reflow-p reflow-p
+                        :range-splice-p reflow-p
                         :variable-content-p
-                        (and (null (plist-get old-state :scroll-region-ids))
+                        (and (not reflow-p)
+                             (null (plist-get old-state :scroll-region-ids))
                              allocated-width
                              (cl-some
                               (lambda (entry)
@@ -10515,6 +10533,14 @@ role, and outside-complement compatibility before publication."
                        path-copied-p)
                       (ebox-incremental--grouped-owner-span-proof
                        buffer old-state prepared candidate-state owner-plan)
+                      (when (cl-some
+                             (lambda (entry)
+                               (cl-intersection (plist-get entry :changed-keys)
+                                                '(:width :min-width :max-width
+                                                  :height :min-height :max-height)))
+                             (plist-get prepared :dirty-set))
+                        (ebox-incremental--grouped-owner-span-proof
+                         buffer old-state prepared candidate-state owner-plan t))
                       (ebox-incremental--range-span-proof
                        buffer old-state prepared candidate-state owner-plan)
                       ;; Preserve a successful narrow proof.  Only its miss

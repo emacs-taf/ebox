@@ -3448,10 +3448,14 @@ available during planning; replacements here belong only to the candidate."
   (let ((rendered
          (ebox-surface--render-candidate-node state (plist-get state :root-node))))
     ;; A complete physical line owns its pixel remainder.  Keep the raw render
-    ;; and cached child strings untouched; retained output stores only whether
-    ;; local geometry would require the missing fractional origin next time.
+    ;; and cached child strings untouched.  Retain pre-quantization output so
+    ;; later owner updates can recover their original fractional allocation.
     (plist-put state :fractional-pixel-output-p
                (ebox--fractional-pixel-spaces-p rendered))
+    (plist-put state :raw-layout-output
+               (and (plist-get state :fractional-pixel-output-p) rendered))
+    (cl-remf state :raw-layout-fragments)
+    (cl-remf state :raw-layout-snapshots)
     (when (plist-get state :fractional-pixel-output-p)
       (let ((ebox--render-owned-text-values
              (plist-get state :render-owned-text-values)))
@@ -4456,11 +4460,13 @@ Render STATE's candidate into BUFFER's retained owner allocation."
          (node (ebox-runtime-index-get owner-id (plist-get state :node-table)))
          (render-node
           (cond
-           ((or (plist-get proof :layer-recompose-p)
+           ((or (plist-get proof :owner-reflow-p)
+                (plist-get proof :layer-recompose-p)
                 (plist-get proof :nested-scroll-patch-p))
             (ebox-surface--owner-slot-render-node
              buffer state owner-id old-snapshot
-             (plist-get proof :allocated-width) nil nil nil))
+             (plist-get proof :allocated-width) nil
+             (plist-get proof :owner-reflow-p) (plist-get proof :changed-keys)))
            ((and node (numberp (plist-get proof :allocated-width)))
             (plist-put (copy-sequence node)
                        :width (plist-get proof :allocated-width)))
@@ -4474,6 +4480,11 @@ Render STATE's candidate into BUFFER's retained owner allocation."
               (ebox-surface--nested-scroll-owned-lines
                buffer spans rendered (plist-get node :region-id))
             rendered))
+         (rendered
+          (if (and rendered (plist-get proof :owner-reflow-p))
+              (ebox-buffer--rendered-owned-lines
+               rendered (plist-get old-snapshot :region-ids) (length spans))
+            rendered))
          (external-owners
           (and rendered
                (ebox-surface--retained-external-owner-suffix
@@ -4484,7 +4495,8 @@ Render STATE's candidate into BUFFER's retained owner allocation."
                (ebox--add-content-owners rendered
                                          (unless (eq external-owners t) external-owners))))
          (rendered
-          (if (and rendered (or (plist-get proof :layer-recompose-p)
+          (if (and rendered (or (plist-get proof :owner-reflow-p)
+                                (plist-get proof :layer-recompose-p)
                                 (plist-get proof :nested-scroll-patch-p)))
               (ebox-surface--layer-enclosing-paint
                buffer state owner-id spans rendered)
@@ -4545,7 +4557,7 @@ Render STATE's candidate into BUFFER's retained owner allocation."
                     :external new-external :parent new-parent :roles new-roles
                     :overflow new-overflow :variable-content-p nil))))))
 
-(defun ebox-surface--layer-patch-candidate (buffer previous-state state proof)
+(defun ebox-surface--composed-owner-patch-candidate (buffer previous-state state proof)
   "Return PROOF's composed host replacement with only newly visible roles.
 Render candidate STATE against BUFFER and its PREVIOUS-STATE.
 Role topology can change inside the host.  The Range footprint validator
@@ -4571,7 +4583,8 @@ contributions without copying the previous children's hidden properties."
       ;; Paint-only preparation normally reuses visible descendant styles.
       ;; Occluded descendants have no visible fragments to refresh, so prepare
       ;; the isolated host's complete style closure before rendering it.
-      (when-let* ((node (ebox-runtime-index-get
+      (when-let* (((not (plist-get proof :owner-reflow-p)))
+                  (node (ebox-runtime-index-get
                         owner-id (plist-get state :node-table))))
         (ebox-surface-prepare-inline-candidate-styles
          previous-state state (ebox--runtime-node-ids node))
@@ -4854,6 +4867,81 @@ detached horizontal owners keep the ordinary fractional-origin fallback."
         (ebox-surface--scroll-content-patch-output buffer previous-state state)
       (ebox-surface--buffer-span-patch-output buffer previous-state state))))
 
+(defun ebox-surface--raw-owner-patch-output (buffer previous-state state)
+  "Patch an allocated owner using retained pre-quantization geometry.
+BUFFER stores whole-pixel output. PREVIOUS-STATE retains the exact raw layout
+of those same characters, so the owner can be rendered at its original width
+and the complete changed rows quantized with their original sibling remainder.
+STATE receives only the resulting character patches and final fragment ledger."
+  (let ((raw (plist-get previous-state :raw-layout-output))
+        (proofs (plist-get state :owner-scoped-proofs)))
+    (when (and (stringp raw) proofs
+               (null (plist-get previous-state :scroll-region-ids))
+               (cl-every (lambda (proof) (plist-get proof :owner-reflow-p)) proofs)
+               (with-current-buffer buffer (= (length raw) (buffer-size))))
+      (with-temp-buffer
+        (insert raw)
+        (let* ((base (copy-sequence previous-state))
+               (candidate (copy-sequence state))
+               (ebox-surface--integral-local-output-required-p nil)
+               (ebox--region-line-index (ebox--build-region-line-index))
+               (ebox--region-line-index-buffer (current-buffer))
+               (ebox-incremental--buffer-render-state-override (cons (current-buffer) base))
+               (ebox-incremental--candidate-base-state (cons (current-buffer) base)))
+          (plist-put base :surface nil)
+          (plist-put base :layout-snapshots
+                     (if-let* ((snapshots (plist-get previous-state :raw-layout-snapshots)))
+                         (copy-hash-table snapshots)
+                       (make-hash-table :test #'equal)))
+          (plist-put base :layout-snapshots-complete-p nil)
+          (plist-put base :surface-fragments
+                     (or (plist-get previous-state :raw-layout-fragments)
+                         (ebox-surface--rendered-fragments (copy-sequence raw))))
+          (plist-put candidate :layout-snapshots (make-hash-table :test #'equal))
+          (plist-put candidate :owner-scoped-proofs
+                     (mapcar
+                      (lambda (proof)
+                        (let* ((copy (copy-sequence proof))
+                               (snapshot (ebox--ensure-layout-snapshot-details
+                                          (current-buffer) (plist-get proof :owner-id))))
+                          (plist-put copy :snapshot snapshot)
+                          (plist-put copy :allocated-width
+                                     (plist-get (plist-get snapshot :external-footprint-signature)
+                                                :max-line-pixel-width))
+                          copy)) proofs))
+          (when-let* ((output (ebox-surface--buffer-span-patch-output (current-buffer) base candidate)))
+            (let* ((ebox--render-owned-text-values (plist-get candidate :render-owned-text-values))
+                   (fragments
+                    (or (plist-get candidate :span-patch-fragment-data)
+                        (ebox-surface--rendered-fragments output)))
+                   (rounded (ebox--quantize-pixel-spaces output)))
+              (plist-put state :raw-layout-output output)
+              (plist-put state :fractional-pixel-output-p
+                         (ebox--fractional-pixel-spaces-p output))
+              (plist-put state :raw-layout-fragments fragments)
+              (plist-put state :raw-layout-snapshots (plist-get candidate :layout-snapshots))
+              (plist-put state :render-owned-text-values ebox--render-owned-text-values)
+              (plist-put state :content-base-extent (length raw))
+              (plist-put state :content-coordinate-patches (plist-get candidate :content-coordinate-patches))
+              ;; Quantization changes only display widths. Character offsets,
+              ;; roles, paint provenance and row dependencies are unchanged.
+              (plist-put state :span-patch-fragment-data
+                         (mapcar (lambda (fragment)
+                                   (let ((copy (copy-sequence fragment)))
+                                     (plist-put copy :text rounded)
+                                     (plist-put copy :text-source-p t)))
+                                 fragments))
+              (plist-put state :span-patch-content-p t)
+              (plist-put state :retained-allocation-certificates
+                         (plist-get candidate :retained-allocation-certificates))
+              ;; The local proof used raw widths. Mounted allocation details
+              ;; must be recaptured from the accepted whole-pixel output.
+              (plist-put state :layout-snapshots (make-hash-table :test #'equal))
+              (plist-put state :layout-snapshots-complete-p nil)
+              (plist-put state :layout-snapshot-detail-generation
+                         (plist-get candidate :layout-snapshot-detail-generation))
+              rounded)))))))
+
 (defun ebox-surface--buffer-span-patch-output (buffer previous-state state)
   "Return a proven single- or multi-owner local patch output, or nil."
   (let* ((proofs (plist-get state :owner-scoped-proofs))
@@ -4865,8 +4953,9 @@ detached horizontal owners keep the ordinary fractional-origin fallback."
                   ((plist-get proof :nested-scroll-patch-p)
                    (ebox-surface--nested-scroll-patch-candidate
                     buffer previous-state state proof))
-                  ((plist-get proof :layer-recompose-p)
-                   (ebox-surface--layer-patch-candidate
+                  ((or (plist-get proof :layer-recompose-p)
+                       (plist-get proof :owner-reflow-p))
+                   (ebox-surface--composed-owner-patch-candidate
                     buffer previous-state state proof))
                   ((plist-get proof :range-splice-p)
                      (unless (ebox-surface--owner-needs-ancestor-paint-p
@@ -7452,6 +7541,9 @@ published runtime and must be consumed without clearing those shared nodes."
                 (tp-signal-read (ebox-surface--signals-scroll signals)))
               (setq state (ebox-surface--finish-runtime-state state))
               (ebox-surface--refresh-paint-snapshots state dirty-set)
+              (cl-remf state :raw-layout-output)
+              (cl-remf state :raw-layout-fragments)
+              (cl-remf state :raw-layout-snapshots)
               (cl-remf state :paint-dirty-set)
               (ebox-surface--projection-result
                context projection state
@@ -7493,6 +7585,10 @@ published runtime and must be consumed without clearing those shared nodes."
                                     (ebox-surface--span-patch-output
                                      (ebox-surface--signals-buffer signals)
                                      previous-state state t))
+                               (and (memq projection-kind '(span-patch owner-scoped))
+                                    (plist-get previous-state :raw-layout-output)
+                                    (ebox-surface--raw-owner-patch-output
+                                     (ebox-surface--signals-buffer signals) previous-state state))
                                ;; A detached fractional owner cannot recover
                                ;; the remainder spent by preceding siblings.
                                (unless (plist-get previous-state

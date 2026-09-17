@@ -154,5 +154,66 @@
         (should (equal (buffer-substring-no-properties (point-min) (point-max))
                        "OtherCharlie\nWordsDelta "))))))
 
+(defun ebox-flex-test--progress-scene (width percent label background)
+  "Build a dashboard with WIDTH, PERCENT, LABEL and enclosing BACKGROUND."
+  (ebox-build
+   `(flex :id frame :width (px ,width) :background-color ,background
+          :column-gap (px 1.5) :align-items stretch :wrap-mode none
+      (box :width (px 10.5) :flex-shrink 0 "Left")
+      (column :flex-basis (px 30) :flex-shrink 0 :min-width (px 0)
+              :padding ((lh 1) (px 1.5)) :overflow hidden
+        (box :id label :width (% 100) :height (lh 1)
+             :tab-index 0 ,label)
+        (box :width (% 100) :height (lh 1) :background-color "gray"
+          (box :id fill :width (% ,percent) :height (lh 1)
+               :background-color "red")))
+      (box :flex-grow 1 :min-width (px 0) "Right"))))
+
+(defun ebox-flex-test--visible-runs (buffer)
+  "Describe BUFFER's visible text, display geometry and colors."
+  (with-current-buffer buffer
+    (let ((text (buffer-string)) result)
+      (dotimes (position (length text) (nreverse result))
+        (push (list (aref text position)
+                    (get-text-property position 'display text)
+                    (get-text-property position 'face text))
+              result)))))
+
+(ert-deftest ebox-flex-progress-updates-preserve-fractional-sibling-geometry ()
+  "Mixed text and dimension updates match full rendering in a stable Flex slot."
+  (let ((ebox-viewport-width 81) (ebox-viewport-height 20)
+        (live (generate-new-buffer " *ebox-progress-live*"))
+        (reference (generate-new-buffer " *ebox-progress-reference*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer live
+                                (ebox-flex-test--progress-scene 81 67 "67%" "blue"))
+          (dolist (context '((81 "blue") (81 "green") (93 "green")
+                            (93 "blue") (74 "blue")))
+            (with-current-buffer live
+              (ebox-call-with-update-batch
+               (lambda ()
+                 (ebox-region-update "frame" :width (list 'px (car context))
+                                     :background-color (cadr context)))))
+            (dolist (percent '(100 67 0 50 100 67))
+              (let ((label (format "%d%%" percent)))
+                (ebox-focus nil live)
+                (ebox-focus-first live)
+                (with-current-buffer live
+                  (ebox-call-with-update-batch
+                   (lambda ()
+                     (ebox-region-update "label" :content label)
+                     (ebox-region-update "fill" :width (list '% percent)))))
+                (ebox-render-to-buffer
+                 reference (ebox-flex-test--progress-scene
+                            (car context) percent label (cadr context)))
+                (should (equal (ebox-flex-test--visible-runs live)
+                               (ebox-flex-test--visible-runs reference)))))))
+      (dolist (buffer (list live reference))
+        (when (buffer-live-p buffer)
+          (when (ebox-surface-buffer-mounted-p buffer)
+            (ebox-unmount-buffer buffer))
+          (kill-buffer buffer))))))
+
 (provide 'ebox-flex-tests)
 ;;; ebox-flex-tests.el ends here

@@ -1050,6 +1050,11 @@
       "name": "ebox-responsive-cache-preserves-cyclic-native-keymaps",
       "file": "tests/ebox-size-style-tests.el",
       "purpose": "Responsive subtrees mount with a recursive native keymap, retain activation across unrelated updates and use a newly published replacement binding."
+    },
+    {
+      "name": "ebox-flex-progress-updates-preserve-fractional-sibling-geometry",
+      "file": "tests/ebox-flex-tests.el",
+      "purpose": "Repeated simultaneous progress width and label updates retain sibling pixel geometry and enclosing paint, matching a fresh render after parent size and color changes."
     }
   ]
 }
