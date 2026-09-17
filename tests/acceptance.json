@@ -1060,6 +1060,16 @@
       "name": "ebox-focus-state-only-observation-keeps-independent-inputs",
       "file": "tests/ebox-focus-style-tests.el",
       "purpose": "Repeated state-only focus updates retain independent mounts and pure input while public exclusive phase timings account for the whole observed commit."
+    },
+    {
+      "name": "ebox-layer-source-intervals-preserve-unicode-and-properties",
+      "file": "tests/ebox-layer-tests.el",
+      "purpose": "Layer show/hide updates preserve untouched CJK and combining glyphs, native properties and caller inputs."
+    },
+    {
+      "name": "ebox-layer-flow-z-order-can-cross-overlay",
+      "file": "tests/ebox-layer-tests.el",
+      "purpose": "Changing normal-flow z order across a positioned overlay preserves the correct visible winner through repeated commits."
     }
   ]
 }

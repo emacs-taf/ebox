@@ -169,6 +169,9 @@ author key 或兄弟位置判断身份。因此，插入状态标签时，后续
 后代的文本与尺寸可在分配不变的 owner 内重排。owner 保留身份、子节点拓扑、
 自身布局声明及祖先分配，最终输出仍须验证精确外部尺寸、裁剪与祖先效果。
 内部绘制角色可以改变；整数与数值相等的浮点数按同一几何值比较，不采用容差。
+分配证明只测量变化 owner 的已发布边界，向上检查父边、布局输入和有序子节点是否
+保持不变。最终 owner 输出通过外部尺寸校验后，以等尺寸输出替换即可逐层保持祖先
+分配，无需重新读取祖先挂载或测量其文本；相关输入变化仍会拒绝局部发布。
 
 含小数像素的已提交代保留取整前的布局文本。局部 owner 使用原始分配更新，再对
 组合后的物理行统一取整，保留前面兄弟消耗的小数余量。原始文本与显示文本共用
@@ -203,6 +206,16 @@ span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，pr
 选择该路径后，candidate 保留已发布的 Ebox topology，并复用 retained TP node-object subtree。Producer 仍会重新执行 viewport-sensitive layout 并生成新的 surface plan；TP 继续负责 scoped buffer diff、revision、stable identity 和原子 rollback。即使最终文本 patch 很小，topology、cascade、inheritance、scroll、overflow 或 display-signature 变化也不能报告为 `viewport-reflow`。
 
 任意 proof 条件失败时，更新必须使用普通安全 projection 路径。该 fallback 可以执行更宽的 node projection 和 TP reconciliation，但必须保持相同的输出、identity、publication 和 rollback 合同。`tests/ebox-surface-tests.el` 覆盖 retained width/height/both-axis 路径、每个不安全 fallback 触发条件，以及 candidate preparation 之后的 publication failure。
+
+## 覆盖层合成
+
+Placement 在判断遮挡前保留原始行文本与像素来源区间。行签名不变时直接复用已提交
+输出，无需先提取每个子元素的字符串；变化的行只从原始来源裁切实际可见的区间。
+这消除了先裁切全部 flow 子元素、再对中间字符串二次裁切的重复工作。普通流、相对
+偏移、portal 定位和 z 顺序共用该路径。
+当 flow 子元素没有相对移动，且全部定位记录的 z 顺序都不低于 flow 时，直接把已完成
+的普通流行作为合成底层，并从中读取 anchor 几何；浮层覆盖之外保持原有内容。相对
+移动或穿插的 z 顺序仍使用逐 owner 合成。
 
 ## 保留式 scroll window
 

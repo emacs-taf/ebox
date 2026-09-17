@@ -244,14 +244,16 @@ Nested scroll changes and source updates cannot use this root-only proof."
 (defun ebox-layer--record-signature (record)
   "Return immutable comparison facts for one paint RECORD.
 Do not retain NODE itself: copied candidate nodes can have mutable transient
-attachments.  The sliced text is compared with its complete text properties,
-which captures display geometry, paint and interaction values."
+attachments.  Compare the source interval and original row with its complete
+text properties, without materializing a slice before the reuse decision."
   (let ((node (plist-get record :node)))
     (list :node-id (ebox-layer--stable-node-id node)
           :x (plist-get record :x)
           :y (plist-get record :y)
           :z-index (or (plist-get node :z-index) 0)
           :positioned (and (ebox-layer-positioned-p node) t)
+          :source-start (plist-get record :source-start)
+          :source-end (plist-get record :source-end)
           :text (plist-get record :text))))
 
 (defun ebox-layer--compose-cache-key (host phase)
@@ -261,12 +263,13 @@ host's rows; an unidentifiable host disables the cache."
   (when-let* ((id (ebox-layer--stable-node-id host)))
     (cons id phase)))
 
-(defun ebox-layer--compose-rows (host records width height &optional phase)
+(defun ebox-layer--compose-rows (host records width height &optional phase base-lines)
   "Compose HOST's visible RECORDS in a WIDTH by HEIGHT content canvas.
 When the caller binds the retained and candidate ledgers and an immutable
 composition context, rows whose ordered record signatures are unchanged are
 returned directly without calling `ebox-composite-line'.  PHASE separates
-anchor prepasses from final composition so neither can reuse the other."
+anchor prepasses from final composition so neither can reuse the other.
+BASE-LINES, when present, are completed flow rows below every paint record."
   (let* ((phase (or phase ebox-layer--composition-phase))
          (ordered (ebox-layer--ordered-records host records))
          (rows (make-vector height nil))
@@ -286,7 +289,9 @@ anchor prepasses from final composition so neither can reuse the other."
           (push record (aref rows row)))))
     (dotimes (row height)
       (let* ((placements (nreverse (aref rows row)))
-             (signature (mapcar #'ebox-layer--record-signature placements))
+             (base-row (or (pop base-lines) ""))
+             (placement-signatures (mapcar #'ebox-layer--record-signature placements))
+             (signature (cons base-row placement-signatures))
              (reusable-p
               (and cacheable-p previous
                    (equal old-context ebox-layer--composition-context)
@@ -296,7 +301,7 @@ anchor prepasses from final composition so neither can reuse the other."
                    (= (length old-rows) height)
                    (cl-every (lambda (entry)
                                (plist-get entry :node-id))
-                             signature)
+                             placement-signatures)
                    (= (length old-signatures) height)
                    (equal-including-properties
                     signature (aref old-signatures row)))))
@@ -304,7 +309,7 @@ anchor prepasses from final composition so neither can reuse the other."
         (aset rows row
               (if reusable-p
                   (aref old-rows row)
-                (ebox-composite-line "" placements width)))))
+                (ebox-composite-line base-row placements width)))))
     (when cacheable-p
       (puthash key (list :context ebox-layer--composition-context
                          :width width :height height
@@ -431,9 +436,26 @@ publication.  Nested root projections join this same candidate-local pass."
               (push (list :node node
                           :x (+ (car origin) (plist-get piece :start))
                           :y (+ (cadr origin) (plist-get piece :y))
-                          :text (ebox-composite-slice (plist-get piece :line)
-                                                      (plist-get piece :start)
-                                                      (plist-get piece :end))) records))))))
+                          :text (plist-get piece :line)
+                          :source-start (plist-get piece :start)
+                          :source-end (plist-get piece :end)) records))))))
+    records))
+
+(defun ebox-layer--flow-records (host flow lines width height)
+  "Extract positioned paint records only when FLOW needs restacking in HOST."
+  (let (records)
+    (dolist (child flow)
+      (unless (eq (plist-get child :visibility) 'hidden)
+        (let ((dx (if (eq (plist-get child :position) 'relative)
+                      (ebox-layer--offset child :left host width) 0))
+              (dy (if (eq (plist-get child :position) 'relative)
+                      (ebox-layer--offset child :top host height) 0)))
+          (dolist (piece (ebox-layer--pieces lines child))
+            (push (list :node child :y (+ dy (plist-get piece :y))
+                        :x (+ dx (plist-get piece :start))
+                        :text (plist-get piece :line)
+                        :source-start (plist-get piece :start)
+                        :source-end (plist-get piece :end)) records)))))
     records))
 
 (defun ebox-layer-render-children (host children renderer)
@@ -452,22 +474,11 @@ Only candidate-local lists of visible paint records are sorted."
              (height (max flow-height (ceiling (ebox--content-height host flow-height base))))
              (absolute (cl-remove-if-not (lambda (child)
                                           (eq (plist-get child :position) 'absolute)) children))
-             records)
+             (relative-p (cl-some (lambda (child) (eq (plist-get child :position) 'relative)) flow))
+             (flow-z (apply #'max 0 (mapcar (lambda (child) (or (plist-get child :z-index) 0)) flow)))
+             (flow-records (and relative-p (ebox-layer--flow-records host flow lines width height)))
+             records base-lines)
         (dolist (child children) (ebox-layer--validate-child child host))
-        ;; Normal children preserve their layout slots.  Relative children use
-        ;; the same source intervals and shift only their paint coordinates.
-        (dolist (child flow)
-          (unless (eq (plist-get child :visibility) 'hidden)
-          (let ((dx (if (eq (plist-get child :position) 'relative)
-                        (ebox-layer--offset child :left host width) 0))
-                (dy (if (eq (plist-get child :position) 'relative)
-                        (ebox-layer--offset child :top host height) 0)))
-            (dolist (piece (ebox-layer--pieces lines child))
-              (push (list :node child :y (+ dy (plist-get piece :y))
-                          :x (+ dx (plist-get piece :start))
-                          :text (ebox-composite-slice (plist-get piece :line)
-                                                      (plist-get piece :start)
-                                                      (plist-get piece :end))) records)))))
         (unless (eq host ebox-layer--render-root)
           (dolist (child absolute)
             (when (and (eq (plist-get child :layer) 'root)
@@ -477,17 +488,26 @@ Only candidate-local lists of visible paint records are sorted."
                                         (eq (plist-get child :layer) 'root)) absolute)))
         (when (eq host ebox-layer--render-root)
           (setq absolute (append absolute (reverse ebox-layer--portals))))
-        (when (cl-some (lambda (child) (plist-get child :anchor)) absolute)
+        (when (and relative-p (cl-some (lambda (child) (plist-get child :anchor)) absolute))
           ;; Anchor geometry follows relative movement and visible clipping,
           ;; not the original flow slot.  This extra composition is needed
           ;; only by anchored panels.
-          (setq lines (ebox-layer--compose-rows host records width height
+          (setq lines (ebox-layer--compose-rows host flow-records width height
                                                 'anchor-prepass)))
-        (setq records (nconc (ebox-layer--absolute-records host absolute lines width height)
-                             records))
+        (setq records (ebox-layer--absolute-records host absolute lines width height))
+        (if (and (not relative-p)
+                 (cl-every (lambda (record)
+                             (>= (or (plist-get (plist-get record :node) :z-index) 0) flow-z))
+                           records))
+            ;; Ordinary flow is already composed. Retain it as the bottom
+            ;; plane instead of disassembling every child and composing it
+            ;; again. Only overlay intersections now require source slicing.
+            (setq base-lines lines)
+          (setq records (nconc records (or flow-records
+                                          (ebox-layer--flow-records host flow lines width height)))))
         (ebox--record-rendered-intrinsic-size
          (ebox--record-rendered-uniform-width
-          (ebox-lines-join (ebox-layer--compose-rows host records width height)) width)
+          (ebox-lines-join (ebox-layer--compose-rows host records width height nil base-lines)) width)
          width flow-height)))))
 
 (provide 'ebox-layer)

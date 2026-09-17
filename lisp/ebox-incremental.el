@@ -9469,8 +9469,9 @@ the complete proof."
     (buffer old-state candidate-state owner-id)
   "Return stable allocated-slot evidence from OWNER-ID through the root.
 Every retained ancestor must keep its parent edge and computed layout style.
-Published snapshot footprints make the allocation proof independent of the
-candidate's unrendered caches."
+Measure the owner's accepted boundary only. Above it, unchanged layout inputs
+and child topology preserve allocation by substitution once final owner output
+passes its footprint check. Ancestor text and mounts need not be remeasured."
   (let ((old-nodes (plist-get old-state :node-table))
         (new-nodes (plist-get candidate-state :node-table))
         (old-parents (plist-get old-state :parent-table))
@@ -9484,7 +9485,8 @@ candidate's unrendered caches."
              (new-node (ebox-runtime-index-get node-id new-nodes))
              (old-parent (ebox-runtime-index-get node-id old-parents))
              (new-parent (ebox-runtime-index-get node-id new-parents))
-             (snapshot (and old-node
+             (owner-p (equal node-id owner-id))
+             (snapshot (and owner-p old-node
                             (ebox-incremental--cached-allocation-snapshot
                              buffer node-id)))
              (old-style (and old-node
@@ -9493,27 +9495,31 @@ candidate's unrendered caches."
              (new-style (and new-node
                              (ebox-incremental--layout-slot-style-signature
                               new-node))))
-        (if (and old-node new-node snapshot
+        (if (and old-node new-node
                  (equal old-parent new-parent)
-                 (if (equal node-id owner-id)
+                 (eq (plist-get old-node :ebox-type) (plist-get new-node :ebox-type))
+                 (if owner-p
                      (and (equal (ebox-get old-node :width)
                                  (ebox-get new-node :width))
                           (equal (ebox-get old-node :height)
                                  (ebox-get new-node :height)))
-                   (equal old-style new-style))
-                 (plist-get snapshot :span-footprint-signature)
-                 (plist-get snapshot :external-footprint-signature)
-                 (or (null old-parent)
-                     (plist-get snapshot :parent-slot-signature)))
-            (push (list :node-id node-id
-                        :allocated-style old-style
-                        :parent-slot-signature
-                        (plist-get snapshot :parent-slot-signature)
-                        :external-footprint-signature
-                        (plist-get snapshot :external-footprint-signature)
-                        :span-footprint-signature
-                        (plist-get snapshot :span-footprint-signature)
-                        :detail-generation generation)
+                   (and (equal old-style new-style)
+                        (ebox-incremental--node-child-ids-equal-p old-node new-node)))
+                 (or (not owner-p)
+                     (and (plist-get snapshot :span-footprint-signature)
+                          (plist-get snapshot :external-footprint-signature)
+                          (or (null old-parent)
+                              (plist-get snapshot :parent-slot-signature)))))
+            (push (append (list :node-id node-id
+                                :allocated-style old-style
+                                :detail-generation generation)
+                          (when owner-p
+                            (list :parent-slot-signature
+                                  (plist-get snapshot :parent-slot-signature)
+                                  :external-footprint-signature
+                                  (plist-get snapshot :external-footprint-signature)
+                                  :span-footprint-signature
+                                  (plist-get snapshot :span-footprint-signature))))
                   signature)
           (setq valid nil))
         (setq node-id old-parent)))

@@ -206,7 +206,9 @@ Do not modify the input interval list or its cons cells."
 BASE is a single-line string or nil.  PLACEMENTS is a proper list of plists
 with a single-line string :text and finite pixel :x, already ordered bottom
 to top.  Each placement covers the full measured width of its text, including
-blanks.  Negative and overflowing placements are clipped to the canvas.
+blanks, or its optional :source-start/:source-end pixel interval.  Such an
+interval retains the original row until visibility is resolved; :x positions
+the interval's left edge.  Negative and overflowing placements are clipped.
 WIDTH must be finite and nonnegative.  Uncovered pixels beyond BASE receive
 neutral fill.  Compute coverage before extracting original source intervals,
 so hidden placements cannot introduce cuts into a visible source glyph.
@@ -217,18 +219,24 @@ Do not modify BASE, PLACEMENTS, or any of their text property values."
     (error "Invalid Ebox composite canvas"))
   (let (sources covered visible)
     (dolist (placement placements)
-      (let ((text (plist-get placement :text))
-            (x (plist-get placement :x)))
+      (let* ((text (plist-get placement :text))
+             (x (plist-get placement :x))
+             (source-start (or (plist-get placement :source-start) 0))
+             (source-end (plist-get placement :source-end)))
         (unless (and (stringp text) (ebox-composite--line-p text)
-                     (ebox-size--finite-number-p x))
+                     (ebox-size--finite-number-p x)
+                     (ebox-size--finite-number-p source-start) (>= source-start 0))
           (error "Invalid Ebox composite placement: %S" placement))
-        (let* ((right (+ x (ebox--string-pixel-width text)))
+        (setq source-end (or source-end (ebox--string-pixel-width text)))
+        (unless (and (ebox-size--finite-number-p source-end) (>= source-end source-start))
+          (error "Invalid Ebox composite source interval"))
+        (let* ((right (+ x (- source-end source-start)))
                (left (max 0 x))
                (end (min width right)))
           (unless (ebox-size--finite-number-p right)
             (error "Ebox composite placement extent is not finite"))
           (when (< left end)
-            (push (list left end text x) sources)))))
+            (push (list left end text (- x source-start)) sources)))))
     ;; Sources were pushed from bottom to top.  Only original source metadata
     ;; participates in occlusion; no sliced text is ever sliced again.
     (dolist (source (append sources (list (list 0 width base 0))))

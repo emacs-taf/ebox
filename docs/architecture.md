@@ -215,6 +215,11 @@ ancestor allocation; exact rendered extents, clipping and enclosing effects
 still determine whether local publication is admissible. Interior paint roles
 may change without invalidating that exterior. Geometry comparisons use exact
 numeric equality, including integral floats, without a rounding tolerance.
+The allocation certificate measures only the changed owner's published boundary.
+Above it, the proof checks unchanged parent edges, layout inputs and ordered
+children. Once the final owner output preserves its footprint, substitution
+preserves each ancestor's allocation without rereading that ancestor's mounts
+or remeasuring its text. Changed inputs still reject local publication.
 
 For fractional pixel output, the retained generation also keeps pre-quantization
 layout text. An admitted owner patch uses that allocation and then quantizes the
@@ -268,6 +273,19 @@ If span, owner-scoped, formatting-context, or mixed local output declines, the p
 When selected, the candidate keeps the published Ebox topology and reuses the retained TP node-object subtree. The producer still reruns viewport-sensitive layout and materializes the new surface plan, and TP remains responsible for the scoped buffer diff, revision, stable identity, and atomic rollback. `viewport-reflow` must never be reported for a topology, cascade, inheritance, scroll, overflow, or display-signature change merely because the final text patch is small.
 
 If any proof condition fails, the update uses the ordinary safe projection path. That fallback may do broader node projection and TP reconciliation, but it preserves the same output, identity, publication, and rollback contract. Tests in `tests/ebox-surface-tests.el` cover the retained width/height/both-axis path, each unsafe fallback trigger, and publication failure after candidate preparation.
+
+## Layer composition
+
+Layer placements carry original row text and pixel source intervals until the
+compositor resolves occlusion. Unchanged row signatures reuse their accepted
+output without extracting child strings; changed rows cut only uncovered
+intervals from original sources. This avoids clipping every flow child before
+the visibility decision and clipping those intermediate strings a second time.
+Normal flow, relative offsets, portal placement and z ordering share this path.
+When flow children have no relative movement and every positioned record is
+above the flow's z order, completed flow rows form the bottom composition plane.
+They supply anchor geometry directly and remain intact outside overlay coverage.
+Relative movement and interleaved z orders use the ordinary per-owner composition.
 
 ## Retained scroll window
 

@@ -143,5 +143,53 @@
     (should (equal (substring-no-properties output)
                    "0123456789\nabBASEghij\nABMENUGHIJ\n0123456789"))))
 
+(ert-deftest ebox-layer-source-intervals-preserve-unicode-and-properties ()
+  "Layer visibility retains untouched flow glyphs and their native properties."
+  (let* ((text (propertize "中éZ" 'help-echo "Unicode source"))
+         (make-input
+          (lambda (hidden)
+            (ebox-build
+             `(row :width (ch 6) :height (lh 1)
+                   (box :width (ch 2) "AA")
+                   (box :width (ch 4) ,text)
+                   (box :position absolute :left (ch 1) :width (ch 1)
+                        :height (lh 1) :visibility ,(if hidden 'hidden 'visible)
+                        "Q")))))
+         (buffer (generate-new-buffer " *layer-source-intervals*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer (funcall make-input t))
+          (dolist (hidden '(nil t nil))
+            (ebox-commit buffer (funcall make-input hidden))
+            (with-current-buffer buffer
+              (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                             (if hidden "AA中éZ" "AQ中éZ")))
+              (should (equal (get-text-property (+ (point-min) 2) 'help-echo)
+                             "Unicode source"))))
+          (should (equal text (propertize "中éZ" 'help-echo "Unicode source"))))
+      (when (buffer-live-p buffer)
+        (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-layer-flow-z-order-can-cross-overlay ()
+  "Retained normal-flow content can move above and below a positioned layer."
+  (let ((buffer (generate-new-buffer " *layer-flow-z*"))
+        (input (lambda (z)
+                 (ebox-build `(box :width (ch 6) :height (lh 1)
+                                   (box :z-index ,z "BOTTOM")
+                                   (box :position absolute :z-index 1
+                                        :width (ch 6) :height (lh 1) "FRONT!"))))))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer (funcall input 0))
+          (dolist (z '(2 0 2 0))
+            (ebox-commit buffer (funcall input z))
+            (with-current-buffer buffer
+              (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                             (if (> z 1) "BOTTOM" "FRONT!"))))))
+      (when (buffer-live-p buffer)
+        (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
+        (kill-buffer buffer)))))
+
 (provide 'ebox-layer-tests)
 ;;; ebox-layer-tests.el ends here

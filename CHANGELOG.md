@@ -6,6 +6,16 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Local allocation proofs measure the changed owner's boundary and verify
+  unchanged ancestor inputs, avoiding repeated mount snapshots and text
+  measurements of unaffected ancestors. Final output checks remain required.
+
+- Layer composition retains original row intervals until occlusion and row
+  reuse are resolved. Hidden and reused content avoids eager slicing; visible
+  glyphs are clipped once from their original shaping context.
+  Overlays above unmoved normal flow compose directly over its completed rows,
+  avoiding full flow disassembly and an unnecessary anchor prepass.
+
 - Visually unchanged focus and pressed-state updates retain their source tree,
   selector relationships and viewport dependencies instead of revalidating and
   preparing a complete author tree. Actual style effects retain normal planning.
