@@ -6,6 +6,13 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Prepared metadata and paint projections survive unscoped publication and
+  empty-range fallback. Focus and pressed-state updates no longer lose their
+  incremental strategy and rebuild the complete surface during mouse input.
+- Owner-scoped updates with integral published pixels skip the raw-layout
+  buffer copy; the raw allocation path remains available when fractional pixel
+  remainders require it.
+
 - Local rich-text updates reuse unaffected fragment parsing even when the
   changed interval gains or loses property runs. Paint addresses and target
   ownership are rebuilt from exact semantic facts; callback/keymap graphs no

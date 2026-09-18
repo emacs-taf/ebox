@@ -5219,7 +5219,9 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
                         callback
                         (plist-get commit-input :preserve-identities-p)
                         (plist-get commit-input :state-overrides)
-                        participant))))
+                        participant
+                        (plist-get commit-input :projection-kind)
+                        t))))
                (ebox-surface--framework-participant-report participant))))))
     (let ((buffer (get-buffer buffer-or-name)))
       (if (and (buffer-live-p buffer)

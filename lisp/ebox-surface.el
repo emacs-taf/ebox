@@ -1460,12 +1460,15 @@ FRAMEWORK-PARTICIPANT owns paired framework publication when non-nil."
 
 (defun ebox-surface-mount-buffer
     (buffer source &optional report-base after-publication
-            preserve-identities-p state-overrides framework-participant)
+            preserve-identities-p state-overrides framework-participant
+            projection-kind source-isolated-p)
   "Mount or atomically update BUFFER from Ebox SOURCE and return its surface.
 REPORT-BASE requests a committed Ebox report.  AFTER-PUBLICATION runs inside
 the rollback-capable transaction.  PRESERVE-IDENTITIES-P retains identities
 already present in a logical candidate.  STATE-OVERRIDES augments its runtime.
-FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
+FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil.
+PROJECTION-KIND and SOURCE-ISOLATED-P preserve a prepared candidate's projection
+and ownership independently of whether publication has an object scope."
   (let* ((observation-context ebox-surface--observation-context)
          (surface (ebox-surface--live-buffer-surface buffer))
          (old-state (and surface (tp-surface-client-state surface)))
@@ -1482,7 +1485,9 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
                     source buffer))))
          (producer
           (ebox-surface-producer
-           source old-state preserve-identities-p state-overrides signals))
+           source old-state preserve-identities-p state-overrides signals
+           projection-kind source-isolated-p
+           (plist-get state-overrides :source-path-copied-p)))
          success native-settled-p)
     (unwind-protect
         (progn
@@ -2575,7 +2580,7 @@ FRAMEWORK-PARTICIPANT retains post-TP publication facts when non-nil."
                (append report-base
                        '(:tp-scope-fallback t :empty-range-owner-fallback t))
                after-publication t state-overrides
-               framework-participant)
+               framework-participant projection-kind source-isolated-p)
             (let* ((context-values
                     (ebox-surface--context-values
                      buffer old-state state-overrides))
@@ -7335,6 +7340,11 @@ published runtime and must be consumed without clearing those shared nodes."
               (and retained-runtime-source-p
                    (eq projection-kind 'native-frame)))
              (root (cond
+                    ;; A proven selector-only candidate shares the published
+                    ;; tree.  Its new facts live in the source index; clearing
+                    ;; attachments would mutate the accepted generation.
+                    ((and retained-runtime-source-p
+                          (eq projection-kind 'metadata)) source)
                     (source-path-copied-p source)
                     (source-isolated-p
                      (if (and (eq projection-kind 'native-frame)
@@ -7619,6 +7629,15 @@ published runtime and must be consumed without clearing those shared nodes."
                                      (ebox-surface--signals-buffer signals)
                                      previous-state state t))
                                (and (memq projection-kind '(span-patch owner-scoped))
+                                    ;; Raw allocation preserves the remainder
+                                    ;; spent by preceding siblings only when
+                                    ;; the published generation actually has
+                                    ;; fractional pixel spaces.  Integer output
+                                    ;; is handled by the integral local patch
+                                    ;; below; copying the complete raw buffer
+                                    ;; first only duplicates that work.
+                                    (plist-get previous-state
+                                               :fractional-pixel-output-p)
                                     (plist-get previous-state :raw-layout-output)
                                     (ebox-surface--raw-owner-patch-output
                                      (ebox-surface--signals-buffer signals) previous-state state))

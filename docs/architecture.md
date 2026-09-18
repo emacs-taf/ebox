@@ -178,6 +178,13 @@ Metadata and paint-only interaction candidates retain complete mounted state
 and therefore do not claim a content-range scope proof. Content and geometry
 patches keep scoped publication only when their candidate mount specifications
 prove the same ranges.
+Publication scope and projection strategy are independent: unscoped publication
+and an empty-range fallback still consume the planner's prepared projection and
+source ownership. Proven selector-only candidates retain the accepted tree;
+new interaction facts reside in their candidate source index.
+Owner-scoped output uses the integral local patch directly when the published
+generation has no fractional pixel spaces. The raw allocation replay is kept
+only for generations whose sibling remainder requires it.
 
 Overlapping replacements resolve intermediate nodes from the nearest candidate
 ancestor before merging descendant writes. Copying an intermediate path from the
