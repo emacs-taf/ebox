@@ -3981,8 +3981,8 @@ Render-created paint origins compare their baselines and paint source roles."
                  (same (ebox--paint-origin-source-roles old)
                        (ebox--paint-origin-source-roles new))))
            ((and (keymapp old) (keymapp new))
-            (funcall (tp-property-policy-equality
-                      (tp-register-text-property 'keymap))
+            (funcall (ebox-property-policy-equality
+                      (ebox-register-text-property 'keymap))
                      old new))
            ((or (functionp old) (functionp new)
                 (keymapp old) (keymapp new)) nil)

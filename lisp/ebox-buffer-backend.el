@@ -26,7 +26,7 @@
 (require 'subr-x)
 (require 'ebox-measure)
 (require 'ebox-font)
-(require 'tp)
+(require 'ebox-paint)
 
 (defvar ebox--propertize-private-content-line-p nil
   "Non-nil allows ownership to be added to fresh content lines in place.")
@@ -361,7 +361,7 @@ Return FUNCTION's value."
           (or (plist-get style :text-decoration-style) 'solid))
          (resolved-color
           (unless (or (memq color '(nil currentColor))
-                      (tp-paint-slot-p color))
+                      (ebox-paint-slot-p color))
             color))
          face)
     (unless (or (null line) (equal lines '(none)))
@@ -416,8 +416,8 @@ foreground color."
 Paint slots retain their named-face address.  ROLE is `foreground',
 `background', `overline', or `underline'; nil horizontal border colors
 retain the ordinary default-color border semantics."
-  (if (tp-paint-slot-p color)
-      (tp-paint-slot-face color)
+  (if (ebox-paint-slot-p color)
+      (ebox-paint-slot-face color)
     (pcase role
       ('foreground
        (if (eq color 'ebox/default-foreground)
@@ -485,7 +485,7 @@ buffer-facing paint properties.  Layout-only properties never pass through."
 (defun ebox-buffer-side-border-face (color)
   "Return the canonical Emacs face for a side border with COLOR."
   (cond
-   ((tp-paint-slot-p color) (tp-paint-slot-face color))
+   ((ebox-paint-slot-p color) (ebox-paint-slot-face color))
    (color `(:background ,color))
    (t '(:inverse-video t))))
 

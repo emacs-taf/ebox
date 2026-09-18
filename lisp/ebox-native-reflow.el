@@ -14,6 +14,7 @@
 (require 'json)
 (require 'subr-x)
 (require 'ebox-text)
+(require 'ebox-paint)
 (require 'ebox-measure)
 (require 'ebox-render-context)
 (require 'ebox-runtime-index)
@@ -100,8 +101,8 @@
 (declare-function ebox-surface--buffer-display-window
                   "ebox-surface" (buffer))
 (declare-function ebox-text-property-value-copy "ebox-text" (value))
-(declare-function tp-paint-slot-p "tp-style" (value))
-(declare-function tp-paint-slot-face "tp-style" (slot))
+(declare-function ebox-paint-slot-p "ebox-paint" (value))
+(declare-function ebox-paint-slot-face "ebox-paint" (slot))
 
 (defvar ebox--flex-content-min-width-table)
 
@@ -1902,7 +1903,7 @@ Viewport height retains the original frame reference in native evaluation."
   "Return the serializable native face for Ebox foreground COLOR."
   (when color
     (cond
-     ((tp-paint-slot-p color) (tp-paint-slot-face color))
+     ((ebox-paint-slot-p color) (ebox-paint-slot-face color))
      ((eq color 'ebox/default-foreground) '(:inherit default))
      (t (list :foreground color)))))
 
@@ -2221,8 +2222,8 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
           (ebox-native-reflow--compile-add-face-style
            (let ((background (ebox-get box :bgcolor)))
              (cond
-              ((tp-paint-slot-p background)
-               (tp-paint-slot-face background))
+              ((ebox-paint-slot-p background)
+               (ebox-paint-slot-face background))
               (background (list :background background))))))
          (border-left-style
           (ebox-native-reflow--compile-border-face-style
@@ -2234,15 +2235,15 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
           (and (> border-top 0)
                (ebox-native-reflow--compile-add-face-style
                 (let ((color (ebox-get box :border-top-color)))
-                  (if (tp-paint-slot-p color)
-                      (tp-paint-slot-face color)
+                  (if (ebox-paint-slot-p color)
+                      (ebox-paint-slot-face color)
                     (list :overline (or color t)))))))
          (border-bottom-style
           (and (> border-bottom 0)
                (ebox-native-reflow--compile-add-face-style
                 (let ((color (ebox-get box :border-bottom-color)))
-                  (if (tp-paint-slot-p color)
-                      (tp-paint-slot-face color)
+                  (if (ebox-paint-slot-p color)
+                      (ebox-paint-slot-face color)
                     (list :underline
                           (append (list :position t)
                                   (when color (list :color color)))))))))

@@ -9,8 +9,8 @@
 
 (require 'cl-lib)
 (require 'ebox-text)
+(require 'ebox-property)
 (defvar ebox-selector-view--current)
-(require 'tp)
 (require 'tp)
 
 (declare-function ebox-style-compile-form "ebox-style" (tag plist))
@@ -1335,8 +1335,8 @@ data values use native value equality, before surface publication loads."
                                 (cond
                                  ((or (keymapp value) (keymapp (cadr entry)))
                                   (funcall
-                                   (tp-property-policy-equality
-                                    (tp-register-text-property
+                                   (ebox-property-policy-equality
+                                    (ebox-register-text-property
                                      (if (eq property :keymap) 'keymap property)))
                                    value (cadr entry)))
                                  ((or (functionp value) (functionp (cadr entry)))

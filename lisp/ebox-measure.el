@@ -319,7 +319,7 @@ switching those layers must not invalidate Ebox measurement caches."
      (lambda (entry)
        (let ((face (car-safe entry)))
          (and (symbolp face)
-              (string-match-p "\\`tp-paint-slot-" (symbol-name face)))))
+              (string-match-p "\\`ebox-paint-slot-" (symbol-name face)))))
      face-remapping-alist)))
 
 ;;;###autoload

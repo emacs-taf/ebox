@@ -9,7 +9,8 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'ecss)
-(require 'tp)
+(require 'ebox-paint)
+(require 'ebox-property)
 (require 'ebox-source)
 (require 'ebox-selector-view)
 (require 'ebox-layout-config)
@@ -641,7 +642,7 @@ the invalid value and its allowed units instead of a shorthand arity error."
   (cond
    ((ebox-style--atomic-size-form-p item) (cons 'width item))
    ((memq item ebox-style--border-styles) (cons 'style item))
-   ((or (stringp item) (tp-paint-slot-p item)) (cons 'color item))
+   ((or (stringp item) (ebox-paint-slot-p item)) (cons 'color item))
    (t (error "Invalid Ebox border component: %S" item))))
 
 (defun ebox-style--split-wsc (value)
@@ -970,7 +971,7 @@ Leave fractional and contextual lengths unresolved until used placement."
 (defun ebox-style--color-p (value)
   "Return non-nil when VALUE is a canonical or deferred color fact."
   (or (null value) (stringp value) (eq value 'currentColor)
-      (tp-paint-slot-p value)))
+      (ebox-paint-slot-p value)))
 
 (defun ebox-style--font-size-p (value)
   "Return non-nil when VALUE is a positive CSS reference-pixel size."
@@ -1366,12 +1367,12 @@ Grid track wrappers are traversed after their structural validator succeeds."
 (defconst ebox-style--closed-computed-cache-limit 512
   "Maximum selector-free computed styles retained across projections.")
 
-(declare-function tp-computed-p "tp-style" (value))
+(declare-function ebox-computed-p "ebox-property" (value))
 
 (defun ebox-style--closed-declarations-p (declarations)
   "Return non-nil when DECLARATIONS contain no deferred source or ECSS tag."
   (cl-loop for (_property value) on declarations by #'cddr
-           never (or (tp-computed-p value)
+           never (or (ebox-computed-p value)
                      (ecss-declaration-value-tagged-p value))))
 
 (defvar ebox-style-stylesheet (ebox-style--create-stylesheet)
@@ -1519,11 +1520,11 @@ cascade pass during its initial static projection."
 
 (defun ebox-style--declaration-value-equal-p (left right)
   "Return non-nil when declaration values LEFT and RIGHT are equivalent.
-TP paint slots are stable paint addresses.  Their installation flag and
-current face specification belong to TP publication state, not to the Ebox
-author declaration that references the slot."
-  (if (and (tp-paint-slot-p left) (tp-paint-slot-p right))
-      (eq (tp-paint-slot-face left) (tp-paint-slot-face right))
+Ebox paint slots are stable paint addresses.  Their installation flag and
+current face specification belong to Ebox paint state, not to the Ebox author
+declaration that references the slot."
+  (if (and (ebox-paint-slot-p left) (ebox-paint-slot-p right))
+      (eq (ebox-paint-slot-face left) (ebox-paint-slot-face right))
     (equal-including-properties left right)))
 
 (defun ebox-style-declarations-equal-p (left right)
@@ -1879,7 +1880,7 @@ ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
               ebox-style-schemas subject :declarations declarations
               :stylesheet ebox-style-stylesheet :parent-style parent-style
               :scopes ebox-style--scopes :adapter ebox-selector-view-adapter
-              :value-resolver #'tp-resolve-value)))
+              :value-resolver #'ebox-resolve-value)))
         (when key
           (when (>= (hash-table-count ebox-style--closed-computed-cache)
                     ebox-style--closed-computed-cache-limit)
@@ -2091,7 +2092,7 @@ child colors are handled by `ebox-style--theme-parent-delta-computed'."
          (ecss-compute-style
           ebox-style-schemas (ecss-subject-create :type "box")
           :declarations (ebox-style-compile-declarations plist)
-          :rules nil :value-resolver #'tp-resolve-value)))
+          :rules nil :value-resolver #'ebox-resolve-value)))
     (ebox-style--add-border-aggregates
      (ebox-style--public-computed-values style))))
 
