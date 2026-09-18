@@ -2006,14 +2006,6 @@ children again."
 (defun ebox-surface--projection-result
     (context projection state output &optional projection-kind)
   "Complete CONTEXT PROJECTION for STATE from rendered OUTPUT."
-  ;; Paint-origin is a producer-only carrier used to recover retained
-  ;; provenance while composing local rows.  It must never cross the Ebox/TP
-  ;; publication boundary: otherwise TP sees a different property plist on
-  ;; every retained run and schedules a property write even when all public
-  ;; properties are unchanged.  Fractional allocation keeps its private raw
-  ;; copy in STATE; the output handed to TP is always carrier-free.
-  (when (stringp output)
-    (ebox--strip-paint-origins! output))
   (let* ((surface-root (plist-get projection :surface-root))
          (objects-by-node (plist-get projection :objects-by-node))
          (root-node (plist-get state :root-node))
