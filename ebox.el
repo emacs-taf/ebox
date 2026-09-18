@@ -41,6 +41,38 @@
 ;; Function: ebox-box-node-layout (node)
 ;;;###autoload (autoload 'ebox-box-node-layout "ebox" nil nil)
 ;; Return canonical BoxNode NODE's typed layout config.
+
+;; Function: ebox-paint-slot-create (spec)
+;;;###autoload (autoload 'ebox-paint-slot-create "ebox" nil nil)
+;; Create an Ebox-owned stable face-remapping slot from face SPEC.
+
+;; Function: ebox-paint-slot-update (slot spec)
+;;;###autoload (autoload 'ebox-paint-slot-update "ebox" nil nil)
+;; Update SLOT's face specification while preserving its identity.
+
+;; Function: ebox-paint-slot-apply-updates (buffer updates)
+;;;###autoload (autoload 'ebox-paint-slot-apply-updates "ebox" nil nil)
+;; Apply Ebox paint SLOT/face updates to BUFFER and return a rollback journal.
+
+;; Function: ebox-paint-slot-rollback-updates (journal)
+;;;###autoload (autoload 'ebox-paint-slot-rollback-updates "ebox" nil nil)
+;; Restore an Ebox paint journal returned by `ebox-paint-slot-apply-updates'.
+
+;; Function: ebox-paint-slot-p (value)
+;;;###autoload (autoload 'ebox-paint-slot-p "ebox" nil nil)
+;; Return non-nil when VALUE is an Ebox paint slot.
+
+;; Function: ebox-paint-slot-face (slot)
+;;;###autoload (autoload 'ebox-paint-slot-face "ebox" nil nil)
+;; Return SLOT's stable face symbol.
+
+;; Function: ebox-paint-slot-spec (slot)
+;;;###autoload (autoload 'ebox-paint-slot-spec "ebox" nil nil)
+;; Return SLOT's current face specification.
+
+;; Function: ebox-paint-slot-installed-p (slot)
+;;;###autoload (autoload 'ebox-paint-slot-installed-p "ebox" nil nil)
+;; Return non-nil when SLOT is installed in a buffer face-remapping map.
 ;;
 ;; Function: ebox-box-node-p (node)
 ;;;###autoload (autoload 'ebox-box-node-p "ebox" nil nil)
