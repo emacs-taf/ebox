@@ -26,7 +26,7 @@
   "Directory containing the active Ebox Lisp sources.")
 
 (defconst ebox--compile-sources
-  '("ebox-text.el" "ebox-paint.el" "ebox-property.el"
+  '("ebox-text.el" "ebox-paint.el" "ebox-property.el" "ebox-transaction.el" "ebox-reactive.el" "ebox-publication.el"
     "ebox-cache.el" "ebox-interaction.el" "ebox-source.el" "ebox-runtime-index.el"
     "ebox-state-contract.el" "ebox-selector-view.el"
     "ebox-font.el" "ebox-size.el" "ebox-style.el"
@@ -93,18 +93,21 @@
 ;;;###autoload
 (defun ebox-call-with-update-batch (callback &optional buffer)
   "Call CALLBACK in BUFFER, coalescing its region updates into one publication.
-BUFFER defaults to the current buffer.  CALLBACK receives no arguments and its
-return value is returned unchanged.  Flush after CALLBACK returns normally;
-an empty or unchanged batch does not publish or replace the last update report.
+BUFFER defaults to the current buffer.  CALLBACK receives no arguments and
+its return value is returned unchanged.  Flush after CALLBACK returns
+normally; an empty or unchanged batch does not publish or replace the last
+update report.
 
 When BUFFER already has an active batch, join it without flushing.  Errors,
 quits and other nonlocal exits discard only this call's queued changes and
-preserve the outer batch.  A failed owned flush discards its unpublished batch;
-the TP publication boundary preserves the previously committed generation.
+preserve the outer batch.  A failed owned flush discards its unpublished
+batch; the Ebox publication publication boundary preserves the previously
+committed generation.
 
-This scope covers queued `ebox-region-update' calls for BUFFER, not arbitrary
-side effects in CALLBACK.  Leave explicit begin/flush lifecycle calls outside
-CALLBACK; the existing explicit API retains its separate retry semantics."
+This scope covers queued `ebox-region-update' calls for BUFFER, not
+arbitrary side effects in CALLBACK.  Leave explicit begin/flush lifecycle
+calls outside CALLBACK; the existing explicit API retains its separate retry
+semantics."
   (let* ((buffer (or buffer (current-buffer)))
          (previous (ebox-incremental--batch-state buffer))
          (outer-batch (ebox-incremental-batching-p buffer))
@@ -136,7 +139,7 @@ CALLBACK; the existing explicit API retains its separate retry semantics."
 (declare-function ebox-native-reflow--build
                   "ebox-native-reflow" (&optional clean))
 (declare-function ebox-native-reflow--status "ebox-native-reflow" ())
-(declare-function tp-transaction-active-p "tp-reactive" ())
+(declare-function ebox-transaction-active-p "ebox-reactive" ())
 
 (defalias 'ebox-select-all #'ebox-selector-query-buffer)
 (defalias 'ebox-update-selector #'ebox-selector-update-buffer)
@@ -514,10 +517,10 @@ publication."
 
 ;;;###autoload
 (defun ebox-buffer-set-observer (buffer-or-name observer-or-nil)
-  "Set BUFFER-OR-NAME's publication observer to OBSERVER-OR-NIL.
-The observer receives BUFFER and one defensive flat report at a time after an
-accepted publication.  TP's report is delivered first, followed by Ebox's
-completed report.  Nil removes observation without affecting rendering."
+  "Set BUFFER-OR-NAME's publication observer to OBSERVER-OR-NIL.  The observer
+receives BUFFER and one defensive flat report at a time after an accepted
+publication.  Ebox's report is delivered first, followed by Ebox's completed
+report.  Nil removes observation without affecting rendering."
   (let ((buffer (and buffer-or-name (get-buffer buffer-or-name))))
     (unless (buffer-live-p buffer)
       (user-error "Ebox observer target is not a live buffer: %S"
@@ -1508,15 +1511,15 @@ Return the signed consumed distance, zero at a boundary, or the sentinel
                        :projection-kind 'native-buffer-scroll
                        :runtime-published t
                        :scroll-patch-fast-p t
-                       :tp-full-root nil :tp-scope-fallback nil
-                       :tp-operation-count 0 :tp-text-operations 0
-                       :tp-property-operations 0 :created-objects 0
+                       :publication-full-root nil :publication-scope-fallback nil
+                       :publication-operation-count 0 :publication-text-operations 0
+                       :publication-property-operations 0 :created-objects 0
                        :removed-objects 0 :moved-objects 0
                        :reconciled-objects 0))))
             ;; Native root scrolling is a presentation-only state transition:
-            ;; it touches no signal, binding, candidate, or TP surface.  Keep
+            ;; it touches no signal, binding, candidate, or Ebox publication surface.  Keep
             ;; the same atomic rollback contract locally, but do not allocate
-            ;; a full TP transaction (hash tables, journals, and participant
+            ;; a full Ebox publication transaction (hash tables, journals, and participant
             ;; records) for every ordinary document line.
             (unless (plist-get render-state :native-scroll-report)
               (plist-put render-state :native-scroll-report report))
@@ -2947,9 +2950,10 @@ Return non-nil when descendant width dependencies remain relevant."
                      'done)))))))
 
 (defun ebox--runtime-prewarm-native-scroll (buffer job)
-  "Materialize and publish an eligible root scroll surface for BUFFER.
-The one-time publication runs only from the idle prewarm job; visible scroll
-events use the native window afterwards and never enter the TP surface plan."
+  "Materialize and publish an eligible root scroll surface for BUFFER.  The
+one-time publication runs only from the idle prewarm job; visible scroll
+events use the native window afterwards and never enter the Ebox publication
+surface plan."
   (let* ((region-id (plist-get job :native-scroll-region-id))
          (render-state (ebox--buffer-render-state buffer)))
     (when (and region-id
@@ -3054,7 +3058,8 @@ Return non-nil while more work remains."
   (get-text-property (point) 'ebox-content))
 
 (defun ebox--scroll-region-ids-in-mounts-at-pos (pos)
-  "Return scroll region ids whose TP mounts contain POS, inner first."
+  "Return scroll region ids whose Ebox publication mounts contain POS, inner
+first."
   (let (candidates)
     (maphash
      (lambda (region-id _state)
@@ -3539,7 +3544,7 @@ Boxes without publishing RUNTIME's deliberately sparse staging indexes."
             (plist-put candidate :reflow-prewarm-scratch nil)
             ;; Quantization registers nested mutable property-value tables.
             ;; A viewport candidate owns that registry before touching even
-            ;; one fractional carrier, including when TP later rejects it.
+            ;; one fractional carrier, including when Ebox publication later rejects it.
             (plist-put candidate :render-owned-text-values (make-hash-table :test #'eq))
             (plist-put candidate :flex-content-min-widths (make-hash-table :test #'eq))
             (dolist (key '(:render-signature-cache :viewport-height-dependent-subtree-cache))
@@ -3666,7 +3671,7 @@ Boxes without publishing RUNTIME's deliberately sparse staging indexes."
                          (when buffer
                            (unless (ebox-surface-buffer-mounted-p buffer)
                              (error
-                              "Ebox scroll update requires a mounted TP surface"))
+                              "Ebox scroll update requires a mounted Ebox publication surface"))
                            (ebox--surface-scroll-region-by
                             buffer region-id delta prefix-budget-lines)))))
                   (if noninteractive
@@ -4402,7 +4407,7 @@ cannot be changed through the unpublished batch root."
           :runtime-published nil :runtime-revision
           (plist-get state :runtime-revision)
           :surface-revision
-          (tp-surface-revision (plist-get state :surface))
+          (ebox--pub-surface-revision (plist-get state :surface))
           :dirty-count 0 :patch-count 0 :patch-ops nil)))
     (plist-put state :last-update-report report)
     report))
@@ -4593,7 +4598,7 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
              nil nil nil
              (plist-get commit-input :projection-kind)
              t)))
-      (plist-get (tp-surface-client-state surface) :last-update-report))))
+      (plist-get (ebox--pub-surface-client-state surface) :last-update-report))))
 
 (defun ebox--publish-surface-region-batch (buffer candidate-root pending)
   "Publish BUFFER's accumulated CANDIDATE-ROOT for entries in PENDING."
@@ -4612,7 +4617,8 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
      (ebox--surface-scroll-changes buffer pending))))
 
 (defun ebox--surface-region-update-target (buffer region-id handle props)
-  "Apply PROPS to BUFFER REGION-ID through TP for optional HANDLE."
+  "Apply PROPS to BUFFER REGION-ID through Ebox publication for optional
+HANDLE."
   (let* ((state (ebox--buffer-render-state buffer))
          (source-index
           (or (ebox-incremental-surface-batch-source-index buffer)
@@ -4718,23 +4724,20 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
 
 ;;;###autoload
 (defun ebox-region-update (handle &rest props)
-  "Update the node identified by HANDLE with PROPS.
-HANDLE is an opaque handle from `ebox-region-resolve' or an Ebox selector,
-or a semantic ID (string, non-nil symbol or integer) in the current buffer.
-PROPS accepts mutable content, style, interaction and scroll keywords plus
-ECSS custom property symbols named --NAME;
-`:content' replaces a Text node's string or a Box's sole direct Text child.
-It does not add children or mutate selector metadata.  The update builds an
-isolated candidate, runs the Ebox owner planner, and publishes once through the
-mounted TP surface.  Return nil while queued in an explicit batch; otherwise
-return the committed update report.
+  "Update the node identified by HANDLE with PROPS.  HANDLE is an opaque handle
+from `ebox-region-resolve' or an Ebox selector, or a semantic ID (string,
+non-nil symbol or integer) in the current buffer.  PROPS accepts mutable
+content, style, interaction and scroll keywords plus ECSS custom property
+symbols named --NAME; `:content' replaces a Text node's string or a Box's
+sole direct Text child.  It does not add children or mutate selector
+metadata.  The update builds an isolated candidate, runs the Ebox owner
+planner, and publishes once through the mounted Ebox publication surface.
+Return nil while queued in an explicit batch; otherwise return the committed
+update report.
 
-Examples:
-  (ebox-region-update \"status\" :content \"Ready\")
-  (ebox-region-update (ebox-region-resolve buffer \"status\")
-                      :content \"Ready\")
-  (ebox-region-update handle :padding \='((lh 1) (ch 2))
-                      :border-color \"red\")"
+Examples: (ebox-region-update \"status\" :content \"Ready\") (ebox-region-update
+  (ebox-region-resolve buffer \"status\") :content \"Ready\")
+  (ebox-region-update handle :padding ='((lh 1) (ch 2)) :border-color \"red\")"
   (when (ebox-source-semantic-id-p handle)
     (setq handle (ebox-region-resolve (current-buffer) handle)))
   (unless (ebox-region-handle-p handle)
@@ -4876,7 +4879,7 @@ Examples:
                  :dirty-count 1 :patch-count 1
                  :patch-ops (initial-mount))))
          (old-observer (ebox-surface-buffer-observer buffer))
-         (old-bridge (with-current-buffer buffer ebox-surface--tp-observer))
+         (old-bridge (with-current-buffer buffer ebox-surface--publication-observer))
          success result)
     (unwind-protect
         (progn
@@ -4922,16 +4925,17 @@ TP/Ebox reports after accepted initial publication and later commits."
 ;;;###autoload
 (defun ebox-unmount-buffer (buffer-or-name)
   "Unmount Ebox's retained surface from BUFFER-OR-NAME and return the buffer.
-The operation releases TP surface authority, observers, retained indexes,
-scroll/native runtime state, and the buffer-local Ebox surface handle."
+The operation releases Ebox publication surface authority, observers,
+retained indexes, scroll/native runtime state, and the buffer-local Ebox
+surface handle."
   (let ((buffer (get-buffer buffer-or-name)))
     (unless (buffer-live-p buffer)
       (user-error "Ebox unmount target is not a live buffer: %S"
                   buffer-or-name))
     (let ((surface (ebox-surface--live-buffer-surface buffer)))
       (unless surface
-        (user-error "Ebox buffer has no mounted TP surface: %S" buffer-or-name))
-      (tp-surface-unmount surface)
+        (user-error "Ebox buffer has no mounted Ebox publication surface: %S" buffer-or-name))
+      (ebox--pub-surface-unmount surface)
       (ebox-surface-cleanup-buffer-observer buffer)
       (ebox--clear-buffer-runtime-state buffer)
       (with-current-buffer buffer
@@ -4963,7 +4967,7 @@ scroll/native runtime state, and the buffer-local Ebox surface handle."
     (and start end (cons start end))))
 
 (defun ebox--host-ref-mount-bounds (buffer node)
-  "Return fallback TP mount bounds for NODE in BUFFER, or nil."
+  "Return fallback Ebox publication mount bounds for NODE in BUFFER, or nil."
   (let (start end)
     (dolist (region-id (ebox--node-all-region-ids node))
       (when-let* ((bounds (ebox-surface-region-bounds buffer region-id)))
@@ -4977,8 +4981,8 @@ scroll/native runtime state, and the buffer-local Ebox surface handle."
 
 The result is a `(START . END)' pair spanning the referenced runtime node's
 rendered border-box characters (excluding margins), or nil when the buffer,
-reference, or live TP mounts no longer exist.  HOST-REF is opaque and
-compared with `equal'."
+reference, or live Ebox publication mounts no longer exist.  HOST-REF is
+opaque and compared with `equal'."
   (when-let* ((buffer (ebox--host-ref-buffer buffer-or-name))
               (node (ebox--host-ref-node buffer host-ref)))
     (or (ebox--host-ref-role-bounds buffer node)
@@ -5149,8 +5153,8 @@ a later transaction phase fails, and is contained if it violates no-throw.
 Return the successful publication report stored by `ebox-buffer-update-report'."
   (let ((execute
          (lambda ()
-           (when (tp-transaction-active-p)
-             (error "Ebox public operation cannot join an outer TP transaction"))
+           (when (ebox-transaction-active-p)
+             (error "Ebox public operation cannot join an outer Ebox publication transaction"))
            (unless (or (null framework-publish) (functionp framework-publish))
              (signal 'wrong-type-argument (list 'functionp framework-publish)))
            (unless (or (null framework-rollback)
@@ -5255,7 +5259,7 @@ through dirty-set and patch-set execution before falling back to root rerender."
                   (old-viewport-width
                    (and state (plist-get state :viewport-width))))
              (unless (ebox-surface-buffer-mounted-p buffer)
-               (user-error "Ebox buffer has no mounted TP surface: %S" buffer))
+               (user-error "Ebox buffer has no mounted Ebox publication surface: %S" buffer))
              (ebox--cancel-buffer-runtime-prewarm buffer)
              (prog1
                  (ebox-surface-update-buffer-viewport

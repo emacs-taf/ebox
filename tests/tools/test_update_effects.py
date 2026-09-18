@@ -38,7 +38,6 @@ class UpdateEffectsTests(unittest.TestCase):
         return subprocess.run(
             [os.environ.get("EBOX_TOOL_TEST_EMACS", "emacs"), "-Q", "--batch",
              "-L", str(ROOT), "-L", str(ROOT.parent / "ecss"),
-             "-L", str(ROOT.parent / "tp"),
              "--eval", "(setq load-prefer-newer t)",
              "-l", str(EVALUATOR), "-f", "ebox-update-effects-batch"],
             cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60,
@@ -83,7 +82,7 @@ class UpdateEffectsTests(unittest.TestCase):
         self.assertEqual(report["status"], "completed")
         self.assertIsNone(report["error"])
         self.assertEqual(report["evaluator_sha256"], hashlib.sha256(EVALUATOR.read_bytes()).hexdigest())
-        self.assertEqual({source["package"] for source in report["sources"]}, {"ebox", "ecss", "tp"})
+        self.assertEqual({source["package"] for source in report["sources"]}, {"ebox", "ecss"})
         expected = {
             (style, subset)
             for style in ("inline", "scoped")

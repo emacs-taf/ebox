@@ -11,7 +11,7 @@
 (require 'ebox-text)
 (require 'ebox-property)
 (defvar ebox-selector-view--current)
-(require 'tp)
+(require 'ebox-publication)
 
 (declare-function ebox-style-compile-form "ebox-style" (tag plist))
 (declare-function ebox-style-declaration-properties "ebox-style"
@@ -656,20 +656,21 @@ clear only the pressed state, matching native Emacs focus semantics."
 
 ;;;###autoload
 (defun ebox-call-with-input (host-ref reader &optional buffer-or-name)
-  "Run native input READER for HOST-REF in BUFFER-OR-NAME.
-READER is a zero-argument function, for example a minibuffer read.  Return
-its result only while the same mounted target remains enabled and visible;
-otherwise signal `ebox-input-cancelled', a subtype of `quit'.  READER errors
-and user quits propagate.  No result is applied to application state here.
-Restore logical focus to the retained target on return, error or quit when
-it is still available.  Reorder and unrelated publication retain ownership;
-replacement, unmount, deletion, hiding and disabling invalidate it.
-This function changes no window selection and owns no input buffer.  Native
-Emacs readers own editing, input methods, selection and undo.  Call outside
-a TP transaction; it must not write native text into an Ebox-owned surface."
+  "Run native input READER for HOST-REF in BUFFER-OR-NAME.  READER is a
+zero-argument function, for example a minibuffer read.  Return its result
+only while the same mounted target remains enabled and visible; otherwise
+signal `ebox-input-cancelled', a subtype of `quit'.  READER errors and user
+quits propagate.  No result is applied to application state here.  Restore
+logical focus to the retained target on return, error or quit when it is
+still available.  Reorder and unrelated publication retain ownership;
+replacement, unmount, deletion, hiding and disabling invalidate it.  This
+function changes no window selection and owns no input buffer.  Native Emacs
+readers own editing, input methods, selection and undo.  Call outside a Ebox
+publication transaction; it must not write native text into an Ebox-owned
+surface."
   (unless (functionp reader)
     (signal 'wrong-type-argument (list 'functionp reader)))
-  (when (tp-transaction-active-p)
+  (when (ebox-transaction-active-p)
     (error "Ebox input requires an accepted transaction boundary"))
   (let* ((buffer (ebox-interaction--focus-buffer buffer-or-name))
          (surface (ebox-surface--live-buffer-surface buffer))
@@ -703,21 +704,22 @@ a TP transaction; it must not write native text into an Ebox-owned surface."
 
 ;;;###autoload
 (defun ebox-focus (host-ref &optional buffer-or-name)
-  "Focus HOST-REF in BUFFER-OR-NAME, defaulting to the current buffer.
-Return the current opaque Host reference and move point to its first accessible
+  "Focus HOST-REF in BUFFER-OR-NAME, defaulting to the current buffer.  Return
+the current opaque Host reference and move point to its first accessible
 visible painted character, without selecting a window.  Any enabled visible
-node may receive explicit focus, including a negative or absent `:tab-index'.
-Nil HOST-REF clears focus and preserves numeric point, clamped after layout.
-Focus changes publish the focus selector state and its computed styles together.
-Styles that make a newly requested target inaccessible reject the operation.
-Missing, disabled, hidden or
+node may receive explicit focus, including a negative or absent
+`:tab-index'.  Nil HOST-REF clears focus and preserves numeric point,
+clamped after layout.  Focus changes publish the focus selector state and
+its computed styles together.  Styles that make a newly requested target
+inaccessible reject the operation.  Missing, disabled, hidden or
 inaccessible targets signal `user-error' without changing focus or point.
 Focus follows retained identity through publication.  Removal, hiding and
-disabling clear it without choosing a replacement; navigation can then restart.
-Failed publication restores focus.  Unmount and buffer death release it.
-An active TP transaction is an error: call after acceptance instead. Focus
-changes cannot join an outer transaction or expose provisional targets."
-  (when (tp-transaction-active-p)
+disabling clear it without choosing a replacement; navigation can then
+restart.  Failed publication restores focus.  Unmount and buffer death
+release it.  An active Ebox publication transaction is an error: call after
+acceptance instead. Focus changes cannot join an outer transaction or expose
+provisional targets."
+  (when (ebox-transaction-active-p)
     (error "Ebox focus changes require an accepted transaction boundary"))
   (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
     (let* ((state (ebox-surface--buffer-client-state (current-buffer)))
@@ -803,7 +805,8 @@ following the target until point is moved back to that target's first character.
                      (min (point-max) (max (point-min) (nth 1 snapshot)))))))))
 
 (defun ebox-interaction--focus-settle (buffer snapshot state)
-  "Apply BUFFER's focus point after TP restores its native view for STATE."
+  "Apply BUFFER's focus point after Ebox publication restores its native view
+for STATE."
   (when (and (or (car snapshot)
                  (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
              (buffer-live-p buffer)
@@ -856,15 +859,16 @@ following the target until point is moved back to that target's first character.
 ;;;###autoload
 (defun ebox-focus-next (&optional count cycle buffer-or-name)
   "Move logical focus COUNT stops forward in BUFFER-OR-NAME and return its ref.
-Defaults are one stop and the current buffer.  Negative COUNT moves backward;
-zero returns current focus.  CYCLE non-nil wraps at a boundary; otherwise a
-missing stop signals `user-error' without changing focus or point.
-Only nodes declaring a nonnegative integer `:tab-index' are navigation stops.
-Order is ascending tab index, buffer start, then end; exact ties use retained
-node identity.  Disabled, hidden and inaccessible nodes are skipped.  Navigation
-starts at the first (or backward last) stop when there is no eligible focus.
-No window is selected and no key bindings are installed. Nonzero moves reject
-active TP transactions; zero remains a read-only query. See `ebox-focus'."
+Defaults are one stop and the current buffer.  Negative COUNT moves
+backward; zero returns current focus.  CYCLE non-nil wraps at a boundary;
+otherwise a missing stop signals `user-error' without changing focus or
+point.  Only nodes declaring a nonnegative integer `:tab-index' are
+navigation stops.  Order is ascending tab index, buffer start, then end;
+exact ties use retained node identity.  Disabled, hidden and inaccessible
+nodes are skipped.  Navigation starts at the first (or backward last) stop
+when there is no eligible focus.  No window is selected and no key bindings
+are installed. Nonzero moves reject active Ebox publication transactions;
+zero remains a read-only query. See `ebox-focus'."
   (interactive "p")
   (ebox-interaction--focus-move (or count 1) cycle buffer-or-name nil))
 
@@ -1324,9 +1328,10 @@ padding.  Border glyphs are excluded; horizontal strokes keep their own paint."
 
 (defun ebox-interaction-surface-equal-p (left right)
   "Compare native surface or interaction plists LEFT and RIGHT literally.
-Literal callbacks retain identity; keymap snapshots use TP's native property
-policy, which compares bindings while retaining command identity.  Paint and
-data values use native value equality, before surface publication loads."
+Literal callbacks retain identity; keymap snapshots use Ebox's native
+property policy, which compares bindings while retaining command identity.
+Paint and data values use native value equality, before surface publication
+loads."
   (or (eq left right)
       (and (= (length left) (length right))
            (cl-loop for (property value) on left by #'cddr

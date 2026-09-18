@@ -210,7 +210,7 @@ TRANSFER assigns the slot to CHILD; REVERSE reverses the physical root order."
           (should (memq (plist-get report :projection-kind)
                         '(viewport-reflow native-frame)))
           (should (plist-get report :runtime-published))
-          (should-not (plist-get report :tp-scope-fallback))
+          (should-not (plist-get report :publication-scope-fallback))
           (should (equal (buffer-substring-no-properties (point-min) (point-max))
                          (substring-no-properties (ebox-render input))))
           (should (equal "#ff0000"
@@ -237,7 +237,7 @@ TRANSFER assigns the slot to CHILD; REVERSE reverses the physical root order."
                 (fresh (ebox-render (funcall input value map))))
             (should (memq (plist-get report :projection-kind)
                           '(span-patch owner-scoped)))
-            (should-not (plist-get report :tp-scope-fallback))
+            (should-not (plist-get report :publication-scope-fallback))
             (should (equal (buffer-substring-no-properties (point-min) (point-max))
                            (substring-no-properties fresh)))
             (should (equal "#ff0000"

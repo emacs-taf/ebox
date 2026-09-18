@@ -19,16 +19,14 @@ package archive or stable release tag.
 | --- | --- |
 | Emacs 29.1 or newer | All Ebox use. |
 | ECSS 0.1.0 or newer | Style computation and selector semantics; required even without a stylesheet. |
-| TP 2.0.0 or newer | Retained publication, native property policies, and transactions; required when loading Ebox. |
 | [EKP 1.0.0 or newer](https://gitea.gklazycat.heiyu.space/geekinney/ekp) | Optional; required only when using `:wrap-mode kp`. |
 
-ECSS and TP are declared package dependencies. EKP is deliberately optional:
+ECSS is the required style dependency. EKP is deliberately optional:
 ordinary `word`, `char`, and `none` wrapping does not need it. For sibling source
 checkouts, add the required directories to `load-path`, then load Ebox:
 
 ```elisp
 (add-to-list 'load-path "/path/to/ecss")
-(add-to-list 'load-path "/path/to/tp")
 (add-to-list 'load-path "/path/to/ebox")
 (require 'ebox)
 ```
@@ -184,20 +182,18 @@ interaction guide for point and lifetime rules.
 Ebox copies canonical input before assigning runtime identity, so one built
 value may be mounted in multiple buffers without sharing live ownership.
 
-Snapshots traverse exported data and TP's latest retained diagnostic report
+Snapshots traverse exported data and Ebox publication's latest retained diagnostic report
 only when requested; ordinary updates do not create them.
 Their canonical input remains usable after later updates or unmounting. Mutable
 node data and interaction keymaps are detached, while immutable source facts
 and opaque capabilities (callbacks, records) retain identity. The display environment and
-external capabilities are not frozen. Querying during a TP transaction or
+external capabilities are not frozen. Querying during a Ebox publication transaction or
 after unmounting signals an error. Compare both mount ID and revision when
 identifying a committed generation; remounting can restart revision numbers.
 
-Ebox registers rollback-capable state only through TP 2.0.0's public structured
-participant API and final v2 protocol. Older transition builds do not provide
-the native property ownership and hover identity guarantees required by this
-release. Missing or malformed structured participant capability stops Ebox
-loading instead of selecting a compatibility writer.
+Ebox owns publication and rollback internally. Frameworks use SPI v3 and
+`ebox-publication/v1` to stage paired state changes and bounded final-accept
+markers. Older framework SPI records are rejected during initialization.
 
 ## Optional native module
 

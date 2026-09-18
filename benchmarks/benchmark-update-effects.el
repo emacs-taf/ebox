@@ -218,7 +218,7 @@ case.  Fifteen effect combinations run with inline and scoped styles."
                            :evaluator_sha256 (ebox-update-effects--file-hash
                                               ebox-update-effects--evaluator-file)
                            :samples samples :warmups warmups
-                           :sources (vconcat (mapcar #'ebox-update-effects--source '(ebox ecss tp)))
+                           :sources (vconcat (mapcar #'ebox-update-effects--source '(ebox ecss)))
                            :native (ebox-update-effects--native)
                            :cases [] :error nil))
              sizes cases acquired)

@@ -9,6 +9,24 @@
 
 (require 'cl-lib)
 
+(define-error 'ebox-unsupported-buffer "Unsupported Ebox buffer")
+
+(defun ebox-text--validate-buffer-range (buffer start end)
+  "Validate ordered START and END in live BUFFER."
+  (unless (buffer-live-p buffer)
+    (signal 'ebox-unsupported-buffer (list buffer)))
+  (with-current-buffer buffer
+    (save-restriction
+      (widen)
+      (unless (and (cl-every (lambda (position)
+                              (or (integerp position)
+                                  (and (markerp position)
+                                       (eq (marker-buffer position) buffer)
+                                       (marker-position position))))
+                            (list start end))
+                   (<= (point-min) start end (point-max)))
+        (signal 'args-out-of-range (list buffer start end))))))
+
 (defconst ebox-text--copy-cache-missing
   (make-symbol "ebox-text-copy-cache-missing"))
 

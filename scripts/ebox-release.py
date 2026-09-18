@@ -48,8 +48,8 @@ def run(args, cwd=None, env=None, timeout=180):
 
 def lock_entries(lock, with_ekp=False):
     """Validate and select required dependencies and the optional KP provider."""
-    if lock.get("schema") != 1 or set(lock.get("dependencies", {})) != {"tp", "ecss"}:
-        raise ValueError("Expected schema 1 with pinned tp and ecss dependencies")
+    if lock.get("schema") != 1 or set(lock.get("dependencies", {})) != {"ecss"}:
+        raise ValueError("Expected schema 1 with pinned ecss dependencies")
     entries = dict(lock["dependencies"])
     if with_ekp:
         entries["ekp"] = lock["optional"]["ekp"]

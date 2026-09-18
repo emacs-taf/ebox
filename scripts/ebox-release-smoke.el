@@ -54,7 +54,7 @@
     (unless (fboundp command)
       (error "Installed autoload registry omitted %s" command)))
   (require 'ebox)
-  (dolist (feature '(tp ecss ebox))
+  (dolist (feature '(ecss ebox))
     (let ((library (locate-library (symbol-name feature))))
       (unless (and (featurep feature) library
                    (file-in-directory-p library package-user-dir))

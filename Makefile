@@ -3,7 +3,6 @@
 EMACS ?= emacs
 CARGO ?= cargo
 PYTHON ?= python3
-TP_DIR ?= ../tp
 ECSS_DIR ?= ../ecss
 LOAD_EXTRA ?=
 RELEASE_DIR ?= /tmp/ebox-release
@@ -11,7 +10,7 @@ RELEASE_DEPS_DIR ?= /tmp/ebox-release-deps
 RELEASE_OPTIONS ?=
 NATIVE_MODULE ?=
 
-EMACS_BATCH = $(EMACS) -Q --batch -L . -L lisp -L benchmarks -L $(ECSS_DIR) -L $(TP_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
+EMACS_BATCH = $(EMACS) -Q --batch -L . -L lisp -L benchmarks -L $(ECSS_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
 EMACS_TEST = $(EMACS_BATCH) -L tests
 NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l lisp/ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
@@ -96,7 +95,7 @@ acceptance:
 .PHONY: api-check
 api-check:
 	$(EMACS) -Q --batch -L . $(API_PROVIDER_PATH) --eval '(setq load-prefer-newer t)' -l scripts/check-api.el
-API_PROVIDER_PATH = -L ../ecss -L ../tp -L ../ekp -L ../etaf -L ../etaf-ui -L ../etaf-db -L ../ebox-playground -L ../etaf-playground
+API_PROVIDER_PATH = -L ../ecss -L ../ekp -L ../etaf -L ../etaf-ui -L ../etaf-db -L ../ebox-playground -L ../etaf-playground
 
 .PHONY: test
 test: acceptance

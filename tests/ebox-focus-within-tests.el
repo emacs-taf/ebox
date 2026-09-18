@@ -6,7 +6,7 @@
 ;;; Code:
 (require 'ert)
 (require 'ebox)
-(require 'tp)
+(require 'ebox)
 
 (defun ebox-focus-within-test--input (items)
   "Build an outside control and a panel containing ITEMS in their given order."
@@ -57,7 +57,7 @@
     (let ((position (point)))
       (should-error (ebox-focus-within 'missing) :type 'user-error)
       (should-error (ebox-focus-within 'panel 'bad) :type 'wrong-type-argument)
-      (should-error (tp-with-transaction (ebox-focus-within 'panel)))
+      (should-error (ebox-with-transaction (ebox-focus-within 'panel)))
       (should (eq (ebox-focused-host-ref) 'outside))
       (should (= position (point))))
     (ebox-region-update "panel" :visibility 'hidden)

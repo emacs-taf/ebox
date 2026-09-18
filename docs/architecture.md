@@ -2,17 +2,30 @@
 
 This document defines the low-level publication contract. It is independent of ETAF application state and must remain true for direct Ebox callers and higher-level packages alike.
 
+
+Ebox owns one retained publication runtime. A prepared candidate is shared by
+projection, text/property writing and rollback; it is not translated into a
+second package's target-entry or outcome graph. The content-only publisher
+keeps one baseline for failure recovery and validates the final text/property
+result before accepting framework authority. The former generic watcher,
+properties-only surface and external variable-signal routes are absent.
+
+The surface context tracks viewport, display and scroll inputs. Style bindings
+retain exact dependencies; application refs remain ETAF-owned. Native property
+composition and paint slots belong to Ebox, while ECSS owns selector/cascade
+semantics. Frameworks integrate only through SPI v3 (`ebox-publication/v1`).
+
 ## Ownership
 
 1. The caller owns the fresh source tree.
 2. `ebox-tree.el` owns identity, keys, traversal, and snapshots.
 3. `ebox-style.el`, `ebox-measure.el`, and the layout modules own normalization, measurement, and geometry.
 4. `ebox-incremental.el` owns dirty classification, live-fact adaptation, pure declarative commit preparation, and Ebox report semantics; `ebox-patch-plan.el` reduces tentative operations using only immutable parent facts.
-5. `ebox-surface.el` projects retained candidates and joins Ebox runtime-state publication to the TP transaction.
-6. TP owns generic retained-surface reconciliation, mount/index state, all live buffer diff execution, revision changes, and rollback for initial mount, declarative commit, handle update, viewport/theme update, and scroll update.
+5. `ebox-surface.el` projects retained candidates and joins Ebox runtime-state publication to the Ebox publication transaction.
+6. Ebox publication owns generic retained-surface reconciliation, mount/index state, all live buffer diff execution, revision changes, and rollback for initial mount, declarative commit, handle update, viewport/theme update, and scroll update.
 7. `ebox-buffer-backend.el` only builds and reshapes propertized render strings. It does not own live markers or a buffer mutation executor.
 
-No layer may infer application state from visible buffer text. No public caller may mutate a published tree in place. Every public live-publication route, including `ebox-render-to-buffer`, its `ebox-display-buffer` display wrapper, and commit/update entry points, uses a retained TP surface; the public facade exposes no erase-and-evaluate-body buffer writer.
+No layer may infer application state from visible buffer text. No public caller may mutate a published tree in place. Every public live-publication route, including `ebox-render-to-buffer`, its `ebox-display-buffer` display wrapper, and commit/update entry points, uses a retained Ebox publication surface; the public facade exposes no erase-and-evaluate-body buffer writer.
 
 Local content-slot reuse requires a parent allocation independent of the changed
 content. Equal parent declarations and retained coordinates alone do not establish
@@ -75,7 +88,7 @@ can still change the class or interaction state that selected its rules.
 
 Local owner proofs resolve scope signatures from the candidate source index,
 including immutable rule revisions and membership, rather than ambient render
-bindings. Retaining enclosing native keymaps uses TP's property equality policy:
+bindings. Retaining enclosing native keymaps uses Ebox publication's property equality policy:
 defensive copies with identical bindings remain equivalent, while changed
 commands, prefix maps or inherited bindings require publication.
 
@@ -148,20 +161,20 @@ The source index and final path-copy trace describe the same resulting tree.
 fresh root
   -> validate and normalize
   -> copy into surface-owned candidate state
-  -> reconcile TP objects, keys, and Ebox identity
+  -> reconcile Ebox publication objects, keys, and Ebox identity
   -> measure/layout candidate
   -> classify dirty owners
-  -> produce TP surface plan plus Ebox report base
-  -> TP prepares and atomically publishes buffer changes
+  -> produce Ebox publication surface plan plus Ebox report base
+  -> Ebox publication prepares and atomically publishes buffer changes
   -> Ebox transaction participant publishes matching runtime indexes/report
   -> retire superseded Ebox timers and warm the committed scroll state after success
 ```
 
-The candidate is either fully published or discarded. A failed render, TP write, Ebox participant, or publication callback preserves the previous buffer text, properties, TP revision, Ebox runtime identity, scroll state, and last successful report. If the target buffer is killed during publication, teardown is authoritative and rollback never resurrects it.
+The candidate is either fully published or discarded. A failed render, Ebox publication write, Ebox participant, or publication callback preserves the previous buffer text, properties, Ebox publication revision, Ebox runtime identity, scroll state, and last successful report. If the target buffer is killed during publication, teardown is authoritative and rollback never resurrects it.
 
-Projection planning shares numeric TP mount snapshots across its local proofs.
-This read view exists only during one planning pass and is discarded before TP
-publishes coordinates. It neither replaces TP's authoritative mounts nor changes
+Projection planning shares numeric Ebox publication mount snapshots across its local proofs.
+This read view exists only during one planning pass and is discarded before Ebox publication
+publishes coordinates. It neither replaces Ebox publication's authoritative mounts nor changes
 the defensive snapshots returned by public Ebox queries.
 
 The fragment ledger retains direct role facts and newline counts independently
@@ -186,7 +199,7 @@ Owner-scoped output uses the integral local patch directly when the published
 generation has no fractional pixel spaces. The raw allocation replay is kept
 only for generations whose sibling remainder requires it.
 Producer-only paint-origin carriers remain in the local fragment ledger and raw
-allocation copy, but are stripped at the Ebox/TP publication boundary. TP then
+allocation copy, but are stripped at the Ebox/Ebox publication publication boundary. Ebox publication then
 compares only public text properties and can retain unchanged runs.
 Interaction candidates retain their source topology proof across the
 declarative preparation boundary; source-state overlays are not recomputed by
@@ -216,9 +229,9 @@ for unkeyed nodes. Positional fallback excludes identities retained elsewhere in
 the new sibling list, preventing inserted content from taking a surviving node's
 identity and invalidating nested Host updates.
 
-Surface projection uses these reconciled runtime node identities as TP keys in
+Surface projection uses these reconciled runtime node identities as Ebox publication keys in
 both complete and delta projections. It does not reconcile author keys or sibling
-positions a second time. Inserting a status label therefore preserves the TP
+positions a second time. Inserting a status label therefore preserves the Ebox publication
 objects, style bindings and editable handles of retained following siblings.
 
 ## Patch order
@@ -258,9 +271,9 @@ are reused; unchanged ancestor allocation certificates are carried forward.
 A paint-only update invalidates this raw output cache. Missing evidence keeps
 the ordinary complete-render fallback, including scrolling owners.
 
-The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; TP alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording TP's actual surface operations and revision.
+The planner prefers `paint-patch`, then `span-patch`, then `owner-rerender`, and finally `root-rerender` when geometry or identity makes a smaller operation unsafe. The incremental adapter derives tentative owners from live generation facts; the pure patch port then receives only those artifacts and the immutable parent table. These names describe Ebox semantic owner scope; Ebox publication alone computes and executes the physical text/property diff. A patch must not silently widen its semantic scope. Reports preserve the Ebox strategy and planned scope while separately recording Ebox publication's actual surface operations and revision.
 
-Selector-only changes can use an exact-coordinate empty TP batch after the
+Selector-only changes can use an exact-coordinate empty Ebox publication batch after the
 complete computed style closure proves no rendering changes and identity,
 ancestry and display constraints match. They publish selector and interaction
 state while retaining mounted objects, fragments, scroll content and layer
@@ -298,9 +311,9 @@ If span, owner-scoped, formatting-context, or mixed local output declines, the p
 
 `viewport-reflow` is an explicit retained projection kind for a narrow, proof-driven viewport resize path. The planner may select it only when all of the following hold: the plan is one root-owned geometry `owner-rerender`; the old and candidate roots are the same retained root; no dirty entry changes children; the node-key set, region-id set, and parent table are unchanged; neither the old surface nor the current style environment requires cascade or inline-inheritance recomputation; there is no scroll state; the root has no visible-overflow scope; and the old surface has a non-empty retained node-object table. Width-only, height-only, and both-axis changes use the same proof. Style stability compares the current global stylesheet and the scopes resolved from the mounted source index against the published signature.
 
-When selected, the candidate keeps the published Ebox topology and reuses the retained TP node-object subtree. The producer still reruns viewport-sensitive layout and materializes the new surface plan, and TP remains responsible for the scoped buffer diff, revision, stable identity, and atomic rollback. `viewport-reflow` must never be reported for a topology, cascade, inheritance, scroll, overflow, or display-signature change merely because the final text patch is small.
+When selected, the candidate keeps the published Ebox topology and reuses the retained Ebox publication node-object subtree. The producer still reruns viewport-sensitive layout and materializes the new surface plan, and Ebox publication remains responsible for the scoped buffer diff, revision, stable identity, and atomic rollback. `viewport-reflow` must never be reported for a topology, cascade, inheritance, scroll, overflow, or display-signature change merely because the final text patch is small.
 
-If any proof condition fails, the update uses the ordinary safe projection path. That fallback may do broader node projection and TP reconciliation, but it preserves the same output, identity, publication, and rollback contract. Tests in `tests/ebox-surface-tests.el` cover the retained width/height/both-axis path, each unsafe fallback trigger, and publication failure after candidate preparation.
+If any proof condition fails, the update uses the ordinary safe projection path. That fallback may do broader node projection and Ebox publication reconciliation, but it preserves the same output, identity, publication, and rollback contract. Tests in `tests/ebox-surface-tests.el` cover the retained width/height/both-axis path, each unsafe fallback trigger, and publication failure after candidate preparation.
 
 ## Layer composition
 
@@ -327,10 +340,10 @@ Style, placement, content and display-context changes must invalidate that proof
 Proved scroll-only changes build a complete candidate from the published state
 and a local immutable index delta, bypassing general declarative preparation.
 Surface stages rich replacement text and exact old/new character ranges, then
-returns an authenticated TP commit batch with complete target mount specs;
+returns an authenticated Ebox publication commit batch with complete target mount specs;
 it does not build a surface plan. Equal text lengths never authorize reuse of
 old mounts: newly visible rows may have different owners and interaction tags.
-Owner resolution can reuse a private cache while its topology and TP object
+Owner resolution can reuse a private cache while its topology and Ebox publication object
 indexes remain valid. Attribute updates and layout reflow retain their own
 preparation paths; only terminal publication and rollback are shared.
 
@@ -345,15 +358,15 @@ the ordinary fallback.
 Classify cache hits before staging. A true prefix miss owns a copied target
 subtree and ancestor path, private indexes and registries, copied cache lines and
 freshly rebound producers. A producer must not mutate a published continuation
-before TP commits. This isolation can rebuild the target prefix on a miss;
+before Ebox publication commits. This isolation can rebuild the target prefix on a miss;
 cached-hit timings do not describe that cost.
 
-The prepared viewport batch is consumed once inside the existing scoped TP
+The prepared viewport batch is consumed once inside the existing scoped Ebox publication
 transaction. Subsequent signal-driven evaluation uses the current committed
 source and ordinary projection. A proof miss chooses the ordinary path before
 publication; a publication error propagates through rollback without retrying
 through another renderer. General preparation and surface-plan counters in the
-shared evaluator verify the bypass separately from TP bookkeeping and buffer
+shared evaluator verify the bypass separately from Ebox publication bookkeeping and buffer
 write time; this path does not establish constant cost in total object count.
 
 Native frame publication carries complete scroll producers keyed by their owning
@@ -366,7 +379,7 @@ Switching back from an ordinary publication rebuilds the native source baseline.
 Native producers currently require top alignment and no container chrome or surface
 template; unsupported geometry uses Elisp before publication.
 
-Scroll publication still goes through TP and the Ebox participant. Rejection
+Scroll publication still goes through Ebox publication and the Ebox participant. Rejection
 preserves the old text, properties, offsets, raw and rendered caches, source
 nodes, indexes, objects, mounts and report. `make test` covers independent nested
 owners, rejected removal, offset clamping after content shrinks and unmount
@@ -375,7 +388,7 @@ distinguishes cached motion from actual prefix extension.
 
 ## Identity and coordinates
 
-Keys are local to a sibling collection. Declarative source trees never own live TP objects, markers, or buffer coordinates. A live logical `:id` resolves through `ebox-region-resolve` to an opaque handle tied to one TP surface object; mounting the same source in two buffers therefore yields distinct handles. Region and host-ref positions are generation-bound; after a buffer mutation, callers must obtain fresh positions from the public accessor. Buffer markers, display spans, and text properties are publication facts, not source-tree identity.
+Keys are local to a sibling collection. Declarative source trees never own live Ebox publication objects, markers, or buffer coordinates. A live logical `:id` resolves through `ebox-region-resolve` to an opaque handle tied to one Ebox publication surface object; mounting the same source in two buffers therefore yields distinct handles. Region and host-ref positions are generation-bound; after a buffer mutation, callers must obtain fresh positions from the public accessor. Buffer markers, display spans, and text properties are publication facts, not source-tree identity.
 
 Native activation and optional interaction navigation resolve declaring keymap
 owners from the committed surface and paint ancestry. Explicit nil stops inherited
@@ -384,7 +397,7 @@ and structural text cannot become activation targets. Commands run only after
 ownership validation, and callback errors remain observable.
 
 Logical focus has one buffer-local retained node owner. Public focus changes
-reject active TP transactions; only publication's internal participant may
+reject active Ebox publication transactions; only publication's internal participant may
 reconcile provisional focus and restore it on rollback. Accepted callbacks may
 start a new focus operation, while read-only queries remain available.
 
@@ -397,7 +410,7 @@ callers cannot author that token. Focus requests are tied to their committed
 base generation, so observer commits cannot replay an earlier request.
 Candidate validation uses ECSS to check focused ancestry. Final rendering also
 checks painted ownership; clipping clears retained focus and recomputes styles
-using the same TP objects before a single accepted publication. Newly requested
+using the same Ebox publication objects before a single accepted publication. Newly requested
 inaccessible targets reject atomically. Pure inputs retain no mounted focus.
 Pressed ownership uses the same immutable source interaction-state projection
 and publication participant. Generated primary-button tracking sets `active`
@@ -415,7 +428,7 @@ Region updates compare source interaction facts as well as native projection,
 so tab order or a disabled node's replacement keymap cannot become a false no-op.
 
 The rollback-capable Ebox participant promotes focus together with the candidate
-and restores it on rejection. TP restores native view markers at final accept,
+and restores it on rejection. Ebox publication restores native view markers at final accept,
 so Ebox reapplies the chosen point in its contained after-commit callback only
 if that candidate is still current. Manual point movement preserves a clamped
 numeric position. Unmount clears focus and the derived index. This state does

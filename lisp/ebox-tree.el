@@ -825,7 +825,8 @@ and all explicit identities are compared with `equal'.  Return ROOT on success."
   "Derived keys excluded from node-local source comparison.
 Canonical declarations remain source facts and therefore participate in diff;
 their property-level delta is normalized by the incremental candidate boundary.
-Computed styles, projection counters, duplicate Text storage, and legacy wrapper
+Computed styles, projection counters, duplicate Text storage, and legacy
+wrapper
 overrides are derived side state.")
 
 (defconst ebox-tree-metadata-source-keys

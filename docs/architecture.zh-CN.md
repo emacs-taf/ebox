@@ -2,17 +2,27 @@
 
 本文定义底层发布合同。它独立于 ETAF 应用状态，直接使用 Ebox 的调用者和上层包都必须遵守。
 
+
+Ebox 自己持有保留式发布运行时。投影、文本/属性写入与回滚共享同一份已准备候选，
+不再转换成另一个包的 target-entry 或 outcome 对象图。发布器只接受 content surface，
+保留一份失败恢复基线，在接受框架 authority 前核对最终文本及属性。原来的通用 watcher、
+properties-only surface 和外部变量 signal 适配路径已删除。
+
+surface 上下文追踪 viewport、display 和 scroll 输入，样式绑定保留准确的依赖关系；
+应用 ref 仍归 ETAF。原生属性组合与 paint slot 归 Ebox，选择器和层叠语义归 ECSS。
+框架只通过 SPI v3（`ebox-publication/v1`）接入发布。
+
 ## 所有权
 
 1. 调用者拥有新的 source tree。
 2. `ebox-tree.el` 拥有 identity、key、遍历和 snapshot。
 3. `ebox-style.el`、`ebox-measure.el` 与布局模块拥有归一化、测量和几何。
 4. `ebox-incremental.el` 拥有 dirty 分类、live fact 适配、纯声明式 commit 准备和 Ebox 报告语义；`ebox-patch-plan.el` 只用不可变 parent fact 归并 tentative operation。
-5. `ebox-surface.el` 投影 retained candidate，并让 Ebox runtime-state 发布加入 TP transaction。
-6. TP 拥有首次 mount、声明式 commit、handle 更新、viewport/theme 更新和 scroll 更新的通用 retained-surface reconciliation、mount/index 状态、全部 live buffer diff 执行、revision 变更和 rollback。
+5. `ebox-surface.el` 投影 retained candidate，并让 Ebox runtime-state 发布加入 Ebox publication transaction。
+6. Ebox publication 拥有首次 mount、声明式 commit、handle 更新、viewport/theme 更新和 scroll 更新的通用 retained-surface reconciliation、mount/index 状态、全部 live buffer diff 执行、revision 变更和 rollback。
 7. `ebox-buffer-backend.el` 只构造和整形带文本属性的渲染字符串，不拥有 live marker 或 buffer mutation executor。
 
-任何层都不能从可见 buffer 文本推断应用状态；公共调用者不能原地修改已经发布的树。每条公共 live 发布路径，包括 `ebox-render-to-buffer`、其展示包装 `ebox-display-buffer` 以及 commit/update 入口，都使用 retained TP surface；公共门面不再提供擦除 buffer 后执行任意 BODY 的 writer。
+任何层都不能从可见 buffer 文本推断应用状态；公共调用者不能原地修改已经发布的树。每条公共 live 发布路径，包括 `ebox-render-to-buffer`、其展示包装 `ebox-display-buffer` 以及 commit/update 入口，都使用 retained Ebox publication surface；公共门面不再提供擦除 buffer 后执行任意 BODY 的 writer。
 
 局部内容槽位复用要求父布局分配独立于变化的内容。仅有相同的父节点声明和保留
 坐标不能证明这一点：内在宽度可能变大或变小，改变兄弟节点的对齐和填充。
@@ -60,7 +70,7 @@ Canonical 输入的选择器元数据变化会准备完整候选样式树，包�
 需要检查选择器事实：结果分类为绘制变化，仍可能来自 class 或交互状态变化。
 
 局部 owner 证明从候选 source index 解析作用域签名，包含不可变规则版本与成员
-身份，不依赖当前动态渲染环境。保留祖先原生 keymap 时使用 TP 的属性相等策略：
+身份，不依赖当前动态渲染环境。保留祖先原生 keymap 时使用 Ebox publication 的属性相等策略：
 绑定相同的防御性副本仍然等价，命令、前缀映射或继承绑定变化则必须发布。
 
 规范构造者与 DSL 通过 Ebox 拥有的统一声明投影取得临时 LayoutConfig 和 outer
@@ -110,19 +120,19 @@ source 所有权、边框、内边距、绘制和溢出行为；内容和 viewpo
 新的根树
   -> 校验与归一化
   -> 复制到 surface-owned candidate state
-  -> reconciliation TP object、key 与 Ebox identity
+  -> reconciliation Ebox publication object、key 与 Ebox identity
   -> 测量/布局候选
   -> 分类 dirty owner
-  -> 生成 TP surface plan 与 Ebox report base
-  -> TP 准备并原子发布 buffer 变更
+  -> 生成 Ebox publication surface plan 与 Ebox report base
+  -> Ebox publication 准备并原子发布 buffer 变更
   -> Ebox transaction participant 发布匹配的 runtime index/report
   -> 成功后退役 Ebox timer，并预热已提交的 scroll state
 ```
 
-候选要么完整发布，要么丢弃。render、TP 写入、Ebox participant 或发布回调失败时，必须保留之前的 buffer 文本、属性、TP revision、Ebox runtime identity、滚动状态和最近一次成功报告。如果目标 buffer 在发布期间被 kill，teardown 是最终状态，rollback 绝不能把它复活。
+候选要么完整发布，要么丢弃。render、Ebox publication 写入、Ebox participant 或发布回调失败时，必须保留之前的 buffer 文本、属性、Ebox publication revision、Ebox runtime identity、滚动状态和最近一次成功报告。如果目标 buffer 在发布期间被 kill，teardown 是最终状态，rollback 绝不能把它复活。
 
-投影规划在多个局部证明之间共享 TP 挂载范围的数值快照。该只读视图只存在于
-一次规划过程，在 TP 发布新坐标之前丢弃；它不替代 TP 的权威挂载状态，也不
+投影规划在多个局部证明之间共享 Ebox publication 挂载范围的数值快照。该只读视图只存在于
+一次规划过程，在 Ebox publication 发布新坐标之前丢弃；它不替代 Ebox publication 的权威挂载状态，也不
 改变 Ebox 公共查询返回防御性快照的契约。
 
 重叠替换在合并后代写入前，先从最近的候选祖先解析中间节点。若从已提交树
@@ -141,9 +151,9 @@ Runtime 身份转移保留节点与 region 身份，不复制子序列坐标。�
 兄弟节点先按 author key 匹配；无 key 时，先按相同的源身份匹配。位置回退排除
 新兄弟列表中仍然保留的身份，避免插入内容占用存活节点的身份、使嵌套 Host 更新失效。
 
-完整和增量 surface 投影均把已协调的 runtime 节点身份用作 TP key，不再次按
+完整和增量 surface 投影均把已协调的 runtime 节点身份用作 Ebox publication key，不再次按
 author key 或兄弟位置判断身份。因此，插入状态标签时，后续保留的兄弟节点仍
-使用原来的 TP object、样式绑定和可编辑 handle。
+使用原来的 Ebox publication object、样式绑定和可编辑 handle。
 
 ## Patch 顺序
 
@@ -183,7 +193,7 @@ owner 时保留完整渲染回退。
 当已发布代没有 fractional pixel 间隙时，owner-scoped 输出直接使用整数局部 patch；只有
 需要保留兄弟余数的代才重放 raw allocation。
 仅供生产阶段使用的 paint-origin carrier 保留在局部 fragment ledger 和 raw allocation
-副本中，但在 Ebox/TP 发布边界剥离；TP 只比较公共文本属性，从而复用未变化的 run。
+副本中，但在 Ebox/Ebox publication 发布边界剥离；Ebox publication 只比较公共文本属性，从而复用未变化的 run。
 交互候选的源拓扑证明会跨越 declarative preparation 边界传递，后续 runtime lowering
 不再重复计算同一份 source-state overlay。
 Metadata 和纯绘制交互候选保留完整挂载状态，不伪称拥有内容范围证明；只有候选挂载
@@ -193,12 +203,12 @@ Metadata 和纯绘制交互候选保留完整挂载状态，不伪称拥有内�
 仅按源修改路径失效不足以证明这些缓存有效：源未变的后代仍可能继承新样式。
 渲染输出继续按新计算的签名复用；已证明的局部投影保留其准备阶段的缓存失效结果。
 
-规划器优先使用 `paint-patch`，再使用 `span-patch`、`owner-rerender`，最后在几何或 identity 使小操作不安全时使用 `root-rerender`。incremental adapter 从 live generation fact 推导 tentative owner；pure patch port 随后只接收这些 artifact 与不可变 parent table。这些名称描述的是 Ebox 的语义 owner 范围；只有 TP 负责计算并执行物理文本/属性 diff。Patch 不得静默扩大语义范围。报告保留 Ebox strategy 与 planned scope，同时单独记录 TP 的实际 surface operation 和 revision。
+规划器优先使用 `paint-patch`，再使用 `span-patch`、`owner-rerender`，最后在几何或 identity 使小操作不安全时使用 `root-rerender`。incremental adapter 从 live generation fact 推导 tentative owner；pure patch port 随后只接收这些 artifact 与不可变 parent table。这些名称描述的是 Ebox 的语义 owner 范围；只有 Ebox publication 负责计算并执行物理文本/属性 diff。Patch 不得静默扩大语义范围。报告保留 Ebox strategy 与 planned scope，同时单独记录 Ebox publication 的实际 surface operation 和 revision。
 
 仅选择器状态变化时，完整计算样式闭包若证明没有绘制变化，且身份、父子关系和显示
 约束不变，可复用已有 paint 投影。这覆盖没有视觉规则命中的焦点和按下状态切换：
-所有 surface 会进一步提交坐标不变的空 TP batch，只提升 runtime 与选择器索引，
-不重新协调已提交的挂载对象；TP 直接复用已提交的 object set。滚动内容和覆盖层像素
+所有 surface 会进一步提交坐标不变的空 Ebox publication batch，只提升 runtime 与选择器索引，
+不重新协调已提交的挂载对象；Ebox publication 直接复用已提交的 object set。滚动内容和覆盖层像素
 仍被保留。任何计算样式中的绘制或几何变化继续使用普通增量规划。
 
 source index 重建按 source 身份保留 selector subject token；只有逐项比较身份、父节点
@@ -219,9 +229,9 @@ span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，pr
 
 `viewport-reflow` 是一个明确的 retained projection kind，只用于范围很窄、由 proof 驱动的 viewport resize 路径。只有以下条件全部满足时，规划器才能选择它：plan 是一个 root-owned geometry `owner-rerender`；旧 root 与 candidate root 是同一个 retained root；没有 dirty entry 修改 children；node-key set、region-id set 和 parent table 都不变；旧 surface 和当前 style environment 都不需要 cascade 或 inline-inheritance 重新计算；没有 scroll state；root 没有 visible-overflow scope；旧 surface 存在非空 retained node-object table。仅改变 width、仅改变 height 以及同时改变两个轴使用同一套 proof。 样式稳定性比较当前全局 stylesheet 及从已挂载 source index 解析的作用域与已发布签名。
 
-选择该路径后，candidate 保留已发布的 Ebox topology，并复用 retained TP node-object subtree。Producer 仍会重新执行 viewport-sensitive layout 并生成新的 surface plan；TP 继续负责 scoped buffer diff、revision、stable identity 和原子 rollback。即使最终文本 patch 很小，topology、cascade、inheritance、scroll、overflow 或 display-signature 变化也不能报告为 `viewport-reflow`。
+选择该路径后，candidate 保留已发布的 Ebox topology，并复用 retained Ebox publication node-object subtree。Producer 仍会重新执行 viewport-sensitive layout 并生成新的 surface plan；Ebox publication 继续负责 scoped buffer diff、revision、stable identity 和原子 rollback。即使最终文本 patch 很小，topology、cascade、inheritance、scroll、overflow 或 display-signature 变化也不能报告为 `viewport-reflow`。
 
-任意 proof 条件失败时，更新必须使用普通安全 projection 路径。该 fallback 可以执行更宽的 node projection 和 TP reconciliation，但必须保持相同的输出、identity、publication 和 rollback 合同。`tests/ebox-surface-tests.el` 覆盖 retained width/height/both-axis 路径、每个不安全 fallback 触发条件，以及 candidate preparation 之后的 publication failure。
+任意 proof 条件失败时，更新必须使用普通安全 projection 路径。该 fallback 可以执行更宽的 node projection 和 Ebox publication reconciliation，但必须保持相同的输出、identity、publication 和 rollback 合同。`tests/ebox-surface-tests.el` 覆盖 retained width/height/both-axis 路径、每个不安全 fallback 触发条件，以及 candidate preparation 之后的 publication failure。
 
 ## 覆盖层合成
 
@@ -243,9 +253,9 @@ context 变化必须使该证明失效。
 
 通过证明的纯滚动变更从已发布状态与局部不可变 index delta 构造完整 candidate，
 跳过通用声明式准备。Surface 提前生成带属性的替换文本及精确的新旧字符范围，
-再通过带完整目标 mount specs 的认证 TP commit batch 发布，不构造 surface plan。
+再通过带完整目标 mount specs 的认证 Ebox publication commit batch 发布，不构造 surface plan。
 文本等长不能证明旧 mount 可复用：新进入视口的行可能具有不同 owner 与交互 tag。
-Topology 与 TP object index 有效时，可复用私有 owner 解析缓存。属性更新与布局
+Topology 与 Ebox publication object index 有效时，可复用私有 owner 解析缓存。属性更新与布局
 重排仍使用各自的准备路径，只共享最终发布与回滚边界。
 
 Nested owner 在 allocation 不变且通过证明时，可以只替换自己的 viewport，避免渲染
@@ -256,13 +266,13 @@ Nested owner 在 allocation 不变且通过证明时，可以只替换自己的 
 
 必须在 staging 前区分 cache hit 与真实 prefix miss。Miss 使用复制的目标子树和祖先
 路径、私有 index 与 registry、复制的缓存行，以及重新绑定的 producer；producer
-不得在 TP commit 前修改已发布的 continuation。该隔离可能在 miss 时重建目标 prefix，
+不得在 Ebox publication commit 前修改已发布的 continuation。该隔离可能在 miss 时重建目标 prefix，
 因此 cached-hit 耗时不能代表 miss 的代价。
 
-预备的 viewport batch 在现有 scoped TP transaction 中只消费一次。后续 signal
+预备的 viewport batch 在现有 scoped Ebox publication transaction 中只消费一次。后续 signal
 触发的求值读取当前已提交 source，使用普通 projection。证明失败在发布前选择普通
 路径；发布错误直接进入 rollback，不换另一个 renderer 重试。共享 evaluator 的
-通用准备与 surface-plan 计数分别验证这两项工作已跳过；TP bookkeeping 与实际
+通用准备与 surface-plan 计数分别验证这两项工作已跳过；Ebox publication bookkeeping 与实际
 buffer 写入另行测量。该路径并不保证耗时与总 object 数无关。
 
 原生 frame 按所属 region 交付完整 scroll producer 集合，支持并列和嵌套容器。
@@ -272,14 +282,14 @@ buffer 写入另行测量。该路径并不保证耗时与总 object 数无关�
 重新建立原生 source 基线。原生 producer 目前要求顶部对齐、无容器边框内外边距
 及 surface template；其余几何在发布前使用 Elisp。
 
-Scroll publication 仍经过 TP 与 Ebox participant。发布失败时，旧文本、属性、offset、
+Scroll publication 仍经过 Ebox publication 与 Ebox participant。发布失败时，旧文本、属性、offset、
 raw/rendered cache、source node、index、object、mount 和 report 均保持不变。
 `make test` 覆盖独立嵌套容器、拒绝移除、内容缩短后的 offset 修正和卸载清理；
 playground scroll evaluator 验证 fresh-render parity，并区分缓存滚动与实际 prefix 扩展。
 
 ## Identity 与坐标
 
-Key 只在同级兄弟集合内有效。声明式 source tree 不拥有 live TP object、marker 或 buffer 坐标。live 逻辑 `:id` 通过 `ebox-region-resolve` 解析为绑定某个 TP surface object 的不透明 handle；同一 source 挂载到两个 buffer 时会得到不同 handle。Region 与 host-ref 位置绑定于 generation；buffer 变更后调用者必须通过公共 accessor 重新获得位置。Buffer marker、display span 和 text property 是发布事实，不是 source tree identity。
+Key 只在同级兄弟集合内有效。声明式 source tree 不拥有 live Ebox publication object、marker 或 buffer 坐标。live 逻辑 `:id` 通过 `ebox-region-resolve` 解析为绑定某个 Ebox publication surface object 的不透明 handle；同一 source 挂载到两个 buffer 时会得到不同 handle。Region 与 host-ref 位置绑定于 generation；buffer 变更后调用者必须通过公共 accessor 重新获得位置。Buffer marker、display span 和 text property 是发布事实，不是 source tree identity。
 
 原生输入边界只在 reader 调用期间保留当前 surface 与目标身份，接受结果和恢复
 焦点时复用已提交的归属索引、可见性与焦点校验。它不增加目标注册表、编辑状态
@@ -306,7 +316,7 @@ Key 只在同级兄弟集合内有效。声明式 source tree 不拥有 live TP 
 
 ## 设计与模块边界
 
-Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过测量的布局 fragment 与通用 TP surface plan。它有意小于应用框架。
+Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过测量的布局 fragment 与通用 Ebox publication surface plan。它有意小于应用框架。
 
 ## 设计原则
 
@@ -327,16 +337,16 @@ Ebox 是底层空间渲染引擎。它负责把声明式节点树转换为经过
   -> 经过测量的 formatting context
   -> 布局 fragment 与 snapshot
   -> render context
-  -> 纯 TP surface plan
+  -> 纯 Ebox publication surface plan
 ```
 
-各层 owner 是：`ebox-child-range.el` 负责不可变 child sequence 与 key index，`ebox-tree.el` 负责 Ebox identity 与遍历，`ebox-style.el` 负责样式语义，`ebox-measure.el` 负责 display 敏感测量，`ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` 负责几何，`ebox-fragment.el` 负责 fragment 事实，`ebox-render-context.el` 负责 candidate/materialization 输入 port，`ebox-patch-plan.el` 负责纯 operation-antichain artifact，`ebox-surface.el` 负责纯 TP plan 投影与 retained 发布，`ebox-incremental.el` 负责 dirty 分类与 live fact 适配。`ebox-layout.el` 不再 load 或调用 surface/TP 层；门面把 surface operation 接入已校验的 render-context port。patch planner 不读取 buffer 或 surface；incremental adapter 只传入不可变 parent fact 与 tentative operation。`ebox-buffer-backend.el` 只构造和整形带文本属性的 render string；所有公共 live buffer 发布路径都经过 TP surface 边界。
+各层 owner 是：`ebox-child-range.el` 负责不可变 child sequence 与 key index，`ebox-tree.el` 负责 Ebox identity 与遍历，`ebox-style.el` 负责样式语义，`ebox-measure.el` 负责 display 敏感测量，`ebox-layout.el`、`ebox-flex.el`、`ebox-grid.el` 负责几何，`ebox-fragment.el` 负责 fragment 事实，`ebox-render-context.el` 负责 candidate/materialization 输入 port，`ebox-patch-plan.el` 负责纯 operation-antichain artifact，`ebox-surface.el` 负责纯 Ebox publication plan 投影与 retained 发布，`ebox-incremental.el` 负责 dirty 分类与 live fact 适配。`ebox-layout.el` 不再 load 或调用 surface/Ebox publication 层；门面把 surface operation 接入已校验的 render-context port。patch planner 不读取 buffer 或 surface；incremental adapter 只传入不可变 parent fact 与 tentative operation。`ebox-buffer-backend.el` 只构造和整形带文本属性的 render string；所有公共 live buffer 发布路径都经过 Ebox publication surface 边界。
 
 ## 公共边界
 
 使用 `docs/manual.zh-CN.md` 中的函数与 property；公共 API 清单位于根目录 `ebox.el` 的 Commentary。应用和同级包只能调用清单内的接口。更高层的 Component、响应式、behavior、data 和 control 概念属于 ETAF。
 
-ECSS 与 TP 是必需的包依赖，即使作者没有写选择器或样式表也需要。EKP 是独立的可选
+ECSS 是必需的包依赖，即使作者没有写选择器或样式表也需要。EKP 是独立的可选
 排版依赖：选择 `:wrap-mode kp` 时需要它的公开段落排版 API。EKP 不可用或不兼容时
 会报错，不会擅自替换换行算法。它的加速器与 Ebox Rust reflow 模块相互独立。
 
@@ -360,14 +370,14 @@ narrowing 与不可见性，不安装按键绑定、焦点注册表或应用状�
 回调错误保持可观察，不另建目标注册表。
 
 逻辑焦点只有一个 buffer-local retained node owner。公共焦点变更拒绝加入活动中的
-TP 事务，只有发布内部 participant 可以协调候选焦点并在拒绝时恢复。事务接受后的
+Ebox publication 事务，只有发布内部 participant 可以协调候选焦点并在拒绝时恢复。事务接受后的
 回调可以发起新的焦点操作，只读查询仍可使用。发布后的 source interaction facts
 提供 tab 顺序与禁用状态。Source record 分别保存作者状态与交互事实，subject 构造从
 交互事实派生 `disabled`。查询、cascade 和增量失效读取同一派生视图；rebind 保留原始
 作者状态，禁用变化会使 subject 失效。挂载焦点在候选 source record 中形成不可变
 派生视图，作者不能声明此状态。焦点请求绑定发起时的已提交代，观察回调中的新提交
 不会重放旧请求。候选阶段通过 ECSS 检查目标与祖先，最终渲染再校验绘制归属；裁剪
-使已有焦点不可用时，复用同一 TP 对象清除状态并重算，之后才进行一次接受发布。
+使已有焦点不可用时，复用同一 Ebox publication 对象清除状态并重算，之后才进行一次接受发布。
 新请求的目标不可访问时原子拒绝。纯输入不保留挂载焦点。按下归属复用同一不可变
 source 交互状态投影与发布 participant：生成的主按钮跟踪在回调前设置 `active`，
 结束时清除；普通更新按存续 source identity 与可见性协调归属。选择器查询、ECSS
@@ -379,7 +389,7 @@ source 交互状态投影与发布 participant：生成的主按钮跟踪在回�
 source identity 优先于复用的绘制节点。Region 更新同时比较 source interaction facts
 和原生投影，因此 tab 顺序或禁用节点的 keymap 更换不会被误判成 no-op。
 
-Ebox 的可回滚 participant 随候选提升焦点，拒绝时恢复。TP 在 final accept 恢复原生
+Ebox 的可回滚 participant 随候选提升焦点，拒绝时恢复。Ebox publication 在 final accept 恢复原生
 视图 marker，因此 Ebox 在受控 after-commit 回调中重新应用 point，且只作用于仍为
 当前代的候选。手动 point 保留受可访问范围限制的数值位置。卸载清理焦点与派生索引；
 该状态不管理应用值，也不选择窗口。

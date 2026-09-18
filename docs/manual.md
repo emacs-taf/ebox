@@ -349,7 +349,7 @@ outside the source remains neutral.
 There is no alpha blending, half-glyph masking, or child frame. Layered trees
 fall back to Elisp when native reflow cannot represent them.
 
-Publication remains a TP transaction, including hidden-node updates and
+Publication remains a Ebox publication transaction, including hidden-node updates and
 rollback. Fixed-footprint local changes can recompose only the affected host;
 geometry changes and root-layer dependencies may require broader work. No
 per-update latency or universal local-update guarantee is implied. Run
@@ -368,7 +368,7 @@ its text content.
 
 Install EKP 1.0.0 or newer, or add its source directory to `load-path`, before
 using `:wrap-mode kp`. It is an optional dependency loaded on demand; ordinary
-Ebox layouts require only ECSS and TP. Choosing `kp` without a compatible EKP
+Ebox layouts require only ECSS. Choosing `kp` without a compatible EKP
 signals an installation or update error; install EKP or explicitly select
 another mode. Ebox never silently switches to word wrapping. The EKP accelerator and the Ebox Rust
 reflow module are separate optional modules; enabling one does not install the
@@ -525,7 +525,7 @@ stop without clearing the existing focus if no stop exists. They return an opaqu
 `ebox-focus` and `ebox-focused-host-ref`; frameworks may also use their explicit
 source-builder identities. `ebox-focus` accepts nil to clear focus. It may
 explicitly focus any enabled visible node, even without a tab index or keymap.
-Focus changes cannot join an active TP transaction: setting, clearing or moving
+Focus changes cannot join an active Ebox publication transaction: setting, clearing or moving
 focus signals an error before changing focus or point. Invoke them after the
 transaction accepts, including from an `after-commit` callback. Read-only
 `ebox-focused-host-ref` and zero-count navigation remain available. This prevents
@@ -577,7 +577,7 @@ The boundary restores logical focus without selecting a window. It returns the
 reader's value only for the same mounted, enabled, accessible target; otherwise
 it signals `ebox-input-cancelled`, a subtype of `quit`. Keyed reorder retains
 the owner. Reader errors and user quit propagate, while focus is restored when
-possible. Call outside a TP transaction. Ebox owns neither application values
+possible. Call outside a Ebox publication transaction. Ebox owns neither application values
 nor the native input buffer, and does not implement another text editor.
 
 A focus change publishes the `:focus` selector state with its computed paint
@@ -642,7 +642,7 @@ region updates.
 ## 5. Render and publish
 
 `ebox-render` returns propertized text without changing a live buffer.
-`ebox-render-to-buffer` mounts a retained TP surface and returns its buffer.
+`ebox-render-to-buffer` mounts a retained Ebox publication surface and returns its buffer.
 Both functions, and `ebox-display-buffer`, accept the opaque value returned by
 `ebox-build`.
 
@@ -685,7 +685,7 @@ When `ebox-buffer-set-observer` enables observation, the optional
 `:phase-duration-ms` plist attributes exclusive elapsed milliseconds to source,
 style, plan, layout, projection and transaction. Nested phases are counted once;
 their sum equals the observed Ebox duration. Transaction includes the remaining
-commit/TP work and overlaps TP's independent report. The workspace runner consumes
+commit/Ebox publication work and overlaps Ebox publication's independent report. The workspace runner consumes
 these reports in its trace pass; CPU and allocation profiling run separately.
 
 The optional
@@ -825,7 +825,7 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 
 ## Framework integration contract
 
-Ebox provides framework SPI v2 through `(require 'ebox)`. This interface is
+Ebox provides framework SPI v3 through `(require 'ebox)`. This interface is
 for framework implementers such as ETAF; application code normally uses the
 render/update API described above. Query `ebox-framework-spi-capabilities` and
 validate the immutable provider with `ebox-framework-spi-validate-provider` before
@@ -833,14 +833,14 @@ retaining its public operation descriptors. Do not read private provider fields.
 
 | Operation | Input and result |
 | --- | --- |
-| `ebox-framework-spi-initial` | An unmounted buffer, canonical input and a stage/rollback callback pair; returns the completed report also supplied to the callbacks. It cannot join an outer TP transaction. |
+| `ebox-framework-spi-initial` | An unmounted buffer, canonical input and a stage/rollback callback pair; returns the completed report also supplied to the callbacks. It cannot join an outer Ebox publication transaction. |
 | `ebox-framework-spi-update` | A mounted buffer, canonical input or candidate, and a stage/rollback pair; returns the same report object observed by the stage callback. |
 | `ebox-unmount-buffer` | Releases the retained mount so a fresh initial generation can be created. |
 
-The framework owns application state; Ebox owns layout/runtime indexes; TP owns
-buffer publication and the transaction. Stage callbacks run after provisional TP
+The framework owns application state; Ebox owns layout/runtime indexes; Ebox publication owns
+buffer publication and the transaction. Stage callbacks run after provisional Ebox publication
 and Ebox state agree. Rollback runs framework rollback, then Ebox state restoration,
-then TP restoration. A failed initial mount restores editor custody, including text,
+then Ebox publication restoration. A failed initial mount restores editor custody, including text,
 point, mark, narrowing, overlays, undo and modified state. Killing the buffer remains
 authoritative. Post-accept observer/retirement failures are diagnostics, not a reason
 to pretend a committed publication rolled back. Callers must supply both callbacks

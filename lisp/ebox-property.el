@@ -4,7 +4,7 @@
 
 ;;; Commentary:
 ;; This is the small native-property kernel needed by Ebox.  It deliberately
-;; does not provide TP's search, surface, or reactive APIs.  Ebox uses it for
+;; does not provide Ebox's search, surface, or reactive APIs.  Ebox uses it for
 ;; identity-preserving keymap comparison and explicit computed style values.
 
 ;;; Code:
@@ -128,6 +128,9 @@
     (or existing
         (ebox-define-property-policy
          id :equality #'ebox-property--native-value-equal-p
+         :merge (if (memq property '(face font-lock-face mouse-face))
+                    #'ebox-property--merge-face-values
+                  (lambda (_old new) new))
          :projector (lambda (value) (list property value))))))
 
 (defun ebox-computed (function)
@@ -145,6 +148,148 @@
   (if (ebox-property--computed-source-p value)
       (funcall (ebox-property--computed-source-function value))
     value))
+
+(defun ebox-property--deep-merge-plist (base new)
+  "Deep merge NEW plist into BASE plist.  For nested plists (starting with
+keyword), recursively merge.  NEW values override BASE values."
+  (let ((result (copy-sequence base)))
+    (cl-loop
+     for (key val) on new by #'cddr
+     do (let ((base-val (plist-get result key)))
+          (setq result
+                (plist-put
+                 result key
+                 (cond
+                  ;; Both are plists - recursively merge
+                  ((and (listp val) (keywordp (car-safe val))
+                        (listp base-val) (keywordp (car-safe base-val)))
+                   (ebox-property--deep-merge-plist base-val val))
+                  ;; Otherwise use new value
+                  (t val))))))
+    result))
+
+
+(defun ebox-property--parse-face-list (face-list)
+  "Parse a mixed face list into symbols and a plist.  FACE-LIST can be a mix
+of: - Face symbols (like bold, italic) - Face plists (like (:foreground
+\"red\")) - Inline plist keys and values (like bold :foreground \"green\")
+
+Returns (SYMBOLS . PLIST) where SYMBOLS is a list of face symbols and PLIST
+is the merged plist of all face attributes."
+  (let ((symbols nil)
+        (plist nil)
+        (i 0)
+        (len (length face-list)))
+    (while (< i len)
+      (let ((elem (nth i face-list)))
+        (cond
+         ;; Nested plist like (:foreground "red")
+         ((and (listp elem) (keywordp (car-safe elem)))
+          (setq plist (if plist (ebox-property--deep-merge-plist plist elem) elem))
+          (setq i (1+ i)))
+         ;; Inline keyword - consume key and value
+         ((keywordp elem)
+          (if (< (1+ i) len)
+              (let ((key elem)
+                    (val (nth (1+ i) face-list)))
+                (setq plist (if plist
+                                (plist-put plist key val)
+                              (list key val)))
+                (setq i (+ i 2)))
+            ;; Trailing bare keyword with no value: malformed input.
+            ;; Ignore it rather than inventing a bogus (KEY nil) pair.
+            (setq i (1+ i))))
+         ;; Face symbol
+         ((symbolp elem)
+          (push elem symbols)
+          (setq i (1+ i)))
+         ;; Something else - skip
+         (t (setq i (1+ i))))))
+    (cons (nreverse symbols) plist)))
+
+
+(defun ebox-property--merge-face-values (face1 face2)
+  "Merge two face values into one.  FACE1 is the earlier value, FACE2 is the
+later value.  For face plists (like (:foreground \"red\")), merge with later
+overriding.  For symbol faces, create a list with FACE2 taking precedence.
+Returns the merged face value.
+
+Face contributions arrive in paint order; later values take precedence."
+  (cond
+   ;; No earlier face - just use later face
+   ((null face1) face2)
+   ;; No later face - just use earlier face
+   ((null face2) face1)
+   ;; Both are plists - merge with later overriding earlier
+   ((and (listp face1) (keywordp (car-safe face1))
+         (listp face2) (keywordp (car-safe face2)))
+    (ebox-property--deep-merge-plist face1 face2))
+   ;; Later is a plist, earlier is a symbol or list of faces
+   ((and (listp face2) (keywordp (car-safe face2)))
+    (cond
+     ((symbolp face1)
+      (list face2 face1))
+     ((listp face1)
+      (cons face2 face1))
+     (t face2)))
+   ;; Earlier is a plist, later is a symbol
+   ((and (listp face1) (keywordp (car-safe face1))
+         (symbolp face2))
+    (list face2 face1))
+   ;; Later is a symbol - prepend to earlier
+   ((symbolp face2)
+    (cond
+     ((symbolp face1)
+      (if (eq face1 face2)
+          face2
+        (list face2 face1)))
+     ((listp face1)
+      (if (member face2 face1)
+          (cons face2 (remove face2 face1))  ; Move to front
+        (cons face2 face1)))
+     (t face2)))
+   ;; Later is a list of faces - prepend to earlier
+   ((listp face2)
+    (cond
+     ((symbolp face1)
+      (if (member face1 face2)
+          face2
+        (append face2 (list face1))))
+     ;; face1 is a plist - need to merge any plist in face2 with face1
+     ((and (listp face1) (keywordp (car-safe face1)))
+      ;; Use ebox-property--parse-face-list to handle mixed formats like (bold :foreground "green")
+      (let* ((parsed (ebox-property--parse-face-list face2))
+             (symbols (car parsed))
+             (plist (cdr parsed)))
+        ;; Merge face2's plist with face1, then prepend symbols
+        (let ((merged-plist (if plist (ebox-property--deep-merge-plist face1 plist) face1)))
+          (if symbols
+              (append symbols (list merged-plist))
+            merged-plist))))
+     ;; Both are lists - parse both, merge plists, combine symbols
+     ((listp face1)
+      (let* ((parsed1 (ebox-property--parse-face-list face1))
+             (symbols1 (car parsed1))
+             (plist1 (cdr parsed1))
+             (parsed2 (ebox-property--parse-face-list face2))
+             (symbols2 (car parsed2))
+             (plist2 (cdr parsed2))
+             ;; Merge plists with face2's plist taking precedence
+             (merged-plist (cond
+                            ((and plist1 plist2) (ebox-property--deep-merge-plist plist1 plist2))
+                            (plist2 plist2)
+                            (plist1 plist1)
+                            (t nil)))
+             ;; Combine symbols: face2 symbols first, then face1 symbols not in face2
+             (merged-symbols (append symbols2
+                                     (cl-remove-if (lambda (s) (member s symbols2)) symbols1))))
+        ;; Build result: symbols first, then merged plist if any
+        (if merged-plist
+            (append merged-symbols (list merged-plist))
+          merged-symbols)))
+     (t face2)))
+   (t face2)))
+
 
 (provide 'ebox-property)
 ;;; ebox-property.el ends here

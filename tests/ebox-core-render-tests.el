@@ -112,8 +112,8 @@
                     (peer-after
                      (car (ebox-selector-query-buffer buffer "#peer"))))
                 (should-not (plist-get report :full-rerender))
-                (should-not (plist-get report :tp-full-root))
-                (should (> (or (plist-get report :tp-scope-count) 0) 0))
+                (should-not (plist-get report :publication-full-root))
+                (should (> (or (plist-get report :publication-scope-count) 0) 0))
                 (should (= (plist-get peer-after :node-id) peer-node-id)))))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 

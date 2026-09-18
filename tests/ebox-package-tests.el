@@ -16,15 +16,14 @@
 (ert-deftest ebox-native-command-autoloads-may-target-the-facade ()
   "Startup registries may safely autoload native commands from `ebox'."
   (let* ((emacs (expand-file-name invocation-name invocation-directory))
-         (ecss (file-name-directory (locate-library "ecss")))
-         (tp (file-name-directory (locate-library "tp"))))
+         (ecss (file-name-directory (locate-library "ecss"))))
     (with-temp-buffer
       (should
        (zerop
         (process-file
          emacs nil (current-buffer) nil
          "-Q" "--batch"
-         "-L" ebox-test--root "-L" ecss "-L" tp
+         "-L" ebox-test--root "-L" ecss
          "--eval" "(setq load-prefer-newer t)"
          "--eval"
          (concat

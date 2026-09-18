@@ -310,10 +310,11 @@ keep their absolute pixel width."
           width)))))
 
 (defun ebox--measurement-face-remapping ()
-  "Return face remaps that can affect geometric text measurement.
-TP paint slots are stable paint-layer addresses.  Their foreground/background
-updates change redisplay without changing glyph geometry, so installing or
-switching those layers must not invalidate Ebox measurement caches."
+  "Return face remaps that can affect geometric text measurement.  Ebox
+publication paint slots are stable paint-layer addresses.  Their
+foreground/background updates change redisplay without changing glyph
+geometry, so installing or switching those layers must not invalidate Ebox
+measurement caches."
   (when (boundp 'face-remapping-alist)
     (cl-remove-if
      (lambda (entry)

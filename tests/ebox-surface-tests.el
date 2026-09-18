@@ -8,7 +8,6 @@
 (require 'cl-lib)
 (require 'ert)
 (require 'ebox)
-(require 'tp)
 
 (defvar ebox-native-reflow-module-path)
 
@@ -71,6 +70,32 @@
       (save-restriction
         (widen)
         (should (string-prefix-p "After!" (buffer-string)))))))
+
+(ert-deftest ebox-publication-rejects-participant-text-corruption ()
+  "A failed framework stage preserves text, revision and the live target."
+  (with-temp-buffer
+    (let ((buffer (current-buffer))
+          (old (ebox-build '(box :id target :width (ch 12) "Before")))
+          (next (ebox-build '(box :id target :width (ch 12) "After")))
+          restored)
+      (ebox-render-to-buffer buffer old)
+      (let ((before (buffer-string))
+            (revision (ebox-surface-buffer-revision buffer))
+            (handle (ebox-region-resolve buffer "target")))
+        (should-error
+         (ebox-framework-spi-update
+          buffer next
+          (lambda (_report)
+            (with-current-buffer buffer
+              (let ((inhibit-read-only t) (buffer-undo-list t))
+                (put-text-property (point-min) (1+ (point-min))
+                                   'display "Corrupted"))))
+          (lambda (_report) (setq restored t))))
+        (should restored)
+        (should (equal-including-properties before (buffer-string)))
+        (should (= revision (ebox-surface-buffer-revision buffer)))
+        (ebox-region-update handle :content "Recovered")
+        (should (string-match-p "Recovered" (buffer-string)))))))
 
 (provide 'ebox-surface-tests)
 ;;; ebox-surface-tests.el ends here

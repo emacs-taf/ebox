@@ -2065,7 +2065,7 @@ Internal implementation of `ebox-render' for box nodes."
              (ebox--side-height box)))))))
 
 (defvar ebox--surface-materialization-active nil
-  "Non-nil while an Ebox TP producer is running raw layout.")
+  "Non-nil while an Ebox Ebox publication producer is running raw layout.")
 
 (defun ebox--render-text-node (node)
   "Render canonical TextNode NODE without entering Box geometry."
@@ -2105,13 +2105,11 @@ Internal implementation of `ebox-render' for box nodes."
       (ebox--render-layout-in-context node))))
 
 (defun ebox--render-layout-in-context (node)
-  "Render layout NODE directly to a multi-line propertized string.
-NODE can be:
-  - a box plist created by `ebox-create'
-  - a concat node created by `ebox-concat'
-  - a stack node created by `ebox-stack'
-  - a flex node created by `ebox-flex'
-This function owns spatial layout only; it never creates a live TP surface."
+  "Render layout NODE directly to a multi-line propertized string.  NODE can
+be: - a box plist created by `ebox-create' - a concat node created by
+`ebox-concat' - a stack node created by `ebox-stack' - a flex node created
+by `ebox-flex' This function owns spatial layout only; it never creates a
+live Ebox publication surface."
   (ebox--with-validated-display-cache
     (let* ((ebox--css-viewport-width
             (if ebox--css-size-context-active-p ebox--css-viewport-width
@@ -2153,8 +2151,8 @@ This function owns spatial layout only; it never creates a live TP surface."
          (t (error "ebox-render: unknown node type %S" type)))))))
 
 (defun ebox--render-ephemeral-static (node)
-  "Render static NODE without constructing a TP object tree.
-The source remains caller-owned; the candidate copy carries all ephemeral
+  "Render static NODE without constructing a Ebox publication object tree.  The
+source remains caller-owned; the candidate copy carries all ephemeral
 region/node identities and render side tables for this one materialization."
   (let ((candidate (ebox-render-context-candidate-root node t)))
     (let ((ebox--surface-materialization-active t)

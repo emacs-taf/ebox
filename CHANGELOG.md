@@ -4,6 +4,16 @@ All notable changes to Ebox are documented here.
 
 ## 3.0.0 (Unreleased)
 
+### Changed
+
+- Retained publication is now owned by Ebox. Update Ebox and ETAF together;
+  the integration uses SPI v3 and `ebox-publication/v1`. TP is no longer a
+  package dependency. Publication reports use `:publication-*` fields and the
+  `ebox-publication` provider; consumers must migrate the former TP fields.
+- Publication and rollback share the prepared candidate and journal; generic
+  target-entry/outcome translation and postcommit shadow graphs are removed.
+
+
 ### Fixed
 
 - Prepared metadata and paint projections survive unscoped publication and

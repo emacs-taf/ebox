@@ -9,8 +9,7 @@
     "../etaf",
     "../etaf-db",
     "../etaf-playground",
-    "../etaf-ui",
-    "../tp"
+    "../etaf-ui"
   ],
   "support": [
     "tests/ebox-child-range-tests.el"
@@ -1080,6 +1079,11 @@
       "name": "ebox-row-disjoint-rich-updates-preserve-line-dependencies",
       "file": "tests/ebox-flex-tests.el",
       "purpose": "Two rich-text updates on shared physical lines retain sibling paint and both target bounds across changed newline placement and later parent paint."
+    },
+    {
+      "name": "ebox-publication-rejects-participant-text-corruption",
+      "file": "tests/ebox-surface-tests.el",
+      "purpose": "Framework text-property writes outside the prepared result reject publication and restore text, revision and retained addresses."
     }
   ]
 }

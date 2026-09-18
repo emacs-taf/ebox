@@ -3083,7 +3083,7 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                      ;; A structural native object delta still identifies the
                      ;; exact changed node partition.  Retain the compiled
                      ;; fragments for its untouched complement; only stable
-                     ;; topology is required to reuse TP objects, not to reuse
+                     ;; topology is required to reuse Ebox publication objects, not to reuse
                      ;; pure layout fragments.
                      (or (plist-get state :native-topology-stable-p)
                          (consp touched-ids))

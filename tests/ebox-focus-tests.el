@@ -6,7 +6,7 @@
 ;;; Code:
 (require 'ert)
 (require 'ebox)
-(require 'tp)
+(require 'ebox)
 
 (defun ebox-focus-test--input (rows &optional unkeyed)
   "Build ROWS of (IDENTITY TEXT INTERACTIONS); UNKEYED omits sibling keys."
@@ -91,7 +91,7 @@
                     (ebox-call-with-input 'absent (lambda () (ert-fail "reader ran")))
                   (quit (car condition)))))
     (should-error
-     (tp-with-transaction
+     (ebox-with-transaction
        (ebox-call-with-input 'a (lambda () (ert-fail "reader ran")))))))
 
 (ert-deftest ebox-focus-orders-declared-stops-and-controls-cycling ()
@@ -445,14 +445,14 @@
                               (lambda () (ebox-focus-first))
                               (lambda () (ebox-focus-next 1 t))
                               (lambda () (ebox-focus-previous))))
-        (should-error (tp-with-transaction (funcall operation)))
+        (should-error (ebox-with-transaction (funcall operation)))
         (should (eq (ebox-focused-host-ref) 'b))
         (should (= (point) before))))
-    (should (eq (tp-with-transaction (ebox-focused-host-ref)) 'b))
-    (should (eq (tp-with-transaction (ebox-focus-next 0)) 'b))
+    (should (eq (ebox-with-transaction (ebox-focused-host-ref)) 'b))
+    (should (eq (ebox-with-transaction (ebox-focus-next 0)) 'b))
     (let (accepted)
-      (tp-with-transaction
-        (tp-transaction-participate-v2
+      (ebox-with-transaction
+        (ebox-transaction-participate
          :key 'accepted-focus :stage #'ignore :rollback #'ignore
          :after-commit (lambda () (setq accepted (ebox-focus 'a)))))
       (should (eq accepted 'a))

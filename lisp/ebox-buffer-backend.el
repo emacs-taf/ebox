@@ -54,7 +54,8 @@ Set this to nil to leave `gc-cons-threshold' unchanged.")
   "Temporary `gc-cons-threshold' used across interactive render bursts.
 The default `auto' uses a bounded fraction of physical memory so visible frames
 can favor throughput without assuming every machine has the same headroom.
-Set this to a byte count for a fixed budget, or nil to leave the setting alone.")
+Set this to a byte count for a fixed budget, or nil to leave the setting
+alone.")
 
 (defvar ebox-deferred-render-gc-auto-min-threshold (* 128 1024 1024)
   "Minimum interactive render allocation budget selected by `auto'.")
@@ -731,13 +732,14 @@ may be added in place."
     (rendered region-ids &optional expected-line-count)
   "Project RENDERED to its contiguous direct role-owned lines.
 
-REGION-IDS is the same owner set used to derive retained TP spans.  Leading
-and trailing lines without a direct target role are stable wrapper chrome and
-are omitted.  When EXPECTED-LINE-COUNT is non-nil, any remaining excess may
-be removed only from role-proven outer margin/border lines (`mt'/`bt' at the
-start, `mb'/`bb' at the end).  Padding and content are never inferred from a
-numeric box-model delta.  An unowned interior line or a foreign direct
-`content' role fails closed.  Returned lines retain all text properties."
+REGION-IDS is the same owner set used to derive retained Ebox publication
+spans.  Leading and trailing lines without a direct target role are stable
+wrapper chrome and are omitted.  When EXPECTED-LINE-COUNT is non-nil, any
+remaining excess may be removed only from role-proven outer margin/border
+lines (`mt'/`bt' at the start, `mb'/`bb' at the end).  Padding and content
+are never inferred from a numeric box-model delta.  An unowned interior line
+or a foreign direct `content' role fails closed.  Returned lines retain all
+text properties."
   (let ((region-set (make-hash-table :test 'equal))
         (lines (ebox-string-lines rendered))
         infos first last invalid)

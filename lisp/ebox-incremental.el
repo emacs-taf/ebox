@@ -47,8 +47,8 @@
                   "ebox-tree" (old new))
 (declare-function ebox-tree-runtime-identity-snapshot
                   "ebox-tree" (root))
-(declare-function tp-object-mounts
-                  "tp-surface" (object))
+(declare-function ebox--pub-object-mounts
+                  "ebox-publication" (object))
 (declare-function ebox-string-lines "ebox" (string))
 (declare-function ebox-lines-join "ebox" (lines))
 (declare-function ebox-get "ebox" (box key))
@@ -159,8 +159,9 @@
    buffer))
 
 (defvar ebox-incremental--mount-snapshot-cache nil
-  "Read-only TP mount snapshots shared within one publication planning pass.
-The planning pass ends before TP can publish new coordinates.")
+  "Read-only Ebox publication mount snapshots shared within one publication
+planning pass.
+The planning pass ends before Ebox publication can publish new coordinates.")
 
 (defvar ebox-incremental--projection-rejections nil
   "Compact rejected local attempts in the current publication planning pass.")
@@ -408,8 +409,8 @@ user code or signal after mutation.")
 
 (defvar ebox--buffer-render-state-table)
 
-(declare-function tp-surface-client-state "tp-surface" (surface))
-(declare-function tp-surface-live-p "tp-surface" (surface))
+(declare-function ebox--pub-surface-client-state "ebox-publication" (surface))
+(declare-function ebox--pub-surface-live-p "ebox-publication" (surface))
 
 (defvar ebox-render-cache-max-entries 2048
   "Maximum persistent render cache entries retained per buffer.
@@ -1180,7 +1181,8 @@ update REPORT.")
 
 (defvar ebox--scroll-global-state (make-hash-table :test 'equal)
   "Global hash table storing scroll state.
-Keys are region-id, values are plists with :scroll-offset, :content-lines, etc.")
+Keys are region-id, values are plists with :scroll-offset, :content-lines,
+etc.")
 
 (defun ebox--buffer-render-state (buffer)
   "Return render state for BUFFER."
@@ -1843,7 +1845,7 @@ separately for every role property."
 (defun ebox--build-region-line-index (&optional include-owner-stacks-p)
   "Return a per-line index of ebox region ownership in the current buffer.
 INCLUDE-OWNER-STACKS-P includes retained wrapper ownership in an unmounted
-scroll cache, whose nested owners have no TP role mounts yet."
+scroll cache, whose nested owners have no Ebox publication role mounts yet."
   (let ((region-lines (make-hash-table :test 'equal))
         (line-number 0)
         lines)
@@ -2022,7 +2024,7 @@ therefore unsafe."
     compatible))
 
 (defun ebox--region-set-line-spans-from-mounts (region-ids)
-  "Return per-line spans for REGION-IDS using TP-owned mounts."
+  "Return per-line spans for REGION-IDS using Ebox-owned mounts."
   (let ((region-set (ebox--region-id-set region-ids))
         (line-ranges (make-hash-table :test 'eql))
         spans)
@@ -4315,7 +4317,7 @@ during `ebox-incremental-flush'."
                               :flush-count 1))
       (ebox--invalidate-buffer-viewport-dependencies buffer)
       (unless surface-publisher
-        (error "Ebox batch has no TP surface publisher"))
+        (error "Ebox batch has no Ebox publication surface publisher"))
       (let (report)
         (unwind-protect
             (let ((ebox-incremental--source-base-index
@@ -5987,11 +5989,11 @@ style consumers; the Style Adapter computes their values exactly once later."
             (ebox-candidate--range-replacements candidate) original-ranges))))
 
 (defun ebox-incremental-consume-candidate (buffer-or-name candidate)
-  "Consume CANDIDATE for BUFFER-OR-NAME and return its pure surface input.
-The returned plist contains the prepared root, Ebox plan report, identity
-policy, and runtime state overrides needed by the TP surface publisher.
-CANDIDATE is sealed before target and staleness validation, so every attempted
-commit consumes it even when later preparation fails."
+  "Consume CANDIDATE for BUFFER-OR-NAME and return its pure surface input.  The
+returned plist contains the prepared root, Ebox plan report, identity
+policy, and runtime state overrides needed by the Ebox publication surface
+publisher.  CANDIDATE is sealed before target and staleness validation, so
+every attempted commit consumes it even when later preparation fails."
   (unless (ebox-candidate-p candidate)
     (error "Ebox logical commit requires an Ebox candidate"))
   (when (ebox-candidate--sealed-p candidate)
@@ -6010,8 +6012,8 @@ commit consumes it even when later preparation fails."
         (ebox-incremental--surface-commit-input buffer old-state prepared)))))
 
 (defun ebox-incremental-prepare-root-commit (buffer-or-name next-root)
-  "Prepare declarative NEXT-ROOT for TP publication in BUFFER-OR-NAME.
-Return the same pure surface-input shape as
+  "Prepare declarative NEXT-ROOT for Ebox publication publication in
+BUFFER-OR-NAME.  Return the same pure surface-input shape as
 `ebox-incremental-consume-candidate'."
   (let* ((buffer (get-buffer buffer-or-name))
          (old-state (and buffer (ebox--buffer-render-state buffer))))
@@ -7234,9 +7236,9 @@ CANDIDATE-INDEX is the prepared runtime index for CANDIDATE-ROOT."
     (nreverse dirty)))
 
 (defun ebox-incremental--isolate-candidate-caches (state)
-  "Copy mutable Ebox caches in unpublished STATE.
-Candidate layout may replace entries while proving a publication.  Each
-candidate therefore owns its cache tables until TP commits the generation."
+  "Copy mutable Ebox caches in unpublished STATE.  Candidate layout may replace
+entries while proving a publication.  Each candidate therefore owns its
+cache tables until Ebox publication commits the generation."
   (dolist (entry '((:render-cache . equal)
                    (:layout-snapshots . equal)
                    (:layout-fragments . equal)
@@ -8019,7 +8021,7 @@ line count; its outside siblings are shifted by the one scoped replacement."
                              (plist-get old-state
                                         :surface-node-object-table))
                             (object (gethash candidate-id object-table))
-                            (mounts (tp-object-mounts object)))
+                            (mounts (ebox--pub-object-mounts object)))
                   (cons (apply #'min (mapcar (lambda (mount)
                                                (plist-get mount :start))
                                              mounts))
@@ -9236,10 +9238,10 @@ permits retaining scroll and layer pixels because none of their inputs changed."
 
 (defun ebox-incremental--span-patch-identity-stable-p
     (buffer old-state candidate-state prepared owner-id)
-  "Return non-nil when a span patch preserves candidate identity topology.
-The candidate index is already the proof boundary for source identity.  This
+  "Return non-nil when a span patch preserves candidate identity topology.  The
+candidate index is already the proof boundary for source identity.  This
 check verifies its observable sets and the copied path's parent slots before
-the surface is allowed to reuse retained TP objects."
+the surface is allowed to reuse retained Ebox publication objects."
   (let* ((partitioned-p (plist-get prepared :partitioned-owner-proof-p))
          (old-node-table (plist-get old-state :node-table))
          (new-node-table (plist-get candidate-state :node-table))
@@ -10695,7 +10697,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
       (when (and valid
                  ;; Variable content is admitted only when every owner has a
                  ;; stable allocated slot proof.  The surface will shape the
-                 ;; new line back into that retained slot before TP sees it;
+                 ;; new line back into that retained slot before Ebox publication sees it;
                  ;; raw string length is not the geometry proof.
                  (cl-every (lambda (proof)
                              (or (plist-get proof :layer-recompose-p)
@@ -10856,7 +10858,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
            (plist-get candidate-state :native-topology-stable-p)))
     (when (eq projection-kind 'metadata)
       ;; Metadata-only candidates retain the complete runtime index so Surface
-      ;; can reuse every mounted TP object instead of creating a sparse
+      ;; can reuse every mounted Ebox publication object instead of creating a sparse
       ;; candidate object context.
       (setq overrides
             (append overrides
@@ -11002,7 +11004,8 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
 
 (defun ebox-incremental--same-root-surface-identity-p
     (old-state candidate-state)
-  "Return non-nil when OLD-STATE and CANDIDATE-STATE retain one TP root."
+  "Return non-nil when OLD-STATE and CANDIDATE-STATE retain one Ebox
+publication root."
   (let ((old-root (plist-get old-state :root-node))
         (new-root (plist-get candidate-state :root-node)))
     (and (eq (plist-get old-root :ebox-type)
@@ -11014,7 +11017,8 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
 
 (defun ebox-incremental--surface-commit-input
     (buffer old-state prepared)
-  "Return TP surface input for BUFFER from OLD-STATE and PREPARED runtime."
+  "Return Ebox publication surface input for BUFFER from OLD-STATE and PREPARED
+runtime."
   (let* ((ebox-incremental--projection-rejections nil)
          (ebox-incremental--mount-snapshot-cache (make-hash-table :test #'equal))
          (ebox-incremental--allocated-slot-proof-cache
@@ -11183,7 +11187,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
           (ebox-incremental--same-root-surface-identity-p
            old-state candidate-state))
          (scope-node-ids
-          ;; Metadata-only interaction changes carry an exact empty TP batch,
+          ;; Metadata-only interaction changes carry an exact empty Ebox publication batch,
           ;; while paint-only owner plans repaint the complete retained output
           ;; without candidate mounts for the logical owner.  Neither has
           ;; candidate mount specs for an object-scoped range proof; routing
@@ -11579,12 +11583,13 @@ whether NEXT-ROOT shares untouched published nodes."
 
 (defun ebox-incremental-prepare-scoped-commit
     (buffer next-root report-overrides &optional isolated-candidate-p)
-  "Prepare NEXT-ROOT for object-scoped TP publication in BUFFER.
+  "Prepare NEXT-ROOT for object-scoped Ebox publication publication in BUFFER.
 REPORT-OVERRIDES replaces Ebox semantic report fields.  The returned plist
 contains the isolated candidate root, Ebox node identities, report, and
-runtime overrides; the surface layer resolves identities to opaque TP objects.
-When ISOLATED-CANDIDATE-P is non-nil, NEXT-ROOT is an internally copied
-runtime candidate whose identities already match the published root."
+runtime overrides; the surface layer resolves identities to opaque Ebox
+publication objects.  When ISOLATED-CANDIDATE-P is non-nil, NEXT-ROOT is an
+internally copied runtime candidate whose identities already match the
+published root."
   (let ((old-state (ebox--buffer-render-state buffer))
         (scroll-transaction-p
          (plist-get report-overrides :scroll-state-transaction))
@@ -11702,8 +11707,8 @@ When RETAIN-NATIVE-P is non-nil, preserve its committed native frame bases."
   (append
    (list :viewport-width (plist-get state :viewport-width)
         :viewport-height (plist-get state :viewport-height)
-        ;; Candidate runtime revisions are the TP base revision for the
-        ;; upcoming viewport transaction; the published TP revision is
+        ;; Candidate runtime revisions are the Ebox publication base revision for the
+        ;; upcoming viewport transaction; the published Ebox publication revision is
         ;; advanced by the transaction and recorded after publication.
         :runtime-revision (plist-get state :runtime-revision)
         :display-signature (plist-get state :display-signature)

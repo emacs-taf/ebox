@@ -81,7 +81,7 @@ The queue holds no buffers, runtime roots or sampled dimensions.")
             (setq ebox--window-size-change-pending-frames nil
                   ebox--window-size-change-timer nil)
             ;; Timer dispatch inhibits quit by default.  Enable C-g only after
-            ;; cleanup is installed; TP retains its own final-accept protection.
+            ;; cleanup is installed; Ebox publication retains its own final-accept protection.
             (let ((inhibit-quit nil))
               (while frames
                 (let ((frame (pop frames)))

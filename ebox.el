@@ -3,7 +3,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ebox contributors
 ;; Version: 3.0.0
-;; Package-Requires: ((emacs "29.1") (ecss "0.1.0") (tp "2.0.0"))
+;; Package-Requires: ((emacs "29.1") (ecss "0.1.0"))
 ;; Keywords: ui, graphics, convenience
 ;; URL: https://gitea.gklazycat.heiyu.space/geekinney/ebox
 
@@ -115,13 +115,13 @@
 ;;;###autoload (autoload 'ebox-buffer-set-observer "ebox" nil nil)
 ;; Set BUFFER-OR-NAME's publication observer to OBSERVER-OR-NIL.
 ;; The observer receives BUFFER and one defensive flat report at a time after an
-;; accepted publication.  TP's report is delivered first, followed by Ebox's
+;; accepted publication.  Ebox publication's report is delivered first, followed by Ebox's
 ;; completed report.  Nil removes observation without affecting rendering.
 ;; Ebox observer reports include :phase-duration-ms, a plist keyed by source,
 ;; style, plan, layout, projection and transaction. Values are elapsed
 ;; milliseconds, including GC, with nested phases charged only to the inner
 ;; phase. Their sum is :duration-ms. Transaction is the remaining commit work,
-;; including TP preparation/publication and acceptance; TP's separate report
+;; including Ebox publication preparation/publication and acceptance; Ebox publication's separate report
 ;; overlaps it. Phase clocks run only while an observer is attached.
 ;;
 ;; Function: ebox-buffer-update-report (buffer-or-name)
@@ -139,7 +139,7 @@
 ;; for reason meanings and the update-effect evaluator for aggregate diagnostics.
 ;; A metadata-update strategy means selector facts were published after proving
 ;; that the complete computed style closure and topology remain unchanged. Ebox
-;; submits an exact-coordinate empty TP batch, so the mounted object set and
+;; submits an exact-coordinate empty Ebox publication batch, so the mounted object set and
 ;; rendered text are retained without reconciliation.
 ;;
 ;; Function: ebox-build (dsl)
@@ -175,7 +175,7 @@
 ;; When BUFFER already has an active batch, join it without flushing.  Errors,
 ;; quits and other nonlocal exits discard only this call's queued changes and
 ;; preserve the outer batch.  A failed owned flush discards its unpublished batch;
-;; the TP publication boundary preserves the previously committed generation.
+;; the Ebox publication publication boundary preserves the previously committed generation.
 ;;
 ;; This scope covers queued `ebox-region-update' calls for BUFFER, not arbitrary
 ;; side effects in CALLBACK.  Leave explicit begin/flush lifecycle calls outside
@@ -361,19 +361,19 @@
 ;;
 ;; Function: ebox-framework-spi-capabilities ()
 ;;;###autoload (autoload 'ebox-framework-spi-capabilities "ebox" nil nil)
-;; Return a fresh immutable Ebox framework SPI v2 provider record.
+;; Return a fresh immutable Ebox framework SPI v3 provider record.
 ;;
 ;; Function: ebox-framework-spi-initial (buffer-or-name input framework-stage framework-rollback)
 ;;;###autoload (autoload 'ebox-framework-spi-initial "ebox" nil nil)
 ;; Initially mount INPUT and run the paired framework callbacks.
 ;;
-;; FRAMEWORK-STAGE runs after provisional TP state and Ebox mirrors/native state
+;; FRAMEWORK-STAGE runs after provisional Ebox publication state and Ebox mirrors/native state
 ;; agree.  FRAMEWORK-ROLLBACK receives the same legacy report on any later
 ;; transaction failure.  Return that same report object after completion.
 ;;
 ;; Function: ebox-framework-spi-initial-observation-reports (report)
 ;;;###autoload (autoload 'ebox-framework-spi-initial-observation-reports "ebox" nil nil)
-;; Return TP/Ebox provider snapshots captured by completed initial REPORT.
+;; Return Ebox publication/Ebox provider snapshots captured by completed initial REPORT.
 ;; The reports are defensive observational snapshots; they expose no publication
 ;; or promotion capability.
 ;;
@@ -437,9 +437,9 @@
 ;;;###autoload (autoload 'ebox-framework-spi-provider-stage-order "ebox" nil nil)
 ;; Return a defensive copy of PROVIDER's participant stage order.
 ;;
-;; Function: ebox-framework-spi-provider-tp-protocol (provider)
-;;;###autoload (autoload 'ebox-framework-spi-provider-tp-protocol "ebox" nil nil)
-;; Return PROVIDER's immutable TP protocol.
+;; Function: ebox-framework-spi-provider-publication-protocol (provider)
+;;;###autoload (autoload 'ebox-framework-spi-provider-publication-protocol "ebox" nil nil)
+;; Return PROVIDER's immutable Ebox publication protocol.
 ;;
 ;; Function: ebox-framework-spi-provider-update-operation (provider)
 ;;;###autoload (autoload 'ebox-framework-spi-provider-update-operation "ebox" nil nil)
@@ -452,7 +452,7 @@
 ;;
 ;; Function: ebox-framework-spi-validate-provider (provider)
 ;;;###autoload (autoload 'ebox-framework-spi-validate-provider "ebox" nil nil)
-;; Validate PROVIDER as one complete Ebox framework SPI v2 record.
+;; Validate PROVIDER as one complete Ebox framework SPI v3 record.
 ;;
 ;; Function: ebox-get (box property)
 ;;;###autoload (autoload 'ebox-get "ebox" nil nil)
@@ -478,7 +478,7 @@
 ;;
 ;; The result is a `(START . END)' pair spanning the referenced runtime node's
 ;; rendered border-box characters (excluding margins), or nil when the buffer,
-;; reference, or live TP mounts no longer exist.  HOST-REF is opaque and
+;; reference, or live Ebox publication mounts no longer exist.  HOST-REF is opaque and
 ;; compared with `equal'.
 ;;
 ;; Function: ebox-host-ref-position (buffer-or-name host-ref)
@@ -496,10 +496,10 @@
 ;;
 ;; Function: ebox-incremental-prepare-scoped-commit (buffer next-root report-overrides &optional isolated-candidate-p)
 ;;;###autoload (autoload 'ebox-incremental-prepare-scoped-commit "ebox" nil nil)
-;; Prepare NEXT-ROOT for object-scoped TP publication in BUFFER.
+;; Prepare NEXT-ROOT for object-scoped Ebox publication publication in BUFFER.
 ;; REPORT-OVERRIDES replaces Ebox semantic report fields.  The returned plist
 ;; contains the isolated candidate root, Ebox node identities, report, and
-;; runtime overrides; the surface layer resolves identities to opaque TP objects.
+;; runtime overrides; the surface layer resolves identities to opaque Ebox publication objects.
 ;; When ISOLATED-CANDIDATE-P is non-nil, NEXT-ROOT is an internally copied
 ;; runtime candidate whose identities already match the published root.
 ;;
@@ -525,7 +525,7 @@
 ;; Focus follows retained identity through publication.  Removal, hiding and
 ;; disabling clear it without choosing a replacement; navigation can then restart.
 ;; Failed publication restores focus.  Unmount and buffer death release it.
-;; Changing or clearing focus during an active TP transaction signals error
+;; Changing or clearing focus during an active Ebox publication transaction signals error
 ;; without mutation. Invoke focus after acceptance, including from after-commit
 ;; callbacks; it cannot join an outer transaction or target provisional state.
 ;;
@@ -542,7 +542,7 @@
 ;; Default to the current buffer. Use the tab order and visibility rules of
 ;; ebox-focus-next, independently of current focus. No stop signals user-error
 ;; without changing focus or point. No window is selected.
-;; Active TP transactions reject focus changes; see ebox-focus.
+;; Active Ebox publication transactions reject focus changes; see ebox-focus.
 ;;
 ;; Function: ebox-focus-next (&optional count cycle buffer-or-name)
 ;;;###autoload (autoload 'ebox-focus-next "ebox" nil t)
@@ -555,7 +555,7 @@
 ;; node identity.  Disabled, hidden and inaccessible nodes are skipped.  Navigation
 ;; starts at the first (or backward last) stop when there is no eligible focus.
 ;; No window is selected and no key bindings are installed. Nonzero moves
-;; during an active TP transaction signal error without mutation. Zero remains
+;; during an active Ebox publication transaction signal error without mutation. Zero remains
 ;; a read-only query; see ebox-focus.
 ;;
 ;; Function: ebox-focus-within (host-ref &optional count cycle buffer-or-name)
@@ -565,7 +565,7 @@
 ;; backward, with CYCLE wrapping inside the subtree. Zero returns current focus
 ;; only when inside the subtree. Use ebox-focus-next ordering and visibility.
 ;; Invalid/inaccessible roots or missing stops signal user-error without changing
-;; focus or point. Nonzero movement rejects active TP transactions. This installs
+;; focus or point. Nonzero movement rejects active Ebox publication transactions. This installs
 ;; no keymap or persistent focus restriction: callers compose menu/dialog policy
 ;; while Ebox remains the focus and painted-target authority.
 ;;
@@ -599,7 +599,7 @@
 ;; errors or user quit. Reorder is allowed; replacement, deletion, hiding,
 ;; disabling, unmount and remount invalidate input. Window selection is unchanged.
 ;; The reader owns its native editing buffer and input methods; it must not
-;; edit Ebox-owned text. Call outside TP transactions. This function applies
+;; edit Ebox-owned text. Call outside Ebox publication transactions. This function applies
 ;; no application value; normal reader errors and quit propagate.
 ;;
 ;; Error: ebox-input-cancelled
@@ -773,7 +773,7 @@
 ;; `:content' replaces a Text node's string or a Box's sole direct Text child.
 ;; It does not add children or mutate selector metadata.  The update builds an
 ;; isolated candidate, runs the Ebox owner planner, and publishes once through the
-;; mounted TP surface.  Return nil while queued in an explicit batch; otherwise
+;; mounted Ebox publication surface.  Return nil while queued in an explicit batch; otherwise
 ;; return the committed update report.
 ;;
 ;; Examples:
@@ -785,7 +785,7 @@
 ;;
 ;; Function: ebox-render (input)
 ;;;###autoload (autoload 'ebox-render "ebox" nil nil)
-;; Render canonical INPUT to a multi-line string through TP.
+;; Render canonical INPUT to a multi-line string through Ebox publication.
 ;; INPUT atomically carries one typed Text/Box root and its source generation.
 ;; The materialized surface is ephemeral and creates no live buffer state.
 ;;
@@ -826,7 +826,7 @@
 ;; Render canonical INPUT into BUFFER-OR-NAME and return the buffer.
 ;; INPUT atomically carries one typed Text/Box root and its source generation.
 ;; OPTIONS accepts only `:observer'.  Its function receives the buffer and flat
-;; TP/Ebox reports after accepted initial publication and later commits.
+;; Ebox publication/Ebox reports after accepted initial publication and later commits.
 ;;
 ;; Function: ebox-rerender-buffer-with-context (buffer viewport-width &optional viewport-height)
 ;;;###autoload (autoload 'ebox-rerender-buffer-with-context "ebox" nil nil)
@@ -1043,23 +1043,23 @@
 ;;
 ;; Function: ebox-surface-buffer-mounted-p (buffer)
 ;;;###autoload (autoload 'ebox-surface-buffer-mounted-p "ebox" nil nil)
-;; Return non-nil when BUFFER has a live Ebox TP surface.
+;; Return non-nil when BUFFER has a live Ebox Ebox publication surface.
 ;;
 ;; Function: ebox-surface-buffer-revision (buffer)
 ;;;###autoload (autoload 'ebox-surface-buffer-revision "ebox" nil nil)
-;; Return BUFFER's committed TP surface revision or fail when unmounted.
+;; Return BUFFER's committed Ebox publication surface revision or fail when unmounted.
 ;;
 ;; Function: ebox-surface-buffer-snapshot (buffer)
 ;;;###autoload (autoload 'ebox-surface-buffer-snapshot "ebox" nil nil)
 ;; Export BUFFER's current committed canonical input on explicit request.
 ;; Return a plist with :input, :revision and :mount-id.  The integer mount ID
 ;; distinguishes remounts whose revisions may coincide.  Query is rejected while
-;; a TP transaction is active or BUFFER has no live Ebox surface.
+;; a Ebox publication transaction is active or BUFFER has no live Ebox surface.
 ;;
 ;; This explicit operation copies node structure and mutable input data, retaining
 ;; exact immutable source facts and opaque capabilities such as callbacks and
 ;; keymaps.  It neither renders nor publishes, and never advances the revision.
-;; Cost is linear in exported data plus TP's latest retained diagnostic report.
+;; Cost is linear in exported data plus Ebox publication's latest retained diagnostic report.
 ;; The returned input survives later commits and unmounting; it can be rendered
 ;; independently.  It does not freeze external capabilities or the display
 ;; environment, and old Host references gain no authority over another mount.
@@ -1068,13 +1068,9 @@
 ;; Ebox surface capability violation
 ;; Catch this condition with condition-case; failed calls do not return a value.
 ;;
-;; Error: ebox-surface-tp-protocol-error
-;; Ebox requires TP 2.0.0 or newer with structured transactions
-;; Catch this condition with condition-case; failed calls do not return a value.
-;;
 ;; Function: ebox-surface-update-buffer-viewport (buffer width &optional height)
 ;;;###autoload (autoload 'ebox-surface-update-buffer-viewport "ebox" nil nil)
-;; Publish BUFFER for viewport WIDTH and optional HEIGHT through TP.
+;; Publish BUFFER for viewport WIDTH and optional HEIGHT through Ebox publication.
 ;;
 ;; Function: ebox-text-create (&rest plist)
 ;;;###autoload (autoload 'ebox-text-create "ebox" nil nil)
@@ -1103,7 +1099,7 @@
 ;; Function: ebox-unmount-buffer (buffer-or-name)
 ;;;###autoload (autoload 'ebox-unmount-buffer "ebox" nil nil)
 ;; Unmount Ebox's retained surface from BUFFER-OR-NAME and return the buffer.
-;; The operation releases TP surface authority, observers, retained indexes,
+;; The operation releases Ebox publication surface authority, observers, retained indexes,
 ;; scroll/native runtime state, and the buffer-local Ebox surface handle.
 ;;
 ;; Function: ebox-update-selector (buffer selector &rest props)
@@ -1154,6 +1150,38 @@
 ;; a dedicated preview buffer. Interactive use: M-x ebox-file-preview, or C-c C-c
 ;; in ebox-dsl-mode. Evaluation errors are reported without publishing a new view.
 ;;
+
+;; Macro: ebox-with-transaction (&rest body)
+;;;###autoload (autoload 'ebox-with-transaction "ebox" nil nil 'macro)
+;; Evaluate BODY in one Ebox display transaction. Application publication must
+;; start outside this boundary; framework participants run inside it.
+;;
+;; Function: ebox-transaction-active-p ()
+;;;###autoload (autoload 'ebox-transaction-active-p "ebox" nil nil)
+;; Return whether an Ebox display transaction is active.
+;;
+;; Function: ebox-transaction-participate (&key key stage rollback precommit after-commit journal)
+;;;###autoload (autoload 'ebox-transaction-participate "ebox" nil nil)
+;; Register a unique KEY's paired STAGE/ROLLBACK in the active publication.
+;; PRECOMMIT is reserved for Ebox-owned validation. AFTER-COMMIT runs only after
+;; acceptance. A failed stage restores the display and already staged owners.
+;;
+;; Function: ebox-final-marker-expectation-create (&key target index value)
+;;;###autoload (autoload 'ebox-final-marker-expectation-create "ebox" nil nil)
+;; Create an opaque expectation of TARGET vector's INDEX holding VALUE.
+;;
+;; Function: ebox-final-marker-slot-write-create (&key target index value)
+;;;###autoload (autoload 'ebox-final-marker-slot-write-create "ebox" nil nil)
+;; Create one bounded vector write for framework final acceptance.
+;;
+;; Function: ebox-transaction-register-final-marker (&key owner-key expected-token expected-version next-values inverse-values slot-write-count operation-key)
+;;;###autoload (autoload 'ebox-transaction-register-final-marker "ebox" nil nil)
+;; Stage framework authority in the current Ebox transaction. OPERATION-KEY
+;; must be ebox-vector-slots/v1. Expectations bind the old token and version;
+;; NEXT-VALUES and INVERSE-VALUES are paired slot writes. Registration is only
+;; valid during framework staging; failed acceptance restores prior values.
+;;
+
 ;;; Code:
 
 ;;;###autoload

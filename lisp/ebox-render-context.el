@@ -154,10 +154,10 @@ REGISTRY defaults to the active render candidate."
       (gethash value values))))
 
 (defun ebox--capture-paint-origins! (string start end)
-  "Capture caller FACE baselines on STRING between START and END.
-Existing origins are preserved so nested Ebox contributions never replace the
-original caller baseline.  The property is stripped before a TP plan leaves
-the render boundary."
+  "Capture caller FACE baselines on STRING between START and END.  Existing
+origins are preserved so nested Ebox contributions never replace the
+original caller baseline.  The property is stripped before a Ebox
+publication plan leaves the render boundary."
   (when (and ebox--paint-origin-capture-p
              (stringp string)
              (< start end))

@@ -1292,7 +1292,7 @@ Grid track wrappers are traversed after their structural validator succeeds."
     (cond
      ((eq group 'typography) 'font-metrics-projection)
      ((memq 'item contexts) 'direct-parent-layout)
-     ((eq group 'paint) 'tp-contribution)
+     ((eq group 'paint) 'publication-contribution)
      ((or (memq name '(:gap :flex-flow))
           (cl-some
            (lambda (tag)

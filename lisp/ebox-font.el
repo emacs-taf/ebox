@@ -3,7 +3,7 @@
 ;;; Commentary:
 ;; Resolves canonical font inputs against one Emacs display capability and
 ;; returns a shared immutable fact for measurement and final paint.  It does
-;; not own author parsing, cascade, layout, TP priority, or buffer publication.
+;; not own author parsing, cascade, layout, Ebox publication priority, or buffer publication.
 
 ;;; Code:
 

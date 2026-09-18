@@ -5,7 +5,7 @@
 ;;; Commentary:
 ;; Paint slots are stable named-face addresses used by Ebox computed styles.
 ;; The slot and its face-remapping journal are owned by Ebox so rendering does
-;; not cross the generic TP property layer for an operation that is local to a
+;; not cross the generic Ebox publication property layer for an operation that is local to a
 ;; mounted Ebox buffer.
 
 ;;; Code:

@@ -297,7 +297,7 @@ Text 的样式声明只接受字体、前景/背景和文本装饰 property；�
 space 可以缩短。不提供 alpha 混合、半字形遮罩或 child frame。native reflow
 无法表示图层时回退到 Elisp。
 
-包括隐藏节点更新和 rollback 在内的发布仍通过 TP transaction。固定外部尺寸的
+包括隐藏节点更新和 rollback 在内的发布仍通过 Ebox publication transaction。固定外部尺寸的
 局部修改可以只重新合成受影响的宿主；几何变化或根图层依赖可能需要扩大范围。
 不保证每次更新的耗时或所有更新都保持局部。用 `make test` 运行聚焦契约。
 独立的 `ebox-playground` 包提供 `layer-minimal.ebox`、`layer-reference.ebox`；
@@ -311,7 +311,7 @@ batch 测试不证明 GUI 视觉一致性或远程 CI 成功。
 换行模式属于 Box，并由其中的文本继承。
 
 使用 `:wrap-mode kp` 前，安装 EKP 1.0.0 或更高版本，或将其源码目录加入 `load-path`。
-它是按需加载的可选依赖，普通 Ebox 布局只需要 ECSS 和 TP。选择 `kp` 而没有兼容的
+它是按需加载的可选依赖，普通 Ebox 布局只需要 ECSS 和 Ebox publication。选择 `kp` 而没有兼容的
 EKP 时，会提示安装或更新；请安装 EKP，或显式选择其他换行模式，不会静默改用单词换行。
 EKP 加速器与 Ebox Rust reflow 模块是两个独立的可选模块，启用一个不会安装另一个。
 
@@ -353,7 +353,7 @@ reader 在所属挂载 buffer 中运行，但编辑由原生 minibuffer／编辑
 只有原挂载目标仍存在、启用且可访问时才返回 reader 的值，否则抛出 `quit`
 子类 `ebox-input-cancelled`。带 key 的重排保留目标；卸载、替换、删除、禁用或
 不可访问的入口不会接受结果。reader 错误与用户 quit 继续传播。调用必须在
-TP 事务之外；Ebox 不持有业务值或原生输入 buffer，也不实现第二套文本编辑器。
+Ebox publication 事务之外；Ebox 不持有业务值或原生输入 buffer，也不实现第二套文本编辑器。
 
 
 Text 与所有 Box form 都接受 `:help-echo`、`:pointer`、`:hover-style` 和
@@ -488,7 +488,7 @@ cascade。焦点属于具体 buffer；同一输入的纯渲染和其他挂载不
 
 `ebox-focus-next` / `ebox-focus-previous` 操作逻辑焦点，第二个可选参数允许循环。
 `ebox-focus-first` 选择第一个有效停靠点；没有停靠点时保持原焦点和 point。
-焦点变更不能加入尚未接受的 TP 事务：设置、清空或移动焦点会在修改焦点与 point 前
+焦点变更不能加入尚未接受的 Ebox publication 事务：设置、清空或移动焦点会在修改焦点与 point 前
 抛出错误。应在事务接受后调用，也可使用 `after-commit` 回调。只读的
 `ebox-focused-host-ref` 和零步导航仍可使用，避免外层回滚遗留未被接受的焦点变更。
 它们返回不透明 Host 引用，供 `ebox-focus` 和 `ebox-focused-host-ref` 使用；框架也可以
@@ -536,7 +536,7 @@ Playground 的[交互实验室](https://gitea.gklazycat.heiyu.space/geekinney/eb
 ## 5. 渲染与发布
 
 `ebox-render` 返回带属性文本，不修改 live buffer；`ebox-render-to-buffer` 挂载
-retained TP surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
+retained Ebox publication surface 并返回 buffer。它们和 `ebox-display-buffer` 都接收
 `ebox-build` 返回的不透明值。
 
 ```elisp
@@ -572,7 +572,7 @@ buffer，遵循 `display-buffer-alist`，并接受与原生 `display-buffer` 相
 
 通过 `ebox-buffer-set-observer` 开启观察时，`:phase-duration-ms` 按 source、style、
 plan、layout、projection、transaction 给出独占毫秒数。嵌套阶段只记一次，总和等于
-Ebox 的观测总时长；transaction 包含其余提交／TP 工作，与 TP 的单独报告重叠。
+Ebox 的观测总时长；transaction 包含其余提交／Ebox publication 工作，与 Ebox publication 的单独报告重叠。
 工作区通用工具在 trace pass 消费这些字段，CPU 与分配采样分别执行。
 
 可选字段 `:projection-rejections` 以
@@ -695,19 +695,19 @@ make check EMACS=/Applications/Emacs.app/Contents/MacOS/Emacs
 
 ## 框架集成契约
 
-Ebox 通过 `(require 'ebox)` 提供 framework SPI v2，面向 ETAF 等框架实现者；
+Ebox 通过 `(require 'ebox)` 提供 framework SPI v3，面向 ETAF 等框架实现者；
 普通应用使用前面的渲染和更新入口。先调用 `ebox-framework-spi-capabilities` 获取
 不可变 provider，并用 `ebox-framework-spi-validate-provider` 验证，再保存公共
 operation descriptor。不得读取私有 provider 字段。
 
 | 操作 | 输入与结果 |
 | --- | --- |
-| `ebox-framework-spi-initial` | 未挂载 buffer、canonical input 和 stage/rollback 回调对；返回传给回调的同一份已完成报告。不允许加入外层 TP 事务。 |
+| `ebox-framework-spi-initial` | 未挂载 buffer、canonical input 和 stage/rollback 回调对；返回传给回调的同一份已完成报告。不允许加入外层 Ebox publication 事务。 |
 | `ebox-framework-spi-update` | 已挂载 buffer、canonical input 或 candidate，以及回调对；返回 stage 回调看到的同一个报告对象。 |
 | `ebox-unmount-buffer` | 释放挂载，使该 buffer 可以建立新的 initial generation。 |
 
-框架管理应用状态，Ebox 管理布局与 runtime indexes，TP 管理 buffer 发布和事务。
-stage 在临时 TP 与 Ebox 状态一致后执行。回滚依次恢复框架、Ebox、TP 状态。
+框架管理应用状态，Ebox 管理布局与 runtime indexes，Ebox publication 管理 buffer 发布和事务。
+stage 在临时 Ebox publication 与 Ebox 状态一致后执行。回滚依次恢复框架、Ebox、Ebox publication 状态。
 initial 失败时恢复编辑器状态，包括文本、point、mark、narrowing、overlay、undo 与
 modified 标志；已被销毁的 buffer 不会被复活。提交接受后的观察者或 retirement 错误
 是诊断信息，不能把已经完成的提交当作回滚。调用方必须同时提供两个回调并传播失败，

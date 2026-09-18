@@ -150,12 +150,12 @@
 
 (defun ebox-native-commit-object-delta-node-ids
     (old-state candidate-state prepared)
-  "Return the exact preorder TP object delta, or nil.
-Compare OLD-STATE with CANDIDATE-STATE under PREPARED's local index proof.
-Every old node absent from CANDIDATE-STATE must be named by PREPARED's removed
-set.  Every new, replaced, moved, reparented, or explicitly touched node enters
-the result.  Untouched nodes are authorized only when their old TP object,
-type, key, parent, and sibling position are identical."
+  "Return the exact preorder Ebox publication object delta, or nil.  Compare
+OLD-STATE with CANDIDATE-STATE under PREPARED's local index proof.  Every
+old node absent from CANDIDATE-STATE must be named by PREPARED's removed
+set.  Every new, replaced, moved, reparented, or explicitly touched node
+enters the result.  Untouched nodes are authorized only when their old Ebox
+publication object, type, key, parent, and sibling position are identical."
   (let* ((old-root (plist-get old-state :root-node))
          (new-root (plist-get candidate-state :root-node))
          (old-nodes (plist-get old-state :node-table))
@@ -259,7 +259,8 @@ type, key, parent, and sibling position are identical."
 
 (defun ebox-native-commit-projection-eligible-p
     (previous-state state-overrides stylesheet-active-p)
-  "Return non-nil when a candidate may use changed-only TP projection."
+  "Return non-nil when a candidate may use changed-only Ebox publication
+projection."
   (let ((state (append state-overrides nil)))
     (and previous-state
          (not stylesheet-active-p)
@@ -379,7 +380,7 @@ new session with the same bounded configuration used by retained frames."
     (plist-put state :native-touched-node-ids layout-touched)
     (plist-put state :native-topology-stable-p stable)
     (when (and (or stable layout-touched)
-               ;; A stable native patch reuses prior TP objects and skips a
+               ;; A stable native patch reuses prior Ebox publication objects and skips a
                ;; full Surface style projection.  Its replacement nodes must
                ;; therefore already carry the computed-style certificate.
                ;; A topology-changing full bootstrap projects every node and
@@ -591,8 +592,8 @@ This is execution geometry, not a proof that the width is font-independent."
              :viewport-height viewport-height
              :root-width root-width
              :runtime-revision
-             ;; Ebox's internal runtime revision names the TP base revision
-             ;; for this candidate.  The published TP revision is confirmed
+             ;; Ebox's internal runtime revision names the Ebox publication base revision
+             ;; for this candidate.  The published Ebox publication revision is confirmed
              ;; separately after the transaction commits.
              (or (plist-get state :runtime-revision) 0)
              :context-hash
@@ -645,9 +646,9 @@ This is execution geometry, not a proof that the width is font-independent."
     target))
 
 (defun ebox-native-commit-confirm-published-frame (state published-revision)
-  "Confirm STATE's pending native frame at its exact published revision.
-This function must run after TP installed STATE as client state and while the
-publication transaction can still roll back."
+  "Confirm STATE's pending native frame at its exact published revision.  This
+function must run after Ebox publication installed STATE as client state and
+while the publication transaction can still roll back."
   (when-let* ((pending (plist-get state :native-sync-pending)))
     (let ((revision published-revision))
       (unless (and (integerp revision) (>= revision 0)

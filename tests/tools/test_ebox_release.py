@@ -17,9 +17,9 @@ SPEC.loader.exec_module(RELEASE)
 class ReleaseTests(unittest.TestCase):
     def test_lock_requires_exact_revisions_and_optional_provider_is_explicit(self):
         lock = json.loads((RELEASE.ROOT / "release-dependencies.json").read_text())
-        self.assertEqual(set(RELEASE.lock_entries(lock)), {"tp", "ecss"})
-        self.assertEqual(set(RELEASE.lock_entries(lock, True)), {"tp", "ecss", "ekp"})
-        lock["dependencies"]["tp"]["revision"] = "main"
+        self.assertEqual(set(RELEASE.lock_entries(lock)), {"ecss"})
+        self.assertEqual(set(RELEASE.lock_entries(lock, True)), {"ecss", "ekp"})
+        lock["dependencies"]["ecss"]["revision"] = "main"
         with self.assertRaises(ValueError):
             RELEASE.lock_entries(lock)
 
@@ -79,23 +79,23 @@ class ReleaseTests(unittest.TestCase):
             output = parent / "deps"
             with mock.patch.object(RELEASE, "run", side_effect=RuntimeError("fetch failed")):
                 with self.assertRaisesRegex(RuntimeError, "fetch failed"):
-                    RELEASE.checkout_dependencies(output, {"tp": {"url": "https://invalid", "revision": "0" * 40}})
+                    RELEASE.checkout_dependencies(output, {"ecss": {"url": "https://invalid", "revision": "0" * 40}})
             self.assertEqual(list(parent.iterdir()), [])
 
     def test_dependency_validation_rejects_modified_checkout(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
-            dependency = root / "tp"
+            dependency = root / "ecss"
             dependency.mkdir()
             subprocess.run(["git", "init", "-q", str(dependency)], check=True)
-            (dependency / "tp.el").write_text("original")
-            subprocess.run(["git", "add", "tp.el"], cwd=dependency, check=True)
+            (dependency / "ecss.el").write_text("original")
+            subprocess.run(["git", "add", "ecss.el"], cwd=dependency, check=True)
             subprocess.run(["git", "-c", "user.name=Release Test", "-c", "user.email=release@example.invalid",
                             "commit", "-qm", "fixture"], cwd=dependency, check=True)
             revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=dependency).decode().strip()
-            entries = {"tp": {"revision": revision}}
+            entries = {"ecss": {"revision": revision}}
             RELEASE.validate_dependencies(root, entries)
-            (dependency / "tp.el").write_text("modified")
+            (dependency / "ecss.el").write_text("modified")
             with self.assertRaisesRegex(ValueError, "dependency must be clean"):
                 RELEASE.validate_dependencies(root, entries)
 

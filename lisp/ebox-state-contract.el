@@ -19,7 +19,7 @@
 
 (defconst ebox-state-contract-categories
   '(generation-fact generation-bound-mutable-authority
-    tp-storage-custody compatibility-mirror disposable-cache)
+    ebox--pub-storage-custody compatibility-mirror disposable-cache)
   "Closed set of retained-state categories used by the M2a inventory.")
 
 (defconst ebox-state-contract-required-fields
@@ -166,7 +166,7 @@
     (:id buffer-surface-runtime-authority
      :storage (ebox-surface--buffer-surface
                ebox-surface--buffer-observer
-               ebox-surface--tp-observer
+               ebox-surface--publication-observer
                ebox-surface--observation-contexts
                ebox-surface--context-signals)
      :current-contract buffer-local-mounted-surface-and-observation-handles
@@ -178,20 +178,20 @@
      :rollback restore-prior-surface-signals-and-observer-bridge
      :rebuild-proof not-rebuildable-from-cache
      :cleanup remove-observers-cancel-contexts-and-unmount)
-    (:id tp-client-state-custody
-     :storage (tp-surface-client-state)
+    (:id ebox--pub-client-state-custody
+     :storage (ebox--pub-surface-client-state)
      :current-contract entire-ebox-state-plist
      :target-contract opaque-generation-correlation-only
-     :category tp-storage-custody
-     :owner tp
+     :category ebox--pub-storage-custody
+     :owner ebox-publication
      :mutation-api opaque-ebox-generation-correlation-only
      :generation-binding opaque-correlation
-     :rollback tp-restores-client-state
+     :rollback ebox--pub-restores-client-state
      :rebuild-proof ebox-generation-remains-source-of-truth
-     :cleanup tp-surface-unmount)
+     :cleanup ebox--pub-surface-unmount)
     (:id buffer-render-state-mirror
      :storage (ebox--buffer-render-state-table)
-     :current-contract same-object-alias-of-tp-client-state
+     :current-contract same-object-alias-of-publication-client-state
      :target-contract one-way-generation-projection
      :category compatibility-mirror
      :owner ebox-compatibility
@@ -240,7 +240,7 @@
      :category disposable-cache
      :owner ebox-surface
      :mutation-api copy-before-candidate-fill
-     :generation-binding unchanged-parent-region-and-tp-object-indexes
+     :generation-binding unchanged-parent-region-and-publication-object-indexes
      :rollback discard-candidate-cache
      :rebuild-proof resolve-rich-line-roles-against-retained-topology
      :cleanup ordinary-projection-or-generation-replacement)
@@ -519,9 +519,10 @@ uses a category outside `ebox-state-contract-categories'."
   "Return fresh buffer and region mirrors projected from committed ENTRIES.
 
 ENTRIES is a list of `(BUFFER . STATE)' pairs.  STATE is the current v1 Ebox
-state plist held by TP client-state custody; a later checkpoint may narrow that
-custody to opaque generation correlation.  The returned plist contains
-`:buffer-table' and `:region-table'; neither table mutates live Ebox state."
+state plist held by Ebox publication client-state custody; a later
+checkpoint may narrow that custody to opaque generation correlation.  The
+returned plist contains `:buffer-table' and `:region-table'; neither table
+mutates live Ebox state."
   (list :buffer-table
         (ebox-state-contract--project-buffer-mirror entries)
         :region-table

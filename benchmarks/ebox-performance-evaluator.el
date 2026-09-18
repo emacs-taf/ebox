@@ -3,7 +3,7 @@
 ;;; Commentary:
 ;; Batch entry point for the repository-local performance contract.
 ;;
-;;   emacs -Q -L lisp -L ../ecss -L ../tp \
+;;   emacs -Q -L lisp -L ../ecss \
 ;;     -l benchmarks/ebox-performance-evaluator.el \
 ;;     -f ebox-performance-evaluator-batch
 
@@ -21,7 +21,7 @@
 
 (require 'ebox)
 (require 'ebox-selector)
-(require 'tp)
+(require 'ebox)
 
 (defconst ebox-performance-evaluator--stage-specs
   '((candidate-preparation
@@ -50,22 +50,22 @@
      ebox-surface--owned-ranges
      ebox-surface--surface-plan
      ebox-incremental--layout-owner-plan)
-    (tp-object-preparation
-     tp-object-ensure
-     tp-object-retain
-     tp-bind)
+    (ebox--pub-object-preparation
+     ebox--pub-object-ensure
+     ebox--pub-object-retain
+     ebox--pub-bind)
     (publication
-     tp-surface-materialize-string
-     tp-surface-mount
-     tp-surface-update
-     tp-surface-update-scoped
-     tp--prepare-surface
-     tp--publish-buffer-content
-     tp--publish-one-surface
-     tp--capture-property-journals
-     tp--surface-state-snapshots
-     tp--validate-retained-batch-precommit
-     tp--validate-surface-precommit
+     ebox--pub-surface-materialize-string
+     ebox--pub-surface-mount
+     ebox--pub-surface-update
+     ebox--pub-surface-update-scoped
+     ebox--pub--prepare-surface
+     ebox--pub--publish-buffer-content
+     ebox--pub--publish-one-surface
+     ebox--pub--capture-property-journals
+     ebox--pub--surface-state-snapshots
+     ebox--pub--validate-retained-batch-precommit
+     ebox--pub--validate-surface-precommit
      ebox-surface--publish-runtime-state))
   "Functions grouped by computation or publication stage.")
 
@@ -289,7 +289,7 @@
        (ebox--buffer-root-node buffer) (plist-get state :source-index)))))
 
 (defun ebox-performance-evaluator--surface-producer (input)
-  "Return a one-shot TP producer for canonical INPUT."
+  "Return a one-shot Ebox publication producer for canonical INPUT."
   (ebox-surface-producer
    (ebox-canonical-input--single-root input "Ebox performance evaluator")
    nil t
@@ -349,7 +349,7 @@
         (ebox-viewport-height 12))
     (ebox-performance-evaluator--reset-runtime-state)
     (let ((expected
-           (tp-surface-materialize-string
+           (ebox--pub-surface-materialize-string
             (ebox-performance-evaluator--surface-producer
              (ebox-performance-evaluator--static-fixture)))))
       (ebox-performance-evaluator--reset-runtime-state)
@@ -370,7 +370,7 @@
          (cl-every (lambda (check) (plist-get check :ok)) checks)
          "pure static scenario failed: %S" checks)
         (list :name 'pure-static :measurement measurement
-              :checks checks :tp-report nil)))))
+              :checks checks :publication-report nil)))))
 
 (defun ebox-performance-evaluator--stylesheet-pure ()
   "Measure pure projection with an active ECSS stylesheet."
@@ -382,7 +382,7 @@
     (ebox-performance-evaluator--reset-runtime-state)
     (let ((ebox-performance-evaluator--active nil)
           (expected
-           (tp-surface-materialize-string
+           (ebox--pub-surface-materialize-string
             (ebox-performance-evaluator--surface-producer
              (ebox-performance-evaluator--static-fixture t)))))
       (ebox-performance-evaluator--reset-runtime-state)
@@ -403,7 +403,7 @@
              (checks
               (list
                (ebox-performance-evaluator--check
-                "stylesheet output matches a second TP materialization"
+                "stylesheet output matches a second Ebox publication materialization"
                 (equal-including-properties actual expected)
                 (format "characters=%d" (length actual)))
                (ebox-performance-evaluator--check
@@ -415,7 +415,7 @@
          (cl-every (lambda (check) (plist-get check :ok)) checks)
          "stylesheet pure scenario failed: %S" checks)
         (list :name 'stylesheet-pure :measurement measurement
-              :checks checks :tp-report nil)))))
+              :checks checks :publication-report nil)))))
 
 (defun ebox-performance-evaluator--mounted-update ()
   "Measure one scoped mounted content commit and validate its output."
@@ -448,7 +448,7 @@
                   (ebox-selector--region-handle-object after-handle))
                  (expected (ebox-performance-evaluator--runtime-output buffer))
                  (actual (ebox-performance-evaluator--buffer-string buffer))
-                 (tp-report (tp-surface-report surface))
+                 (ebox--pub-report (ebox--pub-surface-report surface))
                  (checks
                   (list
                    (ebox-performance-evaluator--check
@@ -461,11 +461,11 @@
                     (format "same-object=%S" (eq before-object after-object)))
                    (ebox-performance-evaluator--check
                     "publication is scoped"
-                    (and (not (plist-get tp-report :full-root))
-                         (> (or (plist-get tp-report :scope-count) 0) 0))
+                    (and (not (plist-get ebox--pub-report :full-root))
+                         (> (or (plist-get ebox--pub-report :scope-count) 0) 0))
                     (format "full-root=%S scope-count=%S"
-                            (plist-get tp-report :full-root)
-                            (plist-get tp-report :scope-count)))
+                            (plist-get ebox--pub-report :full-root)
+                            (plist-get ebox--pub-report :scope-count)))
                    (ebox-performance-evaluator--check
                     "update report confirms runtime publication"
                     (plist-get report :runtime-published)
@@ -475,7 +475,7 @@
              (cl-every (lambda (check) (plist-get check :ok)) checks)
              "mounted update scenario failed: %S" checks)
             (list :name 'mounted-content-update :measurement measurement
-                  :checks checks :tp-report tp-report)))
+                  :checks checks :publication-report ebox--pub-report)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -504,7 +504,7 @@
                                      :surface))
                  (expected (ebox-performance-evaluator--runtime-output buffer))
                  (actual (ebox-performance-evaluator--buffer-string buffer))
-                 (tp-report (tp-surface-report surface))
+                 (ebox--pub-report (ebox--pub-surface-report surface))
                  (new-root-object
                   (plist-get (plist-get (ebox--buffer-render-state buffer)
                                         :root-node)
@@ -523,14 +523,14 @@
                    (ebox-performance-evaluator--check
                     "viewport update publishes through TP"
                     (and (plist-get report :runtime-published)
-                         (tp-surface-live-p surface))
+                         (ebox--pub-surface-live-p surface))
                     (format "strategy=%S" (plist-get report :strategy)))
                    (ebox-performance-evaluator--assert-timings measurement))))
             (ebox-performance-evaluator--assert
              (cl-every (lambda (check) (plist-get check :ok)) checks)
              "viewport resize scenario failed: %S" checks)
             (list :name 'viewport-resize :measurement measurement
-                  :checks checks :tp-report tp-report)))
+                  :checks checks :publication-report ebox--pub-report)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -563,8 +563,8 @@
                      (if (plist-get check :ok) "PASS" "FAIL")
                      (plist-get check :name)
                      (plist-get check :detail))))
-    (when-let* ((tp-report (plist-get report :tp-report)))
-      (princ (format "TP-REPORT %S\n" tp-report)))
+    (when-let* ((ebox--pub-report (plist-get report :publication-report)))
+      (princ (format "PUBLICATION-REPORT %S\n" ebox--pub-report)))
     (princ "\n")))
 
 (defun ebox-performance-evaluator--all-passed-p (reports)

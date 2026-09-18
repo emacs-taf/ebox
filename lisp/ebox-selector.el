@@ -12,7 +12,7 @@
 (require 'ecss)
 (require 'ebox-buffer-backend)
 (require 'ebox-tree)
-(require 'tp)
+(require 'ebox-publication)
 
 (declare-function ebox--ensure-node-id "ebox" (node))
 (declare-function ebox--ensure-region-id "ebox" (box))
@@ -43,10 +43,10 @@
   (let* ((state (ebox--buffer-render-state buffer))
          (surface (plist-get state :surface))
          (region-id
-          (and (tp-object-live-p object)
+          (and (ebox--pub-object-live-p object)
                (gethash object
                         (plist-get state :surface-object-region-table)))))
-    (when (and (tp-surface-live-p surface) region-id)
+    (when (and (ebox--pub-surface-live-p surface) region-id)
       (ebox-selector--make-region-handle
        :buffer buffer :surface surface :object object :logical-id logical-id))))
 
@@ -88,8 +88,8 @@
          (region-id
           (and state
                (eq surface (plist-get state :surface))
-               (tp-surface-live-p surface)
-               (tp-object-live-p object)
+               (ebox--pub-surface-live-p surface)
+               (ebox--pub-object-live-p object)
                ;; A retained positional object can be reused for a different
                ;; source node.  A named handle must still name this object.
                (or (null logical-id)

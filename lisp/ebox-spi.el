@@ -4,7 +4,7 @@
 
 ;;; Commentary:
 
-;; Provider-side Ebox framework SPI v2.  This module publishes an
+;; Provider-side Ebox framework SPI v3.  This module publishes an
 ;; immutable capability snapshot and delegates initial/update execution to the
 ;; existing combined Ebox participant.  It does not select a consumer port,
 ;; or probe a framework package.
@@ -14,14 +14,11 @@
 (require 'cl-lib)
 (require 'ebox-canonical)
 (require 'ebox-surface)
-(require 'tp)
+(require 'ebox-publication)
 
-(defconst ebox-framework-spi-required-tp-version "2.0.0"
-  "Minimum TP package version required by Ebox framework SPI v2.")
-
-(defconst ebox-framework-spi-supported-tp-protocols
-  '(tp-transaction-protocol-v1+v2 tp-transaction-protocol-v2)
-  "TP protocols that provide the structured participant API Ebox requires.")
+(defconst ebox-framework-spi-supported-publication-protocols
+  '(ebox-publication/v1)
+  "Publication contract implemented by Ebox.")
 
 (declare-function ebox--render-to-buffer-internal
                   "ebox" (buffer-or-name input options &optional participant))
@@ -29,15 +26,15 @@
                   "ebox"
                   (buffer-or-name next-root &optional framework-stage
                                   framework-rollback))
-(declare-function tp-transaction-active-p "tp-reactive" ())
+(declare-function ebox-transaction-active-p "ebox-reactive" ())
 
 (define-error 'ebox-framework-spi-provider-error
   "Invalid Ebox framework SPI provider")
 
-(defconst ebox-framework-spi-version 2
+(defconst ebox-framework-spi-version 3
   "Version of the additive Ebox framework provider SPI.")
 
-(defconst ebox-framework-spi-schema-version 'ebox-framework-spi-schema/v2
+(defconst ebox-framework-spi-schema-version 'ebox-framework-spi-schema/v3
   "Schema identity for Ebox framework provider records.")
 
 (defconst ebox-framework-spi--required-capabilities
@@ -46,14 +43,14 @@
     combined-participant-ordering
     same-object-legacy-report
     initial-observation-replay)
-  "Capabilities guaranteed by every Ebox framework SPI v2 provider record.")
+  "Capabilities guaranteed by every Ebox framework SPI v3 provider record.")
 
 (defconst ebox-framework-spi--stage-order
   '(ebox-mirror/native framework-stage)
   "Owner order inside the combined Ebox participant stage.")
 
 (defconst ebox-framework-spi--rollback-order
-  '(framework-rollback ebox-mirror/native tp)
+  '(framework-rollback ebox-mirror/native publication)
   "Rollback order exposed by the combined Ebox participant contract.")
 
 (cl-defstruct
@@ -75,7 +72,7 @@
   (spi-version nil :read-only t)
   (schema-version nil :read-only t)
   (capabilities nil :read-only t)
-  (tp-protocol nil :read-only t)
+  (publication-protocol nil :read-only t)
   (stage-order nil :read-only t)
   (rollback-order nil :read-only t)
   (report-semantics nil :read-only t)
@@ -114,9 +111,9 @@
   "Return a defensive copy of PROVIDER's capabilities."
   (copy-sequence (ebox-framework-spi--provider-capabilities provider)))
 
-(defun ebox-framework-spi-provider-tp-protocol (provider)
-  "Return PROVIDER's immutable TP protocol."
-  (ebox-framework-spi--provider-tp-protocol provider))
+(defun ebox-framework-spi-provider-publication-protocol (provider)
+  "Return PROVIDER's immutable Ebox publication protocol."
+  (ebox-framework-spi--provider-publication-protocol provider))
 
 (defun ebox-framework-spi-provider-stage-order (provider)
   "Return a defensive copy of PROVIDER's participant stage order."
@@ -203,22 +200,23 @@
     (buffer-or-name input framework-stage framework-rollback)
   "Initially mount INPUT and run the paired framework callbacks.
 
-FRAMEWORK-STAGE runs after provisional TP state and Ebox mirrors/native state
-agree.  FRAMEWORK-ROLLBACK receives the same legacy report on any later
-transaction failure.  Return that same report object after completion."
+FRAMEWORK-STAGE runs after provisional Ebox publication state and Ebox
+mirrors/native state agree.  FRAMEWORK-ROLLBACK receives the same legacy
+report on any later transaction failure.  Return that same report object
+after completion."
   (ebox-framework-spi--validate-callback-pair
    framework-stage framework-rollback)
   (unless (ebox-canonical-input-p input)
     (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
-  (when (tp-transaction-active-p)
-    (error "Ebox SPI initial operation cannot join an outer TP transaction"))
+  (when (ebox-transaction-active-p)
+    (error "Ebox SPI initial operation cannot join an outer Ebox publication transaction"))
   (let ((buffer (get-buffer-create buffer-or-name)))
     (when (ebox-surface-buffer-mounted-p buffer)
       (error "Ebox SPI initial operation requires an unmounted buffer"))
     (let* ((custody (ebox-framework-spi--snapshot-editor-custody buffer))
            (change-group (with-current-buffer buffer (prepare-change-group)))
            (existing-bridge
-            (with-current-buffer buffer ebox-surface--tp-observer))
+            (with-current-buffer buffer ebox-surface--publication-observer))
            (started (float-time))
            (participant
             (ebox-surface--make-framework-participant
@@ -237,7 +235,7 @@ transaction failure.  Return that same report object after completion."
       (unwind-protect
           (progn
             (unless existing-bridge
-              (ebox-surface--ensure-tp-observer buffer))
+              (ebox-surface--ensure-publication-observer buffer))
             (with-current-buffer buffer (activate-change-group change-group))
             (setq activated t)
             (prog1 (with-current-buffer buffer
@@ -270,7 +268,7 @@ The reports are defensive observational snapshots; they expose no publication
 or promotion capability."
   (unless (and (proper-list-p report)
                (eq (plist-get report :framework-participant-state) 'completed)
-               (integerp (plist-get report :tp-transaction-id)))
+               (integerp (plist-get report :publication-transaction-id)))
     (signal 'ebox-framework-spi-provider-error
             (list :invalid-initial-report report)))
   (let ((reports
@@ -281,7 +279,7 @@ or promotion capability."
            (equal (mapcar (lambda (item)
                             (plist-get item :provider))
                           reports)
-                  '(tp ebox))
+                  '(ebox-publication ebox))
            (cl-every
             (lambda (item)
               (and (numberp (plist-get item :duration-ms))
@@ -327,7 +325,7 @@ or promotion capability."
   t)
 
 (defun ebox-framework-spi-validate-provider (provider)
-  "Validate PROVIDER as one complete Ebox framework SPI v2 record."
+  "Validate PROVIDER as one complete Ebox framework SPI v3 record."
   (unless (ebox-framework-spi-provider-p provider)
     (signal 'ebox-framework-spi-provider-error
             (list :malformed-provider provider)))
@@ -337,8 +335,8 @@ or promotion capability."
                    ebox-framework-spi-schema-version)
                (equal (ebox-framework-spi--provider-capabilities provider)
                       ebox-framework-spi--required-capabilities)
-               (memq (ebox-framework-spi--provider-tp-protocol provider)
-                     ebox-framework-spi-supported-tp-protocols)
+               (memq (ebox-framework-spi--provider-publication-protocol provider)
+                     ebox-framework-spi-supported-publication-protocols)
                (equal (ebox-framework-spi--provider-stage-order provider)
                       ebox-framework-spi--stage-order)
                (equal (ebox-framework-spi--provider-rollback-order provider)
@@ -358,14 +356,14 @@ or promotion capability."
   t)
 
 (defun ebox-framework-spi-capabilities ()
-  "Return a fresh immutable Ebox framework SPI v2 provider record."
+  "Return a fresh immutable Ebox framework SPI v3 provider record."
   (let ((provider
          (ebox-framework-spi--make-provider
           :spi-version ebox-framework-spi-version
           :schema-version ebox-framework-spi-schema-version
           :capabilities
           (copy-sequence ebox-framework-spi--required-capabilities)
-          :tp-protocol tp-transaction-protocol
+          :publication-protocol 'ebox-publication/v1
           :stage-order (copy-sequence ebox-framework-spi--stage-order)
           :rollback-order (copy-sequence ebox-framework-spi--rollback-order)
           :report-semantics 'same-object-legacy-report
@@ -381,7 +379,7 @@ or promotion capability."
     (ebox-framework-spi-validate-provider provider)
     provider))
 
-(provide 'ebox-framework-spi-v2)
+(provide 'ebox-framework-spi-v3)
 (provide 'ebox-spi)
 
 ;;; ebox-spi.el ends here

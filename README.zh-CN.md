@@ -18,15 +18,13 @@ Component、响应式状态、behavior 或生命周期时，使用同级 ETAF �
 | --- | --- |
 | Emacs 29.1 或更高版本 | 所有 Ebox 使用场景。 |
 | ECSS 0.1.0 或更高版本 | 样式计算和选择器语义；即使不使用样式表也需要。 |
-| TP 2.0.0 或更高版本 | retained 发布、原生属性策略与事务；加载 Ebox 时需要。 |
 | [EKP 1.0.0 或更高版本](https://gitea.gklazycat.heiyu.space/geekinney/ekp) | 可选，仅使用 `:wrap-mode kp` 时需要。 |
 
-ECSS 与 TP 是包声明的必需依赖。EKP 保持可选，普通 `word`、`char`、`none` 换行不需要它。
+ECSS 是包声明的必需依赖。EKP 保持可选，普通 `word`、`char`、`none` 换行不需要它。
 使用同级源码 checkout 时，把必需的目录加入 `load-path` 后加载 Ebox：
 
 ```elisp
 (add-to-list 'load-path "/path/to/ecss")
-(add-to-list 'load-path "/path/to/tp")
 (add-to-list 'load-path "/path/to/ebox")
 (require 'ebox)
 ```
@@ -160,15 +158,14 @@ padding 和 border，不包含该 Box 的 margin 和结构性换行符。悬停�
 Ebox 会在分配 runtime identity 前复制 canonical input，因此同一个 built value 可以
 挂载到多个 buffer，而不会共享 live ownership。
 
-快照只在显式查询时遍历导出数据和 TP 最近的诊断报告，普通更新不会创建快照。其 canonical input 在后续
+快照只在显式查询时遍历导出数据和 Ebox publication 最近的诊断报告，普通更新不会创建快照。其 canonical input 在后续
 更新、卸载后仍可使用；节点中的可变数据与交互 keymap 独立复制，不可变 source facts
-与不透明能力（回调、record）保留身份。快照不冻结显示环境或外部能力。TP 事务期间、
+与不透明能力（回调、record）保留身份。快照不冻结显示环境或外部能力。Ebox publication 事务期间、
 卸载后查询会报错。识别提交版本时同时比较 mount ID 与 revision，避免重新挂载后
 revision 从头计数导致混淆。
 
-Ebox 只通过 TP 2.0.0 的公开 structured participant API 与最终 v2 协议注册可回滚状态。
-旧的过渡版本不具备本版本要求的原生属性所有权与 hover identity 保证。structured
-participant capability 缺失或格式错误时，Ebox 会停止加载，不会选择兼容 writer。
+Ebox 内部持有发布与回滚。框架通过 SPI v3 与 `ebox-publication/v1` 注册成对状态
+操作和有界 final-accept marker；旧版框架 SPI 记录会在初始化时被拒绝。
 
 ## 可选 native 模块
 
