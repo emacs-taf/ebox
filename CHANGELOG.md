@@ -12,6 +12,9 @@ All notable changes to Ebox are documented here.
 - Owner-scoped updates with integral published pixels skip the raw-layout
   buffer copy; the raw allocation path remains available when fractional pixel
   remainders require it.
+- Local owner patches strip producer-only paint-origin carriers before TP
+  publication, so unchanged property runs are no longer rewritten as if their
+  public properties had changed.
 
 - Local rich-text updates reuse unaffected fragment parsing even when the
   changed interval gains or loses property runs. Paint addresses and target

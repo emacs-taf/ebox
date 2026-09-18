@@ -2006,6 +2006,14 @@ children again."
 (defun ebox-surface--projection-result
     (context projection state output &optional projection-kind)
   "Complete CONTEXT PROJECTION for STATE from rendered OUTPUT."
+  ;; Paint-origin is a producer-only carrier used to recover retained
+  ;; provenance while composing local rows.  It must never cross the Ebox/TP
+  ;; publication boundary: otherwise TP sees a different property plist on
+  ;; every retained run and schedules a property write even when all public
+  ;; properties are unchanged.  Fractional allocation keeps its private raw
+  ;; copy in STATE; the output handed to TP is always carrier-free.
+  (when (stringp output)
+    (ebox--strip-paint-origins! output))
   (let* ((surface-root (plist-get projection :surface-root))
          (objects-by-node (plist-get projection :objects-by-node))
          (root-node (plist-get state :root-node))
@@ -5226,6 +5234,17 @@ STATE receives only the resulting character patches and final fragment ledger."
                 (when (and retained-properties-p (not coordinate-shift-p))
                   (plist-put state :span-patch-retained-owned-ranges
                              (plist-get previous-state :surface-owned-ranges))))
+              ;; Paint origins are an internal provenance carrier used only
+              ;; while rebuilding fragment baselines.  The equal-coordinate
+              ;; retained-ledger path above intentionally skips fragment
+              ;; reparsing, so it also skips the parser's normal carrier
+              ;; cleanup.  Letting this property escape into the TP batch
+              ;; makes every origin boundary look like a real content
+              ;; property change even when face/display semantics are equal.
+              ;; The fragment ledger already retained the baseline facts, so
+              ;; remove the carrier before the candidate crosses the Surface
+              ;; boundary.
+              (ebox--strip-paint-origins! output)
               output)))))))
 
 (defun ebox-surface--formatting-context-reflow-lines

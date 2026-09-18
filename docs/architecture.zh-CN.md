@@ -182,6 +182,8 @@ owner 时保留完整渲染回退。
 与源所有权。已证明仅改变选择器状态的候选保留已接受的树，新交互事实存于候选源索引。
 当已发布代没有 fractional pixel 间隙时，owner-scoped 输出直接使用整数局部 patch；只有
 需要保留兄弟余数的代才重放 raw allocation。
+仅供生产阶段使用的 paint-origin carrier 保留在局部 fragment ledger 和 raw allocation
+副本中，但在 Ebox/TP 发布边界剥离；TP 只比较公共文本属性，从而复用未变化的 run。
 Metadata 和纯绘制交互候选保留完整挂载状态，不伪称拥有内容范围证明；只有候选挂载
 规格证明范围一致的内容与几何 patch 才使用 scoped 发布。
 

@@ -185,6 +185,9 @@ new interaction facts reside in their candidate source index.
 Owner-scoped output uses the integral local patch directly when the published
 generation has no fractional pixel spaces. The raw allocation replay is kept
 only for generations whose sibling remainder requires it.
+Producer-only paint-origin carriers remain in the local fragment ledger and raw
+allocation copy, but are stripped at the Ebox/TP publication boundary. TP then
+compares only public text properties and can retain unchanged runs.
 
 Overlapping replacements resolve intermediate nodes from the nearest candidate
 ancestor before merging descendant writes. Copying an intermediate path from the
