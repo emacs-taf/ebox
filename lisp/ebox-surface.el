@@ -12,6 +12,7 @@
 
 (require 'cl-lib)
 (require 'seq)
+(require 'ebox-text)
 (require 'ebox-buffer-backend)
 (require 'ebox-font)
 (require 'ebox-style)
@@ -235,8 +236,8 @@ the winning client state; otherwise only the candidate is disposable."
 (declare-function tp-object-mounted-p "tp-surface" (object))
 (declare-function tp-object-attach-content-ranges-owned
                   "tp-surface" (context leaf ranges))
-(declare-function tp-text-snapshot
-                  "tp-core" (text &optional reuse-property-p))
+(declare-function ebox-text-snapshot
+                  "ebox-text" (text &optional reuse-property-p))
 (declare-function tp-surface-plan-create-owned
                   "tp-surface" (&rest arguments))
 (declare-function tp-surface-result-create-owned
@@ -6011,7 +6012,7 @@ The ledger assigns occurrence ordinals after changed and retained runs merge."
 OWNED-VALUES is the candidate-local provenance registry created by Ebox's
 render helpers.  TP transfers only mutable values present in this registry;
 all other values remain defensively copied."
-  (tp-text-snapshot
+  (ebox-text-snapshot
    rendered
    (and (hash-table-p owned-values)
         (lambda (property value)

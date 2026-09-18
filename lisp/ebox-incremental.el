@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ebox-text)
 (require 'ebox-cache)
 (require 'ebox-fragment)
 (require 'ebox-flex)
@@ -5840,7 +5841,7 @@ style consumers; the Style Adapter computes their values exactly once later."
                 (dolist (key changed-keys)
                   (plist-put next key
                              (if (eq key :surface-properties)
-                                 (tp-property-value-copy (plist-get patch key))
+                                 (ebox-text-property-value-copy (plist-get patch key))
                                (copy-tree (plist-get patch key)))))
                 (dolist (key '(:ebox-style-overrides))
                   (when (plist-member patch key)

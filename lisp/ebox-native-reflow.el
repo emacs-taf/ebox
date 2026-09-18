@@ -13,6 +13,7 @@
 (require 'compile)
 (require 'json)
 (require 'subr-x)
+(require 'ebox-text)
 (require 'ebox-measure)
 (require 'ebox-render-context)
 (require 'ebox-runtime-index)
@@ -98,7 +99,7 @@
                   "ebox-measure" (window))
 (declare-function ebox-surface--buffer-display-window
                   "ebox-surface" (buffer))
-(declare-function tp-property-value-copy "tp-core" (value))
+(declare-function ebox-text-property-value-copy "ebox-text" (value))
 (declare-function tp-paint-slot-p "tp-style" (value))
 (declare-function tp-paint-slot-face "tp-style" (slot))
 
@@ -1558,7 +1559,7 @@ copied separately; no pending frame or registered Rust document is inherited."
                                   ;; or node snapshot.  Preserve their identity
                                   ;; so repeated registration can reuse an id.
                                   (if (keymapp value) value
-                                    (tp-property-value-copy value)))))
+                                    (ebox-text-property-value-copy value)))))
            (entry (list :kind (intern label)
                         :properties owned-properties))
            (missing (make-symbol "missing-property-template"))

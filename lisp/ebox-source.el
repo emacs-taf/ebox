@@ -9,6 +9,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'ebox-text)
 (require 'ebox-interaction)
 
 (cl-defstruct (ebox-style-scope (:constructor ebox-style--make-scope))
@@ -239,7 +240,7 @@ Functions and records are opaque values and retain identity."
 (defun ebox-source-index-interactions (index handle)
   "Return detached fixed interaction facts for HANDLE in INDEX."
   (when-let* ((record (ebox-source--index-record index handle)))
-    (tp-property-value-copy (ebox-source-record-interactions record))))
+    (ebox-text-property-value-copy (ebox-source-record-interactions record))))
 
 (defun ebox-source-stable-key-p (value)
   "Return non-nil when VALUE is one public stable source key."
@@ -883,7 +884,7 @@ A list containing nil certifies that no previous owner exists."
                        (ebox-source-record-declarations record))
         :provenance (ebox-source--copy-data
                      (ebox-source-record-provenance record))
-        :interactions (tp-property-value-copy
+        :interactions (ebox-text-property-value-copy
                        (ebox-source-record-interactions record)))))
 
 (defun ebox-source-index-record (index handle)

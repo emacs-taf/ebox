@@ -8,6 +8,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'ebox-text)
 (defvar ebox-selector-view--current)
 (require 'tp)
 (require 'tp)
@@ -1053,22 +1054,22 @@ callback environments retain their identities.  Sharing and cycles survive."
            ((keymapp value) (map-copy value))
            ((functionp value) value)
            ((and (consp value) (eq (car value) 'menu-item))
-            (let ((copy (tp-property-value-copy value)))
+            (let ((copy (ebox-text-property-value-copy value)))
               (when (cddr copy)
                 (setcar (cddr copy) (binding (nth 2 value))))
               copy))
            ((and (consp value) (stringp (car value)))
-            (cons (tp-property-value-copy (car value)) (binding (cdr value))))
+            (cons (ebox-text-property-value-copy (car value)) (binding (cdr value))))
            ((and (consp value) (keymapp (car value)))
-            (cons (map-copy (car value)) (tp-property-value-copy (cdr value))))
-           (t (tp-property-value-copy value))))
+            (cons (map-copy (car value)) (ebox-text-property-value-copy (cdr value))))
+           (t (ebox-text-property-value-copy value))))
          (map-copy
           (source)
           (setq source (if (symbolp source) (indirect-function source) source))
           (or (gethash source copies)
               (let* ((parent (keymap-parent source))
                      (local (copy-sequence source))
-                     (copy (tp-property-value-copy source)))
+                     (copy (ebox-text-property-value-copy source)))
                 (puthash source copy copies)
                 ;; Only the copied spine is edited, leaving source bindings
                 ;; and character tables untouched while enumerating locals.
@@ -1147,7 +1148,7 @@ replace the property to publish subsequent binding changes."
                   (error "Ebox :disabled requires nil or t")))
                (:hover-style (ebox-interaction--hover-face value))
                (_ (error "Ebox has no interaction property %S" key)))))
-  (let ((owned (tp-property-value-copy properties)))
+  (let ((owned (ebox-text-property-value-copy properties)))
     (when (plist-get properties :keymap)
       (setq owned (plist-put owned :keymap
                              (ebox-interaction--keymap-snapshot
