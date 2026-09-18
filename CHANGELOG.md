@@ -21,6 +21,9 @@ All notable changes to Ebox are documented here.
 - Ebox now owns text-property value snapshots and mutable property graph copies
   in `ebox-text`; source, interaction, incremental and native paths no longer
   cross TP for this ownership operation.
+- Ebox now owns paint slots, computed style values, and native keymap/property
+  equality in `ebox-paint` and `ebox-property`; retained publication remains
+  unchanged while this ownership seam is migrated.
 
 - Local rich-text updates reuse unaffected fragment parsing even when the
   changed interval gains or loses property runs. Paint addresses and target
