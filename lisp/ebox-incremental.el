@@ -7513,7 +7513,17 @@ certificate."
                 (ebox-tree-source-index candidate-root)))
            (interaction-source-changed-p
             (let ((projected (ebox-interaction--candidate-source
-                              buffer old-state candidate-index candidate-source-index candidate-root)))
+                              buffer old-state candidate-index candidate-source-index
+                              candidate-root
+                              ;; Interaction preparation already proved that
+                              ;; this logical candidate retains the mounted
+                              ;; topology.  Preserve that fact here instead
+                              ;; of rebuilding every source record a second
+                              ;; time while lowering the same candidate.
+                              (and local-preparation
+                                   (plist-get local-preparation
+                                              :logical-candidate-p)
+                                   (eq candidate-root old-root)))))
               (unless (eq projected candidate-source-index)
                 (setq candidate-source-index
                       (ebox-tree-source-index candidate-root t nil projected))

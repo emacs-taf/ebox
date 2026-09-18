@@ -188,6 +188,9 @@ only for generations whose sibling remainder requires it.
 Producer-only paint-origin carriers remain in the local fragment ledger and raw
 allocation copy, but are stripped at the Ebox/TP publication boundary. TP then
 compares only public text properties and can retain unchanged runs.
+Interaction candidates retain their source topology proof across the
+declarative preparation boundary; source-state overlays are not recomputed by
+the subsequent runtime lowering pass.
 
 Overlapping replacements resolve intermediate nodes from the nearest candidate
 ancestor before merging descendant writes. Copying an intermediate path from the

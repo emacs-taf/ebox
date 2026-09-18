@@ -184,6 +184,8 @@ owner 时保留完整渲染回退。
 需要保留兄弟余数的代才重放 raw allocation。
 仅供生产阶段使用的 paint-origin carrier 保留在局部 fragment ledger 和 raw allocation
 副本中，但在 Ebox/TP 发布边界剥离；TP 只比较公共文本属性，从而复用未变化的 run。
+交互候选的源拓扑证明会跨越 declarative preparation 边界传递，后续 runtime lowering
+不再重复计算同一份 source-state overlay。
 Metadata 和纯绘制交互候选保留完整挂载状态，不伪称拥有内容范围证明；只有候选挂载
 规格证明范围一致的内容与几何 patch 才使用 scoped 发布。
 

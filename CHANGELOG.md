@@ -15,6 +15,9 @@ All notable changes to Ebox are documented here.
 - Local owner patches strip producer-only paint-origin carriers before TP
   publication, so unchanged property runs are no longer rewritten as if their
   public properties had changed.
+- Retained interaction candidates carry their topology proof through
+  declarative preparation instead of rebuilding the source interaction index a
+  second time.
 
 - Local rich-text updates reuse unaffected fragment parsing even when the
   changed interval gains or loses property runs. Paint addresses and target
