@@ -233,17 +233,17 @@
      :rollback discard-unreferenced-candidates
      :rebuild-proof reproject-owner-native-hover-face
      :cleanup garbage-collect-unreferenced-faces)
-    (:id scroll-viewport-owner-cache
-     :storage (:scroll-viewport-owner-cache)
+    (:id ownership-cache
+     :storage (:ownership-cache)
      :current-contract candidate-private-resolved-owner-table
      :target-contract discardable-derived-values
      :category disposable-cache
      :owner ebox-surface
-     :mutation-api copy-before-candidate-fill
-     :generation-binding unchanged-parent-region-and-publication-object-indexes
+     :mutation-api candidate-local-fill-from-immutable-base
+     :generation-binding retained-topology-and-publication-object-indexes
      :rollback discard-candidate-cache
      :rebuild-proof resolve-rich-line-roles-against-retained-topology
-     :cleanup ordinary-projection-or-generation-replacement)
+     :cleanup structural-projection-or-generation-replacement)
     (:id derived-caches
      :storage (ebox--box-content-render-cache ebox--char-width-cache
                ebox--display-signature-cache ebox--face-height-width-cache

@@ -1453,8 +1453,10 @@ a proof miss."
                  (integerp (ebox--pub--surface-mount-start mount))
                  (integerp (ebox--pub--surface-mount-end mount))
                  (eq (ebox--pub--surface-mount-object mount) object)
-                 (eq (ebox--pub--surface-mount-tags mount)
-                     (plist-get spec :tags)))
+                 (eq (ebox--pub--surface-mount-anchor mount)
+                     (plist-get spec :anchor))
+                 (equal (ebox--pub--surface-mount-tags mount)
+                        (plist-get spec :tags)))
             (progn
               (aset updates update-index mount)
               (aset updates (1+ update-index) (+ base start))
@@ -2236,7 +2238,7 @@ absent."
   "Group matching MOUNTS by anchor identity and equal tags in live order.  Only
 include OBJECT and CAPABILITY by identity.  SEEN prevents enqueuing the same
 mount record twice.  Queue spines are private; no mount IDs are allocated."
-  (let ((anchors (make-hash-table :test #'eq)))
+  (let (anchors)
     (dolist (mount mounts)
       (when (and (eq object (ebox--pub--surface-mount-object mount))
                  (eq capability (ebox--pub--surface-mount-capability mount))
@@ -2244,16 +2246,17 @@ mount record twice.  Queue spines are private; no mount IDs are allocated."
         (puthash mount t seen)
         (let* ((anchor (ebox--pub--surface-mount-anchor mount))
                (tags (ebox--pub--surface-mount-tags mount))
-               (by-tags (or (gethash anchor anchors)
-                            (puthash anchor (make-hash-table :test #'equal)
-                                     anchors))))
-          (push mount (gethash tags by-tags)))))
-    (maphash
-     (lambda (_anchor by-tags)
-       (maphash (lambda (tags queue)
-                  (puthash tags (nreverse queue) by-tags))
-                by-tags))
-     anchors)
+               (bucket (or (assq anchor anchors)
+                           (car (push (list anchor) anchors))))
+               (entry (assoc tags (cdr bucket) #'equal)))
+          (if entry
+              (push mount (cdr entry))
+            (push (list tags mount) (cdr bucket))))))
+    ;; An Ebox object has a single content anchor and a few role variants.
+    ;; Keep those tiny buckets as lists instead of two hash tables per node.
+    (dolist (bucket anchors)
+      (dolist (entry (cdr bucket))
+        (setcdr entry (nreverse (cdr entry)))))
     anchors))
 
 (defun ebox--pub--assign-prepared-mount-ids (prepared)
@@ -2272,19 +2275,20 @@ mount record twice.  Queue spines are private; no mount IDs are allocated."
           (lambda (spec)
             (let* ((object (plist-get spec :object))
                    (anchors
-                    (or (gethash object queues-by-object)
+                    (let ((cached (gethash object queues-by-object 'absent)))
+                      (if (not (eq cached 'absent)) cached
                         ;; Cache empty queues too: later unmatched specs must
                         ;; not rebuild the same object's live bucket.
                         (puthash object
                                  (ebox--pub--mount-match-queues
                                   (gethash object live-by-object)
                                   object capability seen)
-                                 queues-by-object)))
-                   (by-tags (gethash (plist-get spec :anchor) anchors))
+                                 queues-by-object))))
+                   (by-tags (cdr (assq (plist-get spec :anchor) anchors)))
                    (tags (plist-get spec :tags))
-                   (queue (and by-tags (gethash tags by-tags)))
-                   (match (car queue)))
-              (when match (puthash tags (cdr queue) by-tags))
+                   (entry (assoc tags by-tags #'equal))
+                   (match (cadr entry)))
+              (when match (setcdr entry (cddr entry)))
               (plist-put
                spec :mount-id
                (if match
@@ -3402,162 +3406,37 @@ evidence with precommit validation without copying output."
                         :reason 'candidate-output)))))))
 
 (defun ebox--pub--validate-surface-precommit (state)
-  "Validate final published semantics and rollback ownership in STATE."
-  (unless
-      (and (gethash 'change-group state)
-           (listp (gethash 'changed state))
-           (listp (gethash 'snapshots state))
-           (listp (gethash 'views state)))
+  "Validate published generation identity and external output in STATE.
+Object graphs and mount indexes are private results of the same publisher
+that validated their candidate inputs. Do not reconstruct and audit those
+indexes after publication; callbacks can affect the public buffer, whose
+complete text and properties still require boundary validation."
+  (unless (gethash 'change-group state)
     (signal 'ebox--pub-surface-error (list :invalid-precommit-state)))
-  (dolist (view (gethash 'views state))
-    (unless
-        (and (bufferp (nth 0 view)) (markerp (nth 1 view))
-             (cl-every (lambda (entry) (markerp (cdr entry)))
-                       (nth 3 view)))
-      (signal 'ebox--pub-surface-error
-              (list :invalid-view-cleanup view))))
   (dolist (entry (gethash 'snapshots state))
-    (unless
-        (and (ebox--pub--prepared-surface-p (car entry))
-             (ebox--pub--surface-snapshot-p (cdr entry)))
-      (signal 'ebox--pub-surface-error
-              (list :invalid-surface-cleanup entry)))
-    (let ((prepared (car entry)) (snapshot (cdr entry)))
-      (if
-          (ebox--pub--prepared-surface-retained-mount-state-p prepared)
-          (ebox--pub--validate-retained-batch-precommit prepared
-                                                        snapshot)
-        (let*
-            ((surface (ebox--pub--prepared-surface-surface prepared))
-             (plan (ebox--pub--surface-plan surface))
-             (objects (ebox--pub--surface-objects surface))
-             (mounts (ebox--pub--surface-mounts surface))
-             (mount-index (ebox--pub--surface-mount-index surface))
-             (capability (ebox--pub--surface-capability surface))
-             (mount-set (make-hash-table :test #'eq))
-             (indexed-mount-set (make-hash-table :test #'eq)))
-          (ebox--pub--validate-live-surface surface)
-          (unless
-              (eq plan (ebox--pub--prepared-surface-plan prepared))
-            (signal 'ebox--pub-surface-error
-                    (list :invalid-published-plan surface)))
-          (ebox--pub--validate-surface-plan-tree plan)
-          (ebox--pub--validate-plan-capability plan capability)
-          (ebox--pub--validate-context-tree
-           (ebox--pub--prepared-surface-context prepared) plan)
-          (unless
-              (and (hash-table-p objects) (hash-table-p mount-index)
-                   (eq (ebox--pub--surface-index surface) mounts))
-            (signal 'ebox--pub-surface-error
-                    (list :invalid-published-index surface)))
-          (maphash
-           (lambda (path object)
-             (unless
-                 (and (ebox--pub-object-p object)
-                      (equal path
-                             (ebox--pub--surface-object-path object))
-                      (eq (ebox--pub--surface-object-surface object)
-                          surface)
-                      (ebox--pub--surface-object-live object)
-                      (not (ebox--pub--surface-object-disposed object))
-                      (null
-                       (ebox--pub--surface-object-candidate-context
-                        object)))
-               (signal 'ebox--pub-surface-error
-                       (list :invalid-published-object path object))))
-           objects)
-          (dolist (mount mounts)
-            (when (gethash mount mount-set)
-              (signal 'ebox--pub-surface-error
-                      (list :duplicate-published-mount mount)))
-            (puthash mount t mount-set))
-          (maphash
-           (lambda (object entries)
-             (unless
-                 (and (ebox--pub-object-p object)
-                      (eq
-                       (gethash
-                        (ebox--pub--surface-object-path object)
-                        objects)
-                       object))
-               (signal 'ebox--pub-surface-error
-                       (list :invalid-mount-index-owner object)))
-             (dolist (mount entries)
-               (unless
-                   (and (gethash mount mount-set)
-                        (eq (ebox--pub--surface-mount-object mount)
-                            object)
-                        (not (gethash mount indexed-mount-set)))
-                 (signal 'ebox--pub-surface-error
-                         (list :invalid-mount-index-entry object mount)))
-               (puthash mount t indexed-mount-set)))
-           mount-index)
-          (unless
-              (= (hash-table-count mount-set)
-                 (hash-table-count indexed-mount-set))
-            (signal 'ebox--pub-surface-error
-                    (list :incomplete-mount-index surface)))
-          (dolist (mount mounts)
-            (let
-                ((object
-                  (and (ebox--pub--surface-mount-p mount)
-                       (ebox--pub--surface-mount-object mount))))
-              (unless
-                  (and object
-                       (eq
-                        (gethash
-                         (ebox--pub--surface-object-path object)
-                         objects)
-                        object)
-                       (eq (ebox--pub--surface-mount-capability mount)
-                           capability)
-                       (gethash mount indexed-mount-set))
-                (signal 'ebox--pub-surface-error
-                        (list :invalid-published-mount mount)))
-              (ebox-text--validate-buffer-range
-               (ebox--pub--surface-buffer surface)
-               (ebox--pub--surface-mount-start mount)
-               (ebox--pub--surface-mount-end mount))
-              (progn
-                (when (ebox--pub--surface-mount-anchor mount)
-                  (signal 'ebox--pub-surface-error
-                          (list :invalid-content-anchor mount)))))))))
-    (ebox--pub--validate-retained-batch-hover-groups) state))
-
-(defun ebox--pub--surface-prevalidate-cleanup (state)
-  "Validate marker-backed cleanup lists retained in surface STATE."
-  (dolist (entry (gethash 'snapshots state))
-    (let ((prepared (car entry)))
-      (unless
-          (ebox--pub--prepared-surface-retained-mount-state-p prepared)
-        (let*
-            ((snapshot (cdr entry))
-             (surface (ebox--pub--prepared-surface-surface prepared))
-             (coordinate-p
-              (plist-get (ebox--pub--surface-options surface)
-                         :coordinate-mounts)))
-          (dolist
-              (mount (ebox--pub--surface-snapshot-mounts snapshot))
-            (progn
-              (unless
-                  (or
-                   (and
-                    (markerp (ebox--pub--surface-mount-start mount))
-                    (markerp (ebox--pub--surface-mount-end mount)))
-                   (and coordinate-p
-                        (integerp
-                         (ebox--pub--surface-mount-start mount))
-                        (integerp (ebox--pub--surface-mount-end mount))))
-                (signal 'ebox--pub-surface-error
-                        (list :invalid-mount-cleanup mount)))))
-          (dolist
-              (ledger (ebox--pub--surface-snapshot-ledger snapshot))
-            (unless
-                (and
-                 (markerp (ebox--pub--property-ledger-start ledger))
-                 (markerp (ebox--pub--property-ledger-end ledger)))
-              (signal 'ebox--pub-surface-error
-                      (list :invalid-ledger-cleanup ledger))))))))
+    (let* ((prepared (car entry))
+           (snapshot (cdr entry))
+           (surface (ebox--pub--prepared-surface-surface prepared))
+           (mounts (ebox--pub--prepared-surface-live-mounts prepared)))
+      (ebox--pub--validate-live-surface surface)
+      (unless (and (eq (ebox--pub--surface-plan surface)
+                       (ebox--pub--prepared-surface-plan prepared))
+                   (eq (ebox--pub--surface-mounts surface) mounts)
+                   (eq (ebox--pub--surface-index surface) mounts)
+                   (eq (ebox--pub--surface-mount-index surface)
+                       (ebox--pub--prepared-surface-live-mount-index prepared))
+                   (eq (ebox--pub--surface-client-state surface)
+                       (ebox--pub--prepared-surface-client-state prepared))
+                   (= (ebox--pub--surface-revision surface)
+                      (1+ (ebox--pub--surface-snapshot-revision snapshot)))
+                   (not (ebox--pub--context-active
+                         (ebox--pub--prepared-surface-context prepared))))
+        (signal 'ebox--pub-surface-error
+                (list :invalid-published-generation
+                      (ebox--pub--surface-id surface))))
+      (when (ebox--pub--prepared-surface-retained-mount-state-p prepared)
+        (ebox--pub--validate-retained-batch-precommit prepared snapshot))))
+  (ebox--pub--validate-retained-batch-hover-groups)
   state)
 
 (defun ebox--pub--surface-final-accept ()
@@ -3586,7 +3465,6 @@ evidence with precommit validation without copying output."
         (dolist (prepared changed)
           (ebox--pub--enqueue-surface-observers
            (ebox--pub--prepared-surface-surface prepared)))
-        (ebox--pub--surface-prevalidate-cleanup state)
         (ebox--pub--transaction-install-final-accept
          #'ebox--pub--surface-final-accept)))))
 

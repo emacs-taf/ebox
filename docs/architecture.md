@@ -15,6 +15,12 @@ retain exact dependencies; application refs remain ETAF-owned. Native property
 composition and paint slots belong to Ebox, while ECSS owns selector/cascade
 semantics. Frameworks integrate only through SPI v3 (`ebox-publication/v1`).
 
+Candidate inputs are validated before the publisher installs its private object
+and mount indexes. Precommit checks the installed generation by identity; it
+does not rebuild sets to revalidate the same private indexes. Public callbacks
+and buffer hooks can change text or properties, so the complete expected output
+is still checked before lifecycle settlement and again at final acceptance.
+
 ## Ownership
 
 1. The caller owns the fresh source tree.
@@ -26,6 +32,24 @@ semantics. Frameworks integrate only through SPI v3 (`ebox-publication/v1`).
 7. `ebox-buffer-backend.el` only builds and reshapes propertized render strings. It does not own live markers or a buffer mutation executor.
 
 No layer may infer application state from visible buffer text. No public caller may mutate a published tree in place. Every public live-publication route, including `ebox-render-to-buffer`, its `ebox-display-buffer` display wrapper, and commit/update entry points, uses a retained Ebox publication surface; the public facade exposes no erase-and-evaluate-body buffer writer.
+
+Native and Elisp fragment ledgers share one ownership projection. A proven
+unchanged node topology retains the published node/object and region/object
+indexes and resolves only previously unseen role combinations. Candidate caches
+retain only role combinations in the current output; failed candidates cannot
+mutate the accepted cache. Structural projection and complete fallback rebuild
+the indexes. Equal copied role tags preserve mount identity just like identical
+tags; object identity and exact candidate coordinates remain validated.
+
+Candidate render caches copy their eviction rings and recorded storage costs
+with the table. Immutable retained outputs do not need their complete object
+graphs recounted after each candidate copy. Ring vectors remain private, and
+changed capacity settings still enforce both entry and byte limits.
+
+Fractional-pixel output retains one role/paint ledger for raw allocation and
+rounded display coordinates. Pixel quantization changes only display widths;
+initial projection therefore parses this ledger once and later local edits
+reuse it without reparsing the complete raw frame.
 
 Local content-slot reuse requires a parent allocation independent of the changed
 content. Equal parent declarations and retained coordinates alone do not establish

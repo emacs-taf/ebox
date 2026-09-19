@@ -16,6 +16,11 @@
   ],
   "cases": [
     {
+      "name": "ebox-local-ownership-follows-reparented-targets",
+      "file": "tests/ebox-flex-tests.el",
+      "purpose": "Repeated reparenting followed by local rich-text and parent paint updates preserves fresh-render output and current interaction bounds."
+    },
+    {
       "name": "ebox-primary-press-retains-existing-focus",
       "file": "tests/ebox-active-tests.el",
       "purpose": "Pressed state and keyboard focus coexist on the same or different controls without losing retained Host identity."

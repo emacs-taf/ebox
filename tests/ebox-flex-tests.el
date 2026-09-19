@@ -297,5 +297,44 @@
           (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
           (kill-buffer buffer))))))
 
+(ert-deftest ebox-local-ownership-follows-reparented-targets ()
+  "Local updates after reparenting use current paint and interaction bounds."
+  (let ((live (generate-new-buffer " *ownership-live*"))
+        (reference (generate-new-buffer " *ownership-reference*"))
+        (scene
+         (lambda (side label color)
+           (ebox-build
+            `(row :key root :width (px 96) :height (lh 2) :wrap-mode none
+                  ,@(mapcar
+                     (lambda (id)
+                       `(box :key ,id :id ,id :width (px 48) :height (lh 2)
+                             :background-color ,(if (eq id side) color "gray")
+                             ,(if (eq id side)
+                                  `(box :key target :id target :tab-index 0
+                                        :width (% 100) :height (lh 1) ,label)
+                                "Peer")))
+                     '(left right)))))))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer live (funcall scene 'left "Seed" "blue"))
+          (dolist (side '(left right left))
+            (ebox-commit live (funcall scene side "Seed" "blue"))
+            (let ((ref (ebox-focus-first live)))
+              (dolist (text '("Short" "A longer label" "X"))
+                (let ((label (propertize text 'face '(:foreground "yellow"))))
+                  (with-current-buffer live
+                    (ebox-region-update "target" :content label)
+                    (ebox-region-update (symbol-name side) :background-color "green"))
+                  (ebox-render-to-buffer reference (funcall scene side label "green"))
+                  (should (equal (ebox-flex-test--visible-runs live)
+                                 (ebox-flex-test--visible-runs reference)))
+                  (should (equal (ebox-host-ref-bounds live ref)
+                                 (ebox-host-ref-bounds
+                                  reference (ebox-focus-first reference)))))))))
+      (dolist (buffer (list live reference))
+        (when (buffer-live-p buffer)
+          (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
+          (kill-buffer buffer))))))
+
 (provide 'ebox-flex-tests)
 ;;; ebox-flex-tests.el ends here

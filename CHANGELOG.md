@@ -6,6 +6,12 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Local updates retain ownership indexes when node relationships are unchanged.
+  Native and Elisp output use the same role mapping, avoiding repeated ancestor
+  resolution and temporary per-node hash tables during publication.
+- Candidate caches preserve eviction accounting, and publication validates its
+  installed generation without rebuilding private mount indexes. Complete
+  buffer-output checks still reject unexpected callback or hook writes.
 - Retained publication is now owned by Ebox. Update Ebox and ETAF together;
   the integration uses SPI v3 and `ebox-publication/v1`. TP is no longer a
   package dependency. Publication reports use `:publication-*` fields and the
@@ -22,18 +28,14 @@ All notable changes to Ebox are documented here.
 - Owner-scoped updates with integral published pixels skip the raw-layout
   buffer copy; the raw allocation path remains available when fractional pixel
   remainders require it.
-- Local owner patches strip producer-only paint-origin carriers before TP
+- Local owner patches strip producer-only paint-origin carriers before
   publication, so unchanged property runs are no longer rewritten as if their
   public properties had changed.
 - Retained interaction candidates carry their topology proof through
   declarative preparation instead of rebuilding the source interaction index a
   second time.
-- Ebox now owns text-property value snapshots and mutable property graph copies
-  in `ebox-text`; source, interaction, incremental and native paths no longer
-  cross TP for this ownership operation.
-- Ebox now owns paint slots, computed style values, and native keymap/property
-  equality in `ebox-paint` and `ebox-property`; retained publication remains
-  unchanged while this ownership seam is migrated.
+- Ebox owns text-property snapshots, mutable property graph copies, paint slots,
+  computed style values and native keymap/property equality.
 
 - Local rich-text updates reuse unaffected fragment parsing even when the
   changed interval gains or loses property runs. Paint addresses and target

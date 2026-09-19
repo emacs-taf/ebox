@@ -823,6 +823,23 @@ text-property interval spines are charged exactly once by identity."
         (puthash ebox--render-cache-table ring ebox--render-cache-ring-table)
         ring)))
 
+(defun ebox--render-cache-copy (table)
+  "Copy render cache TABLE together with its bounded eviction metadata.
+Entries are immutable render results. Candidate ownership requires private
+tables and ring vectors, not recounting every retained result graph."
+  (let ((copy (copy-hash-table table))
+        (ring (gethash table ebox--render-cache-ring-table))
+        (root-cache (gethash table ebox--render-root-cache-table-table)))
+    (when (and ring (= (aref ring 3) (hash-table-count table)))
+      (let ((next (copy-sequence ring)))
+        (aset next 0 (copy-sequence (aref ring 0)))
+        (aset next 1 (copy-sequence (aref ring 1)))
+        (puthash copy next ebox--render-cache-ring-table)))
+    (when root-cache
+      (puthash copy (ebox--render-cache-copy root-cache)
+               ebox--render-root-cache-table-table))
+    copy))
+
 (defun ebox--render-cache-ring-rebuild (ring entry-limit byte-limit)
   "Rebuild RING from the current cache with ENTRY-LIMIT and BYTE-LIMIT.
 This is reserved for exceptional private mutations that bypass cache stores."
@@ -7243,13 +7260,15 @@ cache tables until Ebox publication commits the generation."
                    (:layout-snapshots . equal)
                    (:layout-fragments . equal)
                    (:render-signature-cache . eq)
-                   (:native-fragment-owner-cache . equal)
                    (:flex-content-min-widths . eq)
                    (:viewport-height-dependent-subtree-cache . eq)))
     (let ((key (car entry))
           (value (plist-get state (car entry))))
       (when (hash-table-p value)
-        (plist-put state key (copy-hash-table value)))))
+        (plist-put state key
+                   (if (eq key :render-cache)
+                       (ebox--render-cache-copy value)
+                     (copy-hash-table value))))))
   state)
 
 (defun ebox-incremental--candidate-state
@@ -10775,9 +10794,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
         :native-committed-fragment-template
         (plist-get state :native-committed-fragment-template)
         :native-committed-owned-ranges
-        (plist-get state :native-committed-owned-ranges)
-        :native-fragment-owner-cache
-        (plist-get state :native-fragment-owner-cache)))
+        (plist-get state :native-committed-owned-ranges)))
 
 (defun ebox-incremental--surface-state-overrides
     (old-state prepared candidate-state projection-kind

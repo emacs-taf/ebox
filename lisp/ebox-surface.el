@@ -1821,6 +1821,13 @@ PREVIOUS-STATE's node-object table."
       (ebox-tree-clear-author-style-pending root))
     (list :surface-root surface-root
           :node-root node-root
+          :retained-topology-state
+          (and (not range-splice-p)
+               (memq projection-kind
+                     '(metadata span-patch owner-scoped scroll-patch
+                       formatting-context-reflow mixed-owner-reflow
+                       viewport-reflow viewport-reflow-mixed-scroll))
+               previous-state)
           :source-index source-index
           :objects-by-node objects-by-node
           :style-binding-states style-state-table
@@ -1962,6 +1969,7 @@ children again."
                      (ebox-tree-subject-index root source-index))))
     (plist-put projection :source-index source-index)
     (plist-put projection :objects-by-node objects-by-node)
+    (plist-put projection :retained-topology-state nil)
     (ebox--pub-object-retain context node-root)
     (ebox-surface--ensure-node-tree
      context node-root root source-index objects-by-node
@@ -1987,6 +1995,7 @@ children again."
   "Complete CONTEXT PROJECTION for STATE from rendered OUTPUT."
   (let* ((surface-root (plist-get projection :surface-root))
          (objects-by-node (plist-get projection :objects-by-node))
+         (retained-topology (plist-get projection :retained-topology-state))
          (root-node (plist-get state :root-node))
          (root-id (and root-node (plist-get root-node :node-id)))
          (owner-id (plist-get state :span-patch-owner-id))
@@ -2018,11 +2027,13 @@ children again."
                                (not (plist-get (car proofs) :range-splice-p))))))
                (plist-get state :span-patch-retained-owned-ranges)))
          (node-objects
-          (or (and scroll-fast-p
+          (or (plist-get retained-topology :surface-node-object-table)
+              (and scroll-fast-p
                    (plist-get state :surface-node-object-table))
               (ebox-surface--node-object-table objects-by-node)))
          (region-objects
-          (or (and scroll-fast-p
+          (or (plist-get retained-topology :region-surface-object-table)
+              (and scroll-fast-p
                    (plist-get state :region-surface-object-table))
               (ebox-surface--region-object-table state node-objects)))
          (property-contributions
@@ -2034,14 +2045,18 @@ children again."
     (cl-remf state :span-patch-retained-owned-ranges)
     (plist-put state :surface-node-object-table node-objects)
     (plist-put state :region-surface-object-table region-objects)
-    (unless (and scroll-fast-p
-                 (plist-get state :surface-object-region-table))
-      (plist-put state :surface-object-region-table
-                 (ebox-surface--object-region-table region-objects)))
-    (unless (and scroll-fast-p
-                 (plist-get state :logical-id-region-table))
+    (plist-put state :surface-object-region-table
+               (or (plist-get retained-topology :surface-object-region-table)
+                   (and scroll-fast-p
+                        (plist-get state :surface-object-region-table))
+                   (ebox-surface--object-region-table region-objects)))
+    ;; Logical IDs are source metadata, independent of retained node topology.
+    ;; They still receive their ordinary candidate projection.
+    (unless (and scroll-fast-p (plist-get state :logical-id-region-table))
       (plist-put state :logical-id-region-table
                  (ebox-surface--logical-id-region-table state region-objects)))
+    (plist-put state :ownership-cache
+               (ebox-surface--ownership-cache retained-topology state))
     (when (eq projection-kind 'metadata)
       (let* ((buffer (plist-get state :metadata-buffer))
              (surface (and buffer (ebox-surface--live-buffer-surface buffer)))
@@ -3518,6 +3533,12 @@ available during planning; replacements here belong only to the candidate."
     (cl-remf state :raw-layout-fragments)
     (cl-remf state :raw-layout-snapshots)
     (when (plist-get state :fractional-pixel-output-p)
+      (unless (plist-get state :native-render-p)
+        ;; The raw and rounded strings have identical character, role and
+        ;; paint coordinates. Build their common ledger once, while creating
+        ;; the full frame, instead of reparsing the page on its first edit.
+        (plist-put state :raw-layout-fragments
+                   (ebox-surface--rendered-fragments rendered)))
       (let ((ebox--render-owned-text-values
              (plist-get state :render-owned-text-values)))
         (setq rendered (ebox--quantize-pixel-spaces rendered))
@@ -5814,22 +5835,22 @@ present."
               (plist-put state :scroll-viewport-batch batch)
               output)))))))
 
-(defun ebox-surface--scroll-viewport-owner-cache (previous-state state)
+(defun ebox-surface--ownership-cache (previous-state state)
   "Return a private owner-resolution cache for STATE's unchanged topology.
-Reuse requires PREVIOUS-STATE's exact parent, region and Ebox publication
-object indexes.  The scroll-only source proof preserves their meanings when
-rebinding copied Boxes; ordinary document projection discards this optional
-derived cache."
-  (let* ((old (plist-get previous-state :scroll-viewport-owner-cache))
-         (keys '(:parent-table :region-node-table
-                  :surface-node-object-table :region-surface-object-table))
+PREVIOUS-STATE is supplied only by a projection retaining the node topology.
+Reuse also requires its exact publication object indexes. Source parent and
+region indexes may be copied while retaining the same proved relationships.
+Only entries read by this candidate survive, bounding the derived cache to
+the current output without modifying the accepted generation."
+  (let* ((old (plist-get previous-state :ownership-cache))
+         (keys '(:surface-node-object-table :region-surface-object-table))
          (valid (and old
                      (cl-every (lambda (key)
                                  (eq (plist-get old key) (plist-get previous-state key)))
                                keys)))
-         (cache (list :owners
-                      (if valid (copy-hash-table (plist-get old :owners))
-                        (make-hash-table :test #'equal)))))
+         (cache (list :owners (if valid (plist-get old :owners)
+                               (make-hash-table :test #'equal))
+                      :shared valid)))
     (dolist (key keys)
       (plist-put cache key (plist-get state key)))
     cache))
@@ -5851,8 +5872,8 @@ equal character lengths do not imply equal visible owners or interaction."
           (unless lines
             (plist-get state :scroll-viewport-fragments)))
          (_cache
-          (plist-put state :scroll-viewport-owner-cache
-                     (ebox-surface--scroll-viewport-owner-cache previous-state state)))
+          (plist-put state :ownership-cache
+                     (ebox-surface--ownership-cache previous-state state)))
          (owned-ranges
           (if lines
               (ebox-surface--scroll-owned-ranges
@@ -6364,11 +6385,16 @@ paint-owner ancestor chain."
 VISIT-RUNS receives one callback accepting ROLE-IDS, START, END, and optional
 layout dependency region ids.
 Adjacent ranges merge only when both their owner and opaque tags match."
-  (let ((active (make-hash-table :test #'eq))
-        (owner-cache
-         (or (plist-get (plist-get state :scroll-viewport-owner-cache) :owners)
-             (make-hash-table :test #'equal)))
-        ranges)
+  (let* ((active (make-hash-table :test #'eq))
+         (cache (plist-get state :ownership-cache))
+         (base-owners (and (plist-get cache :shared) (plist-get cache :owners)))
+         (owner-cache
+          (if base-owners (make-hash-table :test #'equal)
+            (or (plist-get cache :owners) (make-hash-table :test #'equal))))
+         ranges)
+    (when cache
+      (plist-put cache :owners owner-cache)
+      (plist-put cache :shared nil))
     (funcall
      visit-runs
      (lambda (role-ids start end &optional layout-region-ids)
@@ -6377,41 +6403,45 @@ Adjacent ranges merge only when both their owner and opaque tags match."
                            role-ids))
               (owners (gethash cache-key owner-cache 'ebox/no-owners)))
          (when (eq owners 'ebox/no-owners)
-           (setq owners
-                 (ebox-surface--fragment-owners
-                  role-ids state node-objects region-objects))
-           (when layout-region-ids
-             (let ((attached (make-hash-table :test #'eq)))
-               (dolist (owner owners) (puthash (car owner) t attached))
-               (dolist (region-id layout-region-ids)
-                 (let ((node-id (ebox-runtime-index-get region-id
-                                         (plist-get state :region-node-table))))
-                   (while node-id
-                     (let ((object (gethash node-id node-objects)))
-                       (unless object
-                         (error "Ebox layout dependency has no Ebox publication object: %S"
-                                node-id))
-                       (unless (gethash object attached)
-                         (push (list object '(:ebox/layout-output t)) owners)
-                         (puthash object t attached)))
-                     (setq node-id
-                           (ebox-runtime-index-get node-id (plist-get state :parent-table))))))))
+           (setq owners (if base-owners
+                            (gethash cache-key base-owners 'ebox/no-owners)
+                          'ebox/no-owners))
+           (when (eq owners 'ebox/no-owners)
+             (setq owners
+                   (ebox-surface--fragment-owners
+                    role-ids state node-objects region-objects))
+             (when layout-region-ids
+               (let ((attached (make-hash-table :test #'eq)))
+                 (dolist (owner owners) (puthash (car owner) t attached))
+                 (dolist (region-id layout-region-ids)
+                   (let ((node-id (ebox-runtime-index-get region-id
+                                                          (plist-get state :region-node-table))))
+                     (while node-id
+                       (let ((object (gethash node-id node-objects)))
+                         (unless object
+                           (error "Ebox layout dependency has no Ebox publication object: %S"
+                                  node-id))
+                         (unless (gethash object attached)
+                           (push (list object '(:ebox/layout-output t)) owners)
+                           (puthash object t attached)))
+                       (setq node-id
+                             (ebox-runtime-index-get node-id (plist-get state :parent-table)))))))))
            (puthash cache-key owners owner-cache))
          (dolist (owner owners)
            (let* ((object (nth 0 owner))
                   (tags (nth 1 owner))
-                  (tag-ranges
-                   (or (gethash object active)
-                       (let ((table (make-hash-table :test #'equal)))
-                         (puthash object table active)
-                         table)))
-                  (current (gethash tags tag-ranges)))
+                  ;; One node has only its direct, descendant and layout
+                  ;; roles here. Do not allocate a hash table per node.
+                  (entry (assoc tags (gethash object active) #'equal))
+                  (current (cdr entry)))
              (if (and current (= (plist-get current :end) start))
                  (plist-put current :end end)
                (let ((range (list :object object :start start :end end
                                   :tags tags)))
                  (push range ranges)
-                 (puthash tags range tag-ranges))))))))
+                 (if entry
+                     (setcdr entry range)
+                   (push (cons tags range) (gethash object active))))))))))
     (setq ranges (nreverse ranges))
     (when attach-p
       (ebox--pub-object-attach-content-ranges-owned context leaf ranges))
@@ -6459,43 +6489,12 @@ Adjacent ranges merge only when both their owner and opaque tags match."
 (defun ebox-surface--native-owned-ranges
     (context leaf template state node-objects region-objects attach-p)
   "Attach owner ranges from compact native fragment TEMPLATE."
-  (let ((active (make-hash-table :test #'eq))
-        (owner-cache
-         (or (plist-get state :native-fragment-owner-cache)
-             (let ((cache (make-hash-table :test #'equal)))
-               (plist-put state :native-fragment-owner-cache cache)
-               cache)))
-        ranges)
-    (dotimes (index (length template))
-      (let* ((record (aref template index))
-             (roles (aref record 3))
-             (owners (gethash roles owner-cache 'ebox/no-owners))
-             (start (aref record 0))
-             (end (aref record 1)))
-        (when (eq owners 'ebox/no-owners)
-          (setq owners
-                (ebox-surface--fragment-owners
-                 roles state node-objects region-objects))
-          (puthash roles owners owner-cache))
-        (dolist (owner owners)
-          (let* ((object (nth 0 owner))
-                 (tags (nth 1 owner))
-                 (tag-ranges
-                  (or (gethash object active)
-                      (let ((table (make-hash-table :test #'equal)))
-                        (puthash object table active)
-                        table)))
-                 (current (gethash tags tag-ranges)))
-            (if (and current (= (plist-get current :end) start))
-                (plist-put current :end end)
-              (let ((range (list :object object :start start :end end
-                                 :tags tags)))
-                (push range ranges)
-                (puthash tags range tag-ranges)))))))
-    (setq ranges (nreverse ranges))
-    (when attach-p
-      (ebox--pub-object-attach-content-ranges-owned context leaf ranges))
-    ranges))
+  (ebox-surface--owned-ranges-from-runs
+   context leaf state node-objects region-objects attach-p
+   (lambda (visit)
+     (dotimes (index (length template))
+       (let ((record (aref template index)))
+         (funcall visit (aref record 3) (aref record 0) (aref record 1)))))))
 
 (defun ebox-surface--materialized-fragment-ledger (state)
   "Return STATE's paint ledger, expanding a native frame only on demand."
@@ -6565,6 +6564,8 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
                 (and (memq (plist-get state :projection-kind)
                            '(span-patch owner-scoped))
                      (plist-get state :span-patch-fragment-data))
+                (and (plist-get state :raw-layout-output)
+                     (plist-get state :raw-layout-fragments))
                 (if (stringp output)
                     (ebox-surface--rendered-fragments output)
                   output))))
@@ -6667,7 +6668,7 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
                     (plist-get state :native-render-p)
                     (plist-get state :mixed-owner-content-p)
                     (plist-get state :span-patch-content-p))
-                ;; Scroll output is a fresh renderer-owned string.  The TP
+                ;; Scroll output is a fresh renderer-owned string. The
                 ;; owned-result path copies the string spine once while
                 ;; rendering the plan; recursively snapshotting every
                 ;; property value here duplicated the hot scroll work.

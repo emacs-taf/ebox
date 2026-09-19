@@ -406,7 +406,7 @@ new session with the same bounded configuration used by retained frames."
         (plist-put candidate-state :viewport-dependent-node-id-axes
                    (plist-get old-state :viewport-dependent-node-id-axes)))
       (unless stable
-        (cl-remf candidate-state :native-fragment-owner-cache))
+        (cl-remf candidate-state :ownership-cache))
       t)))
 
 (defun ebox-native-commit--root-box (node)
