@@ -173,6 +173,11 @@ This function does not install navigation bindings or event propagation."
 (defvar ebox-interaction--drag-active nil
   "Non-nil inside the native primary-button tracking boundary.")
 
+(defconst ebox-interaction--tracking-poll-interval 0.005
+  "Maximum idle wait between native mouse tracking polls, in seconds.
+Keep this short because an Emacs mouse macro can place release input between
+command-loop turns. Target and window validity are checked on every poll.")
+
 (defun ebox-interaction--drag-position (position window)
   "Return POSITION's text-area pixels inside WINDOW, or nil."
   (let ((xy (posn-x-y position)) (edges (window-inside-pixel-edges window)))
@@ -244,7 +249,10 @@ This function does not install navigation bindings or event propagation."
                           (while (and (not done) (available))
                             ;; A timeout lets ordinary Emacs timers invalidate a
                             ;; removed owner or window even while the mouse rests.
-                            (when-let* ((next (read-event nil nil 0.05)))
+                            (when-let* ((next
+                                         (read-event
+                                          nil nil
+                                          ebox-interaction--tracking-poll-interval)))
                               (setq last-event next)
                               (let* ((release (and (eq (event-basic-type next) button)
                                                    (not (memq 'down (event-modifiers next)))))
