@@ -84,6 +84,34 @@
               (should (equal "#112233" (ebox-focus-style-test--color (buffer-string) "Alpha")))))
         (ebox-unmount-buffer (current-buffer))))))
 
+(ert-deftest ebox-focus-metadata-survives-retained-content-updates ()
+  "Focus remains metadata-only after local content updates retain styled nodes."
+  (with-temp-buffer
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           (current-buffer)
+           (ebox-build '(column :width (ch 40) :height (lh 12) :overflow scroll
+                               :color "#112233"
+                               (box :id a :key a :tab-index 0 "Alpha")
+                               (box :id b :key b :tab-index 0 "Bravo"))))
+          (dolist (content '("Updated" "Alpha" "Updated again"))
+            (ebox-region-update "a" :content content)
+            (let ((before (buffer-string)))
+              (ebox-focus-first)
+              (should (ebox-selector-query-buffer (current-buffer) "#a:focus"))
+              (should (equal-including-properties before (buffer-string)))
+              (should (eq (plist-get (ebox-buffer-update-report (current-buffer))
+                                     :projection-kind)
+                          'metadata))
+              (ebox-focus nil)
+              (should-not (ebox-selector-query-buffer (current-buffer) ":focus"))
+              (should (equal-including-properties before (buffer-string)))
+              (should (eq (plist-get (ebox-buffer-update-report (current-buffer))
+                                     :projection-kind)
+                          'metadata)))))
+      (ebox-unmount-buffer (current-buffer)))))
+
 (ert-deftest ebox-focus-state-shares-selectors-paint-and-layout ()
   "Setting and clearing focus recompute shared rules and preserve manual point."
   (dolist (viewport '((nil nil) (160 20)))

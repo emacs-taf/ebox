@@ -22,6 +22,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Repeated percentage updates retain their raw allocation evidence when an
+  intermediate result has integral pixels. Returning from a full progress bar
+  to a partial value no longer discards an otherwise valid local projection.
+- Focus and pressed-state changes after retained content updates preserve their
+  selector metadata classification instead of unnecessarily rendering the root.
 - Prepared metadata and paint projections survive unscoped publication and
   empty-range fallback. Focus and pressed-state updates no longer lose their
   incremental strategy and rebuild the complete surface during mouse input.

@@ -7629,14 +7629,11 @@ published runtime and must be consumed without clearing those shared nodes."
                                      previous-state state t))
                                (and (memq projection-kind '(span-patch owner-scoped))
                                     ;; Raw allocation preserves the remainder
-                                    ;; spent by preceding siblings only when
-                                    ;; the published generation actually has
-                                    ;; fractional pixel spaces.  Integer output
-                                    ;; is handled by the integral local patch
-                                    ;; below; copying the complete raw buffer
-                                    ;; first only duplicates that work.
-                                    (plist-get previous-state
-                                               :fractional-pixel-output-p)
+                                    ;; spent by preceding siblings. An integral
+                                    ;; result (for example a 100% fill) keeps
+                                    ;; that evidence for its next fractional
+                                    ;; update; current fractionality does not
+                                    ;; determine whether the proof is valid.
                                     (plist-get previous-state :raw-layout-output)
                                     (ebox-surface--raw-owner-patch-output
                                      (ebox-surface--signals-buffer signals) previous-state state))

@@ -7480,10 +7480,15 @@ STYLE-NODE-IDS bounds the nodes prepared by the Style Adapter."
                    ;; it must not resolve the same generation facts again.
                    (source-keys (plist-get entry :changed-keys))
                    (metadata-keys
-                    (cl-remove-if-not
-                     (lambda (key)
-                       (memq key ebox-tree-metadata-source-keys))
-                     source-keys))
+                    ;; Interaction preparation can classify selector facts
+                    ;; before this pass, leaving no ordinary source delta.
+                    (delete-dups
+                     (append
+                      (plist-get entry :metadata-changed-keys)
+                      (cl-remove-if-not
+                       (lambda (key)
+                         (memq key ebox-tree-metadata-source-keys))
+                       source-keys))))
                    (ordinary-keys
                     (cl-remove-if
                      (lambda (key)

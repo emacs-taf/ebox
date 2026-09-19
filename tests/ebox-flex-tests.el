@@ -336,5 +336,81 @@
           (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
           (kill-buffer buffer))))))
 
+(ert-deftest ebox-flex-local-update-retains-raw-allocation-after-integral-output ()
+  "A full progress bar must retain local allocation for its next partial value."
+  (let ((ebox-viewport-width 81) (ebox-viewport-height 20)
+        (live (generate-new-buffer " *integral-progress-live*"))
+        (reference (generate-new-buffer " *integral-progress-reference*")))
+    (cl-labels
+        ((input (spec)
+           (let ((builder (ebox-source-builder-create)))
+             (cl-labels
+                 ((node (entry)
+                    (pcase-let* ((`(,ref ,tag ,style . ,children) entry)
+                                 (declarations (ebox-style-compile-form tag style))
+                                 (handle (ebox-source-builder-bind
+                                          builder :identity ref :key ref :id ref
+                                          :declarations declarations))
+                                 (facts (ebox-canonical-facts-from-declarations
+                                         tag declarations)))
+                      (if (eq tag 'text)
+                          (ebox-text-create :value (car children)
+                                            :source-handle handle
+                                            :owned-facts facts)
+                        (apply #'ebox-box-create
+                               (append (ebox-canonical-box-configuration
+                                        tag declarations)
+                                       (list :source-handle handle :owned-facts facts
+                                             :source-builder builder
+                                             :children (mapcar #'node children))))))))
+               (let ((root (node spec)))
+                 (ebox-canonical-input-create
+                  (list root) (ebox-source-builder-finish builder))))))
+         (scene (percent)
+           (input
+            `(root flex (:width (px 81) :column-gap (px 2)
+                         :align-items stretch :wrap-mode none)
+               (left box (:width (px 10) :flex-shrink 0)
+                     (left-label text nil "Left"))
+               (panel column (:flex-basis (px 31) :flex-shrink 0
+                              :min-width (px 0) :padding ((lh 1) (px 2))
+                              :background-color "blue" :overflow hidden)
+                 (label text nil ,(format "%d%%" percent))
+                 (track box (:width (% 100) :height (lh 1)
+                             :background-color "gray")
+                   ,(fill-spec percent)))
+               (right box (:flex-grow 1 :min-width (px 0))
+                      (right-label text nil "Right")))))
+         (fill-spec (percent)
+           `(fill box (:width (% ,percent) :height (lh 1)
+                       :background-color "red"))))
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer live (scene 67))
+            (ebox-buffer-set-observer live (lambda (_buffer _report)))
+            (dolist (percent '(100 67 100 67))
+              (let ((candidate (ebox-candidate-begin live)))
+                (ebox-candidate-replace-host-ref
+                 candidate 'label
+                 (input `(label text nil ,(format "%d%%" percent))))
+                (ebox-candidate-update-host-properties
+                 candidate 'fill
+                 (input (fill-spec (if (= percent 100) 67 100)))
+                 (input (fill-spec percent)))
+                (ebox-commit live candidate))
+              (ebox-render-to-buffer reference (scene percent))
+              (should (equal (ebox-flex-test--visible-runs live)
+                             (ebox-flex-test--visible-runs reference)))
+              (let ((report (ebox-buffer-update-report live)))
+                (ert-info ((format "%s%%: %S, %S" percent
+                                   (plist-get report :projection-kind)
+                                   (plist-get report :projection-rejections)))
+                  (should (memq (plist-get report :projection-kind)
+                                '(owner-scoped span-patch)))))))
+        (dolist (buffer (list live reference))
+          (when (buffer-live-p buffer)
+            (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
+            (kill-buffer buffer)))))))
+
 (provide 'ebox-flex-tests)
 ;;; ebox-flex-tests.el ends here

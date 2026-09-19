@@ -16,6 +16,16 @@
   ],
   "cases": [
     {
+      "name": "ebox-flex-local-update-retains-raw-allocation-after-integral-output",
+      "file": "tests/ebox-flex-tests.el",
+      "purpose": "Alternating partial and full progress values retain local projection and match fresh rendering when fractional geometry temporarily becomes integral."
+    },
+    {
+      "name": "ebox-focus-metadata-survives-retained-content-updates",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Focus changes after repeated retained content updates preserve selector facts and unchanged output without promoting metadata to a root render."
+    },
+    {
       "name": "ebox-local-ownership-follows-reparented-targets",
       "file": "tests/ebox-flex-tests.el",
       "purpose": "Repeated reparenting followed by local rich-text and parent paint updates preserves fresh-render output and current interaction bounds."

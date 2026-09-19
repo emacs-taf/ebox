@@ -51,6 +51,12 @@ rounded display coordinates. Pixel quantization changes only display widths;
 initial projection therefore parses this ledger once and later local edits
 reuse it without reparsing the complete raw frame.
 
+Raw allocation evidence belongs to the retained generation, independently of
+whether its current display contains fractional widths. An integral intermediate
+result keeps that evidence for the next update. Computed-effect normalization
+also preserves already classified selector metadata; normalizing a retained
+state twice must not turn a display-neutral interaction into a root update.
+
 Local content-slot reuse requires a parent allocation independent of the changed
 content. Equal parent declarations and retained coordinates alone do not establish
 that condition: intrinsic width can shrink or grow and alter sibling alignment
