@@ -16,6 +16,11 @@
   ],
   "cases": [
     {
+      "name": "ebox-focus-local-updates-survive-transient-style-removal",
+      "file": "tests/ebox-focus-style-tests.el",
+      "purpose": "Removing a styled sibling or root layer, including rejected removal, preserves metadata focus and local paint/content updates with fresh-render output equivalence."
+    },
+    {
       "name": "ebox-flex-local-update-retains-raw-allocation-after-integral-output",
       "file": "tests/ebox-flex-tests.el",
       "purpose": "Alternating partial and full progress values retain local projection and match fresh rendering when fractional geometry temporarily becomes integral."

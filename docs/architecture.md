@@ -57,6 +57,13 @@ result keeps that evidence for the next update. Computed-effect normalization
 also preserves already classified selector metadata; normalizing a retained
 state twice must not turn a display-neutral interaction into a root update.
 
+The style graph is owned by one published node generation. Complete object
+projection selects only states whose objects and bindings belong to that
+candidate. Removed or omitted bindings are retired after publication; weak
+table collection and binding liveness do not establish candidate membership.
+This keeps a removed layer or ordinary sibling from invalidating later local
+updates elsewhere in the document.
+
 Local content-slot reuse requires a parent allocation independent of the changed
 content. Equal parent declarations and retained coordinates alone do not establish
 that condition: intrinsic width can shrink or grow and alter sibling alignment

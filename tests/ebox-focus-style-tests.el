@@ -353,5 +353,62 @@
           (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
           (kill-buffer buffer))))))
 
+(ert-deftest ebox-focus-local-updates-survive-transient-style-removal ()
+  "Removing styled content preserves local focus, paint and content updates."
+  (cl-labels
+      ((input (popup label color)
+         (ebox-build
+          `(column :width (ch 40) :height (lh 8) :color "#112233"
+             (box :id a :key a :tab-index 0 :width (ch 12)
+                  :background-color ,color
+               (text :id label :key label ,label))
+             (box :id b :key b :tab-index 1 :width (ch 12) "Bravo")
+             ,@(when popup
+                 `((box :id popup :key popup :color "#cc0000"
+                        ,@(when (eq popup 'layer)
+                            '(:position absolute :layer root :left (ch 1)
+                              :top (lh 3) :width (ch 20) :height (lh 1)))
+                        "Transient content"))))))
+       (visible (text)
+         (list (substring-no-properties text)
+               (cl-loop for position below (length text)
+                        collect (list (get-text-property position 'face text)
+                                      (get-text-property position 'display text))))))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer (current-buffer) (input nil "Alpha" "#ffffff"))
+            (dolist (popup '(sibling layer sibling))
+              (ebox-commit (current-buffer) (input popup "Alpha" "#ffffff"))
+              (should (string-match-p "Transient content" (buffer-string)))
+              (let ((before (buffer-string)))
+                (should-error
+                 (ebox-commit (current-buffer) (input nil "Alpha" "#ffffff")
+                              (lambda (_report) (error "Reject transient removal"))))
+                (should (equal-including-properties before (buffer-string))))
+              (ebox-commit (current-buffer) (input nil "Alpha" "#ffffff"))
+              (should-not (string-match-p "Transient content" (buffer-string)))
+              (ebox-focus nil)
+              (let ((before (buffer-string)))
+                (ebox-focus-first)
+                (should (ebox-selector-query-buffer (current-buffer) "#a:focus"))
+                (should (equal-including-properties before (buffer-string)))
+                (should (eq (plist-get (ebox-buffer-update-report (current-buffer))
+                                       :projection-kind)
+                            'metadata)))
+              (ebox-region-update "a" :background-color "#eeeeee")
+              (should (eq (plist-get (ebox-buffer-update-report (current-buffer))
+                                     :projection-kind)
+                          'paint))
+              (ebox-region-update "label" :content "Updated")
+              (should (memq (plist-get (ebox-buffer-update-report (current-buffer))
+                                       :projection-kind)
+                            '(span-patch owner-scoped)))
+              (should (string-match-p "Updated" (buffer-string)))
+              (should (equal (visible (buffer-string))
+                             (visible (ebox-render
+                                       (input nil "Updated" "#eeeeee")))))))
+        (ebox-unmount-buffer (current-buffer))))))
+
 (provide 'ebox-focus-style-tests)
 ;;; ebox-focus-style-tests.el ends here

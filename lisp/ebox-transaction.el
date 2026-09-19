@@ -36,18 +36,6 @@
 (defconst ebox--pub--final-marker-max-slot-writes 16
   "Maximum total fixed marker slot writes in one transaction.")
 
-(defvar ebox--pub--transaction-id-counter 0)
-
-(defvar ebox--pub--final-accept-id-counter 0)
-
-(defun ebox--pub--next-transaction-id ()
-  "Return a fresh monotonic internal transaction identifier."
-  (cl-incf ebox--pub--transaction-id-counter))
-
-(defun ebox--pub--next-final-accept-id ()
-  "Return a fresh monotonic final-accept identifier."
-  (cl-incf ebox--pub--final-accept-id-counter))
-
 (cl-defstruct (ebox--pub--final-marker-operation
                (:constructor ebox--pub--make-final-marker-operation)
                (:copier nil))

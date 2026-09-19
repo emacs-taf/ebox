@@ -22,6 +22,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Removing styled content now retires its style state from the published node
+  generation. Closing a layer or removing an ordinary sibling no longer makes
+  later focus, background paint and local content updates lose incremental reuse.
 - Repeated percentage updates retain their raw allocation evidence when an
   intermediate result has integral pixels. Returning from a full progress bar
   to a partial value no longer discards an otherwise valid local projection.

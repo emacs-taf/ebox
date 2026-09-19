@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 ;; Builds propertized render strings and reshapes them for existing layout
-;; slots.  Live buffer publication and retained markers belong to TP.
+;; slots. Live buffer publication and retained markers belong to ebox-publication.
 
 ;;; Code:
 

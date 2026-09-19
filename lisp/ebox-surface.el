@@ -5,7 +5,7 @@
 ;;; Commentary:
 
 ;; Owns the boundary from an Ebox candidate runtime to a generic Ebox publication surface
-;; plan, and the atomic publication participant that mirrors the committed TP
+;; plan, and the atomic participant that mirrors the committed publication
 ;; generation into Ebox's buffer-local runtime indexes.
 
 ;;; Code:
@@ -592,11 +592,29 @@ owned; no per-fragment substring is allocated."
        (cl-every #'ebox-surface--scroll-line-fragment-template lines)))
 
 (defun ebox-surface--style-state-table (previous-state)
-  "Copy retained style state from PREVIOUS-STATE into a weak table."
+  "Copy PREVIOUS-STATE style states for candidate binding lookup.
+Complete object projection selects the new generation's owned subset."
   (let ((table (make-hash-table :test 'eq :weakness 'key)))
     (when-let* ((previous (plist-get previous-state :style-binding-states)))
       (maphash (lambda (object state) (puthash object state table)) previous))
     table))
+
+(defun ebox-surface--project-style-states (context states node-objects)
+  "Return STATES owned by CONTEXT's candidate NODE-OBJECTS and bindings.
+Removed objects and omitted style bindings still exist until publication
+settles their lifecycle.  Their liveness therefore cannot identify the next
+generation's style graph.  Use the same selected bindings that publication
+will retain, keeping the accepted table untouched if this candidate fails."
+  (let ((projected (make-hash-table :test 'eq :weakness 'key))
+        (bindings (ebox--pub--context-bindings context)))
+    (maphash
+     (lambda (_id object)
+       (when-let* ((state (gethash object states))
+                   (binding (plist-get state :binding))
+                   ((gethash binding bindings)))
+         (puthash object state projected)))
+     node-objects)
+    projected))
 
 (defun ebox-surface--stylesheet-signature ()
   "Return one immutable snapshot of the active Ebox stylesheet."
@@ -1583,7 +1601,7 @@ publication has an object scope."
     report))
 
 (defun ebox-surface-update-buffer-viewport (buffer width &optional height)
-  "Publish BUFFER for viewport WIDTH and optional HEIGHT through TP."
+  "Publish BUFFER for viewport WIDTH and optional HEIGHT."
   (let* ((surface (ebox-surface--live-buffer-surface buffer))
          (state (and surface (ebox--pub-surface-client-state surface))))
     (unless state
@@ -2045,6 +2063,10 @@ children again."
     (cl-remf state :span-patch-retained-owned-ranges)
     (plist-put state :surface-node-object-table node-objects)
     (plist-put state :region-surface-object-table region-objects)
+    (unless retained-topology
+      (plist-put state :style-binding-states
+                 (ebox-surface--project-style-states
+                  context (plist-get state :style-binding-states) node-objects)))
     (plist-put state :surface-object-region-table
                (or (plist-get retained-topology :surface-object-region-table)
                    (and scroll-fast-p
@@ -2543,7 +2565,7 @@ RETAINED-OWNED-RANGES witnesses unchanged ownership when it is that snapshot."
     (buffer source scope-node-ids report-base state-overrides
             &optional after-publication on-mismatch scroll-prefetch-delay
             projection-kind source-isolated-p framework-participant)
-  "Publish BUFFER SOURCE within SCOPE-NODE-IDS through TP.  STATE-OVERRIDES
+  "Publish BUFFER SOURCE within SCOPE-NODE-IDS. STATE-OVERRIDES
 augments the isolated candidate runtime.  REPORT-BASE and AFTER-PUBLICATION
 have the same meaning as in `ebox-surface-mount-buffer'.  ON-MISMATCH is
 forwarded to Ebox's scoped publication policy.  SCROLL-PREFETCH-DELAY
@@ -3231,7 +3253,7 @@ is a dynamic Ebox publication source and prevents a local cascade proof."
     (state candidate-state dirty-set)
   "Return non-nil when DIRTY-SET has a static cascade closure in STATE.
 CANDIDATE-STATE supplies the declarative nodes before cascade projection.
-Missing binding state, changed declarations or selector metadata, dynamic TP
+Missing binding state, changed declarations or selector metadata, dynamic
 dependencies, or any malformed index conservatively preserves root planning."
   (let* ((objects (plist-get state :surface-node-object-table))
          (style-states (plist-get state :style-binding-states))

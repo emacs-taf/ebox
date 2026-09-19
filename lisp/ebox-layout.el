@@ -2247,9 +2247,9 @@ also pass a pre-rendered string while an active surface owns runtime facts."
 
 ;;;###autoload
 (defun ebox-render (input)
-  "Render canonical INPUT to a multi-line string through TP.
+  "Render canonical INPUT as a multi-line propertized string.
 INPUT atomically carries one typed Text/Box root and its source generation.
-The materialized surface is ephemeral and creates no live buffer state."
+Pure rendering creates no mounted buffer state."
   (unless (ebox-canonical-input-p input)
     (signal 'wrong-type-argument (list 'ebox-canonical-input-p input)))
   (ebox--render-node

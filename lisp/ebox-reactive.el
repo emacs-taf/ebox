@@ -85,10 +85,7 @@
 (defvar ebox--pub--transaction-participant-order 0)
 (defvar ebox--pub--transaction-published-participants nil)
 (defvar ebox--pub--transaction-signal-commit-journal nil)
-(defvar ebox--pub--transaction-id nil)
 (defvar ebox--pub--transaction-phase nil)
-(defvar ebox--pub--transaction-phase-start nil)
-(defvar ebox--pub--transaction-phase-timings nil)
 (defvar ebox--pub--publication-started-p nil)
 (defvar ebox--pub--transaction-structured-participants nil)
 (defvar ebox--pub--transaction-final-marker-registry nil)
@@ -131,16 +128,6 @@
   (setq ebox--pub--reactive-counters
         (plist-put ebox--pub--reactive-counters key
                    (1+ (plist-get ebox--pub--reactive-counters key)))))
-
-(defun ebox--pub-reactive-counters ()
-  "Return public signal and binding scheduler counters."
-  (copy-sequence ebox--pub--reactive-counters))
-
-(defun ebox--pub-reactive-reset-counters ()
-  "Reset public signal and binding scheduler counters."
-  (setq ebox--pub--reactive-counters
-        (list :invalidated 0 :recomputed 0 :skipped 0
-              :subscription-added 0 :subscription-removed 0)))
 
 (defun ebox--pub--dependency-subscribers (dependency)
   "Return the subscriber table owned by DEPENDENCY."
@@ -324,13 +311,6 @@
     (ebox--pub--call-with-transaction
      (lambda () (ebox--pub--set-signal-candidate signal value)))))
 
-(defun ebox--pub-signal-subscriber-count (signal)
-  "Return the number of subscribers attached to SIGNAL.  Disposed signals
-return zero."
-  (unless (ebox--pub-signal-p signal)
-    (signal 'wrong-type-argument (list 'ebox--pub-signal-p signal)))
-  (hash-table-count (ebox--pub-signal-subscribers signal)))
-
 (defun ebox--pub--binding-dependency-path (start target visited)
   "Return a binding path from START to TARGET, avoiding VISITED."
   (cond
@@ -443,13 +423,6 @@ recomputed."
   (ebox--pub--validate-binding-read binding)
   (ebox--pub--record-dependency binding)
   (ebox--pub-binding-last-value binding))
-
-(defun ebox--pub-binding-subscriber-count (binding)
-  "Return the number of bindings depending directly on BINDING.  Disposed
-bindings return zero."
-  (unless (ebox--pub-binding-p binding)
-    (signal 'wrong-type-argument (list 'ebox--pub-binding-p binding)))
-  (hash-table-count (ebox--pub-binding-subscribers binding)))
 
 (defun ebox--pub-binding-dependency-count (binding)
   "Return BINDING's current direct dependency count.  Disposed bindings return
@@ -872,14 +845,8 @@ without exposing Ebox's internal participant object."
   (setq ebox--pub--transaction-final-accept-function function))
 
 (defun ebox--pub--transaction-enter-phase (phase)
-  "Record the completed phase duration and enter PHASE."
-  (let ((now (float-time)))
-    (when (and ebox--pub--transaction-phase ebox--pub--transaction-phase-start)
-      (push (cons ebox--pub--transaction-phase
-                  (- now ebox--pub--transaction-phase-start))
-            ebox--pub--transaction-phase-timings))
-    (setq ebox--pub--transaction-phase phase
-          ebox--pub--transaction-phase-start now)))
+  "Enter transaction PHASE for lifecycle validation."
+  (setq ebox--pub--transaction-phase phase))
 
 (cl-defun ebox--pub--transaction-register-final-marker
     (&key owner-key expected-token expected-version next-values inverse-values
@@ -1182,10 +1149,7 @@ primary condition data."
           (ebox--pub--transaction-contained-failures nil))
       (setq result
             (let ((ebox--pub--transaction-active t)
-                  (ebox--pub--transaction-id (ebox--pub--next-transaction-id))
                   (ebox--pub--transaction-phase 'body)
-                  (ebox--pub--transaction-phase-start (float-time))
-                  (ebox--pub--transaction-phase-timings nil)
                   (ebox--pub--transaction-signal-values
                    (make-hash-table :test #'eq))
                   (ebox--pub--transaction-signals nil)

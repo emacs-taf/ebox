@@ -3633,7 +3633,7 @@ Boxes without publishing RUNTIME's deliberately sparse staging indexes."
       (plist-get transition :result))))
 
 (defun ebox--surface-scroll-to-offset (buffer region-id offset)
-  "Set mounted BUFFER REGION-ID to absolute scroll OFFSET through TP."
+  "Publish absolute scroll OFFSET for mounted BUFFER REGION-ID."
   (let* ((state (ebox--buffer-render-state buffer))
          (table (plist-get state :scroll-state-table))
          (scroll-state (and table (gethash region-id table)))
@@ -4438,7 +4438,7 @@ cannot be changed through the unpublished batch root."
                 :deferred deferred))))))
 
 (defun ebox--surface-region-scroll-report (context changed-keys)
-  "Return TP-era scroll report fields for CONTEXT and CHANGED-KEYS."
+  "Return publication scroll report fields for CONTEXT and CHANGED-KEYS."
   (when-let* ((node (plist-get context :node)))
     (let* ((count (length (plist-get context :states)))
            (paint-p
@@ -4918,7 +4918,7 @@ Examples: (ebox-region-update \"status\" :content \"Ready\") (ebox-region-update
   "Render canonical INPUT into BUFFER-OR-NAME and return the buffer.
 INPUT atomically carries one typed Text/Box root and its source generation.
 OPTIONS accepts only `:observer'.  Its function receives the buffer and flat
-TP/Ebox reports after accepted initial publication and later commits."
+Ebox publication and render reports after accepted initial and later commits."
   (declare (indent 1))
   (ebox--render-to-buffer-internal buffer-or-name input options))
 

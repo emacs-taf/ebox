@@ -35,8 +35,6 @@
 (define-error 'ebox--pub-capability-error "Ebox mount capability violation"
   'ebox--pub-surface-error)
 (define-error 'ebox--pub-stale-mount "Stale Ebox mount" 'ebox--pub-surface-error)
-(define-error 'ebox--pub-property-conflict "Ebox property ownership conflict"
-  'ebox--pub-surface-error)
 (define-error 'ebox--pub-dead-surface "Dead Ebox surface" 'ebox--pub-surface-error)
 (define-error 'ebox--pub-invalid-range-anchor "Invalid Ebox range anchor"
   'ebox--pub-surface-error)
@@ -90,7 +88,7 @@ producer result to the active prepare transaction."
                (:conc-name ebox--pub--surface-))
   "One live retained tree mounted in a buffer."
   id buffer capability start end options producer producer-binding plan objects
-  mounts index mount-index ledger client-state revision report live stale
+  mounts index mount-index client-state revision report live stale
   observers)
 
 (cl-defstruct (ebox--pub-object
@@ -114,20 +112,16 @@ producer result to the active prepare transaction."
   "Return numeric POSITION for a marker or coordinate mount endpoint."
   (if (markerp position) (marker-position position) position))
 
-(cl-defstruct (ebox--pub--property-ledger (:constructor ebox--pub--make-property-ledger))
-  start end property baseline-present baseline-value published-present
-  published-value anchors)
-
 (cl-defstruct (ebox--pub--prepared-surface (:constructor ebox--pub--make-prepared-surface))
-  surface context plan rendered mount-specs ledger-specs property-operations
+  surface context plan rendered mount-specs
   objects client-state producer initial created removed moved reconciled
   scope-objects scope-patches scope-fallback live-mounts live-mount-index
-  live-ledger report retained-content-p commit-batch
+  report retained-content-p commit-batch
   retained-mount-state-p mount-coordinate-updates mount-coordinate-undo
   baseline-output expected-output)
 
 (cl-defstruct (ebox--pub--surface-snapshot (:constructor ebox--pub--make-surface-snapshot))
-  plan objects mounts index mount-index ledger client-state producer revision
+  plan objects mounts index mount-index client-state producer revision
   report live stale)
 
 (defvar ebox--pub--surface-id-counter 0)
@@ -767,8 +761,6 @@ transfers candidate-local property values through the render pass."
   (let ((declared (ebox--pub-surface-plan-capability plan)))
     (when (and declared (not (eq declared capability)))
       (signal 'ebox--pub-capability-error (list declared capability)))
-    (when (and nil (ebox--pub-surface-plan-text plan))
-      (signal 'ebox--pub-capability-error (list :properties-text)))
     (dolist (child (ebox--pub-surface-plan-children plan))
       (ebox--pub--validate-plan-capability child capability))))
 
@@ -1651,7 +1643,6 @@ mount and INITIAL is non-nil for first publication."
                   (ebox--pub--validate-cross-surface-ranges surface
                                                             mount-specs
                                                             rendered))
-                 (property-result nil)
                  (scope-analysis
                   (when scope-objects
                     (ebox--pub--prepare-content-scope surface rendered
@@ -1666,12 +1657,6 @@ mount and INITIAL is non-nil for first publication."
                                                       rendered
                                                       :mount-specs
                                                       mount-specs
-                                                      :ledger-specs
-                                                      (car
-                                                       property-result)
-                                                      :property-operations
-                                                      (cdr
-                                                       property-result)
                                                       :objects objects
                                                       :client-state
                                                       client-state
@@ -1955,7 +1940,7 @@ Return the actual (TEXT-OPERATIONS . PROPERTY-OPERATIONS) counts."
                              (ebox-text--copy-property-value options)
                              :objects (make-hash-table :test #'equal)
                              :mounts nil :index nil :mount-index
-                             (make-hash-table :test #'eq) :ledger nil
+                             (make-hash-table :test #'eq)
                              :revision 0 :live nil :stale nil
                              :observers
                              (ebox--pub--normalize-surface-observers
@@ -2559,24 +2544,6 @@ SCOPED is non-nil, inspect only RANGES, including an empty set."
         :tags (plist-get spec :tags) :capability 'content))
      (ebox--pub--prepared-surface-mount-specs prepared))))
 
-(defun ebox--pub--make-live-ledger (prepared)
-  "Create marker-backed property ledger entries for PREPARED."
-  (let ((buffer (ebox--pub--surface-buffer (ebox--pub--prepared-surface-surface prepared))))
-    (mapcar
-     (lambda (spec)
-       (ebox--pub--make-property-ledger
-        :start (with-current-buffer buffer
-                 (copy-marker (plist-get spec :start) nil))
-        :end (with-current-buffer buffer
-               (copy-marker (plist-get spec :end) t))
-        :property (plist-get spec :property)
-        :baseline-present (plist-get spec :baseline-present)
-        :baseline-value (plist-get spec :baseline-value)
-        :published-present (plist-get spec :published-present)
-        :published-value (plist-get spec :published-value)
-        :anchors (plist-get spec :anchors)))
-     (ebox--pub--prepared-surface-ledger-specs prepared))))
-
 (defun ebox--pub--index-mounts-by-object (mounts)
   "Return an object-keyed index of marker-backed MOUNTS."
   (let ((index (make-hash-table :test #'eq)))
@@ -2592,8 +2559,7 @@ SCOPED is non-nil, inspect only RANGES, including an empty set."
   (let ((mounts (ebox--pub--make-content-mounts prepared)))
     (setf (ebox--pub--prepared-surface-live-mounts prepared) mounts
           (ebox--pub--prepared-surface-live-mount-index prepared)
-          (ebox--pub--index-mounts-by-object mounts)
-          (ebox--pub--prepared-surface-live-ledger prepared) nil)
+          (ebox--pub--index-mounts-by-object mounts))
     mounts))
 
 (defun ebox--pub--retain-candidate-mount-state (prepared)
@@ -2618,9 +2584,7 @@ SCOPED is non-nil, inspect only RANGES, including an empty set."
           undo
           (ebox--pub--prepared-surface-live-mounts prepared) mounts
           (ebox--pub--prepared-surface-live-mount-index prepared)
-          (ebox--pub--surface-mount-index surface)
-          (ebox--pub--prepared-surface-live-ledger prepared)
-          (ebox--pub--surface-ledger surface))
+          (ebox--pub--surface-mount-index surface))
     mounts))
 
 (defun ebox--pub--restore-retained-mount-state (prepared)
@@ -2644,7 +2608,6 @@ SCOPED is non-nil, inspect only RANGES, including an empty set."
    :plan (ebox--pub--surface-plan surface) :objects (ebox--pub--surface-objects surface)
    :mounts (ebox--pub--surface-mounts surface) :index (ebox--pub--surface-index surface)
    :mount-index (ebox--pub--surface-mount-index surface)
-   :ledger (ebox--pub--surface-ledger surface)
    :client-state (ebox--pub--surface-client-state surface)
    :producer (ebox--pub--surface-producer surface)
    :revision (ebox--pub--surface-revision surface) :report (ebox--pub--surface-report surface)
@@ -2702,7 +2665,7 @@ SCOPED is non-nil, inspect only RANGES, including an empty set."
           :touched-characters touched :full-root
           (or (null scoped) fallback) :scope-count (length scoped)
           :scope-range-count (and scoped (length patches))
-          :scope-fallback fallback :property-conflicts nil
+          :scope-fallback fallback
           :rolled-back nil :commit-batch
           (and (ebox--pub--prepared-surface-commit-batch prepared) t)
           :retained-mount-state
@@ -2753,8 +2716,7 @@ operations."
   "Publish PREPARED retained content in one full-surface text operation.  The
 candidate proof guarantees that the retained surface scope is exactly the
 surface range.  RENDERED already carries its final text properties, so a
-delete/insert preserves the authoritative property runs without constructing
-the generic property-operation ledger."
+delete/insert preserves the authoritative property runs."
   (let* ((surface (ebox--pub--prepared-surface-surface prepared))
          (buffer (ebox--pub--surface-buffer surface))
          (rendered (ebox--pub--prepared-surface-rendered prepared))
@@ -2847,7 +2809,6 @@ the generic property-operation ledger."
   "Promote PREPARED side state using operation COUNTS."
   (let* ((surface (ebox--pub--prepared-surface-surface prepared))
          (mounts (ebox--pub--prepared-surface-live-mounts prepared))
-         (ledger (ebox--pub--prepared-surface-live-ledger prepared))
          (report (ebox--pub--surface-report-value prepared (car counts) (cdr counts))))
     (ebox--pub--promote-prepared-objects prepared)
     (setf (ebox--pub--surface-plan surface) (ebox--pub--prepared-surface-plan prepared)
@@ -2860,7 +2821,6 @@ the generic property-operation ledger."
           (ebox--pub--surface-index surface) mounts
           (ebox--pub--surface-mount-index surface)
           (ebox--pub--prepared-surface-live-mount-index prepared)
-          (ebox--pub--surface-ledger surface) ledger
           (ebox--pub--surface-client-state surface)
           (ebox--pub--prepared-surface-client-state prepared)
           (ebox--pub--surface-producer surface) (ebox--pub--prepared-surface-producer prepared)
@@ -3056,12 +3016,6 @@ non-nil, keep snapshot markers for rollback."
        (ebox--pub--surface-mount-start mount))
       (ebox--pub--dispose-marker (ebox--pub--surface-mount-end mount)))))
 
-(defun ebox--pub--dispose-ledger (ledger)
-  "Detach interval markers owned by property LEDGER entries."
-  (dolist (entry ledger)
-    (ebox--pub--dispose-marker (ebox--pub--property-ledger-start entry))
-    (ebox--pub--dispose-marker (ebox--pub--property-ledger-end entry))))
-
 (defun ebox--pub--unregister-surface (surface)
   "Remove SURFACE from weak and buffer-local registries."
   (remhash (ebox--pub--surface-id surface) ebox--pub--surfaces)
@@ -3079,7 +3033,6 @@ non-nil, keep snapshot markers for rollback."
     (ebox--pub--restore-retained-mount-state prepared)
     (ebox--pub--dispose-content-mounts
      (ebox--pub--prepared-surface-live-mounts prepared))
-    (ebox--pub--dispose-ledger (ebox--pub--prepared-surface-live-ledger prepared))
     (if (not (buffer-live-p (ebox--pub--surface-buffer surface)))
         (progn
           (when (ebox--pub--surface-snapshot-objects snapshot)
@@ -3096,9 +3049,7 @@ non-nil, keep snapshot markers for rollback."
                 (ebox--pub--surface-index surface)
                 (ebox--pub--surface-snapshot-index snapshot)
             (ebox--pub--surface-mount-index surface)
-            (ebox--pub--surface-snapshot-mount-index snapshot)
-            (ebox--pub--surface-ledger surface)
-            (ebox--pub--surface-snapshot-ledger snapshot)))
+            (ebox--pub--surface-snapshot-mount-index snapshot)))
       (when (and (ebox--pub--surface-live surface)
                  (not (ebox--pub--surface-snapshot-live snapshot)))
         (ebox--pub--unregister-surface surface))
@@ -3117,7 +3068,6 @@ non-nil, keep snapshot markers for rollback."
             (ebox--pub--surface-index surface) (ebox--pub--surface-snapshot-index snapshot)
             (ebox--pub--surface-mount-index surface)
             (ebox--pub--surface-snapshot-mount-index snapshot)
-            (ebox--pub--surface-ledger surface) (ebox--pub--surface-snapshot-ledger snapshot)
             (ebox--pub--surface-client-state surface)
             (ebox--pub--surface-snapshot-client-state snapshot)
             (ebox--pub--surface-producer surface)
@@ -3149,19 +3099,6 @@ non-nil, keep snapshot markers for rollback."
                   (ebox--pub--surface-snapshot
                    (ebox--pub--prepared-surface-surface prepared))))
           prepared-list))
-
-(defun ebox--pub--shadow-apply-commit-batch-to-string (string batch)
-  "Return STRING with BATCH patches applied without touching a buffer."
-  (let ((patches (ebox--pub-commit-batch-patches batch)))
-    (if (null patches)
-        (copy-sequence string)
-      (let ((cursor 0) pieces)
-        (dolist (patch patches)
-          (push (substring string cursor (plist-get patch :old-start)) pieces)
-          (push (plist-get patch :replacement) pieces)
-          (setq cursor (plist-get patch :old-end)))
-        (push (substring string cursor) pieces)
-        (apply #'concat (nreverse pieces))))))
 
 (cl-defstruct (ebox--pub--shadow-batch-output
                (:constructor ebox--pub--make-shadow-batch-output))
@@ -3659,8 +3596,8 @@ complete text and properties still require boundary validation."
       (ebox--pub--discard-context context)
       (unless success (setq rendered nil)))))
 
-(defun ebox--pub--unmount-journals (surface _operations)
-  "Capture property rollback journals for SURFACE and OPERATIONS."
+(defun ebox--pub--unmount-journals (surface)
+  "Capture SURFACE's text properties for unmount rollback."
   (let
       ((entries
         (pcase-let
@@ -3674,8 +3611,8 @@ complete text and properties still require boundary validation."
                  (buffer-substring start end)))))
      (ebox--pub--merge-buffer-intervals entries))))
 
-(defun ebox--pub--publish-unmount (surface _operations)
-  "Remove SURFACE content or apply property restoration OPERATIONS."
+(defun ebox--pub--publish-unmount (surface)
+  "Remove SURFACE content."
   (let
       ((buffer (ebox--pub--surface-buffer surface))
        (ebox--pub--surface-publishing t))
@@ -3703,7 +3640,6 @@ complete text and properties still require boundary validation."
                (ebox--pub--surface-object-disposed object) t))
        (ebox--pub--surface-objects surface)))
     (ebox--pub--dispose-content-mounts (ebox--pub--surface-mounts surface))
-    (ebox--pub--dispose-ledger (ebox--pub--surface-ledger surface))
     (ebox--pub--dispose-marker (ebox--pub--surface-start surface))
     (ebox--pub--dispose-marker (ebox--pub--surface-end surface))
     (setf (ebox--pub--surface-live surface) nil
@@ -3711,23 +3647,17 @@ complete text and properties still require boundary validation."
           (ebox--pub--surface-objects surface) (make-hash-table :test #'equal)
           (ebox--pub--surface-mounts surface) nil (ebox--pub--surface-index surface) nil
           (ebox--pub--surface-mount-index surface) (make-hash-table :test #'eq)
-          (ebox--pub--surface-ledger surface) nil
           (ebox--pub--surface-client-state surface) nil
           (ebox--pub--surface-observers surface) nil)))
 
 (defun ebox--pub-surface-unmount (surface)
-  "Unmount SURFACE and return a generic report.  Properties-only mounts restore
-their baseline only when Ebox's last value still owns the property;
-conflicting host values are preserved and reported."
+  "Remove SURFACE's content and runtime state, returning its publication report."
   (ebox--pub--validate-live-surface surface)
   (when ebox--pub--transaction-active
     (signal 'ebox--pub-surface-error
             (list :unmount-during-transaction)))
   (let*
-      ((property-result (progn (cons nil nil)))
-       (operations (car property-result))
-       (conflicts (cdr property-result))
-       (journals (ebox--pub--unmount-journals surface operations))
+      ((journals (ebox--pub--unmount-journals surface))
        (views
         (ebox--pub--capture-view-state
          (list (ebox--pub--surface-buffer surface))))
@@ -3737,7 +3667,7 @@ conflicting host values are preserved and reported."
        success)
     (unwind-protect
         (progn
-          (ebox--pub--publish-unmount surface operations)
+          (ebox--pub--publish-unmount surface)
           (accept-change-group group) (setq success t))
       (unless success
         (ebox--pub--cancel-change-group-safely group)
@@ -3750,8 +3680,7 @@ conflicting host values are preserved and reported."
                 :surface-id (ebox--pub--surface-id surface)
                 :old-revision (ebox--pub--surface-revision surface)
                 :new-revision nil :text-operations 1
-                :property-operations (length operations)
-                :property-conflicts conflicts :unmounted t)))
+                :property-operations 0 :unmounted t)))
       (ebox--pub--teardown-surface surface nil) report)))
 
 (defun ebox--pub-surface-report (surface)

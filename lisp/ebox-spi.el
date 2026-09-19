@@ -263,7 +263,7 @@ Return the same completed legacy report object observed by FRAMEWORK-STAGE."
   (ebox-commit buffer-or-name input framework-stage framework-rollback))
 
 (defun ebox-framework-spi-initial-observation-reports (report)
-  "Return TP/Ebox provider snapshots captured by completed initial REPORT.
+  "Return publication/render snapshots captured by completed initial REPORT.
 The reports are defensive observational snapshots; they expose no publication
 or promotion capability."
   (unless (and (proper-list-p report)
