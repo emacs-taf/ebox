@@ -528,20 +528,25 @@ When REGION is given, require its producer in the confirmed collection."
                previous))
     (plist-put state :native-scroll-producers installed)))
 
-(defun ebox-native-commit--runtime-types-supported-p (state)
-  "Return non-nil when STATE contains only executable native node types."
-  (let ((nodes (plist-get state :node-table))
-        (supported t))
+(defun ebox-native-commit--runtime-type-rejection (state)
+  "Return the first unsupported node fact in STATE, or nil."
+  (let ((nodes (plist-get state :node-table)) rejection)
     (when (ebox-runtime-index-like-p nodes)
       (ebox-runtime-index-map
-       (lambda (_node-id node)
-         (unless (and (memq (plist-get node :ebox-type)
+       (lambda (node-id node)
+         (unless (or rejection (and (memq (plist-get node :ebox-type)
                             '(box concat stack flex))
                       (not (ebox-layer-host-p node))
-                      (not (ebox-layer-positioned-p node)))
-           (setq supported nil)))
+                      (not (ebox-layer-positioned-p node))))
+           (setq rejection (list :reason 'unsupported-node :node-id node-id
+                                 :type (plist-get node :ebox-type)
+                                 :position (plist-get node :position)))))
        nodes))
-    supported))
+    rejection))
+
+(defun ebox-native-commit--runtime-types-supported-p (state)
+  "Return non-nil when STATE contains only executable native node types."
+  (null (ebox-native-commit--runtime-type-rejection state)))
 
 (defun ebox-native-commit--install-region-boxes (state)
   "Install STATE's already indexed region boxes without walking its tree."
@@ -789,61 +794,69 @@ while the publication transaction can still roll back."
 
 (defun ebox-native-commit-render (state node)
   "Return NODE's native rendered string after committing effects into STATE.
-Return nil without mutating STATE when the native capability proof is absent.
+Return nil with a bounded diagnostic when the native capability proof is absent.
 Once native execution begins, failure downgrades STATE to an ordinary
 projection so the caller may publish its existing Elisp fallback truthfully."
   (when (and (require 'ebox-native-reflow nil t)
              (ebox-native-reflow-layout-ready-p)
-             (eq (plist-get state :projection-kind) 'native-frame)
-             (ebox-native-commit--runtime-types-supported-p state)
-             (ebox-native-commit--region-index-safe-p state))
-    ;; Scroll tables own the accepted offsets even when the previous window
-    ;; publication reused an ancestor's source tree.  Feed that same candidate
-    ;; context into native compilation, including independently scrolled peers.
-    (maphash
-     (lambda (region scroll)
-       (when (ebox-native-commit--region-box state region)
-         (ebox-native-commit--normalize-scroll-offset
-          state region (or (plist-get scroll :scroll-offset) 0))))
-     ebox--scroll-global-state)
-    (setq node (plist-get state :root-node))
-    (when-let* ((frame-spec (ebox-native-commit--frame-spec state node)))
-      (when (plist-get state :native-scroll-offset-dirty)
-        (dolist (node-id (plist-get state :native-scroll-offset-dirty))
-          (plist-put state :native-touched-node-ids
-                     (cons node-id (remove node-id (plist-get state :native-touched-node-ids))))
-          (plist-put state :native-local-dirty-entries
-                     (cons (list :node-id node-id :dirty-kind 'geometry
-                                 :changed-keys '(:scroll-offset))
-                           (plist-get state :native-local-dirty-entries))))
-        (cl-remf state :native-scroll-offset-dirty))
-      (condition-case err
-          (let* ((frame (ebox-native-commit--retained-frame
-                         state node frame-spec))
-                  (effects (plist-get frame :effect-tape))
-                  (rendered (plist-get frame :rendered))
-                  (producers (plist-get effects :scroll-producers))
-                  (fragment-template
-                   (and (or (not (plist-get effects :scroll-window-p)) (hash-table-p producers))
-                       (plist-get effects :fragment-span-template))))
-            (if (and (stringp rendered) (vectorp fragment-template))
-                (progn
-                  (ebox-native-commit--install-region-boxes state)
-                  (when (hash-table-p producers)
-                    (ebox-native-commit--install-scroll-producers state producers))
-                  (plist-put state :render-owned-text-values
-                             (make-hash-table :test #'eq))
-                  (plist-put state :native-render-output rendered)
-                  (plist-put state :native-render-frame frame)
-                  (plist-put state :native-render-fragment-template
-                             fragment-template)
-                  (plist-put state :native-render-p t)
-                  rendered)
-              (ebox-native-commit--downgrade-candidate
-               state "Native rendering returned an incomplete frame")))
-        (error
-         (ebox-native-commit--downgrade-candidate
-          state (error-message-string err)))))))
+             (eq (plist-get state :projection-kind) 'native-frame))
+    (let ((rejection
+           (or (ebox-native-commit--runtime-type-rejection state)
+               (unless (ebox-native-commit--region-index-safe-p state)
+                 '(:reason region-index))
+               (unless (ebox-native-commit--frame-spec state node)
+                 (list :reason 'viewport-context
+                       :width (plist-get state :viewport-width)
+                       :height (plist-get state :viewport-height))))))
+      (if rejection
+          (progn (plist-put state :native-render-declined rejection) nil)
+        ;; Scroll tables own the accepted offsets even when the previous window
+        ;; publication reused an ancestor's source tree.  Feed that same candidate
+        ;; context into native compilation, including independently scrolled peers.
+        (maphash
+         (lambda (region scroll)
+           (when (ebox-native-commit--region-box state region)
+             (ebox-native-commit--normalize-scroll-offset
+              state region (or (plist-get scroll :scroll-offset) 0))))
+         ebox--scroll-global-state)
+        (setq node (plist-get state :root-node))
+        (when-let* ((frame-spec (ebox-native-commit--frame-spec state node)))
+          (when (plist-get state :native-scroll-offset-dirty)
+            (dolist (node-id (plist-get state :native-scroll-offset-dirty))
+              (plist-put state :native-touched-node-ids
+                         (cons node-id (remove node-id (plist-get state :native-touched-node-ids))))
+              (plist-put state :native-local-dirty-entries
+                         (cons (list :node-id node-id :dirty-kind 'geometry
+                                     :changed-keys '(:scroll-offset))
+                               (plist-get state :native-local-dirty-entries))))
+            (cl-remf state :native-scroll-offset-dirty))
+          (condition-case err
+              (let* ((frame (ebox-native-commit--retained-frame
+                             state node frame-spec))
+                     (effects (plist-get frame :effect-tape))
+                     (rendered (plist-get frame :rendered))
+                     (producers (plist-get effects :scroll-producers))
+                     (fragment-template
+                      (and (or (not (plist-get effects :scroll-window-p)) (hash-table-p producers))
+                           (plist-get effects :fragment-span-template))))
+                (if (and (stringp rendered) (vectorp fragment-template))
+                    (progn
+                      (ebox-native-commit--install-region-boxes state)
+                      (when (hash-table-p producers)
+                        (ebox-native-commit--install-scroll-producers state producers))
+                      (plist-put state :render-owned-text-values
+                                 (make-hash-table :test #'eq))
+                      (plist-put state :native-render-output rendered)
+                      (plist-put state :native-render-frame frame)
+                      (plist-put state :native-render-fragment-template
+                                 fragment-template)
+                      (plist-put state :native-render-p t)
+                      rendered)
+                  (ebox-native-commit--downgrade-candidate
+                   state "Native rendering returned an incomplete frame")))
+            (error
+             (ebox-native-commit--downgrade-candidate
+              state (error-message-string err)))))))))
 
 (provide 'ebox-native-commit)
 ;;; ebox-native-commit.el ends here

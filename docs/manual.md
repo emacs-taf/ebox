@@ -688,6 +688,12 @@ their sum equals the observed Ebox duration. Transaction includes the remaining
 commit/Ebox publication work and overlaps Ebox publication's independent report. The workspace runner consumes
 these reports in its trace pass; CPU and allocation profiling run separately.
 
+`:native-declined-reason` explains an unavailable native input capability before
+execution, such as missing viewport dimensions or positioned nodes.
+`:native-fallback-reason` describes an attempted native execution that could
+not produce a supported result. Both retain normal Elisp rendering; a loaded
+native module alone does not establish that an interaction used it.
+
 The optional
 `:projection-rejections` field records local attempts as
 `(:projection KIND :reasons (REASON ...))`. It currently covers mixed local

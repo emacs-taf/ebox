@@ -9,6 +9,26 @@
 (require 'ert)
 (require 'ebox)
 
+(ert-deftest ebox-display-native-decline-reports-missing-viewport ()
+  "An unbounded mount renders normally and explains absent native geometry."
+  (let ((ebox-viewport-width nil) (ebox-viewport-height nil) reports)
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer) (ebox-build '(box :width (ch 20) "Visible fallback"))
+       (list :observer (lambda (_buffer report)
+                         (when (eq (plist-get report :provider) 'ebox)
+                           (push report reports)))))
+      (should (string-match-p "Visible fallback" (buffer-string)))
+      (should reports)
+      (when (ebox-native-reflow-layout-ready-p)
+        (should (eq (plist-get (plist-get (car reports) :native-declined-reason) :reason)
+                    'viewport-context))
+        (should-not (plist-get (car reports) :native-fallback-reason)))
+      (ebox-rerender-buffer-with-context (current-buffer) 80 20)
+      (should (string-match-p "Visible fallback" (buffer-string)))
+      (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                            :native-declined-reason)))))
+
 (ert-deftest ebox-display-border-metrics-restore-on-unmount ()
   "Mounted borders keep the line grid without leaking redisplay settings."
   (let ((default-margin (default-value 'overline-margin)))

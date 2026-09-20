@@ -1089,6 +1089,7 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
                (:runtime-revision . ,(plist-get state :runtime-revision))
                (:projection-kind . ,(plist-get state :projection-kind))
                (:native-frame-kind . ,(plist-get state :native-frame-kind))
+               (:native-declined-reason . ,(plist-get state :native-render-declined))
                (:surface-revision . ,(ebox--pub-surface-revision surface))
                (:publication-scope . ebox--pub-surface)
                (:planned-publication-scope . ,planned-publication-scope)
@@ -1146,6 +1147,7 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
                        native-fallback-reason))
       (cl-remf state :native-render-fallback)
       (cl-remf state :native-session-setup-failure))
+    (cl-remf state :native-render-declined)
     (unless (plist-member report :strategy)
       (setq report
             (plist-put report :strategy

@@ -137,6 +137,10 @@
 ;; proof boundaries, not exhaustive causes or CPU costs. Another local route may
 ;; succeed; :projection-kind describes the actual published route. See the manual
 ;; for reason meanings and the update-effect evaluator for aggregate diagnostics.
+;; :native-declined-reason records an unavailable input capability before native
+;; execution (for example, missing viewport dimensions or a positioned node).
+;; :native-fallback-reason instead records a failed native execution attempt.
+;; Both preserve the ordinary renderer; neither field certifies native coverage.
 ;; A metadata-update strategy means selector facts were published after proving
 ;; that the complete computed style closure and topology remain unchanged. Ebox
 ;; submits an exact-coordinate empty Ebox publication batch, so the mounted object set and

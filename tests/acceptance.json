@@ -1104,6 +1104,11 @@
       "name": "ebox-publication-rejects-participant-text-corruption",
       "file": "tests/ebox-surface-tests.el",
       "purpose": "Framework text-property writes outside the prepared result reject publication and restore text, revision and retained addresses."
+    },
+    {
+      "name": "ebox-display-native-decline-reports-missing-viewport",
+      "file": "tests/ebox-display-tests.el",
+      "purpose": "An unbounded hidden mount renders correctly and reports why native geometry is unavailable; a later viewport update does not retain the stale diagnostic."
     }
   ]
 }

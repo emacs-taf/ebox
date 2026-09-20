@@ -575,6 +575,10 @@ plan、layout、projection、transaction 给出独占毫秒数。嵌套阶段只
 Ebox 的观测总时长；transaction 包含其余提交／Ebox publication 工作，与 Ebox publication 的单独报告重叠。
 工作区通用工具在 trace pass 消费这些字段，CPU 与分配采样分别执行。
 
+`:native-declined-reason` 说明原生执行前缺少的输入能力，例如视口尺寸未确定或存在
+定位节点；`:native-fallback-reason` 说明原生执行尝试未能生成受支持结果的原因。
+两者均保留正常的 Elisp 渲染。模块已经加载，不代表某次交互实际使用了原生布局。
+
 可选字段 `:projection-rejections` 以
 `(:projection KIND :reasons (REASON ...))` 记录局部尝试。目前覆盖混合局部规划，
 以及已选局部计划在生成输出时退回普通投影的情况：
