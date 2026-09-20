@@ -1106,6 +1106,11 @@
       "purpose": "Framework text-property writes outside the prepared result reject publication and restore text, revision and retained addresses."
     },
     {
+      "name": "ebox-publication-rollback-restores-unaffected-output",
+      "file": "tests/ebox-surface-tests.el",
+      "purpose": "A framework stage that mutates text and properties outside the prepared change rejects atomically and restores the complete surface, revision and retained handles."
+    },
+    {
       "name": "ebox-display-native-decline-reports-missing-viewport",
       "file": "tests/ebox-display-tests.el",
       "purpose": "An unbounded hidden mount renders correctly and reports why native geometry is unavailable; a later viewport update does not retain the stale diagnostic."

@@ -97,5 +97,53 @@
         (ebox-region-update handle :content "Recovered")
         (should (string-match-p "Recovered" (buffer-string)))))))
 
+(ert-deftest ebox-publication-rollback-restores-unaffected-output ()
+  "A publication failure restores text and properties outside its change."
+  (let* ((buffer (generate-new-buffer " *ebox-scoped-publication-rollback*"))
+         (scene
+          (lambda (target peer)
+            (ebox-build
+             `(row :id root :width (px 200)
+                   (box :id target :width (px 100) ,target)
+                   (box :id peer :width (px 100) ,peer)))))
+         (old (funcall scene "Before" "Peer"))
+         (next (funcall scene "After" "Peer"))
+         restored)
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer buffer old)
+          (let ((before (with-current-buffer buffer (buffer-string)))
+                (revision (ebox-surface-buffer-revision buffer))
+                (target (ebox-region-resolve buffer "target"))
+                (peer (ebox-region-resolve buffer "peer")))
+            (should-error
+             (ebox-framework-spi-update
+              buffer next
+              (lambda (_report)
+                (with-current-buffer buffer
+                  (let ((inhibit-read-only t)
+                        (buffer-undo-list t))
+                    (goto-char (point-min))
+                    (search-forward "Peer")
+                    (let ((start (- (point) 4)))
+                      (delete-region start (point))
+                      (goto-char start)
+                      (insert "CORRUPT")
+                      (put-text-property start (+ start 7) 'face 'error))))
+                (error "Reject scoped publication"))
+              (lambda (_report) (setq restored t))))
+            (should restored)
+            (should (equal-including-properties
+                     before (with-current-buffer buffer (buffer-string))))
+            (should (= revision (ebox-surface-buffer-revision buffer)))
+            (ebox-region-update target :content "Recovered")
+            (ebox-region-update peer :content "Peer2")
+            (should (string-match-p "Recovered" (with-current-buffer buffer
+                                                    (buffer-string))))
+            (should (string-match-p "Peer2" (with-current-buffer buffer
+                                               (buffer-string))))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (provide 'ebox-surface-tests)
 ;;; ebox-surface-tests.el ends here

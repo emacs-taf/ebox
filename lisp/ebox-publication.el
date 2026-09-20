@@ -2249,38 +2249,67 @@ mount record twice.  Queue spines are private; no mount IDs are allocated."
   (let* ((surface (ebox--pub--prepared-surface-surface prepared))
          (live (ebox--pub--surface-mounts surface)))
     (if (ebox--pub--prepared-surface-retained-mount-state-p prepared)
-        (dolist (mount live) (ebox--pub--ensure-surface-mount-id mount))
-      (let ((capability (ebox--pub--surface-capability surface))
-            (live-by-object (ebox--pub--surface-mount-index surface))
-            (queues-by-object (make-hash-table :test #'eq))
-            (seen (make-hash-table :test #'eq)))
-        (setf
-         (ebox--pub--prepared-surface-mount-specs prepared)
-         (mapcar
-          (lambda (spec)
-            (let* ((object (plist-get spec :object))
-                   (anchors
-                    (let ((cached (gethash object queues-by-object 'absent)))
-                      (if (not (eq cached 'absent)) cached
-                        ;; Cache empty queues too: later unmatched specs must
-                        ;; not rebuild the same object's live bucket.
-                        (puthash object
-                                 (ebox--pub--mount-match-queues
-                                  (gethash object live-by-object)
-                                  object capability seen)
-                                 queues-by-object))))
-                   (by-tags (cdr (assq (plist-get spec :anchor) anchors)))
-                   (tags (plist-get spec :tags))
-                   (entry (assoc tags by-tags #'equal))
-                   (match (cadr entry)))
-              (when match (setcdr entry (cddr entry)))
-              (plist-put
-               spec :mount-id
-               (if match
-                   (ebox--pub--ensure-surface-mount-id match)
-                 (cl-incf ebox--pub--mount-id-counter)))))
-          (ebox--pub--prepared-surface-mount-specs prepared)))))
-    prepared))
+        (progn
+          (dolist (mount live) (ebox--pub--ensure-surface-mount-id mount))
+          prepared)
+      (let* ((specs (ebox--pub--prepared-surface-mount-specs prepared))
+             (capability (ebox--pub--surface-capability surface))
+             ;; The ordered proof is deliberately all-or-nothing.  It is
+             ;; equivalent to the queue matcher only when every candidate
+             ;; spec has the same object, anchor, and semantically equal tags
+             ;; as its live counterpart.  Any topology or role difference
+             ;; falls through to the duplicate-aware matcher below.
+             (ordered-match-p
+              (and (= (length specs) (length live))
+                   (cl-loop for spec in specs
+                            for mount in live
+                            always
+                            (and (eq (plist-get spec :object)
+                                     (ebox--pub--surface-mount-object mount))
+                                 (eq (plist-get spec :anchor)
+                                     (ebox--pub--surface-mount-anchor mount))
+                                 (equal (plist-get spec :tags)
+                                        (ebox--pub--surface-mount-tags mount))
+                                 (eq capability
+                                     (ebox--pub--surface-mount-capability mount)))))))
+        (if ordered-match-p
+            (progn
+              (cl-loop for spec in specs
+                       for mount in live
+                       do (plist-put
+                           spec :mount-id
+                           (ebox--pub--ensure-surface-mount-id mount)))
+              prepared)
+          (let ((live-by-object (ebox--pub--surface-mount-index surface))
+                (queues-by-object (make-hash-table :test #'eq))
+                (seen (make-hash-table :test #'eq)))
+            (setf
+             (ebox--pub--prepared-surface-mount-specs prepared)
+             (mapcar
+              (lambda (spec)
+                (let* ((object (plist-get spec :object))
+                       (anchors
+                        (let ((cached (gethash object queues-by-object 'absent)))
+                          (if (not (eq cached 'absent)) cached
+                            ;; Cache empty queues too: later unmatched specs must
+                            ;; not rebuild the same object's live bucket.
+                            (puthash object
+                                     (ebox--pub--mount-match-queues
+                                      (gethash object live-by-object)
+                                      object capability seen)
+                                     queues-by-object))))
+                       (by-tags (cdr (assq (plist-get spec :anchor) anchors)))
+                       (tags (plist-get spec :tags))
+                       (entry (assoc tags by-tags #'equal))
+                       (match (cadr entry)))
+                  (when match (setcdr entry (cddr entry)))
+                  (plist-put
+                   spec :mount-id
+                   (if match
+                       (ebox--pub--ensure-surface-mount-id match)
+                     (cl-incf ebox--pub--mount-id-counter)))))
+              specs))
+            prepared))))))
 
 (defun ebox--pub--content-output-equal-p (prepared)
   "Return non-nil when PREPARED already matches its content mount."
