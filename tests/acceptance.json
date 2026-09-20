@@ -913,7 +913,7 @@
     {
       "name": "ebox-native-input-rejects-invalid-entry-and-unaccepted-transactions",
       "file": "tests/ebox-focus-tests.el",
-      "purpose": "Readers cannot run for missing targets or within an unaccepted TP transaction."
+      "purpose": "Readers cannot run for missing targets or within an unaccepted Ebox transaction."
     },
     {
       "name": "ebox-overlapping-replacements-retain-parent-text-and-child-state",

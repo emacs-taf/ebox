@@ -343,7 +343,7 @@
              (nreverse items)))))
 
 (defun ebox-performance-evaluator--pure-static ()
-  "Measure isolated static materialization against a TP-backed reference."
+  "Measure isolated static materialization against Ebox's retained reference."
   (let ((ebox-style-stylesheet (ecss-stylesheet-create))
         (ebox-viewport-width 240)
         (ebox-viewport-height 12))
@@ -362,7 +362,7 @@
              (checks
               (list
                (ebox-performance-evaluator--check
-                "isolated output matches TP-backed reference"
+                "isolated output matches the retained Ebox reference"
                 (equal-including-properties actual expected)
                 (format "characters=%d" (length actual)))
                (ebox-performance-evaluator--assert-timings measurement))))
@@ -521,7 +521,7 @@
                     (format "same-root-object=%S"
                             (eq old-root-object new-root-object)))
                    (ebox-performance-evaluator--check
-                    "viewport update publishes through TP"
+                    "viewport update publishes through Ebox publication"
                     (and (plist-get report :runtime-published)
                          (ebox--pub-surface-live-p surface))
                     (format "strategy=%S" (plist-get report :strategy)))

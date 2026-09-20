@@ -13,9 +13,8 @@ All notable changes to Ebox are documented here.
   installed generation without rebuilding private mount indexes. Complete
   buffer-output checks still reject unexpected callback or hook writes.
 - Retained publication is now owned by Ebox. Update Ebox and ETAF together;
-  the integration uses SPI v3 and `ebox-publication/v1`. TP is no longer a
-  package dependency. Publication reports use `:publication-*` fields and the
-  `ebox-publication` provider; consumers must migrate the former TP fields.
+  the integration uses SPI v3 and `ebox-publication/v1`. Publication reports
+  use `:publication-*` fields and the `ebox-publication` provider.
 - Publication and rollback share the prepared candidate and journal; generic
   target-entry/outcome translation and postcommit shadow graphs are removed.
 

@@ -82,7 +82,7 @@
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest ebox-native-input-rejects-invalid-entry-and-unaccepted-transactions ()
-  "Readers cannot run for missing targets or within an unaccepted TP transaction."
+  "Readers cannot run for missing targets or within an unaccepted Ebox transaction."
   (with-temp-buffer
     (ebox-render-to-buffer (current-buffer) (ebox-focus-test--input '((a "A" (:tab-index 0)))))
     (should-error (ebox-call-with-input 'a nil) :type 'wrong-type-argument)

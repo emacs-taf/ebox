@@ -6,9 +6,9 @@ Ebox 的重要变化记录在这里。
 
 ### 变更
 
-- 发布、文本属性快照与绘制槽由 Ebox 统一维护，不再依赖 TP。Ebox 和 ETAF
-  须一起升级到 SPI v3；发布协议为 `ebox-publication/v1`，报告提供方改为
-  `ebox-publication`，原有 TP 报告字段迁移到 `:publication-*`。
+- 发布、文本属性快照与绘制槽由 Ebox 统一维护。Ebox 和 ETAF 须一起升级到
+  SPI v3；发布协议为 `ebox-publication/v1`，报告提供方为 `ebox-publication`，
+  报告字段使用 `:publication-*`。
 - 原生与 Elisp 输出共用归属映射；节点关系不变的局部更新复用已发布索引，
   减少重复祖先解析和按节点创建的临时哈希表。
 - 候选缓存保留淘汰统计，发布时按代核对私有索引而不重复重建验证集合；仍检查完整
