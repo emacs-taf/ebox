@@ -443,9 +443,6 @@ its `:activate` callback takes no arguments and handles `RET`, `[return]`, `SPC`
 and `[mouse-1]`. On a mounted surface, pressing consumes motion and release,
 with `:active` visible to selectors and styles while held. Release over the same
 retained owner clears the state and activates once; release elsewhere cancels.
-The native tracker polls pending Emacs events at a short bounded interval so a
-queued release is not delayed by a coarse timer; this does not change hold,
-cancel, or target invalidation behavior.
 Rapid double and triple clicks each activate once. Release in the selected
 window focuses the activated owner before its callback, so a panel opened by
 the callback can return to that entry. Events dispatched for other windows
