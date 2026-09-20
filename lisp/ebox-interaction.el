@@ -238,7 +238,10 @@ This function does not install navigation bindings or event propagation."
                       (ebox-interaction--set-active identity buffer)
                       (setq started t)
                       (emit 'start)
-                      (redisplay t)
+                      ;; The release path immediately clears this transient
+                      ;; state; avoid a synchronous redisplay before the first
+                      ;; tracked event. Motion/release handling below still
+                      ;; redisplays the accepted state when needed.
                       (track-mouse
                         (let ((track-mouse 'dragging) done)
                           (while (and (not done) (available))
