@@ -182,8 +182,11 @@ This function does not install navigation bindings or event propagation."
                (<= 0 (cdr xy)) (< (cdr xy) (- (nth 3 edges) (nth 1 edges))))
       (cons (car xy) (cdr xy)))))
 
-(defun ebox-interaction--track-drag (event callback)
-  "Track EVENT's committed owner and deliver gesture phases to CALLBACK."
+(defun ebox-interaction--track-drag (event callback &optional defer-active-p)
+  "Track EVENT's committed owner and deliver gesture phases to CALLBACK.
+When DEFER-ACTIVE-P is non-nil, defer transient active publication until
+the first motion, so a click that releases immediately does not commit
+pressed state. Drag callbacks keep immediate active feedback."
   (when ebox-interaction--drag-active
     (user-error "An Ebox drag is already active"))
   (unless (and (mouse-event-p event) (eq (event-basic-type event) 'mouse-1)
@@ -207,7 +210,7 @@ This function does not install navigation bindings or event propagation."
                (position start) (last-event event) (reason 'input)
                (ebox-interaction--drag-active t)
                (mouse-fine-grained-tracking t)
-               started finished)
+               started finished active-p)
           (cl-labels
               ((available ()
                  (and (window-live-p window) (buffer-live-p buffer)
@@ -235,13 +238,11 @@ This function does not install navigation bindings or event propagation."
             (unwind-protect
                 (condition-case problem
                     (progn
-                      (ebox-interaction--set-active identity buffer)
+                      (unless defer-active-p
+                        (ebox-interaction--set-active identity buffer)
+                        (setq active-p t))
                       (setq started t)
                       (emit 'start)
-                      ;; The release path immediately clears this transient
-                      ;; state; avoid a synchronous redisplay before the first
-                      ;; tracked event. Motion/release handling below still
-                      ;; redisplays the accepted state when needed.
                       (track-mouse
                         (let ((track-mouse 'dragging) done)
                           (while (and (not done) (available))
@@ -254,6 +255,9 @@ This function does not install navigation bindings or event propagation."
                                      (motion (mouse-movement-p next)))
                                 (cond
                                  ((or release motion)
+                                  (when (and defer-active-p motion (not active-p))
+                                    (ebox-interaction--set-active identity buffer)
+                                    (setq active-p t))
                                   (let ((xy (and (available)
                                                  (ebox-interaction--drag-position
                                                   (if release (event-end next) (event-start next)) window))))
@@ -274,7 +278,7 @@ This function does not install navigation bindings or event propagation."
                    (signal (car problem) (cdr problem))))
               (unwind-protect
                   (when (and started (not finished)) (emit 'cancel))
-                (when (and (buffer-live-p buffer)
+                (when (and active-p (buffer-live-p buffer)
                            (eq surface (ebox-surface--live-buffer-surface buffer)))
                   (ebox-interaction--set-active nil buffer))))))))))
 
@@ -317,7 +321,7 @@ This function does not install navigation bindings or event propagation."
                         (command (and map (lookup-key map release-key)))
                         (ebox-interaction--dispatching-activation t)
                         (last-input-event (plist-get gesture :event)))
-                   (when (commandp command) (command-execute command)))))))))))
+                   (when (commandp command) (command-execute command)))))))))) t)
 
 (defun ebox-interaction--navigable-keymap-p (map)
   "Return non-nil when MAP contains a command, including inherited bindings.
