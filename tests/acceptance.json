@@ -251,6 +251,16 @@
       "purpose": "Invalid callbacks and duplicate or shadowed key sequences fail at creation."
     },
     {
+      "name": "ebox-keymap-create-supports-drag-lock-modifier",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A supported modifier creates a native keymap for locked pointer drags."
+    },
+    {
+      "name": "ebox-interaction-hover-content-group-updates-siblings-in-one-transition",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Entering one grouped hover target updates and restores all members together."
+    },
+    {
       "name": "ebox-keymap-create-mouse-uses-event-buffer-without-moving-focus",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Mouse callbacks target the clicked buffer even when another buffer is current."

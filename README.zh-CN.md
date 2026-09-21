@@ -122,9 +122,11 @@ Box 几何统一写成 `(单位 数值)`，支持 `px`、`%`、`vw`、`vh`、`ch
 
 ## 原生交互
 
-Text 与所有 Box form 都接受五种显式节点能力：`:help-echo` 提供字符串或原生帮助
+Text 与所有 Box form 都接受七种显式节点能力：`:help-echo` 提供字符串或原生帮助
 函数，`:pointer` 选择原生鼠标指针形状，`:hover-style` 设置受限的颜色与文本装饰
-绘制，`:hover-content` 在指针进入时替换 Text 内容，`:keymap` 接收原生 Emacs keymap。Box 的帮助、指针和 keymap 范围包含内容、
+绘制，`:hover-content` 在指针进入时替换 Text 内容，`:keymap` 接收原生 Emacs keymap，
+`:drag-lock-modifier` 为主按钮拖拽提供可选的锁定修饰键，`:hover-group` 让相关
+hover-content 在一次增量发布中同时更新。Box 的帮助、指针和 keymap 范围包含内容、
 padding 和 border，不包含该 Box 的 margin 和结构性换行符。悬停在文字与 padding
 间共享声明节点的绘制，不包含物理左右边框。嵌套节点的显式值覆盖外层能力；
 显式 `nil` 清除对应能力。
@@ -134,7 +136,9 @@ padding 和 border，不包含该 Box 的 margin 和结构性换行符。悬停�
 buffer 才会启用本地鼠标移动跟踪；Ebox 不创建 overlay，也不把 hover 放进主按钮拖拽循环。
 使用 `ebox-help-create` 将零参数业务函数适配为原生帮助，并提供悬停 buffer 上下文。
 使用 `ebox-keymap-create` 将普通零参数回调绑定到激活键或自定义按键；鼠标命令会
-自动在被点击窗口的 buffer 中运行。`ebox-region-update` 可以使用当前已挂载 buffer
+自动在被点击窗口的 buffer 中运行。配合 `:drag` 和 `:drag-lock-modifier` 时，初次按下
+修饰键会在释放按钮后继续锁定拖拽；再次按主按钮结束，ESC 取消，状态只属于该挂载目标。
+`ebox-region-update` 可以使用当前已挂载 buffer
 中的语义 ID，或显式 region handle，替换或清除节点能力。原生 keymap 可用于
 独立的 Ebox 交互；可选的 `ebox-next-interaction`、`ebox-previous-interaction` 命令
 在渲染后的 keymap owner 之间移动 point，不添加默认按键绑定。应用状态与命令行为

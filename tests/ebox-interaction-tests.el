@@ -149,9 +149,19 @@
                      (:bindings (("C-m" . ignore) ("RET" . ignore)))
                      (:bindings (("x" . ignore) ("x y" . ignore)))
                      (:bindings (("x y" . ignore) ("x" . ignore)))
+                     (:drag-lock-modifier shift)
+                     (:drag (lambda (_gesture) nil) :drag-lock-modifier invalid)
                      (:activate ignore :bindings (("RET" . ignore)))
                      (:activate ignore :bindings (([mouse-1] . ignore)))))
     (should-error (apply #'ebox-keymap-create options))))
+
+(ert-deftest ebox-keymap-create-supports-drag-lock-modifier ()
+  "A supported modifier creates a native locked-drag keymap."
+  (let ((map (ebox-keymap-create
+              :drag (lambda (_gesture) nil)
+              :drag-lock-modifier 'shift)))
+    (should (keymapp map))
+    (should (commandp (lookup-key map [down-mouse-1])))))
 
 (ert-deftest ebox-keymap-create-mouse-uses-event-buffer-without-moving-focus ()
   "Mouse callbacks target the clicked buffer even when another buffer is current."
@@ -916,6 +926,38 @@ it does not create an overlay or enter the primary-button drag loop."
                          (list 'mouse-movement
                                (list window (point-max) '(50 . 50) 0)))
                 (should (equal "●" (substring-no-properties (buffer-string))))))))
+      (when (buffer-live-p buffer)
+        (ebox-unmount-buffer buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest ebox-interaction-hover-content-group-updates-siblings-in-one-transition ()
+  "Entering one grouped hover target updates and restores all group members."
+  (let ((buffer (generate-new-buffer " *ebox-hover-content-group*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (selected-window)))
+            (ebox-render-to-buffer
+             buffer
+             (ebox-build
+              '(row
+                (text :id "close" :hover-group traffic
+                      :hover-content "×" "⬤")
+                (text :id "min" :hover-group traffic
+                      :hover-content "−" "⬤")
+                (text :id "max" :hover-group traffic
+                      :hover-content "+" "⬤"))))
+            (set-window-buffer window buffer)
+            (with-current-buffer buffer
+              (let ((command (lookup-key ebox-buffer-mode-map [mouse-movement])))
+                (funcall command
+                         (list 'mouse-movement
+                               (list window (point-min) '(1 . 1) 0)))
+                (should (equal "×−+" (substring-no-properties (buffer-string))))
+                (funcall command
+                         (list 'mouse-movement
+                               (list window (point-max) '(50 . 50) 0)))
+                (should (equal "⬤⬤⬤" (substring-no-properties (buffer-string))))))))
       (when (buffer-live-p buffer)
         (ebox-unmount-buffer buffer)
         (kill-buffer buffer)))))

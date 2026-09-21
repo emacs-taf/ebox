@@ -425,7 +425,7 @@ Emacs, the selected fonts, and the window system.
 ### Native node interaction
 
 Text and every Box form accept `:help-echo`, `:pointer`, `:hover-style`,
-`:hover-content`, and `:keymap`, plus node-local `:tab-index` and `:disabled`
+`:hover-content`, `:hover-group`, and `:keymap`, plus node-local `:tab-index` and `:disabled`
 focus inputs. These are explicit node capabilities outside the CSS cascade.
 For example, render a Box with dynamic help, a hand pointer, hover paint, and
 one callback for both mouse and keyboard activation:
@@ -475,6 +475,11 @@ rollback remain authoritative. A node with this capability enables local
 receive motion events. Keep the alternate value on the same line as the base
 value when the control's line height must remain stable. Ebox does not create
 overlays or enter the primary-button drag tracking loop for this capability.
+
+`:hover-group` gives sibling hover-content nodes one scalar group key. Entering
+any member updates every member in one explicit Ebox incremental batch; leaving
+the group restores all members in one batch. When omitted, a node is its own
+group. This is useful for compound controls such as traffic-light buttons.
 
 Box help, pointer, and keymap cover its rendered content, padding, and border,
 excluding that Box's margin and structural newlines; hover follows the rule

@@ -251,8 +251,10 @@
 ;; Source declarations stay behind the source handle; the returned value contains
 ;; provisional concrete node properties. Tagged values require ECSS computation.
 ;; INTERACTIONS is a plist of fixed node capabilities, separate from CSS:
-;; :help-echo, :pointer, :hover-style, :hover-content, :keymap, :tab-index and
-;; :disabled.  :hover-content is an optional alternate one-line Text value
+;; :help-echo, :pointer, :hover-style, :hover-content, :keymap, :tab-index,
+;; :disabled, :drag-lock-modifier and :hover-group.  :drag-lock-modifier is nil or one of
+;; `shift', `control', `meta', `super' and `hyper'; it is consumed by a
+;; `:drag' keymap.  :hover-group groups sibling hover-content updates. :hover-content is an optional alternate one-line Text value
 ;; (or zero-argument function) entered and left through retained content
 ;; updates; only buffers that declare it enable local mouse-motion tracking.
 ;; Tab index is nil or an integer; nonnegative values create navigation stops.
@@ -638,6 +640,10 @@
 ;; This helper does not install navigation bindings or event propagation.
 ;; `:drag' supplies a one-argument callback for a GUI primary-button gesture.
 ;; It owns press/motion/release; with both options, :activate is keyboard-only.
+;; `:drag-lock-modifier' optionally names a modifier (`shift', `control',
+;; `meta', `super' or `hyper'). Holding it for the initial press keeps the
+;; gesture alive after release; the next primary-button press ends it and ESC
+;; cancels it. The option requires `:drag'.
 ;; The callback receives a plist: :phase is start, move, end or cancel;
 ;; :start and :position are (X . Y) pixels in the original window's text area,
 ;; :delta is displacement from the press, :event preserves the native event,

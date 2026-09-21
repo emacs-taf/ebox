@@ -43,12 +43,15 @@
 (declare-function ebox-selector--live-region-handle
                   "ebox-selector" (buffer object &optional logical-id))
 (declare-function ebox-region-update "ebox" (handle &rest props))
+(declare-function ebox-incremental-begin-batch "ebox" (buffer))
+(declare-function ebox-incremental-flush "ebox" (buffer))
 (declare-function ebox--region-update-content-value "ebox-runtime" (box))
 (defvar ebox-region-types)
 (defvar ebox-buffer--decoration-style-map)
 
 (defconst ebox-interaction-properties
-  '(:help-echo :pointer :hover-style :hover-content :keymap :tab-index :disabled)
+  '(:help-echo :pointer :hover-style :hover-content :keymap :tab-index :disabled
+    :drag-lock-modifier :hover-group)
   "Fixed node capabilities accepted outside the Ebox style schema.")
 
 (defconst ebox-interaction--hover-properties
@@ -65,8 +68,11 @@
 (defvar-local ebox-interaction--hover-content-owner nil
   "Host reference whose hover content is currently active, or nil.")
 
-(defvar-local ebox-interaction--hover-content-base nil
-  "Original content saved while `ebox-interaction--hover-content-owner' is active.")
+(defvar-local ebox-interaction--hover-content-group nil
+  "Active hover-content group key, or nil when no group is active.")
+
+(defvar-local ebox-interaction--hover-content-bases nil
+  "Alist of (HOST-REF . CONTENT) saved for the active hover-content group.")
 
 (defvar-local ebox-interaction--hover-content-track-mouse nil
   "Saved local `track-mouse' binding while hover-content tracking is enabled.")
@@ -107,6 +113,13 @@ Pure rendered text keeps release activation without mounted state.
 Nil omits these activation bindings.  `:drag' accepts a one-argument callback
 for start/move/end/cancel gesture plists.  It owns primary-button tracking;
 when both options are supplied, activation remains keyboard-only.
+`:drag-lock-modifier' optionally names `shift', `control', `meta', `super' or
+`hyper'.  Holding it for the initial primary-button press keeps the gesture
+alive after the first release; motion continues to publish `move' until the
+next primary-button press publishes `end'.  ESC cancels the locked gesture.
+`:hover-group' groups sibling `:hover-content' nodes.  Entering one member
+updates every member in one incremental batch; leaving the group restores all
+members together.  Group keys are symbols, strings, numbers or nil.
 `:bindings' is an alist of string key
 descriptions or key vectors paired with zero-argument callbacks.  Explicit
 bindings override the repeated-click, press and drag defaults.
@@ -121,14 +134,22 @@ This function does not install navigation bindings or event propagation."
     (error "Ebox keymap options must be an even plist"))
   (let ((map (make-sparse-keymap)) seen keys)
     (cl-loop for (key _value) on options by #'cddr do
-             (unless (memq key '(:activate :bindings :drag))
+             (unless (memq key '(:activate :bindings :drag :drag-lock-modifier))
                (error "Unknown Ebox keymap option: %S" key))
              (when (memq key seen)
                (error "Repeated Ebox keymap option: %S" key))
              (push key seen))
     (let ((activate (plist-get options :activate))
           (drag (plist-get options :drag))
+          (drag-lock-modifier (plist-get options :drag-lock-modifier))
           (bindings (plist-get options :bindings)))
+      (when (and drag-lock-modifier
+                 (not (memq drag-lock-modifier
+                            '(shift control meta super hyper))))
+        (error "Ebox :drag-lock-modifier must be a supported modifier: %S"
+               drag-lock-modifier))
+      (when (and drag-lock-modifier (not drag))
+        (error "Ebox :drag-lock-modifier requires :drag"))
       (when drag
         (unless (and (functionp drag)
                      (or (autoloadp (indirect-function drag))
@@ -180,7 +201,11 @@ This function does not install navigation bindings or event propagation."
                          ((and drag (memq 'down (event-modifiers event)))
                           (lambda (press)
                             (interactive (list last-input-event))
-                            (ebox-interaction--track-drag press drag)))
+                            (ebox-interaction--track-drag
+                             press drag nil
+                             (and drag-lock-modifier
+                                  (memq drag-lock-modifier
+                                        (event-modifiers press))))))
                          ((and activate (not drag)
                                (memq event '(double-mouse-1 triple-mouse-1)))
                           (lookup-key map [mouse-1]))
@@ -203,11 +228,15 @@ This function does not install navigation bindings or event propagation."
                (<= 0 (cdr xy)) (< (cdr xy) (- (nth 3 edges) (nth 1 edges))))
       (cons (car xy) (cdr xy)))))
 
-(defun ebox-interaction--track-drag (event callback &optional defer-active-p)
+(defun ebox-interaction--track-drag
+    (event callback &optional defer-active-p lock-p)
   "Track EVENT's committed owner and deliver gesture phases to CALLBACK.
 When DEFER-ACTIVE-P is non-nil, defer transient active publication until
 the first motion, so a click that releases immediately does not commit
-pressed state. Drag callbacks keep immediate active feedback."
+pressed state. Drag callbacks keep immediate active feedback. When LOCK-P is
+non-nil, the first release changes the gesture into a pointer lock; motion
+continues until the next primary-button press, which publishes `end'. ESC
+publishes `cancel'."
   (when ebox-interaction--drag-active
     (user-error "An Ebox drag is already active"))
   (unless (and (mouse-event-p event) (eq (event-basic-type event) 'mouse-1)
@@ -231,7 +260,7 @@ pressed state. Drag callbacks keep immediate active feedback."
                (position start) (last-event event) (reason 'input)
                (ebox-interaction--drag-active t)
                (mouse-fine-grained-tracking t)
-               started finished active-p)
+               started finished active-p locked finishing)
           (cl-labels
               ((available ()
                  (and (window-live-p window) (buffer-live-p buffer)
@@ -271,10 +300,26 @@ pressed state. Drag callbacks keep immediate active feedback."
                             ;; removed owner or window even while the mouse rests.
                             (when-let* ((next (read-event nil nil 0.05)))
                               (setq last-event next)
-                              (let* ((release (and (eq (event-basic-type next) button)
-                                                   (not (memq 'down (event-modifiers next)))))
+                              (let* ((modifiers (event-modifiers next))
+                                     (primary-down
+                                      (and (eq (event-basic-type next) button)
+                                           (memq 'down modifiers)))
+                                     (release (and (eq (event-basic-type next) button)
+                                                   (not (memq 'down modifiers))))
                                      (motion (mouse-movement-p next)))
                                 (cond
+                                 ((and locked
+                                       (or (eq (event-basic-type next) 'escape)
+                                           (equal next ?\e)))
+                                  (setq reason 'quit done t))
+                                 ((and finishing release)
+                                  (setq done t))
+                                 ((and locked primary-down)
+                                  (setq position (or (ebox-interaction--drag-position
+                                                      (event-start next) window)
+                                                     position)
+                                        finished t finishing t locked nil)
+                                  (emit 'end))
                                  ((or release motion)
                                   (when (and defer-active-p motion (not active-p))
                                     (ebox-interaction--set-active identity buffer)
@@ -285,8 +330,13 @@ pressed state. Drag callbacks keep immediate active feedback."
                                     (cond
                                      ((null xy) (setq reason 'window-left done t))
                                      (release
-                                      (setq position xy finished t done t)
-                                      (emit 'end))
+                                      (setq position xy)
+                                      (if (and lock-p (not locked))
+                                          (progn
+                                            (setq locked t)
+                                            (emit 'move))
+                                        (setq finished t done t)
+                                        (emit 'end)))
                                      ((not (equal xy position))
                                       (setq position xy)
                                       (emit 'move)))
@@ -546,7 +596,8 @@ RETAINED-TOPOLOGY-P certifies that ROOT and its source handles are unchanged."
         ebox-interaction--active-owner nil
         ebox-interaction--focus-order nil
         ebox-interaction--hover-content-owner nil
-        ebox-interaction--hover-content-base nil
+        ebox-interaction--hover-content-group nil
+        ebox-interaction--hover-content-bases nil
         ebox-interaction--hover-content-specs nil)
   (when ebox-interaction--hover-content-track-mouse
     (let ((saved ebox-interaction--hover-content-track-mouse))
@@ -1188,6 +1239,16 @@ replace the property to publish subsequent binding changes."
                (:disabled
                 (unless (memq value '(nil t))
                   (error "Ebox :disabled requires nil or t")))
+               (:drag-lock-modifier
+                (unless (or (null value)
+                            (memq value '(shift control meta super hyper)))
+                  (error "Ebox :drag-lock-modifier has unsupported value: %S"
+                         value)))
+               (:hover-group
+                (unless (or (null value) (symbolp value) (stringp value)
+                            (numberp value))
+                  (error "Ebox :hover-group requires nil or a scalar key: %S"
+                         value)))
                (:hover-style (ebox-interaction--hover-face value))
                (:hover-content
                 (unless (or (null value) (stringp value)
@@ -1243,7 +1304,9 @@ than exposing a runtime region table to callers."
                                 buffer node state))
                      (bounds (ebox-host-ref-bounds buffer ref)))
            (push (list :ref ref :node node :handle editable
-                       :content content :bounds bounds)
+                       :content content
+                       :group (plist-get interactions :hover-group)
+                       :bounds bounds)
                  specs)))
        (ebox--buffer-host-ref-table buffer)))
     specs))
@@ -1288,12 +1351,73 @@ path and never receive motion events."
         (ebox-region-update (plist-get spec :handle) :content content)
       (error nil))))
 
+(defun ebox-interaction--hover-content-group-key (spec)
+  "Return SPEC's explicit hover group, or its own reference when absent."
+  (or (plist-get spec :group) (plist-get spec :ref)))
+
+(defun ebox-interaction--hover-content-update-many (buffer updates)
+  "Publish UPDATES for BUFFER in one retained incremental batch.
+Each UPDATE is `(SPEC . CONTENT)'.  Invalid or stale members are ignored;
+the remaining members still share one candidate publication."
+  (when updates
+    (with-current-buffer buffer
+      (condition-case _error
+          (progn
+            (ebox-incremental-begin-batch buffer)
+            (dolist (update updates)
+              (ebox-region-update (plist-get (car update) :handle)
+                                  :content (cdr update)))
+            (ebox-incremental-flush buffer))
+        (error
+         (ignore-errors (ebox-incremental-flush buffer)))))))
+
+(defun ebox-interaction--hover-content-spec-by-ref (ref specs)
+  "Return the SPEC in SPECS whose reference equals REF."
+  (cl-find-if (lambda (spec) (equal ref (plist-get spec :ref))) specs))
+
+(defun ebox-interaction--hover-content-restore-group (buffer specs)
+  "Restore the currently active hover group in BUFFER from saved bases."
+  (let (updates)
+    (dolist (entry ebox-interaction--hover-content-bases)
+      (when-let* ((spec (ebox-interaction--hover-content-spec-by-ref
+                         (car entry) specs)))
+        (push (cons spec (cdr entry)) updates)))
+    (ebox-interaction--hover-content-update-many buffer updates)
+    (setq ebox-interaction--hover-content-group nil
+          ebox-interaction--hover-content-bases nil
+          ebox-interaction--hover-content-owner nil)))
+
+(defun ebox-interaction--hover-content-activate-group (buffer specs group)
+  "Activate GROUP in BUFFER and save every member's original content."
+  (let (updates bases)
+    (dolist (spec specs)
+      (when (equal group (ebox-interaction--hover-content-group-key spec))
+        (let* ((node (plist-get spec :node))
+               (base (and node (ebox--region-update-content-value node)))
+               (content (condition-case _error
+                            (ebox-interaction--hover-content-value
+                             (plist-get spec :content) buffer)
+                          (error nil))))
+          (when (and base content (plist-get spec :handle))
+            (push (cons (plist-get spec :ref)
+                        (ebox-text-property-value-copy base))
+                  bases)
+            (push (cons spec content) updates)))))
+    (ebox-interaction--hover-content-update-many buffer updates)
+    (setq ebox-interaction--hover-content-group group
+          ebox-interaction--hover-content-bases bases)))
+
 (defun ebox-interaction--hover-content-event (event)
   "Handle one native mouse-movement EVENT for a hover-content buffer.
-Only transitions between owners publish content updates; motion within the
-current owner is ignored so a drag or pointer sweep does not trigger a render
-for every pixel."
+Only transitions between groups publish content updates; motion within one
+group is ignored so a drag or pointer sweep does not trigger a render for every
+pixel.  Entering a group updates all of its members in one batch."
   (interactive "e")
+  ;; A few global Emacs animation packages treat any mouse event in
+  ;; `this-command-keys-vector' as a click.  Ebox's movement event is a
+  ;; retained hover update, never activation; clear the command sequence before
+  ;; post-command hooks can mistake it for a click ripple.
+  (clear-this-command-keys)
   (let* ((position (event-end event))
          (window (and (consp position) (posn-window position)))
          (point (and (consp position) (posn-point position)))
@@ -1303,41 +1427,24 @@ for every pixel."
       (with-current-buffer buffer
         (let* ((spec (ebox-interaction--hover-content-spec-at point))
                (owner (and spec (plist-get spec :ref)))
-               (previous ebox-interaction--hover-content-owner))
-          (unless (equal owner previous)
-            (let ((old-base ebox-interaction--hover-content-base)
-                  (old-spec (and previous
-                                 (cl-find-if
-                                  (lambda (entry)
-                                    (equal previous (plist-get entry :ref)))
-                                  ebox-interaction--hover-content-specs))))
-              ;; Clear the ownership marker before publishing the leave
-              ;; update.  The publication callback may refresh specs and must
-              ;; not preserve a stale active owner while content is restored.
-              (setq ebox-interaction--hover-content-owner nil
-                    ebox-interaction--hover-content-base nil)
-              (when (and old-spec old-base)
-                (ebox-interaction--hover-content-update old-spec old-base))
-              (when (and spec owner)
-                (let* ((handle (plist-get spec :handle))
-                       (node (plist-get spec :node))
-                       (base (and node (ebox--region-update-content-value node)))
-                       (content (condition-case _error
-                                    (ebox-interaction--hover-content-value
-                                     (plist-get spec :content) buffer)
-                                  (error nil))))
-                  (when (and handle base content)
-                    (ebox-interaction--hover-content-update spec content)
-                    (setq ebox-interaction--hover-content-owner owner
-                          ebox-interaction--hover-content-base base)))))))))
-    nil))
+               (group (and spec (ebox-interaction--hover-content-group-key spec)))
+               (previous-group ebox-interaction--hover-content-group))
+          (unless (equal group previous-group)
+            (when previous-group
+              (ebox-interaction--hover-content-restore-group
+               buffer ebox-interaction--hover-content-specs))
+            (when group
+              (ebox-interaction--hover-content-activate-group
+               buffer ebox-interaction--hover-content-specs group))
+            (setq ebox-interaction--hover-content-owner owner))))))
+    nil)
 
 (defun ebox-interaction-surface-properties (properties)
   "Project normalized node PROPERTIES to native surface facts."
   (append
    (when (plist-get properties :disabled) '(keymap nil))
    (cl-loop for (key value) on properties by #'cddr
-           unless (or (memq key '(:tab-index :disabled :hover-content))
+           unless (or (memq key '(:tab-index :disabled :hover-content :hover-group))
                       (and (eq key :keymap) (plist-get properties :disabled)))
            append (if (eq key :hover-style)
                       (let* ((face (ebox-interaction--hover-face value))

@@ -385,7 +385,7 @@ Ebox publication 事务之外；Ebox 不持有业务值或原生输入 buffer，
 
 
 Text 与所有 Box form 都接受 `:help-echo`、`:pointer`、`:hover-style`、
-`:hover-content` 和 `:keymap`，以及节点自身的焦点输入 `:tab-index` 和 `:disabled`。它们是 CSS cascade
+`:hover-content`、`:hover-group` 和 `:keymap`，以及节点自身的焦点输入 `:tab-index` 和 `:disabled`。它们是 CSS cascade
 之外的显式节点能力。例如，下面的 Box 组合了
 动态帮助、手形指针、悬停绘制，以及供鼠标和键盘激活共用的回调：
 
@@ -425,6 +425,10 @@ Ebox 绘制 plist。同一渲染行中，一个声明节点覆盖的文字与 pa
 Ebox 通过保留的 `ebox-region-update` 内容路径替换 Text；离开时恢复原内容。只有声明
 该能力的挂载 buffer 才启用本地鼠标移动跟踪；Ebox 不创建 overlay，也不把它接入主按钮
 拖拽循环。需要行高稳定时，基础内容和替代内容应保持同一行。
+
+`:hover-group` 用一个标量 key 把多个 sibling 的 hover-content 组成一组。进入任意成员
+时，Ebox 在一次增量 batch 中更新全部成员；离开整组时一次恢复。省略时每个节点单独成组，
+适合三色窗口按钮这类复合控件。
 
 Box 的帮助、指针和 keymap 覆盖渲染内容、padding 和 border，不包含该 Box 自身的
 margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 Box 可通过显式值替换

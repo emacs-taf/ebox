@@ -138,11 +138,13 @@ use `(box :height (lh 1))` to reserve a blank line.
 
 ## Native interaction
 
-Text and every Box form accept five explicit node capabilities: `:help-echo`
+Text and every Box form accept seven explicit node capabilities: `:help-echo`
 for a string or native help function, `:pointer` for a native pointer shape,
 `:hover-style` for restricted color and text-decoration paint, `:hover-content`
-for an alternate Text value during pointer hover, and `:keymap` for a native
-Emacs keymap. Box help, pointer and keymap cover its content,
+for an alternate Text value during pointer hover, `:keymap` for a native
+Emacs keymap, and `:drag-lock-modifier` for an optional modifier that keeps a
+primary-button drag locked after release, and `:hover-group` to update related
+hover-content nodes as one incremental batch. Box help, pointer and keymap cover its content,
 padding, and border; they exclude that Box's margin and structural newlines.
 Hover shares the declaring node's paint across text and padding, excluding
 physical left/right borders. Nested explicit
@@ -152,6 +154,9 @@ Use `ebox-help-create` to adapt a zero-argument business function to native help
 with the hovered buffer as its context. Use `ebox-keymap-create` to bind
 ordinary zero-argument callbacks to activation
 keys or custom keys; it supplies the clicked window's buffer for mouse commands.
+With `:drag` and `:drag-lock-modifier`, holding the modifier for the initial
+press keeps a drag active after release; the next primary-button press ends it
+and `ESC` cancels it. The state is local to that mounted target.
 `:hover-content` enters and leaves through retained `ebox-region-update`
 content publications. Its value is a string or zero-argument function returning
 a string; keep one-line alternatives when line height must remain stable. Only
