@@ -303,6 +303,34 @@ space 可以缩短。不提供 alpha 混合、半字形遮罩或 child frame。n
 独立的 `ebox-playground` 包提供 `layer-minimal.ebox`、`layer-reference.ebox`；
 batch 测试不证明 GUI 视觉一致性或远程 CI 成功。
 
+### Box 几何的增量更新
+
+`ebox-region-update-geometry` 是挂载 Box 的底层类型化接口，用于修改位置、尺寸、
+边界和堆叠事实。它接受 `:box-sizing`、`:position`、`:left`、`:top`、`:z-index`、
+`:layer`、`:anchor`、`:placement`，以及带 min/max 边界的 width/height 属性。
+Ebox 按普通单位语法校验值，构造隔离 candidate，并通过与 `ebox-region-update` 相同的
+保留式事务发布：
+
+```elisp
+(ebox-region-update-geometry
+ "panel"
+ :left (px 12) :top (lh 2)
+ :width (ch 24) :height (lh 4)
+ :z-index 3)
+(ebox-region-geometry "panel")
+;; => (:box-sizing border-box :position absolute :left (px 12) ...)
+```
+
+`ebox-region-geometry` 返回当前 Box 有效几何事实的脱离式 plist；省略的声明会使用已
+注册的初始值。在显式 update batch 中，它在 flush 前报告上一次已接纳的发布。过期、已
+卸载或 Text handle 会报错。padding、margin、border 及其他样式属性仍通过通用的
+`ebox-region-update` 更新，因为它们属于样式/布局细节，而不是框架行为共同需要的位置、
+尺寸和图层原语。
+
+这个类型化接口不实现指针跟踪、resize handle、focus、最大化/最小化模式或窗口管理策略。
+框架行为或应用可以通过 `ebox-keymap-create` 接收手势，再用本接口提交下一组声明式几何。
+Ebox 负责校验、保留式布局、遮挡重组、增量发布和回滚；调用方负责交互状态和策略。
+
 ### 换行与可选 EKP 依赖
 
 `:wrap-mode word` 按普通单词换行，并允许 CJK 字符换行；`char` 按 Ebox 支持的常见

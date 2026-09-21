@@ -787,6 +787,28 @@
 ;;   (ebox-region-update handle :padding ='((lh 1) (ch 2))
 ;;                       :border-color "red")
 ;;
+;;
+;; Function: ebox-region-update-geometry (handle &rest geometry)
+;;;###autoload (autoload 'ebox-region-update-geometry "ebox" nil nil)
+;; Atomically update a mounted Box's low-level geometry and layer facts through
+;; the retained incremental publication path.  GEOMETRY accepts only
+;; `:box-sizing', `:position', `:left', `:top', `:z-index', `:layer', `:anchor',
+;; `:placement', and width/height properties with min/max bounds.  Values use
+;; Ebox's ordinary unit grammar and are validated before publication.  HANDLE
+;; may be an opaque region handle or a semantic ID in the current buffer.  A
+;; Text target or a non-geometry property signals `user-error'.  Return nil
+;; while queued in an explicit batch, otherwise return the committed update
+;; report.  This primitive does not implement drag, resize, maximize,
+;; minimize, focus, or window-management policy; callers own those behaviors.
+;;
+;; Function: ebox-region-geometry (handle)
+;;;###autoload (autoload 'ebox-region-geometry "ebox" nil nil)
+;; Return a defensive effective geometry plist for a mounted Box HANDLE.  The
+;; plist contains positioning, layer, box-sizing, and width/height bound facts
+;; from the last accepted publication.  Values remain in Ebox's unit form when
+;; retained as expressions.  Stale, unmounted, or Text handles signal an
+;; error; the query never creates or publishes a candidate.
+;;
 ;; Function: ebox-render (input)
 ;;;###autoload (autoload 'ebox-render "ebox" nil nil)
 ;; Render canonical INPUT to a multi-line string through Ebox publication.

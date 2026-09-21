@@ -357,6 +357,40 @@ per-update latency or universal local-update guarantee is implied. Run
 package provides `layer-minimal.ebox` and `layer-reference.ebox`; batch tests
 do not establish GUI visual parity or remote CI success.
 
+### Incremental Box geometry
+
+`ebox-region-update-geometry` is the typed low-level path for changing a
+mounted Box's position, size, bounds, or stacking facts. It accepts
+`:box-sizing`, `:position`, `:left`, `:top`, `:z-index`, `:layer`, `:anchor`,
+`:placement`, and width/height properties with their min/max bounds. Ebox
+validates the ordinary unit grammar, builds an isolated candidate, and publishes
+the change through the same retained transaction as `ebox-region-update`:
+
+```elisp
+(ebox-region-update-geometry
+ "panel"
+ :left (px 12) :top (lh 2)
+ :width (ch 24) :height (lh 4)
+ :z-index 3)
+(ebox-region-geometry "panel")
+;; => (:box-sizing border-box :position absolute :left (px 12) ...)
+```
+
+`ebox-region-geometry` returns a detached plist of the current effective Box
+facts, including registered initial values for omitted declarations. During an
+explicit update batch it reports the last accepted publication until the batch
+is flushed. Stale, unmounted, or Text handles signal an error. Padding, margin,
+border and other style properties remain available through the general
+`ebox-region-update` API because they are styling/layout details rather than
+the position/size/layer primitive shared by framework behaviors.
+
+The typed path does not implement pointer tracking, resize handles, focus,
+maximize/minimize modes, or window-management policy. A framework behavior or
+application may use `ebox-keymap-create` to receive a gesture and then call
+this API with the next declarative geometry. Ebox owns validation, retained
+layout, occlusion recomposition, incremental publication, and rollback; the
+caller owns interaction state and policy.
+
 ### Wrapping and the optional EKP dependency
 
 `:wrap-mode word` wraps ordinary words and permits character breaks for CJK;

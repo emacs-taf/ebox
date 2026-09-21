@@ -258,6 +258,18 @@ span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，pr
 
 ## 覆盖层合成
 
+公共几何边界是 `ebox-region-update-geometry` 与 `ebox-region-geometry`。它们只暴露
+Box 所有的位置、尺寸、边界和堆叠事实，并沿用现有 retained candidate 与 publication
+事务。调用方的属性表会先校验并复制到一个 candidate，按 geometry 分类，再遵循普通
+`ebox-region-update` 的 scoped planning 与 rollback；不会增加第二份几何状态。查询返回
+已提交 Box 事实及注册的样式初始值的脱离式视图。
+
+Ebox 不把这些事实解释成可拖拽窗口。`:drag` keymap 能力仍是报告手势阶段和 delta 的
+输入原语；回调或 ETAF behavior 决定 delta 是否改变 `:left`、`:top`、`:width` 或
+`:height`。resize handle、约束、最大化/最小化状态、focus 顺序和桌面窗口策略都在
+Ebox 之上。padding、margin、border 等样式变化继续走通用 region-update，不扩大这个
+位置/尺寸/图层类型边界。
+
 Placement 在判断遮挡前保留原始行文本与像素来源区间。行签名不变时直接复用已提交
 输出，无需先提取每个子元素的字符串；变化的行只从原始来源裁切实际可见的区间。
 这消除了先裁切全部 flow 子元素、再对中间字符串二次裁切的重复工作。普通流、相对

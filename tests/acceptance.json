@@ -1114,6 +1114,16 @@
       "name": "ebox-display-native-decline-reports-missing-viewport",
       "file": "tests/ebox-display-tests.el",
       "purpose": "An unbounded hidden mount renders correctly and reports why native geometry is unavailable; a later viewport update does not retain the stale diagnostic."
+    },
+    {
+      "name": "ebox-region-geometry-updates-position-size-and-layer-atomically",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "One typed Box geometry update changes position, size and stacking facts through retained publication and matches a fresh render; the geometry query is defensive."
+    },
+    {
+      "name": "ebox-region-update-geometry-rejects-non-geometry-and-text",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "The low-level geometry boundary rejects content, paint, malformed and Text updates before publication."
     }
   ]
 }

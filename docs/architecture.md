@@ -354,6 +354,23 @@ If any proof condition fails, the update uses the ordinary safe projection path.
 
 ## Layer composition
 
+The public geometry boundary is `ebox-region-update-geometry` and
+`ebox-region-geometry`. These functions expose only Box-owned positioning,
+size, bounds, and stacking facts through the existing retained candidate and
+publication transaction. They do not add a second geometry store: the caller's
+property list is validated, copied into one candidate, classified as geometry,
+and published with the same scoped planning and rollback rules as an ordinary
+`ebox-region-update`. The query returns a detached view of the committed Box
+facts and registered style initials.
+
+Ebox does not interpret those facts as a draggable window. Its `:drag` keymap
+capability remains an input primitive that reports gesture phases and deltas;
+callbacks or ETAF behaviors decide whether a delta changes `:left`, `:top`,
+`:width`, or `:height`. Resize handles, constraints, maximize/minimize state,
+focus order, and desktop window policy remain above Ebox. Padding, margin,
+border, and other style changes continue through the general region-update
+route rather than widening this typed position/size/layer boundary.
+
 Layer placements carry original row text and pixel source intervals until the
 compositor resolves occlusion. Unchanged row signatures reuse their accepted
 output without extracting child strings; changed rows cut only uncovered

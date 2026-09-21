@@ -4186,6 +4186,47 @@ Defaults to the current buffer."
   (append '(:content :scroll-offset) ebox-interaction-properties)
   "Surface controls accepted by `ebox-region-update' outside style schemas.")
 
+(defconst ebox--region-geometry-properties
+  '(:box-sizing
+    :position :left :top :z-index :layer :anchor :placement
+    :width :min-width :max-width :height :min-height :max-height)
+  "Geometry and layer properties accepted by `ebox-region-update-geometry'.
+
+This list deliberately stops at Ebox's low-level geometry facts.  It does not
+include gesture, drag, resize, maximize, or minimize policy; those belong to
+higher-level framework components and applications.")
+
+(defun ebox--region-update-geometry-target (handle)
+  "Return `(BUFFER REGION-ID BOX HANDLE)' for geometry HANDLE.
+
+Resolve semantic IDs using the current buffer, as `ebox-region-update' does.
+Text nodes have region identities for content and interaction updates, but
+geometry is a Box capability and therefore rejects a Text target explicitly."
+  (when (ebox-source-semantic-id-p handle)
+    (setq handle (ebox-region-resolve (current-buffer) handle)))
+  (unless (ebox-region-handle-p handle)
+    (signal 'wrong-type-argument (list 'ebox-region-handle-p handle)))
+  (pcase-let ((`(,buffer . ,region-id)
+               (ebox-selector--region-target handle)))
+    (let ((box (ebox--root-region-box
+                (ebox--buffer-root-node buffer) region-id)))
+      (when (or (null box) (ebox-text-node-p box))
+        (user-error "Ebox geometry updates require a Box region"))
+      (list buffer region-id box handle))))
+
+(defun ebox--region-geometry-plist (box)
+  "Return a detached effective geometry plist for Box BOX.
+
+Missing declarations use the registered style initial, keeping the query's
+shape stable before and after the first incremental update."
+  (cl-loop with result = nil
+           for property in ebox--region-geometry-properties
+           for value = (if (plist-member box property)
+                           (ebox-get box property)
+                         (plist-get (ebox-style-property property) :initial))
+           do (setq result (plist-put result property (copy-tree value)))
+           finally return result))
+
 (defun ebox--region-update-style-properties (props)
   "Return PROPS without region-owned content and scroll controls."
   (cl-loop for (property value) on props by #'cddr
@@ -4756,6 +4797,54 @@ Examples: (ebox-region-update \"status\" :content \"Ready\") (ebox-region-update
       (if (ebox-incremental-batching-p buffer)
           (funcall execute)
         (ebox-surface-call-with-observation buffer 'region execute)))))
+
+;;;###autoload
+(defun ebox-region-update-geometry (handle &rest geometry)
+  "Incrementally update Box geometry for HANDLE with GEOMETRY.
+
+GEOMETRY is a property list containing only Ebox's low-level geometry and
+layer facts: `:box-sizing', `:position', `:left', `:top', `:z-index', `:layer',
+`:anchor', `:placement', and the width/height properties with their min/max
+bounds.  Values use the ordinary Ebox unit grammar, so axis and size
+constraints are checked before publication.  The update is atomic and uses
+the same retained surface and batching semantics as `ebox-region-update'.
+
+This function only changes declarative geometry.  It does not implement a
+drag gesture, resize handle, focus policy, maximize/minimize mode, or any
+window-management behavior.  Callers own those policies and may use this
+function from their interaction callbacks.  Return nil while queued in an
+explicit update batch; otherwise return the committed update report.
+
+HANDLE may be an opaque handle from `ebox-region-resolve' or a semantic ID in
+the current buffer.  A Text target or a property outside the geometry set
+signals `user-error' without publishing anything."
+  (when (null geometry)
+    (user-error "Ebox geometry update requires at least one property"))
+  (when (cl-oddp (length geometry))
+    (user-error "Ebox geometry update requires a property list"))
+  (dolist (property (cl-loop for (key _value) on geometry by #'cddr collect key))
+    (unless (memq property ebox--region-geometry-properties)
+      (user-error "Ebox property is not geometry: %S" property)))
+  ;; Resolve and validate before delegating, so a Text target or an invalid
+  ;; handle cannot be converted into a silent no-op by the general updater.
+  (let* ((target (ebox--region-update-geometry-target handle))
+         (resolved-handle (nth 3 target)))
+    (apply #'ebox-region-update resolved-handle geometry)))
+
+;;;###autoload
+(defun ebox-region-geometry (handle)
+  "Return a defensive effective geometry plist for Box HANDLE.
+
+The result contains `:box-sizing', positioning and layer facts, and width and
+height bounds.  Values are the current mounted Ebox runtime values after the
+last accepted publication; size expressions remain in their Ebox unit form
+when that is the retained value.  The returned plist is detached and may be
+modified by the caller.  Querying a stale handle, an unmounted buffer, or a
+Text region signals the same lifecycle or type error as other Ebox region
+operations.  This is a read-only query: it does not create a candidate or
+publish a change."
+  (let ((target (ebox--region-update-geometry-target handle)))
+    (ebox--region-geometry-plist (nth 2 target))))
 
 (defvar ebox-buffer-mode-map nil
   "Keymap for scrolling, focus navigation and activation in mounted Ebox buffers.")
