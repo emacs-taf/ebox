@@ -341,8 +341,8 @@ Missing or invisible anchors do not paint a panel; ambiguous IDs and placement
 dependency cycles are errors.
 
 Composition uses horizontal pixels and one shared vertical text-row grid.
-Positioned subtrees must have the same effective font line height as their
-host. Whole supported clusters survive cuts; partially covered glyphs/images
+Positioned descendants must not exceed their containing host's effective font
+line height; smaller glyphs are allowed inside the fixed row. Whole supported clusters survive cuts; partially covered glyphs/images
 are replaced with noninteractive space retaining the source faces (including
 background paint), and fixed display spaces can be shortened. Blank canvas
 outside the source remains neutral.

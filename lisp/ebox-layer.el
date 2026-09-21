@@ -203,8 +203,8 @@ Nested scroll changes and source updates cannot use this root-only proof."
   (when (ebox-layer-positioned-p node)
     (cl-labels ((check (child)
                   (when (ebox-layer-positioned-p child)
-                    (unless (= (ebox--size-line-height child)
-                               (ebox--size-line-height host))
+                    (when (> (ebox--size-line-height child)
+                             (ebox--size-line-height host))
                       (error "Ebox positioned boxes must share their host's line height (node=%S node-height=%S host=%S host-height=%S)"
                              (plist-get child :ebox-type)
                              (ebox--size-line-height child)

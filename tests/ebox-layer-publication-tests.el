@@ -241,7 +241,7 @@ ordinary flow content is allowed to choose its own font presentation."
             (box :position relative :width (ch 20) :height (lh 2)
                  (box :font-weight bold "Title")
                  (box :position absolute :left (px 0) :top (lh 0)
-                      :width (ch 8) :height (lh 1) "Overlay")))))))
+                      :width (ch 8) :height (lh 1) :font-size 10 "Overlay")))))))
 
 (ert-deftest ebox-layer-publication-hidden-ancestor-portals-stay-hidden-in-active-root ()
   "Root composition must not collect portals under a hidden flow ancestor."
