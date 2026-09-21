@@ -384,8 +384,8 @@ reader 在所属挂载 buffer 中运行，但编辑由原生 minibuffer／编辑
 Ebox publication 事务之外；Ebox 不持有业务值或原生输入 buffer，也不实现第二套文本编辑器。
 
 
-Text 与所有 Box form 都接受 `:help-echo`、`:pointer`、`:hover-style` 和
-`:keymap`，以及节点自身的焦点输入 `:tab-index` 和 `:disabled`。它们是 CSS cascade
+Text 与所有 Box form 都接受 `:help-echo`、`:pointer`、`:hover-style`、
+`:hover-content` 和 `:keymap`，以及节点自身的焦点输入 `:tab-index` 和 `:disabled`。它们是 CSS cascade
 之外的显式节点能力。例如，下面的 Box 组合了
 动态帮助、手形指针、悬停绘制，以及供鼠标和键盘激活共用的回调：
 
@@ -420,6 +420,11 @@ Ebox 绘制 plist。同一渲染行中，一个声明节点覆盖的文字与 pa
 不改变。允许的值见
 [API 参考](manual.zh-CN.md)。Ebox 将这个 plist 编译为原生
 `mouse-face`，不提供任意原生 property 透传。
+
+`:hover-content` 接受字符串或返回字符串的零参数函数。指针进入节点的可见范围时，
+Ebox 通过保留的 `ebox-region-update` 内容路径替换 Text；离开时恢复原内容。只有声明
+该能力的挂载 buffer 才启用本地鼠标移动跟踪；Ebox 不创建 overlay，也不把它接入主按钮
+拖拽循环。需要行高稳定时，基础内容和替代内容应保持同一行。
 
 Box 的帮助、指针和 keymap 覆盖渲染内容、padding 和 border，不包含该 Box 自身的
 margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 Box 可通过显式值替换
@@ -559,7 +564,7 @@ Shift-TAB/backtab 导航及 RET/return 激活。独立 Ebox 与框架调用方�
 Playground 的[交互实验室](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)
 把业务函数与状态放在 `interaction-reference.el`，把布局放在
 `interaction-reference.ebox`，展示回调、嵌套覆盖，以及通过公共 region 更新替换或
-清除四种能力。
+清除五种能力（包括 `:hover-content`）。
 
 ## 5. 渲染与发布
 
@@ -656,9 +661,10 @@ Ebox 的观测总时长；transaction 包含其余提交／Ebox publication 工�
 ```elisp
 (with-current-buffer "*Ebox Interaction*"
   (ebox-region-update "action" :help-echo "Updated help" :pointer 'arrow
-                      :hover-style '(:background-color "#F6D6AB"))
+                      :hover-style '(:background-color "#F6D6AB")
+                      :hover-content "×")
   (ebox-region-update "action" :help-echo nil :pointer nil
-                      :hover-style nil :keymap nil))
+                      :hover-style nil :hover-content nil :keymap nil))
 ```
 
 更新参数是正常求值的 Elisp，因此符号和字面量 plist 需要 quote；它们与已经被 quote

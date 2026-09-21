@@ -251,7 +251,10 @@
 ;; Source declarations stay behind the source handle; the returned value contains
 ;; provisional concrete node properties. Tagged values require ECSS computation.
 ;; INTERACTIONS is a plist of fixed node capabilities, separate from CSS:
-;; :help-echo, :pointer, :hover-style, :keymap, :tab-index and :disabled.
+;; :help-echo, :pointer, :hover-style, :hover-content, :keymap, :tab-index and
+;; :disabled.  :hover-content is an optional alternate one-line Text value
+;; (or zero-argument function) entered and left through retained content
+;; updates; only buffers that declare it enable local mouse-motion tracking.
 ;; Tab index is nil or an integer; nonnegative values create navigation stops.
 ;; Disabled is nil or t; t excludes focus and blocks this node's own or inherited
 ;; keymap and derives the disabled selector state for queries and cascade.
@@ -772,7 +775,8 @@
 ;; Update the node identified by HANDLE with PROPS.
 ;; HANDLE is an opaque handle from `ebox-region-resolve' or an Ebox selector,
 ;; or a semantic ID (string, non-nil symbol or integer) in the current buffer.
-;; PROPS accepts mutable content, style, interaction and scroll keywords plus
+;; PROPS accepts mutable content, style, interaction (including
+;; `:hover-content') and scroll keywords plus
 ;; ECSS custom property symbols named --NAME;
 ;; `:content' replaces a Text node's string or a Box's sole direct Text child.
 ;; It does not add children or mutate selector metadata.  The update builds an

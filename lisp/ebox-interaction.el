@@ -27,7 +27,6 @@
 (declare-function ebox-surface--buffer-client-state "ebox-surface" (buffer))
 (declare-function ebox-surface--live-buffer-surface "ebox-surface" (buffer))
 (declare-function ebox-surface--paint-node-chain "ebox-surface" (state role-ids))
-(declare-function ebox--buffer-host-ref-table "ebox-incremental" (buffer))
 (declare-function ebox--host-ref-node "ebox-runtime" (buffer host-ref))
 (declare-function ebox-host-ref-bounds "ebox-runtime" (buffer-or-name host-ref))
 (declare-function ebox-source--copy-data "ebox-source" (value))
@@ -35,11 +34,21 @@
 (declare-function ebox-source-record-key "ebox-source" (record))
 (declare-function ebox-source-record-interactions "ebox-source" (record))
 (declare-function ebox-source--handle-id-view "ebox-source" (handle))
+(declare-function ebox-source-index-interactions "ebox-source" (index handle))
+(declare-function ebox-tree-node-source-handle "ebox-tree" (node))
+(declare-function ebox-tree-node-source-identity "ebox-tree" (node))
+(declare-function ebox--buffer-render-state "ebox-incremental" (buffer))
+(declare-function ebox--buffer-runtime-node "ebox-incremental" (buffer node-id))
+(declare-function ebox--buffer-host-ref-table "ebox-incremental" (buffer))
+(declare-function ebox-selector--live-region-handle
+                  "ebox-selector" (buffer object &optional logical-id))
+(declare-function ebox-region-update "ebox" (handle &rest props))
+(declare-function ebox--region-update-content-value "ebox-runtime" (box))
 (defvar ebox-region-types)
 (defvar ebox-buffer--decoration-style-map)
 
 (defconst ebox-interaction-properties
-  '(:help-echo :pointer :hover-style :keymap :tab-index :disabled)
+  '(:help-echo :pointer :hover-style :hover-content :keymap :tab-index :disabled)
   "Fixed node capabilities accepted outside the Ebox style schema.")
 
 (defconst ebox-interaction--hover-properties
@@ -49,6 +58,18 @@
 
 (defvar ebox-interaction--dispatching-activation nil
   "Non-nil while invoking a target already selected by Ebox activation.")
+
+(defvar-local ebox-interaction--hover-content-specs nil
+  "Visible hover-content registrations for the current mounted buffer.")
+
+(defvar-local ebox-interaction--hover-content-owner nil
+  "Host reference whose hover content is currently active, or nil.")
+
+(defvar-local ebox-interaction--hover-content-base nil
+  "Original content saved while `ebox-interaction--hover-content-owner' is active.")
+
+(defvar-local ebox-interaction--hover-content-track-mouse nil
+  "Saved local `track-mouse' binding while hover-content tracking is enabled.")
 
 (defun ebox-interaction--command (callback &optional activation-p)
   "Wrap CALLBACK as a command; ACTIVATION-P uses shared keyboard focus."
@@ -523,7 +544,16 @@ RETAINED-TOPOLOGY-P certifies that ROOT and its source handles are unchanged."
   "Release this buffer's interaction owners and derived navigation index."
   (setq ebox-interaction--focus-owner nil
         ebox-interaction--active-owner nil
-        ebox-interaction--focus-order nil))
+        ebox-interaction--focus-order nil
+        ebox-interaction--hover-content-owner nil
+        ebox-interaction--hover-content-base nil
+        ebox-interaction--hover-content-specs nil)
+  (when ebox-interaction--hover-content-track-mouse
+    (let ((saved ebox-interaction--hover-content-track-mouse))
+      (if (car saved)
+          (setq-local track-mouse (cadr saved))
+        (kill-local-variable 'track-mouse)))
+    (setq ebox-interaction--hover-content-track-mouse nil)))
 
 (defun ebox-interaction--commit-state (buffer state)
   "Publish an interaction request against BUFFER's accepted STATE.
@@ -809,7 +839,8 @@ following the target until point is moved back to that target's first character.
       (setq ebox-interaction--focus-owner (and position owner))
       (when (or request (car snapshot))
         (goto-char (if (and position (or request (nth 2 snapshot))) position
-                     (min (point-max) (max (point-min) (nth 1 snapshot)))))))))
+                     (min (point-max) (max (point-min) (nth 1 snapshot)))))))
+    (ebox-interaction--hover-content-sync buffer)))
 
 (defun ebox-interaction--focus-settle (buffer snapshot state)
   "Apply BUFFER's focus point after Ebox publication restores its native view
@@ -1158,6 +1189,12 @@ replace the property to publish subsequent binding changes."
                 (unless (memq value '(nil t))
                   (error "Ebox :disabled requires nil or t")))
                (:hover-style (ebox-interaction--hover-face value))
+               (:hover-content
+                (unless (or (null value) (stringp value)
+                            (and (functionp value)
+                                 (or (autoloadp (indirect-function value))
+                                     (zerop (car (func-arity value))))))
+                  (error "Ebox :hover-content requires a string or zero-argument function")))
                (_ (error "Ebox has no interaction property %S" key)))))
   (let ((owned (ebox-text-property-value-copy properties)))
     (when (plist-get properties :keymap)
@@ -1166,12 +1203,143 @@ replace the property to publish subsequent binding changes."
                               (plist-get properties :keymap)))))
     owned))
 
+(defun ebox-interaction--hover-content-value (value buffer)
+  "Resolve hover CONTENT VALUE in BUFFER and validate its result.
+VALUE is either a literal string or a zero-argument function.  Functions run
+with BUFFER current, matching `ebox-help-create' context rules."
+  (let ((result (if (functionp value)
+                    (with-current-buffer buffer (funcall value))
+                  value)))
+    (unless (stringp result)
+      (error "Ebox :hover-content function must return a string"))
+    result))
+
+(defun ebox-interaction--hover-content-handle (buffer node state)
+  "Return an editable handle for NODE in BUFFER and STATE, or nil.
+The handle is reconstructed from Ebox's retained publication object rather
+than exposing a runtime region table to callers."
+  (let* ((region-id (and node (ebox-get node :region-id)))
+         (object (and region-id
+                      (gethash region-id
+                               (plist-get state :region-surface-object-table)))))
+    (and object
+         (ebox-selector--live-region-handle buffer object))))
+
+(defun ebox-interaction--hover-content-specs (&optional buffer)
+  "Return visible hover-content specs for BUFFER's committed surface."
+  (setq buffer (or buffer (current-buffer)))
+  (let* ((state (and (buffer-live-p buffer)
+                     (ebox-surface--buffer-client-state buffer)))
+         (source (and state (plist-get state :source-index)))
+         specs)
+    (when (and state source)
+      (maphash
+       (lambda (ref node-id)
+         (when-let* ((node (ebox--buffer-runtime-node buffer node-id))
+                     (handle (ebox-tree-node-source-handle node))
+                     (interactions (ebox-source-index-interactions source handle))
+                     (content (plist-get interactions :hover-content))
+                     (editable (ebox-interaction--hover-content-handle
+                                buffer node state))
+                     (bounds (ebox-host-ref-bounds buffer ref)))
+           (push (list :ref ref :node node :handle editable
+                       :content content :bounds bounds)
+                 specs)))
+       (ebox--buffer-host-ref-table buffer)))
+    specs))
+
+(defun ebox-interaction--hover-content-sync (&optional buffer)
+  "Refresh hover-content registrations and local motion tracking for BUFFER.
+Tracking is enabled only for a mounted buffer that declares at least one
+`:hover-content' capability.  Other Ebox buffers retain their normal input
+path and never receive motion events."
+  (setq buffer (or buffer (current-buffer)))
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq ebox-interaction--hover-content-specs
+            (ebox-interaction--hover-content-specs buffer))
+      (if ebox-interaction--hover-content-specs
+          (progn
+            (unless ebox-interaction--hover-content-track-mouse
+              (setq ebox-interaction--hover-content-track-mouse
+                    (list (local-variable-p 'track-mouse) track-mouse))
+              (setq-local track-mouse t)))
+        (when ebox-interaction--hover-content-track-mouse
+          (let ((saved ebox-interaction--hover-content-track-mouse))
+            (if (car saved)
+                (setq-local track-mouse (cadr saved))
+              (kill-local-variable 'track-mouse)))
+          (setq ebox-interaction--hover-content-track-mouse nil))))))
+
+(defun ebox-interaction--hover-content-spec-at (position)
+  "Return the innermost hover-content spec covering text POSITION."
+  (let (result width)
+    (dolist (spec ebox-interaction--hover-content-specs result)
+      (let ((bounds (plist-get spec :bounds)))
+        (when (and bounds (<= (car bounds) position) (< position (cdr bounds)))
+          (let ((candidate (- (cdr bounds) (car bounds))))
+            (when (or (null width) (< candidate width))
+              (setq result spec width candidate))))))))
+
+(defun ebox-interaction--hover-content-update (spec content)
+  "Publish CONTENT for hover SPEC through Ebox's retained update boundary."
+  (when (and spec (stringp content))
+    (condition-case _error
+        (ebox-region-update (plist-get spec :handle) :content content)
+      (error nil))))
+
+(defun ebox-interaction--hover-content-event (event)
+  "Handle one native mouse-movement EVENT for a hover-content buffer.
+Only transitions between owners publish content updates; motion within the
+current owner is ignored so a drag or pointer sweep does not trigger a render
+for every pixel."
+  (interactive "e")
+  (let* ((position (event-end event))
+         (window (and (consp position) (posn-window position)))
+         (point (and (consp position) (posn-point position)))
+         (buffer (and (window-live-p window) (window-buffer window)))
+         (spec (and buffer (null (posn-area position))
+                    (integer-or-marker-p point)
+                    (with-current-buffer buffer
+                      (ebox-interaction--hover-content-spec-at point))))
+         (owner (and spec (plist-get spec :ref)))
+         (previous ebox-interaction--hover-content-owner))
+    (unless (and buffer (eq buffer (current-buffer))
+                 (equal owner previous))
+      (when (buffer-live-p (current-buffer))
+      (let ((old-base ebox-interaction--hover-content-base)
+            (old-spec (and previous
+                           (cl-find-if
+                            (lambda (entry)
+                              (equal previous (plist-get entry :ref)))
+                            ebox-interaction--hover-content-specs))))
+        ;; Clear the ownership marker before publishing the leave update.  The
+        ;; publication callback may refresh specs and must not preserve a
+        ;; stale active owner while the old content is being restored.
+        (setq ebox-interaction--hover-content-owner nil
+              ebox-interaction--hover-content-base nil)
+        (when (and old-spec old-base)
+          (ebox-interaction--hover-content-update old-spec old-base))
+        (when (and spec owner)
+          (let* ((handle (plist-get spec :handle))
+                 (node (plist-get spec :node))
+                 (base (and node (ebox--region-update-content-value node)))
+                 (content (condition-case _error
+                              (ebox-interaction--hover-content-value
+                               (plist-get spec :content) buffer)
+                            (error nil))))
+            (when (and handle base content)
+              (ebox-interaction--hover-content-update spec content)
+                (setq ebox-interaction--hover-content-owner owner
+                      ebox-interaction--hover-content-base base)))))))
+    nil))
+
 (defun ebox-interaction-surface-properties (properties)
   "Project normalized node PROPERTIES to native surface facts."
   (append
    (when (plist-get properties :disabled) '(keymap nil))
    (cl-loop for (key value) on properties by #'cddr
-           unless (or (memq key '(:tab-index :disabled))
+           unless (or (memq key '(:tab-index :disabled :hover-content))
                       (and (eq key :keymap) (plist-get properties :disabled)))
            append (if (eq key :hover-style)
                       (let* ((face (ebox-interaction--hover-face value))

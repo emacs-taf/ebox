@@ -424,9 +424,9 @@ Emacs, the selected fonts, and the window system.
 <a id="native-node-interaction"></a>
 ### Native node interaction
 
-Text and every Box form accept `:help-echo`, `:pointer`, `:hover-style`, and
-`:keymap`, plus node-local `:tab-index` and `:disabled` focus inputs. These are
-explicit node capabilities outside the CSS cascade.
+Text and every Box form accept `:help-echo`, `:pointer`, `:hover-style`,
+`:hover-content`, and `:keymap`, plus node-local `:tab-index` and `:disabled`
+focus inputs. These are explicit node capabilities outside the CSS cascade.
 For example, render a Box with dynamic help, a hand pointer, hover paint, and
 one callback for both mouse and keyboard activation:
 
@@ -465,6 +465,16 @@ horizontal border strokes remain intact. Font metrics and geometry do not change
 The [API reference](manual.md)
 defines the accepted values. Ebox compiles this plist to native `mouse-face`;
 there is no arbitrary native-property passthrough.
+
+`:hover-content` is an optional string (or zero-argument function returning a
+string) that temporarily replaces a Text node's content while the pointer is
+inside its rendered bounds. Ebox enters and leaves through the retained
+`ebox-region-update` content path, so the source tree, focus and publication
+rollback remain authoritative. A node with this capability enables local
+`track-mouse` handling in its mounted buffer; ordinary Ebox buffers do not
+receive motion events. Keep the alternate value on the same line as the base
+value when the control's line height must remain stable. Ebox does not create
+overlays or enter the primary-button drag tracking loop for this capability.
 
 Box help, pointer, and keymap cover its rendered content, padding, and border,
 excluding that Box's margin and structural newlines; hover follows the rule
@@ -785,9 +795,10 @@ interaction example above:
 ```elisp
 (with-current-buffer "*Ebox Interaction*"
   (ebox-region-update "action" :help-echo "Updated help" :pointer 'arrow
-                      :hover-style '(:background-color "#F6D6AB"))
+                      :hover-style '(:background-color "#F6D6AB")
+                      :hover-content "×")
   (ebox-region-update "action" :help-echo nil :pointer nil
-                      :hover-style nil :keymap nil))
+                      :hover-style nil :hover-content nil :keymap nil))
 ```
 
 Update arguments are evaluated Elisp, so literal symbols and plists need

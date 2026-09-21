@@ -392,7 +392,7 @@ display action、返回 buffer，不选择独占窗口布局，也不选中结�
 
 ## 布局范围
 
-Ebox 支持显式 `px`、`%`、`vw`、`vh`、`ch`、`lh` 尺寸、padding、margin、border、颜色、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。公共 typography 子集是 `:font-family`、以 CSS reference pixel 表示的 `:font-size`、`:font-weight` 和 `:font-style`；`:font-slant` 只是 `:font-style` 的精确 parse-time alias。任意 Emacs face 和文本属性 plist 属于最终 adapter，不是 Ebox 作者输入；四种显式原生能力 `:help-echo`、`:pointer`、`:hover-style`、`:keymap` 单独受支持。CSS 兼容性有意是部分实现：绝对定位和 z-index 属于 Ebox 的定位/图层子集；阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
+Ebox 支持显式 `px`、`%`、`vw`、`vh`、`ch`、`lh` 尺寸、padding、margin、border、颜色、overflow、换行、row/column/flex formatting，以及固定、分数、隐式、gap、放置、span 和对齐等 Grid 能力。公共 typography 子集是 `:font-family`、以 CSS reference pixel 表示的 `:font-size`、`:font-weight` 和 `:font-style`；`:font-slant` 只是 `:font-style` 的精确 parse-time alias。任意 Emacs face 和文本属性 plist 属于最终 adapter，不是 Ebox 作者输入；显式原生能力 `:help-echo`、`:pointer`、`:hover-style`、`:hover-content`、`:keymap` 单独受支持。`:hover-content` 只在声明它的挂载 buffer 中启用本地鼠标移动跟踪，并通过保留的内容更新恢复，不创建 overlay 或拖拽循环。CSS 兼容性有意是部分实现：绝对定位和 z-index 属于 Ebox 的定位/图层子集；阴影、border radius、完整浏览器 typography 和浏览器级 bidi 不属于本包。
 
 文本簇模型覆盖常见组合音标、变体选择符、Emoji 修饰符、ZWJ 序列和区域指示符配对。
 它的范围小于完整 Unicode 字素分段；字符数量或这个有限的分段模型，都不能保证任意

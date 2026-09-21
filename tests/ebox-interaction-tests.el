@@ -389,7 +389,8 @@
       (should (equal (get-text-property position 'mouse-face text)
                      '(:underline t :overline nil :strike-through nil
                        :foreground "red" :background "blue")))))
-  (dolist (props '((:help-echo 1) (:pointer invalid) (:keymap (bogus))
+  (dolist (props '((:help-echo 1) (:pointer invalid) (:hover-content 1)
+                   (:keymap (bogus))
                    (:hover-style (:font-weight bold))
                    (:hover-style (:padding (px 2)))
                    (:hover-style (:face highlight))
@@ -889,6 +890,35 @@
                                    (ebox-keymap-create :activate (lambda () (user-error "Callback failed")))
                                    "Failure")))
     (should-error (ebox-activate (point-min) t) :type 'user-error)))
+
+(ert-deftest ebox-interaction-hover-content-uses-retained-updates ()
+  "Hover content swaps through Ebox updates and restores on pointer leave.
+The surface uses local mouse tracking only for a node declaring the capability;
+it does not create an overlay or enter the primary-button drag loop."
+  (let ((buffer (generate-new-buffer " *ebox-hover-content*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (selected-window)))
+            (ebox-render-to-buffer
+             buffer (ebox-build
+                     '(text :id "control" :hover-content "×" "●")))
+            (set-window-buffer window buffer)
+            (with-current-buffer buffer
+              (should (eq track-mouse t))
+              (let ((command (lookup-key ebox-buffer-mode-map [mouse-movement])))
+                (should (commandp command))
+                (funcall command
+                         (list 'mouse-movement
+                               (list window (point-min) '(1 . 1) 0)))
+                (should (equal "×" (substring-no-properties (buffer-string))))
+                (funcall command
+                         (list 'mouse-movement
+                               (list window (point-max) '(50 . 50) 0)))
+                (should (equal "●" (substring-no-properties (buffer-string))))))))
+      (when (buffer-live-p buffer)
+        (ebox-unmount-buffer buffer)
+        (kill-buffer buffer)))))
 
 (provide 'ebox-interaction-tests)
 ;;; ebox-interaction-tests.el ends here

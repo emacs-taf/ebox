@@ -122,13 +122,16 @@ Box 几何统一写成 `(单位 数值)`，支持 `px`、`%`、`vw`、`vh`、`ch
 
 ## 原生交互
 
-Text 与所有 Box form 都接受四种显式节点能力：`:help-echo` 提供字符串或原生帮助
+Text 与所有 Box form 都接受五种显式节点能力：`:help-echo` 提供字符串或原生帮助
 函数，`:pointer` 选择原生鼠标指针形状，`:hover-style` 设置受限的颜色与文本装饰
-绘制，`:keymap` 接收原生 Emacs keymap。Box 的帮助、指针和 keymap 范围包含内容、
+绘制，`:hover-content` 在指针进入时替换 Text 内容，`:keymap` 接收原生 Emacs keymap。Box 的帮助、指针和 keymap 范围包含内容、
 padding 和 border，不包含该 Box 的 margin 和结构性换行符。悬停在文字与 padding
 间共享声明节点的绘制，不包含物理左右边框。嵌套节点的显式值覆盖外层能力；
 显式 `nil` 清除对应能力。
 
+`:hover-content` 通过保留的 `ebox-region-update` 内容发布进入和离开；值可以是字符串或
+返回字符串的零参数函数。需要保持行高时请使用同一行的替代内容。只有声明该能力的
+buffer 才会启用本地鼠标移动跟踪；Ebox 不创建 overlay，也不把 hover 放进主按钮拖拽循环。
 使用 `ebox-help-create` 将零参数业务函数适配为原生帮助，并提供悬停 buffer 上下文。
 使用 `ebox-keymap-create` 将普通零参数回调绑定到激活键或自定义按键；鼠标命令会
 自动在被点击窗口的 buffer 中运行。`ebox-region-update` 可以使用当前已挂载 buffer

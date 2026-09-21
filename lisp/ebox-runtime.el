@@ -74,6 +74,9 @@
 (require 'ebox-selector)
 (require 'ebox-file)
 
+(declare-function ebox-interaction--hover-content-event
+                  "ebox-interaction" (event))
+
 (defconst ebox--default-layout-context-port
   (ebox-render-context-create-layout-port
    :candidate-root #'ebox-surface--candidate-root
@@ -4880,6 +4883,11 @@ publish a change."
                       (lambda () (interactive) (ebox-focus-previous 1 t))))
         (dolist (key '("RET" "<return>"))
           (define-key map (kbd key) #'ebox-activate))
+        ;; Buffers that declare Ebox `:hover-content' opt into local
+        ;; `track-mouse' from the interaction layer.  Other buffers leave
+        ;; `track-mouse' nil, so this binding is dormant for normal surfaces.
+        (define-key map [mouse-movement]
+                    #'ebox-interaction--hover-content-event)
         map))
 
 (defconst ebox--scroll-overridden-minor-modes
