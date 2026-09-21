@@ -228,6 +228,21 @@
       (ebox-region-update "lower" :content content)
       (ebox-layer-publication-test--assert-fresh-properties))))
 
+(ert-deftest ebox-layer-positioned-host-allows-nonpositioned-font-descendants ()
+  "A positioned host may contain ordinary text with a different font metric.
+
+Only positioned descendants must share the containing host's line height;
+ordinary flow content is allowed to choose its own font presentation."
+  (ebox-layer-publication-test--with-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build
+      '(row :width (ch 24) :height (lh 3)
+            (box :position relative :width (ch 20) :height (lh 2)
+                 (box :font-weight bold "Title")
+                 (box :position absolute :left (px 0) :top (lh 0)
+                      :width (ch 8) :height (lh 1) "Overlay")))))))
+
 (ert-deftest ebox-layer-publication-hidden-ancestor-portals-stay-hidden-in-active-root ()
   "Root composition must not collect portals under a hidden flow ancestor."
   (dolist (other-root-paint '(absolute portal))

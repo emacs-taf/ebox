@@ -391,6 +391,11 @@
       "purpose": "Automatic inline widths remain content-dependent even under normal flow."
     },
     {
+      "name": "ebox-layer-positioned-host-allows-nonpositioned-font-descendants",
+      "file": "tests/ebox-layer-publication-tests.el",
+      "purpose": "Positioned line-height validation ignores ordinary flow descendants whose font presentation legitimately differs."
+    },
+    {
       "name": "ebox-layer-publication-hidden-ancestor-portals-stay-hidden-in-active-root",
       "file": "tests/ebox-layer-publication-tests.el",
       "purpose": "Root composition must not collect portals under a hidden flow ancestor."
