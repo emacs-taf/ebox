@@ -1297,41 +1297,39 @@ for every pixel."
   (let* ((position (event-end event))
          (window (and (consp position) (posn-window position)))
          (point (and (consp position) (posn-point position)))
-         (buffer (and (window-live-p window) (window-buffer window)))
-         (spec (and buffer (null (posn-area position))
-                    (integer-or-marker-p point)
-                    (with-current-buffer buffer
-                      (ebox-interaction--hover-content-spec-at point))))
-         (owner (and spec (plist-get spec :ref)))
-         (previous ebox-interaction--hover-content-owner))
-    (unless (and buffer (eq buffer (current-buffer))
-                 (equal owner previous))
-      (when (buffer-live-p (current-buffer))
-      (let ((old-base ebox-interaction--hover-content-base)
-            (old-spec (and previous
-                           (cl-find-if
-                            (lambda (entry)
-                              (equal previous (plist-get entry :ref)))
-                            ebox-interaction--hover-content-specs))))
-        ;; Clear the ownership marker before publishing the leave update.  The
-        ;; publication callback may refresh specs and must not preserve a
-        ;; stale active owner while the old content is being restored.
-        (setq ebox-interaction--hover-content-owner nil
-              ebox-interaction--hover-content-base nil)
-        (when (and old-spec old-base)
-          (ebox-interaction--hover-content-update old-spec old-base))
-        (when (and spec owner)
-          (let* ((handle (plist-get spec :handle))
-                 (node (plist-get spec :node))
-                 (base (and node (ebox--region-update-content-value node)))
-                 (content (condition-case _error
-                              (ebox-interaction--hover-content-value
-                               (plist-get spec :content) buffer)
-                            (error nil))))
-            (when (and handle base content)
-              (ebox-interaction--hover-content-update spec content)
-                (setq ebox-interaction--hover-content-owner owner
-                      ebox-interaction--hover-content-base base)))))))
+         (buffer (and (window-live-p window) (window-buffer window))))
+    (when (and buffer (null (posn-area position))
+               (integer-or-marker-p point))
+      (with-current-buffer buffer
+        (let* ((spec (ebox-interaction--hover-content-spec-at point))
+               (owner (and spec (plist-get spec :ref)))
+               (previous ebox-interaction--hover-content-owner))
+          (unless (equal owner previous)
+            (let ((old-base ebox-interaction--hover-content-base)
+                  (old-spec (and previous
+                                 (cl-find-if
+                                  (lambda (entry)
+                                    (equal previous (plist-get entry :ref)))
+                                  ebox-interaction--hover-content-specs))))
+              ;; Clear the ownership marker before publishing the leave
+              ;; update.  The publication callback may refresh specs and must
+              ;; not preserve a stale active owner while content is restored.
+              (setq ebox-interaction--hover-content-owner nil
+                    ebox-interaction--hover-content-base nil)
+              (when (and old-spec old-base)
+                (ebox-interaction--hover-content-update old-spec old-base))
+              (when (and spec owner)
+                (let* ((handle (plist-get spec :handle))
+                       (node (plist-get spec :node))
+                       (base (and node (ebox--region-update-content-value node)))
+                       (content (condition-case _error
+                                    (ebox-interaction--hover-content-value
+                                     (plist-get spec :content) buffer)
+                                  (error nil))))
+                  (when (and handle base content)
+                    (ebox-interaction--hover-content-update spec content)
+                    (setq ebox-interaction--hover-content-owner owner
+                          ebox-interaction--hover-content-base base)))))))))
     nil))
 
 (defun ebox-interaction-surface-properties (properties)
