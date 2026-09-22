@@ -87,6 +87,40 @@
             (unless disable (should (equal unread-command-events '(?x)))))
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-drag-lock-modifier-keeps-gesture-after-release ()
+  "Shift-down starts a locked drag whose next click publishes the end phase."
+  (let ((buffer (generate-new-buffer " *ebox-drag-lock*")) phases)
+    (unwind-protect
+        (progn
+          (let ((map (ebox-keymap-create
+                      :drag-lock-modifier 'shift
+                      :drag (lambda (gesture)
+                              (push (plist-get gesture :phase) phases)))))
+            (ebox-render-to-buffer buffer (ebox-drag-test--input map))
+            (save-window-excursion
+              (set-window-buffer (selected-window) buffer)
+              (with-current-buffer buffer
+                (goto-char (point-min))
+                (search-forward "Drag")
+                (let* ((position (match-beginning 0))
+                       (window (selected-window))
+                       (data (list window position '(1 . 1) 0))
+                       (press (list 'S-down-mouse-1 data))
+                       (command (lookup-key map [down-mouse-1]))
+                       (events (list
+                                (ebox-drag-test--event 'mouse-movement window
+                                                       position '(4 . 3))
+                                (ebox-drag-test--event 'drag-mouse-1 window
+                                                       position '(4 . 3) '(7 . 4))
+                                (list 'S-down-mouse-1 data)
+                                (list 'mouse-1 data))))
+                  (cl-letf (((symbol-function 'read-event)
+                             (lambda (&rest _) (or (pop events) ?q))))
+                    (funcall command press)))))
+            (should (equal (reverse phases) '(start move move end)))
+            (should-not (ebox-selector-query-buffer buffer ":active")))
+      (kill-buffer buffer)))))
+
 (ert-deftest ebox-drag-cancels-when-leaving-the-original-window ()
   "A pointer outside the original text area cancels without moving the target."
   (let ((buffer (generate-new-buffer " *ebox-drag-outside*")) phases reason)

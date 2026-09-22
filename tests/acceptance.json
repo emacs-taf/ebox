@@ -261,6 +261,11 @@
       "purpose": "Entering one grouped hover target updates and restores all members together."
     },
     {
+      "name": "ebox-drag-lock-modifier-keeps-gesture-after-release",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "A Shift drag remains active after release until the next click ends it."
+    },
+    {
       "name": "ebox-keymap-create-mouse-uses-event-buffer-without-moving-focus",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Mouse callbacks target the clicked buffer even when another buffer is current."
