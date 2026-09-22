@@ -962,5 +962,39 @@ it does not create an overlay or enter the primary-button drag loop."
         (ebox-unmount-buffer buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-interaction-hover-content-follows-retained-geometry ()
+  "A retained geometry update refreshes hover bounds without any input.
+
+A desktop that tiles windows moves hover targets by updating geometry, so a
+hover target must be discoverable at its committed position before the user
+touches the buffer again."
+  (let ((buffer (generate-new-buffer " *ebox-hover-geometry*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let ((window (selected-window)))
+            (ebox-render-to-buffer
+             buffer
+             (ebox-build
+              '(column
+                (text :id "prefix" "ab")
+                (text :id "control" :hover-content "×" "●"))))
+            (set-window-buffer window buffer)
+            (with-current-buffer buffer
+              (ebox-region-update "prefix" :content "abcd")
+              (let* ((position (save-excursion
+                                 (goto-char (point-min))
+                                 (search-forward "●")
+                                 (match-beginning 0)))
+                     (command (lookup-key ebox-buffer-mode-map [mouse-movement])))
+                (should (commandp command))
+                (funcall command
+                         (list 'mouse-movement
+                               (list window position '(1 . 1) 0)))
+                (should (equal "abcd\n× " (substring-no-properties (buffer-string))))))))
+      (when (buffer-live-p buffer)
+        (ebox-unmount-buffer buffer)
+        (kill-buffer buffer)))))
+
 (provide 'ebox-interaction-tests)
 ;;; ebox-interaction-tests.el ends here

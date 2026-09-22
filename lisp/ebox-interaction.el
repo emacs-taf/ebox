@@ -191,10 +191,19 @@ This function does not install navigation bindings or event propagation."
         ;; A release-only map lets the preceding press enter mouse-drag-region;
         ;; double/triple clicks can then select words or whole lines.  Claim
         ;; the primary-button sequence locally, preserving explicit handlers.
-        (dolist (event '(mouse-1 double-mouse-1 triple-mouse-1
-                                      down-mouse-1 double-down-mouse-1
-                                      triple-down-mouse-1 drag-mouse-1
-                                      double-drag-mouse-1 triple-drag-mouse-1))
+        ;; Modifier-prefixed presses are claimed as well: otherwise a
+        ;; lock-modifier drag (for example shift-click) leaves the press to a
+        ;; global command such as shift-click region extension.
+        (dolist (event (append
+                        '(mouse-1 double-mouse-1 triple-mouse-1
+                          down-mouse-1 double-down-mouse-1
+                          triple-down-mouse-1 drag-mouse-1
+                          double-drag-mouse-1 triple-drag-mouse-1)
+                        (cl-loop for modifier in '(shift control meta super hyper)
+                                 append (mapcar
+                                         (lambda (base)
+                                           (event-convert-list (list modifier base)))
+                                         '(down-mouse-1 mouse-1 drag-mouse-1)))))
           (unless (lookup-key map (vector event))
             (define-key map (vector event)
                         (cond
@@ -895,18 +904,25 @@ following the target until point is moved back to that target's first character.
 
 (defun ebox-interaction--focus-settle (buffer snapshot state)
   "Apply BUFFER's focus point after Ebox publication restores its native view
-for STATE."
-  (when (and (or (car snapshot)
-                 (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
-             (buffer-live-p buffer)
+for STATE.
+
+Hover-content bounds follow every committed publication: retained geometry
+updates move hover targets without any focus change, and stale bounds would
+stop `:hover-content' from ever activating.
+"
+  (when (and (buffer-live-p buffer)
              (eq state (ebox-surface--buffer-client-state buffer)))
+    (when (or (car snapshot)
+              (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
+      (with-current-buffer buffer
+        (let ((position (and (or (nth 2 snapshot)
+                                 (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
+                             (ebox-interaction--focus-position
+                              state ebox-interaction--focus-owner))))
+          (goto-char (or position
+                         (min (point-max) (max (point-min) (nth 1 snapshot))))))))
     (with-current-buffer buffer
-      (let ((position (and (or (nth 2 snapshot)
-                               (ebox-interaction--focus-request-for buffer (nth 5 snapshot)))
-                           (ebox-interaction--focus-position
-                            state ebox-interaction--focus-owner))))
-        (goto-char (or position
-                       (min (point-max) (max (point-min) (nth 1 snapshot)))))))))
+      (ebox-interaction--hover-content-sync buffer))))
 
 (defun ebox-interaction--rollback (buffer snapshot)
   "Restore BUFFER's interaction owners after publication rejection."

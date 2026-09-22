@@ -1146,6 +1146,11 @@
       "purpose": "The low-level geometry boundary rejects content, paint, malformed and Text updates before publication."
     },
     {
+      "name": "ebox-interaction-hover-content-follows-retained-geometry",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Hover content responds at a target's committed position after a retained geometry update, without any intervening input."
+    },
+    {
       "name": "ebox-interaction-hover-content-uses-retained-updates",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "A node-declared hover content value enters and leaves through retained Ebox content updates with local motion tracking and no overlay."

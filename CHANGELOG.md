@@ -4,6 +4,13 @@ All notable changes to Ebox are documented here.
 
 ## 3.0.0 (Unreleased)
 
+### Fixed
+
+- Modifier-prefixed primary clicks stay on the interactive node's own keymap.
+  A lock-modifier drag (shift, control, meta, super or hyper with a click)
+  starts the controlled Ebox gesture instead of leaving the press to a global
+  command such as Emacs's shift-click region extension.
+
 ### Changed
 
 - Local updates retain ownership indexes when node relationships are unchanged.
