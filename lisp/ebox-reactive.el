@@ -66,6 +66,8 @@
         :subscription-added 0 :subscription-removed 0))
 
 (defvar ebox--pub--transaction-active nil)
+(defvar ebox--pub--prepared-frame-active nil
+  "Non-nil while a prepared primitive publication owns the transaction.")
 
 (defun ebox-transaction-active-p ()
   "Return non-nil while the current dynamic extent is in a Ebox transaction."
@@ -1143,6 +1145,9 @@ primary condition data."
 
 (defun ebox--pub--call-with-transaction (function)
   "Call FUNCTION in one atomic signal and binding transaction."
+  (when ebox--pub--prepared-frame-active
+    (signal 'ebox--pub-transaction-contract-error
+            (list :nested-prepared-publication)))
   (if ebox--pub--transaction-active
       (funcall function)
     (let (after-commit result

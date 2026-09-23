@@ -331,6 +331,66 @@ Ebox 按普通单位语法校验值，构造隔离 candidate，并通过与 `ebo
 框架行为或应用可以通过 `ebox-keymap-create` 接收手势，再用本接口提交下一组声明式几何。
 Ebox 负责校验、保留式布局、遮挡重组、增量发布和回滚；调用方负责交互状态和策略。
 
+框架连续更新同一挂载 Host 时，可以在准备边界调用 `ebox-geometry-prepare`，传入
+buffer、Host 引用（或语义 ID）与固定属性顺序，再将复用的值 vector 交给
+`ebox-geometry-apply`。返回 nil 表示尚未暂存任何状态，调用方必须走普通更新路径。
+普通发布、替换和卸载会使操作过期；应在下一个稳定准备边界重建，不能把过期当作成功。
+同一受支持画布内的目标共享保留式准备，轮流接纳这些预备操作不会使其他目标过期。
+兼容的绘制或定位发布后，再次准备会保留画布已编译的 wrapper 与所有权资源。旧操作
+仍然过期；调用者必须取得对应已接纳代次的新绑定。
+
+```elisp
+(let ((operation (ebox-geometry-prepare
+                  (current-buffer) "panel" [:left :top :z-index]))
+      (values (vector '(px 12) '(lh 2) 3)))
+  (unless (and operation (ebox-geometry-apply operation values))
+    (ebox-region-update-geometry "panel" :left '(px 12) :top '(lh 2) :z-index 3)))
+```
+
+当前编译路径支持固定包含平面内的绝对位置与层级变化，以及外层固定 wrapper；水平
+保留 `px` 或 `ch`，垂直保留 `lh` 单位。不变的尺寸绑定可以共用此 vector。尺寸变化、
+anchor、根 portal 与滚动依赖在具备预备实现前继续使用普通发布。复用位置存储不等于
+通过延迟或零分配验收；裁剪和原生文本发布仍有各自需要测量的成本。固定 wrapper
+装饰、所有权投影及发布复用已编译资源，只处理损伤行。
+
+可选的零参数 `stage` 与 `rollback` 必须成对传入，以同一次发布协调框架状态；
+stage 失败会恢复两方权威。`after-commit` 只在接纳后执行，其异常不会撤销已接纳的
+发布。每个 `ebox-geometry-prepare` 操作拥有一个 Host；`ebox-update-prepare`
+把跨 Host 的受支持变化组成一次原子发布。不受支持的组合继续使用普通 batch。
+已导出的 snapshot 不随后续预备移动发生变化。
+
+框架可用 `ebox-update-prepare` 把相关绘制、Text 与几何效果组成一个固定 cohort。
+规格是 `[HOST-REF PROPERTY-VECTOR]` 的向量；同一 Host 可声明互不重叠的属性组。
+`ebox-update-apply` 复用成员值向量和稀疏变化索引，一组 stage/rollback 回调覆盖
+全部成员和一次发布。对于语义 ID 为 `panel` 的已挂载 Box 和 ID 为 `label` 的
+Text，准备或应用返回 nil 时，用普通 batch 完成同一次更新：
+
+```elisp
+(let ((operation (ebox-update-prepare
+                  (current-buffer)
+                  [["panel" [:left :z-index]]
+                   ["label" [:color :content]]]))
+      (values [[(px 20) 3] ["#0088cc" "Ready"]]))
+  (unless (and operation (ebox-update-apply operation values [0 1]))
+    (ebox-call-with-update-batch
+     (lambda ()
+       (ebox-region-update-geometry "panel" :left '(px 20) :z-index 3)
+       (ebox-region-update "label" :color "#0088cc" :content "Ready")))))
+```
+
+cohort 使用预备几何的共享固定画布。受支持属性、值和 Text 区域条件由
+[入口 API 清单](../ebox.el)的 `ebox-update-prepare` 定义。其中 class、border、
+font-weight 和 nil 前景色变化使用普通发布。Text 可以在获准的固定单行分配中
+改变宽度；初始内容为空、已被裁剪或恰好占满分配范围时，不能准备该固定槽。
+未支持的富文本、布局依赖、分配范围变化及活动 hover 替换也在发布前拒绝，
+由调用方回退到普通事务。源记录保留 opaque
+handle；更换记录绑定使旧操作过期，而早先导出的 canonical input 仍有效。接纳绘制后，
+下一次普通更新先重算陈旧 cascade，再采用通用局部更新证明。
+
+只要用户没有手动移动 point，它会跟随保留的逻辑焦点。目标被完全遮挡时清理 focus
+和 active 所有权，并更新 hover 范围；若清理这些状态会改变计算样式，该样本会在
+暂存前拒绝，由普通路径一并发布样式变化。
+
 ### 换行与可选 EKP 依赖
 
 `:wrap-mode word` 按普通单词换行，并允许 CJK 字符换行；`char` 按 Ebox 支持的常见
@@ -468,8 +528,11 @@ margin 及结构性换行符；悬停遵循上面的规则。嵌套的 Text 或 
            "水平拖动")))))
 ```
 
-Ebox 在 keyed 重排后保持初始目标，每次事件前检查当前已发布的归属。
-回调完成并 redisplay 后再读取输入，释放事件提供最终位置。离开原文本窗口、
+Ebox 在 keyed 重排后保持初始目标，在原生读取后与分派前检查当前已发布的归属。
+每轮最多合并 64 个原文本窗口中已经待处理的移动，以最新位置完成回调和
+redisplay；轮询不会等待更多移动。释放、再次按下、取消、无关输入及移出窗口
+都会停止合并，无关事件保持原顺序。释放使用它自己的最终位置；锁定手势在
+第二次按下时结束，随后等待释放期间的移动不再发布。离开原文本窗口、
 目标或窗口失效会结束跟踪；`C-g` 取消并继续传播 quit。已接受的位置仍由应用持有。
 可以同时提供 `:activate` 处理键盘激活，主鼠标按钮序列归 `:drag`。
 手势字段和生命周期见[入口文件](../ebox.el)。本接口面向同一 GUI 窗口，

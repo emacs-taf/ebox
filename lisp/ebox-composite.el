@@ -201,7 +201,7 @@ Do not modify the input interval list or its cons cells."
     (push (cons start end) result)
     (nreverse result)))
 
-(defun ebox-composite-line (base placements width)
+(defun ebox-composite-line (base placements width &optional stop)
   "Compose BASE and opaque PLACEMENTS on a fixed WIDTH-pixel canvas.
 BASE is a single-line string or nil.  PLACEMENTS is a proper list of plists
 with a single-line string :text and finite pixel :x, already ordered bottom
@@ -212,13 +212,15 @@ the interval's left edge.  Negative and overflowing placements are clipped.
 WIDTH must be finite and nonnegative.  Uncovered pixels beyond BASE receive
 neutral fill.  Compute coverage before extracting original source intervals,
 so hidden placements cannot introduce cuts into a visible source glyph.
-Do not modify BASE, PLACEMENTS, or any of their text property values."
+Do not modify BASE, PLACEMENTS, or any of their text property values.
+STOP, when non-nil, is the first unused tail of a prepared placement spine."
   (unless (and (ebox-composite--line-p base)
                (proper-list-p placements)
                (ebox-size--finite-number-p width) (>= width 0))
     (error "Invalid Ebox composite canvas"))
   (let (sources covered visible)
-    (dolist (placement placements)
+    (while (and placements (not (eq placements stop)))
+      (let ((placement (car placements)))
       (let* ((text (plist-get placement :text))
              (x (plist-get placement :x))
              (source-start (or (plist-get placement :source-start) 0))
@@ -237,6 +239,7 @@ Do not modify BASE, PLACEMENTS, or any of their text property values."
             (error "Ebox composite placement extent is not finite"))
           (when (< left end)
             (push (list left end text (- x source-start)) sources)))))
+      (setq placements (cdr placements)))
     ;; Sources were pushed from bottom to top.  Only original source metadata
     ;; participates in occlusion; no sliced text is ever sliced again.
     (dolist (source (append sources (list (list 0 width base 0))))

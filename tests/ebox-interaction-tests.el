@@ -996,5 +996,74 @@ touches the buffer again."
         (ebox-unmount-buffer buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-interaction-prepared-geometry-updates-hover-bounds ()
+  "Prepared movement discovers hover controls at their new or newly revealed positions."
+  (dolist (covered '(nil t))
+    (let ((buffer (generate-new-buffer " *ebox-prepared-hover*")))
+      (unwind-protect
+          (save-window-excursion
+            (let ((window (selected-window)))
+              (set-window-buffer window buffer)
+              (ebox-render-to-buffer
+               buffer
+               (ebox-build
+                `(box :width (px 80) :height (lh 8)
+                      (box :id "moving" :position absolute :left (px 2) :top (lh 1)
+                           :width (px 20) :height (lh 2) :z-index 2
+                           ,(if covered "Cover" '(text :id "control" :hover-content "×" "●")))
+                      ,@(when covered
+                          '((box :id "lower" :position absolute :left (px 2) :top (lh 1)
+                                 :width (px 20) :height (lh 2) :z-index 1
+                                 (text :id "control" :hover-content "×" "●")))))))
+              (with-current-buffer buffer
+                (when covered (should-not (string-match-p "●" (buffer-string))))
+                (let* ((reject t)
+                       (before (buffer-string))
+                       (operation (ebox-geometry-prepare
+                                   buffer "moving" [:left :top :z-index]
+                                   (lambda () (when reject (error "Reject hover relocation"))) #'ignore)))
+                  (should operation)
+                  (should-error (ebox-geometry-apply operation [(px 30) (lh 3) 2]))
+                  (should (equal-including-properties before (buffer-string)))
+                  (setq reject nil)
+                  (should (ebox-geometry-apply operation [(px 30) (lh 3) 2])))
+                (let* ((position (save-excursion (goto-char (point-min))
+                                                 (search-forward "●") (match-beginning 0)))
+                       (command (lookup-key ebox-buffer-mode-map [mouse-movement])))
+                  (should (eq track-mouse t))
+                  (funcall command (list 'mouse-movement (list window position '(1 . 1) 0)))
+                  (should (string-match-p "×" (buffer-string)))
+                  (should-not (string-match-p "●" (buffer-string)))))))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest ebox-interaction-prepared-occlusion-declines-changing-focus-style ()
+  "Visible focused translation stays prepared; style-changing occlusion declines untouched."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build
+      '(box :width (px 80) :height (lh 8)
+            :ecss (("#moving:focus" :color "#ff0000"))
+            (box :id "moving" :tab-index 0 :position absolute
+                 :left (px 2) :top (lh 1) :width (px 20) :height (lh 2)
+                 :z-index 2 "Moving")
+            (box :id "peer" :position absolute
+                 :left (px 2) :top (lh 1) :width (px 20) :height (lh 2)
+                 :z-index 1 "Peer"))))
+    (ebox-focus-first)
+    (let ((operation (ebox-geometry-prepare (current-buffer) "moving" [:left :top :z-index])))
+      (should operation)
+      (should (ebox-geometry-apply operation [(px 30) (lh 3) 2]))
+      (let ((before (buffer-string))
+            (point-before (point))
+            (revision (ebox-surface-buffer-revision (current-buffer)))
+            (focused (ebox-focused-host-ref)))
+        (should-not (ebox-geometry-apply operation [(px 2) (lh 1) 0]))
+        (should (equal-including-properties before (buffer-string)))
+        (should (= point-before (point)))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal focused (ebox-focused-host-ref)))
+        (should (= 1 (length (ebox-selector-query-buffer (current-buffer) "#moving:focus"))))))))
+
 (provide 'ebox-interaction-tests)
 ;;; ebox-interaction-tests.el ends here

@@ -648,8 +648,14 @@
 ;; :start and :position are (X . Y) pixels in the original window's text area,
 ;; :delta is displacement from the press, :event preserves the native event,
 ;; and :window, :buffer and the current :host-ref identify the retained target.
-;; Each callback completes and redisplay runs before the next input;
-;; end includes the release endpoint. The target has derived :active state
+;; Each input round merges at most 64 already pending motions in the original
+;; text window, then calls back with the latest position and redisplays.
+;; Polling never waits for another motion. Release, another press, cancellation,
+;; unrelated input and leaving the window are boundaries that cannot be merged.
+;; End uses the release endpoint, or the second press in a locked gesture.
+;; Each started gesture delivers one end/cancel; motion while consuming the
+;; final locked release cannot publish after end. Target availability is checked
+;; after native reads as well as before callbacks. The target has derived :active state
 ;; during tracking. State and styles publish together, survive retained updates,
 ;; and clear when tracking ends or its target becomes unavailable. A requested
 ;; :active style must leave the target visible and enabled; otherwise press fails
@@ -818,6 +824,73 @@
 ;; from the last accepted publication.  Values remain in Ebox's unit form when
 ;; retained as expressions.  Stale, unmounted, or Text handles signal an
 ;; error; the query never creates or publishes a candidate.
+;;
+;; Function: ebox-update-prepare (buffer-or-name specifications &optional stage rollback after-commit)
+;;;###autoload (autoload 'ebox-update-prepare "ebox" nil nil)
+;; Prepare a fixed mixed primitive cohort. SPECIFICATIONS is a vector of
+;; [HOST-REF PROPERTY-VECTOR] members; one Host may have disjoint members.
+;; Return an opaque operation or nil for unsupported canvas/dependencies.
+;; Supported geometry follows `ebox-geometry-apply'. Other admitted properties
+;; are effective inline :color, :background-color (alias :bgcolor), existing
+;; nonnil :hover-content, and Text :content. Changing :class, :border or
+;; :font-weight is unsupported, as is applying nil to :color; use ordinary
+;; publication. Clearing hover-content or replacing active hover also declines.
+;; Text must be nonempty and contain no newline, carriage return or tab.
+;; Supported caller text properties are face, font-lock-face and display;
+;; display values may be strings, spaces or images subject to the same retained
+;; ownership and vertical-metric proof. Other rich-text forms decline.
+;; Replacement normally retains the Text span's pixel footprint. Its width may
+;; vary in a proven fixed parent allocation: one sole Text child, left aligned,
+;; no soft wrapping and height (lh 1). The parent's width must be independent of
+;; its content, either declared or allocated by a nonwrapping row Flex with
+;; positive growth, zero basis/min-width and no intrinsic max-width constraint.
+;; Cold preparation requires the initial Text to be fully visible with trailing
+;; fill; an empty, already clipped or exactly full initial allocation declines
+;; this fixed-slot route. Overflow hidden clips replacement text; otherwise it
+;; must fit. Changed vertical metrics or unproved ownership use ordinary updates.
+;; STAGE and ROLLBACK are paired zero-argument callbacks; AFTER-COMMIT runs once
+;; after acceptance. Preparation does not advance the publication revision.
+;;
+;; Function: ebox-update-valid-p (operation)
+;;;###autoload (autoload 'ebox-update-valid-p "ebox" nil nil)
+;; Return whether OPERATION still binds the accepted mounted generation.
+;; Ordinary publication, replacement and unmounting require new preparation.
+;;
+;; Function: ebox-update-apply (operation values changed-indices &optional count)
+;;;###autoload (autoload 'ebox-update-apply "ebox" nil nil)
+;; Publish OPERATION's sparse member updates atomically. VALUES is a reusable
+;; vector of member value vectors. CHANGED-INDICES is a reusable integer vector;
+;; COUNT selects its active prefix and defaults to its length. Return t on
+;; acceptance or nil before publication for unsupported or stale work. Errors
+;; restore source, pixels, bounds, revision and paired caller state. An
+;; after-commit error propagates after acceptance. The ordinary update route is
+;; the fallback when allocation or dependency proofs no longer hold.
+;;
+;; Function: ebox-geometry-prepare (buffer-or-name host-ref properties &optional stage rollback after-commit)
+;;;###autoload (autoload 'ebox-geometry-prepare "ebox" nil nil)
+;; Compile fixed geometry PROPERTIES for one mounted HOST-REF, using the same
+;; identity as `ebox-host-ref-bounds', or its semantic ID.  Return an opaque operation or nil when
+;; the current output dependencies are unsupported.  PROPERTIES is a vector or
+;; list of geometry keywords.  Optional zero-argument STAGE and ROLLBACK must
+;; be paired; AFTER-COMMIT runs after acceptance.  Preparation does not advance
+;; the revision.  Ordinary publication invalidates the prepared operation.
+;;
+;; Function: ebox-geometry-valid-p (operation)
+;;;###autoload (autoload 'ebox-geometry-valid-p "ebox" nil nil)
+;; Return whether OPERATION still owns the mounted publication generation.
+;; This bounded query does not traverse logical nodes or publish anything.
+;;
+;; Function: ebox-geometry-apply (operation values)
+;;;###autoload (autoload 'ebox-geometry-apply "ebox" nil nil)
+;; Apply a reusable VALUES vector in OPERATION's fixed property order.  Values
+;; retain their prepared ordinary units.  Return t after atomic acceptance or
+;; nil before mutation when preparation is stale or a changed dependency needs
+;; general publication.  Changed left/top/z-index currently have compiled
+;; primitives; unchanged dimensions may accompany them.  Invalid values signal
+;; an error.  Failed publication restores source facts, pixels, mounts, revision
+;; and paired caller state.  Focus follows its retained target unless point was
+;; moved manually.  Occlusion clears focus/active ownership; clearing that would
+;; change styles declines before staging.  Caller owns policy and value storage.
 ;;
 ;; Function: ebox-render (input)
 ;;;###autoload (autoload 'ebox-render "ebox" nil nil)
@@ -1231,6 +1304,8 @@
 
 (require 'ebox-runtime)
 (require 'ebox-native-reflow)
+(require 'ebox-geometry)
+(require 'ebox-update)
 
 (provide 'ebox)
 ;;; ebox.el ends here

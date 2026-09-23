@@ -1378,6 +1378,9 @@ Grid track wrappers are traversed after their structural validator succeeds."
 (defvar ebox-style-stylesheet (ebox-style--create-stylesheet)
   "Isolated ECSS stylesheet containing Ebox layout and paint rules.")
 
+(defvar ebox-style--stylesheet-epoch 0
+  "Generation of Ebox-owned mutable global stylesheet configuration.")
+
 (defvar ebox-style--scopes nil
   "Mounted ECSS scopes for the current candidate or retained computation.")
 
@@ -1503,7 +1506,8 @@ cascade pass during its initial static projection."
 
 (defun ebox-style-reset-rules ()
   "Clear all rules and cascade layers in `ebox-style-stylesheet'."
-  (ecss-stylesheet-clear ebox-style-stylesheet))
+  (prog1 (ecss-stylesheet-clear ebox-style-stylesheet)
+    (cl-incf ebox-style--stylesheet-epoch)))
 
 (defun ebox-style--selector (selector)
   "Return ECSS selector AST compiled from Ebox SELECTOR."
@@ -1858,11 +1862,13 @@ mutates no input or stylesheet and evaluates no declaration values."
     (selector declarations &key (origin 'author) layer scope)
   "Add SELECTOR rule with Ebox DECLARATIONS to the isolated stylesheet.
 ORIGIN, LAYER, and SCOPE use ECSS cascade semantics."
-  (ecss-stylesheet-add-rule
-   ebox-style-stylesheet ebox-style-schemas (ebox-style--selector selector)
-   (ebox-style-compile-declarations declarations t)
-   :origin origin :layer layer
-   :scope (and scope (ebox-style--selector scope))))
+  (prog1
+      (ecss-stylesheet-add-rule
+       ebox-style-stylesheet ebox-style-schemas (ebox-style--selector selector)
+       (ebox-style-compile-declarations declarations t)
+       :origin origin :layer layer
+       :scope (and scope (ebox-style--selector scope)))
+    (cl-incf ebox-style--stylesheet-epoch)))
 
 (defun ebox-style-compute-subject (subject declarations &optional parent-style)
   "Compute SUBJECT style from DECLARATIONS and optional PARENT-STYLE via ECSS."

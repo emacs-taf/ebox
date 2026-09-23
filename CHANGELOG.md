@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Native drags merge bounded bursts of pending motion and publish their latest
+  position without crossing release, cancellation or unrelated input. Locked
+  gestures no longer publish movement after the ending press, and targets lost
+  while a native read runs timers cancel before another callback is delivered.
+
 - Modifier-prefixed primary clicks stay on the interactive node's own keymap.
   A lock-modifier drag (shift, control, meta, super or hyper with a click)
   starts the controlled Ebox gesture instead of leaving the press to a global
@@ -13,6 +18,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Framework integrations can prepare retained geometry operations for repeated
+  absolute moves and stacking changes. Accepted operations preserve source
+  snapshots and pair caller state with the existing publication rollback;
+  unsupported dependencies continue through ordinary updates.
 - Local updates retain ownership indexes when node relationships are unchanged.
   Native and Elisp output use the same role mapping, avoiding repeated ancestor
   resolution and temporary per-node hash tables during publication.

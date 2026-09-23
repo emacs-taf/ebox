@@ -1,0 +1,161 @@
+;;; ebox-prepared-update-tests.el --- Mixed primitive publication contracts -*- lexical-binding: t; -*-
+
+;;; Commentary:
+;; Validate sparse mixed source publication through the public retained API.
+
+;;; Code:
+(require 'ert)
+(require 'ebox)
+
+(defun ebox-prepared-update-test--input ()
+  "Build a fixed canvas with a positioned mixed-update target."
+  (ebox-build
+   '(box :width (ch 30) :height (lh 5)
+      (box :id "panel" :position absolute :left (ch 0) :top (lh 1)
+           :width (ch 12) :height (lh 2) :z-index 1
+           :color "#224466" :hover-content "Hover01"
+        (text :id "label" "Value00")))))
+
+(defun ebox-prepared-update-test--assert-fresh ()
+  "Compare current visible primitive output with the exported canonical input."
+  (let ((actual (buffer-string))
+        (expected (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))
+    (should (equal (substring-no-properties actual) (substring-no-properties expected)))
+    (dotimes (position (length actual))
+      (dolist (property '(display face font-lock-face help-echo keymap pointer mouse-face))
+        (should (equal (get-text-property position property actual)
+                       (get-text-property position property expected)))))))
+
+(ert-deftest ebox-prepared-update-publishes-mixed-members-once ()
+  "Geometry, inherited paint, native hover and Text advance one accepted revision."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-prepared-update-test--input))
+      (let* ((staged 0) (accepted 0)
+             (operation
+              (ebox-update-prepare
+               (current-buffer) [["panel" [:left :top :z-index]]
+                                 ["panel" [:color :hover-content]]
+                                 ["label" [:content]]]
+               (lambda () (setq staged (1+ staged)))
+               (lambda () (setq staged (1- staged)))
+               (lambda () (setq accepted (1+ accepted)))))
+             (values [[(ch 4) (lh 2) 3] ["#884422" "Hover02"] ["Value01"]])
+             (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should operation)
+        (should (ebox-update-valid-p operation))
+        (should (ebox-update-apply operation values [0 1 2]))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (should (= staged 1)) (should (= accepted 1))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [(ch 8) (lh 1) 4])
+        (should (ebox-update-apply operation values [0]))
+        (ebox-prepared-update-test--assert-fresh)
+        (should (= staged 2)) (should (= accepted 2))
+        ;; A later sparse geometry member must retain the accepted hover
+        ;; source and its prebound native capability from the earlier batch.
+        (save-window-excursion
+          (set-window-buffer (selected-window) (current-buffer))
+          (goto-char (point-min))
+          (search-forward "Value01")
+          (funcall (lookup-key ebox-buffer-mode-map [mouse-movement])
+                   (list 'mouse-movement (list (selected-window) (- (point) 7) '(1 . 1) 0)))
+          (should (string-match-p "Hover02" (buffer-string))))))))
+
+(ert-deftest ebox-prepared-update-rolls-back-all-members-and-retries ()
+  "A rejected paired stage restores pixels, source, revision and every member."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-prepared-update-test--input))
+      (let* ((reject t) (caller 'before) (caller-count 0)
+             (operation
+              (ebox-update-prepare
+               (current-buffer) [["panel" [:left :color]] ["label" [:content]]]
+               (lambda () (setq caller 'after caller-count (1+ caller-count))
+                 (when reject (error "Reject mixed update")))
+               (lambda () (setq caller 'before caller-count (1- caller-count)))))
+             (values [[(ch 5) "#885522"] ["Value02"]])
+             (before (buffer-string))
+             (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should operation)
+        (should-error (ebox-update-apply operation values [0 1]))
+        (should (eq caller 'before))
+        (should (= caller-count 0))
+        (should (equal-including-properties before (buffer-string)))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (ebox-prepared-update-test--assert-fresh)
+        (setq reject nil)
+        (should (ebox-update-apply operation values [0 1]))
+        (should (eq caller 'after))
+        (should (= caller-count 1))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 1 ["A longer replacement"])
+        (setq before (buffer-string) revision (ebox-surface-buffer-revision (current-buffer)))
+        (should-not (ebox-update-apply operation values [1]))
+        (should (equal-including-properties before (buffer-string)))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))))))
+
+(ert-deftest ebox-prepared-update-fits-variable-text-in-fixed-flex-allocation ()
+  "A fixed status allocation accepts variable text and preserves adjacent controls."
+  (let ((ebox-viewport-width 320) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(column :width (ch 40) :height (lh 6)
+           (flex :width (ch 40) :height (lh 1) :flex-direction row :flex-wrap nowrap
+             (box :flex-shrink 0 :min-width max-content "Left")
+             (box :id "status-slot" :flex-grow 1 :flex-basis (px 0) :min-width (px 0)
+                  :height (lh 1) :wrap-mode none :overflow hidden
+               (text :id "status" "Ready"))
+             (box :id "controls" :flex-shrink 0 :min-width max-content "Controls"))
+           (box :id "panel" :position absolute :left (ch 0) :top (lh 3)
+                :width (ch 8) :height (lh 1) :z-index 1 "Panel"))))
+      (let* ((reject nil)
+             (operation
+              (ebox-update-prepare
+               (current-buffer) [["status" [:content]]]
+               (lambda () (when reject (error "Reject status"))) #'ignore))
+             (values [["Window one"]]))
+        (should operation)
+        (dolist (text '("Window one" "Window three" "A very long status title that clips before Controls" "Ready"))
+          (aset values 0 (vector text))
+          (should (ebox-update-apply operation values [0]))
+          (should (string-match-p "Controls" (buffer-string)))
+          (ebox-prepared-update-test--assert-fresh))
+        (let ((before (buffer-string)) (revision (ebox-surface-buffer-revision (current-buffer))))
+          (setq reject t)
+          (aset values 0 ["Rejected status"])
+          (should-error (ebox-update-apply operation values [0]))
+          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (equal-including-properties before (buffer-string))))))))
+
+(ert-deftest ebox-prepared-update-declines-unproved-variable-text-allocation ()
+  "Empty, initially clipped and full slots reject unproved width changes atomically."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 8))
+    (dolist (initial '("" "1234567890123456" "12345678"))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(column :width (ch 20) :height (lh 4)
+             (box :width (ch 8) :height (lh 1) :wrap-mode none :overflow hidden
+               (text :id "status" ,initial))
+             (box :id "panel" :position absolute :left (ch 0) :top (lh 2)
+                  :width (ch 8) :height (lh 1) :z-index 1 "Panel"))))
+        (let* ((staged nil)
+               (operation (ebox-update-prepare
+                           (current-buffer) [["status" [:content]]]
+                           (lambda () (setq staged t)) #'ignore))
+               (before (buffer-string))
+               (revision (ebox-surface-buffer-revision (current-buffer)))
+               (snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))
+          (when operation (should-not (ebox-update-apply operation [["x"]] [0])))
+          (should-not staged)
+          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (equal-including-properties before (buffer-string)))
+          (should (equal-including-properties
+                   snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input)))))))))
+
+(provide 'ebox-prepared-update-tests)
+;;; ebox-prepared-update-tests.el ends here

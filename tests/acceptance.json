@@ -1154,6 +1154,176 @@
       "name": "ebox-interaction-hover-content-uses-retained-updates",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "A node-declared hover content value enters and leaves through retained Ebox content updates with local motion tracking and no overlay."
+    },
+    {
+      "name": "ebox-drag-coalesces-bounded-bursts-and-keeps-release-position",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Pending motion bursts publish bounded latest positions and preserve the exact release endpoint through the public native keymap."
+    },
+    {
+      "name": "ebox-drag-preserves-input-barriers-and-remaining-event-order",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Keys and another primary press stop motion merging while preserving the complete remaining native input order."
+    },
+    {
+      "name": "ebox-drag-treats-another-window-as-a-motion-barrier",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Motion crossing another window cancels at the last accepted position without consuming later original-window input."
+    },
+    {
+      "name": "ebox-drag-rechecks-target-after-wait-and-motion-poll",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "A target disabled, removed or unmounted while native reads run is cancelled before motion dispatch and unrelated input is retained."
+    },
+    {
+      "name": "ebox-drag-locked-end-rejects-finishing-motion-and-release-position",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "A locked gesture ends once at its second press and cannot publish later motion or replace that endpoint with its final release."
+    },
+    {
+      "name": "ebox-drag-locked-escape-preserves-later-input",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Escape cancels a locked motion burst and leaves later native input in its original order."
+    },
+    {
+      "name": "ebox-prepared-geometry-retains-source-and-snapshots",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "Prepared translations and stacking preserve prior exported source snapshots and feed the latest geometry into the next ordinary publication."
+    },
+    {
+      "name": "ebox-prepared-geometry-rejects-and-recovers-paired-state",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "A failed prepared publication restores source facts, pixels, revision and caller state, then accepts a valid retry."
+    },
+    {
+      "name": "ebox-prepared-geometry-composes-nested-fixed-canvas",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "Prepared moves inside a bordered nested canvas retain enclosing rows, paint and native properties with fresh-render parity."
+    },
+    {
+      "name": "ebox-prepared-publication-reveals-occluded-host-and-wrapper-bounds",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Prepared translation and stacking reveal occluded Hosts with fresh-mount interaction properties and margin-free bounds, including fixed wrapper borders and padding."
+    },
+    {
+      "name": "ebox-prepared-publication-retries-disjoint-multi-row-moves",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Repeated multi-row translation across separated row ranges preserves source, pixels, properties, bounds and paired state after rejection and matches fresh mounts after each retry."
+    },
+    {
+      "name": "ebox-prepared-publication-reprepares-after-ordinary-paint",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Repreparing after an ordinary paint publication leaves the previous operation stale and preserves accepted pixels, bounds, report, revision and mount identity through a rejected move before a successful retry."
+    },
+    {
+      "name": "ebox-prepared-publication-reprepares-after-inserting-host",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Inserting a Host invalidates the previous prepared operation without mutation; fresh preparation includes the added Host in occlusion, visible bounds and fresh-render parity."
+    },
+    {
+      "name": "ebox-prepared-publication-retains-source-through-focus-reentry",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Focus and unchanged-axis context generations remain source-resolvable across prepared moves, later focus changes and unrelated ordinary content and native-property updates."
+    },
+    {
+      "name": "ebox-prepared-publication-rebuilds-inherited-paint-on-ordinary-update",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Prepared inherited paint survives rejected ordinary publication, unrelated later content and native-property updates, unchanged viewport refresh and detached snapshot reuse."
+    },
+    {
+      "name": "ebox-prepared-publication-rejects-unrecorded-buffer-hook-rewrite",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "External buffer-hook text rewrites reject a prepared frame and restore source geometry, visible properties, Host bounds, revision and point before a later valid move."
+    },
+    {
+      "name": "ebox-prepared-publication-rejects-stage-output-mutation",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Unrecorded stage property writes restore paired state, source, pixels and the last accepted report, including rejection after an earlier prepared success."
+    },
+    {
+      "name": "ebox-prepared-publication-snapshots-caller-values-before-hooks",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "A buffer hook mutating the caller-owned reusable geometry vector cannot change the source values already used to render the prepared frame."
+    },
+    {
+      "name": "ebox-prepared-geometry-respects-important-cascade",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "Equal current inline and important stylesheet positions do not authorize a prepared move to bypass cascade precedence; ordinary fallback preserves effective geometry."
+    },
+    {
+      "name": "ebox-prepared-geometry-crosses-flow-stacking-and-visible-clip",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "Prepared movement and stacking across normal flow and each clipping edge preserve source rendering, pixels and native interaction properties."
+    },
+    {
+      "name": "ebox-prepared-publication-follows-focus-unless-point-moved-manually",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Prepared translation makes logical focus follow its visible target, preserves independently moved point, and resumes following when point returns to the target."
+    },
+    {
+      "name": "ebox-prepared-publication-clears-occluded-focus-after-acceptance",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Rejected occlusion preserves focus, point and source selectors; accepted complete occlusion clears logical focus and the focused selector state."
+    },
+    {
+      "name": "ebox-prepared-publication-delivers-paired-defensive-observations",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Accepted prepared updates deliver correlated publication and Ebox reports with defensive values and phase timing; rejected frames do not notify observers."
+    },
+    {
+      "name": "ebox-prepared-geometry-switches-target-with-current-pixels",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "Preparing another geometry target after an accepted move preserves current pixels and source geometry rather than reusing an earlier canvas ledger."
+    },
+    {
+      "name": "ebox-prepared-geometry-declines-root-without-containing-plane",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "A standalone absolute root has no containing-plane program and declines without error; its ordinary typed geometry update remains usable."
+    },
+    {
+      "name": "ebox-prepared-geometry-rejects-changed-text-scale",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "Changing buffer-local text scale rejects prepared geometry and stale repreparation without callbacks or publication changes; ordinary display refresh enables a correct new operation."
+    },
+    {
+      "name": "ebox-prepared-geometry-rejects-changed-face-remapping",
+      "file": "tests/ebox-geometry-tests.el",
+      "purpose": "Updating an existing default-face remapping rejects its prepared geometry without changing source, output, bounds or revision; ordinary refresh permits valid preparation."
+    },
+    {
+      "name": "ebox-drag-prepared-geometry-retains-and-releases-active-owner",
+      "file": "tests/ebox-drag-tests.el",
+      "purpose": "Prepared geometry keeps the pressed target through row movement, then accepted occlusion clears active selector facts and terminates the native gesture."
+    },
+    {
+      "name": "ebox-interaction-prepared-geometry-updates-hover-bounds",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Prepared movement and rollback preserve hover content behavior at moved and newly revealed control positions."
+    },
+    {
+      "name": "ebox-interaction-prepared-occlusion-declines-changing-focus-style",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Focused translation remains prepared while an occluding update requiring different focus paint declines without changing source, pixels, point or revision."
+    },
+    {
+      "name": "ebox-prepared-update-publishes-mixed-members-once",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "Mixed geometry, inherited paint, hover content and Text publish once; later sparse geometry retains the accepted native hover capability."
+    },
+    {
+      "name": "ebox-prepared-update-rolls-back-all-members-and-retries",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "A failing stage reverses multiple caller cells and all source/display changes; retry succeeds and unsupported text footprint changes preserve the accepted generation."
+    },
+    {
+      "name": "ebox-prepared-update-fits-variable-text-in-fixed-flex-allocation",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "A fixed Flex status allocation accepts variable-length titles, clips long content before adjacent controls, and restores prior content and revision on rejection."
+    },
+    {
+      "name": "ebox-prepared-update-declines-unproved-variable-text-allocation",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "Initially empty, clipped or full Text allocations decline unproved footprint changes without callbacks, source mutation, visible edits or revision advancement."
     }
   ]
 }

@@ -991,12 +991,18 @@ exported."
                result))
             (t value)))
          (visit (node)
-           (cl-loop for tail on node by #'cddr
-                    for key = (car tail)
-                    unless (memq key ebox-tree--child-source-keys)
-                    do (setcar (cdr tail)
-                               (unless (memq key ebox-tree--runtime-source-keys)
-                                 (data (cadr tail)))))
+           (let ((children (ebox-tree-node-children node)))
+             (cl-loop for tail on node by #'cddr
+                      for key = (car tail)
+                      unless (and (memq key ebox-tree--child-source-keys)
+                                  ;; Coordinate names also describe old
+                                  ;; concat/stack child slots.  Only actual
+                                  ;; child values were detached structurally.
+                                  (or (not (memq key '(:left :right :top :bottom)))
+                                      (memq (cadr tail) children)))
+                      do (setcar (cdr tail)
+                                 (unless (memq key ebox-tree--runtime-source-keys)
+                                   (data (cadr tail))))))
            (ebox-tree-for-each-direct-child node #'visit)))
       (visit copy))
     copy))
@@ -1009,7 +1015,8 @@ while a Ebox publication transaction is active or BUFFER has no live Ebox
 surface.
 
 This explicit operation copies node structure and mutable input data,
-retaining exact immutable source facts and opaque capabilities such as
+freezes private prepared geometry declarations, and retains sealed immutable
+source facts and opaque capabilities such as
 callbacks and keymaps.  It neither renders nor publishes, and never advances
 the revision.  Cost is linear in exported data plus Ebox's latest retained
 diagnostic report.  The returned input survives later commits and
@@ -1024,6 +1031,8 @@ authority over another mount."
          (revision (ebox--pub-surface-revision surface))
          (root (ebox-surface--snapshot-root (plist-get state :root-node)))
          (builder (ebox-source-builder-create)))
+    ;; Import detaches private prepared declaration cells; the copied node
+    ;; geometry above and this source generation must both remain frozen.
     (ebox-source-builder-import builder (plist-get state :source-index))
     (list :input (ebox-canonical-input-create
                   (list root) (ebox-source-builder-finish builder))
@@ -1392,6 +1401,22 @@ non-nil."
                       (make-hash-table :test 'equal))
            (plist-put new-state :layout-snapshots-complete-p nil))
          (ebox-surface--bind-scroll-states-to-buffer new-state buffer)
+         ;; Prepared ownership programs need a durable topology proof, not a
+         ;; second traversal of every node after a paint/placement publication.
+         ;; The accepted dirty classification and publisher identity facts are
+         ;; authoritative here; an unknown or structural transition retires it.
+         (let ((published (ebox--pub-surface-report-summary surface)))
+           (plist-put
+            new-state :geometry-topology-generation
+            (if (and old-mirror
+                     (plist-get old-mirror :geometry-topology-generation)
+                     (plist-member report-base :dirty-kinds)
+                     (not (memq 'structure (plist-get report-base :dirty-kinds)))
+                     (eql 0 (plist-get published :created-objects))
+                     (eql 0 (plist-get published :removed-objects))
+                     (eql 0 (plist-get published :moved-objects)))
+                (plist-get old-mirror :geometry-topology-generation)
+              (list 'ebox/geometry-topology))))
          (when report-base
            (plist-put new-state :last-update-report
                       (ebox-surface--commit-report
@@ -1631,7 +1656,8 @@ publication has an object scope."
                        (width-changed 'width)
                        (height-changed 'height)
                        (t 'none))))
-      (if (and (eq axes 'none) (not display-changed))
+      (if (and (eq axes 'none) (not display-changed)
+               (not (plist-get state :computed-styles-stale-p)))
           (let ((report
                  (ebox-surface--viewport-report
                   state width target-height axes 'no-op)))
@@ -2753,6 +2779,9 @@ namespace."
   "Return the Ebox publication kind discriminator for Ebox NODE."
   (list 'ebox/node (plist-get node :ebox-type)))
 
+(defvar ebox-surface--rebuilding-computed-styles-p nil
+  "Non-nil while an ordinary candidate rebuilds prepared source style effects.")
+
 (defun ebox-surface--node-style-binding
     (source-index object node subject bindings-by-subject states-by-subject
             style-state-table
@@ -2793,7 +2822,7 @@ namespace."
          (new-parent-style
           (and parent-binding (ebox--pub-binding-last-value parent-binding)))
          (theme-explicit-delta-style
-          (and old-state old-binding
+          (and (not ebox-surface--rebuilding-computed-styles-p) old-state old-binding
                selector-context-stable-p
                stylesheet-stable-p
                (ebox-style--theme-delta-computed
@@ -2803,7 +2832,7 @@ namespace."
                 old-parent-style
                 new-parent-style)))
          (theme-parent-delta-style
-          (and old-state old-binding
+          (and (not ebox-surface--rebuilding-computed-styles-p) old-state old-binding
                (equal (plist-get old-state :declarations)
                       declarations)
                selector-context-stable-p
@@ -2817,7 +2846,7 @@ namespace."
           (and (null theme-explicit-delta-style)
                theme-parent-delta-style))
          (reused-p
-         (and old-state
+         (and (not ebox-surface--rebuilding-computed-styles-p) old-state
                (not (plist-get node :ebox-candidate-computed-style-p))
                (null theme-delta-style)
                selector-context-stable-p
@@ -3014,6 +3043,7 @@ source-handle-to-subject table when the requested local preparation completed."
           (ebox-style-source-scopes source-index (plist-get candidate-index :root-node)))
          (stylesheet-signature (ebox-surface--stylesheet-signature)))
     (when (and node-ids
+               (not (plist-get old-state :computed-styles-stale-p))
                (equal stylesheet-signature (plist-get old-state :stylesheet-signature))
                (ebox-surface--stylesheet-subject-local-p
                 stylesheet-signature t))
@@ -3435,14 +3465,31 @@ NODE-OBJECTS reuses already ensured identities for a same-context style pass."
 (defun ebox-surface--logical-id-region-table (state region-objects)
   "Return root-scoped logical-id entries for STATE and REGION-OBJECTS."
   (let ((table (make-hash-table :test 'equal)))
-    (maphash
-     (lambda (logical-id entries)
-       (dolist (entry entries)
-         (when-let* ((region-id
-                      (ebox-surface--node-editable-region-id (car entry)))
-                     (object (gethash region-id region-objects)))
-           (push (cons object region-id) (gethash logical-id table)))))
-     (plist-get state :selector-id-table))
+    (if (or (plist-get state :selector-index-stale-p)
+            (and (plist-get state :source-index)
+                 (ebox-source--index-derived-stale-p
+                  (plist-get state :source-index))))
+        ;; A structural delta deliberately leaves selector search paths lazy.
+        ;; Its old entries can point at removed region identities.  Logical
+        ;; publication needs current source membership, not selector paths.
+        (ebox-runtime-index-map
+         (lambda (_id node)
+           (when-let* ((handle (ebox-tree-node-source-handle node))
+                       (record (ebox-source--index-record
+                                (plist-get state :source-index) handle))
+                       (logical-id (ebox-source-record-id record))
+                       (region-id (ebox-surface--node-editable-region-id node))
+                       (object (gethash region-id region-objects)))
+             (push (cons object region-id) (gethash logical-id table))))
+         (plist-get state :node-table))
+      (maphash
+       (lambda (logical-id entries)
+         (dolist (entry entries)
+           (when-let* ((region-id
+                        (ebox-surface--node-editable-region-id (car entry)))
+                       (object (gethash region-id region-objects)))
+             (push (cons object region-id) (gethash logical-id table)))))
+       (plist-get state :selector-id-table)))
     (maphash (lambda (logical-id matches)
                (puthash logical-id (nreverse matches) table))
              table)
@@ -6085,6 +6132,524 @@ Each owner appears at most once for one rendered fragment."
           (setq node-id (ebox-runtime-index-get node-id parent-table)))))
     (nreverse owners)))
 
+(cl-defstruct (ebox-surface--geometry-mount
+               (:constructor ebox-surface--make-geometry-mount))
+  "Compiled ownership instructions and fixed mount capacity for one surface."
+  slots descriptors full epoch properties signature signatures role-instructions
+  row-values row-heads row-tails row-entries active-row row-origin
+  surface topology-generation rasters raster-bank raster-capacity role-epoch)
+
+(cl-defstruct (ebox-surface--geometry-owner
+               (:constructor ebox-surface--make-geometry-owner))
+  "One direct or ancestor owner, with reusable interval and merge storage."
+  object tags mounts epoch used end slot full-p
+  free-entry row-epoch row-end row-slot binding direct-p)
+
+(defun ebox-surface--geometry-owner-intern (table object tags)
+  "Resolve OBJECT and TAGS in cold ownership TABLE."
+  (let* ((entries (gethash object table))
+         (entry (assoc tags entries #'equal)))
+    (or (cdr entry)
+        (let ((owner (ebox-surface--make-geometry-owner
+                      :object object :tags (copy-tree tags))))
+          (puthash object (cons (cons (ebox-surface--geometry-owner-tags owner) owner)
+                               entries) table)
+          owner))))
+
+(defun ebox-surface--geometry-mount-prepare-role
+    (owners instructions roles region index state node-objects region-objects)
+  "Compile one REGION role at INDEX into cold ownership INSTRUCTIONS.
+The role's direct tag is exact; combining it with another role later cannot
+expose tags that were present only in a broader raster signature."
+  (let ((program (or (gethash region instructions)
+                     (puthash region (make-vector (length roles) nil) instructions))))
+    (unless (aref program index)
+      (let* ((role (aref roles index))
+             (token (vconcat
+                     (mapcar
+                      (lambda (entry)
+                        (ebox-surface--geometry-owner-intern
+                         owners (car entry) (cadr entry)))
+                      (ebox-surface--fragment-owners
+                       (list (cons role region)) state node-objects region-objects)))))
+        ;; The list-valued and direct content-owner properties share one
+        ;; semantic role, so both execute the same exact token program.
+        (dotimes (slot (length roles))
+          (when (eq (aref roles slot) role) (aset program slot token)))))))
+
+(defun ebox-surface--geometry-mount-prepare
+    (surface state rasters interval-capacity &optional wrapper-region-ids rows)
+  "Compile SURFACE ownership from STATE into owned raster copies RASTERS.
+RASTERS must be caller-owned strings: compilation adds immutable private
+owner tokens in place.  The compositor preserves those tokens while slicing
+and joining pixels.  INTERVAL-CAPACITY bounds disjoint visible intervals per
+owner/tag combination.  Existing authoritative mounts are retained in the
+pool, including combinations absent from the current pixels.
+Call the publisher's frame preparation on the returned slots before filling
+them for the first time.  This is the control-plane pass; ancestor traversal,
+tag interning and mount allocation never occur in the fill operation.
+Optional ROWS is the fixed final row vector, excluding structural newlines;
+the first RASTERS element must then be its complete joined output.  Its
+row interval cache is primed here without changing the complete mount pool."
+  (unless (and (integerp interval-capacity) (> interval-capacity 0))
+    (error "Invalid prepared geometry interval capacity: %S" interval-capacity))
+  (let ((owners (make-hash-table :test #'eq))
+        (tokens (make-hash-table :test #'equal))
+        (signatures (make-hash-table :test #'equal))
+        (role-instructions (make-hash-table :test #'equal))
+        (properties (vconcat '(ebox-overflow-foreground-source ebox-content-owners)
+                             (mapcar #'cdr ebox-region-types)))
+        (role-names (vconcat '(overflow-foreground content-owner)
+                             (mapcar #'car ebox-region-types)))
+        (node-objects (plist-get state :surface-node-object-table))
+        (region-objects (plist-get state :region-surface-object-table))
+        descriptors full all-mounts)
+    ;; Reuse accepted mount identities before allocating spare capacity.
+    (dolist (mount (ebox--pub--surface-mounts surface))
+      (let* ((object (ebox--pub--surface-mount-object mount))
+             (tags (ebox--pub--surface-mount-tags mount))
+             (owner (ebox-surface--geometry-owner-intern owners object tags)))
+        (push mount (ebox-surface--geometry-owner-mounts owner))
+        (when (and (null tags)
+                   (memq (ebox--pub--surface-object-kind object)
+                         '(ebox/surface ebox/fragments ebox/text)))
+          (cl-pushnew owner full :test #'eq))))
+    ;; The full accepted primitive also contains fixed wrapper borders and
+    ;; padding.  They are regenerated around the compiled plane, so their
+    ;; role signatures provide cold instructions when a new wrapper run has
+    ;; no raster token.  Empty-role filler always has an empty owner program.
+    (puthash (make-vector (length properties) nil) [] signatures)
+    (dolist (raster (cons (ebox--pub--shadow-surface-output surface) rasters))
+      (unless (stringp raster) (error "Prepared geometry raster is not a string"))
+      (remove-text-properties 0 (length raster) '(ebox--prepared-owners nil) raster)
+      (let ((position 0))
+        (while (< position (length raster))
+          (let* ((end (next-property-change position raster (length raster)))
+                 (roles (ebox-surface--role-ids-at raster position))
+                 (token (gethash roles tokens 'ebox/unknown)))
+            (when (eq token 'ebox/unknown)
+              (setq token
+                    (vconcat
+                     (mapcar
+                      (lambda (entry)
+                        (ebox-surface--geometry-owner-intern
+                         owners (car entry) (cadr entry)))
+                      (ebox-surface--fragment-owners
+                       roles state node-objects region-objects))))
+              (puthash roles token tokens))
+            (let ((signature (make-vector (length properties) nil)))
+              (dotimes (index (length properties))
+                (let ((value (get-text-property position (aref properties index) raster)))
+                  (aset signature index (copy-tree value))
+                  (if (= index 1)
+                      (dolist (region value)
+                        (ebox-surface--geometry-mount-prepare-role
+                         owners role-instructions role-names region index
+                         state node-objects region-objects))
+                    (when value
+                      (ebox-surface--geometry-mount-prepare-role
+                       owners role-instructions role-names value index
+                       state node-objects region-objects)))))
+              (puthash signature token signatures))
+            (when (> (length token) 0)
+              (put-text-property position end 'ebox--prepared-owners token raster))
+            (setq position end)))))
+    ;; Raw rasters compile their exact role factors even when currently
+    ;; occluded.  Enclosing wrappers can add their own roles around a later
+    ;; exposed child signature without discovering ownership on refresh.
+    ;; Duplicate ancestor spans coalesce through the same owner instruction.
+    (dolist (region-id wrapper-region-ids)
+      (dotimes (index (length properties))
+        (ebox-surface--geometry-mount-prepare-role
+         owners role-instructions role-names region-id index
+         state node-objects region-objects)))
+    (maphash
+     (lambda (_object entries)
+       (let ((binding (vector nil nil)))
+         (dolist (entry entries)
+           (let* ((owner (cdr entry))
+                  (existing (nreverse (ebox-surface--geometry-owner-mounts owner)))
+                  (capacity (if (memq owner full) (max 1 (length existing))
+                              (max (+ interval-capacity (length rows))
+                                   (length existing))))
+                  (mounts (make-vector capacity nil))
+                  (index 0))
+             (dolist (mount existing)
+               (aset mounts index mount)
+               (setq index (1+ index)))
+             (while (< index capacity)
+               (aset mounts index
+                     (ebox--pub-frame-mount-create
+                      (ebox-surface--geometry-owner-object owner)
+                      (ebox-surface--geometry-owner-tags owner)))
+               (setq index (1+ index)))
+             (setf (ebox-surface--geometry-owner-mounts owner) mounts
+                   (ebox-surface--geometry-owner-full-p owner) (and (memq owner full) t)
+                   (ebox-surface--geometry-owner-binding owner) binding
+                   (ebox-surface--geometry-owner-direct-p owner)
+                   (and (plist-get (ebox-surface--geometry-owner-tags owner) :ebox/region-id) t))
+             (push owner descriptors)
+             (dotimes (i capacity) (push (aref mounts i) all-mounts))))))
+     owners)
+    (let ((slots (make-vector (* 4 (length all-mounts)) nil))
+          (entries (and rows (make-vector (* 6 (length all-mounts)) nil)))
+          (index 0) (entry 0))
+      (dolist (mount all-mounts)
+        (aset slots index mount)
+        (aset slots (1+ index) 0)
+        (aset slots (+ 2 index) 0)
+        (aset slots (+ 3 index) (ebox--pub--surface-mount-tags mount))
+        (when entries
+          (let ((owner (ebox-surface--geometry-owner-intern
+                        owners (ebox--pub--surface-mount-object mount)
+                        (ebox--pub--surface-mount-tags mount))))
+            ;; Each cache entry belongs permanently to one mount and owner.
+            ;; Its link joins either one row's intervals or the owner's free pool.
+            (aset entries entry mount)
+            (aset entries (1+ entry) owner)
+            (aset entries (+ 4 entry) (ebox-surface--geometry-owner-free-entry owner))
+            (aset entries (+ 5 entry) (ebox-surface--geometry-owner-tags owner))
+            (setf (ebox-surface--geometry-owner-free-entry owner) entry))
+          (setq entry (+ entry 6)))
+        (setq index (+ index 4)))
+      (let ((projection
+             (ebox-surface--make-geometry-mount
+              :slots slots :descriptors (vconcat descriptors) :full (vconcat full)
+              :epoch 0 :properties properties :signatures signatures
+              :signature (make-vector (length properties) nil)
+              :role-instructions role-instructions
+              :row-values (and rows (make-vector (length rows) nil))
+              :row-heads (and rows (make-vector (length rows) nil))
+              :row-tails (and rows (make-vector (length rows) nil))
+              :row-entries entries :surface surface
+              :topology-generation (plist-get state :geometry-topology-generation)
+              :rasters (vector (make-hash-table :test #'eq :size (max 1 (length rasters)))
+                               (make-hash-table :test #'eq :size (max 1 (length rasters))))
+              :raster-bank 0 :raster-capacity (length rasters) :role-epoch 0)))
+        (dolist (raster rasters)
+          (puthash raster t (aref (ebox-surface--geometry-mount-rasters projection) 0)))
+        (when rows
+          (unless (ebox-surface--geometry-mount-update-rows projection (car rasters) rows nil)
+            (error "Prepared geometry row ownership exceeds its cold capacity")))
+        projection))))
+
+(defun ebox-surface--geometry-mount-known-roles-p (projection signature)
+  "Return whether PROJECTION can execute every role in SIGNATURE.
+Unknown combinations may use the existing factored raster instructions;
+refresh never interns an owner or creates a combined token program."
+  (let ((instructions (ebox-surface--geometry-mount-role-instructions projection))
+        (index 0) (valid t))
+    (while (and valid (< index (length signature)))
+      (let ((value (aref signature index)))
+        (if (= index 1)
+            (while (and valid value)
+              (let ((program (and (consp value) (gethash (car value) instructions))))
+                (setq valid (and program (aref program index))
+                      value (cdr-safe value))))
+          (when value
+            (let ((program (gethash value instructions)))
+              (setq valid (and program (aref program index)))))))
+      (setq index (1+ index)))
+    valid))
+
+(defun ebox-surface--geometry-mount-refresh-raster (projection raster annotate)
+  "Check RASTER's compiled role instructions, optionally ANNOTATE in place.
+RASTER must be an owned primitive string, immutable after this pass."
+  (let ((properties (ebox-surface--geometry-mount-properties projection))
+        (signature (ebox-surface--geometry-mount-signature projection))
+        (signatures (ebox-surface--geometry-mount-signatures projection))
+        (position 0) (size (length raster)) (valid t))
+    (when annotate
+      (remove-text-properties 0 size '(ebox--prepared-owners nil) raster))
+    (while (and valid (< position size))
+      (let ((end (next-property-change position raster size)))
+        (dotimes (index (length properties))
+          (aset signature index
+                (get-text-property position (aref properties index) raster)))
+        (let ((token (gethash signature signatures)))
+          (setq valid (or token (ebox-surface--geometry-mount-known-roles-p
+                                projection signature)))
+          (when (and annotate token (> (length token) 0))
+            (put-text-property position end 'ebox--prepared-owners token raster)))
+        (setq position end)))
+    valid))
+
+(defun ebox-surface--geometry-mount-refresh (projection surface state rasters &optional rows)
+  "Refresh PROJECTION's owned RASTERS after a proved ordinary publication.
+STATE's topology generation is retained only by the publication authority's
+accepted dirty and object facts.  Equal generation and SURFACE identity let
+this pass reuse owner programs, mount records and interval capacity without
+comparing node trees or following ancestors.  RASTERS supplies the complete
+current inventory, beginning with the joined output; unchanged immutable
+strings need no property scan.  Optional ROWS has the original fixed count.
+Return non-nil on refresh, or nil when existing instructions cannot represent
+the new pixels.  No surface authority is changed; frame refresh separately
+adopts the current accepted generation before these slots can be published."
+  (let ((generation (ebox-surface--geometry-mount-topology-generation projection)))
+    (when (and generation
+               (eq generation (plist-get state :geometry-topology-generation))
+               (eq surface (ebox-surface--geometry-mount-surface projection))
+               (<= (length rasters) (ebox-surface--geometry-mount-raster-capacity projection))
+               (or (null rows)
+                   (= (length rows) (length (ebox-surface--geometry-mount-row-values projection)))))
+      (let* ((banks (ebox-surface--geometry-mount-rasters projection))
+             (old-bank (ebox-surface--geometry-mount-raster-bank projection))
+             (next-bank (- 1 old-bank))
+             (known (aref banks old-bank))
+             (next (aref banks next-bank))
+             (valid t))
+        (clrhash next)
+        ;; Prove every changed primitive before altering any raster.  An
+        ;; unsupported role leaves the caller free to choose cold preparation.
+        (dolist (raster rasters)
+          (when valid
+            (setq valid
+                  (and (stringp raster)
+                       (or (gethash raster known)
+                           (ebox-surface--geometry-mount-refresh-raster projection raster nil))))))
+        (when valid
+          (dolist (raster rasters)
+            (unless (or (gethash raster known) (gethash raster next))
+              (ebox-surface--geometry-mount-refresh-raster projection raster t))
+            (puthash raster t next))
+          (setq valid
+                (or (null rows)
+                    (ebox-surface--geometry-mount-update-rows
+                     projection (car rasters) rows nil)))
+          (when valid
+            (setf (ebox-surface--geometry-mount-raster-bank projection) next-bank)))
+        valid))))
+
+(defun ebox-surface--geometry-mount-append
+    (projection owner start end epoch count)
+  "Append or extend OWNER's START..END interval in PROJECTION.
+EPOCH resets preallocated merge slots lazily.  COUNT is the active interval
+count; return the new count, or nil when this owner exhausts its cold pool."
+  (if (ebox-surface--geometry-mount-active-row projection)
+      (ebox-surface--geometry-mount-row-append projection owner start end epoch count)
+    (unless (eql (ebox-surface--geometry-owner-epoch owner) epoch)
+      (setf (ebox-surface--geometry-owner-epoch owner) epoch
+            (ebox-surface--geometry-owner-used owner) 0
+            (ebox-surface--geometry-owner-end owner) nil
+            (ebox-surface--geometry-owner-slot owner) nil))
+    (let ((slots (ebox-surface--geometry-mount-slots projection))
+          (last-end (ebox-surface--geometry-owner-end owner)))
+      (if (and last-end (>= last-end end)
+               (<= (aref slots (1+ (ebox-surface--geometry-owner-slot owner))) start))
+          count
+        (if (and last-end (= last-end start))
+            (progn
+              (aset slots (+ 2 (ebox-surface--geometry-owner-slot owner)) end)
+              (setf (ebox-surface--geometry-owner-end owner) end)
+              count)
+          (let* ((used (ebox-surface--geometry-owner-used owner))
+                 (mounts (ebox-surface--geometry-owner-mounts owner))
+                 (offset (* 4 count)))
+            (when (< used (length mounts))
+              (aset slots offset (aref mounts used))
+              (aset slots (1+ offset) start)
+              (aset slots (+ 2 offset) end)
+              (aset slots (+ 3 offset) (ebox-surface--geometry-owner-tags owner))
+              (setf (ebox-surface--geometry-owner-used owner) (1+ used)
+                    (ebox-surface--geometry-owner-end owner) end
+                    (ebox-surface--geometry-owner-slot owner) offset)
+              (1+ count))))))))
+
+(defun ebox-surface--geometry-mount-role
+    (projection region role start end epoch count)
+  "Run a known REGION's prepared ROLE instructions for START..END."
+  (if (null region) count
+    (let* ((instructions (gethash region (ebox-surface--geometry-mount-role-instructions projection)))
+           (token (and instructions (aref instructions role)))
+           (index 0))
+      (unless token (setq count nil))
+      (while (and count (< index (length token)))
+        (let* ((owner (aref token index))
+               (binding (ebox-surface--geometry-owner-binding owner))
+               (direct (ebox-surface--geometry-owner-direct-p owner))
+               (role-epoch (ebox-surface--geometry-mount-role-epoch projection)))
+          (unless (eql (aref binding 0) role-epoch)
+            (aset binding 0 role-epoch)
+            (aset binding 1 direct))
+          ;; Generic ownership gives first attachment priority; later roles
+          ;; cannot change a direct attachment to an ancestor or vice versa.
+          ;; A first direct owner may still contribute several exact roles.
+          (when (eq direct (aref binding 1))
+            (setq count (ebox-surface--geometry-mount-append
+                         projection owner start end epoch count))))
+        (setq index (1+ index)))
+      count)))
+
+(defun ebox-surface--geometry-mount-run-roles
+    (projection rendered start end epoch count)
+  "Execute compiled property-role instructions for RENDERED at START..END."
+  (let ((properties (ebox-surface--geometry-mount-properties projection))
+        (index 0))
+    (cl-incf (ebox-surface--geometry-mount-role-epoch projection))
+    (while (and count (< index (length properties)))
+      (let ((value (get-text-property start (aref properties index) rendered)))
+        (if (= index 1)
+            (while (and count value)
+              (setq count (ebox-surface--geometry-mount-role
+                           projection (car value) index start end epoch count)
+                    value (cdr value)))
+          (setq count (ebox-surface--geometry-mount-role
+                       projection value index start end epoch count))))
+      (setq index (1+ index)))
+    count))
+
+(defun ebox-surface--geometry-mount-row-append
+    (projection owner start end epoch count)
+  "Append OWNER's interval to the active cached row in PROJECTION.
+All entries and their owner-specific free links belong to the cold mount pool."
+  (if (ebox-surface--geometry-owner-full-p owner) count
+    (unless (eql (ebox-surface--geometry-owner-row-epoch owner) epoch)
+      (setf (ebox-surface--geometry-owner-row-epoch owner) epoch
+            (ebox-surface--geometry-owner-row-end owner) nil
+            (ebox-surface--geometry-owner-row-slot owner) nil))
+    (let* ((entries (ebox-surface--geometry-mount-row-entries projection))
+           (origin (ebox-surface--geometry-mount-row-origin projection))
+           (start (- start origin)) (end (- end origin))
+           (last-end (ebox-surface--geometry-owner-row-end owner))
+           (last-slot (ebox-surface--geometry-owner-row-slot owner)))
+      (cond
+       ((and last-end (>= last-end end)
+             (<= (aref entries (+ 2 last-slot)) start)) count)
+       ((and last-end (= last-end start))
+        (aset entries (+ 3 last-slot) end)
+        (setf (ebox-surface--geometry-owner-row-end owner) end)
+        count)
+       (t
+        (let ((entry (ebox-surface--geometry-owner-free-entry owner)))
+          (when entry
+            (setf (ebox-surface--geometry-owner-free-entry owner)
+                  (aref entries (+ 4 entry)))
+            (aset entries (+ 2 entry) start)
+            (aset entries (+ 3 entry) end)
+            (aset entries (+ 4 entry) nil)
+            (let* ((row (ebox-surface--geometry-mount-active-row projection))
+                   (heads (ebox-surface--geometry-mount-row-heads projection))
+                   (tails (ebox-surface--geometry-mount-row-tails projection))
+                   (tail (aref tails row)))
+              (if tail (aset entries (+ 4 tail) entry)
+                (aset heads row entry))
+              (aset tails row entry))
+            (setf (ebox-surface--geometry-owner-row-end owner) end
+                  (ebox-surface--geometry-owner-row-slot owner) entry)
+            (1+ count))))))))
+
+(defun ebox-surface--geometry-mount-scan
+    (projection rendered position limit epoch count)
+  "Execute RENDERED ownership runs from POSITION to LIMIT into PROJECTION."
+  (while (and count (< position limit))
+    (let* ((token (get-text-property position 'ebox--prepared-owners rendered))
+           (end (if token
+                    (next-single-property-change
+                     position 'ebox--prepared-owners rendered limit)
+                  (next-property-change position rendered limit)))
+           (i 0))
+      (unless token
+        (let ((signature (ebox-surface--geometry-mount-signature projection))
+              (properties (ebox-surface--geometry-mount-properties projection)))
+          (dotimes (index (length properties))
+            (aset signature index
+                  (get-text-property position (aref properties index) rendered)))
+          (setq token (gethash signature (ebox-surface--geometry-mount-signatures projection)))
+          (unless token
+            (setq count (ebox-surface--geometry-mount-run-roles
+                         projection rendered position end epoch count)
+                  token []))))
+      (while (and count (< i (length token)))
+        (setq count (ebox-surface--geometry-mount-append
+                     projection (aref token i) position end epoch count)
+              i (1+ i)))
+      (setq position end)))
+  count)
+
+(defun ebox-surface--geometry-mount-update-rows (projection rendered rows dirty)
+  "Refresh only changed ROWS' cached intervals from RENDERED in PROJECTION.
+DIRTY names normal damage.  Row identity additionally detects the previous
+attempt's discarded pixels, so publication rollback needs no cache mutation."
+  (let ((values (ebox-surface--geometry-mount-row-values projection))
+        (heads (ebox-surface--geometry-mount-row-heads projection))
+        (tails (ebox-surface--geometry-mount-row-tails projection))
+        (entries (ebox-surface--geometry-mount-row-entries projection))
+        (size (length rendered)) (offset 0) (valid t))
+    (unless (= (length rows) (length values))
+      (error "Prepared geometry changed its retained row count"))
+    ;; Release every affected row before acquiring entries for any one row.
+    ;; A vertical translation can transfer an owner's whole interval capacity.
+    (dotimes (row (length rows))
+      (when (or (and dirty (aref dirty row))
+                (not (eq (aref rows row) (aref values row))))
+        (let ((entry (aref heads row)))
+          (while entry
+            (let ((owner (aref entries (1+ entry)))
+                  (next (aref entries (+ 4 entry))))
+              (aset entries (+ 4 entry) (ebox-surface--geometry-owner-free-entry owner))
+              (setf (ebox-surface--geometry-owner-free-entry owner) entry)
+              (setq entry next))))
+        (aset heads row nil)
+        (aset tails row nil)
+        (aset values row nil)))
+    (unwind-protect
+        (dotimes (row (length rows))
+          (let* ((text (aref rows row))
+                 (end (+ offset (length text)
+                         (if (< (1+ row) (length rows)) 1 0))))
+            (when (and valid (not (eq text (aref values row))))
+              (let ((epoch (1+ (ebox-surface--geometry-mount-epoch projection))))
+                (setf (ebox-surface--geometry-mount-active-row projection) row
+                      (ebox-surface--geometry-mount-row-origin projection) offset
+                      (ebox-surface--geometry-mount-epoch projection) epoch)
+                (setq valid
+                      (and (<= end size)
+                           (ebox-surface--geometry-mount-scan
+                            projection rendered offset end epoch 0)))
+                (when valid (aset values row text))))
+            (setq offset end)))
+      (setf (ebox-surface--geometry-mount-active-row projection) nil))
+    (and valid (= offset size))))
+
+(defun ebox-surface--geometry-mount-fill (projection rendered &optional rows dirty)
+  "Fill PROJECTION's reusable active mount slots from RENDERED tokens.
+Optional ROWS and DIRTY use the cold retained-row cache.  Only changed rows
+rescan token memberships; unchanged intervals shift by current character
+offsets.  Return the active count, or nil if an interval pool is insufficient.
+Surface, fragment and text records span the complete primitive output.
+Strip private tokens only from successful RENDERED, preserving retained rows.
+No source/component traversal or temporary ownership records are constructed."
+  (let ((epoch (1+ (ebox-surface--geometry-mount-epoch projection)))
+        (full (ebox-surface--geometry-mount-full projection))
+        (count 0) (size (length rendered)))
+    (setf (ebox-surface--geometry-mount-epoch projection) epoch)
+    (dotimes (i (length full))
+      (when count
+        (setq count (ebox-surface--geometry-mount-append
+                     projection (aref full i) 0 size epoch count))))
+    (if rows
+        (if (ebox-surface--geometry-mount-update-rows projection rendered rows dirty)
+            (let ((entries (ebox-surface--geometry-mount-row-entries projection))
+                  (heads (ebox-surface--geometry-mount-row-heads projection))
+                  (slots (ebox-surface--geometry-mount-slots projection))
+                  (origin 0))
+              (dotimes (row (length rows))
+                (let ((entry (aref heads row)))
+                  (while entry
+                    (let ((slot (* 4 count)))
+                      (aset slots slot (aref entries entry))
+                      (aset slots (1+ slot) (+ origin (aref entries (+ 2 entry))))
+                      (aset slots (+ 2 slot) (+ origin (aref entries (+ 3 entry))))
+                      (aset slots (+ 3 slot) (aref entries (+ 5 entry))))
+                    (setq count (1+ count) entry (aref entries (+ 4 entry)))))
+                (setq origin (+ origin (length (aref rows row)) 1))))
+          (setq count nil))
+      (setq count (ebox-surface--geometry-mount-scan
+                   projection rendered 0 size epoch count)))
+    (when count
+      (remove-text-properties 0 size '(ebox--prepared-owners nil) rendered))
+    count))
+
 (defun ebox-surface--line-layout-dependencies (fragments rendered)
   "Record allocation dependencies for one line's FRAGMENTS from RENDERED.
 A boundary display-space with only content-owner roles fills its containing
@@ -7302,6 +7867,18 @@ SOURCE-ISOLATED-P means SOURCE is a private candidate owned by the current
 publication attempt; it is safe to clear its transient attachments in place.
 SOURCE-PATH-COPIED-P means SOURCE shares untouched Ebox nodes with the
 published runtime and must be consumed without clearing those shared nodes."
+  (when (plist-get previous-state :computed-styles-stale-p)
+    ;; A prepared source write leaves immutable computed styles and their
+    ;; inherited projections as stale derived data.  This ordinary boundary
+    ;; owns a complete cold rebuild; never reuse local output or old caches.
+    (setq projection-kind nil source-isolated-p nil source-path-copied-p nil
+          state-overrides
+          (cl-loop for (key value) on state-overrides by #'cddr
+                   when (memq key '(:source-index :source-base-index
+                                    :viewport-width :viewport-height
+                                    :runtime-revision :display-signature
+                                    :logical-candidate-p :detached-identity-history))
+                   append (list key value))))
   (if (stringp source)
       (let ((object
              (ebox--pub-object-ensure context nil ebox-surface--root-key
@@ -7311,7 +7888,9 @@ published runtime and must be consumed without clearing those shared nodes."
          (ebox--pub-surface-plan-create
           :key ebox-surface--root-key :kind 'ebox/string
           :text source :capability 'content)))
-      (let* ((scroll-patch-p (eq projection-kind 'scroll-patch))
+      (let* ((ebox-surface--rebuilding-computed-styles-p
+              (plist-get previous-state :computed-styles-stale-p))
+             (scroll-patch-p (eq projection-kind 'scroll-patch))
              (scroll-input-stable-p
               (and scroll-patch-p previous-state preserve-identities-p
                    (plist-get state-overrides :scroll-state-transaction)
@@ -7363,6 +7942,17 @@ published runtime and must be consumed without clearing those shared nodes."
               (and retained-runtime-source-p
                    (eq projection-kind 'native-frame)))
              (root (cond
+                    ((plist-get previous-state :computed-styles-stale-p)
+                     (let ((copy (ebox-surface--candidate-root source preserve-identities-p)))
+                       (cl-labels
+                           ((clear-style (node)
+                              (when (plist-member node :ebox-computed-style)
+                                (plist-put node :ebox-computed-style nil))
+                              (when (plist-member node :ebox-candidate-computed-style-p)
+                                (plist-put node :ebox-candidate-computed-style-p nil))
+                              (ebox-tree-for-each-direct-child node #'clear-style)))
+                         (clear-style copy))
+                       copy))
                     ;; A proven selector-only candidate shares the published
                     ;; tree.  Its new facts live in the source index; clearing
                     ;; attachments would mutate the accepted generation.
@@ -7455,7 +8045,8 @@ published runtime and must be consumed without clearing those shared nodes."
              (style-required-p
               (if scroll-input-stable-p
                   cascade-required-p
-                (or cascade-required-p
+                (or (plist-get previous-state :computed-styles-stale-p)
+                    cascade-required-p
                     author-style-pending-p
                     (plist-get previous-state :cascade-active-p)
                     (plist-get previous-state :cascade-required-p))))
@@ -7555,6 +8146,9 @@ published runtime and must be consumed without clearing those shared nodes."
                stylesheet-active-p cascade-required-p axes viewport-width
                viewport-height surface-display-signature scroll-offsets)))
         (plist-put state :source-index source-index)
+        ;; This is private candidate state.  A failed publication retains
+        ;; the accepted state's stale bit and retries the complete cascade.
+        (plist-put state :computed-styles-stale-p nil)
         (plist-put state :fragment-reuse-rejection nil)
         (plist-put state :fragment-ownership-changed-p nil)
         (when reuse-context-axes-p

@@ -1,9 +1,11 @@
-;;; ebox-source.el --- Immutable author source facts -*- lexical-binding: t; -*-
+;;; ebox-source.el --- Owned author source facts -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Owns opaque author source handles, immutable source records, and candidate
-;; source indexes.  It does not own Ebox nodes, tree traversal, selector
-;; matching, layout, paint, buffers, or publication.
+;; Owns opaque author source handles, sealed source records, and candidate
+;; source indexes.  Prepared updates bind private source and value cells
+;; to an already-owned runtime node; public exports freeze those cells.
+;; This module does not own tree traversal, selector matching, layout, paint,
+;; buffers, or publication.
 
 ;;; Code:
 
@@ -12,15 +14,23 @@
 (require 'ebox-text)
 (require 'ebox-interaction)
 
+(declare-function ebox-style-schema-id "ebox-style" (name))
+
 (cl-defstruct (ebox-style-scope (:constructor ebox-style--make-scope))
   "Immutable stylesheet shared by explicitly marked roots and member sources."
   identity stylesheet)
 
 (cl-defstruct (ebox-source-record
                (:constructor ebox-source--make-record))
-  "Immutable author facts and candidate-derived interaction states for one source."
+  "Sealed author facts and candidate-derived interaction states for one source.
+MUTABLE-PREPARED-P marks private live source cells, never exported by sharing."
   key id classes attributes states interaction-states declarations provenance interactions
-  ecss ecss-targets ecss-scopes ecss-scope-roots)
+  ecss ecss-targets ecss-scopes ecss-scope-roots mutable-prepared-p)
+
+(cl-defstruct (ebox-source--update-slots
+               (:constructor ebox-source--update-slots-create))
+  "Prepared private source/node cells with reusable value rollback storage."
+  index handle kinds source-cells node-cells value-cells old-values staged-count)
 
 (cl-defstruct (ebox-source-handle
                (:constructor ebox-source--make-handle)
@@ -31,7 +41,8 @@
 (cl-defstruct (ebox-source-index
                (:constructor ebox-source--make-index)
                (:conc-name ebox-source--index-))
-  "Immutable candidate-local mapping from source handles to records."
+  "Sealed generation mapping from source handles to owned records.
+Only privately prepared records permit bounded source-value mutation."
   records handle-records order subjects node-subjects entries root-subject selector-view selector-topology
   selector-id-table selector-class-table selector-type-table host-ref-table
   derived-stale-p)
@@ -419,17 +430,200 @@ declaring membership and independent roots.  Both lists are snapshotted."
 
 (defun ebox-source-builder-import (builder index)
   "Import INDEX's immutable source facts into open BUILDER.
-The exact handles and records are shared; duplicate source identity is an
-error because one canonical forest cannot contain the same source twice."
+Exact handles and sealed records are shared.  Private live prepared records
+are frozen into detached records.  Duplicate source identity is an error
+because one canonical forest cannot contain the same source twice."
   (ebox-source--builder-assert-open builder)
   (unless (ebox-source-index-p index)
     (signal 'wrong-type-argument (list 'ebox-source-index-p index)))
   (dolist (handle (ebox-source-index-handles index))
-    (ebox-source--builder-add-record
-     builder handle
-     (or (ebox-source--index-record index handle)
-         (error "Ebox imported source handle is absent from its index"))))
+    (let ((record (or (ebox-source--index-record index handle)
+                      (error "Ebox imported source handle is absent from its index"))))
+      (ebox-source--builder-add-record
+       builder handle
+       (if (ebox-source-record-mutable-prepared-p record)
+           (ebox-source--copy-record record)
+         record))))
   builder)
+
+(defun ebox-source--update-slots-prepare (index node properties)
+  "Prepare private source and value cells for NODE in INDEX.
+PROPERTIES fixes the incoming value-vector order.  Return slots carrying an
+equivalent replacement source index and handle, or nil if any requested
+primitive cannot be bound.  Style slots require explicit concrete source
+values equal to their engine projections.  Native `:hover-content' binds its
+explicit source interaction; the caller owns its compiled hover registration.
+`:content'
+binds a Text node's canonical value and engine content together.
+Unbound geometry fields other than left/top/z-index stay fixed; the caller
+must prove that their incoming values do not change.
+The caller proves effective inline winners, validates subsequent VALUES,
+and installs the returned index/handle together.  Numeric unit slots retain
+their unit tag.  Incoming nonnumeric values are already caller-owned; stage
+does not copy strings or invoke callbacks.  Preparation replaces only
+private equivalent node values, keeping prior canonical inputs and exports
+isolated from later writes."
+  (catch 'unsupported
+    (let* ((handle (plist-get node :ebox-source-handle))
+           (original (and handle (ebox-source--index-record index handle)))
+           (record (and original (ebox-source--copy-record original)))
+           (count (length properties))
+           (kinds (make-vector count nil))
+           (source-cells (make-vector count nil))
+           (node-cells (make-vector count nil))
+           (value-cells (make-vector count nil))
+           (old-values (make-vector count nil))
+           (seen (make-hash-table :test #'eq))
+           (mutable-count 0))
+      (unless (and record (> count 0)) (throw 'unsupported nil))
+      (dotimes (position count)
+        (let* ((property (elt properties position))
+               (engine-property (if (eq property :background-color) :bgcolor property))
+               source-cell targets value kind)
+          (cond
+           ((eq property :content)
+            (let ((canonical (cdr (plist-member node :ebox-text-value)))
+                  (content (cdr (plist-member node :content))))
+              (unless (and (eq (plist-get node :ebox-kind) 'text)
+                           canonical content (stringp (car canonical))
+                           (equal (car canonical) (car content)))
+                (throw 'unsupported nil))
+              (setq targets (vector canonical content) value (car canonical) kind 'value)))
+           ((eq property :hover-content)
+            (setq source-cell (cdr (plist-member (ebox-source-record-interactions record)
+                                                property))
+                  targets (vector source-cell)
+                  kind 'value))
+           ((memq property '(:box-sizing :position :left :top :z-index :layer :anchor :placement
+                             :width :min-width :max-width :height :min-height :max-height
+                             :color :background-color :bgcolor))
+            (setq source-cell
+                  (cdr (plist-member (ebox-source-record-declarations record)
+                                     (ebox-style-schema-id property)))
+                  targets (vector (cdr (plist-member node engine-property)))
+                  kind 'value)
+            (let ((current (car source-cell)))
+              (when (and (memq property '(:left :top :width :min-width :max-width
+                                         :height :min-height :max-height))
+                         (consp current) (consp (cdr current)) (null (cddr current))
+                         (memq (car current) '(px % vw vh ch lh)) (numberp (cadr current)))
+                (setq kind 'unit))))
+           (t (throw 'unsupported nil)))
+          (unless (eq property :content)
+            (if (and source-cell (aref targets 0)
+                     (equal (car source-cell) (car (aref targets 0))))
+                (setq value (car source-cell))
+              (if (memq property '(:box-sizing :position :layer :anchor :placement
+                                  :width :min-width :max-width :height :min-height :max-height))
+                  (setq kind 'fixed source-cell nil value (car (aref targets 0)))
+                (throw 'unsupported nil))))
+          (unless (eq kind 'fixed)
+            (when (gethash (aref targets 0) seen) (throw 'unsupported nil))
+            (puthash (aref targets 0) t seen)
+            (setq mutable-count (1+ mutable-count)))
+          (aset kinds position kind)
+          (aset source-cells position source-cell)
+          (aset node-cells position targets)
+          (aset old-values position (if (eq kind 'unit) (cadr value) value))
+          (when (eq kind 'unit) (aset value-cells position (cdr value)))))
+      (when (zerop mutable-count) (throw 'unsupported nil))
+      (let* ((replacement handle)
+             (builder (ebox-source-builder-create))
+             (sources (make-hash-table :test #'eq))
+             candidate)
+        (setf (ebox-source-record-mutable-prepared-p record) t)
+        (ebox-source--builder-add-record builder replacement record)
+        (puthash replacement (ebox-source-builder-finish builder) sources)
+        (setq candidate
+              (ebox-source--index-replace-handles
+               index (list handle) (list replacement) sources
+               (list (cons handle replacement))))
+        ;; Handles carry identity only.  Preserve that exact identity so a
+        ;; shared runtime node remains resolvable in earlier source indexes;
+        ;; only this candidate index sees the private mutable record.
+        (setf (ebox-source--index-selector-topology candidate)
+              (ebox-source--index-selector-topology index)
+              (ebox-source--index-selector-view candidate)
+              (ebox-source--index-selector-view index)
+              (ebox-source--index-derived-stale-p candidate)
+              (ebox-source--index-derived-stale-p index))
+        (dotimes (position count)
+          (unless (eq (aref kinds position) 'fixed)
+            (let* ((source (aref source-cells position))
+                   (targets (aref node-cells position))
+                   (value (if source (car source) (aref old-values position))))
+              (dotimes (target (length targets))
+                (setcar (aref targets target) value)))))
+        (ebox-source--update-slots-create
+         :index candidate :handle replacement :kinds kinds
+         :source-cells source-cells :node-cells node-cells
+         :value-cells value-cells :old-values old-values :staged-count 0)))))
+
+(defun ebox-source--update-slots-current-p (slots index)
+  "Return non-nil when INDEX still owns SLOTS' exact prepared source record."
+  (and (ebox-source--update-slots-p slots)
+       (ebox-source-index-p index)
+       (let ((handle (ebox-source--update-slots-handle slots)))
+         (eq (ebox-source--index-record index handle)
+             (ebox-source--index-record (ebox-source--update-slots-index slots) handle)))))
+
+(defun ebox-source--update-slots-value (slots position)
+  "Read SLOTS' current canonical value at compiled POSITION without a lookup."
+  (car (aref (aref (ebox-source--update-slots-node-cells slots) position) 0)))
+
+(defun ebox-source--update-slots-stage (slots values)
+  "Write already-admitted VALUES through SLOTS' retained source/node cells.
+VALUES is a reused vector in the prepared property order.  The caller owns
+its string or capability values and has checked numeric unit tags.  No
+candidate record, node, plist, unit cell or undo graph is allocated here."
+  (let ((position 0)
+        (kinds (ebox-source--update-slots-kinds slots))
+        (old-values (ebox-source--update-slots-old-values slots))
+        (value-cells (ebox-source--update-slots-value-cells slots))
+        (node-cells (ebox-source--update-slots-node-cells slots))
+        (source-cells (ebox-source--update-slots-source-cells slots)))
+    (setf (ebox-source--update-slots-staged-count slots) 0)
+    (while (< position (length kinds))
+      (cond
+       ((eq (aref kinds position) 'unit)
+        (let ((cell (aref value-cells position)))
+          (aset old-values position (car cell))
+          (setf (ebox-source--update-slots-staged-count slots) (1+ position))
+          (setcar cell (cadr (aref values position)))))
+       ((eq (aref kinds position) 'value)
+        (let* ((source (aref source-cells position))
+               (targets (aref node-cells position))
+               (value (aref values position)))
+          (aset old-values position (car (aref targets 0)))
+          (setf (ebox-source--update-slots-staged-count slots) (1+ position))
+          (when source (setcar source value))
+          (dotimes (target (length targets))
+            (setcar (aref targets target) value)))))
+      (setq position (1+ position))))
+  slots)
+
+(defun ebox-source--update-slots-rollback (slots)
+  "Restore SLOTS' last staged values, including a partially completed stage."
+  (let ((position 0)
+        (kinds (ebox-source--update-slots-kinds slots))
+        (old-values (ebox-source--update-slots-old-values slots))
+        (value-cells (ebox-source--update-slots-value-cells slots))
+        (node-cells (ebox-source--update-slots-node-cells slots))
+        (source-cells (ebox-source--update-slots-source-cells slots)))
+    (while (< position (ebox-source--update-slots-staged-count slots))
+      (let ((value (aref old-values position)))
+        (cond
+         ((eq (aref kinds position) 'unit)
+          (setcar (aref value-cells position) value))
+         ((eq (aref kinds position) 'value)
+          (let ((source (aref source-cells position))
+                (targets (aref node-cells position)))
+            (when source (setcar source value))
+            (dotimes (target (length targets))
+              (setcar (aref targets target) value))))))
+      (setq position (1+ position)))
+    (setf (ebox-source--update-slots-staged-count slots) 0))
+  slots)
 
 (cl-defun ebox-source-index-rebind
     (index handle &key
@@ -850,7 +1044,8 @@ A list containing nil certifies that no previous owner exists."
    (ebox-source--index-declarations-view index handle)))
 
 (defun ebox-source--index-declarations-view (index handle)
-  "Return HANDLE's private immutable declaration view in INDEX."
+  "Return HANDLE's private declaration view in INDEX.
+Prepared live updates may mutate only their provider-owned source cells."
   (when-let* ((record (ebox-source--index-record index handle)))
     (ebox-source-record-declarations record)))
 

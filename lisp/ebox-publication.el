@@ -124,6 +124,587 @@ producer result to the active prepare transaction."
   plan objects mounts index mount-index client-state producer revision
   report live stale)
 
+(cl-defstruct (ebox--pub-frame (:constructor ebox--pub--make-frame))
+  "Reusable publication storage for a compiled, fixed-object content surface.
+Mount records, list spines, indexes and rollback slots are allocated during
+preparation.  The two mount banks alternate so the accepted index is never
+changed while the next index is assembled.  Only the owning publisher may
+install either bank as the surface's authoritative mount projection."
+  surface slots pool lookup object-keys banks bank snapshots undo undo-count marks epoch
+  output revision tick owner stage rollback accept point point-before windows window-before modified
+  start end report previous-report previous-client-state active-count busy)
+
+(defun ebox--pub-frame-mount-create (object tags)
+  "Prepare an inactive content mount for live OBJECT with immutable TAGS."
+  (unless (ebox--pub-object-live-p object)
+    (signal 'ebox--pub-stale-object (list object)))
+  (ebox--pub--make-surface-mount
+   :id (cl-incf ebox--pub--mount-id-counter) :object object
+   :start 0 :end 0 :tags tags :capability 'content))
+
+(defun ebox--pub--frame-bank (pool object-keys report)
+  "Allocate one reusable mount bank for POOL, OBJECT-KEYS and REPORT."
+  (let ((global (make-vector (length pool) nil))
+        (local (make-vector (length pool) nil))
+        (index (make-hash-table :test #'eq)))
+    (dotimes (i (length pool))
+      (aset global i (list (aref pool i)))
+      (aset local i (list (aref pool i))))
+    (dotimes (i (length object-keys))
+      (puthash (aref object-keys i) nil index))
+    (vector global local index (copy-tree report))))
+
+(defun ebox--pub-frame-prepare (surface slots owner stage rollback accept)
+  "Prepare reusable publication storage for SURFACE and mutable SLOTS.
+SLOTS contains fixed-capacity quadruples [MOUNT START END TAGS].  MOUNT
+records are the complete cold pool; subsequent publication may reorder
+these records and select an active prefix.  START and END are relative
+character offsets.  STAGE, ROLLBACK and ACCEPT are once-bound functions
+called with OWNER and the publication report; nil means no callback.
+STAGE publishes the matching owner state.  ACCEPT performs bounded final
+authority writes.  ROLLBACK restores both, including a partially failed
+STAGE or ACCEPT.  Callbacks must not initiate another publication."
+  (ebox--pub--validate-live-surface surface)
+  (unless (and (not ebox--pub--transaction-active)
+               (vectorp slots) (= (% (length slots) 4) 0)
+               (or (null stage) (functionp stage))
+               (or (null rollback) (functionp rollback))
+               (or (null accept) (functionp accept))
+               (or (null accept) rollback)
+               (eq (null stage) (null rollback)))
+    (signal 'ebox--pub-surface-error (list :invalid-prepared-frame)))
+  (let* ((count (/ (length slots) 4))
+         (pool (make-vector count nil))
+         (lookup (make-hash-table :test #'eq))
+         (seen (make-hash-table :test #'eq))
+         objects
+         (report (list :transaction-id 0 :surface-id (ebox--pub--surface-id surface)
+                       :old-revision 0 :new-revision 0 :candidate-source-writes 0
+                       :invalidated-bindings 0 :recomputed-bindings 0
+                       :skipped-bindings 0 :reconciled-objects 0 :created-objects 0
+                       :removed-objects 0 :moved-objects 0 :text-operations 0
+                       :property-operations 0 :retained-content-p t
+                       :touched-characters 0 :full-root nil :scope-count 1
+                       :scope-range-count 1 :scope-fallback nil :rolled-back nil
+                       :commit-batch t :retained-mount-state t :prepared-frame t
+                       :failure nil :observer-errors nil :timing (list :publication 0.0)
+                       :provider 'ebox-publication :stage 'publication
+                       :duration-ms nil)))
+    (dotimes (i count)
+      (let* ((mount (aref slots (* 4 i)))
+             (object (and (ebox--pub--surface-mount-p mount)
+                          (ebox--pub--surface-mount-object mount))))
+        (unless (and object (ebox--pub-object-live-p object)
+                     (eq (ebox--pub--surface-object-surface object) surface)
+                     (integerp (ebox--pub--surface-mount-start mount))
+                     (integerp (ebox--pub--surface-mount-end mount))
+                     (not (gethash mount lookup)))
+          (signal 'ebox--pub-surface-error (list :invalid-frame-mount mount)))
+        ;; One-based entries leave nil available for a missing pool member.
+        (puthash mount (1+ i) lookup)
+        (aset pool i mount)
+        (unless (gethash object seen)
+          (puthash object t seen)
+          (push object objects))))
+    (dolist (mount (ebox--pub--surface-mounts surface))
+      (unless (gethash mount lookup)
+        (signal 'ebox--pub-surface-error (list :missing-frame-mount mount))))
+    (setq objects (vconcat objects))
+    (let* ((buffer (ebox--pub--surface-buffer surface))
+           (windows (get-buffer-window-list buffer nil t))
+           (anchors (make-vector (* 2 (length windows)) nil))
+           (i 0))
+      (dolist (window windows)
+        (aset anchors i window)
+        (aset anchors (1+ i) (copy-marker (window-start window) nil))
+        (setq i (+ i 2)))
+      (ebox--pub--make-frame
+       :surface surface :slots slots :pool pool :lookup lookup :object-keys objects
+       :banks (vector (ebox--pub--frame-bank pool objects report)
+                      (ebox--pub--frame-bank pool objects report))
+       :bank -1 :snapshots (make-vector 4 nil) :undo (make-vector (* 4 count) nil)
+       :marks (make-vector count 0) :epoch 0
+       :output (ebox--pub--shadow-surface-output surface)
+       :revision (ebox--pub--surface-revision surface)
+       :tick (with-current-buffer buffer (buffer-modified-tick))
+       :owner owner :stage stage :rollback rollback :accept accept
+       :point (with-current-buffer buffer (copy-marker (point) nil))
+       :windows anchors :window-before (make-vector (length windows) nil)
+       :previous-client-state (ebox--pub--surface-client-state surface)))))
+
+(defun ebox--pub-frame-refresh (frame client-state owner &optional output)
+  "Rebind FRAME's storage to its surface's accepted CLIENT-STATE and OWNER.
+The owning compiler must first prove that its topology and mount capacity
+remain valid.  Return FRAME, or nil before mutation when its surface is no
+longer live or CLIENT-STATE is not the current accepted authority.
+OUTPUT, when supplied, is the owner's exact accepted visible primitive;
+otherwise take a native buffer snapshot.  Reuse the mount pool, both banks,
+callback bindings and rollback storage without changing the accepted mounts
+or indexes.  The next publication snapshots that accepted generic authority,
+so a failed publication restores it even when it uses different mount records."
+  (when (and (ebox--pub-frame-p frame)
+             (not (ebox--pub-frame-busy frame))
+             (not ebox--pub--transaction-active))
+    (let* ((surface (ebox--pub-frame-surface frame))
+           (buffer (ebox--pub--surface-buffer surface)))
+      (when (and (ebox--pub-surface-live-p surface)
+                 (not (ebox--pub--surface-stale surface))
+                 (eq client-state (ebox--pub--surface-client-state surface)))
+        (let* ((rendered (or output (ebox--pub--shadow-surface-output surface)))
+               (start (marker-position (ebox--pub--surface-start surface)))
+               (end (marker-position (ebox--pub--surface-end surface))))
+          (when (and (stringp rendered) start end (= (- end start) (length rendered)))
+            (let* ((visible (get-buffer-window-list buffer nil t))
+                   (count (length visible))
+                   (windows (ebox--pub-frame-windows frame))
+                   (index 0))
+              (when (> (* 2 count) (length windows))
+                (setq windows (vconcat windows (make-vector (- (* 2 count) (length windows)) nil)))
+                (setf (ebox--pub-frame-windows frame) windows
+                      (ebox--pub-frame-window-before frame) (make-vector count nil)))
+              (dolist (window visible)
+                (aset windows index window)
+                (if (markerp (aref windows (1+ index)))
+                    (set-marker (aref windows (1+ index)) (window-start window) buffer)
+                  (aset windows (1+ index)
+                        (with-current-buffer buffer
+                          (copy-marker (window-start window) nil))))
+                (setq index (+ index 2)))
+              (while (< index (length windows))
+                (aset windows index nil)
+                (when (markerp (aref windows (1+ index)))
+                  (set-marker (aref windows (1+ index)) nil))
+                (setq index (+ index 2))))
+            (fillarray (ebox--pub-frame-snapshots frame) nil)
+            (fillarray (ebox--pub-frame-undo frame) nil)
+            (fillarray (ebox--pub-frame-marks frame) 0)
+            (setf (ebox--pub-frame-output frame) rendered
+                  (ebox--pub-frame-revision frame) (ebox--pub--surface-revision surface)
+                  (ebox--pub-frame-tick frame) (with-current-buffer buffer (buffer-modified-tick))
+                  (ebox--pub-frame-owner frame) owner
+                  (ebox--pub-frame-previous-client-state frame) client-state
+                  (ebox--pub-frame-previous-report frame) (ebox--pub--surface-report surface)
+                  (ebox--pub-frame-report frame) nil
+                  (ebox--pub-frame-undo-count frame) 0
+                  (ebox--pub-frame-epoch frame) 0
+                  (ebox--pub-frame-active-count frame) nil)
+            (with-current-buffer buffer
+              (ebox--pub--frame-capture-view frame))
+            frame))))))
+
+(defun ebox--pub-frame-current-p (frame)
+  "Return non-nil when FRAME still describes the accepted live generation."
+  (and (ebox--pub-frame-p frame) (not (ebox--pub-frame-busy frame))
+       (not ebox--pub--transaction-active)
+       (let* ((surface (ebox--pub-frame-surface frame))
+              (buffer (ebox--pub--surface-buffer surface)))
+         (and (ebox--pub-surface-live-p surface)
+              (not (ebox--pub--surface-stale surface))
+              (= (ebox--pub-frame-revision frame)
+                 (ebox--pub--surface-revision surface))
+              (eq (ebox--pub-frame-previous-client-state frame)
+                  (ebox--pub--surface-client-state surface))
+              (= (ebox--pub-frame-tick frame)
+                 (with-current-buffer buffer (buffer-modified-tick)))))))
+
+(defun ebox--pub--frame-slots-valid-p (frame extent count)
+  "Check FRAME's active COUNT mount slots against EXTENT without mutation."
+  (let ((slots (ebox--pub-frame-slots frame))
+        (marks (ebox--pub-frame-marks frame))
+        (epoch (1+ (ebox--pub-frame-epoch frame)))
+        (i 0) (valid (and (integerp count) (<= 0 count)
+                          (<= (* 4 count) (length (ebox--pub-frame-slots frame))))))
+    (setf (ebox--pub-frame-epoch frame) epoch)
+    (while (and valid (< i count))
+      (let* ((offset (* 4 i))
+             (member (gethash (aref slots offset) (ebox--pub-frame-lookup frame)))
+             (start (aref slots (1+ offset)))
+             (end (aref slots (+ 2 offset))))
+        (setq valid (and member (/= (aref marks (1- member)) epoch)
+                         (integerp start) (integerp end) (<= 0 start end extent)))
+        (when valid (aset marks (1- member) epoch)))
+      (setq i (1+ i)))
+    valid))
+
+(defun ebox--pub--frame-install-mounts (frame bank count base)
+  "Install FRAME's COUNT slots through prepared BANK, relative to BASE."
+  (let ((keys (ebox--pub-frame-object-keys frame))
+        (undo (ebox--pub-frame-undo frame))
+        (slots (ebox--pub-frame-slots frame))
+        (index (aref bank 2))
+        (i 0) mounts)
+    (setf (ebox--pub-frame-undo-count frame) 0)
+    (dotimes (j (length keys)) (puthash (aref keys j) nil index))
+    (setq i (1- count))
+    (while (>= i 0)
+      (let* ((offset (* 4 i)) (mount (aref slots offset))
+             (ordinal (1- (gethash mount (ebox--pub-frame-lookup frame))))
+             (global (aref (aref bank 0) ordinal))
+             (local (aref (aref bank 1) ordinal))
+             (object (ebox--pub--surface-mount-object mount))
+             (start (+ base (aref slots (1+ offset))))
+             (end (+ base (aref slots (+ 2 offset))))
+             (tags (aref slots (+ 3 offset))))
+        (unless (and (= start (ebox--pub--surface-mount-start mount))
+                     (= end (ebox--pub--surface-mount-end mount))
+                     (eq tags (ebox--pub--surface-mount-tags mount)))
+          (let ((undo-offset (* 4 (ebox--pub-frame-undo-count frame))))
+            (aset undo undo-offset mount)
+            (aset undo (1+ undo-offset) (ebox--pub--surface-mount-start mount))
+            (aset undo (+ 2 undo-offset) (ebox--pub--surface-mount-end mount))
+            (aset undo (+ 3 undo-offset) (ebox--pub--surface-mount-tags mount))
+            (cl-incf (ebox--pub-frame-undo-count frame)))
+          (setf (ebox--pub--surface-mount-start mount) start
+                (ebox--pub--surface-mount-end mount) end
+                (ebox--pub--surface-mount-tags mount) tags))
+        (setcdr global mounts)
+        (setq mounts global)
+        (setcdr local (gethash object index))
+        (puthash object local index))
+      (setq i (1- i)))
+    (setf (ebox--pub--surface-mounts (ebox--pub-frame-surface frame)) mounts
+          (ebox--pub--surface-index (ebox--pub-frame-surface frame)) mounts
+          (ebox--pub--surface-mount-index (ebox--pub-frame-surface frame)) index)))
+
+(defun ebox--pub--frame-damage-valid-p (frame rendered damage count)
+  "Check DAMAGE's COUNT old/new intervals for FRAME and RENDERED.
+The publisher's compiled owner proves unchanged content between intervals.
+This check proves only that those retained intervals preserve coordinates."
+  (let ((old-end 0) (new-end 0) (index 0)
+        (old-length (length (ebox--pub-frame-output frame)))
+        (new-length (length rendered))
+        (valid (and (vectorp damage) (integerp count) (<= 0 count)
+                    (<= (* 4 count) (length damage)))))
+    (while (and valid (< index count))
+      (let* ((offset (* 4 index))
+             (old-start (aref damage offset))
+             (old-limit (aref damage (1+ offset)))
+             (new-start (aref damage (+ 2 offset)))
+             (new-limit (aref damage (+ 3 offset))))
+        (setq valid
+              (and (integerp old-start) (integerp old-limit)
+                   (integerp new-start) (integerp new-limit)
+                   (<= old-end old-start old-limit old-length)
+                   (<= new-end new-start new-limit new-length)
+                   (= (- old-start old-end) (- new-start new-end)))
+              old-end old-limit new-end new-limit))
+      (setq index (1+ index)))
+    (and valid (= (- old-length old-end) (- new-length new-end)))))
+
+(defun ebox--pub--frame-write-text-range
+    (old rendered base old-start old-end new-start new-end)
+  "Write the changed characters in OLD and RENDERED intervals at BASE.
+Return non-nil if text was edited.  Equal prefix comparison runs natively;
+the suffix scan is bounded by this compiled damage interval."
+  (let ((comparison (compare-strings old old-start old-end
+                                     rendered new-start new-end)))
+    (unless (eq comparison t)
+      (let* ((prefix (1- (abs comparison)))
+             (suffix 0)
+             (limit (min (- old-end old-start prefix)
+                         (- new-end new-start prefix))))
+        (while (and (< suffix limit)
+                    (= (aref old (- old-end suffix 1))
+                       (aref rendered (- new-end suffix 1))))
+          (setq suffix (1+ suffix)))
+        (delete-region (+ base old-start prefix) (+ base old-end (- suffix)))
+        (goto-char (+ base old-start prefix))
+        (insert (substring rendered (+ new-start prefix) (- new-end suffix))))
+      t)))
+
+(defun ebox--pub--frame-write-properties (rendered base start end)
+  "Apply RENDERED's property runs from START to END at BASE.
+Return the number of property runs changed."
+  (let ((operations 0))
+    (while (< start end)
+      (let* ((next (next-property-change start rendered end))
+             (props (text-properties-at start rendered)))
+        (unless (and (ebox--pub--shadow-props-identical-p
+                      props (text-properties-at (+ base start)))
+                     (= (next-property-change (+ base start) nil (+ base next))
+                        (+ base next)))
+          (set-text-properties (+ base start) (+ base next) props)
+          (setq operations (1+ operations)))
+        (setq start next)))
+    operations))
+
+(defun ebox--pub--frame-write (frame rendered damage damage-count)
+  "Publish RENDERED using FRAME's retained text and direct property runs.
+DAMAGE's DAMAGE-COUNT quadruples restrict writes to compiled old/new ranges.
+Nil DAMAGE retains the complete output path.
+No patch descriptors, operation lists or temporary candidate graphs are
+constructed.  Strings and native undo records are buffer-write primitives."
+  (let* ((surface (ebox--pub-frame-surface frame))
+         (old (ebox--pub-frame-output frame))
+         (base (ebox--pub-frame-start frame))
+         (report (ebox--pub-frame-report frame))
+         (text-operations 0) (property-operations 0) (touched 0))
+    (if damage
+        (let ((index (1- damage-count)))
+          (while (>= index 0)
+            (let* ((offset (* 4 index))
+                   (old-start (aref damage offset))
+                   (old-end (aref damage (1+ offset)))
+                   (new-start (aref damage (+ 2 offset)))
+                   (new-end (aref damage (+ 3 offset))))
+              (when (ebox--pub--frame-write-text-range
+                     old rendered base old-start old-end new-start new-end)
+                (setq text-operations (1+ text-operations)))
+              (setq touched (+ touched (max (- old-end old-start)
+                                           (- new-end new-start)))))
+            (setq index (1- index))))
+      (when (ebox--pub--frame-write-text-range
+             old rendered base 0 (length old) 0 (length rendered))
+        (setq text-operations 1))
+      (setq touched (max (length old) (length rendered))))
+    (plist-put report :text-operations text-operations)
+    (ebox--pub--publication-step 'text surface)
+    (let ((inhibit-modification-hooks t))
+      (if damage
+          (dotimes (index damage-count)
+            (let ((offset (* 4 index)))
+              (setq property-operations
+                    (+ property-operations
+                       (ebox--pub--frame-write-properties
+                        rendered base (aref damage (+ 2 offset))
+                        (aref damage (+ 3 offset)))))))
+        (setq property-operations
+              (ebox--pub--frame-write-properties rendered base 0 (length rendered)))))
+    (plist-put report :property-operations property-operations)
+    (plist-put report :touched-characters touched)
+    (set-marker (ebox--pub--surface-start surface) base)
+    (set-marker (ebox--pub--surface-end surface) (+ base (length rendered)))
+    (ebox--pub--publication-step 'property surface)))
+
+(defun ebox--pub--frame-validate-output (frame rendered)
+  "Validate FRAME's complete visible output against RENDERED."
+  (let* ((surface (ebox--pub-frame-surface frame))
+         (buffer (ebox--pub--surface-buffer surface))
+         (start (marker-position (ebox--pub--surface-start surface)))
+         (end (marker-position (ebox--pub--surface-end surface))))
+    (unless (and (buffer-live-p buffer) start end
+                 (= start (ebox--pub-frame-start frame))
+                 (= (- end start) (length rendered))
+                 (ebox--pub--shadow-text-range-equal-p
+                  rendered 0 (length rendered) buffer start end))
+      (signal 'ebox--pub-publication-mismatch (list :prepared-frame surface)))))
+
+(defun ebox--pub--frame-capture-view (frame)
+  "Capture editor anchors into FRAME's preallocated marker storage."
+  (set-marker (ebox--pub-frame-point frame) (point) (current-buffer))
+  (setf (ebox--pub-frame-modified frame) (buffer-modified-p)
+        (ebox--pub-frame-point-before frame) (point))
+  (let ((windows (ebox--pub-frame-windows frame)) (i 0))
+    (while (< i (length windows))
+      (let ((window (aref windows i)))
+        (when (and (window-live-p window) (eq (window-buffer window) (current-buffer)))
+          (set-marker (aref windows (1+ i)) (window-start window) (current-buffer))
+          (aset (ebox--pub-frame-window-before frame) (/ i 2) (window-start window))))
+      (setq i (+ i 2)))))
+
+(defun ebox--pub--frame-restore-view (frame &optional rollback)
+  "Restore surviving editor anchors captured in FRAME."
+  (let ((buffer (ebox--pub--surface-buffer (ebox--pub-frame-surface frame))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (goto-char (min (point-max) (max (point-min)
+                                       (if rollback (ebox--pub-frame-point-before frame)
+                                         (marker-position (ebox--pub-frame-point frame))))))
+        (set-buffer-modified-p (ebox--pub-frame-modified frame)))
+      (let ((windows (ebox--pub-frame-windows frame)) (i 0))
+        (while (< i (length windows))
+          (let ((window (aref windows i)) (anchor (aref windows (1+ i))))
+            (when (and (window-live-p window) (eq (window-buffer window) buffer)
+                       (marker-position anchor))
+              (set-window-start window
+                                (if rollback (aref (ebox--pub-frame-window-before frame) (/ i 2))
+                                  (marker-position anchor)) t)))
+          (setq i (+ i 2)))))))
+
+(defun ebox--pub--frame-owned-hooks-p ()
+  "Return non-nil when the current buffer has only publisher edit hooks."
+  (let ((before before-change-functions) (after after-change-functions))
+    (while (and (consp before) (eq (car before) #'ebox--pub--surface-before-change))
+      (setq before (cdr before)))
+    (while (and (consp after) (eq (car after) #'ebox--pub--surface-after-change))
+      (setq after (cdr after)))
+    (and (null before) (null after)
+         (null ebox--pub--surface-publication-step-function))))
+
+(defun ebox--pub--frame-restore (frame mounts-installed)
+  "Restore FRAME's accepted surface and optionally its MOUNTS-INSTALLED."
+  (let* ((surface (ebox--pub-frame-surface frame))
+         (buffer (ebox--pub--surface-buffer surface))
+         (snapshot (ebox--pub-frame-snapshots frame)))
+    (when (and (buffer-live-p buffer) (ebox--pub--surface-live surface))
+      (with-current-buffer buffer
+        (save-restriction
+          (widen)
+          (let* ((inhibit-read-only t) (inhibit-modification-hooks t)
+                 (buffer-undo-list t) (ebox--pub--surface-publishing t)
+                 (old (ebox--pub-frame-output frame))
+                 (start (ebox--pub-frame-start frame))
+                 (end (marker-position (ebox--pub--surface-end surface)))
+                 (actual (buffer-substring-no-properties start end))
+                 (prefix (ebox--pub--common-prefix-length actual old))
+                 (suffix (ebox--pub--common-suffix-length actual old prefix)))
+            ;; The retained primitive output also restores unrecorded hook
+            ;; edits.  This exceptional path may allocate native strings.
+            (unless (and (= prefix (length actual)) (= prefix (length old)))
+              (delete-region (+ start prefix) (- end suffix))
+              (goto-char (+ start prefix))
+              (insert (substring old prefix (- (length old) suffix))))
+            (set-marker (ebox--pub--surface-start surface) start)
+            (set-marker (ebox--pub--surface-end surface) (+ start (length old)))
+            (ebox--pub--replay-string-properties buffer start old))))
+      (when mounts-installed
+        (let ((undo (ebox--pub-frame-undo frame)) (i 0))
+          (while (< i (ebox--pub-frame-undo-count frame))
+            (let* ((offset (* 4 i)) (mount (aref undo offset)))
+              (setf (ebox--pub--surface-mount-start mount) (aref undo (1+ offset))
+                    (ebox--pub--surface-mount-end mount) (aref undo (+ 2 offset))
+                    (ebox--pub--surface-mount-tags mount) (aref undo (+ 3 offset))))
+            (setq i (1+ i)))))
+      (setf (ebox--pub--surface-mounts surface) (aref snapshot 0)
+            (ebox--pub--surface-index surface) (aref snapshot 1)
+            (ebox--pub--surface-mount-index surface) (aref snapshot 2)
+            (ebox--pub--surface-stale surface) (aref snapshot 3)
+            (ebox--pub--surface-client-state surface) (ebox--pub-frame-previous-client-state frame)
+            (ebox--pub--surface-report surface) (ebox--pub-frame-previous-report frame)
+            (ebox--pub--surface-revision surface) (ebox--pub-frame-revision frame))
+      (ebox--pub--frame-restore-view frame t)
+      (setf (ebox--pub-frame-tick frame)
+            (with-current-buffer buffer (buffer-modified-tick))))))
+
+(defun ebox--pub-frame-publish
+    (frame rendered client-state &optional active-count damage damage-count)
+  "Publish prepared FRAME's RENDERED output and CLIENT-STATE atomically.
+ACTIVE-COUNT selects the active prefix of FRAME's fixed mount slots and
+defaults to the complete pool.  Optional DAMAGE is cold-owned storage with
+DAMAGE-COUNT active quadruples [OLD-START OLD-END NEW-START NEW-END], in
+ascending order.  Its owner proves that all other text and properties remain
+unchanged.  Return the reusable publication report, or
+nil before mutation when the accepted generation or mount capacity changed.
+Failures invoke the once-bound rollback callback and restore the accepted
+buffer, mount projection, revision and report before propagating the error.
+Native text/undo primitives may allocate; framework storage is cold-owned."
+  (let ((count (or active-count (and (ebox--pub-frame-p frame)
+                                   (/ (length (ebox--pub-frame-slots frame)) 4)))))
+    (when (and (stringp rendered) (ebox--pub-frame-current-p frame)
+               (or (null damage)
+                   (ebox--pub--frame-damage-valid-p frame rendered damage damage-count))
+               (ebox--pub--frame-slots-valid-p frame (length rendered) count))
+      (let* ((surface (ebox--pub-frame-surface frame))
+             (buffer (ebox--pub--surface-buffer surface))
+             (next-bank (if (= (ebox--pub-frame-bank frame) 0) 1 0))
+             (bank (aref (ebox--pub-frame-banks frame) next-bank))
+             (report (aref bank 3))
+             (snapshot (ebox--pub-frame-snapshots frame))
+             (started (and (ebox--pub--surface-observers surface)
+                           (ebox--pub--surface-observation-clock)))
+             (old-transaction-id ebox--pub--surface-transaction-id)
+             (ebox--pub--transaction-active t)
+             (ebox--pub--prepared-frame-active t)
+             (ebox--pub--transaction-phase 'publication)
+             (ebox--pub--surface-publishing t)
+             group success mounts-installed failure rollback-failure tick)
+        (setf (ebox--pub-frame-busy frame) t
+              (ebox--pub-frame-start frame) (marker-position (ebox--pub--surface-start surface))
+              (ebox--pub-frame-end frame) (marker-position (ebox--pub--surface-end surface))
+              (ebox--pub-frame-report frame) report
+              (ebox--pub-frame-previous-report frame) (ebox--pub--surface-report surface))
+        (aset snapshot 0 (ebox--pub--surface-mounts surface))
+        (aset snapshot 1 (ebox--pub--surface-index surface))
+        (aset snapshot 2 (ebox--pub--surface-mount-index surface))
+        (aset snapshot 3 (ebox--pub--surface-stale surface))
+        (plist-put report :transaction-id (1+ old-transaction-id))
+        (plist-put report :old-revision (ebox--pub-frame-revision frame))
+        (plist-put report :new-revision (1+ (ebox--pub-frame-revision frame)))
+        (plist-put report :text-operations 0)
+        (plist-put report :property-operations 0)
+        (plist-put report :touched-characters (length rendered))
+        (plist-put report :observer-errors nil)
+        (plist-put report :failure nil)
+        (plist-put report :duration-ms nil)
+        (plist-put (plist-get report :timing) :publication 0.0)
+        (unwind-protect
+            (condition-case condition
+                (with-current-buffer buffer
+                  (ebox--pub--frame-capture-view frame)
+                  (save-restriction
+                    (widen)
+                    (setq group (prepare-change-group))
+                    (activate-change-group group)
+                    (let ((inhibit-read-only
+                           (plist-get (ebox--pub--surface-options surface) :inhibit-read-only))
+                          (trusted (ebox--pub--frame-owned-hooks-p)))
+                      (ebox--pub--frame-write frame rendered damage damage-count)
+                      (unless trusted (ebox--pub--frame-validate-output frame rendered)))
+                    (setq tick (buffer-modified-tick))
+                    (setq mounts-installed t)
+                    (ebox--pub--frame-install-mounts frame bank count (ebox--pub-frame-start frame))
+                    (ebox--pub--publication-step 'marker surface)
+                    (ebox--pub--publication-step 'index surface)
+                    (setf (ebox--pub--surface-client-state surface) client-state
+                          (ebox--pub--surface-revision surface) (plist-get report :new-revision)
+                          (ebox--pub--surface-report surface) report)
+                    (ebox--pub--publication-step 'client-state surface)
+                    (setq ebox--pub--surface-transaction-id (1+ old-transaction-id)
+                          ebox--pub--transaction-phase 'participants)
+                    (when (ebox--pub-frame-stage frame)
+                      (funcall (ebox--pub-frame-stage frame) (ebox--pub-frame-owner frame) report))
+                    (ebox--pub--validate-live-surface surface)
+                    (unless (= tick (buffer-modified-tick))
+                      (ebox--pub--frame-validate-output frame rendered))
+                    (ebox--pub--frame-restore-view frame)
+                    (setq tick (buffer-modified-tick)
+                          ebox--pub--transaction-phase 'final-accept)
+                    (let ((inhibit-quit t) (quit-flag nil))
+                      (unwind-protect
+                          (progn
+                            (when (ebox--pub-frame-accept frame)
+                              (funcall (ebox--pub-frame-accept frame) (ebox--pub-frame-owner frame) report))
+                            (ebox--pub--validate-live-surface surface)
+                            (unless (= tick (buffer-modified-tick))
+                              (ebox--pub--frame-validate-output frame rendered))
+                            (accept-change-group group)
+                            (setf (ebox--pub-frame-output frame) rendered
+                                  (ebox--pub-frame-bank frame) next-bank
+                                  (ebox--pub-frame-revision frame) (ebox--pub--surface-revision surface)
+                                  (ebox--pub-frame-previous-client-state frame) client-state
+                                  (ebox--pub-frame-active-count frame) count
+                                  (ebox--pub-frame-tick frame) (buffer-modified-tick))
+                            (setq success t))
+                        (setq quit-flag nil)))))
+              ((error quit) (setq failure condition)))
+          (unless success
+            (let ((inhibit-quit t) (quit-flag nil))
+              (condition-case condition
+                  (when (ebox--pub-frame-rollback frame)
+                    (funcall (ebox--pub-frame-rollback frame) (ebox--pub-frame-owner frame) report))
+                ((error quit) (setq rollback-failure condition)))
+              (ebox--pub--cancel-change-group-safely group)
+              (ebox--pub--frame-restore frame mounts-installed)
+              (setq ebox--pub--surface-transaction-id old-transaction-id)))
+          (setf (ebox--pub-frame-busy frame) nil))
+        (when failure
+          (ebox--pub--resignal-transaction-primary
+           failure (and rollback-failure
+                        (list (list 'participants 'prepared-frame rollback-failure)))))
+        (when started
+          (let ((elapsed (- (ebox--pub--surface-observation-clock) started)))
+            (plist-put report :duration-ms (* 1000.0 elapsed))
+            (plist-put (plist-get report :timing) :publication elapsed)))
+        ;; Observers are explicitly opt-in and receive detached reports. Their
+        ;; allocations and failures do not change the accepted hot operation.
+        (let ((ebox--pub--transaction-active nil)
+              (ebox--pub--prepared-frame-active nil)
+              (observers (ebox--pub--surface-observers surface)))
+          (when observers
+            (ebox--pub--run-surface-observers
+             surface observers (ebox--pub-surface-report surface))))
+        report))))
+
 (defvar ebox--pub--surface-id-counter 0)
 (defvar ebox--pub--object-id-counter 0)
 (defvar ebox--pub--mount-id-counter 0)

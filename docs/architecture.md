@@ -382,6 +382,71 @@ above the flow's z order, completed flow rows form the bottom composition plane.
 They supply anchor geometry directly and remain intact outside overlay coverage.
 Relative movement and interleaved z orders use the ordinary per-owner composition.
 
+Prepared geometry compiles stable containing-plane routes into retained raster
+pieces, numeric placement slots, document order and reusable damage-row storage.
+A translation updates only the target primitives and propagates changed rows
+through prepared enclosing wrappers. Cold compilation resolves fixed chrome and
+finite property transformations, including clipping and inherited wrapper paint.
+The warm path decorates only damaged rows with those instructions and retains
+all other accepted rows. Panel raster preparation is independent of position and
+stacking; ordinary candidates also reuse that raster's split rows, measured width
+and ownership pieces when its rendered text is unchanged.
+
+The prepared publisher remains inside the existing surface authority. It reuses
+two mount/index banks, callback bindings, reports and rollback storage. Cold
+ownership tokens map raster slices directly to retained objects and ancestors;
+changed rows refresh visible intervals in a fixed mount pool while unchanged row
+intervals shift by their retained character offsets. Publication receives known
+old/new damage ranges, edits them from the end, and updates only their property
+runs. Private ownership tokens are stripped before publication. Source preparation owns private declaration cells
+shared with the mounted node's numeric geometry. Snapshot export freezes these
+cells; a subsequent general publication reads the latest declarations and
+rebuilds invalidated fragment proofs. External buffer hooks still run, and their
+unexpected writes reject the publication.
+
+Eligible targets in the same containing-plane route share one mounted scene,
+mount pool, publication frame and interaction capability. Preparing another
+target binds only its scalar source cells, value storage and callbacks. The
+shared frame dispatches to that target for the current publication; another
+prepared target does not invalidate the scene or restart its composition.
+Source-handle changes refresh the one shared interaction capability in the cold
+plane. An ordinary publication invalidates operation bindings, while a
+publication-owned topology token can preserve compiled resources. The token is
+retained only for an explicit nonstructural dirty classification with no created,
+removed or moved publication objects. A later preparation refreshes raster rows
+and bindings without comparing the complete node tree. Matching fixed wrapper
+configuration reuses its property transforms; only newly encountered primitive
+property combinations are compiled. Only border variants present in the wrapper
+feed the enclosing domain. Exact role instructions include initially occluded
+rasters, so exposing those pixels can reuse the mount pool. The frame adopts the
+accepted revision and client state while generic mounts remain authoritative
+until the next atomic prepared publication. Structural or unsupported changes
+use fresh preparation.
+
+This path currently compiles translation and stacking for fixed planes. Resize,
+anchor, portal and scroll dependencies still decline before staging. Primitive
+clipping and native text writes still allocate output-related artifacts; compiled
+wrapper instructions and the prepared publisher alone do not establish allocation
+or latency acceptance.
+
+The mixed prepared-update cohort cold-binds source cells and raster instructions
+for a fixed member set. Sparse changed-member indices feed one retained frame.
+Duplicate Host specifications share one source-record binding; stage snapshots
+caller values before hooks, and a rejected frame restores every source and caller
+cell. Paint recipes retain their computed inheritance providers and raw raster
+ownership. Warm replay touches bound primitive rows, without rebuilding a source
+or component graph. A fixed sparse geometry batch saves each record once, so
+paint, Text and multiple placements share complete pixel rollback.
+
+Prepared source records preserve exact opaque handles while an immutable index
+overlay selects the new private record. Operation validity compares record
+identity. This keeps retained tree/index pairs and previously exported snapshots
+resolvable through focus/active metadata and later ordinary candidate creation.
+Prepared paint changes defer general computed-style rebuilding: a stale flag
+blocks metadata, native, scoped, viewport-no-op and retained-scroll shortcuts;
+the next private candidate recomputes inherited styles, retaining binding keys
+and clearing the flag only in that candidate's accepted state.
+
 ## Retained scroll window
 
 Cached scroll intents reuse the published cascade, viewport axes and unchanged
@@ -509,8 +574,28 @@ as focus when publication moves it. The native tracking loop delivers one
 start, changed motion positions, and one terminal end/cancel callback. It has
 no application position state, target registry or publication path of its own.
 Each consumer callback updates through ordinary public rendering operations.
-The native reader periodically checks target and window lifetime while idle;
-unrelated input returns to Emacs's command loop.
+The native reader periodically checks target and window lifetime while idle
+and rechecks after reads that may run timers. One input round drains at most
+64 already pending same-window motions without waiting, then publishes only
+the latest position. A release, press, cancel, unrelated event or window exit
+ends that drain; its event stays ahead of later input. A gesture-local check
+reuses the resolved owner while the surface revision and client-state identity
+are unchanged; buffer accessibility and native visibility are checked separately.
+Terminal delivery happens once, including locked gestures whose final release
+still needs consuming. Unrelated input returns to Emacs's command loop.
+
+Prepared geometry compiles only declared interaction dependencies. Current
+focus and pressed owners and all hover-content targets bind directly to
+publication objects during preparation, including occluded hover targets.
+Each publication resolves those bindings from its output mount intervals;
+it does not rebuild navigation or walk the Box tree. Logical focus follows
+its first painted position while manual point remains independent, and
+occlusion clears focus/pressed selector facts as well as buffer ownership.
+Four cold selector variants retain the geometry provider's private numeric
+cells without mutating exported source records. Style comparison admits a
+variant only when clearing an interaction state needs no new painted output;
+other occluding updates decline before publication. Hover bounds and rollback
+storage are retained, and final focus placement runs after native view restoration.
 
 ## Verification
 

@@ -340,7 +340,9 @@ This is the public, text-scale-aware measurement used by Ebox layout code."
         (face-attribute 'default :weight frame t)
         (face-attribute 'default :slant frame t)
         (face-attribute 'default :width frame t)
-        (ebox--measurement-face-remapping)
+        ;; `face-remap-add-relative' can replace an existing entry's tail.
+        ;; A retained display proof must keep its accepted remapping values.
+        (copy-tree (ebox--measurement-face-remapping))
         (and (boundp 'text-scale-mode-amount) text-scale-mode-amount)
         (and (boundp 'text-scale-mode-step) text-scale-mode-step)))
 

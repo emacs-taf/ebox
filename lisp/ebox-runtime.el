@@ -39,6 +39,7 @@
     "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
     "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
     "ebox-dsl.el" "ebox-selector.el" "ebox-file.el" "ebox-spi.el" "ebox-runtime.el"
+    "ebox-geometry.el" "ebox-update-raster.el" "ebox-update.el"
     "ebox-native-reflow.el" "../ebox.el")
   "Active Ebox Lisp sources compiled by `ebox-byte-compile'.")
 
@@ -3484,6 +3485,7 @@ Boxes without publishing RUNTIME's deliberately sparse staging indexes."
          (nested-proof (plist-get runtime :nested-scroll-patch-proof))
          (old-scroll (gethash region-id (plist-get base :scroll-state-table))))
     (when (and owner old-scroll
+               (not (plist-get base :computed-styles-stale-p))
                (ebox-surface--runtime-index-ready-p base)
                (hash-table-p (plist-get base :surface-node-object-table))
                (hash-table-p (plist-get base :region-surface-object-table))

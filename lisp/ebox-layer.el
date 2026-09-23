@@ -65,6 +65,364 @@ change pixel measurement.  Reuse is disabled when this token is nil.")
   "Composition phase used as the default host ledger key.
 Anchor prepasses and final paints must use distinct phase values.")
 
+(cl-defstruct (ebox-layer--raster
+               (:constructor ebox-layer--make-raster))
+  "Prepared opaque panel pixels, independent of their placement.
+TEXT and its derived LINES, PIECES and WIDTH are immutable after preparation.
+The containing display CONTEXT bounds reuse across mounted generations."
+  text context lines pieces width)
+
+(cl-defstruct (ebox-layer--program
+               (:constructor ebox-layer--make-program))
+  "Prepared imperative composition storage for a stable containing plane.
+RECORDS contain reusable placement primitives.  ORDER, Z-VALUES, row list
+spines and dirty flags are allocated at preparation, never by translation.
+Published and pending rows use separate vectors so rejection restores pixels
+without rendering the former geometry again."
+  width height records order z-values document-order targets
+  base-lines rows saved-rows row-spines row-heads row-tails dirty output-spine
+  pending batch-open order-dirty order-changed saved-texts modified-texts
+  saved-coordinates saved-z modified-geometry)
+
+(defun ebox-layer--program-prepare (entry host)
+  "Compile retained composition ENTRY into a private primitive program.
+HOST supplies logical document order at this control-plane boundary.
+This operation does not publish or change ENTRY."
+  (when (and (listp entry) (vectorp (plist-get entry :rows)))
+    (let* ((base (plist-get entry :base-lines))
+           ;; A prepared z slot can cross the normal-flow plane.  Expand that
+           ;; bottom-plane optimization once during compilation, so a later
+           ;; negative z value never needs tree discovery or special policy.
+           (source
+            (if base
+                (ebox-layer--ordered-records
+                 host
+                 (append
+                  (plist-get entry :records)
+                  (ebox-layer--flow-records
+                   host
+                   (cl-remove-if
+                    (lambda (child) (eq (plist-get child :position) 'absolute))
+                    (ebox-tree-layout-children host))
+                   base (plist-get entry :width) (plist-get entry :height))))
+              (plist-get entry :records)))
+           (count (length source))
+           (height (plist-get entry :height))
+           (records (make-vector count nil))
+           (order (make-vector count 0))
+           (z-values (make-vector count 0))
+           (document-order (make-vector count 0))
+           (targets (make-hash-table :test #'equal))
+           (row-spines (make-vector height nil))
+           (ordinal 0)
+           (node-order (make-hash-table :test #'equal))
+           (strings (make-hash-table :test #'eq)))
+      (cl-labels ((visit (node)
+                    (puthash (ebox-layer--stable-node-id node)
+                             (hash-table-count node-order) node-order)
+                    (mapc #'visit (ebox-tree-node-children node))))
+        (visit host))
+      (dolist (record source)
+        (let* ((node (plist-get record :node))
+               (id (ebox-layer--stable-node-id node))
+               (rank (gethash id node-order 0))
+               (copy (copy-sequence record))
+               (text (plist-get record :text)))
+          (plist-put copy :text
+                     (or (gethash text strings)
+                         (puthash text (copy-sequence text) strings)))
+          (aset records ordinal copy)
+          (aset order ordinal ordinal)
+          (aset z-values ordinal (or (plist-get node :z-index) 0))
+          (aset document-order ordinal rank)
+          (puthash id (cons ordinal (gethash id targets)) targets)
+          (setq ordinal (1+ ordinal))))
+      (maphash (lambda (id indexes)
+                 (puthash id (vconcat (nreverse indexes)) targets)) targets)
+      (dotimes (row height)
+        (aset row-spines row (make-list count nil)))
+      (ebox-layer--make-program
+       :width (plist-get entry :width) :height height
+       :records records :order order :z-values z-values
+       :document-order document-order :targets targets
+       :base-lines []
+       :rows (vconcat (mapcar #'copy-sequence
+                             (append (plist-get entry :rows) nil)))
+       :saved-rows (make-vector height nil)
+       :row-spines row-spines :row-heads (make-vector height nil)
+       :row-tails (make-vector height nil) :dirty (make-vector height nil)
+       :saved-texts (make-vector count nil) :modified-texts (make-vector count nil)
+       :saved-coordinates (make-vector (* 2 count) 0)
+       :saved-z (make-vector count 0) :modified-geometry (make-vector count nil)
+       :output-spine (make-list height nil)))))
+
+(defun ebox-layer--program-strings (program)
+  "Return PROGRAM's private raster strings for cold ownership compilation."
+  (let ((strings (append (ebox-layer--program-base-lines program)
+                         (append (ebox-layer--program-rows program) nil))))
+    (dotimes (index (length (ebox-layer--program-records program)))
+      (push (plist-get (aref (ebox-layer--program-records program) index) :text)
+            strings))
+    (cl-delete-duplicates strings :test #'eq)))
+
+(defun ebox-layer--program-record-less-p (program left right)
+  "Return whether PROGRAM primitive LEFT paints below RIGHT."
+  (let ((zs (ebox-layer--program-z-values program))
+        (ranks (ebox-layer--program-document-order program))
+        (records (ebox-layer--program-records program)))
+    (cond
+     ((/= (aref zs left) (aref zs right))
+      (< (aref zs left) (aref zs right)))
+     ((not (eq (and (ebox-layer-positioned-p
+                    (plist-get (aref records left) :node)) t)
+               (and (ebox-layer-positioned-p
+                    (plist-get (aref records right) :node)) t)))
+      (not (ebox-layer-positioned-p
+            (plist-get (aref records left) :node))))
+     (t (< (aref ranks left) (aref ranks right))))))
+
+(defun ebox-layer--program-sort (program)
+  "Update PROGRAM's preallocated stacking order in place."
+  (let ((order (ebox-layer--program-order program)) (index 1))
+    (while (< index (length order))
+      (let ((value (aref order index)) (cursor index))
+        (while (and (> cursor 0)
+                    (ebox-layer--program-record-less-p
+                     program value (aref order (1- cursor))))
+          (aset order cursor (aref order (1- cursor)))
+          (setq cursor (1- cursor)))
+        (aset order cursor value))
+      (setq index (1+ index)))))
+
+(defun ebox-layer--program-mark-row (program row)
+  "Mark one visible ROW in PROGRAM's retained damage storage.
+Save its accepted pixels only at first damage, before rendering or mutation
+of any other record can overwrite this publication's rollback baseline."
+  (when (and (integerp row) (<= 0 row)
+             (< row (ebox-layer--program-height program)))
+    (unless (aref (ebox-layer--program-dirty program) row)
+      (aset (ebox-layer--program-saved-rows program) row
+            (aref (ebox-layer--program-rows program) row)))
+    (aset (ebox-layer--program-dirty program) row t)))
+
+(defun ebox-layer--program-batch-begin (program)
+  "Open PROGRAM's fixed primitive storage for one atomic update batch.
+Several translations and raster replacements may accumulate until
+`ebox-layer--program-batch-end'.  Settle accepts or restores the whole batch."
+  (when (ebox-layer--program-pending program)
+    (error "Ebox composition program already has pending changes"))
+  (setf (ebox-layer--program-pending program) t
+        (ebox-layer--program-batch-open program) t)
+  program)
+
+(defun ebox-layer--program-batch-end (program)
+  "Close PROGRAM's batch and prepare its final stacking order for rendering.
+The updates remain pending until `ebox-layer--program-settle' accepts or
+restores them; closing a batch does not publish or change rollback storage."
+  (unless (ebox-layer--program-batch-open program)
+    (error "Ebox composition program has no open batch"))
+  (when (ebox-layer--program-order-dirty program)
+    (ebox-layer--program-sort program)
+    (setf (ebox-layer--program-order-dirty program) nil))
+  (setf (ebox-layer--program-batch-open program) nil)
+  program)
+
+(defun ebox-layer--program-translate (program target dx dy z)
+  "Stage TARGET's DX/DY translation and absolute Z in PROGRAM's numeric slots.
+TARGET is a cold-resolved primitive-index vector.  An open batch accumulates
+translations relative to the latest staged coordinates, preserving each
+record's original coordinates and stacking once.  Otherwise only one pending
+translation is allowed.  No component or Box traversal is needed."
+  (when (and (ebox-layer--program-pending program)
+             (not (ebox-layer--program-batch-open program)))
+    (error "Ebox composition program already has a pending translation"))
+  (setf (ebox-layer--program-pending program) t)
+  (let ((records (ebox-layer--program-records program))
+        (zs (ebox-layer--program-z-values program))
+        (saved (ebox-layer--program-saved-coordinates program))
+        (saved-z (ebox-layer--program-saved-z program))
+        (modified (ebox-layer--program-modified-geometry program)))
+    (dotimes (offset (length target))
+      (let* ((index (aref target offset))
+             (record (aref records index))
+             (old-x (plist-get record :x))
+             (old-y (plist-get record :y))
+             (old-z (aref zs index)))
+        (unless (and (= dx 0) (= dy 0) (= z old-z))
+          (unless (aref modified index)
+            (aset saved (* 2 index) old-x)
+            (aset saved (1+ (* 2 index)) old-y)
+            (aset saved-z index old-z)
+            (aset modified index t))
+          (ebox-layer--program-mark-row program old-y)
+          (plist-put record :x (+ old-x dx))
+          (plist-put record :y (+ old-y dy))
+          (aset zs index z)
+          (ebox-layer--program-mark-row program (+ old-y dy))
+          (unless (= z old-z)
+            (setf (ebox-layer--program-order-dirty program) t
+                  (ebox-layer--program-order-changed program) t)))))
+    (when (and (ebox-layer--program-order-dirty program)
+               (not (ebox-layer--program-batch-open program)))
+      (ebox-layer--program-sort program)
+      (setf (ebox-layer--program-order-dirty program) nil)))
+  program)
+
+(defun ebox-layer--program-replace-text (program record-index text)
+  "Stage owned row TEXT for PROGRAM's primitive RECORD-INDEX.
+TEXT must be a single-line string and remains immutable until settlement.
+The caller proves its fixed pixel interval; placement, source bounds and
+record identity do not change.  Original text and accepted row pixels are
+saved once even when the same record changes repeatedly in one batch."
+  (unless (and (integerp record-index) (<= 0 record-index)
+               (< record-index (length (ebox-layer--program-records program))))
+    (error "Invalid Ebox prepared raster record index: %S" record-index))
+  (unless (and (stringp text) (not (string-match-p "\n" text)))
+    (error "Ebox prepared raster replacement must be a single-line string"))
+  (let* ((record (aref (ebox-layer--program-records program) record-index))
+         (old (plist-get record :text)))
+    (setf (ebox-layer--program-pending program) t)
+    (unless (eq old text)
+      (unless (aref (ebox-layer--program-modified-texts program) record-index)
+        (aset (ebox-layer--program-saved-texts program) record-index old)
+        (aset (ebox-layer--program-modified-texts program) record-index t))
+      (ebox-layer--program-mark-row program (plist-get record :y))
+      (plist-put record :text text)))
+  program)
+
+(defun ebox-layer--program-render (program &optional rows-only)
+  "Render PROGRAM's damaged rows using its prepared placement list spines.
+The row compositor still creates output strings and pixel clipping artifacts;
+those primitive costs remain measurable independently from preparation.
+A batch must be closed before rendering; repeated renders preserve the first
+accepted row baseline until settlement."
+  (when (ebox-layer--program-batch-open program)
+    (error "Ebox composition batch must be closed before rendering"))
+  (let* ((height (ebox-layer--program-height program))
+         (records (ebox-layer--program-records program))
+         (order (ebox-layer--program-order program))
+         (heads (ebox-layer--program-row-heads program))
+         (tails (ebox-layer--program-row-tails program))
+         (spines (ebox-layer--program-row-spines program))
+         (dirty (ebox-layer--program-dirty program))
+         (base (ebox-layer--program-base-lines program))
+         (rows (ebox-layer--program-rows program)))
+    (dotimes (row height)
+      (when (aref dirty row)
+        (aset heads row nil)
+        (aset tails row (aref spines row))))
+    (dotimes (offset (length order))
+      (let* ((record (aref records (aref order offset)))
+             (row (plist-get record :y)))
+        (when (and (integerp row) (<= 0 row) (< row height)
+                   (aref dirty row))
+          (let ((tail (aref tails row)))
+            (setcar tail record)
+            (unless (aref heads row) (aset heads row tail))
+            (aset tails row (cdr tail))))))
+    (dotimes (row height)
+      (when (aref dirty row)
+        ;; Keep the allocated spine intact.  The compositor receives the
+        ;; bounded prefix length rather than severing a reusable list tail.
+        (aset rows row
+              (ebox-composite-line
+               (if (< row (length base)) (aref base row) "")
+               (aref heads row) (ebox-layer--program-width program)
+               (aref tails row)))))
+    (unless rows-only
+      (let ((tail (ebox-layer--program-output-spine program)))
+        (dotimes (row height)
+          (setcar tail (aref rows row))
+          (setq tail (cdr tail))))
+      (ebox-lines-join (ebox-layer--program-output-spine program)))))
+
+(defun ebox-layer--program-replace-rows
+    (program target lines first-row dirty content-offset)
+  "Stage prepared TARGET raster LINES into enclosing PROGRAM.
+FIRST-ROW is the source-row origin established at compilation.  DIRTY is the
+child plane's damage vector; CONTENT-OFFSET locates that plane in its wrapper.
+Every target piece retains its pixel interval and placement."
+  (setf (ebox-layer--program-pending program) t)
+  (dotimes (offset (length target))
+    (let* ((index (aref target offset))
+           (record (aref (ebox-layer--program-records program) index))
+           (row (- (plist-get record :source-row) first-row))
+           (content-row (- row content-offset)))
+      (unless (and (<= 0 row) (< row (length lines)))
+        (error "Ebox prepared enclosing raster changed its row topology"))
+      (when (and (<= 0 content-row) (< content-row (length dirty))
+                 (aref dirty content-row))
+        (ebox-layer--program-replace-text program index (aref lines row))))))
+
+(defun ebox-layer--program-settle (program accepted)
+  "Accept or restore all PROGRAM's pending primitive changes as one unit.
+Rejection also handles an open batch or a failure before the first render."
+  (when (ebox-layer--program-pending program)
+    (let ((records (ebox-layer--program-records program))
+          (zs (ebox-layer--program-z-values program))
+          (coordinates (ebox-layer--program-saved-coordinates program))
+          (saved-z (ebox-layer--program-saved-z program))
+          (geometry (ebox-layer--program-modified-geometry program))
+          (texts (ebox-layer--program-modified-texts program))
+          (saved-texts (ebox-layer--program-saved-texts program)))
+      (dotimes (index (length records))
+        (when (aref geometry index)
+          (unless accepted
+            (let ((record (aref records index)))
+              (plist-put record :x (aref coordinates (* 2 index)))
+              (plist-put record :y (aref coordinates (1+ (* 2 index))))
+              (aset zs index (aref saved-z index))))
+          (aset geometry index nil))
+        (when (aref texts index)
+          (unless accepted
+            (plist-put (aref records index) :text (aref saved-texts index)))
+          (aset saved-texts index nil)
+          (aset texts index nil))))
+    (when (if accepted (ebox-layer--program-order-dirty program)
+            (ebox-layer--program-order-changed program))
+      (ebox-layer--program-sort program))
+    (dotimes (row (ebox-layer--program-height program))
+      (when (aref (ebox-layer--program-dirty program) row)
+        (unless accepted
+          (aset (ebox-layer--program-rows program) row
+                (aref (ebox-layer--program-saved-rows program) row)))
+        (aset (ebox-layer--program-saved-rows program) row nil)
+        (aset (ebox-layer--program-dirty program) row nil)))
+    (setf (ebox-layer--program-pending program) nil
+          (ebox-layer--program-batch-open program) nil
+          (ebox-layer--program-order-dirty program) nil
+          (ebox-layer--program-order-changed program) nil)))
+
+(defun ebox-layer--prepare-raster (node text)
+  "Return prepared local pixels for NODE's rendered TEXT.
+Placement is deliberately absent from this artifact: moving or restacking a
+panel does not split, measure or rediscover the ownership of its rows.  The
+ordinary rendering path still establishes TEXT; prepared geometry operations
+can consume the same artifact directly after their dependency validation."
+  (let* ((key (ebox-layer--compose-cache-key node 'raster))
+         (previous (and key ebox-layer--composition-context
+                        (hash-table-p ebox-layer--previous-composition-cache)
+                        (gethash key ebox-layer--previous-composition-cache)))
+         (raster
+          (if (and (ebox-layer--raster-p previous)
+                   (equal ebox-layer--composition-context
+                          (ebox-layer--raster-context previous))
+                   (equal-including-properties
+                    text (ebox-layer--raster-text previous)))
+              previous
+            (let ((lines (and text (ebox-string-lines text))))
+              (ebox-layer--make-raster
+               :text text :context ebox-layer--composition-context
+               :lines lines :pieces (ebox-layer--pieces lines node)
+               :width (if lines
+                          (apply #'max
+                                 (mapcar #'ebox--string-pixel-width lines))
+                        0))))))
+    (when (and key ebox-layer--composition-context
+               (hash-table-p ebox-layer--composition-cache))
+      (puthash key raster ebox-layer--composition-cache))
+    raster))
+
 (defun ebox-layer-active-p (&optional node)
   "Return the current candidate's layer capability without repeated scans."
   (if (eq ebox-layer--active-p 'unknown)
@@ -287,7 +645,8 @@ BASE-LINES, when present, are completed flow rows below every paint record."
          (old-signatures (and previous (plist-get previous :signatures)))
          (old-rows (and previous (plist-get previous :rows)))
          (cacheable-p (and key ebox-layer--composition-context
-                           (hash-table-p ebox-layer--composition-cache))))
+                           (hash-table-p ebox-layer--composition-cache)))
+         (retained-base-lines base-lines))
     (dolist (record ordered)
       (let ((row (plist-get record :y)))
         (when (and (integerp row) (>= row 0) (< row height))
@@ -318,7 +677,8 @@ BASE-LINES, when present, are completed flow rows below every paint record."
     (when cacheable-p
       (puthash key (list :context ebox-layer--composition-context
                          :width width :height height
-                         :signatures signatures :rows rows)
+                         :signatures signatures :rows rows
+                         :records ordered :base-lines retained-base-lines)
                ebox-layer--composition-cache))
     (append rows nil)))
 
@@ -424,10 +784,12 @@ publication.  Nested root projections join this same candidate-local pass."
                     (unless (eq (plist-get node :visibility) 'hidden)
                       (ebox--call-with-box-content-context
                        host (lambda () (ebox--render-with-cache node)))))
-                   (lines (and text (ebox-string-lines text))))
+                   (raster (ebox-layer--prepare-raster node text)))
               (puthash node
-                       (list :lines lines :origin nil
-                             :width (if lines (apply #'max (mapcar #'ebox--string-pixel-width lines)) 0))
+                       (list :raster raster
+                             :lines (ebox-layer--raster-lines raster)
+                             :origin nil
+                             :width (ebox-layer--raster-width raster))
                        panels)
               (push node order)
               (when (eq host ebox-layer--render-root)
@@ -437,13 +799,15 @@ publication.  Nested root projections join this same candidate-local pass."
       (dolist (node (nreverse order))
         (let ((origin (resolve node)))
           (when origin
-            (dolist (piece (ebox-layer--pieces (plist-get (gethash node panels) :lines) node))
+            (dolist (piece (ebox-layer--raster-pieces
+                           (plist-get (gethash node panels) :raster)))
               (push (list :node node
                           :x (+ (car origin) (plist-get piece :start))
                           :y (+ (cadr origin) (plist-get piece :y))
                           :text (plist-get piece :line)
                           :source-start (plist-get piece :start)
-                          :source-end (plist-get piece :end)) records))))))
+                          :source-end (plist-get piece :end)
+                          :source-row (plist-get piece :y)) records))))))
     records))
 
 (defun ebox-layer--flow-records (host flow lines width height)
@@ -460,7 +824,8 @@ publication.  Nested root projections join this same candidate-local pass."
                         :x (+ dx (plist-get piece :start))
                         :text (plist-get piece :line)
                         :source-start (plist-get piece :start)
-                        :source-end (plist-get piece :end)) records)))))
+                        :source-end (plist-get piece :end)
+                        :source-row (plist-get piece :y)) records)))))
     records))
 
 (defun ebox-layer-render-children (host children renderer)

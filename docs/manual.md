@@ -391,6 +391,85 @@ this API with the next declarative geometry. Ebox owns validation, retained
 layout, occlusion recomposition, incremental publication, and rollback; the
 caller owns interaction state and policy.
 
+Frameworks that repeatedly update the same mounted Host can prepare a fixed
+geometry operation once. `ebox-geometry-prepare` accepts its buffer, Host
+reference (or semantic ID), and fixed property order. Reuse a value vector with
+`ebox-geometry-apply`; a nil result means no state was staged and the caller
+must use its ordinary update route. The prepared operation becomes stale after
+an ordinary publication, replacement or unmounting. Reprepare at the next
+settled control-plane boundary; never treat a stale operation as accepted.
+Targets within one supported canvas share its retained preparation, so alternating
+accepted prepared operations keeps the other targets' operations usable.
+Repreparation after a compatible paint or positioning publication retains the
+canvas's compiled wrapper and ownership resources. The old operation remains
+stale; callers still obtain a new binding for the accepted generation.
+
+```elisp
+(let ((operation (ebox-geometry-prepare
+                  (current-buffer) "panel" [:left :top :z-index]))
+      (values (vector '(px 12) '(lh 2) 3)))
+  (unless (and operation (ebox-geometry-apply operation values))
+    (ebox-region-update-geometry "panel" :left '(px 12) :top '(lh 2) :z-index 3)))
+```
+
+The current compiled route supports absolute translation and stacking inside
+fixed containing planes, including enclosing fixed wrappers. Horizontal units
+are retained `px` or `ch`; vertical units are retained `lh`. Unchanged size
+bindings may share the value vector. Changed sizes, anchors, root portals and
+scroll dependencies use ordinary publication until their dependencies have a
+prepared implementation. Reusing placement storage does not certify a latency
+budget or allocation-free rendering; clipping and native text publication still
+have their own measured costs. Fixed wrapper decoration, ownership projection and
+publication reuse compiled resources and process damaged rows.
+
+Frameworks with related paint, Text and geometry effects can prepare one cohort
+with `ebox-update-prepare`. Each specification is `[HOST-REF PROPERTY-VECTOR]`;
+disjoint specifications may address the same Host. Reuse member value vectors
+and a sparse vector of changed member indices with `ebox-update-apply`.
+One stage/rollback callback pair covers every changed member and one publication.
+For a mounted Box with semantic ID `panel` and Text with semantic ID `label`,
+handle either preparation or application declining with one ordinary batch:
+
+```elisp
+(let ((operation (ebox-update-prepare
+                  (current-buffer)
+                  [["panel" [:left :z-index]]
+                   ["label" [:color :content]]]))
+      (values [[(px 20) 3] ["#0088cc" "Ready"]]))
+  (unless (and operation (ebox-update-apply operation values [0 1]))
+    (ebox-call-with-update-batch
+     (lambda ()
+       (ebox-region-update-geometry "panel" :left '(px 20) :z-index 3)
+       (ebox-region-update "label" :color "#0088cc" :content "Ready")))))
+```
+
+The cohort uses the shared fixed canvas from prepared geometry. Its supported
+properties, values and Text-region conditions are defined by `ebox-update-prepare`
+in [the API inventory](../ebox.el). In particular, class, border, font-weight and
+nil foreground changes use ordinary publication. A Text value may change width
+inside an admitted fixed single-row allocation; an initially empty, clipped or
+exactly full allocation cannot prepare that fixed slot. Unsupported rich text,
+layout dependencies, changed allocations and active hover replacements also
+decline before publication. The caller then uses its ordinary update transaction.
+A retained source record keeps its
+opaque handle; a new record binding invalidates earlier operations without
+breaking previously exported canonical input. Accepted paint marks computed
+styles stale for the next ordinary update, which recomputes the cascade before
+using general local-update proofs.
+
+Optional preparation callbacks pair framework state with the same publication:
+`stage` and `rollback` are zero-argument functions supplied together;
+`after-commit` runs after acceptance. A failing stage restores both authorities.
+An after-commit error propagates after the accepted publication. Each
+`ebox-geometry-prepare` operation owns one Host; `ebox-update-prepare` groups
+supported changes across Hosts into one atomic publication. Unsupported groups
+use the ordinary batch route. Exported snapshots remain independent of subsequent
+prepared moves.
+Point follows a retained logical focus target while point has not been moved
+manually. Complete occlusion clears focus and active ownership and updates hover
+bounds. If clearing those states would change computed styling, that sample
+declines before staging so the ordinary route can publish the style change too.
+
 ### Wrapping and the optional EKP dependency
 
 `:wrap-mode word` wraps ordinary words and permits character breaks for CJK;
@@ -523,8 +602,13 @@ keeps ordinary Elisp application state and moves the retained Box horizontally:
 ```
 
 Ebox keeps the initial target through keyed reorder and checks its current
-published ownership before each event. The callback completes and Emacs
-redisplays before more input is read. Release supplies the final position.
+published ownership after native reads and before dispatch. One input round
+merges at most 64 already pending motions in the original text window, uses
+the latest position, completes its callback and redisplays. Polling does not
+wait for more motion. Release, another press, cancellation, unrelated input
+and leaving the window stop merging; unrelated events retain their order.
+Release supplies its own final position. A locked gesture ends at its second
+press and consumes subsequent motion until release without publishing again.
 Leaving the original text window or losing the target/window ends tracking;
 `C-g` cancels and propagates quit. Accepted positions remain application-owned.
 `:activate` may also provide keyboard activation; `:drag` owns the primary mouse

@@ -11,6 +11,8 @@
 (require 'ebox-text)
 (require 'ebox-property)
 (defvar ebox-selector-view--current)
+(defvar ebox-selector-view--topology)
+(defvar ebox-style--scopes)
 (require 'ebox-publication)
 
 (declare-function ebox-style-compile-form "ebox-style" (tag plist))
@@ -29,6 +31,7 @@
 (declare-function ebox-surface--paint-node-chain "ebox-surface" (state role-ids))
 (declare-function ebox--host-ref-node "ebox-runtime" (buffer host-ref))
 (declare-function ebox-host-ref-bounds "ebox-runtime" (buffer-or-name host-ref))
+(declare-function ebox--node-all-region-ids "ebox-runtime" (node))
 (declare-function ebox-source--copy-data "ebox-source" (value))
 (declare-function ebox-source--index-record "ebox-source" (index handle))
 (declare-function ebox-source-record-key "ebox-source" (record))
@@ -37,6 +40,16 @@
 (declare-function ebox-source-index-interactions "ebox-source" (index handle))
 (declare-function ebox-tree-node-source-handle "ebox-tree" (node))
 (declare-function ebox-tree-node-source-identity "ebox-tree" (node))
+(declare-function ebox-tree-node-subject "ebox-tree" (source-index node))
+(declare-function ebox-tree-node-source-declarations "ebox-tree" (source-index node))
+(declare-function ebox-style-source-scopes "ebox-style" (source-index &optional root))
+(declare-function ebox-tree-source-interaction-state "ebox-tree"
+                  (index state target-handle old-handle))
+(declare-function ebox-surface--stylesheet-signature "ebox-surface" ())
+(declare-function ebox-surface--stylesheet-subject-local-p "ebox-surface"
+                  (stylesheet-signature &optional fixed-scope-roots-p))
+(declare-function ebox-surface--compute-node-style "ebox-surface"
+                  (subject declarations parent-style))
 (declare-function ebox--buffer-render-state "ebox-incremental" (buffer))
 (declare-function ebox--buffer-runtime-node "ebox-incremental" (buffer node-id))
 (declare-function ebox--buffer-host-ref-table "ebox-incremental" (buffer))
@@ -117,6 +130,10 @@ when both options are supplied, activation remains keyboard-only.
 `hyper'.  Holding it for the initial primary-button press keeps the gesture
 alive after the first release; motion continues to publish `move' until the
 next primary-button press publishes `end'.  ESC cancels the locked gesture.
+Each input round merges at most 64 pending same-window motions without waiting,
+then publishes the latest position and redisplays.  Release, another press,
+cancel, unrelated input and leaving the window are barriers.  A started gesture
+has one end/cancel; consuming a locked release never delivers motion after end.
 `:hover-group' groups sibling `:hover-content' nodes.  Entering one member
 updates every member in one incremental batch; leaving the group restores all
 members together.  Group keys are symbols, strings, numbers or nil.
@@ -235,7 +252,7 @@ This function does not install navigation bindings or event propagation."
                (consp xy) (numberp (car xy)) (numberp (cdr xy))
                (<= 0 (car xy)) (< (car xy) (- (nth 2 edges) (nth 0 edges)))
                (<= 0 (cdr xy)) (< (cdr xy) (- (nth 3 edges) (nth 1 edges))))
-      (cons (car xy) (cdr xy)))))
+      xy)))
 
 (defun ebox-interaction--track-drag
     (event callback &optional defer-active-p lock-p)
@@ -269,29 +286,40 @@ publishes `cancel'."
                (position start) (last-event event) (reason 'input)
                (ebox-interaction--drag-active t)
                (mouse-fine-grained-tracking t)
-               started finished active-p locked finishing)
+               started finished active-p locked finishing
+               validated-state validated-revision validated-position)
           (cl-labels
               ((available ()
                  (and (window-live-p window) (buffer-live-p buffer)
                       (eq (window-buffer window) buffer)
                       (eq surface (ebox-surface--live-buffer-surface buffer))
-                      (let ((current (ebox-surface--buffer-client-state buffer)))
-                        (and (equal owner (ebox-interaction--resolve-focus-owner
-                                           current (plist-get current :source-index) identity owner key))
-                             (with-current-buffer buffer
-                               (when (ebox-interaction--focus-position current owner)
-                                 (setq identity (ebox-interaction--focus-ref current owner))))))))
+                      (let ((current (ebox-surface--buffer-client-state buffer))
+                            (revision (ebox--pub-surface-revision surface)))
+                        (with-current-buffer buffer
+                          (or (and (eq current validated-state)
+                                   (eql revision validated-revision)
+                                   validated-position
+                                   (<= (point-min) validated-position)
+                                   (< validated-position (point-max))
+                                   (not (invisible-p validated-position))
+                                   (not (equal (get-text-property validated-position 'display) "")))
+                              (and (equal owner (ebox-interaction--resolve-focus-owner
+                                                 current (plist-get current :source-index) identity owner key))
+                                   (setq validated-position (ebox-interaction--focus-position current owner))
+                                   (setq identity (ebox-interaction--focus-ref current owner)
+                                         validated-state current
+                                         validated-revision revision)))))))
                (emit (phase)
                  (with-current-buffer (if (buffer-live-p buffer) buffer (current-buffer))
                    (funcall callback
-                          (list :phase phase :event last-event
-                                :host-ref (ebox-source--copy-data identity)
-                                :window window :buffer buffer
-                                :start (cons (car start) (cdr start))
-                                :position (cons (car position) (cdr position))
-                                :delta (cons (- (car position) (car start))
-                                             (- (cdr position) (cdr start)))
-                                :reason (and (eq phase 'cancel) reason))))))
+                            (list :phase phase :event last-event
+                                  :host-ref (ebox-source--copy-data identity)
+                                  :window window :buffer buffer
+                                  :start (cons (car start) (cdr start))
+                                  :position (cons (car position) (cdr position))
+                                  :delta (cons (- (car position) (car start))
+                                               (- (cdr position) (cdr start)))
+                                  :reason (and (eq phase 'cancel) reason))))))
             (unless (and owner identity (available))
               (user-error "No enabled Ebox drag target at the press position"))
             (unwind-protect
@@ -304,54 +332,90 @@ publishes `cancel'."
                       (emit 'start)
                       (track-mouse
                         (let ((track-mouse 'dragging) done)
-                          (while (and (not done) (available))
+                          (while (and (not done) (or finishing (available)))
                             ;; A timeout lets ordinary Emacs timers invalidate a
                             ;; removed owner or window even while the mouse rests.
                             (when-let* ((next (read-event nil nil 0.05)))
+                              ;; `read-event' runs timers.  Do not deliver the
+                              ;; event to an owner invalidated during that wait.
+                              (unless (or finishing (available))
+                                (push next unread-command-events)
+                                (setq reason 'target-unavailable done t))
+                              (when (and (not done) (not finishing)
+                                         (mouse-movement-p next)
+                                         (ebox-interaction--drag-position
+                                          (event-start next) window))
+                                ;; Only already pending motions are replaceable.
+                                ;; Bound each drain so a busy input stream still
+                                ;; publishes promptly.  The first semantic barrier
+                                ;; returns unchanged to the native input queue.
+                                (let ((count 1) (poll t))
+                                  (while (and poll (< count 64) (available))
+                                    (let ((candidate (read-event nil nil 0)))
+                                      (cond
+                                       ((null candidate) (setq poll nil))
+                                       ((and (available)
+                                             (mouse-movement-p candidate)
+                                             (ebox-interaction--drag-position
+                                              (event-start candidate) window))
+                                        (setq next candidate count (1+ count)))
+                                       (t (push candidate unread-command-events)
+                                          (setq poll nil))))))
+                                (unless (available)
+                                  (setq reason 'target-unavailable done t)))
                               (setq last-event next)
-                              (let* ((modifiers (event-modifiers next))
-                                     (primary-down
-                                      (and (eq (event-basic-type next) button)
-                                           (memq 'down modifiers)))
-                                     (release (and (eq (event-basic-type next) button)
-                                                   (not (memq 'down modifiers))))
-                                     (motion (mouse-movement-p next)))
-                                (cond
-                                 ((and locked
-                                       (or (eq (event-basic-type next) 'escape)
-                                           (equal next ?\e)))
-                                  (setq reason 'quit done t))
-                                 ((and finishing release)
-                                  (setq done t))
-                                 ((and locked primary-down)
-                                  (setq position (or (ebox-interaction--drag-position
-                                                      (event-start next) window)
-                                                     position)
-                                        finished t finishing t locked nil)
-                                  (emit 'end))
-                                 ((or release motion)
-                                  (when (and defer-active-p motion (not active-p))
-                                    (ebox-interaction--set-active identity buffer)
-                                    (setq active-p t))
-                                  (let ((xy (and (available)
-                                                 (ebox-interaction--drag-position
-                                                  (if release (event-end next) (event-start next)) window))))
-                                    (cond
-                                     ((null xy) (setq reason 'window-left done t))
-                                     (release
-                                      (setq position xy)
-                                      (if (and lock-p (not locked))
-                                          (progn
-                                            (setq locked t)
-                                            (emit 'move))
-                                        (setq finished t done t)
-                                        (emit 'end)))
-                                     ((not (equal xy position))
-                                      (setq position xy)
-                                      (emit 'move)))
-                                    (redisplay t)))
-                                 (t (push next unread-command-events)
-                                    (setq reason 'input done t))))))
+                              (unless done
+                                (let* ((modifiers (event-modifiers next))
+                                       (primary-down
+                                        (and (eq (event-basic-type next) button)
+                                             (memq 'down modifiers)))
+                                       (release (and (eq (event-basic-type next) button)
+                                                     (not (memq 'down modifiers))))
+                                       (motion (mouse-movement-p next)))
+                                  (cond
+                                   ((and locked
+                                         (or (eq (event-basic-type next) 'escape)
+                                             (equal next ?\e)))
+                                    (setq reason 'quit done t))
+                                   ((and finishing release)
+                                    (setq done t))
+                                   ((and finishing motion)
+                                    ;; The second locked press already delivered
+                                    ;; the terminal position.  Drain to its release
+                                    ;; without publishing any later motion.
+                                    nil)
+                                   ((and locked primary-down)
+                                    (if-let* ((xy (ebox-interaction--drag-position
+                                                   (event-start next) window)))
+                                        (progn
+                                          (setq position xy finished t finishing t locked nil)
+                                          (emit 'end)
+                                          (redisplay t))
+                                      (push next unread-command-events)
+                                      (setq reason 'window-left done t)))
+                                   ((or release motion)
+                                    (when (and defer-active-p motion (not active-p))
+                                      (ebox-interaction--set-active identity buffer)
+                                      (setq active-p t))
+                                    (let ((xy (and (available)
+                                                   (ebox-interaction--drag-position
+                                                    (if release (event-end next) (event-start next)) window))))
+                                      (cond
+                                       ((null xy) (setq reason 'window-left done t))
+                                       (release
+                                        (setq position xy)
+                                        (if (and lock-p (not locked))
+                                            (progn
+                                              (setq locked t)
+                                              (emit 'move))
+                                          (setq finished t done t)
+                                          (emit 'end)))
+                                       ((not (equal xy position))
+                                        (setq position xy)
+                                        (emit 'move)))
+                                      (redisplay t)))
+                                   (t (push next unread-command-events)
+                                      (setq reason 'input done t)))))))
                           (unless (available) (setq reason 'target-unavailable)))))
                   ((error quit)
                    (setq reason (if (eq (car problem) 'quit) 'quit 'error))
@@ -931,6 +995,324 @@ stop `:hover-content' from ever activating.
       (setq ebox-interaction--focus-owner (car snapshot)
             ebox-interaction--active-owner (nth 6 snapshot)
             ebox-interaction--focus-order nil))))
+
+(cl-defstruct (ebox-interaction--geometry-target
+               (:constructor ebox-interaction--geometry-target-create))
+  "Cold-owned lookup and bounds storage for one retained interaction target."
+  owner ref primary-start primary-end primary-position
+  fallback-start fallback-end fallback-position position
+  hover-spec hover-cell hover-bounds old-hover-bounds old-start old-end)
+
+(cl-defstruct (ebox-interaction--geometry
+               (:constructor ebox-interaction--geometry-create))
+  "Prepared interaction dependencies and reusable publication rollback cells."
+  buffer surface state targets bindings focus active focus-owner active-owner
+  sources supported source-cell stale-cell hover-specs tracking-backup
+  mask next-focus next-active next-position follow point staged old-focus-position
+  old-source old-stale old-focus old-active old-order old-hover-specs
+  old-track-local old-track-value old-tracking)
+
+(defun ebox-interaction--geometry-styles-unchanged-p (state source variant owners)
+  "Prove that VARIANT changes no effective styles of OWNERS from SOURCE.
+Canonical inline nodes need not retain computed styles.  Recompute both
+counterfactuals with the existing style provider during cold preparation,
+including inherited parent styles; relational selectors remain unsupported."
+  (let* ((ebox-style--scopes (ebox-style-source-scopes source (plist-get state :root-node)))
+         (signature (ebox-surface--stylesheet-signature))
+         (nodes (plist-get state :node-table))
+         (parents (plist-get state :parent-table))
+         (before (make-hash-table :test #'eql))
+         (after (make-hash-table :test #'eql)))
+    (when (and (equal signature (plist-get state :stylesheet-signature))
+               (ebox-surface--stylesheet-subject-local-p signature t))
+      (cl-labels
+          ((compute (index owner cache)
+             (when owner
+               (or (gethash owner cache)
+                   (let* ((node (ebox-runtime-index-get owner nodes))
+                          (parent (compute index (ebox-runtime-index-get owner parents) cache))
+                          (ebox-selector-view--current (ebox-source--index-selector-view index))
+                          (ebox-selector-view--topology (ebox-source--index-selector-topology index))
+                          (style (ebox-surface--compute-node-style
+                                  (ebox-tree-node-subject index node)
+                                  (ebox-tree-node-source-declarations index node) parent)))
+                     (puthash owner style cache)
+                     style)))))
+        (cl-every (lambda (owner) (equal (compute source owner before)
+                                         (compute variant owner after))) owners)))))
+
+(defun ebox-interaction--geometry-prepare (buffer state surface)
+  "Prepare fixed interaction dependencies for BUFFER's STATE and SURFACE.
+Selector variants are immutable and share the geometry provider's private
+numeric declaration cells.  Unsupported style effects are recorded for the
+particular occluding update, without excluding visible translation."
+  (with-current-buffer buffer
+    (let* ((source (plist-get state :source-index))
+           (focus-owner ebox-interaction--focus-owner)
+           (active-owner ebox-interaction--active-owner)
+           (targets (make-hash-table :test #'eql))
+           (bindings (make-hash-table :test #'eq))
+           (sources (make-vector 4 nil))
+           (supported (make-vector 4 nil))
+           focus active hover-specs)
+      (cl-labels
+          ((target (owner)
+             (or (gethash owner targets)
+                 (let* ((node (ebox-interaction--focus-node state owner))
+                        (entry (ebox-interaction--geometry-target-create
+                                :owner owner :ref (ebox-interaction--focus-ref state owner))))
+                   (dolist (region (ebox--node-all-region-ids node))
+                     (when-let* ((object (gethash region
+                                                  (plist-get state :region-surface-object-table))))
+                       (puthash object (cons (cons entry region) (gethash object bindings)) bindings)))
+                   (puthash owner entry targets)
+                   entry))))
+        (when focus-owner
+          (setq focus (target focus-owner))
+          (setf (ebox-interaction--geometry-target-position focus)
+                (ebox-interaction--focus-position state focus-owner)))
+        (when active-owner (setq active (target active-owner)))
+        ;; Preparation visits declared capabilities once, including currently
+        ;; occluded hover targets which can be revealed by later translation.
+        (maphash
+         (lambda (ref owner)
+           (let* ((node (ebox-interaction--focus-node state owner))
+                  (facts (ebox-interaction--focus-properties state owner))
+                  (content (plist-get facts :hover-content)))
+             (when content
+               (when-let* ((editable (ebox-interaction--hover-content-handle buffer node state)))
+                 (let* ((entry (target owner))
+                        (bounds (cons 0 0))
+                        (spec (list :ref ref :node node :handle editable :content content
+                                    :group (plist-get facts :hover-group) :bounds nil)))
+                   (setf (ebox-interaction--geometry-target-hover-spec entry) spec
+                         (ebox-interaction--geometry-target-hover-cell entry) (cdr (plist-member spec :bounds))
+                         (ebox-interaction--geometry-target-hover-bounds entry) bounds)
+                   (push spec hover-specs))))))
+         (ebox--buffer-host-ref-table buffer)))
+      (dotimes (mask 4)
+        (let ((variant source) changed)
+          (when (and focus-owner (= 0 (logand mask 1)))
+            (setq variant
+                  (ebox-tree-source-interaction-state
+                   variant "focus" nil
+                   (ebox-tree-node-source-handle (ebox-interaction--focus-node state focus-owner))))
+            (push focus-owner changed))
+          (when (and active-owner (= 0 (logand mask 2)))
+            (setq variant
+                  (ebox-tree-source-interaction-state
+                   variant "active" nil
+                   (ebox-tree-node-source-handle (ebox-interaction--focus-node state active-owner))))
+            (cl-pushnew active-owner changed))
+          (aset sources mask variant)
+          (aset supported mask
+                (or (eq variant source)
+                    (ebox-interaction--geometry-styles-unchanged-p
+                     state source variant changed)))))
+      (unless (plist-member state :selector-index-stale-p)
+        (plist-put state :selector-index-stale-p nil))
+      (ebox-interaction--geometry-create
+       :buffer buffer :surface surface :state state
+       :targets (vconcat (hash-table-values targets)) :bindings bindings
+       :focus focus :active active :focus-owner focus-owner :active-owner active-owner
+       :sources sources :supported supported
+       :source-cell (cdr (plist-member state :source-index))
+       :stale-cell (cdr (plist-member state :selector-index-stale-p))
+       :hover-specs hover-specs
+       :tracking-backup (or ebox-interaction--hover-content-track-mouse
+                            (list (local-variable-p 'track-mouse) track-mouse))))))
+
+(defun ebox-interaction--geometry-painted-position (rendered start end)
+  "Return the first visible painted offset in RENDERED's START..END interval."
+  (let ((position start) found)
+    (while (and (< position end) (not found))
+      (cond
+       ((eq (aref rendered position) ?\n) (setq position (1+ position)))
+       ((or (invisible-p (get-text-property position 'invisible rendered))
+            (equal (get-text-property position 'display rendered) ""))
+        (setq position (next-property-change position rendered end)))
+       (t (setq found position))))
+    found))
+
+(defun ebox-interaction--geometry-ready-p (capability slots count rendered)
+  "Resolve CAPABILITY against candidate SLOTS before publishing RENDERED.
+Visit actual output mount metadata and cold target bindings, never the Box
+tree.  Return nil before mutation if a required interaction style change
+would need general rendering."
+  (with-current-buffer (ebox-interaction--geometry-buffer capability)
+    (when (and (not (buffer-narrowed-p))
+               (or (null ebox-interaction--focus-owner)
+                   (eql ebox-interaction--focus-owner
+                        (ebox-interaction--geometry-focus-owner capability)))
+               (or (null ebox-interaction--active-owner)
+                   (eql ebox-interaction--active-owner
+                        (ebox-interaction--geometry-active-owner capability))))
+      (let ((targets (ebox-interaction--geometry-targets capability))
+            (bindings (ebox-interaction--geometry-bindings capability))
+            (base (marker-position (ebox--pub--surface-start
+                                    (ebox-interaction--geometry-surface capability)))))
+        (setf (ebox-interaction--geometry-point capability) (point)
+              (ebox-interaction--geometry-old-focus-position capability)
+              (and (ebox-interaction--geometry-focus capability)
+                   (ebox-interaction--geometry-target-position
+                    (ebox-interaction--geometry-focus capability)))
+              (ebox-interaction--geometry-follow capability)
+              (and ebox-interaction--focus-owner
+                   (equal (point) (ebox-interaction--geometry-target-position
+                                   (ebox-interaction--geometry-focus capability)))))
+        (dotimes (index (length targets))
+          (let ((entry (aref targets index)))
+            (setf (ebox-interaction--geometry-target-primary-start entry) nil
+                  (ebox-interaction--geometry-target-primary-end entry) nil
+                  (ebox-interaction--geometry-target-primary-position entry) nil
+                  (ebox-interaction--geometry-target-fallback-start entry) nil
+                  (ebox-interaction--geometry-target-fallback-end entry) nil
+                  (ebox-interaction--geometry-target-fallback-position entry) nil)))
+        (dotimes (index (if (= (length targets) 0) 0 count))
+          (let* ((offset (* index 4))
+                 (mount (aref slots offset))
+                 (start (aref slots (1+ offset)))
+                 (end (aref slots (+ offset 2)))
+                 (tags (aref slots (+ offset 3)))
+                 (known (gethash (ebox--pub--surface-mount-object mount) bindings)))
+            (when (< start end)
+              (dolist (binding known)
+                (let* ((entry (car binding))
+                       (same (equal (cdr binding) (plist-get tags :ebox/region-id)))
+                       (roles (and same (plist-get tags :ebox/roles)))
+                       primary)
+                  (while (and roles (not primary))
+                    (setq primary (memq (car roles) ebox--horizontal-border-anchor-roles)
+                          roles (cdr roles)))
+                  (when (or same (plist-get tags :ebox/descendant-output))
+                    (let ((position (ebox-interaction--geometry-painted-position rendered start end)))
+                      (setf (ebox-interaction--geometry-target-fallback-start entry)
+                            (min start (or (ebox-interaction--geometry-target-fallback-start entry) start))
+                            (ebox-interaction--geometry-target-fallback-end entry)
+                            (max end (or (ebox-interaction--geometry-target-fallback-end entry) end)))
+                      (when position
+                        (setf (ebox-interaction--geometry-target-fallback-position entry)
+                              (min position (or (ebox-interaction--geometry-target-fallback-position entry) position))))))
+                  (when primary
+                    (let ((position (ebox-interaction--geometry-painted-position rendered start end)))
+                      (setf (ebox-interaction--geometry-target-primary-start entry)
+                            (min start (or (ebox-interaction--geometry-target-primary-start entry) start))
+                            (ebox-interaction--geometry-target-primary-end entry)
+                            (max end (or (ebox-interaction--geometry-target-primary-end entry) end)))
+                      (when position
+                        (setf (ebox-interaction--geometry-target-primary-position entry)
+                              (min position (or (ebox-interaction--geometry-target-primary-position entry) position)))))))))))
+        (let* ((focus (ebox-interaction--geometry-focus capability))
+               (active (ebox-interaction--geometry-active capability))
+               (focus-position
+                (and focus ebox-interaction--focus-owner
+                     (if (ebox-interaction--geometry-target-primary-start focus)
+                         (ebox-interaction--geometry-target-primary-position focus)
+                       (ebox-interaction--geometry-target-fallback-position focus))))
+               (active-position
+                (and active ebox-interaction--active-owner
+                     (if (ebox-interaction--geometry-target-primary-start active)
+                         (ebox-interaction--geometry-target-primary-position active)
+                       (ebox-interaction--geometry-target-fallback-position active))))
+               (mask (+ (if focus-position 1 0) (if active-position 2 0))))
+          (setf (ebox-interaction--geometry-mask capability) mask
+                (ebox-interaction--geometry-next-focus capability) (and focus-position ebox-interaction--focus-owner)
+                (ebox-interaction--geometry-next-active capability) (and active-position ebox-interaction--active-owner)
+                (ebox-interaction--geometry-next-position capability) (and focus-position (+ base focus-position)))
+          (aref (ebox-interaction--geometry-supported capability) mask))))))
+
+(defun ebox-interaction--geometry-stage (capability)
+  "Stage CAPABILITY's preflighted source facts and current native input bounds."
+  (with-current-buffer (ebox-interaction--geometry-buffer capability)
+    (setf (ebox-interaction--geometry-old-source capability) (car (ebox-interaction--geometry-source-cell capability))
+          (ebox-interaction--geometry-old-stale capability) (car (ebox-interaction--geometry-stale-cell capability))
+          (ebox-interaction--geometry-old-focus capability) ebox-interaction--focus-owner
+          (ebox-interaction--geometry-old-active capability) ebox-interaction--active-owner
+          (ebox-interaction--geometry-old-order capability) ebox-interaction--focus-order
+          (ebox-interaction--geometry-old-hover-specs capability) ebox-interaction--hover-content-specs
+          (ebox-interaction--geometry-old-track-local capability) (local-variable-p 'track-mouse)
+          (ebox-interaction--geometry-old-track-value capability) track-mouse
+          (ebox-interaction--geometry-old-tracking capability) ebox-interaction--hover-content-track-mouse
+          (ebox-interaction--geometry-staged capability) t)
+    (let ((next (aref (ebox-interaction--geometry-sources capability)
+                      (ebox-interaction--geometry-mask capability))))
+      (unless (eq next (car (ebox-interaction--geometry-source-cell capability)))
+        (setcar (ebox-interaction--geometry-source-cell capability) next)
+        (setcar (ebox-interaction--geometry-stale-cell capability) t)))
+    (setq ebox-interaction--focus-owner (ebox-interaction--geometry-next-focus capability)
+          ebox-interaction--active-owner (ebox-interaction--geometry-next-active capability)
+          ebox-interaction--focus-order nil
+          ebox-interaction--hover-content-specs (ebox-interaction--geometry-hover-specs capability))
+    (let ((targets (ebox-interaction--geometry-targets capability))
+          (base (marker-position (ebox--pub--surface-start
+                                  (ebox-interaction--geometry-surface capability))))
+          visible)
+      (dotimes (index (length targets))
+        (let* ((entry (aref targets index))
+               (cell (ebox-interaction--geometry-target-hover-cell entry))
+               (bounds (ebox-interaction--geometry-target-hover-bounds entry)))
+          (when cell
+            (setf (ebox-interaction--geometry-target-old-hover-bounds entry) (car cell)
+                  (ebox-interaction--geometry-target-old-start entry) (car bounds)
+                  (ebox-interaction--geometry-target-old-end entry) (cdr bounds))
+            (let* ((primary (ebox-interaction--geometry-target-primary-start entry))
+                   (start (or primary (ebox-interaction--geometry-target-fallback-start entry)))
+                   (end (if primary (ebox-interaction--geometry-target-primary-end entry)
+                          (ebox-interaction--geometry-target-fallback-end entry))))
+              (if (and start end (< start end))
+                  (progn (setcar bounds (+ base start)) (setcdr bounds (+ base end))
+                         (setcar cell bounds) (setq visible t))
+                (setcar cell nil))))))
+      (cond
+       (visible
+        (unless ebox-interaction--hover-content-track-mouse
+          (setq ebox-interaction--hover-content-track-mouse
+                (ebox-interaction--geometry-tracking-backup capability)))
+        (setq-local track-mouse t))
+       (ebox-interaction--hover-content-track-mouse
+        (let ((saved ebox-interaction--hover-content-track-mouse))
+          (if (car saved) (setq-local track-mouse (cadr saved))
+            (kill-local-variable 'track-mouse)))
+        (setq ebox-interaction--hover-content-track-mouse nil))))))
+
+(defun ebox-interaction--geometry-accept (capability)
+  "Settle CAPABILITY's logical focus after the publisher restores native view."
+  (with-current-buffer (ebox-interaction--geometry-buffer capability)
+    (let ((position (ebox-interaction--geometry-next-position capability)))
+      (when (ebox-interaction--geometry-old-focus capability)
+        (goto-char (if (and position (ebox-interaction--geometry-follow capability)) position
+                     (min (point-max) (max (point-min) (ebox-interaction--geometry-point capability)))))))
+    (when-let* ((focus (ebox-interaction--geometry-focus capability)))
+      (setf (ebox-interaction--geometry-target-position focus)
+            (ebox-interaction--geometry-next-position capability)))))
+
+(defun ebox-interaction--geometry-rollback (capability)
+  "Restore CAPABILITY's saved source and interaction slots without reading mounts."
+  (when (ebox-interaction--geometry-staged capability)
+    (with-current-buffer (ebox-interaction--geometry-buffer capability)
+      (setcar (ebox-interaction--geometry-source-cell capability) (ebox-interaction--geometry-old-source capability))
+      (setcar (ebox-interaction--geometry-stale-cell capability) (ebox-interaction--geometry-old-stale capability))
+      (setq ebox-interaction--focus-owner (ebox-interaction--geometry-old-focus capability)
+            ebox-interaction--active-owner (ebox-interaction--geometry-old-active capability)
+            ebox-interaction--focus-order (ebox-interaction--geometry-old-order capability)
+            ebox-interaction--hover-content-specs (ebox-interaction--geometry-old-hover-specs capability)
+            ebox-interaction--hover-content-track-mouse (ebox-interaction--geometry-old-tracking capability))
+      (if (ebox-interaction--geometry-old-track-local capability)
+          (setq-local track-mouse (ebox-interaction--geometry-old-track-value capability))
+        (kill-local-variable 'track-mouse))
+      (let ((targets (ebox-interaction--geometry-targets capability)))
+        (dotimes (index (length targets))
+          (let ((entry (aref targets index)))
+            (when-let* ((cell (ebox-interaction--geometry-target-hover-cell entry)))
+              (setcar cell (ebox-interaction--geometry-target-old-hover-bounds entry))
+              (setcar (ebox-interaction--geometry-target-hover-bounds entry)
+                      (ebox-interaction--geometry-target-old-start entry))
+              (setcdr (ebox-interaction--geometry-target-hover-bounds entry)
+                      (ebox-interaction--geometry-target-old-end entry)))))))
+    (when-let* ((focus (ebox-interaction--geometry-focus capability)))
+      (setf (ebox-interaction--geometry-target-position focus)
+            (ebox-interaction--geometry-old-focus-position capability)))
+    (setf (ebox-interaction--geometry-staged capability) nil)))
 
 (defun ebox-interaction--focus-index (state)
   "Return a cached navigation vector and owner ranks for published STATE."

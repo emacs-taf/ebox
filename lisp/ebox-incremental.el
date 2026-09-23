@@ -6041,7 +6041,8 @@ BUFFER-OR-NAME.  Return the same pure surface-input shape as
       (error "Ebox buffer has no rendered runtime: %S" buffer))
     (let ((prepared
            (ebox-incremental--with-phase 'source
-             (or (and (eq next-root (plist-get old-state :root-node))
+             (or (and (not (plist-get old-state :computed-styles-stale-p))
+                      (eq next-root (plist-get old-state :root-node))
                       ebox-incremental--source-base-index
                       (eq (ebox-source--index-handle-records ebox-incremental--source-base-index)
                           (ebox-source--index-handle-records (plist-get old-state :source-index)))
@@ -6060,7 +6061,8 @@ All actual style effects and changed display constraints use normal planning."
            (root (plist-get old-state :root-node))
            (source (plist-get old-state :source-index))
            (display (ebox--current-display-signature)))
-      (when (and (or focus active)
+      (when (and (not (plist-get old-state :computed-styles-stale-p))
+                 (or focus active)
                  (equal display (plist-get old-state :display-signature))
                  (ebox-incremental--static-style-bindings-p old-state)
                  (ebox-source--index-selector-view source))
@@ -11041,7 +11043,8 @@ publication root."
     (buffer old-state prepared)
   "Return Ebox publication surface input for BUFFER from OLD-STATE and PREPARED
 runtime."
-  (let* ((ebox-incremental--projection-rejections nil)
+  (let* ((stale-styles-p (plist-get old-state :computed-styles-stale-p))
+         (ebox-incremental--projection-rejections nil)
          (ebox-incremental--mount-snapshot-cache (make-hash-table :test #'equal))
          (ebox-incremental--allocated-slot-proof-cache
           (make-hash-table :test 'equal))
@@ -11106,9 +11109,10 @@ runtime."
                               (plist-get entry :range-delta)))
                         (plist-get prepared :dirty-set))))))
          (metadata-only-p
-          (ebox-incremental--metadata-projection-p old-state prepared candidate-state))
+          (and (not stale-styles-p)
+               (ebox-incremental--metadata-projection-p old-state prepared candidate-state)))
          (native-program-p
-          (and (not metadata-only-p)
+          (and (not stale-styles-p) (not metadata-only-p)
                (or (eq (plist-get old-state :projection-kind) 'native-frame)
                    (>= (length (plist-get prepared :dirty-set)) 3)
                    structural-dirty-p
@@ -11122,8 +11126,9 @@ runtime."
                (ebox-native-commit-plan-eligible-p
                 old-state candidate-state prepared)))
          (unprepared-style-p
-          (/= (ebox-tree-author-style-count (plist-get old-state :root-node))
-              (ebox-tree-author-style-count (plist-get candidate-state :root-node))))
+          (or stale-styles-p
+              (/= (ebox-tree-author-style-count (plist-get old-state :root-node))
+                  (ebox-tree-author-style-count (plist-get candidate-state :root-node)))))
          ;; Resolve the mandatory cascade boundary before any local layout probe.
          ;; Such probes cannot render detached nodes with pending author styles.
          (layer-owner-plan
@@ -11215,7 +11220,7 @@ runtime."
           ;; candidate mount specs for an object-scoped range proof; routing
           ;; them through the scoped surface path would compare old mounts with
           ;; nil ranges and reject an otherwise exact focus/style update.
-          (and (not metadata-only-p)
+          (and (not stale-styles-p) (not metadata-only-p)
                (not (and owner-plan
                          (cl-every
                           (lambda (op)
@@ -11230,12 +11235,13 @@ runtime."
           (ebox-incremental--layout-owner-report
            prepared owner-plan candidate-state))
          (paint-p
-          (or metadata-only-p
+          (and (not stale-styles-p)
+           (or metadata-only-p
               (and (not native-program-p)
                (ebox-incremental--paint-projection-p
-                buffer old-state prepared candidate-state owner-plan))))
+                buffer old-state prepared candidate-state owner-plan)))))
          (span-proof
-          (unless (or native-program-p
+          (unless (or stale-styles-p native-program-p
                       (and structural-dirty-p (not layer-owner-plan))
                       paint-p mixed-proof)
             (ebox-incremental--span-patch-projection-proof
@@ -11458,7 +11464,10 @@ logical tree.  SKIP-SPAN-PROOF-P permits the retained scroll fast path;
 SCROLL-TRANSACTION-P and SCROLL-OWNER-ID identify the changing scroll owner.
 Return the intermediate candidate state, owner plan, projection proof, and
 whether NEXT-ROOT shares untouched published nodes."
-  (let* ((ebox-incremental--projection-rejections nil)
+  (let* ((stale-styles-p (plist-get old-state :computed-styles-stale-p))
+         (scroll-transaction-p (and (not stale-styles-p) scroll-transaction-p))
+         (skip-span-proof-p (and (not stale-styles-p) skip-span-proof-p))
+         (ebox-incremental--projection-rejections nil)
          (ebox-incremental--allocated-slot-proof-cache
           (make-hash-table :test 'equal))
          (source-base-index
@@ -11517,10 +11526,11 @@ whether NEXT-ROOT shares untouched published nodes."
                       (plist-get candidate-state :source-index)))
             (plist-put candidate-state :selector-index-stale-p t)))
          (layer-owner-plan
-          (unless (and scroll-transaction-p
+          (unless (or stale-styles-p
+                      (and scroll-transaction-p
                        (plist-get old-state :layered-p)
                        (ebox-incremental--layer-root-scroll-p
-                        old-state candidate-state prepared scroll-owner-id))
+                        old-state candidate-state prepared scroll-owner-id)))
             (ebox-incremental--layer-owner-plan
              buffer old-state candidate-state
              (or (plist-get prepared :dirty-set)
@@ -11529,7 +11539,7 @@ whether NEXT-ROOT shares untouched published nodes."
                                   :dirty-kind 'geometry
                                   :changed-keys '(:scroll-offset))))))))
          (formatting-proof
-          (and (not layer-owner-plan) (not scroll-transaction-p)
+          (and (not stale-styles-p) (not layer-owner-plan) (not scroll-transaction-p)
                (not (cl-some
                      (lambda (entry)
                        (eq (plist-get entry :dirty-kind) 'paint))
@@ -11537,7 +11547,9 @@ whether NEXT-ROOT shares untouched published nodes."
                (ebox-incremental--formatting-context-reflow-proof
                 buffer old-state candidate-state prepared)))
          (owner-plan
-          (if layer-owner-plan layer-owner-plan
+          (if stale-styles-p
+              (ebox-incremental--root-owner-plan buffer (plist-get prepared :dirty-set))
+           (if layer-owner-plan layer-owner-plan
            (if formatting-proof
               (list
                (ebox--patch-op
@@ -11550,21 +11562,24 @@ whether NEXT-ROOT shares untouched published nodes."
                      candidate-state))
                 (ebox-incremental--layout-owner-plan
                  buffer old-state candidate-state
-                 (plist-get prepared :dirty-set)))))))
+                 (plist-get prepared :dirty-set))))))))
          (mixed-proof
-          (and (not layer-owner-plan) (not scroll-transaction-p)
+          (and (not stale-styles-p) (not layer-owner-plan) (not scroll-transaction-p)
                (ebox-incremental--mixed-owner-proof
                 buffer old-state candidate-state prepared owner-plan)))
          (scope-node-ids
-          (delete-dups
+          (and (not stale-styles-p)
+           (delete-dups
            (or (mapcar (lambda (op) (plist-get op :owner-id)) owner-plan)
                (mapcar (lambda (entry) (plist-get entry :node-id))
-                       (plist-get prepared :dirty-set)))))
+                       (plist-get prepared :dirty-set))))))
          (paint-p
-          (ebox-incremental--paint-projection-p
-           buffer old-state prepared candidate-state owner-plan))
+          (and (not stale-styles-p)
+               (ebox-incremental--paint-projection-p
+                buffer old-state prepared candidate-state owner-plan)))
          (span-proof
-          (if (and scroll-transaction-p skip-span-proof-p (not layer-owner-plan))
+          (unless stale-styles-p
+           (if (and scroll-transaction-p skip-span-proof-p (not layer-owner-plan))
               (ebox-incremental--scroll-content-span-proof
                buffer old-state prepared candidate-state scroll-owner-id)
             (unless (or paint-p mixed-proof)
@@ -11572,7 +11587,7 @@ whether NEXT-ROOT shares untouched published nodes."
                  buffer old-state prepared candidate-state owner-plan
                  path-copied-p)
                 (ebox-incremental--scroll-content-span-proof
-                 buffer old-state prepared candidate-state)))))
+                 buffer old-state prepared candidate-state))))))
          (projection-kind
          (cond
            (mixed-proof 'mixed-owner-reflow)
@@ -11612,11 +11627,13 @@ runtime overrides; the surface layer resolves identities to opaque Ebox
 publication objects.  When ISOLATED-CANDIDATE-P is non-nil, NEXT-ROOT is an
 internally copied runtime candidate whose identities already match the
 published root."
-  (let ((old-state (ebox--buffer-render-state buffer))
+  (let* ((old-state (ebox--buffer-render-state buffer))
         (scroll-transaction-p
-         (plist-get report-overrides :scroll-state-transaction))
+         (and (not (plist-get old-state :computed-styles-stale-p))
+              (plist-get report-overrides :scroll-state-transaction)))
         (scroll-patch-fast-p
-         (plist-get report-overrides :scroll-patch-fast-p)))
+         (and (not (plist-get old-state :computed-styles-stale-p))
+              (plist-get report-overrides :scroll-patch-fast-p))))
     (unless old-state
       (error "Ebox buffer has no rendered runtime: %S" buffer))
     (let* ((candidate
@@ -11937,18 +11954,20 @@ fresh regardless of whether any stable producers exist."
             style-context-stable-p)
   "Prepare BUFFER for VIEWPORT-WIDTH, VIEWPORT-HEIGHT, AXES, and DISPLAY-SIGNATURE."
   (let* ((old-state (ebox--buffer-render-state buffer))
+         (stale-styles-p (plist-get old-state :computed-styles-stale-p))
+         (style-context-stable-p (and (not stale-styles-p) style-context-stable-p))
          (ebox--render-source-index (plist-get old-state :source-index))
          (change (ebox--viewport-constraint-change buffer axes))
          (display-changed
           (not (equal display-signature
                       (plist-get old-state :display-signature))))
          (dirty-set
-          (if display-changed
+          (if (or display-changed stale-styles-p)
               (let ((root (plist-get old-state :root-node)))
                 (list
                  (ebox--dirty-entry
                   (plist-get root :node-id) 'geometry
-                  :changed-keys '(:display-signature)
+                  :changed-keys (if stale-styles-p '(:color :bgcolor) '(:display-signature))
                   :old-region-ids (ebox--node-all-region-ids root)
                   :new-region-ids (ebox--node-all-region-ids root))))
             (plist-get change :dirty-set)))
