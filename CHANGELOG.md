@@ -4,6 +4,19 @@ All notable changes to Ebox are documented here.
 
 ## 3.0.0 (Unreleased)
 
+### Added
+
+- `ebox-geometry-prepare` and `ebox-update-prepare` compile `:width` and
+  `:height` for a normal-layout absolute Box that contains only fixed Text:
+  opaque string background, `overflow hidden`, `wrap-mode none`, left/top
+  alignment, explicit `(px 0)`/`(lh 0)` minimums and no maximum, padding,
+  margins, borders or scrolling. Preparation paints one maximum raster bounded
+  by the containing plane; applying a size only changes the visible row and
+  column extent, restoring formerly clipped text on expansion, and shares the
+  translation program's rollback. Other size changes keep their existing
+  boundary re-render or ordinary publication route, and unsupported values are
+  declined before mutation. See the `ebox-geometry-apply` record in `ebox.el`.
+
 ### Fixed
 
 - `ebox-update-prepare` binds a `:color`/`:background-color` cell whose value

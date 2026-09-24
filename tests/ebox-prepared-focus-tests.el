@@ -110,5 +110,35 @@
         (should (eq selected 'three)) (should (= callbacks 1))
         (ebox-prepared-focus-test--assert-fresh)))))
 
+(ert-deftest ebox-prepared-focus-rebinds-after-resize-and-style-updates ()
+  "New focus plans observe resized geometry and changed inherited paint."
+  (let ((ebox-viewport-width 480) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-prepared-focus-test--input))
+      (let ((operation (ebox-update-prepare
+                        (current-buffer) (ebox-prepared-focus-test--specifications))))
+        (should operation)
+        (dolist (change '((28 . "#111827") (20 . "#7C3AED") (26 . "#047857")))
+          (ebox-call-with-update-batch
+           (lambda ()
+             (ebox-region-update-geometry "window-one" :width (list 'ch (car change)))
+             (ebox-region-update "tab-one" :color (cdr change)
+                                 :background-color (cdr change))))
+          (should-not (ebox-update-valid-p operation))
+          (ebox-prepared-focus-test--assert-fresh)
+          (let ((before (buffer-string))
+                (revision (ebox-surface-buffer-revision (current-buffer))))
+            (setq operation (ebox-update-prepare
+                             (current-buffer) (ebox-prepared-focus-test--specifications)))
+            (should operation)
+            (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+            (should (equal-including-properties before (buffer-string))))
+          ;; Sparse geometry must retain the newly accepted task paint.
+          (should (ebox-update-apply operation (ebox-prepared-focus-test--values t) [0 1]))
+          (ebox-prepared-focus-test--assert-fresh)
+          ;; Then change the coordinated font, class, paint and text channels.
+          (should (ebox-update-apply operation (ebox-prepared-focus-test--values t) [2 3 4]))
+          (ebox-prepared-focus-test--assert-fresh))))))
+
 (provide 'ebox-prepared-focus-tests)
 ;;; ebox-prepared-focus-tests.el ends here

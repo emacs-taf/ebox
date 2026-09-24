@@ -118,6 +118,45 @@ source glyph or borrowing its pixels."
             (setq position next pixel next-pixel)))))
     (ebox-composite--join (nreverse parts))))
 
+(defvar ebox-composite--prepared-lines nil
+  "Owner-local slice indexes for immutable retained lines in this display context.
+Only a validated retained program binds this table.  Indexes are built on the
+first slice of each line, so preparation pays nothing for lines that are
+never cropped.  Lines whose shaping admits no monotone index record nil and
+keep the ordinary measurement path.")
+
+(defun ebox-composite--prepare-line (line)
+  "Record LINE's display units and monotone original prefix widths once.
+Return nil when shaping does not admit a monotone index. The owning retained
+program is responsible for invalidating this data with its display context."
+  (let ((position 0) (pixel 0) (positions (list 0)) (pixels (list 0)) (valid t))
+    (while (and valid (< position (length line)))
+      (let* ((next (ebox-composite--unit-end line position))
+             (width (ebox--substring-pixel-width line 0 next)))
+        (setq valid (and (ebox-size--finite-number-p width) (>= width pixel)))
+        (push next positions) (push width pixels)
+        (setq position next pixel width)))
+    (when (and valid (= pixel (ebox--string-pixel-width line)))
+      (cons (vconcat (nreverse positions)) (vconcat (nreverse pixels))))))
+
+(defun ebox-composite--prepared-index (line)
+  "Return LINE's slice index from the bound owner table, building it once."
+  (let ((entry (gethash line ebox-composite--prepared-lines 'missing)))
+    (if (eq entry 'missing)
+        (puthash line (ebox-composite--prepare-line line) ebox-composite--prepared-lines)
+      entry)))
+
+(defun ebox-composite--slice-unit-index (pixels start)
+  "Locate the first possibly intersecting unit for START in sorted PIXELS.
+Keep the preceding unit at an exact boundary so zero-width units retain the
+ordinary slice semantics."
+  (let ((low 0) (high (1- (length pixels))))
+    (while (< low high)
+      (let ((middle (/ (+ low high) 2)))
+        (if (< (aref pixels middle) start) (setq low (1+ middle))
+          (setq high middle))))
+    (max 0 (1- low))))
+
 (defun ebox-composite-slice (line start end)
   "Extract LINE's pixel interval [START, END), exactly END minus START wide.
 START and END must be finite nonnegative numbers with START <= END.  LINE is
@@ -142,8 +181,13 @@ property values are modified."
        (list line (ebox-pixel-space (- end line-width)))))
      ((>= start line-width) (ebox-pixel-space (- end start)))
      (t
-      (let ((position 0) (pixel 0) parts
-            run-start run-end run-left run-right)
+      (let* ((prepared (and ebox-composite--prepared-lines
+                            (ebox-composite--prepared-index line)))
+             (positions (car prepared)) (pixels (cdr prepared))
+             (index (if prepared (ebox-composite--slice-unit-index pixels start) 0))
+             (position (if prepared (aref positions index) 0))
+             (pixel (if prepared (aref pixels index) 0)) parts
+             run-start run-end run-left run-right)
         (cl-labels
             ((flush ()
                (when run-start
@@ -152,8 +196,10 @@ property values are modified."
                        parts)
                  (setq run-start nil))))
           (while (and (< position (length line)) (< pixel end))
-            (let* ((next (ebox-composite--unit-end line position))
-                   (next-pixel (ebox--substring-pixel-width line 0 next))
+            (let* ((next (if prepared (aref positions (1+ index))
+                           (ebox-composite--unit-end line position)))
+                   (next-pixel (if prepared (aref pixels (1+ index))
+                                 (ebox--substring-pixel-width line 0 next)))
                    (left (max start pixel))
                    (right (min end next-pixel)))
               (cond
@@ -169,7 +215,7 @@ property values are modified."
                            line position next (- right left))
                         (ebox-composite--fill line position (- right left)))
                       parts)))
-              (setq position next pixel next-pixel)))
+              (setq position next pixel next-pixel index (1+ index))))
           (flush))
         (when (> end (max start pixel))
           (push (ebox-pixel-space (- end (max start pixel))) parts))

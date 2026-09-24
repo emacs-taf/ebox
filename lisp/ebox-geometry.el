@@ -24,7 +24,7 @@
   old-report-revision old-report-publication
   stylesheet stylesheet-epoch frame-window frame-font-frame display-snapshot
   frame-char-width frame-char-height window-width window-height
-  stage rollback after-commit staged-p)
+  stage rollback after-commit staged-p crop)
 
 (cl-defstruct (ebox-geometry--route (:constructor ebox-geometry--make-route))
   "One fixed wrapper and its containing plane in a compiled output route."
@@ -78,7 +78,7 @@ and scoped declarations.  Equal current values alone cannot prove ownership."
       (let ((property (aref properties index)))
         (dolist (key (if (eq property :border)
                          '(:border-top-color :border-right-color :border-bottom-color :border-left-color)
-                       (and (memq property '(:left :top :z-index :color :background-color :bgcolor :font-weight))
+                       (and (memq property '(:left :top :width :height :z-index :color :background-color :bgcolor :font-weight))
                             (list property))))
           (unless (plist-get (plist-get provenance (ebox-style-schema-id key)) :inline)
             (setq valid nil)))))
@@ -664,6 +664,98 @@ read in the owning buffer even when the public caller uses another buffer."
                 (equal (and (boundp 'text-scale-mode-step) text-scale-mode-step)
                        (aref snapshot 11)))))))
 
+(defun ebox-geometry--crop-candidate-p (node)
+  "Whether NODE has fixed text and an opaque, undecorated clipping box.
+This initial resize primitive excludes child layout, wrapping, alignment,
+scrolling and box decorations rather than changing their normal semantics."
+  (and (eq (plist-get node :ebox-kind) 'box)
+       (eq (ebox--box-layout-kind node) 'normal)
+       (eq (ebox-get node :position) 'absolute)
+       (eq (ebox-get node :overflow) 'hidden)
+       (eq (ebox-get node :wrap-mode) 'none)
+       (eq (ebox-get node :text-align) 'left)
+       (eq (ebox-get node :vertical-align) 'top)
+       (stringp (ebox-get node :bgcolor))
+       (not (member (ebox-get node :bgcolor) '("transparent" "unspecified-bg")))
+       (equal (ebox-get node :min-width) '(px 0))
+       (equal (ebox-get node :min-height) '(lh 0))
+       (not (ebox-get node :max-width)) (not (ebox-get node :max-height))
+       (cl-every (lambda (key) (zerop (or (ebox-get node key) 0)))
+                 '(:padding-left-pixel :padding-right-pixel
+                   :padding-top-height :padding-bottom-height
+                   :margin-left-pixel :margin-right-pixel
+                   :margin-top-height :margin-bottom-height
+                   :border-left-pixel :border-right-pixel
+                   :border-top-pixel :border-bottom-pixel :scroll-offset))
+       (cl-every (lambda (child) (eq (plist-get child :ebox-kind) 'text))
+                 (ebox-tree-node-children node))
+       (let ((width (ebox-get node :width)) (height (ebox-get node :height)))
+         (and (eq (car-safe width) 'px) (integerp (cadr width)) (> (cadr width) 0)
+              (eq (car-safe height) 'lh) (integerp (cadr height)) (> (cadr height) 0)))))
+
+(defun ebox-geometry--resize-program (program target descriptor width height)
+  "Stage DESCRIPTOR's crop of TARGET in PROGRAM at WIDTH and HEIGHT.
+Return nil before mutation when the size exceeds the prepared capacity."
+  (when (and (integerp width) (integerp height) (> width 0) (> height 0)
+             (<= width (aref descriptor 1)) (<= height (aref descriptor 2)))
+    (ebox-layer--program-crop program target width height)
+    t))
+
+(defun ebox-geometry--prepare-crop (state route node)
+  "Compile NODE's fixed-content crop in ROUTE without publishing anything.
+Keep a single maximum raster, not a cache of rendered sizes.  Its capacity is
+the containing plane.  Ordinary source/style/environment changes invalidate
+the session; unsupported sizes are declined before mutation."
+  (when (and (ebox-geometry--crop-candidate-p node)
+             (ebox-incremental--static-style-bindings-p state))
+    (let* ((old (ebox-geometry--route-program route))
+           (width (ebox-layer--program-width old))
+           (height (ebox-layer--program-height old))
+           (current-width (cadr (ebox-get node :width)))
+           (current-height (cadr (ebox-get node :height)))
+           (targets (gethash (plist-get node :node-id) (ebox-layer--program-targets old)))
+           (records (ebox-layer--program-records old))
+           (first (and targets (> (length targets) 0) (aref records (aref targets 0))))
+           (x (and first (- (plist-get first :x) (plist-get first :source-start))))
+           (y (and first (- (plist-get first :y) (plist-get first :source-row))))
+           (host (ebox-runtime-index-get
+                  (plist-get (ebox-geometry--route-wrapper route) :node-id)
+                  (plist-get state :node-table))))
+      (when (and first host (integerp width) (integerp height)
+                 (<= current-width width) (<= current-height height))
+        (let* ((probe (copy-tree node))
+               (ebox--render-source-index (plist-get state :source-index))
+               (ebox--paint-origin-capture-p t)
+               (_size (progn (plist-put probe :width (list 'px width))
+                             (plist-put probe :height (list 'lh height))))
+               (lines (vconcat (ebox-string-lines (ebox--render-ephemeral-static probe))))
+               source program)
+          (when (= (length lines) height)
+            (dotimes (index (length records))
+              (unless (cl-position index targets)
+                (push (aref records index) source)))
+            (dotimes (row height)
+              (push (list :node node :x x :y (+ y row) :text (aref lines row)
+                          :source-start 0 :source-end (if (< row current-height) current-width 0)
+                          :source-row row) source))
+            (setq program
+                  (ebox-layer--program-prepare
+                   (list :width width :height height :records (nreverse source)
+                         :rows (ebox-layer--program-rows old)) host))
+            ;; The different internal row representation must reproduce the
+            ;; accepted pixels before it may replace the old primitive plan.
+            (ebox-layer--program-batch-begin program)
+            (dotimes (row height) (ebox-layer--program-mark-row program row))
+            (ebox-layer--program-batch-end program)
+            (ebox-layer--program-render program t)
+            (when (cl-loop for before across (ebox-layer--program-rows old)
+                           for after across (ebox-layer--program-rows program)
+                           always (equal-including-properties before after))
+              (ebox-layer--program-settle program t)
+              (setf (ebox-geometry--route-program route) program
+                    (ebox-geometry--route-refresh-p route) t)
+              (vector node width height))))))))
+
 ;;;###autoload
 (defun ebox-geometry-prepare (buffer-or-name host-ref properties
                                              &optional stage rollback after-commit)
@@ -723,6 +815,12 @@ acceptance.  Preparation itself does not advance the publication revision."
            (routes (or (and session (ebox-geometry--operation-routes session))
                        (and node surface (ebox-geometry--root-program
                                           state node (and prior (ebox-geometry--operation-routes prior))))))
+           (crop (or (and session (ebox-geometry--operation-crop session))
+                     (and (not session) routes (= (length routes) 1)
+                          (cl-some (lambda (key) (memq key '(:width :height)))
+                                   (append keys nil))
+                          (with-current-buffer buffer
+                            (ebox-geometry--prepare-crop state (aref routes 0) node)))))
            (program (and routes (ebox-geometry--route-program (aref routes 0)))))
       (dotimes (index (length keys))
         (unless (memq (aref keys index) ebox--region-geometry-properties)
@@ -776,6 +874,7 @@ acceptance.  Preparation itself does not advance the publication revision."
               (when operation
                 (setf (ebox-geometry--operation-session operation) (or session operation)
                       (ebox-geometry--operation-node operation) node
+                      (ebox-geometry--operation-crop operation) crop
                       (ebox-geometry--operation-properties operation) keys
                       (ebox-geometry--operation-units operation) units
                       (ebox-geometry--operation-values operation)
@@ -909,6 +1008,10 @@ source, display, revision, primitive geometry and paired caller state."
            (node (ebox-geometry--operation-node operation))
            (program (ebox-geometry--operation-program operation))
            (owned-values (ebox-geometry--operation-values operation))
+           (crop (ebox-geometry--operation-crop operation))
+           (crop-p (and crop (eq node (aref crop 0))))
+           (width (and crop-p (cadr (ebox-get node :width))))
+           (height (and crop-p (cadr (ebox-get node :height))))
            (supported t) (dx 0) (dy 0)
            (z (or (ebox-get node :z-index) 0)) result)
       (dotimes (index (length keys))
@@ -930,6 +1033,16 @@ source, display, revision, primitive geometry and paired caller state."
             (unless (integerp value) (user-error "Ebox z-index must be an integer"))
             (aset owned-values index value)
             (setq z value))
+           ((and crop-p (memq key '(:width :height)))
+            (unless (and (consp value) (eq (car value) (if (eq key :width) 'px 'lh))
+                         (consp (cdr value)) (null (cddr value))
+                         (ebox-size--finite-number-p (cadr value)) (>= (cadr value) 0))
+              (user-error "Prepared crop dimensions must retain finite px/lh units"))
+            (unless (and (integerp (cadr value)) (> (cadr value) 0)
+                         (<= (cadr value) (aref crop (if (eq key :width) 1 2))))
+              (setq supported nil))
+            (if (eq key :width) (setq width (cadr value)) (setq height (cadr value)))
+            (setcar (cdr (aref owned-values index)) (cadr value)))
            ((not (equal value old)) (setq supported nil)))))
       (when supported
         (setf (ebox-geometry--operation-staged-p operation) nil)
@@ -943,8 +1056,11 @@ source, display, revision, primitive geometry and paired caller state."
         (ebox-layer--program-translate
          program (ebox-geometry--operation-target operation) dx dy z)
         (unwind-protect
-            (let* ((rendered (ebox-incremental--with-phase 'layout
-                                                           (ebox-geometry--render operation)))
+            (let* ((resized (or (not crop-p)
+                                (ebox-geometry--resize-program
+                                 program (ebox-geometry--operation-target operation) crop width height)))
+                   (rendered (and resized (ebox-incremental--with-phase 'layout
+                                                           (ebox-geometry--render operation))))
                    (root-route (aref (ebox-geometry--operation-routes operation)
                                      (1- (length (ebox-geometry--operation-routes operation)))))
                    (count (and rendered (ebox-incremental--with-phase 'projection

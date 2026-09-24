@@ -88,7 +88,8 @@ without rendering the former geometry again."
   width height records order z-values document-order targets
   base-lines rows saved-rows row-spines row-heads row-tails dirty output-spine
   pending batch-open order-dirty order-changed saved-texts modified-texts
-  saved-coordinates saved-z modified-geometry saved-records saved-targets saved-count)
+  saved-coordinates saved-z modified-geometry saved-records saved-targets saved-count
+  saved-ends modified-ends slice-indexes)
 
 (defun ebox-layer--program-prepare (entry host)
   "Compile retained composition ENTRY into a private primitive program.
@@ -122,7 +123,8 @@ This operation does not publish or change ENTRY."
            (row-spines (make-vector height nil))
            (ordinal 0)
            (node-order (make-hash-table :test #'equal))
-           (strings (make-hash-table :test #'eq)))
+           (strings (make-hash-table :test #'eq))
+           (slice-indexes (make-hash-table :test #'eq)))
       (cl-labels ((visit (node)
                     (puthash (ebox-layer--stable-node-id node)
                              (hash-table-count node-order) node-order)
@@ -161,6 +163,8 @@ This operation does not publish or change ENTRY."
        :saved-coordinates (make-vector (* 2 count) 0)
        :saved-z (make-vector count 0) :modified-geometry (make-vector count nil)
        :saved-records (make-vector count nil)
+       :saved-ends (make-vector count 0) :modified-ends (make-vector count nil)
+       :slice-indexes slice-indexes
        :output-spine (make-list height nil)))))
 
 (defun ebox-layer--program-strings (program)
@@ -273,6 +277,25 @@ translation is allowed.  No component or Box traversal is needed."
                (not (ebox-layer--program-batch-open program)))
       (ebox-layer--program-sort program)
       (setf (ebox-layer--program-order-dirty program) nil)))
+  program)
+
+(defun ebox-layer--program-crop (program target width height)
+  "Stage WIDTH and HEIGHT of TARGET's preallocated opaque row records.
+Each record has an immutable maximum-width source row.  Changing its source
+end clips pixels; zero-width records retain invisible rows for later growth.
+Coordinates, native ownership and rollback stay with the same program."
+  (setf (ebox-layer--program-pending program) t)
+  (dotimes (offset (length target))
+    (let* ((index (aref target offset))
+           (record (aref (ebox-layer--program-records program) index))
+           (old (plist-get record :source-end))
+           (end (if (< (plist-get record :source-row) height) width 0)))
+      (unless (= old end)
+        (unless (aref (ebox-layer--program-modified-ends program) index)
+          (aset (ebox-layer--program-saved-ends program) index old)
+          (aset (ebox-layer--program-modified-ends program) index t))
+        (ebox-layer--program-mark-row program (plist-get record :y))
+        (plist-put record :source-end end))))
   program)
 
 (defun ebox-layer--program-replace-text (program record-index text)
@@ -397,7 +420,8 @@ accepted row baseline until settlement."
          (spines (ebox-layer--program-row-spines program))
          (dirty (ebox-layer--program-dirty program))
          (base (ebox-layer--program-base-lines program))
-         (rows (ebox-layer--program-rows program)))
+         (rows (ebox-layer--program-rows program))
+         (ebox-composite--prepared-lines (ebox-layer--program-slice-indexes program)))
     (dotimes (row height)
       (when (aref dirty row)
         (aset heads row nil)
@@ -473,6 +497,11 @@ Rejection also handles an open batch or a failure before the first render."
               (setcar record (car saved))
               (setcdr record (cdr saved))))
           (aset (ebox-layer--program-saved-records program) index nil))
+        (when (aref (ebox-layer--program-modified-ends program) index)
+          (unless accepted
+            (plist-put (aref records index) :source-end
+                       (aref (ebox-layer--program-saved-ends program) index)))
+          (aset (ebox-layer--program-modified-ends program) index nil))
         (when (aref geometry index)
           (unless accepted
             (let ((record (aref records index)))

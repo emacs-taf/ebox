@@ -910,8 +910,17 @@
 ;; Apply a reusable VALUES vector in OPERATION's fixed property order.  Values
 ;; retain their prepared ordinary units.  Return t after atomic acceptance or
 ;; nil before mutation when preparation is stale or a changed dependency needs
-;; general publication.  Changed left/top/z-index currently have compiled
-;; primitives; unchanged dimensions may accompany them.  Invalid values signal
+;; general publication. Changed left/top/z-index have compiled primitives.
+;; Width/height also compile for a normal-layout absolute Box containing only
+;; fixed Text children: opaque string background, overflow hidden, wrap-mode
+;; none, left/top alignment, explicit zero min-width/min-height, no maximum,
+;; padding, margins, borders or scrolling, and one fixed containing plane.
+;; Request dimensions during initial preparation. Positive integer px width
+;; and lh height are admitted up to that plane's capacity; one maximum native
+;; text raster is clipped/restored, not one cached image or layout per size.
+;; Unsupported dimensions, wrapping, child layout and decorated windows use
+;; ordinary publication. Unchanged dimensions may still accompany translation.
+;; Invalid values signal
 ;; an error.  Failed publication restores source facts, pixels, mounts, revision
 ;; and paired caller state.  Focus follows its retained target unless point was
 ;; moved manually.  Occlusion clears focus/active ownership; clearing that would

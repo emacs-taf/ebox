@@ -17,7 +17,7 @@
 
 (cl-defstruct (ebox-update--group (:constructor ebox-update--make-group))
   node properties variants first-member slots values geometry-program x-factor
-  boundary style-p restyle resized class-slot hover-cell hover-old hover-owners dirty staged dx dy z)
+  boundary style-p restyle resized crop class-slot hover-cell hover-old hover-owners dirty staged dx dy z)
 
 (cl-defstruct (ebox-update--boundary (:constructor ebox-update--make-boundary))
   "Nearest retained composition primitive owning a group's pixels.
@@ -65,15 +65,17 @@ panel does not participate in flow, so its complete footprint may change."
         (ebox-source--update-slots-value (ebox-update--group-slots group) index)
       (ebox-update--current-value (ebox-update--group-node group) property))))
 
-(defun ebox-update--scene (buffer state nodes)
-  "Return BUFFER's shared fixed scene admitting one of NODES' ancestors."
+(defun ebox-update--scene (buffer state nodes &optional resize-node)
+  "Return BUFFER's shared scene admitting NODES, preferring RESIZE-NODE.
+A requested fixed-content size binding prepares the crop primitive before
+input; ordinary layout keeps its existing publication route."
   (or (with-current-buffer buffer
         (and (ebox-geometry--session-valid-p ebox-geometry--session)
              ebox-geometry--session))
       (let ((parents (plist-get state :parent-table))
             (table (plist-get state :node-table)) anchor reference)
         (catch 'found
-          (dolist (node nodes)
+          (dolist (node (if resize-node (cons resize-node nodes) nodes))
             (while node
               (when (eq (plist-get node :position) 'absolute)
                 (setq anchor node)
@@ -91,7 +93,10 @@ panel does not participate in flow, so its complete footprint may change."
                    (ebox--buffer-host-ref-table buffer))
           (setq reference (or reference (plist-get anchor :id)))
           (when reference
-            (when-let* ((operation (ebox-geometry-prepare buffer reference [:left :top :z-index])))
+            (when-let* ((operation (ebox-geometry-prepare
+                                   buffer reference
+                                   (if resize-node [:left :top :width :height]
+                                     [:left :top :z-index]))))
               (ebox-geometry--operation-session operation)))))))
 
 (defun ebox-update--geometry-binding (group routes)
@@ -323,7 +328,14 @@ operation, or nil if a member cannot use the fixed retained canvas."
                       (append (ebox-update--group-variants group) (list (and variants (aref variants key-index)))))))
             (aset members index (ebox-update--make-member :group group :properties (copy-sequence keys) :variants (and variants (copy-tree variants t)))))))
       (setq ebox-update--preparing-member nil ebox-update--preparing-property nil)
-      (setq groups (vconcat (nreverse groups)) scene (ebox-update--scene buffer state nodes))
+      (setq groups (vconcat (nreverse groups))
+            scene (ebox-update--scene
+                   buffer state nodes
+                   (cl-loop for group across groups
+                            when (and (cl-intersection (ebox-update--group-properties group)
+                                                       '(:width :height))
+                                      (ebox-geometry--crop-candidate-p (ebox-update--group-node group)))
+                            return (ebox-update--group-node group))))
       (unless scene (ebox-update--decline 'fixed-canvas))
       (let ((routes (ebox-geometry--operation-routes scene))
             (boundaries (make-hash-table :test #'eq)))
@@ -332,16 +344,25 @@ operation, or nil if a member cannot use the fixed retained canvas."
                  (node (ebox-update--group-node group))
                  (keys (vconcat (ebox-update--group-properties group)))
                  (variants (vconcat (ebox-update--group-variants group)))
-                 (values (make-vector (length keys) nil)) geometry raster)
+                 (values (make-vector (length keys) nil))
+                 (crop (ebox-geometry--operation-crop scene)) geometry raster)
+            (when (and crop (eq node (aref crop 0)))
+              (setf (ebox-update--group-crop group) crop))
             (setq ebox-update--preparing-member (ebox-update--group-first-member group)
                   ebox-update--preparing-property nil)
             (dotimes (key-index (length keys))
               (let ((property (aref keys key-index)))
-                (when (memq property '(:left :top :z-index)) (setq geometry t))
+                ;; A proved fixed-text crop resizes through the retained
+                ;; geometry program; every other size change re-renders the
+                ;; Host's composition boundary.
+                (when (or (memq property '(:left :top :z-index))
+                          (and (ebox-update--group-crop group) (memq property '(:width :height))))
+                  (setq geometry t))
                 (when (memq property '(:color :background-color :bgcolor :border :font-weight :visibility))
                   (setf (ebox-update--group-style-p group) t))
-                (when (memq property '(:content :color :background-color :bgcolor :hover-content :border :font-weight
-                                          :visibility :width :height))
+                (when (or (memq property '(:content :color :background-color :bgcolor :hover-content :border
+                                              :font-weight :visibility))
+                          (and (memq property '(:width :height)) (not (ebox-update--group-crop group))))
                   (setq raster t))
                 (aset values key-index (copy-tree (ebox-update--current-value node property (plist-get state :source-index))))))
             (setf (ebox-update--group-properties group) keys
@@ -463,6 +484,14 @@ operation, or nil if a member cannot use the fixed retained canvas."
                 (* (- (cadr value) (cadr old))
                    (if (eq (car value) 'ch) (ebox-update--group-x-factor group) 1)))
         (setf (ebox-update--group-dy group) (- (floor (cadr value)) (floor (cadr old))))))
+     ((and (ebox-update--group-crop group) (memq property '(:width :height)))
+      (unless (and (consp value) (consp (cdr value)) (null (cddr value))
+                   (eq (car value) (if (eq property :width) 'px 'lh))
+                   (integerp (cadr value)) (> (cadr value) 0)
+                   (<= (cadr value) (aref (ebox-update--group-crop group)
+                                          (if (eq property :width) 1 2))))
+        (throw 'unsupported nil))
+      (setcar (cdr (aref values index)) (cadr value)))
      ((memq property '(:width :height))
       (unless (and (consp value) (consp (cdr value)) (null (cddr value))
                    (eq (car value) (car-safe old))
@@ -828,12 +857,19 @@ after acceptance."
                              (ebox-update--group-slots group)
                              (cl-position :hover-content (ebox-update--group-properties group)))))
                   (when (ebox-update--group-geometry-program group)
-                    (let ((program (ebox-update--group-geometry-program group)))
+                    (let* ((program (ebox-update--group-geometry-program group))
+                           (node (ebox-update--group-node group))
+                           (target (gethash (plist-get node :node-id)
+                                            (ebox-layer--program-targets program))))
                       (ebox-layer--program-translate
-                       program (gethash (plist-get (ebox-update--group-node group) :node-id)
-                                        (ebox-layer--program-targets program))
+                       program target
                        (ebox-update--group-dx group) (ebox-update--group-dy group)
-                       (ebox-update--group-z group)))))))
+                       (ebox-update--group-z group))
+                      (when (and (ebox-update--group-crop group)
+                                 (not (ebox-geometry--resize-program
+                                       program target (ebox-update--group-crop group)
+                                       (cadr (ebox-get node :width)) (cadr (ebox-get node :height)))))
+                        (throw 'unsupported nil)))))))
             ;; Source writes precede every derived computation, so several
             ;; changed members of one cascade observe the complete new input.
             ;; Geometry-only changes of a member that also owns paint keep the

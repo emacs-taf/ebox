@@ -416,9 +416,24 @@ stale; callers still obtain a new binding for the accepted generation.
 The current compiled route supports absolute translation and stacking inside
 fixed containing planes, including enclosing fixed wrappers. Horizontal units
 are retained `px` or `ch`; vertical units are retained `lh`. Unchanged size
-bindings may share the value vector. Changed sizes, anchors, root portals and
-scroll dependencies use ordinary publication until their dependencies have a
-prepared implementation. Reusing placement storage does not certify a latency
+bindings may share the value vector. A normal-layout absolute Box with only
+fixed Text children also supports cropped width/height updates: use an opaque
+string background, `overflow hidden`, `wrap-mode none`, left/top alignment,
+explicit `(px 0)` minimum width and `(lh 0)` minimum height, and no maximum,
+padding, margins, borders or scrolling. Request `[:width :height]` during the
+initial preparation, before a translation-only session has been retained.
+The single fixed containing plane bounds positive integer pixel width and row
+height. Preparation paints one maximum native text raster; execution changes
+its visible row/column extent and restores formerly clipped text on expansion.
+It does not cache every possible size, rasterize the interface as an image,
+or postpone application state or input-target publication.
+
+Ordinary publication is still required for wrapping, child layout, decorated
+window shells, out-of-capacity sizes, anchors, root portals and scroll
+dependencies without a prepared implementation. Unsupported input is declined
+before publication, not silently converted into clipping. Source, style,
+font and display changes retain the same invalidation and rollback contract.
+Reusing placement storage does not certify a latency
 budget or allocation-free rendering; clipping and native text publication still
 have their own measured costs. Fixed wrapper decoration, ownership projection and
 publication reuse compiled resources and process damaged rows.
