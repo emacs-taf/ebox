@@ -30,7 +30,8 @@ MUTABLE-PREPARED-P marks private live source cells, never exported by sharing."
 (cl-defstruct (ebox-source--update-slots
                (:constructor ebox-source--update-slots-create))
   "Prepared private source/node cells with reusable value rollback storage."
-  index handle kinds source-cells node-cells value-cells old-values staged-count)
+  index handle kinds source-cells node-cells value-cells old-values staged-count
+  selector-context)
 
 (cl-defstruct (ebox-source-handle
                (:constructor ebox-source--make-handle)
@@ -45,7 +46,7 @@ MUTABLE-PREPARED-P marks private live source cells, never exported by sharing."
 Only privately prepared records permit bounded source-value mutation."
   records handle-records order subjects node-subjects entries root-subject selector-view selector-topology
   selector-id-table selector-class-table selector-type-table host-ref-table
-  derived-stale-p)
+  derived-stale-p prepared-selector-context)
 
 (cl-defstruct (ebox-source-builder
                (:constructor ebox-source--make-builder)
@@ -446,6 +447,63 @@ because one canonical forest cannot contain the same source twice."
          record))))
   builder)
 
+(defconst ebox-source--border-properties
+  [[:border-top-width :border-top-style :border-top-color]
+   [:border-right-width :border-right-style :border-right-color]
+   [:border-bottom-width :border-bottom-style :border-bottom-color]
+   [:border-left-width :border-left-style :border-left-color]]
+  "Source border longhands in fixed top/right/bottom/left order.")
+
+(defun ebox-source--update-slots-class-value (index node)
+  "Return NODE's detached canonical class tokens in INDEX."
+  (ebox-source--copy-data
+   (ebox-source-record-classes
+    (ebox-source--index-record index (plist-get node :ebox-source-handle)))))
+
+(defun ebox-source--update-slots-border-value (index node)
+  "Return NODE's uniform explicit source border in INDEX, or nil."
+  (let* ((record (ebox-source--index-record index (plist-get node :ebox-source-handle)))
+         (declarations (and record (ebox-source-record-declarations record)))
+         (width (plist-get declarations 'ebox/border-top-width))
+         (style (plist-get declarations 'ebox/border-top-style))
+         (color (plist-get declarations 'ebox/border-top-color))
+         (valid (and (consp width) (eq (car width) 'px) (numberp (cadr width))
+                     (null (cddr width)) (eq style 'solid))))
+    (dotimes (side 4)
+      (let ((keys (aref ebox-source--border-properties side)))
+        (unless (and (let ((actual (plist-get node (aref [:border-top-pixel :border-right-pixel
+                                                         :border-bottom-pixel :border-left-pixel] side))))
+                       (or (equal width actual) (equal (cadr width) actual)))
+                     (eq style (plist-get node (aref keys 1))))
+          (setq valid nil))
+        (dotimes (part 3)
+          (let* ((key (aref keys part)) (id (ebox-style-schema-id key))
+                 (wanted (pcase part (0 width) (1 style) (_ color))))
+            (unless (and (plist-member declarations id)
+                         (equal wanted (plist-get declarations id))
+                         (or (/= part 2)
+                             (and (plist-member node key) (equal wanted (plist-get node key)))))
+              (setq valid nil))))))
+    (when valid (list (copy-tree width) style (ebox-source--copy-data color)))))
+
+(defun ebox-source--update-slots-border-valid-p (slots position value)
+  "Check VALUE against SLOTS' fixed border geometry at POSITION."
+  (let ((current (ebox-source--update-slots-value slots position)))
+    (and (eq (aref (ebox-source--update-slots-kinds slots) position) 'border)
+         (consp value) (consp (cdr value)) (consp (cddr value)) (null (cdddr value))
+         (equal (car value) (car current)) (eq (cadr value) (cadr current))
+         (or (null (caddr value)) (stringp (caddr value))))))
+
+(defun ebox-source--update-slots-bind-selector
+    (slots position context capture apply rollback)
+  "Bind SLOTS' class POSITION to cold CONTEXT callbacks.
+CAPTURE saves undo without changing facts; APPLY writes the admitted value;
+ROLLBACK restores that captured value.  All callbacks have fixed ownership."
+  (unless (eq (aref (ebox-source--update-slots-kinds slots) position) 'class)
+    (error "Prepared selector binding requires a class slot"))
+  (setf (ebox-source--update-slots-selector-context slots) context)
+  (aset (ebox-source--update-slots-value-cells slots) position (vector capture apply rollback)))
+
 (defun ebox-source--update-slots-prepare (index node properties)
   "Prepare private source and value cells for NODE in INDEX.
 PROPERTIES fixes the incoming value-vector order.  Return slots carrying an
@@ -494,6 +552,24 @@ isolated from later writes."
                                                 property))
                   targets (vector source-cell)
                   kind 'value))
+           ((eq property :class)
+            (setq value (ebox-source--copy-data (ebox-source-record-classes record))
+                  targets (vector (list value)) kind 'class))
+           ((eq property :border)
+            (setq value (ebox-source--update-slots-border-value index node))
+            (unless value (throw 'unsupported nil))
+            (setq source-cell (make-vector 4 nil) targets (make-vector 5 nil) kind 'border)
+            (aset targets 0 (list value))
+            (dotimes (side 4)
+              (let ((key (aref (aref ebox-source--border-properties side) 2)))
+                (aset source-cell side
+                      (cdr (plist-member (ebox-source-record-declarations record)
+                                         (ebox-style-schema-id key))))
+                (aset targets (1+ side) (cdr (plist-member node key))))))
+           ((eq property :font-weight)
+            (setq source-cell (cdr (plist-member (ebox-source-record-declarations record)
+                                                'ebox/font-weight))
+                  targets (vector source-cell) kind 'value))
            ((memq property '(:box-sizing :position :left :top :z-index :layer :anchor :placement
                              :width :min-width :max-width :height :min-height :max-height
                              :color :background-color :bgcolor))
@@ -509,7 +585,7 @@ isolated from later writes."
                          (memq (car current) '(px % vw vh ch lh)) (numberp (cadr current)))
                 (setq kind 'unit))))
            (t (throw 'unsupported nil)))
-          (unless (eq property :content)
+          (unless (memq property '(:content :class :border))
             (if (and source-cell (aref targets 0)
                      (equal (car source-cell) (car (aref targets 0))))
                 (setq value (car source-cell))
@@ -524,7 +600,8 @@ isolated from later writes."
           (aset kinds position kind)
           (aset source-cells position source-cell)
           (aset node-cells position targets)
-          (aset old-values position (if (eq kind 'unit) (cadr value) value))
+          (aset old-values position (pcase kind ('unit (cadr value))
+                                      ('border (make-vector 5 nil)) (_ value)))
           (when (eq kind 'unit) (aset value-cells position (cdr value)))))
       (when (zerop mutable-count) (throw 'unsupported nil))
       (let* ((replacement handle)
@@ -548,12 +625,16 @@ isolated from later writes."
               (ebox-source--index-derived-stale-p candidate)
               (ebox-source--index-derived-stale-p index))
         (dotimes (position count)
-          (unless (eq (aref kinds position) 'fixed)
+          (unless (memq (aref kinds position) '(fixed class border))
             (let* ((source (aref source-cells position))
                    (targets (aref node-cells position))
                    (value (if source (car source) (aref old-values position))))
               (dotimes (target (length targets))
-                (setcar (aref targets target) value)))))
+                (setcar (aref targets target) value))))
+          (when (eq (aref kinds position) 'border)
+            (dotimes (side 4)
+              (setcar (aref (aref node-cells position) (1+ side))
+                      (car (aref (aref source-cells position) side))))))
         (ebox-source--update-slots-create
          :index candidate :handle replacement :kinds kinds
          :source-cells source-cells :node-cells node-cells
@@ -563,6 +644,9 @@ isolated from later writes."
   "Return non-nil when INDEX still owns SLOTS' exact prepared source record."
   (and (ebox-source--update-slots-p slots)
        (ebox-source-index-p index)
+       (or (null (ebox-source--update-slots-selector-context slots))
+           (eq (ebox-source--update-slots-selector-context slots)
+               (ebox-source--index-prepared-selector-context index)))
        (let ((handle (ebox-source--update-slots-handle slots)))
          (eq (ebox-source--index-record index handle)
              (ebox-source--index-record (ebox-source--update-slots-index slots) handle)))))
@@ -598,7 +682,24 @@ candidate record, node, plist, unit cell or undo graph is allocated here."
           (setf (ebox-source--update-slots-staged-count slots) (1+ position))
           (when source (setcar source value))
           (dotimes (target (length targets))
-            (setcar (aref targets target) value)))))
+            (setcar (aref targets target) value))))
+       ((eq (aref kinds position) 'border)
+        (let* ((sources (aref source-cells position)) (targets (aref node-cells position))
+               (undo (aref old-values position))
+               (border (car (aref targets 0))) (color (caddr (aref values position))))
+          (aset undo 0 (caddr border))
+          (dotimes (side 4) (aset undo (1+ side) (car (aref sources side))))
+          (setf (ebox-source--update-slots-staged-count slots) (1+ position))
+          (setcar (cddr border) color)
+          (dotimes (side 4)
+            (setcar (aref sources side) color)
+            (setcar (aref targets (1+ side)) color))))
+       ((eq (aref kinds position) 'class)
+        (let ((callbacks (aref value-cells position)) (value (aref values position)))
+          (unless callbacks (error "Prepared class slot has no selector proof"))
+          (funcall (aref callbacks 0) value)
+          (setf (ebox-source--update-slots-staged-count slots) (1+ position))
+          (funcall (aref callbacks 1) value))))
       (setq position (1+ position))))
   slots)
 
@@ -620,7 +721,15 @@ candidate record, node, plist, unit cell or undo graph is allocated here."
                 (targets (aref node-cells position)))
             (when source (setcar source value))
             (dotimes (target (length targets))
-              (setcar (aref targets target) value))))))
+              (setcar (aref targets target) value))))
+         ((eq (aref kinds position) 'border)
+          (let ((sources (aref source-cells position)) (targets (aref node-cells position)))
+            (setcar (cddr (car (aref targets 0))) (aref value 0))
+            (dotimes (side 4)
+              (setcar (aref sources side) (aref value (1+ side)))
+              (setcar (aref targets (1+ side)) (aref value (1+ side))))))
+         ((eq (aref kinds position) 'class)
+          (funcall (aref (aref value-cells position) 2)))))
       (setq position (1+ position)))
     (setf (ebox-source--update-slots-staged-count slots) 0))
   slots)

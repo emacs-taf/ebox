@@ -130,7 +130,7 @@ Mount records, list spines, indexes and rollback slots are allocated during
 preparation.  The two mount banks alternate so the accepted index is never
 changed while the next index is assembled.  Only the owning publisher may
 install either bank as the surface's authoritative mount projection."
-  surface slots pool lookup object-keys banks bank snapshots undo undo-count marks epoch
+  surface slots pool lookup object-keys banks bank report-bank snapshots undo undo-count marks epoch
   output revision tick owner stage rollback accept point point-before windows window-before modified
   start end report previous-report previous-client-state active-count busy)
 
@@ -222,7 +222,7 @@ STAGE or ACCEPT.  Callbacks must not initiate another publication."
        :surface surface :slots slots :pool pool :lookup lookup :object-keys objects
        :banks (vector (ebox--pub--frame-bank pool objects report)
                       (ebox--pub--frame-bank pool objects report))
-       :bank -1 :snapshots (make-vector 4 nil) :undo (make-vector (* 4 count) nil)
+       :bank -1 :report-bank -1 :snapshots (make-vector 4 nil) :undo (make-vector (* 4 count) nil)
        :marks (make-vector count 0) :epoch 0
        :output (ebox--pub--shadow-surface-output surface)
        :revision (ebox--pub--surface-revision surface)
@@ -577,7 +577,7 @@ constructed.  Strings and native undo records are buffer-write primitives."
             (with-current-buffer buffer (buffer-modified-tick))))))
 
 (defun ebox--pub-frame-publish
-    (frame rendered client-state &optional active-count damage damage-count)
+    (frame rendered client-state &optional active-count damage damage-count retain-mounts)
   "Publish prepared FRAME's RENDERED output and CLIENT-STATE atomically.
 ACTIVE-COUNT selects the active prefix of FRAME's fixed mount slots and
 defaults to the complete pool.  Optional DAMAGE is cold-owned storage with
@@ -587,18 +587,25 @@ unchanged.  Return the reusable publication report, or
 nil before mutation when the accepted generation or mount capacity changed.
 Failures invoke the once-bound rollback callback and restore the accepted
 buffer, mount projection, revision and report before propagating the error.
+RETAIN-MOUNTS is reserved for source/interaction-only publication.  It keeps
+accepted output and ownership indexes intact while using the same paired
+transaction, callback validation, revision and rollback authority.
 Native text/undo primitives may allocate; framework storage is cold-owned."
-  (let ((count (or active-count (and (ebox--pub-frame-p frame)
-                                   (/ (length (ebox--pub-frame-slots frame)) 4)))))
+  (let ((count (if retain-mounts (ebox--pub-frame-active-count frame)
+                 (or active-count (and (ebox--pub-frame-p frame)
+                                       (/ (length (ebox--pub-frame-slots frame)) 4))))))
     (when (and (stringp rendered) (ebox--pub-frame-current-p frame)
                (or (null damage)
                    (ebox--pub--frame-damage-valid-p frame rendered damage damage-count))
-               (ebox--pub--frame-slots-valid-p frame (length rendered) count))
+               (if retain-mounts
+                   (eq rendered (ebox--pub-frame-output frame))
+                 (ebox--pub--frame-slots-valid-p frame (length rendered) count)))
       (let* ((surface (ebox--pub-frame-surface frame))
              (buffer (ebox--pub--surface-buffer surface))
              (next-bank (if (= (ebox--pub-frame-bank frame) 0) 1 0))
              (bank (aref (ebox--pub-frame-banks frame) next-bank))
-             (report (aref bank 3))
+             (next-report-bank (if (= (ebox--pub-frame-report-bank frame) 0) 1 0))
+             (report (aref (aref (ebox--pub-frame-banks frame) next-report-bank) 3))
              (snapshot (ebox--pub-frame-snapshots frame))
              (started (and (ebox--pub--surface-observers surface)
                            (ebox--pub--surface-observation-clock)))
@@ -622,7 +629,7 @@ Native text/undo primitives may allocate; framework storage is cold-owned."
         (plist-put report :new-revision (1+ (ebox--pub-frame-revision frame)))
         (plist-put report :text-operations 0)
         (plist-put report :property-operations 0)
-        (plist-put report :touched-characters (length rendered))
+        (plist-put report :touched-characters (if retain-mounts 0 (length rendered)))
         (plist-put report :observer-errors nil)
         (plist-put report :failure nil)
         (plist-put report :duration-ms nil)
@@ -638,11 +645,16 @@ Native text/undo primitives may allocate; framework storage is cold-owned."
                     (let ((inhibit-read-only
                            (plist-get (ebox--pub--surface-options surface) :inhibit-read-only))
                           (trusted (ebox--pub--frame-owned-hooks-p)))
-                      (ebox--pub--frame-write frame rendered damage damage-count)
+                      (if retain-mounts
+                          (progn
+                            (ebox--pub--publication-step 'text surface)
+                            (ebox--pub--publication-step 'property surface))
+                        (ebox--pub--frame-write frame rendered damage damage-count))
                       (unless trusted (ebox--pub--frame-validate-output frame rendered)))
                     (setq tick (buffer-modified-tick))
-                    (setq mounts-installed t)
-                    (ebox--pub--frame-install-mounts frame bank count (ebox--pub-frame-start frame))
+                    (unless retain-mounts
+                      (setq mounts-installed t)
+                      (ebox--pub--frame-install-mounts frame bank count (ebox--pub-frame-start frame)))
                     (ebox--pub--publication-step 'marker surface)
                     (ebox--pub--publication-step 'index surface)
                     (setf (ebox--pub--surface-client-state surface) client-state
@@ -669,11 +681,12 @@ Native text/undo primitives may allocate; framework storage is cold-owned."
                               (ebox--pub--frame-validate-output frame rendered))
                             (accept-change-group group)
                             (setf (ebox--pub-frame-output frame) rendered
-                                  (ebox--pub-frame-bank frame) next-bank
+                                  (ebox--pub-frame-report-bank frame) next-report-bank
                                   (ebox--pub-frame-revision frame) (ebox--pub--surface-revision surface)
                                   (ebox--pub-frame-previous-client-state frame) client-state
                                   (ebox--pub-frame-active-count frame) count
                                   (ebox--pub-frame-tick frame) (buffer-modified-tick))
+                            (unless retain-mounts (setf (ebox--pub-frame-bank frame) next-bank))
                             (setq success t))
                         (setq quit-flag nil)))))
               ((error quit) (setq failure condition)))
@@ -704,6 +717,12 @@ Native text/undo primitives may allocate; framework storage is cold-owned."
             (ebox--pub--run-surface-observers
              surface observers (ebox--pub-surface-report surface))))
         report))))
+
+(defun ebox--pub-frame-publish-state (frame client-state)
+  "Publish only FRAME's paired CLIENT-STATE and retain accepted visible mounts.
+Use the existing frame transaction so native focus/active metadata has the same
+revision, hook validation, observer delivery and rollback as pixel changes."
+  (ebox--pub-frame-publish frame (ebox--pub-frame-output frame) client-state nil nil nil t))
 
 (defvar ebox--pub--surface-id-counter 0)
 (defvar ebox--pub--object-id-counter 0)

@@ -438,12 +438,29 @@ ownership. Warm replay touches bound primitive rows, without rebuilding a source
 or component graph. A fixed sparse geometry batch saves each record once, so
 paint, Text and multiple placements share complete pixel rollback.
 
+Class variants compile to the existing source token grammar and a private
+selector view. Candidate indexes contain the finite class superset; ECSS always
+matches the current subject. Any rule/scope that observes a changing token is
+rejected, so several Hosts cannot jointly activate an unproved relational rule.
+Native focus/active uses the same private source/subject cells and fixed state
+journals. With no dependent state selectors or dynamic style evaluators, press,
+focus and release publish metadata through the retained frame without replacing
+pixels or mount indexes. The report and mount banks advance independently, so
+metadata between geometry updates cannot overwrite the live rollback index.
+
+Border recipes read prebound side-color cells. Font preparation resolves the
+actual normal/bold facts and inherited consumers, and checks glyph shaping,
+spacing and vertical metrics; the terminal uses its explicit fixed-cell proof.
+Each raster retains independent paint-face snapshots. Hot updates switch bound
+facts and repaint known regions; unknown typography or changed inputs invalidate
+that proof. Display guards and font-cache generations prevent stale metrics.
+
 Prepared source records preserve exact opaque handles while an immutable index
 overlay selects the new private record. Operation validity compares record
 identity. This keeps retained tree/index pairs and previously exported snapshots
 resolvable through focus/active metadata and later ordinary candidate creation.
 Prepared paint changes defer general computed-style rebuilding: a stale flag
-blocks metadata, native, scoped, viewport-no-op and retained-scroll shortcuts;
+blocks ordinary metadata, native, scoped, viewport-no-op and retained-scroll shortcuts;
 the next private candidate recomputes inherited styles, retaining binding keys
 and clearing the flag only in that candidate's accepted state.
 

@@ -39,7 +39,7 @@
     "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
     "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
     "ebox-dsl.el" "ebox-selector.el" "ebox-file.el" "ebox-spi.el" "ebox-runtime.el"
-    "ebox-geometry.el" "ebox-update-raster.el" "ebox-update.el"
+    "ebox-geometry.el" "ebox-update-raster.el" "ebox-update-selector.el" "ebox-update.el"
     "ebox-native-reflow.el" "../ebox.el")
   "Active Ebox Lisp sources compiled by `ebox-byte-compile'.")
 

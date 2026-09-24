@@ -825,16 +825,45 @@
 ;; retained as expressions.  Stale, unmounted, or Text handles signal an
 ;; error; the query never creates or publishes a candidate.
 ;;
+;; Function: ebox-update-binding-token (buffer-or-name)
+;;;###autoload (autoload 'ebox-update-binding-token "ebox" nil nil)
+;; Return an opaque capability for BUFFER-OR-NAME's prepared binding context,
+;; or nil when unmounted. Compare with eq; do not inspect or mutate it. The
+;; token remains stable through prepared scalar/pixel publications. Ordinary
+;; publication, stylesheet and measurement environment changes replace it on
+;; the next control-plane query; unchanged hot queries reuse the same object.
+;;
+;; Function: ebox-update-prepare-report (buffer-or-name)
+;;;###autoload (autoload 'ebox-update-prepare-report "ebox" nil nil)
+;; Return a defensive report of the latest cold preparation: :status is ready,
+;; unsupported or stale; :reason names its result; :binding-token identifies
+;; the context. When a specific specification is rejected, :member is its
+;; zero-based index and :property identifies the rejected property when known.
+;; An unsupported member may be cached until the binding token or declared
+;; variants change. Stale admission requires control-plane refresh.
+;;
 ;; Function: ebox-update-prepare (buffer-or-name specifications &optional stage rollback after-commit)
 ;;;###autoload (autoload 'ebox-update-prepare "ebox" nil nil)
 ;; Prepare a fixed mixed primitive cohort. SPECIFICATIONS is a vector of
 ;; [HOST-REF PROPERTY-VECTOR] members; one Host may have disjoint members.
+;; An optional third VARIANT-VECTOR aligns with properties; class slots contain
+;; finite canonical class token/list values and other slots contain nil. A
+;; string is one token, matching the source-builder contract; consumers that
+;; accept whitespace class strings normalize them before this boundary.
+;; Cold proof admits only variants whose selector and layout consequences are
+;; covered; rules or scopes observing a changing class token require ordinary
+;; publication, including relational combinations across cohort members.
 ;; Return an opaque operation or nil for unsupported canvas/dependencies.
 ;; Supported geometry follows `ebox-geometry-apply'. Other admitted properties
 ;; are effective inline :color, :background-color (alias :bgcolor), existing
-;; nonnil :hover-content, and Text :content. Changing :class, :border or
-;; :font-weight is unsupported, as is applying nil to :color; use ordinary
-;; publication. Clearing hover-content or replacing active hover also declines.
+;; nonnil :hover-content, Text :content, finite canonical :class variants,
+;; uniform :border shorthand color changes with unchanged width/style, and
+;; :font-weight normal/bold when cold measurement proves the same allocation.
+;; Font proofs cover inherited facts, actual glyphs, ch spacing and vertical
+;; metrics in the current display environment. Unknown variants, changed Text
+;; inputs, named caller typography and independently composed nested font scopes
+;; require ordinary publication. Applying nil to :color, clearing hover-content
+;; or replacing active hover also declines.
 ;; Text must be nonempty and contain no newline, carriage return or tab.
 ;; Supported caller text properties are face, font-lock-face and display;
 ;; display values may be strings, spaces or images subject to the same retained
@@ -850,6 +879,8 @@
 ;; must fit. Changed vertical metrics or unproved ownership use ordinary updates.
 ;; STAGE and ROLLBACK are paired zero-argument callbacks; AFTER-COMMIT runs once
 ;; after acceptance. Preparation does not advance the publication revision.
+;; Prepare at mounted/structural/configuration boundaries and retain the cohort;
+;; ordinary publications or changed binding tokens require cold refresh.
 ;;
 ;; Function: ebox-update-valid-p (operation)
 ;;;###autoload (autoload 'ebox-update-valid-p "ebox" nil nil)

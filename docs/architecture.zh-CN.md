@@ -313,9 +313,21 @@ publisher 本身不代表已经通过分配或延迟验收。
 热路径只处理已绑定 primitive 行，不重建源或 Component 图。几何批次对每条记录只保存
 一次原值，使绘制、Text 与多个位置共享完整像素回滚。
 
+class 变体使用原有 source token 语法，冷编译私有 selector view 与有限候选索引；
+ECSS 始终匹配当前 subject。任何观察变化 token 的 rule/scope 都拒绝，避免多个 Host
+合批时触发未证明的关系规则。原生 focus/active 共用私有 source/subject 单元及固定
+状态 journal；没有相关状态 selector 或动态样式求值器时，press/focus/release 经保留
+frame 只发布元数据，不替换像素或 mount index。report bank 与 mount bank 分别推进，
+保证穿插元数据发布不会覆盖下一次几何回滚所依赖的 live index。
+
+边框指令读取预绑定的四边颜色单元。字体冷准备解析实际 normal/bold 及继承消费者，
+检查字形 shaping、间距和垂直度量；终端另用明确的固定 cell 证明。每个 raster 保留
+独立的绘制 face 快照；热更新只切换已绑定 fact 并重绘已知区域。未知字体输入或配置
+改变使证明失效，display guard 与 font-cache generation 防止复用过期度量。
+
 预备源记录保留精确 opaque handle，通过不可变索引 overlay 选择新的私有记录；
 操作有效性比较记录 identity。这保证旧树/索引及导出快照在 focus/active 元数据和后续
-普通 candidate 处理中仍可解析。预备绘制只标记 computed style 陈旧；该标记阻止
+普通 candidate 处理中仍可解析。预备绘制只标记 computed style 陈旧；该标记阻止普通更新中的
 metadata、native、scoped、viewport no-op 和 retained-scroll 快捷路径。下一私有
 candidate 保留 binding key 并重算继承，仅其接纳状态清除标记。
 

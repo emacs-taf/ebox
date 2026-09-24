@@ -1324,6 +1324,41 @@
       "name": "ebox-prepared-update-declines-unproved-variable-text-allocation",
       "file": "tests/ebox-prepared-update-tests.el",
       "purpose": "Initially empty, clipped or full Text allocations decline unproved footprint changes without callbacks, source mutation, visible edits or revision advancement."
+    },
+    {
+      "name": "ebox-prepared-publication-native-state-retains-rollback-banks",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Interleaved geometry and native active/focus/clear publications preserve independent mount/report banks and restore bounds, pixels, point, selectors and revision after rejected geometry before retry."
+    },
+    {
+      "name": "ebox-prepared-publication-focus-selector-keeps-ordinary-paint",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "A focus-dependent stylesheet retains the ordinary style publication path and correct focused rendering."
+    },
+    {
+      "name": "ebox-prepared-focus-publishes-all-visible-channels-once",
+      "file": "tests/ebox-prepared-focus-tests.el",
+      "purpose": "Window raise, taskbar active classes, unchanged-thickness border colors, measured font weights and variable status publish once through a stable prepared cohort with immediate selector queries and fresh-render equivalence."
+    },
+    {
+      "name": "ebox-prepared-focus-rejection-restores-selector-font-and-caller",
+      "file": "tests/ebox-prepared-focus-tests.el",
+      "purpose": "A rejected focus cohort restores selector classes, border and font paint, source, display, revision and multiple caller cells; retry publishes the complete focus state."
+    },
+    {
+      "name": "ebox-prepared-selector-publishes-class-border-and-rollback",
+      "file": "tests/ebox-prepared-selector-tests.el",
+      "purpose": "Finite class variants and fixed border colors publish together with immediate selector queries, exact rollback, detached snapshot isolation, empty classes and rejection of unknown classes or changed border geometry."
+    },
+    {
+      "name": "ebox-prepared-selector-rejects-combined-relational-effects",
+      "file": "tests/ebox-prepared-selector-tests.el",
+      "purpose": "Class preparation rejects changes that can jointly activate an ancestor :has rule across two Hosts, preserving source selectors, pixels and revision."
+    },
+    {
+      "name": "ebox-prepared-selector-preserves-source-token-grammar",
+      "file": "tests/ebox-prepared-selector-tests.el",
+      "purpose": "Prepared class variants preserve the canonical source grammar for single strings, symbols, nil and flat token lists, including one token containing whitespace and snapshot isolation."
     }
   ]
 }

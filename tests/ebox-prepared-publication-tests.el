@@ -16,15 +16,18 @@
      (let ((ebox-viewport-width 160) (ebox-viewport-height 12))
        (with-temp-buffer ,@body))))
 
-(defun ebox-prepared-publication-test--input (&optional multi-row extra-host)
+(defun ebox-prepared-publication-test--input (&optional multi-row extra-host native-map)
   "Build overlapping panels with explicit public Host identities.
 MULTI-ROW gives the moving panel three unequal text rows in a taller surface.
-EXTRA-HOST inserts another independently addressable positioned panel."
+EXTRA-HOST inserts another independently addressable positioned panel.
+NATIVE-MAP enables the moving panel's native input and logical focus."
   (let ((builder (ebox-source-builder-create)))
     (cl-labels
         ((box (identity style children &optional help)
            (let* ((declarations (ebox-style-compile-form 'box style))
-                  (interactions (and help (list :help-echo help)))
+                  (interactions (append (and help (list :help-echo help))
+                                        (when (and native-map (eq identity 'moving))
+                                          (list :keymap native-map :tab-index 0))))
                   (handle (ebox-source-builder-bind
                            builder :identity identity :key identity :id identity
                            :declarations declarations :interactions interactions)))
@@ -451,6 +454,141 @@ EXTRA-HOST inserts another independently addressable positioned panel."
       (setq reports nil reject t)
       (should-error (ebox-geometry-apply operation [(ch 0) (lh 1) 2]))
       (should-not reports))))
+
+(ert-deftest ebox-prepared-publication-native-state-retains-rollback-banks ()
+  "Native state between geometry frames preserves atomic rejection and retry."
+  (save-window-excursion
+    (ebox-prepared-publication-test--with-buffer
+      (set-window-buffer (selected-window) (current-buffer))
+      (let ((buffer (current-buffer)) (window (selected-window))
+            (caller-state 0) (saved-state 0) reject operation phases events reports
+            (unread-command-events nil))
+        (cl-labels
+            ((retry (values)
+               (let* ((before (buffer-string))
+                      (revision (ebox-surface-buffer-revision buffer))
+                      (report (ebox-buffer-update-report buffer))
+                      (snapshot (ebox-surface-buffer-snapshot buffer))
+                      (input (plist-get snapshot :input))
+                      (point-before (point))
+                      (focus (ebox-focused-host-ref buffer))
+                      (bounds (mapcar (lambda (ref) (ebox-host-ref-bounds buffer ref))
+                                      '(surface moving covered))))
+                 (setq reject t saved-state caller-state)
+                 (should-error (ebox-geometry-apply operation values))
+                 (should (= caller-state saved-state))
+                 (should (= revision (ebox-surface-buffer-revision buffer)))
+                 (should (equal report (ebox-buffer-update-report buffer)))
+                 (should (equal-including-properties before (buffer-string)))
+                 (should (= point-before (point)))
+                 (should (equal focus (ebox-focused-host-ref buffer)))
+                 (should (equal bounds
+                                (mapcar (lambda (ref) (ebox-host-ref-bounds buffer ref))
+                                        '(surface moving covered))))
+                 (let ((after (ebox-surface-buffer-snapshot buffer)))
+                   (should (= (plist-get snapshot :mount-id) (plist-get after :mount-id)))
+                   (should (ebox-canonical-input-equal-p input (plist-get after :input))))
+                 (should (ebox-geometry-valid-p operation))
+                 (setq reject nil)
+                 (should (ebox-geometry-apply operation values))
+                 (should (= caller-state (1+ saved-state)))
+                 (should (= (1+ revision) (ebox-surface-buffer-revision buffer)))
+                 (ebox-prepared-publication-test--assert-authority)))
+             (event (kind position xy &optional end)
+               (append (list kind (list window position xy 0))
+                       (when end (list (list window position end 1))))))
+          (let ((map (ebox-keymap-create
+                      :drag
+                      (lambda (gesture)
+                        (push (plist-get gesture :phase) phases)
+                        (when (memq (plist-get gesture :phase) '(start move end))
+                          (ert-info ((format "Native phase %S" (plist-get gesture :phase)))
+                            (should (= 1 (length (ebox-selector-query-buffer buffer "#moving:active"))))))
+                        (pcase (plist-get gesture :phase)
+                          ('start
+                           (should (eq (plist-get (ebox-buffer-update-report buffer) :projection-kind)
+                                       'prepared-interaction))
+                           ;; One metadata publication must not rotate the
+                           ;; live mount bank before a rejected geometry frame.
+                           (retry [(ch 4) (lh 2) 2])
+                           (ebox-focus 'moving buffer)
+                           (should (eq (plist-get (ebox-buffer-update-report buffer) :projection-kind)
+                                       'prepared-interaction))
+                           (should (= 1 (length (ebox-selector-query-buffer buffer "#moving:focus"))))
+                           (retry [(ch 6) (lh 3) 2]))
+                          ('move (retry [(ch 8) (lh 2) 2])))))))
+            (ebox-render-to-buffer buffer (ebox-prepared-publication-test--input t nil map)))
+          (setq operation
+                (ebox-geometry-prepare
+                 buffer 'moving [:left :top :z-index]
+                 (lambda ()
+                   (setq caller-state (1+ caller-state))
+                   (when reject (error "Reject native interleaved geometry")))
+                 (lambda () (setq caller-state saved-state))))
+          (should operation)
+          (should (ebox-geometry-apply operation [(ch 10) (lh 1) 2]))
+          (ebox-buffer-set-observer buffer (lambda (_buffer report) (push report reports)))
+          (goto-char (point-min))
+          (search-forward "UPPER")
+          (let* ((position (match-beginning 0))
+                 (press (event 'down-mouse-1 position '(1 . 1)))
+                 (command (key-binding (vector press) nil nil position)))
+            (setq events (list (event 'mouse-movement position '(4 . 2))
+                               (event 'drag-mouse-1 position '(1 . 1) '(4 . 2))))
+            (cl-letf (((symbol-function 'read-event)
+                       (lambda (&optional _prompt _inherit seconds)
+                         (cond (unread-command-events (pop unread-command-events))
+                               (events (pop events))
+                               ((equal seconds 0) nil)
+                               (t ?q)))))
+              (funcall command press)))
+          (should (equal (reverse phases) '(start move end)))
+          (should-not (ebox-selector-query-buffer buffer "#moving:active"))
+          (should (= 1 (length (ebox-selector-query-buffer buffer "#moving:focus"))))
+          (should (eq (plist-get (ebox-buffer-update-report buffer) :projection-kind)
+                      'prepared-interaction))
+          (should (= 3 (cl-count-if
+                        (lambda (report)
+                          (and (eq (plist-get report :provider) 'ebox)
+                               (eq (plist-get report :projection-kind) 'prepared-interaction)))
+                        reports)))
+          (dolist (report reports)
+            (when (and (eq (plist-get report :provider) 'ebox)
+                       (eq (plist-get report :projection-kind) 'prepared-interaction))
+              (let ((publication
+                     (cl-find-if
+                      (lambda (candidate)
+                        (and (eq (plist-get candidate :provider) 'ebox-publication)
+                             (equal (plist-get candidate :correlation-id)
+                                    (plist-get report :correlation-id))))
+                      reports)))
+                (should publication)
+                (should (= 0 (plist-get publication :text-operations)))
+                (should (= 0 (plist-get publication :property-operations))))))
+          (retry [(ch 10) (lh 1) 2]))))))
+
+(ert-deftest ebox-prepared-publication-focus-selector-keeps-ordinary-paint ()
+  "Prepared native state never skips selector-dependent focus paint."
+  (ebox-prepared-publication-test--with-buffer
+    (ebox-render-to-buffer
+     (current-buffer)
+     (ebox-build
+      '(box :width (ch 20) :height (lh 5)
+            :ecss (("#moving:focus" :color "#ff0000"))
+            (box :id "moving" :tab-index 0 :position absolute
+                 :left (ch 1) :top (lh 1) :width (ch 8) :height (lh 1)
+                 :z-index 1 "Moving"))))
+    (let ((operation (ebox-geometry-prepare (current-buffer) "moving" [:left :top :z-index])))
+      (should operation)
+      (ebox-focus-first)
+      (should (= 1 (length (ebox-selector-query-buffer (current-buffer) "#moving:focus"))))
+      (should-not (eq (plist-get (ebox-buffer-update-report (current-buffer)) :projection-kind)
+                      'prepared-interaction))
+      (should-not (ebox-geometry-valid-p operation))
+      (goto-char (point-min))
+      (search-forward "Moving")
+      (should (equal (get-text-property (match-beginning 0) 'face)
+                     '(:foreground "#ff0000"))))))
 
 (provide 'ebox-prepared-publication-tests)
 ;;; ebox-prepared-publication-tests.el ends here

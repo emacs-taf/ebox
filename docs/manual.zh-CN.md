@@ -359,8 +359,11 @@ stage 失败会恢复两方权威。`after-commit` 只在接纳后执行，其�
 把跨 Host 的受支持变化组成一次原子发布。不受支持的组合继续使用普通 batch。
 已导出的 snapshot 不随后续预备移动发生变化。
 
-框架可用 `ebox-update-prepare` 把相关绘制、Text 与几何效果组成一个固定 cohort。
-规格是 `[HOST-REF PROPERTY-VECTOR]` 的向量；同一 Host 可声明互不重叠的属性组。
+框架在挂载或结构/配置更新后，用 `ebox-update-prepare` 把实际存在的绘制、Text 与
+几何效果组成固定 cohort，后续交互保留复用。规格是 `[HOST-REF PROPERTY-VECTOR]`
+的向量；同一 Host 可声明互不重叠的属性组。class 成员可加第三个对齐的变体向量，
+包含有限 canonical class 值。Ebox 字符串是一枚 token；接受空白 class 语法的上层
+须在冷准备前规范化，应用时只查保留映射。
 `ebox-update-apply` 复用成员值向量和稀疏变化索引，一组 stage/rollback 回调覆盖
 全部成员和一次发布。对于语义 ID 为 `panel` 的已挂载 Box 和 ID 为 `label` 的
 Text，准备或应用返回 nil 时，用普通 batch 完成同一次更新：
@@ -379,8 +382,12 @@ Text，准备或应用返回 nil 时，用普通 batch 完成同一次更新：
 ```
 
 cohort 使用预备几何的共享固定画布。受支持属性、值和 Text 区域条件由
-[入口 API 清单](../ebox.el)的 `ebox-update-prepare` 定义。其中 class、border、
-font-weight 和 nil 前景色变化使用普通发布。Text 可以在获准的固定单行分配中
+[入口 API 清单](../ebox.el)的 `ebox-update-prepare` 定义。冷准备可接纳不被样式
+selector 观察的 class 变体、厚度和样式不变的边框颜色，以及经真实字体和字形度量
+证明分配不变的 normal/bold。未知变体/依赖和 nil 前景色 reset 使用普通发布。
+`ebox-update-binding-token` 标识当前绑定环境；`ebox-update-prepare-report` 区分
+环境过期与具体成员不受支持，避免框架反复准备已知拒绝。
+Text 可以在获准的固定单行分配中
 改变宽度；初始内容为空、已被裁剪或恰好占满分配范围时，不能准备该固定槽。
 未支持的富文本、布局依赖、分配范围变化及活动 hover 替换也在发布前拒绝，
 由调用方回退到普通事务。源记录保留 opaque

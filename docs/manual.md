@@ -423,8 +423,13 @@ have their own measured costs. Fixed wrapper decoration, ownership projection an
 publication reuse compiled resources and process damaged rows.
 
 Frameworks with related paint, Text and geometry effects can prepare one cohort
-with `ebox-update-prepare`. Each specification is `[HOST-REF PROPERTY-VECTOR]`;
-disjoint specifications may address the same Host. Reuse member value vectors
+with `ebox-update-prepare` after mounting or a structural/configuration update.
+Keep the cohort for subsequent interactions. Each specification is
+`[HOST-REF PROPERTY-VECTOR]`; disjoint specifications may address the same Host.
+Class members add a third aligned variant vector containing finite canonical
+class values. A string is one Ebox class token; integrations with whitespace
+class syntax normalize it before preparation and use a retained lookup during
+application. Reuse member value vectors
 and a sparse vector of changed member indices with `ebox-update-apply`.
 One stage/rollback callback pair covers every changed member and one publication.
 For a mounted Box with semantic ID `panel` and Text with semantic ID `label`,
@@ -445,8 +450,14 @@ handle either preparation or application declining with one ordinary batch:
 
 The cohort uses the shared fixed canvas from prepared geometry. Its supported
 properties, values and Text-region conditions are defined by `ebox-update-prepare`
-in [the API inventory](../ebox.el). In particular, class, border, font-weight and
-nil foreground changes use ordinary publication. A Text value may change width
+in [the API inventory](../ebox.el). Cold preparation can admit class variants
+unobserved by style selectors, fixed-thickness border color changes, and
+normal/bold when real font/glyph measurements preserve allocation. Unknown
+variants or dependencies and nil foreground reset use ordinary publication.
+`ebox-update-binding-token` identifies the current binding context;
+`ebox-update-prepare-report` distinguishes stale context from an unsupported
+member, allowing frameworks to avoid repeatedly preparing a known rejection.
+A Text value may change width
 inside an admitted fixed single-row allocation; an initially empty, clipped or
 exactly full allocation cannot prepare that fixed slot. Unsupported rich text,
 layout dependencies, changed allocations and active hover replacements also

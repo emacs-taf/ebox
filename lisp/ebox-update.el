@@ -8,12 +8,13 @@
 (require 'cl-lib)
 (require 'ebox-geometry)
 (require 'ebox-update-raster)
+(require 'ebox-update-selector)
 
 (cl-defstruct (ebox-update--member (:constructor ebox-update--make-member))
-  group properties offsets)
+  group properties offsets variants)
 
 (cl-defstruct (ebox-update--group (:constructor ebox-update--make-group))
-  node properties slots values geometry-target geometry-program x-factor raster
+  node properties variants first-member slots values geometry-target geometry-program x-factor raster font class-slot
   hover-cell hover-old hover-owners dirty staged dx dy z)
 
 (cl-defstruct (ebox-update--cohort (:constructor ebox-update--make-cohort))
@@ -36,15 +37,21 @@
   (pcase property
     (:content (plist-get node :ebox-text-value))
     (:hover-content (and source (plist-get (ebox-source-record-interactions
-                                           (ebox-source--index-record source (plist-get node :ebox-source-handle)))
-                                          :hover-content)))
+                                            (ebox-source--index-record source (plist-get node :ebox-source-handle)))
+                                           :hover-content)))
+    (:class (and source (ebox-source-record-classes
+                         (ebox-source--index-record source (plist-get node :ebox-source-handle)))))
+    (:border (and source (ebox-source--update-slots-border-value source node)))
+    (:font-weight (and source (plist-get (ebox-source-record-declarations
+                                          (ebox-source--index-record source (plist-get node :ebox-source-handle)))
+                                         (ebox-style-schema-id :font-weight))))
     (:background-color (ebox-get node :bgcolor))
     (_ (ebox-get node property))))
 
 (defun ebox-update--group-current-value (group index)
   "Read GROUP's prebound primitive value at INDEX."
   (let ((property (aref (ebox-update--group-properties group) index)))
-    (if (eq property :hover-content)
+    (if (memq property '(:hover-content :class :border :font-weight))
         (ebox-source--update-slots-value (ebox-update--group-slots group) index)
       (ebox-update--current-value (ebox-update--group-node group) property))))
 
@@ -93,8 +100,136 @@
             (ebox-update--group-x-factor group) (ebox--size-pixels '(ch 1) wrapper 'width))
       t)))
 
+(cl-defstruct (ebox-update--binding (:constructor ebox-update--make-binding))
+  "Opaque cold capability for mounted state and its measurement environment."
+  public-token buffer state stylesheet stylesheet-epoch font-epoch environment window width height)
+
+(defvar-local ebox-update--binding-token nil
+  "Current immutable prepared-binding capability for this mounted buffer.")
+
+(defvar-local ebox-update--prepare-report nil
+  "Latest cold prepared-update admission report; queried only on request.")
+
+(defvar ebox-update--preparing-buffer nil)
+(defvar ebox-update--preparing-member nil)
+(defvar ebox-update--preparing-property nil)
+
+(defun ebox-update--binding-current-p (token buffer state)
+  "Check TOKEN against BUFFER and STATE without building a measurement signature."
+  (and (ebox-update--binding-p token)
+       (eq buffer (ebox-update--binding-buffer token))
+       (eq state (ebox-update--binding-state token))
+       (eq ebox-style-stylesheet (ebox-update--binding-stylesheet token))
+       (= ebox-style--stylesheet-epoch (ebox-update--binding-stylesheet-epoch token))
+       (= ebox-font--measurement-epoch (ebox-update--binding-font-epoch token))
+       (ebox-geometry--display-current-p (ebox-update--binding-environment token))
+       (let ((window (ebox-update--binding-window token)))
+         (or (null window)
+             (and (window-live-p window) (eq buffer (window-buffer window))
+                  (= (window-pixel-width window) (ebox-update--binding-width token))
+                  (= (window-pixel-height window) (ebox-update--binding-height token)))))))
+
+;;;###autoload
+(defun ebox-update-binding-token (buffer-or-name)
+  "Return BUFFER-OR-NAME's opaque prepared-binding capability, or nil.
+Compare tokens with `eq'; never inspect their representation.  The token is
+stable across prepared source/pixel publications on the same runtime state.
+Ordinary publication, stylesheet changes and a changed measurement environment
+produce a new token at the next control-plane query.  The unchanged hot query
+only compares captured fields and returns the existing object."
+  (let* ((buffer (ebox--host-ref-buffer buffer-or-name))
+         (state (and buffer (ebox--buffer-render-state buffer))))
+    (when state
+      (with-current-buffer buffer
+        (unless (ebox-update--binding-current-p ebox-update--binding-token buffer state)
+          (let* ((window (get-buffer-window buffer t))
+                 (frame (if window (window-frame window) (selected-frame)))
+                 (environment
+                  (ebox-geometry--make-operation
+                   :buffer buffer :frame-font-frame frame
+                   :display-snapshot (vconcat (ebox--display-signature-for-frame frame)))))
+            (setq ebox-update--binding-token
+                  (ebox-update--make-binding
+                   :public-token (make-symbol "ebox-update-binding")
+                   :buffer buffer :state state :stylesheet ebox-style-stylesheet
+                   :stylesheet-epoch ebox-style--stylesheet-epoch :font-epoch ebox-font--measurement-epoch
+                   :environment environment
+                   :window window :width (and window (window-pixel-width window))
+                   :height (and window (window-pixel-height window))))))
+        (ebox-update--binding-public-token ebox-update--binding-token)))))
+
+;;;###autoload
+(defun ebox-update-prepare-report (buffer-or-name)
+  "Return BUFFER-OR-NAME's latest cold prepared-update admission report.
+The defensive plist contains :status (ready, unsupported or stale), :reason,
+:binding-token and, when a particular member was rejected, :member and
+:property.  Unsupported members may be excluded until the binding token or
+their declared variant configuration changes.  A stale report requests a
+control-plane refresh; it never authorizes use of the previous operation."
+  (let ((buffer (ebox--host-ref-buffer buffer-or-name)))
+    (when buffer
+      (with-current-buffer buffer (copy-tree ebox-update--prepare-report)))))
+
+(defun ebox-update--locate-member (members group &optional property raster-p)
+  "Bind cold diagnostics to GROUP's exact member and optional PROPERTY."
+  (let ((index 0) found)
+    (while (and (< index (length members)) (not found))
+      (let* ((member (aref members index))
+             (keys (ebox-update--member-properties member)))
+        (when (and (eq group (ebox-update--member-group member))
+                   (cond (property (cl-position property keys))
+                         (raster-p (cl-some (lambda (key) (not (memq key ebox--region-geometry-properties)))
+                                            (append keys nil)))
+                         (t t)))
+          (setq found t ebox-update--preparing-member index
+                ebox-update--preparing-property property)))
+      (setq index (1+ index)))
+    (unless found
+      (setq ebox-update--preparing-member (ebox-update--group-first-member group)
+            ebox-update--preparing-property property))))
+
+(defun ebox-update--decline (reason &optional stale)
+  "Reject the active cold preparation with REASON and optional STALE status."
+  (when (buffer-live-p ebox-update--preparing-buffer)
+    (with-current-buffer ebox-update--preparing-buffer
+      (setq ebox-update--prepare-report
+            (list :status (if stale 'stale 'unsupported) :reason reason
+                  :binding-token (and ebox-update--binding-token
+                                      (ebox-update--binding-public-token ebox-update--binding-token))
+                  :member ebox-update--preparing-member :property ebox-update--preparing-property))))
+  (throw 'unsupported nil))
+
 ;;;###autoload
 (defun ebox-update-prepare (buffer-or-name specifications &optional stage rollback after-commit)
+  "Compile BUFFER-OR-NAME's fixed SPECIFICATIONS into one primitive cohort.
+A member is [HOST-REF PROPERTY-VECTOR] or [HOST-REF PROPERTY-VECTOR VARIANTS].
+VARIANTS, when present, aligns with the properties; a class slot contains a
+nonempty vector of finite canonical class token/list values.  Other slots use
+nil.  Duplicate Hosts may declare disjoint properties.  STAGE and ROLLBACK
+are paired zero-argument callbacks.  AFTER-COMMIT runs once after acceptance.
+Return an opaque operation or nil.  `ebox-update-prepare-report' describes
+cold admission."
+  (let* ((buffer (ebox--host-ref-buffer buffer-or-name))
+         (ebox-update--preparing-buffer buffer)
+         (ebox-update--preparing-member nil)
+         (ebox-update--preparing-property nil)
+         (token (and buffer (ebox-update-binding-token buffer)))
+         result)
+    (when buffer
+      (with-current-buffer buffer
+        (setq ebox-update--prepare-report
+              (list :status 'unsupported :reason 'unavailable :binding-token token))))
+    (setq result (if buffer
+                     (with-current-buffer buffer
+                       (ebox-update--prepare buffer-or-name specifications stage rollback after-commit))
+                   (ebox-update--prepare buffer-or-name specifications stage rollback after-commit)))
+    (when result
+      (with-current-buffer buffer
+        (setq ebox-update--prepare-report
+              (list :status 'ready :reason nil :binding-token token))))
+    result))
+
+(defun ebox-update--prepare (buffer-or-name specifications &optional stage rollback after-commit)
   "Compile BUFFER-OR-NAME's fixed SPECIFICATIONS into one primitive cohort.
 SPECIFICATIONS is a vector of [HOST-REF PROPERTY-VECTOR] members.  Duplicate
 Hosts may declare disjoint properties.  STAGE and ROLLBACK are paired zero
@@ -113,63 +248,116 @@ operation, or nil if a member cannot use the fixed retained canvas."
            (state (and buffer (ebox--buffer-render-state buffer)))
            (groups-table (make-hash-table :test #'eq))
            (members (make-vector (length specifications) nil)) groups nodes scene)
-      (unless state (throw 'unsupported nil))
+      (unless state (ebox-update--decline 'unmounted t))
+      (unless (equal (plist-get state :display-signature)
+                     (append (ebox-geometry--operation-display-snapshot
+                              (ebox-update--binding-environment ebox-update--binding-token)) nil))
+        (ebox-update--decline 'display-context t))
       (dotimes (index (length specifications))
+        (setq ebox-update--preparing-member index ebox-update--preparing-property nil)
         (let* ((spec (aref specifications index))
-               (node (and (vectorp spec) (= (length spec) 2)
+               (node (and (vectorp spec) (memq (length spec) '(2 3))
                           (ebox-update--node buffer (aref spec 0))))
-               (keys (and (vectorp spec) (= (length spec) 2) (aref spec 1))))
+               (keys (and (vectorp spec) (memq (length spec) '(2 3)) (aref spec 1)))
+               (variants (and (vectorp spec) (= (length spec) 3) (aref spec 2))))
           (unless (and (vectorp keys) (> (length keys) 0))
             (user-error "Prepared Ebox members require a Host and property vector"))
-          (unless node (throw 'unsupported nil))
+          (unless (or (null variants) (and (vectorp variants) (= (length variants) (length keys))))
+            (user-error "Prepared member variants must align with its property vector"))
+          (unless node (ebox-update--decline 'missing-host t))
           (setq keys (vconcat (mapcar (lambda (key) (if (eq key :bgcolor) :background-color key)) (append keys nil))))
           (let ((group (or (gethash node groups-table)
-                           (let ((entry (ebox-update--make-group :node node)))
+                           (let ((entry (ebox-update--make-group :node node :first-member index)))
                              (puthash node entry groups-table)
                              (push entry groups) (push node nodes) entry))))
             (dotimes (key-index (length keys))
               (let ((property (aref keys key-index)))
+                (setq ebox-update--preparing-property property)
                 (unless (or (memq property ebox--region-geometry-properties)
-                            (memq property '(:content :color :background-color :bgcolor :hover-content)))
-                  (throw 'unsupported nil))
+                            (memq property '(:content :color :background-color :bgcolor :hover-content :class :border :font-weight)))
+                  (ebox-update--decline 'unsupported-property))
                 (when (memq property (ebox-update--group-properties group))
                   (user-error "Prepared Ebox cohort properties overlap for one Host"))
                 (setf (ebox-update--group-properties group)
-                      (append (ebox-update--group-properties group) (list property)))))
-            (aset members index (ebox-update--make-member :group group :properties (copy-sequence keys))))))
+                      (append (ebox-update--group-properties group) (list property))
+                      (ebox-update--group-variants group)
+                      (append (ebox-update--group-variants group) (list (and variants (aref variants key-index)))))))
+            (aset members index (ebox-update--make-member :group group :properties (copy-sequence keys) :variants (and variants (copy-tree variants t)))))))
+      (setq ebox-update--preparing-member nil ebox-update--preparing-property nil)
       (setq groups (vconcat (nreverse groups)) scene (ebox-update--scene buffer state nodes))
-      (unless scene (throw 'unsupported nil))
-      (let ((routes (ebox-geometry--operation-routes scene)))
+      (unless scene (ebox-update--decline 'fixed-canvas))
+      (let ((routes (ebox-geometry--operation-routes scene))
+            (font-cells (make-hash-table :test #'eq)))
         (dotimes (index (length groups))
           (let* ((group (aref groups index))
                  (node (ebox-update--group-node group))
                  (keys (vconcat (ebox-update--group-properties group)))
+                 (variants (vconcat (ebox-update--group-variants group)))
                  (values (make-vector (length keys) nil)) geometry raster)
-            (unless (ebox-geometry--inline-slots-p state node keys) (throw 'unsupported nil))
+            (setq ebox-update--preparing-member (ebox-update--group-first-member group)
+                  ebox-update--preparing-property nil)
+            (unless (ebox-geometry--inline-slots-p state node keys) (ebox-update--decline 'inline-winner))
             (dotimes (key-index (length keys))
               (let ((property (aref keys key-index)))
                 (when (memq property '(:left :top :z-index)) (setq geometry t))
-                (when (memq property '(:content :color :background-color :bgcolor :hover-content))
+                (when (memq property '(:content :color :background-color :bgcolor :hover-content :border :font-weight))
                   (setq raster t))
                 (aset values key-index (copy-tree (ebox-update--current-value node property (plist-get state :source-index))))))
             (setf (ebox-update--group-properties group) keys
+                  (ebox-update--group-variants group) variants
                   (ebox-update--group-values group) values)
             (when (and geometry (not (ebox-update--geometry-binding group routes)))
-              (throw 'unsupported nil))
+              (ebox-update--decline 'geometry-target))
+            (when-let* ((class-index (cl-position :class keys)))
+              (ebox-update--locate-member members group :class)
+              (let ((palette (aref variants class-index)))
+                (unless (and (vectorp palette) (> (length palette) 0))
+                  (ebox-update--decline 'class-variants))
+                (let ((proof (ebox-update-selector-prepare state node palette)))
+                  (unless proof (ebox-update--decline 'selector-dependency))
+                  (setf (ebox-update--group-class-slot group) proof))))
             (when raster
+              (ebox-update--locate-member members group nil t)
               (let ((descriptor (ebox-update-raster-prepare state routes node keys)))
-                (unless descriptor (throw 'unsupported nil))
-                (setf (ebox-update--group-raster group) descriptor)))))
+                (unless descriptor (ebox-update--decline 'raster-footprint))
+                (setf (ebox-update--group-raster group) descriptor)))
+            (when (cl-position :font-weight keys)
+              (ebox-update--locate-member members group :font-weight)
+              (let ((font (ebox-update-font-prepare state routes node (ebox-update--group-raster group) scene)))
+                (unless font (ebox-update--decline 'font-allocation))
+                (dotimes (cell-index (length (ebox-update-font-cells font)))
+                  (let ((cell (aref (ebox-update-font-cells font) cell-index)))
+                    (when (gethash cell font-cells) (ebox-update--decline 'overlapping-font-scope))
+                    (puthash cell t font-cells)))
+                (setf (ebox-update--group-font group) font)))))
+        ;; Each raw raster owns its immutable face representations.  Register
+        ;; all admitted font variants before any hot row can observe them.
+        (dotimes (font-index (length groups))
+          (let ((font (ebox-update--group-font (aref groups font-index))))
+            (when font
+              (dotimes (raster-index (length groups))
+                (when-let* ((raster (ebox-update--group-raster (aref groups raster-index))))
+                  (ebox-update-font-bind-raster font raster))))))
         ;; All output proofs precede the equivalent private source rebinding.
         (dotimes (index (length groups))
           (let* ((group (aref groups index))
                  (node (ebox-update--group-node group))
+                 (_diagnostic (ebox-update--locate-member members group))
                  (slots (ebox-source--update-slots-prepare
                          (plist-get state :source-index) node (ebox-update--group-properties group))))
-            (unless slots (throw 'unsupported nil))
+            (unless slots (ebox-update--decline 'source-binding))
             (setf (ebox-update--group-slots group) slots)
             (plist-put node :ebox-source-handle (ebox-source--update-slots-handle slots))
             (plist-put state :source-index (ebox-source--update-slots-index slots))))
+        (dotimes (index (length groups))
+          (let ((group (aref groups index)))
+            (when (ebox-update--group-class-slot group)
+              (ebox-update--locate-member members group :class)
+              (unless (ebox-update-selector-bind
+                       state (ebox-update--group-slots group)
+                       (cl-position :class (ebox-update--group-properties group))
+                       (ebox-update--group-class-slot group))
+                (ebox-update--decline 'selector-binding)))))
         (dotimes (index (length members))
           (let* ((member (aref members index))
                  (keys (ebox-update--member-properties member))
@@ -219,8 +407,11 @@ operation, or nil if a member cannot use the fixed retained canvas."
              (index (plist-get (ebox-update--cohort-state operation) :source-index))
              (valid t))
          (dotimes (position (length groups))
-           (unless (ebox-source--update-slots-current-p (ebox-update--group-slots (aref groups position)) index)
-             (setq valid nil))) valid)))
+           (let ((group (aref groups position)))
+             (unless (and (ebox-source--update-slots-current-p (ebox-update--group-slots group) index)
+                          (or (null (ebox-update--group-font group))
+                              (ebox-update-font-current-p (ebox-update--group-font group))))
+               (setq valid nil)))) valid)))
 
 (defun ebox-update--capture-value (group index value)
   "Validate VALUE for GROUP's INDEX and retain owned primitive storage."
@@ -243,6 +434,17 @@ operation, or nil if a member cannot use the fixed retained canvas."
      ((eq property :z-index)
       (unless (integerp value) (throw 'unsupported nil))
       (aset values index value) (setf (ebox-update--group-z group) value))
+     ((eq property :class)
+      (unless (ebox-update-selector-value-p (ebox-update--group-class-slot group) value)
+        (throw 'unsupported nil))
+      (aset values index (ebox-update-selector-value (ebox-update--group-class-slot group) value)))
+     ((eq property :font-weight)
+      (unless (memq value '(normal bold)) (throw 'unsupported nil))
+      (aset values index value))
+     ((eq property :border)
+      (unless (ebox-source--update-slots-border-valid-p (ebox-update--group-slots group) index value)
+        (throw 'unsupported nil))
+      (setcar (cddr (aref values index)) (if (stringp (nth 2 value)) (copy-sequence (nth 2 value)) (nth 2 value))))
      ((eq property :content)
       (unless (stringp value) (throw 'unsupported nil))
       (aset values index (copy-sequence value)))
@@ -290,6 +492,7 @@ operation, or nil if a member cannot use the fixed retained canvas."
   (let ((groups (ebox-update--cohort-groups operation)))
     (dotimes (index (length groups))
       (let ((group (aref groups index)))
+        (when (ebox-update--group-font group) (ebox-update-font-rollback (ebox-update--group-font group)))
         (when (ebox-update--group-staged group)
           (ebox-source--update-slots-rollback (ebox-update--group-slots group))
           (when (ebox-update--group-hover-cell group)
@@ -321,8 +524,8 @@ operation, or nil if a member cannot use the fixed retained canvas."
     (dolist (key '(:layout-snapshots :layout-fragments :render-signature-cache))
       (when (hash-table-p (plist-get state key)) (clrhash (plist-get state key))))
     (dolist (key '(:surface-owned-ranges :surface-fragments
-                  :native-render-fragment-template :native-committed-fragment-template
-                  :native-committed-owned-ranges :layout-snapshots-complete-p :layer-composition-cache))
+                                         :native-render-fragment-template :native-committed-fragment-template
+                                         :native-committed-owned-ranges :layout-snapshots-complete-p :layer-composition-cache))
       (when (plist-member state key) (plist-put state key nil)))))
 
 ;;;###autoload
@@ -364,10 +567,13 @@ after acceptance."
                 (ebox-update--group-z group) (or (ebox-get node :z-index) 0))
           (dotimes (key-index (length keys))
             (let ((current (ebox-update--group-current-value group key-index)))
-              (if (and (consp current) (consp (aref owned key-index))
-                       (memq (aref keys key-index) '(:left :top :width :height)))
-                  (setcar (cdr (aref owned key-index)) (cadr current))
-                (aset owned key-index current))))))
+              (cond
+               ((eq (aref keys key-index) :border)
+                (setcar (cddr (aref owned key-index)) (nth 2 current)))
+               ((and (consp current) (consp (aref owned key-index))
+                     (memq (aref keys key-index) '(:left :top :width :height)))
+                (setcar (cdr (aref owned key-index)) (cadr current)))
+               (t (aset owned key-index current)))))))
       (unwind-protect
           (catch 'unsupported
             (dotimes (position count)
@@ -383,7 +589,7 @@ after acceptance."
                     (user-error "Prepared member values do not match their properties"))
                   (setf (ebox-update--group-dirty group) t)
                   (dotimes (key-index (length keys))
-                    (when (and (memq (aref keys key-index) '(:color :background-color :bgcolor))
+                    (when (and (memq (aref keys key-index) '(:color :background-color :bgcolor :border :font-weight))
                                (not (equal-including-properties
                                      (aref incoming key-index)
                                      (ebox-update--group-current-value group (aref offsets key-index)))))
@@ -414,6 +620,17 @@ after acceptance."
                     (ebox-layer--program-translate
                      (ebox-update--group-geometry-program group) (ebox-update--group-geometry-target group)
                      (ebox-update--group-dx group) (ebox-update--group-dy group) (ebox-update--group-z group))))))
+            ;; Font metrics were resolved in the cold plan.  All source writes
+            ;; precede these checks, so a simultaneous new Text cannot sneak
+            ;; past the captured normal/bold glyph allocation proof.
+            (dotimes (index (length groups))
+              (let ((group (aref groups index)))
+                (when (and (ebox-update--group-dirty group) (ebox-update--group-font group))
+                  (let ((weight (aref (ebox-update--group-values group)
+                                      (cl-position :font-weight (ebox-update--group-properties group)))))
+                    (unless (ebox-update-font-valid-p (ebox-update--group-font group) weight)
+                      (throw 'unsupported nil))
+                    (ebox-update-font-stage (ebox-update--group-font group) weight)))))
             (dotimes (index (length routes))
               (ebox-layer--program-batch-end (ebox-geometry--route-program (aref routes index))))
             (setf (ebox-geometry--operation-active-operation scene) operation
@@ -421,13 +638,13 @@ after acceptance."
                   (ebox-geometry--operation-frame-rollback scene) #'ebox-update--rollback
                   (ebox-geometry--operation-frame-accept scene) #'ebox-update--accept)
             (let* ((rendered (ebox-incremental--with-phase 'layout
-                               (ebox-geometry--render scene (ebox-update--cohort-before-route operation))))
+                                                           (ebox-geometry--render scene (ebox-update--cohort-before-route operation))))
                    (root-route (aref routes (1- (length routes))))
                    (mount-count
                     (and rendered (ebox-incremental--with-phase 'projection
-                                    (ebox-surface--geometry-mount-fill
-                                     (ebox-geometry--operation-projection scene) rendered
-                                     (ebox-geometry--route-lines root-route) (ebox-geometry--route-dirty root-route))))))
+                                                                (ebox-surface--geometry-mount-fill
+                                                                 (ebox-geometry--operation-projection scene) rendered
+                                                                 (ebox-geometry--route-lines root-route) (ebox-geometry--route-dirty root-route))))))
               (when (and mount-count
                          (ebox-interaction--geometry-ready-p
                           (ebox-geometry--operation-interaction scene)
@@ -435,9 +652,9 @@ after acceptance."
                           mount-count rendered))
                 (setq result
                       (ebox-incremental--with-phase 'transaction
-                        (ebox--pub-frame-publish
-                         (ebox-geometry--operation-frame scene) rendered (ebox-update--cohort-state operation) mount-count
-                         (ebox-geometry--route-damage root-route) (ebox-geometry--route-damage-count root-route)))))))
+                                                    (ebox--pub-frame-publish
+                                                     (ebox-geometry--operation-frame scene) rendered (ebox-update--cohort-state operation) mount-count
+                                                     (ebox-geometry--route-damage root-route) (ebox-geometry--route-damage-count root-route)))))))
         (unless result (ebox-update--restore-source operation))
         (dotimes (index (length routes))
           (let ((route (aref routes index)))
@@ -445,7 +662,10 @@ after acceptance."
             (ebox-geometry--settle-wrapper route (and result t)))))
       (when result
         (setf (ebox-update--cohort-staged operation) nil)
-        (dotimes (index (length groups)) (setf (ebox-update--group-staged (aref groups index)) nil))
+        (dotimes (index (length groups))
+          (let ((group (aref groups index)))
+            (when (ebox-update--group-font group) (ebox-update-font-accept (ebox-update--group-font group)))
+            (setf (ebox-update--group-staged group) nil)))
         (when (ebox-update--cohort-after-commit operation) (funcall (ebox-update--cohort-after-commit operation)))
         t))))
 

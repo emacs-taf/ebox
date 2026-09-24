@@ -19,6 +19,7 @@
   program target region-table scroll-table projection frame values
   viewport-cache content-cache
   routes interaction session active-operation frame-stage frame-rollback frame-accept
+  interaction-stage interaction-rollback interaction-accept
   x-factor old-revision old-report report
   old-report-revision old-report-publication
   stylesheet stylesheet-epoch frame-window frame-font-frame display-snapshot
@@ -75,8 +76,11 @@ and scoped declarations.  Equal current values alone cannot prove ownership."
          (valid t))
     (dotimes (index (length properties))
       (let ((property (aref properties index)))
-        (when (memq property '(:left :top :z-index :color :background-color :bgcolor))
-          (unless (plist-get (plist-get provenance (ebox-style-schema-id property)) :inline)
+        (dolist (key (if (eq property :border)
+                         '(:border-top-color :border-right-color :border-bottom-color :border-left-color)
+                       (and (memq property '(:left :top :z-index :color :background-color :bgcolor :font-weight))
+                            (list property))))
+          (unless (plist-get (plist-get provenance (ebox-style-schema-id key)) :inline)
             (setq valid nil)))))
     valid))
 
@@ -239,7 +243,7 @@ up front; an unknown later combination declines the prepared operation."
                     (unless (equal (get-text-property 0 property source)
                                    (get-text-property position property painted))
                       (setq changes (cons property (cons (get-text-property position property painted) changes))))))
-(puthash (copy-sequence (ebox-geometry--property-signature source 0 properties signature))
+                (puthash (copy-sequence (ebox-geometry--property-signature source 0 properties signature))
                          (or changes 'ebox/unchanged) (aref tables variant))
                 (let ((metadata-properties [ebox-content ebox-content-owner ebox-content-owners ebox-bt ebox-bb])
                       metadata-changes)
@@ -426,6 +430,51 @@ up front; an unknown later combination declines the prepared operation."
                (ebox-geometry--route-target next) (ebox-geometry--route-lines route)
                (ebox-geometry--route-first-row next) dirty offset)))))
       (ebox-geometry--join-route (aref routes (1- (length routes)))))))
+
+(defun ebox-geometry--interaction-capability (buffer state)
+  "Return BUFFER's current compiled interaction capability for STATE."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((scene ebox-geometry--session))
+        (and (ebox-geometry--session-valid-p scene)
+             (eq state (ebox-geometry--operation-state scene))
+             (ebox-geometry--operation-interaction scene))))))
+
+(defun ebox-geometry--interaction-stage (scene report)
+  "Stage SCENE's active native metadata operation with REPORT."
+  (when ebox-surface--observation-context
+    (setf (ebox-surface--observation-correlation-id ebox-surface--observation-context)
+          (plist-get report :transaction-id)))
+  (funcall (ebox-geometry--operation-interaction-stage scene)
+           (ebox-geometry--operation-active-operation scene) report))
+
+(defun ebox-geometry--interaction-rollback (scene report)
+  "Roll back SCENE's active native metadata operation with REPORT."
+  (funcall (ebox-geometry--operation-interaction-rollback scene)
+           (ebox-geometry--operation-active-operation scene) report))
+
+(defun ebox-geometry--interaction-accept (scene report)
+  "Accept SCENE's active native metadata operation with REPORT."
+  (funcall (ebox-geometry--operation-interaction-accept scene)
+           (ebox-geometry--operation-active-operation scene) report))
+
+(defun ebox-geometry--publish-interaction (buffer state operation stage rollback accept)
+  "Publish OPERATION's native metadata through BUFFER's shared scene.
+STATE must be the accepted runtime.  STAGE, ROLLBACK and ACCEPT receive
+OPERATION and the publication report; no pixel or mount authority is replaced."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((scene ebox-geometry--session))
+        (when (and (ebox-geometry--session-valid-p scene)
+                   (eq state (ebox-geometry--operation-state scene)))
+          (setf (ebox-geometry--operation-active-operation scene) operation
+                (ebox-geometry--operation-interaction-stage scene) stage
+                (ebox-geometry--operation-interaction-rollback scene) rollback
+                (ebox-geometry--operation-interaction-accept scene) accept
+                (ebox-geometry--operation-frame-stage scene) #'ebox-geometry--interaction-stage
+                (ebox-geometry--operation-frame-rollback scene) #'ebox-geometry--interaction-rollback
+                (ebox-geometry--operation-frame-accept scene) #'ebox-geometry--interaction-accept)
+          (ebox--pub-frame-publish-state (ebox-geometry--operation-frame scene) state))))))
 
 (defun ebox-geometry--dispatch-stage (session report)
   "Stage the active primitive publisher bound to SESSION with REPORT."
@@ -884,7 +933,7 @@ source, display, revision, primitive geometry and paired caller state."
            ((not (equal value old)) (setq supported nil)))))
       (when supported
         (setf (ebox-geometry--operation-staged-p operation) nil)
-(let ((session (ebox-geometry--operation-session operation)))
+        (let ((session (ebox-geometry--operation-session operation)))
           (setf (ebox-geometry--operation-active-operation session) operation
                 (ebox-geometry--operation-frame-stage session) #'ebox-geometry--stage
                 (ebox-geometry--operation-frame-rollback session) #'ebox-geometry--rollback

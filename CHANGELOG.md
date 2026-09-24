@@ -18,6 +18,12 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Prepared cohorts can publish coordinated selection classes, unchanged-thickness
+  border colors and measured normal/bold font variants with geometry, Text and
+  hover updates. Class values retain Ebox's canonical token grammar. Native
+  focus/active metadata reuses the same publication authority when style
+  dependencies are proven unchanged.
+
 - Framework integrations can prepare retained geometry operations for repeated
   absolute moves and stacking changes. Accepted operations preserve source
   snapshots and pair caller state with the existing publication rollback;

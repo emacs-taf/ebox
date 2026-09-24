@@ -28,6 +28,8 @@
 (declare-function ebox-surface-buffer-mounted-p "ebox-surface" (buffer))
 (declare-function ebox-surface--buffer-client-state "ebox-surface" (buffer))
 (declare-function ebox-surface--live-buffer-surface "ebox-surface" (buffer))
+(declare-function ebox-surface-buffer-observer "ebox-surface" (buffer))
+(declare-function ebox-surface-call-with-observation "ebox-surface" (buffer stage function))
 (declare-function ebox-surface--paint-node-chain "ebox-surface" (state role-ids))
 (declare-function ebox--host-ref-node "ebox-runtime" (buffer host-ref))
 (declare-function ebox-host-ref-bounds "ebox-runtime" (buffer-or-name host-ref))
@@ -58,7 +60,18 @@
 (declare-function ebox-region-update "ebox" (handle &rest props))
 (declare-function ebox-incremental-begin-batch "ebox" (buffer))
 (declare-function ebox-incremental-flush "ebox" (buffer))
+(declare-function ebox-incremental--ensure-buffer-selector-indexes "ebox-incremental" (buffer))
+(declare-function ebox-incremental--static-style-bindings-p "ebox-incremental" (state))
 (declare-function ebox--region-update-content-value "ebox-runtime" (box))
+(declare-function ebox-geometry--interaction-capability "ebox-geometry" (buffer state))
+(declare-function ebox-geometry--publish-interaction "ebox-geometry"
+                  (buffer state operation stage rollback accept))
+(declare-function ebox-source--interaction-slots-prepare "ebox-update-selector" (index handles))
+(declare-function ebox-source--interaction-slots-index "ebox-update-selector" (slots))
+(declare-function ebox-source--interaction-slots-current-p "ebox-update-selector" (slots index))
+(declare-function ebox-source--interaction-slots-stage "ebox-update-selector"
+                  (slots old-focus new-focus old-active new-active))
+(declare-function ebox-source--interaction-slots-rollback "ebox-update-selector" (slots))
 (defvar ebox-region-types)
 (defvar ebox-buffer--decoration-style-map)
 
@@ -305,7 +318,9 @@ publishes `cancel'."
                                    (not (equal (get-text-property validated-position 'display) "")))
                               (and (equal owner (ebox-interaction--resolve-focus-owner
                                                  current (plist-get current :source-index) identity owner key))
-                                   (setq validated-position (ebox-interaction--focus-position current owner))
+                                   (setq validated-position
+                                         (or (ebox-interaction--native-position buffer current owner)
+                                             (ebox-interaction--focus-position current owner)))
                                    (setq identity (ebox-interaction--focus-ref current owner)
                                          validated-state current
                                          validated-revision revision)))))))
@@ -508,21 +523,22 @@ Rendered region ownership and the retained parent index identify inheritance;
 an explicit nil on a descendant blocks an ancestor's declaration."
   (when-let* ((map (get-text-property position 'keymap))
               ((keymapp map)))
-    (let ((chain (ebox-surface--paint-node-chain
-                  state (cl-loop for (role . property) in ebox-region-types
-                                 for region = (get-text-property position property)
-                                 when region collect (cons role region)))))
-      (catch 'owner
-        (dolist (node-id chain)
-          (let* ((node (ebox-runtime-index-get node-id (plist-get state :node-table)))
-                 (source (ebox-fragment-style-source-node node))
-                 (entry (plist-member (ebox-get source :surface-properties) 'keymap)))
-            (when entry
-              (throw 'owner
-                     (and (cadr entry)
-                          (ebox-interaction-surface-equal-p
-                           (list 'keymap map) (list 'keymap (cadr entry)))
-                          node-id)))))))))
+    (or (ebox-interaction--native-keymap-owner state map)
+        (let ((chain (ebox-surface--paint-node-chain
+                      state (cl-loop for (role . property) in ebox-region-types
+                                     for region = (get-text-property position property)
+                                     when region collect (cons role region)))))
+          (catch 'owner
+            (dolist (node-id chain)
+              (let* ((node (ebox-runtime-index-get node-id (plist-get state :node-table)))
+                     (source (ebox-fragment-style-source-node node))
+                     (entry (plist-member (ebox-get source :surface-properties) 'keymap)))
+                (when entry
+                  (throw 'owner
+                         (and (cadr entry)
+                              (ebox-interaction-surface-equal-p
+                               (list 'keymap map) (list 'keymap (cadr entry)))
+                              node-id))))))))))
 
 ;;;###autoload
 (defun ebox-activate (&optional position noerror)
@@ -695,13 +711,15 @@ generation directly instead of validating the whole author forest again."
   (with-current-buffer (ebox-interaction--focus-buffer buffer)
     (let* ((state (ebox-surface--buffer-client-state buffer))
            (owner (and host-ref (gethash host-ref (ebox--buffer-host-ref-table buffer)))))
-      (when (and host-ref (not (and owner (ebox-interaction--focus-position state owner))))
+      (when (and host-ref (not (and owner (or (ebox-interaction--native-position buffer state owner)
+                                  (ebox-interaction--focus-position state owner)))))
         (user-error "No enabled visible Ebox pressed target"))
       (unless (equal owner ebox-interaction--active-owner)
-        (let ((ebox-interaction--active-request (list buffer host-ref state)))
-          (save-restriction
-            (widen)
-            (ebox-interaction--commit-state buffer state)))))))
+        (unless (ebox-interaction--native-publish buffer state ebox-interaction--focus-owner owner nil)
+          (let ((ebox-interaction--active-request (list buffer host-ref state)))
+            (save-restriction
+              (widen)
+              (ebox-interaction--commit-state buffer state))))))))
 
 (defun ebox-interaction--release-active-and-focus (host-ref buffer)
   "Clear the pressed state and focus HOST-REF in one publication.
@@ -717,17 +735,19 @@ clear only the pressed state, matching native Emacs focus semantics."
            (owner (and host-ref
                        (gethash host-ref
                                 (ebox--buffer-host-ref-table buffer))))
-           (position (and owner (ebox-interaction--focus-position state owner))))
+           (position (and owner (or (ebox-interaction--native-position buffer state owner)
+                                  (ebox-interaction--focus-position state owner)))))
       (unless (and owner position)
         (user-error "No enabled visible Ebox focus target: %S" host-ref))
       (if (or (not (eq (selected-window) (get-buffer-window buffer t)))
               (equal owner ebox-interaction--focus-owner))
           (ebox-interaction--set-active nil buffer)
-        (let ((ebox-interaction--active-request (list buffer nil state))
-              (ebox-interaction--focus-request (list buffer host-ref state)))
-          (save-restriction
-            (widen)
-            (ebox-interaction--commit-state buffer state)))))))
+        (unless (ebox-interaction--native-publish buffer state owner nil t)
+          (let ((ebox-interaction--active-request (list buffer nil state))
+                (ebox-interaction--focus-request (list buffer host-ref state)))
+            (save-restriction
+              (widen)
+              (ebox-interaction--commit-state buffer state))))))))
 
 (defun ebox-interaction--focus-node (state owner)
   "Return OWNER's runtime node in STATE."
@@ -793,7 +813,9 @@ clear only the pressed state, matching native Emacs focus semantics."
   (when (and ebox-interaction--focus-owner
              (ebox-surface-buffer-mounted-p (current-buffer)))
     (let ((state (ebox-surface--buffer-client-state (current-buffer))))
-      (and (equal (point) (ebox-interaction--focus-position state ebox-interaction--focus-owner))
+      (and (equal (point) (or (ebox-interaction--native-position
+                              (current-buffer) state ebox-interaction--focus-owner)
+                             (ebox-interaction--focus-position state ebox-interaction--focus-owner)))
            ebox-interaction--focus-owner))))
 
 (defun ebox-interaction--owner-keymap (state owner)
@@ -885,15 +907,18 @@ provisional targets."
   (with-current-buffer (ebox-interaction--focus-buffer buffer-or-name)
     (let* ((state (ebox-surface--buffer-client-state (current-buffer)))
            (owner (and host-ref (gethash host-ref (ebox--buffer-host-ref-table (current-buffer)))))
-           (position (and owner (ebox-interaction--focus-position state owner))))
+           (position (and owner (or (ebox-interaction--native-position (current-buffer) state owner)
+                                    (ebox-interaction--focus-position state owner)))))
       (when (and host-ref (not position))
         (user-error "No enabled visible Ebox focus target: %S" host-ref))
       (if (equal owner ebox-interaction--focus-owner)
           (when position (goto-char position))
-        (let ((ebox-interaction--focus-request (list (current-buffer) host-ref state)))
-          (save-restriction
-            (widen)
-            (ebox-interaction--commit-state (current-buffer) state))))
+        (unless (ebox-interaction--native-publish
+                 (current-buffer) state owner ebox-interaction--active-owner t)
+          (let ((ebox-interaction--focus-request (list (current-buffer) host-ref state)))
+            (save-restriction
+              (widen)
+              (ebox-interaction--commit-state (current-buffer) state)))))
       (ebox-focused-host-ref))))
 
 ;;;###autoload
@@ -1001,77 +1026,120 @@ stop `:hover-content' from ever activating.
   "Cold-owned lookup and bounds storage for one retained interaction target."
   owner ref primary-start primary-end primary-position
   fallback-start fallback-end fallback-position position
-  hover-spec hover-cell hover-bounds old-hover-bounds old-start old-end)
+  hover-spec hover-cell hover-bounds old-hover-bounds old-start old-end
+  native-p eligible old-position handle)
 
 (cl-defstruct (ebox-interaction--geometry
                (:constructor ebox-interaction--geometry-create))
   "Prepared interaction dependencies and reusable publication rollback cells."
   buffer surface state targets bindings focus active focus-owner active-owner
-  sources supported source-cell stale-cell hover-specs tracking-backup
+  hover-specs tracking-backup
   mask next-focus next-active next-position follow point staged old-focus-position
-  old-source old-stale old-focus old-active old-order old-hover-specs
-  old-track-local old-track-value old-tracking)
+  old-focus old-active old-order old-hover-specs
+  old-track-local old-track-value old-tracking
+  target-table state-slots native native-keymaps)
 
-(defun ebox-interaction--geometry-styles-unchanged-p (state source variant owners)
-  "Prove that VARIANT changes no effective styles of OWNERS from SOURCE.
-Canonical inline nodes need not retain computed styles.  Recompute both
-counterfactuals with the existing style provider during cold preparation,
-including inherited parent styles; relational selectors remain unsupported."
-  (let* ((ebox-style--scopes (ebox-style-source-scopes source (plist-get state :root-node)))
-         (signature (ebox-surface--stylesheet-signature))
-         (nodes (plist-get state :node-table))
-         (parents (plist-get state :parent-table))
-         (before (make-hash-table :test #'eql))
-         (after (make-hash-table :test #'eql)))
-    (when (and (equal signature (plist-get state :stylesheet-signature))
-               (ebox-surface--stylesheet-subject-local-p signature t))
-      (cl-labels
-          ((compute (index owner cache)
-             (when owner
-               (or (gethash owner cache)
-                   (let* ((node (ebox-runtime-index-get owner nodes))
-                          (parent (compute index (ebox-runtime-index-get owner parents) cache))
-                          (ebox-selector-view--current (ebox-source--index-selector-view index))
-                          (ebox-selector-view--topology (ebox-source--index-selector-topology index))
-                          (style (ebox-surface--compute-node-style
-                                  (ebox-tree-node-subject index node)
-                                  (ebox-tree-node-source-declarations index node) parent)))
-                     (puthash owner style cache)
-                     style)))))
-        (cl-every (lambda (owner) (equal (compute source owner before)
-                                         (compute variant owner after))) owners)))))
+(cl-defstruct (ebox-interaction--native
+               (:constructor ebox-interaction--native-create))
+  "Cold native state publication storage for one shared prepared scene."
+  capability unsafe-mask report
+  next-focus next-active requested-focus next-position follow point staged
+  old-focus old-active old-order old-cap-focus old-cap-active
+  old-cap-focus-owner old-cap-active-owner old-revision old-report
+  old-report-revision old-report-publication)
+
+(defun ebox-interaction--selector-native-state-mask (selector)
+  "Return focus/active dependency bits in the public ECSS SELECTOR AST.
+Unknown forms conservatively depend on both states.  This cold proof remains
+valid when prepared class or declaration values change."
+  (pcase (car-safe selector)
+    ((or :universal :type :id :class :attr :anchor :scope-root) 0)
+    (:state
+     (let* ((value (cadr selector))
+            (name (if (consp value) (car value) value)))
+       (logior (cond ((equal name "focus") 1) ((equal name "active") 2) (t 0))
+               (if (and (consp value) (nth 2 value))
+                   (ebox-interaction--selector-native-state-mask (nth 2 value))
+                 0))))
+    ((or :and :list :is :where :not :has :descendant :child :adjacent :sibling)
+     (let ((mask 0))
+       (dolist (branch (cdr selector))
+         (setq mask (logior mask (ebox-interaction--selector-native-state-mask branch))))
+       mask))
+    (_ 3)))
+
+(defun ebox-interaction--native-state-style-mask (state source)
+  "Return STATE's cold focus/active style dependency bits for SOURCE.
+Every global and mounted-scope rule participates, including selector scopes.
+Independent dynamic evaluators are unsupported.  No match or computed-style
+equality is assumed for future class values."
+  (catch 'unsupported
+    (condition-case nil
+        (let* ((ebox-style--scopes (ebox-style-source-scopes source (plist-get state :root-node)))
+               (signature (ebox-surface--stylesheet-signature))
+               (mask 0))
+          (unless (and (equal signature (plist-get state :stylesheet-signature))
+                       (ebox-incremental--static-style-bindings-p state))
+            (throw 'unsupported 3))
+          (dolist (handle (ebox-source-index-handles source))
+            (let ((declarations (ebox-source-record-declarations (ebox-source--index-record source handle))))
+              (while declarations
+                (when (or (functionp (cadr declarations))
+                          (ecss-declaration-value-tagged-p (cadr declarations)))
+                  (throw 'unsupported 3))
+                (setq declarations (cddr declarations)))))
+          (cl-labels
+              ((include (rule)
+                 (setq mask
+                       (logior mask
+                               (ebox-interaction--selector-native-state-mask (ecss-rule-selector rule))
+                               (if (ecss-rule-scope rule)
+                                   (ebox-interaction--selector-native-state-mask (ecss-rule-scope rule))
+                                 0)))))
+            (mapc #'include (car signature))
+            (dolist (scope ebox-style--scopes)
+              (mapc #'include (ecss-stylesheet-rules (ecss-scope-stylesheet scope)))))
+          mask)
+      (error 3))))
 
 (defun ebox-interaction--geometry-prepare (buffer state surface)
   "Prepare fixed interaction dependencies for BUFFER's STATE and SURFACE.
-Selector variants are immutable and share the geometry provider's private
-numeric declaration cells.  Unsupported style effects are recorded for the
-particular occluding update, without excluding visible translation."
+Private selector-state slots share the prepared source and declaration
+context.  A cold selector dependency mask admits only state changes that
+cannot affect styles, without excluding visible translations."
+  (require 'ebox-update-selector)
   (with-current-buffer buffer
+    (when (or (plist-get state :selector-index-stale-p)
+              (ebox-source--index-derived-stale-p (plist-get state :source-index)))
+      (plist-put state :selector-index-stale-p t)
+      (setq state (ebox-incremental--ensure-buffer-selector-indexes buffer)))
     (let* ((source (plist-get state :source-index))
            (focus-owner ebox-interaction--focus-owner)
            (active-owner ebox-interaction--active-owner)
            (targets (make-hash-table :test #'eql))
            (bindings (make-hash-table :test #'eq))
-           (sources (make-vector 4 nil))
-           (supported (make-vector 4 nil))
-           focus active hover-specs)
+           focus active hover-specs state-slots)
       (cl-labels
-          ((target (owner)
-             (or (gethash owner targets)
-                 (let* ((node (ebox-interaction--focus-node state owner))
-                        (entry (ebox-interaction--geometry-target-create
-                                :owner owner :ref (ebox-interaction--focus-ref state owner))))
-                   (dolist (region (ebox--node-all-region-ids node))
-                     (when-let* ((object (gethash region
-                                                  (plist-get state :region-surface-object-table))))
-                       (puthash object (cons (cons entry region) (gethash object bindings)) bindings)))
-                   (puthash owner entry targets)
-                   entry))))
-        (when focus-owner
-          (setq focus (target focus-owner))
-          (setf (ebox-interaction--geometry-target-position focus)
-                (ebox-interaction--focus-position state focus-owner)))
-        (when active-owner (setq active (target active-owner)))
+          ((target (owner &optional native)
+             (let ((entry
+                    (or (gethash owner targets)
+                        (let* ((node (ebox-interaction--focus-node state owner))
+                               (entry (ebox-interaction--geometry-target-create
+                                       :owner owner :ref (ebox-interaction--focus-ref state owner)
+                                       :handle (ebox-tree-node-source-handle node)
+                                       :eligible (not (plist-get (ebox-interaction--focus-properties state owner)
+                                                                 :disabled))
+                                       :position (ebox-interaction--focus-position state owner))))
+                          (dolist (region (ebox--node-all-region-ids node))
+                            (when-let* ((object (gethash region
+                                                         (plist-get state :region-surface-object-table))))
+                              (puthash object (cons (cons entry region) (gethash object bindings)) bindings)))
+                          (puthash owner entry targets)
+                          entry))))
+               (when native (setf (ebox-interaction--geometry-target-native-p entry) t))
+               entry)))
+        (when focus-owner (setq focus (target focus-owner t)))
+        (when active-owner (setq active (target active-owner t)))
         ;; Preparation visits declared capabilities once, including currently
         ;; occluded hover targets which can be revealed by later translation.
         (maphash
@@ -1079,6 +1147,8 @@ particular occluding update, without excluding visible translation."
            (let* ((node (ebox-interaction--focus-node state owner))
                   (facts (ebox-interaction--focus-properties state owner))
                   (content (plist-get facts :hover-content)))
+             (when (or (plist-get facts :keymap) (integerp (plist-get facts :tab-index)))
+               (target owner t))
              (when content
                (when-let* ((editable (ebox-interaction--hover-content-handle buffer node state)))
                  (let* ((entry (target owner))
@@ -1090,37 +1160,217 @@ particular occluding update, without excluding visible translation."
                          (ebox-interaction--geometry-target-hover-bounds entry) bounds)
                    (push spec hover-specs))))))
          (ebox--buffer-host-ref-table buffer)))
-      (dotimes (mask 4)
-        (let ((variant source) changed)
-          (when (and focus-owner (= 0 (logand mask 1)))
-            (setq variant
-                  (ebox-tree-source-interaction-state
-                   variant "focus" nil
-                   (ebox-tree-node-source-handle (ebox-interaction--focus-node state focus-owner))))
-            (push focus-owner changed))
-          (when (and active-owner (= 0 (logand mask 2)))
-            (setq variant
-                  (ebox-tree-source-interaction-state
-                   variant "active" nil
-                   (ebox-tree-node-source-handle (ebox-interaction--focus-node state active-owner))))
-            (cl-pushnew active-owner changed))
-          (aset sources mask variant)
-          (aset supported mask
-                (or (eq variant source)
-                    (ebox-interaction--geometry-styles-unchanged-p
-                     state source variant changed)))))
+      (setq state-slots
+            (ebox-source--interaction-slots-prepare
+             source (vconcat (mapcar #'ebox-interaction--geometry-target-handle
+                                     (hash-table-values targets)))))
+      (when state-slots
+        (setq source (ebox-source--interaction-slots-index state-slots))
+        (plist-put state :source-index source)
+        (plist-put state :selector-id-table (ebox-source--index-selector-table source 'id))
+        (plist-put state :selector-class-table (ebox-source--index-selector-table source 'class))
+        (plist-put state :selector-type-table (ebox-source--index-selector-table source 'type))
+        (plist-put state :selector-index-stale-p nil))
       (unless (plist-member state :selector-index-stale-p)
         (plist-put state :selector-index-stale-p nil))
-      (ebox-interaction--geometry-create
-       :buffer buffer :surface surface :state state
-       :targets (vconcat (hash-table-values targets)) :bindings bindings
-       :focus focus :active active :focus-owner focus-owner :active-owner active-owner
-       :sources sources :supported supported
-       :source-cell (cdr (plist-member state :source-index))
-       :stale-cell (cdr (plist-member state :selector-index-stale-p))
-       :hover-specs hover-specs
-       :tracking-backup (or ebox-interaction--hover-content-track-mouse
-                            (list (local-variable-p 'track-mouse) track-mouse))))))
+      (let ((capability
+             (ebox-interaction--geometry-create
+              :buffer buffer :surface surface :state state
+              :targets (vconcat (hash-table-values targets)) :bindings bindings :target-table targets
+              :focus focus :active active :focus-owner focus-owner :active-owner active-owner
+              :state-slots state-slots
+              :hover-specs hover-specs
+              :tracking-backup (or ebox-interaction--hover-content-track-mouse
+                                   (list (local-variable-p 'track-mouse) track-mouse)))))
+        (setf (ebox-interaction--geometry-native-keymaps capability)
+              (ebox-interaction--native-keymaps-prepare capability))
+        (when state-slots
+          (setf (ebox-interaction--geometry-native capability)
+                (ebox-interaction--native-create
+                 :capability capability :unsafe-mask (ebox-interaction--native-state-style-mask state source)
+                 :report (list :strategy 'metadata-update :projection-kind 'prepared-interaction
+                               :dirty-kinds '(selector) :prepared-interaction-p t
+                               :revision 0 :publication nil))))
+        capability))))
+
+(defun ebox-interaction--geometry-owner-handle (capability owner)
+  "Read OWNER's cold source handle in CAPABILITY, or nil for no owner."
+  (when-let* ((target (and owner (gethash owner (ebox-interaction--geometry-target-table capability)))))
+    (ebox-interaction--geometry-target-handle target)))
+
+(defun ebox-interaction--native-keymaps-prepare (capability)
+  "Index unambiguous native map owners in CAPABILITY's accepted text.
+A shared map observed on different declaring targets retains the ordinary
+ownership lookup.  This cold pass adds no alternative mouse dispatch."
+  (let* ((surface (ebox-interaction--geometry-surface capability))
+         (state (ebox-interaction--geometry-state capability))
+         (targets (ebox-interaction--geometry-target-table capability))
+         (maps (make-hash-table :test #'eq :size (max 1 (hash-table-count targets))))
+         (position (max (point-min) (marker-position (ebox--pub--surface-start surface))))
+         (limit (min (point-max) (marker-position (ebox--pub--surface-end surface)))))
+    (while (< position limit)
+      (let ((end (next-property-change position nil limit))
+            (map (get-text-property position 'keymap))
+            (probe position))
+        (while (and (< probe end) (eq (char-after probe) ?\n))
+          (setq probe (1+ probe)))
+        (when (and (< probe end) (keymapp map))
+          (let* ((owner (ebox-interaction--navigation-owner probe state))
+                 (target (and owner (gethash owner targets)))
+                 (previous (gethash map maps 'ebox/unknown)))
+            (if (and target (ebox-interaction--geometry-target-native-p target))
+                (cond ((eq previous 'ebox/unknown) (puthash map target maps))
+                      ((not (eq previous target)) (puthash map 'ebox/ambiguous maps)))
+              (puthash map 'ebox/ambiguous maps))))
+        (setq position end)))
+    maps))
+
+(defun ebox-interaction--native-keymap-owner (state map)
+  "Resolve an accepted MAP in STATE's cold native owner index, or decline."
+  (when-let* ((capability (ebox-interaction--current-native-capability (current-buffer) state))
+              (target (gethash map (ebox-interaction--geometry-native-keymaps capability)))
+              ((ebox-interaction--geometry-target-p target)))
+    (ebox-interaction--geometry-target-owner target)))
+
+(defun ebox-interaction--current-native-capability (buffer state)
+  "Return BUFFER's current compiled native state capability for STATE."
+  (when (and (not (buffer-narrowed-p))
+             (not (ebox-transaction-active-p)))
+    (let ((capability (ebox-geometry--interaction-capability buffer state)))
+      (and capability (ebox-interaction--geometry-native capability)
+           (ebox-source--interaction-slots-current-p
+            (ebox-interaction--geometry-state-slots capability) (plist-get state :source-index))
+           capability))))
+
+(defun ebox-interaction--native-target-position (capability owner)
+  "Read OWNER's accepted visible native position from CAPABILITY's index."
+  (when-let* ((target (and owner (gethash owner (ebox-interaction--geometry-target-table capability))))
+              ((ebox-interaction--geometry-target-native-p target))
+              ((ebox-interaction--geometry-target-eligible target))
+              (position (ebox-interaction--geometry-target-position target)))
+    (and (<= (point-min) position) (< position (point-max))
+         (not (invisible-p position))
+         (not (equal (get-text-property position 'display) ""))
+         position)))
+
+(defun ebox-interaction--native-position (buffer state owner)
+  "Return OWNER's compiled position when BUFFER's prepared STATE is current."
+  (when-let* ((capability (ebox-interaction--current-native-capability buffer state)))
+    (ebox-interaction--native-target-position capability owner)))
+
+(defun ebox-interaction--native-stage (operation publication-report)
+  "Stage OPERATION's native source facts and logical owners atomically."
+  (let* ((capability (ebox-interaction--native-capability operation))
+         (state (ebox-interaction--geometry-state capability))
+         (report (ebox-interaction--native-report operation)))
+    (with-current-buffer (ebox-interaction--geometry-buffer capability)
+      (setf (ebox-interaction--native-old-focus operation) ebox-interaction--focus-owner
+            (ebox-interaction--native-old-active operation) ebox-interaction--active-owner
+            (ebox-interaction--native-old-order operation) ebox-interaction--focus-order
+            (ebox-interaction--native-old-cap-focus operation) (ebox-interaction--geometry-focus capability)
+            (ebox-interaction--native-old-cap-active operation) (ebox-interaction--geometry-active capability)
+            (ebox-interaction--native-old-cap-focus-owner operation) (ebox-interaction--geometry-focus-owner capability)
+            (ebox-interaction--native-old-cap-active-owner operation) (ebox-interaction--geometry-active-owner capability)
+            (ebox-interaction--native-old-revision operation) (plist-get state :runtime-revision)
+            (ebox-interaction--native-old-report operation) (plist-get state :last-update-report)
+            (ebox-interaction--native-old-report-revision operation) (plist-get report :revision)
+            (ebox-interaction--native-old-report-publication operation) (plist-get report :publication)
+            (ebox-interaction--native-staged operation) t)
+      (ebox-source--interaction-slots-stage
+       (ebox-interaction--geometry-state-slots capability)
+       (ebox-interaction--geometry-owner-handle capability ebox-interaction--focus-owner)
+       (ebox-interaction--geometry-owner-handle capability (ebox-interaction--native-next-focus operation))
+       (ebox-interaction--geometry-owner-handle capability ebox-interaction--active-owner)
+       (ebox-interaction--geometry-owner-handle capability (ebox-interaction--native-next-active operation)))
+      (setq ebox-interaction--focus-owner (ebox-interaction--native-next-focus operation)
+            ebox-interaction--active-owner (ebox-interaction--native-next-active operation))
+      (plist-put state :runtime-revision (1- (plist-get publication-report :new-revision)))
+      (plist-put report :revision (plist-get publication-report :new-revision))
+      (plist-put report :publication publication-report)
+      (plist-put state :last-update-report report)
+      (when (and (ebox-interaction--native-requested-focus operation)
+                 (ebox-interaction--native-next-position operation))
+        (goto-char (ebox-interaction--native-next-position operation))))))
+
+(defun ebox-interaction--native-accept (operation _report)
+  "Settle OPERATION's logical focus after native view restoration."
+  (let* ((capability (ebox-interaction--native-capability operation))
+         (targets (ebox-interaction--geometry-target-table capability)))
+    (with-current-buffer (ebox-interaction--geometry-buffer capability)
+      (let ((position (ebox-interaction--native-next-position operation)))
+        (when (or (ebox-interaction--native-requested-focus operation)
+                  (ebox-interaction--native-old-focus operation))
+          (goto-char
+           (if (and position (or (ebox-interaction--native-requested-focus operation)
+                                 (ebox-interaction--native-follow operation)))
+               position
+             (min (point-max) (max (point-min) (ebox-interaction--native-point operation)))))))
+      (setf (ebox-interaction--geometry-focus capability) (gethash ebox-interaction--focus-owner targets)
+            (ebox-interaction--geometry-active capability) (gethash ebox-interaction--active-owner targets)
+            (ebox-interaction--geometry-focus-owner capability) ebox-interaction--focus-owner
+            (ebox-interaction--geometry-active-owner capability) ebox-interaction--active-owner))))
+
+(defun ebox-interaction--native-rollback (operation _report)
+  "Restore OPERATION's source, owners, point and report after rejection."
+  (when (ebox-interaction--native-staged operation)
+    (let* ((capability (ebox-interaction--native-capability operation))
+           (state (ebox-interaction--geometry-state capability))
+           (report (ebox-interaction--native-report operation)))
+      (ebox-source--interaction-slots-rollback (ebox-interaction--geometry-state-slots capability))
+      (with-current-buffer (ebox-interaction--geometry-buffer capability)
+        (setq ebox-interaction--focus-owner (ebox-interaction--native-old-focus operation)
+              ebox-interaction--active-owner (ebox-interaction--native-old-active operation)
+              ebox-interaction--focus-order (ebox-interaction--native-old-order operation))
+        (goto-char (min (point-max) (max (point-min) (ebox-interaction--native-point operation)))))
+      (setf (ebox-interaction--geometry-focus capability) (ebox-interaction--native-old-cap-focus operation)
+            (ebox-interaction--geometry-active capability) (ebox-interaction--native-old-cap-active operation)
+            (ebox-interaction--geometry-focus-owner capability) (ebox-interaction--native-old-cap-focus-owner operation)
+            (ebox-interaction--geometry-active-owner capability) (ebox-interaction--native-old-cap-active-owner operation))
+      (plist-put state :runtime-revision (ebox-interaction--native-old-revision operation))
+      (plist-put state :last-update-report (ebox-interaction--native-old-report operation))
+      (plist-put report :revision (ebox-interaction--native-old-report-revision operation))
+      (plist-put report :publication (ebox-interaction--native-old-report-publication operation)))
+    (setf (ebox-interaction--native-staged operation) nil)))
+
+(defun ebox-interaction--native-publish (buffer state focus active requested-focus)
+  "Publish compiled native state with BUFFER's optional observation scope."
+  (if (ebox-surface-buffer-observer buffer)
+      (ebox-surface-call-with-observation
+       buffer 'interaction
+       (lambda () (ebox-interaction--native-publish-direct buffer state focus active requested-focus)))
+    (ebox-interaction--native-publish-direct buffer state focus active requested-focus)))
+
+(defun ebox-interaction--native-publish-direct (buffer state focus active requested-focus)
+  "Publish no-style native FOCUS and ACTIVE changes in BUFFER's shared STATE.
+REQUESTED-FOCUS preserves explicit focus and native release point semantics.
+Unknown targets or selector dependencies decline before source mutation."
+  (when-let* ((capability (ebox-interaction--current-native-capability buffer state)))
+    (let* ((operation (ebox-interaction--geometry-native capability))
+           (targets (ebox-interaction--geometry-target-table capability))
+           (focus-position (and focus (ebox-interaction--native-target-position capability focus)))
+           (active-position (and active (ebox-interaction--native-target-position capability active)))
+           (changed (+ (if (equal focus ebox-interaction--focus-owner) 0 1)
+                       (if (equal active ebox-interaction--active-owner) 0 2))))
+      (when (and (= 0 (logand changed (ebox-interaction--native-unsafe-mask operation)))
+                 (or (null focus) focus-position)
+                 (or (null active) active-position)
+                 (or (null ebox-interaction--focus-owner) (gethash ebox-interaction--focus-owner targets))
+                 (or (null ebox-interaction--active-owner) (gethash ebox-interaction--active-owner targets)))
+        (setf (ebox-interaction--native-next-focus operation) focus
+              (ebox-interaction--native-next-active operation) active
+              (ebox-interaction--native-requested-focus operation) requested-focus
+              (ebox-interaction--native-next-position operation) focus-position
+              (ebox-interaction--native-point operation) (point)
+              (ebox-interaction--native-follow operation)
+              (and ebox-interaction--focus-owner
+                   (equal (point) (ebox-interaction--geometry-target-position
+                                   (gethash ebox-interaction--focus-owner targets))))
+              (ebox-interaction--native-staged operation) nil)
+        (when (ebox-geometry--publish-interaction
+               buffer state operation #'ebox-interaction--native-stage
+               #'ebox-interaction--native-rollback #'ebox-interaction--native-accept)
+          (setf (ebox-interaction--native-staged operation) nil)
+          t)))))
 
 (defun ebox-interaction--geometry-painted-position (rendered start end)
   "Return the first visible painted offset in RENDERED's START..END interval."
@@ -1162,7 +1412,9 @@ would need general rendering."
                                    (ebox-interaction--geometry-focus capability)))))
         (dotimes (index (length targets))
           (let ((entry (aref targets index)))
-            (setf (ebox-interaction--geometry-target-primary-start entry) nil
+            (setf (ebox-interaction--geometry-target-old-position entry)
+                  (ebox-interaction--geometry-target-position entry)
+                  (ebox-interaction--geometry-target-primary-start entry) nil
                   (ebox-interaction--geometry-target-primary-end entry) nil
                   (ebox-interaction--geometry-target-primary-position entry) nil
                   (ebox-interaction--geometry-target-fallback-start entry) nil
@@ -1219,14 +1471,15 @@ would need general rendering."
                 (ebox-interaction--geometry-next-focus capability) (and focus-position ebox-interaction--focus-owner)
                 (ebox-interaction--geometry-next-active capability) (and active-position ebox-interaction--active-owner)
                 (ebox-interaction--geometry-next-position capability) (and focus-position (+ base focus-position)))
-          (aref (ebox-interaction--geometry-supported capability) mask))))))
+          (= 0 (logand (ebox-interaction--native-unsafe-mask
+                        (ebox-interaction--geometry-native capability))
+                       (+ (if (and ebox-interaction--focus-owner (null focus-position)) 1 0)
+                          (if (and ebox-interaction--active-owner (null active-position)) 2 0)))))))))
 
 (defun ebox-interaction--geometry-stage (capability)
   "Stage CAPABILITY's preflighted source facts and current native input bounds."
   (with-current-buffer (ebox-interaction--geometry-buffer capability)
-    (setf (ebox-interaction--geometry-old-source capability) (car (ebox-interaction--geometry-source-cell capability))
-          (ebox-interaction--geometry-old-stale capability) (car (ebox-interaction--geometry-stale-cell capability))
-          (ebox-interaction--geometry-old-focus capability) ebox-interaction--focus-owner
+    (setf (ebox-interaction--geometry-old-focus capability) ebox-interaction--focus-owner
           (ebox-interaction--geometry-old-active capability) ebox-interaction--active-owner
           (ebox-interaction--geometry-old-order capability) ebox-interaction--focus-order
           (ebox-interaction--geometry-old-hover-specs capability) ebox-interaction--hover-content-specs
@@ -1234,11 +1487,12 @@ would need general rendering."
           (ebox-interaction--geometry-old-track-value capability) track-mouse
           (ebox-interaction--geometry-old-tracking capability) ebox-interaction--hover-content-track-mouse
           (ebox-interaction--geometry-staged capability) t)
-    (let ((next (aref (ebox-interaction--geometry-sources capability)
-                      (ebox-interaction--geometry-mask capability))))
-      (unless (eq next (car (ebox-interaction--geometry-source-cell capability)))
-        (setcar (ebox-interaction--geometry-source-cell capability) next)
-        (setcar (ebox-interaction--geometry-stale-cell capability) t)))
+    (ebox-source--interaction-slots-stage
+     (ebox-interaction--geometry-state-slots capability)
+     (ebox-interaction--geometry-owner-handle capability ebox-interaction--focus-owner)
+     (ebox-interaction--geometry-owner-handle capability (ebox-interaction--geometry-next-focus capability))
+     (ebox-interaction--geometry-owner-handle capability ebox-interaction--active-owner)
+     (ebox-interaction--geometry-owner-handle capability (ebox-interaction--geometry-next-active capability)))
     (setq ebox-interaction--focus-owner (ebox-interaction--geometry-next-focus capability)
           ebox-interaction--active-owner (ebox-interaction--geometry-next-active capability)
           ebox-interaction--focus-order nil
@@ -1275,6 +1529,16 @@ would need general rendering."
             (kill-local-variable 'track-mouse)))
         (setq ebox-interaction--hover-content-track-mouse nil))))))
 
+(defun ebox-interaction--geometry-sync-owners (capability)
+  "Bind CAPABILITY's mutable-state focus targets to their accepted owners."
+  (when (ebox-interaction--geometry-state-slots capability)
+    (with-current-buffer (ebox-interaction--geometry-buffer capability)
+      (let ((targets (ebox-interaction--geometry-target-table capability)))
+        (setf (ebox-interaction--geometry-focus capability) (gethash ebox-interaction--focus-owner targets)
+              (ebox-interaction--geometry-active capability) (gethash ebox-interaction--active-owner targets)
+              (ebox-interaction--geometry-focus-owner capability) ebox-interaction--focus-owner
+              (ebox-interaction--geometry-active-owner capability) ebox-interaction--active-owner)))))
+
 (defun ebox-interaction--geometry-accept (capability)
   "Settle CAPABILITY's logical focus after the publisher restores native view."
   (with-current-buffer (ebox-interaction--geometry-buffer capability)
@@ -1282,16 +1546,24 @@ would need general rendering."
       (when (ebox-interaction--geometry-old-focus capability)
         (goto-char (if (and position (ebox-interaction--geometry-follow capability)) position
                      (min (point-max) (max (point-min) (ebox-interaction--geometry-point capability)))))))
-    (when-let* ((focus (ebox-interaction--geometry-focus capability)))
-      (setf (ebox-interaction--geometry-target-position focus)
-            (ebox-interaction--geometry-next-position capability)))))
+    (let ((targets (ebox-interaction--geometry-targets capability))
+          (base (marker-position (ebox--pub--surface-start
+                                  (ebox-interaction--geometry-surface capability)))))
+      (dotimes (index (length targets))
+        (let* ((entry (aref targets index))
+               (position (if (ebox-interaction--geometry-target-primary-start entry)
+                             (ebox-interaction--geometry-target-primary-position entry)
+                           (ebox-interaction--geometry-target-fallback-position entry))))
+          (setf (ebox-interaction--geometry-target-position entry)
+                (and position (ebox-interaction--geometry-target-eligible entry) (+ base position)))))))
+  (ebox-interaction--geometry-sync-owners capability))
 
 (defun ebox-interaction--geometry-rollback (capability)
   "Restore CAPABILITY's saved source and interaction slots without reading mounts."
   (when (ebox-interaction--geometry-staged capability)
     (with-current-buffer (ebox-interaction--geometry-buffer capability)
-      (setcar (ebox-interaction--geometry-source-cell capability) (ebox-interaction--geometry-old-source capability))
-      (setcar (ebox-interaction--geometry-stale-cell capability) (ebox-interaction--geometry-old-stale capability))
+      (when (ebox-interaction--geometry-state-slots capability)
+        (ebox-source--interaction-slots-rollback (ebox-interaction--geometry-state-slots capability)))
       (setq ebox-interaction--focus-owner (ebox-interaction--geometry-old-focus capability)
             ebox-interaction--active-owner (ebox-interaction--geometry-old-active capability)
             ebox-interaction--focus-order (ebox-interaction--geometry-old-order capability)
@@ -1303,12 +1575,15 @@ would need general rendering."
       (let ((targets (ebox-interaction--geometry-targets capability)))
         (dotimes (index (length targets))
           (let ((entry (aref targets index)))
+            (setf (ebox-interaction--geometry-target-position entry)
+                  (ebox-interaction--geometry-target-old-position entry))
             (when-let* ((cell (ebox-interaction--geometry-target-hover-cell entry)))
               (setcar cell (ebox-interaction--geometry-target-old-hover-bounds entry))
               (setcar (ebox-interaction--geometry-target-hover-bounds entry)
                       (ebox-interaction--geometry-target-old-start entry))
               (setcdr (ebox-interaction--geometry-target-hover-bounds entry)
                       (ebox-interaction--geometry-target-old-end entry)))))))
+    (ebox-interaction--geometry-sync-owners capability)
     (when-let* ((focus (ebox-interaction--geometry-focus capability)))
       (setf (ebox-interaction--geometry-target-position focus)
             (ebox-interaction--geometry-old-focus-position capability)))

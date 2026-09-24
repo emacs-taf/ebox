@@ -40,6 +40,9 @@
 (defvar ebox-font--cache (make-hash-table :test #'equal)
   "Cache keyed by canonical font inputs and complete capability signature.")
 
+(defvar ebox-font--measurement-epoch 0
+  "Invalidation epoch for cold font and glyph-allocation proofs.")
+
 (defun ebox-font--requested-decipoints (font-size-px)
   "Convert positive FONT-SIZE-PX reference pixels to integer decipoints."
   (when font-size-px
@@ -198,7 +201,8 @@ SPECIFIED is the canonical property-id set with declaration winners."
 
 (defun ebox-font-clear-cache ()
   "Clear all surface-resolved font facts."
-  (clrhash ebox-font--cache))
+  (clrhash ebox-font--cache)
+  (cl-incf ebox-font--measurement-epoch))
 
 (defun ebox-font-measurement-face (fact)
   "Return a detached measurement face from font FACT."
@@ -213,6 +217,57 @@ SPECIFIED is the canonical property-id set with declaration winners."
     (signal 'wrong-type-argument (list 'ebox-font-fact-p fact)))
   (copy-tree
    (plist-get (ebox-font-fact--resolved-font-identity fact) :face)))
+
+(defun ebox-font--prepared-metrics (fact capability window)
+  "Return complete actual metrics for FACT in CAPABILITY and WINDOW.
+Neutral inherited font projections may be nil; resolve their actual default
+font once on this cold path.  Missing native height or baseline evidence
+does not establish that a prepared font transition keeps its allocation."
+  (let* ((fact (or fact (ebox-font--project
+                        :weight 'normal :style 'normal
+                        :capability-signature capability :window window)))
+         (metrics (ebox-font-fact--measurement-metrics fact)))
+    (when (cl-every (lambda (property) (numberp (plist-get metrics property)))
+                    '(:zero-width :space-width :height :baseline-offset :ascent :descent))
+      metrics)))
+
+(defun ebox-font--prepared-metrics-equal-p (left right capability window &optional terminal-cell)
+  "Prove LEFT and RIGHT keep actual font-based geometry in CAPABILITY/WINDOW."
+  (if terminal-cell
+      ;; The terminal renderer has a fixed line cell, independent of font
+      ;; weight.  Ebox itself falls back to that height for lh; retain its
+      ;; actual measured zero/space advances for ch and horizontal fill.
+      (let* ((neutral (ebox-font--project :weight 'normal :style 'normal
+                                         :capability-signature capability :window window))
+             (before (ebox-font-fact--measurement-metrics (or left neutral)))
+             (after (ebox-font-fact--measurement-metrics (or right neutral))))
+        (and (= (or (plist-get before :height) (aref terminal-cell 1))
+                (or (plist-get after :height) (aref terminal-cell 1)))
+             (cl-every (lambda (property)
+                         (and (numberp (plist-get before property))
+                              (numberp (plist-get after property))
+                              (= (plist-get before property) (plist-get after property))))
+                       '(:zero-width :space-width))))
+    (let ((before (ebox-font--prepared-metrics left capability window))
+          (after (ebox-font--prepared-metrics right capability window)))
+      (and before after
+           (cl-every (lambda (property) (= (plist-get before property) (plist-get after property)))
+                     '(:zero-width :space-width :height :baseline-offset :ascent :descent))))))
+
+(defun ebox-font--prepared-glyph-metrics (text position window)
+  "Read the actual font metrics for TEXT's glyph at POSITION in WINDOW.
+This cold proof includes caller faces and fontset fallback selection, which
+the FontFact's Latin default probe alone cannot establish."
+  (let* ((font (ignore-errors (font-at position window text)))
+         (name (and font
+                    (or (ignore-errors (font-get font :name))
+                        (and (fboundp 'font-xlfd-name)
+                             (ignore-errors (font-xlfd-name font))))))
+         (info (and name (ignore-errors
+                          (font-info name (and (window-live-p window) (window-frame window)))))))
+    (when (and (vectorp info) (> (length info) 9)
+               (cl-every (lambda (index) (numberp (aref info index))) '(3 4 8 9)))
+      (vector (aref info 3) (aref info 4) (aref info 8) (aref info 9)))))
 
 (defun ebox-font-fact-neutral-p (fact)
   "Return non-nil when FACT adds no non-default font capability."
