@@ -17,7 +17,7 @@
 
 (cl-defstruct (ebox-update--group (:constructor ebox-update--make-group))
   node properties variants first-member slots values geometry-program x-factor
-  boundary style-p resized class-slot hover-cell hover-old hover-owners dirty staged dx dy z)
+  boundary style-p restyle resized class-slot hover-cell hover-old hover-owners dirty staged dx dy z)
 
 (cl-defstruct (ebox-update--boundary (:constructor ebox-update--make-boundary))
   "Nearest retained composition primitive owning a group's pixels.
@@ -763,7 +763,7 @@ after acceptance."
         (let* ((group (aref groups index)) (node (ebox-update--group-node group))
                (keys (ebox-update--group-properties group)) (owned (ebox-update--group-values group)))
           (setf (ebox-update--group-dirty group) nil (ebox-update--group-staged group) nil
-                (ebox-update--group-resized group) nil
+                (ebox-update--group-resized group) nil (ebox-update--group-restyle group) nil
                 (ebox-update--group-dx group) 0 (ebox-update--group-dy group) 0
                 (ebox-update--group-z group) (or (ebox-get node :z-index) 0))
           (dotimes (key-index (length keys))
@@ -794,7 +794,8 @@ after acceptance."
                                (not (equal-including-properties
                                      (aref incoming key-index)
                                      (ebox-update--group-current-value group (aref offsets key-index)))))
-                      (setf (ebox-update--cohort-paint-changed operation) t))
+                      (setf (ebox-update--cohort-paint-changed operation) t
+                            (ebox-update--group-restyle group) t))
                     (ebox-update--capture-value group (aref offsets key-index) (aref incoming key-index))))))
             (with-current-buffer (ebox-update--cohort-buffer operation)
               (when ebox-interaction--hover-content-owner
@@ -826,9 +827,12 @@ after acceptance."
                        (ebox-update--group-z group)))))))
             ;; Source writes precede every derived computation, so several
             ;; changed members of one cascade observe the complete new input.
+            ;; Geometry-only changes of a member that also owns paint keep the
+            ;; cascade, so only changed paint recomputes it.
             (dotimes (index (length groups))
               (let ((group (aref groups index)))
-                (when (and (ebox-update--group-dirty group) (ebox-update--group-style-p group))
+                (when (and (ebox-update--group-dirty group) (ebox-update--group-style-p group)
+                           (ebox-update--group-restyle group))
                   (ebox-update--restyle operation (ebox-update--group-node group)))))
             (let ((boundaries (ebox-update--cohort-boundaries operation)))
               (dotimes (index (length boundaries))

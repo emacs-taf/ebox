@@ -24,6 +24,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Prepared cohort restyles run only for members whose paint or class values
+  changed. A geometry-only publish of a Host that also declares `:visibility`
+  or a color no longer recomputes its cascade.
+
 - Prepared cohorts can publish coordinated selection classes, unchanged-thickness
   border colors, normal/bold font variants and nil color resets with geometry,
   Text and hover updates. Absolute Hosts in a cohort can also resize, change
