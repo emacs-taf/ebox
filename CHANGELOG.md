@@ -16,6 +16,12 @@ All notable changes to Ebox are documented here.
   starts the controlled Ebox gesture instead of leaving the press to a global
   command such as Emacs's shift-click region extension.
 
+- A rejected prepared paint or class update restores every restyled node's
+  exact plist. Previously the rollback wrote values by position while the
+  restyle had moved Flex/Grid item properties to the end of the plist, which
+  corrupted `:children` and made the next structural commit signal
+  `wrong-type-argument`. Restyles now also keep item properties in place.
+
 ### Changed
 
 - Prepared cohorts can publish coordinated selection classes, unchanged-thickness

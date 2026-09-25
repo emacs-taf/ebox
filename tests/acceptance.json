@@ -1366,6 +1366,11 @@
       "purpose": "Class preparation rejects changes that can jointly activate an ancestor :has rule across two Hosts, preserving source selectors, pixels and revision."
     },
     {
+      "name": "ebox-prepared-selector-rollback-restores-restyled-flex-items",
+      "file": "tests/ebox-prepared-selector-tests.el",
+      "purpose": "A rejected class change whose restyle deletes or re-adds flex item properties restores each node's exact plist, so pixels, revision, later accepted variants and a structural commit stay correct."
+    },
+    {
       "name": "ebox-prepared-selector-preserves-source-token-grammar",
       "file": "tests/ebox-prepared-selector-tests.el",
       "purpose": "Prepared class variants preserve the canonical source grammar for single strings, symbols, nil and flat token lists, including one token containing whitespace and snapshot isolation."

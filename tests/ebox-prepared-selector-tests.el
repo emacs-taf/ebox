@@ -153,5 +153,47 @@
         (should-not (ebox-selector-query-buffer (current-buffer) "#b.active"))
         (ebox-prepared-selector-test--assert-render)))))
 
+(defun ebox-prepared-selector-test--item-input (label)
+  "Build a flex row whose first item declares participation, showing LABEL."
+  (ebox-build
+   `(box :width (ch 30) :height (lh 4)
+      (flex :id "bar" :color "#000000" :flex-direction row :height (lh 1) :width stretch
+        (box :flex-grow 1 :flex-shrink 1 :min-width (ch 0) :height (lh 1)
+          (box :class "label" :width max-content ,label))
+        (box :width (ch 4) :height (lh 1) "CD"))
+      (box :id "panel" :position absolute :left (ch 0) :top (lh 3)
+           :width (ch 8) :height (lh 1) :z-index 1 "Panel"))))
+
+(ert-deftest ebox-prepared-selector-rollback-restores-restyled-flex-items ()
+  "A rejected paint change restores descendants whose restyle rewrote item properties."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer)
+                             (ebox-prepared-selector-test--item-input "AB"))
+      (let* ((reject t)
+             (before (buffer-string))
+             (revision (ebox-surface-buffer-revision (current-buffer)))
+             (operation
+              (ebox-update-prepare
+               (current-buffer) [["bar" [:color]]]
+               (lambda () (when reject (error "Reject bar color")))
+               #'ignore)))
+        (should operation)
+        (should-error (ebox-update-apply operation [["#ff0000"]] [0]))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal-including-properties before (buffer-string)))
+        (ebox-prepared-selector-test--assert-render)
+        (setq reject nil)
+        (should (ebox-update-apply operation [["#ff0000"]] [0]))
+        (ebox-prepared-selector-test--assert-render)
+        (should (ebox-update-apply operation [["#000000"]] [0]))
+        (should (equal-including-properties before (buffer-string)))
+        ;; A structural commit walks the restored tree's children.
+        (ebox-commit (current-buffer)
+                     (ebox-prepared-selector-test--item-input "ABC"))
+        (should (string-prefix-p "ABC" (buffer-substring-no-properties
+                                        (point-min) (point-max))))
+        (ebox-prepared-selector-test--assert-render)))))
+
 (provide 'ebox-prepared-selector-tests)
 ;;; ebox-prepared-selector-tests.el ends here

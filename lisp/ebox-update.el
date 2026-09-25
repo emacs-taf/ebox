@@ -499,27 +499,28 @@ operation, or nil if a member cannot use the fixed retained canvas."
       (aset values index value))
      ((not (equal-including-properties value old)) (throw 'unsupported nil)))))
 
-;; Restyling rewrites plist values in place and may append keys.  A snapshot
-;; keeps the original length and values, so rollback restores the exact
-;; cells that prepared source slots and other retained owners refer to.
+;; Restyling rewrites plist values in place, may append keys and may delete
+;; and re-add keys, which changes key positions.  A snapshot keeps the
+;; original key/value sequence, so rollback restores NODE's exact plist
+;; while keeping the head cells that retained owners refer to.
 (defun ebox-update--snapshot-node (operation node)
-  "Record NODE's plist values once for OPERATION's rollback."
+  "Record NODE's plist keys and values once for OPERATION's rollback."
   (unless (assq node (ebox-update--cohort-snapshots operation))
-    (let ((tail node) values)
-      (while tail
-        (push (cadr tail) values)
-        (setq tail (cddr tail)))
-      (push (cons node (cons (length node) (nreverse values)))
-            (ebox-update--cohort-snapshots operation)))))
+    (push (cons node (copy-sequence node))
+          (ebox-update--cohort-snapshots operation))))
 
 (defun ebox-update--restore-node (node snapshot)
-  "Restore NODE's plist cells from SNAPSHOT in place."
-  (let ((tail node) (values (cdr snapshot)))
-    (while values
-      (setcar (cdr tail) (pop values))
-      (setq tail (cddr tail)))
-    (when (> (car snapshot) 0)
-      (setcdr (nthcdr (1- (car snapshot)) node) nil))))
+  "Restore NODE's plist keys and values from SNAPSHOT in place."
+  (let ((tail node) (source snapshot))
+    (while source
+      (setcar tail (car source))
+      (setcar (cdr tail) (cadr source))
+      (setq source (cddr source))
+      (if source
+          (progn
+            (unless (cddr tail) (setcdr (cdr tail) (list nil nil)))
+            (setq tail (cddr tail)))
+        (setcdr (cdr tail) nil)))))
 
 (defun ebox-update--restyle (operation node)
   "Recompute NODE's cascade and its descendants' inherited consequences."

@@ -2538,10 +2538,13 @@ owned by NEW; only fields owned by the unchanged computed style are shared."
   new)
 
 (defun ebox-style--apply-item (node style &optional snapshot)
-  "Apply computed Flex/Grid item fields from STYLE to NODE."
+  "Apply computed Flex/Grid item fields from STYLE to NODE.
+Properties already present keep their plist position so retained owners
+that snapshot NODE's cells observe a stable layout."
   (let ((values (ebox-style--context-values style 'item nil snapshot)))
     (dolist (property ebox-style--item-projection-properties)
-      (ebox-style--delete-node-property node property))
+      (unless (plist-member values property)
+        (ebox-style--delete-node-property node property)))
     (cl-loop for (property value) on values by #'cddr
              do (plist-put node property value)))
   node)
