@@ -1849,6 +1849,77 @@ callback environments retain their identities.  Sharing and cycles survive."
                 copy))))
       (map-copy keymap))))
 
+(defvar ebox-interaction--published-keymaps (make-hash-table :test #'eq :weakness 'key)
+  "Caller keymaps mapped to their structure log and frozen snapshot.")
+
+(defun ebox-interaction--keymap-log (keymap)
+  "Return KEYMAP's complete mutable structure as a vector, or nil.
+The log records every cons cell with its car and cdr, resolved named maps
+and string contents, so binding, parent, prompt and name changes remain
+observable.  Character-table maps return nil and are always copied."
+  (let ((log nil) (seen (make-hash-table :test #'eq)))
+    (catch 'unsupported
+      (cl-labels
+          ((visit (value)
+             (while value
+               (cond
+                ((and (symbolp value) (keymapp value))
+                 (let ((definition (indirect-function value)))
+                   (push value log) (push definition log)
+                   (setq value (and (not (symbolp definition)) definition))))
+                ((stringp value)
+                 (push (copy-sequence value) log)
+                 (setq value nil))
+                ((or (char-table-p value) (bool-vector-p value))
+                 (throw 'unsupported nil))
+                ((and (vectorp value) (not (recordp value)))
+                 (unless (gethash value seen)
+                   (puthash value t seen)
+                   (push value log)
+                   (dotimes (index (length value))
+                     (push (aref value index) log)
+                     (visit (aref value index))))
+                 (setq value nil))
+                ((and (consp value) (not (functionp value)))
+                 (if (gethash value seen)
+                     (setq value nil)
+                   (puthash value t seen)
+                   (push value log) (push (car value) log) (push (cdr value) log)
+                   (visit (car value))
+                   (setq value (cdr value))))
+                (t (setq value nil))))))
+        (visit keymap)
+        (vconcat (nreverse log))))))
+
+(defun ebox-interaction--keymap-log-equal-p (old new)
+  "Return non-nil when structure logs OLD and NEW record the same keymap."
+  (and (= (length old) (length new))
+       (let ((index 0) (same t))
+         (while (and same (< index (length old)))
+           (let ((left (aref old index)) (right (aref new index)))
+             (unless (or (eq left right)
+                         (and (stringp left) (stringp right)
+                              (equal-including-properties left right)))
+               (setq same nil)))
+           (setq index (1+ index)))
+         same)))
+
+(defun ebox-interaction--published-keymap (keymap)
+  "Return KEYMAP's owned snapshot, reusing it while KEYMAP is unchanged.
+A reused snapshot keeps its identity, so unchanged interactive output keeps
+render-cache and publication equality proofs."
+  (if (gethash keymap ebox-text--frozen-values)
+      keymap
+    (let ((entry (gethash keymap ebox-interaction--published-keymaps))
+          (log (ebox-interaction--keymap-log keymap)))
+      (if (and entry log (ebox-interaction--keymap-log-equal-p (car entry) log))
+          (cdr entry)
+        (let ((snapshot (ebox-interaction--keymap-snapshot keymap)))
+          (when log
+            (ebox-text--freeze snapshot)
+            (puthash keymap (cons log snapshot) ebox-interaction--published-keymaps))
+          snapshot)))))
+
 (defun ebox-interaction--hover-face (value)
   "Validate hover declarations VALUE and return a native mouse face."
   (unless (and (proper-list-p value) (zerop (% (length value) 2)))
@@ -1930,12 +2001,12 @@ replace the property to publish subsequent binding changes."
                                      (zerop (car (func-arity value))))))
                   (error "Ebox :hover-content requires a string or zero-argument function")))
                (_ (error "Ebox has no interaction property %S" key)))))
-  (let ((owned (ebox-text-property-value-copy properties)))
-    (when (plist-get properties :keymap)
-      (setq owned (plist-put owned :keymap
-                             (ebox-interaction--keymap-snapshot
-                              (plist-get properties :keymap)))))
-    owned))
+  (let ((keymap (plist-get properties :keymap)))
+    (ebox-text-property-value-copy
+     (if keymap
+         (plist-put (copy-sequence properties) :keymap
+                    (ebox-interaction--published-keymap keymap))
+       properties))))
 
 (defun ebox-interaction--hover-content-value (value buffer)
   "Resolve hover CONTENT VALUE in BUFFER and validate its result.

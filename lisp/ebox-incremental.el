@@ -615,8 +615,28 @@ Source publication snapshots keymaps; replacing one supplies a new identity.")
                             :ebox-content-width-exact-p
                             :ebox-content-layout-complete-p))
           (push key signature)
-          (push (ebox--render-cache-value-signature value) signature))))
+          (push (cond
+                 ((eq key :surface-properties)
+                  ;; A native plist beginning with `keymap' satisfies
+                  ;; `keymapp'; its identity is not a capability.
+                  (cl-loop for (name item) on value by #'cddr
+                           collect name
+                           collect (ebox--render-cache-value-signature item)))
+                 ((and (eq key :ebox-computed-style)
+                       (ecss-computed-style-p value))
+                  (ebox--render-cache-computed-style-signature value))
+                 (t (ebox--render-cache-value-signature value)))
+                signature))))
     (nreverse signature)))
+
+(defun ebox--render-cache-computed-style-signature (style)
+  "Return the render-relevant projection of computed STYLE.
+Cascade winners, provenance and diagnostics describe how values were chosen,
+not what renders; two computations of the same declarations compare equal."
+  (let ((snapshot (ebox-style--computed-snapshot style t)))
+    (list 'ebox-computed-style
+          (nth 0 snapshot) (nth 1 snapshot) (nth 2 snapshot)
+          (ecss-computed-style-custom-properties style))))
 
 (defun ebox--render-cache-node-body-signature (node)
   "Return NODE's recursive body signature, memoized within a render pass."
@@ -654,7 +674,60 @@ Source publication snapshots keymaps; replacing one supplies a new identity.")
           (list ebox-viewport-height ebox--css-containing-height))
         ebox--intrinsic-layout-measurement
         ebox--inline-auto-width-intrinsic-p
-        (ebox--render-cache-node-body-signature node)))
+        (ebox--render-cache-own-body-signature node)))
+
+(defconst ebox--render-cache-placement-keys '(:left :top :z-index)
+  "Placement facts consumed by the containing layer, not by the node's output.")
+
+(defconst ebox--render-cache-placement-properties
+  '(ebox/left ebox/top ebox/z-index)
+  "Computed style identifiers of `ebox--render-cache-placement-keys'.")
+
+(defun ebox--render-cache-without-keys (plist keys)
+  "Return PLIST without KEYS, sharing PLIST when no key is present."
+  (if (not (cl-loop for (key _value) on plist by #'cddr
+                    thereis (memq key keys)))
+      plist
+    (cl-loop for (key value) on plist by #'cddr
+             unless (memq key keys)
+             collect key and collect value)))
+
+(defun ebox--render-cache-own-body-signature (node)
+  "Return NODE's body signature without facts consumed only by its host.
+Moving or restacking a node therefore reuses its rendered output.  Hosts
+still observe those facts through their recursive child signatures.  Legacy
+concat and stack nodes use the same names for child slots and keep them."
+  (let ((body (ebox--render-cache-node-body-signature node)))
+    (if (not (and (listp node)
+                  (not (stringp node))
+                  (not (memq (plist-get node :ebox-type) '(concat stack)))
+                  (cl-some (lambda (key) (plist-member node key))
+                           ebox--render-cache-placement-keys)))
+        body
+      (let (own)
+        (while body
+          (let ((key (pop body))
+                (value (pop body)))
+            (cond
+             ((memq key ebox--render-cache-placement-keys))
+             ((and (eq key :ebox-computed-style)
+                   (eq (car-safe value) 'ebox-computed-style))
+              (push key own)
+              (push (list (nth 0 value)
+                          (ebox--render-cache-without-keys
+                           (nth 1 value)
+                           ebox--render-cache-placement-properties)
+                          (cl-set-difference
+                           (nth 2 value)
+                           ebox--render-cache-placement-properties)
+                          (cl-set-difference
+                           (nth 3 value)
+                           ebox--render-cache-placement-properties)
+                          (nth 4 value))
+                    own))
+             (t (push key own)
+                (push value own)))))
+        (nreverse own)))))
 
 (defun ebox--render-cache-box-signature (box)
   "Return a cache signature for BOX render output."

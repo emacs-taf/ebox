@@ -30,10 +30,19 @@
 (defconst ebox-text--copy-cache-missing
   (make-symbol "ebox-text-copy-cache-missing"))
 
+(defvar ebox-text--frozen-values (make-hash-table :test #'eq :weakness 'key)
+  "Ebox-owned property values that are never mutated after creation.")
+
+(defun ebox-text--freeze (value)
+  "Register Ebox-owned VALUE as immutable and return it.
+Owned copies share a frozen value, so its identity survives publication."
+  (puthash value t ebox-text--frozen-values)
+  value)
+
 (defun ebox-text--copy-mutable-p (value)
   "Return non-nil when VALUE is a recursively copied property container."
   (and (not (functionp value))
-       (or (consp value)
+       (or (and (consp value) (not (gethash value ebox-text--frozen-values)))
            (stringp value)
            (char-table-p value)
            (and (vectorp value) (not (recordp value))))))
