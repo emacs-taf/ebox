@@ -381,16 +381,16 @@ Text，准备或应用返回 nil 时，用普通 batch 完成同一次更新：
        (ebox-region-update "label" :color "#0088cc" :content "Ready")))))
 ```
 
-cohort 使用预备几何的共享固定画布。受支持属性、值和 Text 区域条件由
-[入口 API 清单](../ebox.el)的 `ebox-update-prepare` 定义。冷准备可接纳不被样式
-selector 观察的 class 变体、厚度和样式不变的边框颜色，以及经真实字体和字形度量
-证明分配不变的 normal/bold。未知变体/依赖和 nil 前景色 reset 使用普通发布。
-`ebox-update-binding-token` 标识当前绑定环境；`ebox-update-prepare-report` 区分
-环境过期与具体成员不受支持，避免框架反复准备已知拒绝。
-Text 可以在获准的固定单行分配中
-改变宽度；初始内容为空、已被裁剪或恰好占满分配范围时，不能准备该固定槽。
-未支持的富文本、布局依赖、分配范围变化及活动 hover 替换也在发布前拒绝，
-由调用方回退到普通事务。源记录保留 opaque
+cohort 使用预备几何的共享固定画布。受支持属性和值由
+[入口 API 清单](../ebox.el)的 `ebox-update-prepare` 定义。准备只把源单元绑定到
+保留 primitive；只有应用变化时才渲染输出。冷准备可接纳不被样式 selector 观察的
+class 变体；未知变体或依赖使用普通发布。`ebox-update-binding-token` 标识当前绑定
+环境；`ebox-update-prepare-report` 区分环境过期与具体成员不受支持，避免框架反复
+准备已知拒绝。
+每次应用都重算变化的样式，并用普通渲染器渲染受影响的保留 primitive。absolute
+Host 可以移动、改变尺寸和内容行数。flow 内容必须保持原有行和像素区间：Text 可以在
+固定单行 Flex 分配中改变宽度，而会移动相邻内容的变化返回 nil。活动 hover 替换也在
+发布前拒绝，由调用方回退到普通事务。源记录保留 opaque
 handle；更换记录绑定使旧操作过期，而早先导出的 canonical input 仍有效。接纳绘制后，
 下一次普通更新先重算陈旧 cascade，再采用通用局部更新证明。
 

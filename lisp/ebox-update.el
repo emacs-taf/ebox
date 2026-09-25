@@ -1,25 +1,35 @@
 ;;; ebox-update.el --- Prepared mixed primitive publication -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Compile a stable cohort of mounted source cells and raster instructions.
-;; Sparse accepted changes share one existing surface publication and rollback.
+;; Bind a stable cohort of mounted source cells to the retained scene.
+;; Applying a change recomputes only the changed nodes' cascade, re-renders
+;; their nearest composition boundary with the ordinary renderer, and replaces
+;; that boundary's retained primitives.  Sparse accepted changes share one
+;; existing surface publication and rollback.
 
 ;;; Code:
 (require 'cl-lib)
 (require 'ebox-geometry)
-(require 'ebox-update-raster)
 (require 'ebox-update-selector)
 
 (cl-defstruct (ebox-update--member (:constructor ebox-update--make-member))
   group properties offsets variants)
 
 (cl-defstruct (ebox-update--group (:constructor ebox-update--make-group))
-  node properties variants first-member slots values geometry-target geometry-program x-factor raster font class-slot
-  hover-cell hover-old hover-owners dirty staged dx dy z)
+  node properties variants first-member slots values geometry-program x-factor
+  boundary style-p resized class-slot hover-cell hover-old hover-owners dirty staged dx dy z)
+
+(cl-defstruct (ebox-update--boundary (:constructor ebox-update--make-boundary))
+  "Nearest retained composition primitive owning a group's pixels.
+NODE is rendered in HOST's content context with the ordinary renderer.  Its
+pieces replace NODE's primitive records in ROUTE's program.  A flow child
+must keep exactly the same source rows and pixel intervals; an absolute
+panel does not participate in flow, so its complete footprint may change."
+  node host route dirty)
 
 (cl-defstruct (ebox-update--cohort (:constructor ebox-update--make-cohort))
-  buffer state scene members groups marks epoch before-route
-  stage rollback after-commit report old-report old-revision old-stale
+  buffer state scene members groups boundaries marks epoch snapshots
+  signatures viewport-nodes viewport-subtrees css-viewport-subtrees viewport-heights stage rollback after-commit report old-report old-revision old-stale
   old-report-revision old-report-publication staged paint-changed)
 
 (defun ebox-update--node (buffer reference)
@@ -95,10 +105,39 @@
           (setq target (gethash (plist-get node :node-id) (ebox-layer--program-targets candidate))
                 program candidate wrapper (ebox-geometry--route-wrapper route)))))
     (when (and target (eq (plist-get node :position) 'absolute))
-      (setf (ebox-update--group-geometry-target group) target
-            (ebox-update--group-geometry-program group) program
+      (setf (ebox-update--group-geometry-program group) program
             (ebox-update--group-x-factor group) (ebox--size-pixels '(ch 1) wrapper 'width))
       t)))
+
+;; Retained primitives record their row and pixel interval in the containing
+;; plane.  An ordinary render of the boundary node proves that a change keeps
+;; this footprint, so only record text changes and composition stays fixed.
+(defun ebox-update--bind-boundary (state routes node table)
+  "Return NODE's nearest boundary owning primitive records in ROUTES.
+TABLE shares one boundary among all groups rendered by the same node."
+  (let ((parents (plist-get state :parent-table))
+        (nodes (plist-get state :node-table))
+        found)
+    (while (and node (not found))
+      (let ((id (plist-get node :node-id)) (index 0))
+        (while (and (not found) (< index (length routes)))
+          (let* ((route (aref routes index))
+                 (program (ebox-geometry--route-program route))
+                 (target (gethash id (ebox-layer--program-targets program))))
+            (when (and target (> (length target) 0))
+              (setq found
+                    (or (gethash node table)
+                        (puthash node
+                                 (ebox-update--make-boundary
+                                  :node node :route index
+                                  :host (ebox-runtime-index-get
+                                         (plist-get (ebox-geometry--route-wrapper route) :node-id)
+                                         nodes))
+                                 table)))))
+          (setq index (1+ index)))
+        (unless found
+          (setq node (ebox-runtime-index-get (ebox-runtime-index-get id parents) nodes)))))
+    (and found (ebox-update--boundary-host found) found)))
 
 (cl-defstruct (ebox-update--binding (:constructor ebox-update--make-binding))
   "Opaque cold capability for mounted state and its measurement environment."
@@ -287,7 +326,7 @@ operation, or nil if a member cannot use the fixed retained canvas."
       (setq groups (vconcat (nreverse groups)) scene (ebox-update--scene buffer state nodes))
       (unless scene (ebox-update--decline 'fixed-canvas))
       (let ((routes (ebox-geometry--operation-routes scene))
-            (font-cells (make-hash-table :test #'eq)))
+            (boundaries (make-hash-table :test #'eq)))
         (dotimes (index (length groups))
           (let* ((group (aref groups index))
                  (node (ebox-update--group-node group))
@@ -296,18 +335,24 @@ operation, or nil if a member cannot use the fixed retained canvas."
                  (values (make-vector (length keys) nil)) geometry raster)
             (setq ebox-update--preparing-member (ebox-update--group-first-member group)
                   ebox-update--preparing-property nil)
-            (unless (ebox-geometry--inline-slots-p state node keys) (ebox-update--decline 'inline-winner))
             (dotimes (key-index (length keys))
               (let ((property (aref keys key-index)))
                 (when (memq property '(:left :top :z-index)) (setq geometry t))
-                (when (memq property '(:content :color :background-color :bgcolor :hover-content :border :font-weight))
+                (when (memq property '(:color :background-color :bgcolor :border :font-weight))
+                  (setf (ebox-update--group-style-p group) t))
+                (when (memq property '(:content :color :background-color :bgcolor :hover-content :border :font-weight
+                                          :width :height))
                   (setq raster t))
                 (aset values key-index (copy-tree (ebox-update--current-value node property (plist-get state :source-index))))))
             (setf (ebox-update--group-properties group) keys
                   (ebox-update--group-variants group) variants
                   (ebox-update--group-values group) values)
-            (when (and geometry (not (ebox-update--geometry-binding group routes)))
-              (ebox-update--decline 'geometry-target))
+            ;; Translation writes placement directly, so only a proved inline
+            ;; winner may own it.  Paint recomputes the complete cascade.
+            (when geometry
+              (unless (ebox-geometry--inline-slots-p state node keys) (ebox-update--decline 'inline-winner))
+              (unless (ebox-update--geometry-binding group routes)
+                (ebox-update--decline 'geometry-target)))
             (when-let* ((class-index (cl-position :class keys)))
               (ebox-update--locate-member members group :class)
               (let ((palette (aref variants class-index)))
@@ -318,26 +363,9 @@ operation, or nil if a member cannot use the fixed retained canvas."
                   (setf (ebox-update--group-class-slot group) proof))))
             (when raster
               (ebox-update--locate-member members group nil t)
-              (let ((descriptor (ebox-update-raster-prepare state routes node keys)))
-                (unless descriptor (ebox-update--decline 'raster-footprint))
-                (setf (ebox-update--group-raster group) descriptor)))
-            (when (cl-position :font-weight keys)
-              (ebox-update--locate-member members group :font-weight)
-              (let ((font (ebox-update-font-prepare state routes node (ebox-update--group-raster group) scene)))
-                (unless font (ebox-update--decline 'font-allocation))
-                (dotimes (cell-index (length (ebox-update-font-cells font)))
-                  (let ((cell (aref (ebox-update-font-cells font) cell-index)))
-                    (when (gethash cell font-cells) (ebox-update--decline 'overlapping-font-scope))
-                    (puthash cell t font-cells)))
-                (setf (ebox-update--group-font group) font)))))
-        ;; Each raw raster owns its immutable face representations.  Register
-        ;; all admitted font variants before any hot row can observe them.
-        (dotimes (font-index (length groups))
-          (let ((font (ebox-update--group-font (aref groups font-index))))
-            (when font
-              (dotimes (raster-index (length groups))
-                (when-let* ((raster (ebox-update--group-raster (aref groups raster-index))))
-                  (ebox-update-font-bind-raster font raster))))))
+              (let ((boundary (ebox-update--bind-boundary state routes node boundaries)))
+                (unless boundary (ebox-update--decline 'raster-boundary))
+                (setf (ebox-update--group-boundary group) boundary)))))
         ;; All output proofs precede the equivalent private source rebinding.
         (dotimes (index (length groups))
           (let* ((group (aref groups index))
@@ -389,13 +417,19 @@ operation, or nil if a member cannot use the fixed retained canvas."
         (let ((operation
                (ebox-update--make-cohort
                 :buffer buffer :state state :scene scene :members members :groups groups
+                :boundaries (let (all)
+                              (maphash (lambda (_node boundary) (push boundary all)) boundaries)
+                              (vconcat all))
                 :marks (make-vector (length members) 0) :epoch 0
+                :signatures (make-hash-table :test #'eq)
+                :viewport-nodes (make-hash-table :test #'eq)
+                :viewport-subtrees (make-hash-table :test #'eq)
+                :css-viewport-subtrees (make-hash-table :test #'eq)
+                :viewport-heights (make-hash-table :test #'eq)
                 :stage stage :rollback rollback :after-commit after-commit
                 :report (list :strategy 'owner-rerender :projection-kind 'prepared-update
                               :dirty-kinds '(geometry paint span) :prepared-update-p t
                               :revision 0 :publication nil))))
-          (setf (ebox-update--cohort-before-route operation)
-                (lambda (index) (ebox-update--before-route operation index)))
           operation)))))
 
 ;;;###autoload
@@ -408,9 +442,7 @@ operation, or nil if a member cannot use the fixed retained canvas."
              (valid t))
          (dotimes (position (length groups))
            (let ((group (aref groups position)))
-             (unless (and (ebox-source--update-slots-current-p (ebox-update--group-slots group) index)
-                          (or (null (ebox-update--group-font group))
-                              (ebox-update-font-current-p (ebox-update--group-font group))))
+             (unless (ebox-source--update-slots-current-p (ebox-update--group-slots group) index)
                (setq valid nil)))) valid)))
 
 (defun ebox-update--capture-value (group index value)
@@ -431,6 +463,14 @@ operation, or nil if a member cannot use the fixed retained canvas."
                 (* (- (cadr value) (cadr old))
                    (if (eq (car value) 'ch) (ebox-update--group-x-factor group) 1)))
         (setf (ebox-update--group-dy group) (- (floor (cadr value)) (floor (cadr old))))))
+     ((memq property '(:width :height))
+      (unless (and (consp value) (consp (cdr value)) (null (cddr value))
+                   (eq (car value) (car-safe old))
+                   (eq (aref (ebox-source--update-slots-kinds (ebox-update--group-slots group)) index) 'unit)
+                   (ebox-size--finite-number-p (cadr value)))
+        (throw 'unsupported nil))
+      (unless (= (cadr value) (cadr old)) (setf (ebox-update--group-resized group) t))
+      (setcar (cdr (aref values index)) (cadr value)))
      ((eq property :z-index)
       (unless (integerp value) (throw 'unsupported nil))
       (aset values index value) (setf (ebox-update--group-z group) value))
@@ -456,15 +496,167 @@ operation, or nil if a member cannot use the fixed retained canvas."
       (aset values index (if (stringp value) (copy-sequence value) value)))
      ((not (equal-including-properties value old)) (throw 'unsupported nil)))))
 
-(defun ebox-update--before-route (operation index)
-  "Replay OPERATION's changed raster instructions before route INDEX."
-  (let ((groups (ebox-update--cohort-groups operation)))
-    (dotimes (position (length groups))
-      (let* ((group (aref groups position)) (raster (ebox-update--group-raster group)))
-        (when (and (ebox-update--group-dirty group) raster
-                   (= index (ebox-update-raster-route-index raster)))
-          (unless (ebox-update-raster-apply raster (ebox-update--group-values group))
-            (throw 'ebox-geometry-unsupported nil)))))))
+;; Restyling rewrites plist values in place and may append keys.  A snapshot
+;; keeps the original length and values, so rollback restores the exact
+;; cells that prepared source slots and other retained owners refer to.
+(defun ebox-update--snapshot-node (operation node)
+  "Record NODE's plist values once for OPERATION's rollback."
+  (unless (assq node (ebox-update--cohort-snapshots operation))
+    (let ((tail node) values)
+      (while tail
+        (push (cadr tail) values)
+        (setq tail (cddr tail)))
+      (push (cons node (cons (length node) (nreverse values)))
+            (ebox-update--cohort-snapshots operation)))))
+
+(defun ebox-update--restore-node (node snapshot)
+  "Restore NODE's plist cells from SNAPSHOT in place."
+  (let ((tail node) (values (cdr snapshot)))
+    (while values
+      (setcar (cdr tail) (pop values))
+      (setq tail (cddr tail)))
+    (when (> (car snapshot) 0)
+      (setcdr (nthcdr (1- (car snapshot)) node) nil))))
+
+(defun ebox-update--restyle (operation node)
+  "Recompute NODE's cascade and its descendants' inherited consequences."
+  (let* ((state (ebox-update--cohort-state operation))
+         (source (plist-get state :source-index))
+         (parents (plist-get state :parent-table))
+         (nodes (plist-get state :node-table))
+         (parent (ebox-runtime-index-get
+                  (ebox-runtime-index-get (plist-get node :node-id) parents) nodes))
+         (scopes (ebox-style-source-scopes source))
+         (ebox-selector-view--current (ebox-source--index-selector-view source))
+         (ebox-selector-view--topology (ebox-source--index-selector-topology source)))
+    (cl-labels
+        ((visit (node parent-style parent-font)
+           (when (and (listp node) (not (stringp node)))
+             (unless (and (plist-get node :ebox-source-handle)
+                          (ebox-source--index-node-subject source node))
+               (throw 'unsupported nil))
+             (ebox-update--snapshot-node operation node)
+             (let* ((style (ebox-surface--compute-node-style
+                            (ebox-tree-node-subject source node)
+                            (ebox-tree-node-source-declarations source node)
+                            parent-style scopes ebox-selector-view--current))
+                    (snapshot (ebox-style--computed-snapshot style t)))
+               (ebox-surface--project-font node style parent-font snapshot)
+               (ebox-style-apply-computed node style snapshot)
+               (let ((font (plist-get node :ebox-font-fact)))
+                 (ebox-tree-for-each-direct-child
+                  node (lambda (child) (visit child style font))))))))
+      (visit node (plist-get parent :ebox-computed-style) (plist-get parent :ebox-font-fact)))))
+
+;; Render signatures are recursive and memoized by node identity.  A change
+;; can alter only its own and its ancestors' memoized entries.
+(defun ebox-update--forget-signatures (operation)
+  "Drop OPERATION's memoized render facts along changed nodes' ancestor paths."
+  (let* ((state (ebox-update--cohort-state operation))
+         (parents (plist-get state :parent-table))
+         (nodes (plist-get state :node-table))
+         (tables (list (ebox-update--cohort-signatures operation)
+                       (ebox-update--cohort-viewport-nodes operation)
+                       (ebox-update--cohort-viewport-subtrees operation)
+                       (ebox-update--cohort-css-viewport-subtrees operation)
+                       (ebox-update--cohort-viewport-heights operation)))
+         (groups (ebox-update--cohort-groups operation))
+         (changed (mapcar #'car (ebox-update--cohort-snapshots operation))))
+    (dotimes (index (length groups))
+      (when (ebox-update--group-dirty (aref groups index))
+        (push (ebox-update--group-node (aref groups index)) changed)))
+    (dolist (node changed)
+      (while node
+        (dolist (table tables) (remhash node table))
+        (setq node (ebox-runtime-index-get
+                    (ebox-runtime-index-get (plist-get node :node-id) parents) nodes))))))
+
+(defun ebox-update--render-boundary (operation boundary)
+  "Render BOUNDARY's node in its host context from OPERATION's current nodes."
+  (let* ((state (ebox-update--cohort-state operation))
+         (scene (ebox-update--cohort-scene operation))
+         (ebox-viewport-width (plist-get state :viewport-width))
+         (ebox-viewport-height (plist-get state :viewport-height))
+         (ebox--render-display-signature (plist-get state :display-signature))
+         (ebox--render-source-index (plist-get state :source-index))
+         (ebox--region-box-table (ebox-geometry--operation-region-table scene))
+         (ebox--scroll-global-state (ebox-geometry--operation-scroll-table scene))
+         (ebox--render-runtime-revision (plist-get state :runtime-revision))
+         (ebox--render-cache-table (plist-get state :render-cache))
+         (ebox--render-cache-allow-viewport-dependent t)
+         (ebox--render-cache-signature-cache (ebox-update--cohort-signatures operation))
+         (ebox--layout-fragments-table nil)
+         (ebox--layout-fragments-reuse-p nil)
+         (ebox-layer--previous-composition-cache nil)
+         (ebox-layer--composition-cache nil)
+         (ebox-layer--composition-context nil)
+         (ebox-layer--active-p 'unknown)
+         (ebox-incremental--render-portals-p nil)
+         (ebox--viewport-dependent-node-ids-cache (ebox-update--cohort-viewport-nodes operation))
+         (ebox--viewport-dependent-subtree-cache (ebox-update--cohort-viewport-subtrees operation))
+         (ebox--css-viewport-dependent-subtree-cache (ebox-update--cohort-css-viewport-subtrees operation))
+         (ebox--viewport-height-dependent-subtree-cache (ebox-update--cohort-viewport-heights operation))
+         (ebox--flex-content-min-width-table (plist-get state :flex-content-min-widths))
+         (ebox--paint-origin-capture-p t)
+         (ebox--render-owned-text-values (make-hash-table :test #'eq))
+         (ebox--surface-materialization-active t)
+         (node (ebox-update--boundary-node boundary)))
+    (cl-letf (((symbol-function 'ebox--scroll-schedule-idle-prefetch) #'ignore))
+      (ebox--call-with-box-content-context
+       (ebox-update--boundary-host boundary)
+       (lambda () (ebox--render-with-cache node))))))
+
+(defun ebox-update--replace-boundary (operation boundary)
+  "Replace BOUNDARY's retained primitives with its ordinary render.
+Rows whose pixels are unchanged keep their primitives and damage.  Throw
+`unsupported' when a flow child's footprint changes or new pixels contain
+roles the mounted projection cannot represent."
+  (let* ((scene (ebox-update--cohort-scene operation))
+         (route (aref (ebox-geometry--operation-routes scene) (ebox-update--boundary-route boundary)))
+         (program (ebox-geometry--route-program route))
+         (records (ebox-layer--program-records program))
+         (projection (ebox-geometry--operation-projection scene))
+         (node (ebox-update--boundary-node boundary))
+         (host (ebox-update--boundary-host boundary))
+         (target (gethash (plist-get node :node-id) (ebox-layer--program-targets program)))
+         (text (ebox-update--render-boundary operation boundary))
+         (pieces (and (stringp text) (ebox-layer--pieces (ebox-string-lines text) node)))
+         (keys (make-hash-table :test #'equal))
+         (annotated (make-hash-table :test #'eq))
+         (first-row nil) (offset nil) (same (> (length pieces) 0)))
+    (unless target (throw 'unsupported nil))
+    (dotimes (position (length target))
+      (let* ((record (aref records (aref target position)))
+             (row (plist-get record :source-row)))
+        (when (>= (plist-get record :y) 0)
+          (setq first-row (if first-row (min first-row row) row))
+          (puthash (cons row (plist-get record :source-start)) (aref target position) keys))))
+    (setq offset (and first-row pieces (- first-row (plist-get (car pieces) :y)))
+          same (and same offset (= (length pieces) (hash-table-count keys))))
+    (dolist (piece pieces)
+      (let ((index (and same (gethash (cons (+ offset (plist-get piece :y)) (plist-get piece :start)) keys))))
+        (unless (and index (= (plist-get piece :end) (plist-get (aref records index) :source-end)))
+          (setq same nil))))
+    (cl-flet ((annotate (line)
+                (unless (gethash line annotated)
+                  (unless (ebox-surface--geometry-mount-refresh-raster projection line t)
+                    (throw 'unsupported nil))
+                  (puthash line t annotated))))
+      (if same
+          (dolist (piece pieces)
+            (let* ((index (gethash (cons (+ offset (plist-get piece :y)) (plist-get piece :start)) keys))
+                   (line (plist-get piece :line)))
+              (unless (equal-including-properties line (plist-get (aref records index) :text))
+                (annotate line)
+                (ebox-layer--program-replace-text program index line))))
+        (unless (eq (plist-get node :position) 'absolute) (throw 'unsupported nil))
+        (dolist (piece pieces) (annotate (plist-get piece :line)))
+        (let ((width (ebox-layer--program-width program))
+              (height (ebox-layer--program-height program)))
+          (ebox-layer--program-replace-target
+           program (plist-get node :node-id) pieces
+           (ebox-layer--offset node :left host width)
+           (ebox-layer--offset node :top host height)))))))
 
 (defun ebox-update--stage (scene publication-report)
   "Stage SCENE's active cohort and its paired caller state."
@@ -488,11 +680,15 @@ operation, or nil if a member cannot use the fixed retained canvas."
     (when (ebox-update--cohort-stage operation) (funcall (ebox-update--cohort-stage operation)))))
 
 (defun ebox-update--restore-source (operation)
-  "Restore OPERATION's staged source and native hover value cells."
+  "Restore OPERATION's restyled nodes, staged source and native hover cells."
   (let ((groups (ebox-update--cohort-groups operation)))
+    ;; Snapshots follow staging, so restore derived styles before source slots.
+    (ebox-update--forget-signatures operation)
+    (dolist (entry (ebox-update--cohort-snapshots operation))
+      (ebox-update--restore-node (car entry) (cdr entry)))
+    (setf (ebox-update--cohort-snapshots operation) nil)
     (dotimes (index (length groups))
       (let ((group (aref groups index)))
-        (when (ebox-update--group-font group) (ebox-update-font-rollback (ebox-update--group-font group)))
         (when (ebox-update--group-staged group)
           (ebox-source--update-slots-rollback (ebox-update--group-slots group))
           (when (ebox-update--group-hover-cell group)
@@ -557,12 +753,14 @@ after acceptance."
       (user-error "Invalid Ebox prepared update values or member indices"))
     (when (ebox-update-valid-p operation)
       (setf (ebox-update--cohort-epoch operation) epoch
+            (ebox-update--cohort-snapshots operation) nil
             (ebox-update--cohort-paint-changed operation) nil
             (ebox-update--cohort-staged operation) nil)
       (dotimes (index (length groups))
         (let* ((group (aref groups index)) (node (ebox-update--group-node group))
                (keys (ebox-update--group-properties group)) (owned (ebox-update--group-values group)))
           (setf (ebox-update--group-dirty group) nil (ebox-update--group-staged group) nil
+                (ebox-update--group-resized group) nil
                 (ebox-update--group-dx group) 0 (ebox-update--group-dy group) 0
                 (ebox-update--group-z group) (or (ebox-get node :z-index) 0))
           (dotimes (key-index (length keys))
@@ -616,21 +814,31 @@ after acceptance."
                             (ebox-source--update-slots-value
                              (ebox-update--group-slots group)
                              (cl-position :hover-content (ebox-update--group-properties group)))))
-                  (when (ebox-update--group-geometry-target group)
-                    (ebox-layer--program-translate
-                     (ebox-update--group-geometry-program group) (ebox-update--group-geometry-target group)
-                     (ebox-update--group-dx group) (ebox-update--group-dy group) (ebox-update--group-z group))))))
-            ;; Font metrics were resolved in the cold plan.  All source writes
-            ;; precede these checks, so a simultaneous new Text cannot sneak
-            ;; past the captured normal/bold glyph allocation proof.
+                  (when (ebox-update--group-geometry-program group)
+                    (let ((program (ebox-update--group-geometry-program group)))
+                      (ebox-layer--program-translate
+                       program (gethash (plist-get (ebox-update--group-node group) :node-id)
+                                        (ebox-layer--program-targets program))
+                       (ebox-update--group-dx group) (ebox-update--group-dy group)
+                       (ebox-update--group-z group)))))))
+            ;; Source writes precede every derived computation, so several
+            ;; changed members of one cascade observe the complete new input.
             (dotimes (index (length groups))
               (let ((group (aref groups index)))
-                (when (and (ebox-update--group-dirty group) (ebox-update--group-font group))
-                  (let ((weight (aref (ebox-update--group-values group)
-                                      (cl-position :font-weight (ebox-update--group-properties group)))))
-                    (unless (ebox-update-font-valid-p (ebox-update--group-font group) weight)
-                      (throw 'unsupported nil))
-                    (ebox-update-font-stage (ebox-update--group-font group) weight)))))
+                (when (and (ebox-update--group-dirty group) (ebox-update--group-style-p group))
+                  (ebox-update--restyle operation (ebox-update--group-node group)))))
+            (let ((boundaries (ebox-update--cohort-boundaries operation)))
+              (dotimes (index (length boundaries))
+                (setf (ebox-update--boundary-dirty (aref boundaries index)) nil))
+              (dotimes (index (length groups))
+                (let ((group (aref groups index)))
+                  (when (and (ebox-update--group-dirty group) (ebox-update--group-boundary group))
+                    (setf (ebox-update--boundary-dirty (ebox-update--group-boundary group)) t))))
+              (ebox-update--forget-signatures operation)
+              (ebox-incremental--with-phase 'layout
+                (dotimes (index (length boundaries))
+                  (when (ebox-update--boundary-dirty (aref boundaries index))
+                    (ebox-update--replace-boundary operation (aref boundaries index))))))
             (dotimes (index (length routes))
               (ebox-layer--program-batch-end (ebox-geometry--route-program (aref routes index))))
             (setf (ebox-geometry--operation-active-operation scene) operation
@@ -638,7 +846,7 @@ after acceptance."
                   (ebox-geometry--operation-frame-rollback scene) #'ebox-update--rollback
                   (ebox-geometry--operation-frame-accept scene) #'ebox-update--accept)
             (let* ((rendered (ebox-incremental--with-phase 'layout
-                                                           (ebox-geometry--render scene (ebox-update--cohort-before-route operation))))
+                                                           (ebox-geometry--render scene)))
                    (root-route (aref routes (1- (length routes))))
                    (mount-count
                     (and rendered (ebox-incremental--with-phase 'projection
@@ -662,10 +870,9 @@ after acceptance."
             (ebox-geometry--settle-wrapper route (and result t)))))
       (when result
         (setf (ebox-update--cohort-staged operation) nil)
+        (setf (ebox-update--cohort-snapshots operation) nil)
         (dotimes (index (length groups))
-          (let ((group (aref groups index)))
-            (when (ebox-update--group-font group) (ebox-update-font-accept (ebox-update--group-font group)))
-            (setf (ebox-update--group-staged group) nil)))
+          (setf (ebox-update--group-staged (aref groups index)) nil))
         (when (ebox-update--cohort-after-commit operation) (funcall (ebox-update--cohort-after-commit operation)))
         t))))
 

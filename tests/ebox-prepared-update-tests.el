@@ -89,11 +89,13 @@
         (should (eq caller 'after))
         (should (= caller-count 1))
         (ebox-prepared-update-test--assert-fresh)
+        ;; An absolute panel does not participate in flow, so content that
+        ;; changes its wrapped rows replaces the panel's retained pixels.
         (aset values 1 ["A longer replacement"])
-        (setq before (buffer-string) revision (ebox-surface-buffer-revision (current-buffer)))
-        (should-not (ebox-update-apply operation values [1]))
-        (should (equal-including-properties before (buffer-string)))
-        (should (= revision (ebox-surface-buffer-revision (current-buffer))))))))
+        (setq revision (ebox-surface-buffer-revision (current-buffer)))
+        (should (ebox-update-apply operation values [1]))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (ebox-prepared-update-test--assert-fresh)))))
 
 (ert-deftest ebox-prepared-update-fits-variable-text-in-fixed-flex-allocation ()
   "A fixed status allocation accepts variable text and preserves adjacent controls."

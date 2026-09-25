@@ -449,19 +449,21 @@ handle either preparation or application declining with one ordinary batch:
 ```
 
 The cohort uses the shared fixed canvas from prepared geometry. Its supported
-properties, values and Text-region conditions are defined by `ebox-update-prepare`
-in [the API inventory](../ebox.el). Cold preparation can admit class variants
-unobserved by style selectors, fixed-thickness border color changes, and
-normal/bold when real font/glyph measurements preserve allocation. Unknown
-variants or dependencies and nil foreground reset use ordinary publication.
-`ebox-update-binding-token` identifies the current binding context;
-`ebox-update-prepare-report` distinguishes stale context from an unsupported
-member, allowing frameworks to avoid repeatedly preparing a known rejection.
-A Text value may change width
-inside an admitted fixed single-row allocation; an initially empty, clipped or
-exactly full allocation cannot prepare that fixed slot. Unsupported rich text,
-layout dependencies, changed allocations and active hover replacements also
-decline before publication. The caller then uses its ordinary update transaction.
+properties and values are defined by `ebox-update-prepare` in
+[the API inventory](../ebox.el). Preparation binds source cells to retained
+primitives; output is rendered only when a change is applied. Cold preparation
+admits class variants unobserved by style selectors; unknown variants or
+dependencies use ordinary publication. `ebox-update-binding-token` identifies
+the current binding context; `ebox-update-prepare-report` distinguishes stale
+context from an unsupported member, allowing frameworks to avoid repeatedly
+preparing a known rejection.
+Each apply recomputes the changed styles and renders the affected retained
+primitive with the ordinary renderer. An absolute Host may move, resize and
+change its content rows. Flow content must keep its rows and pixel intervals:
+Text may change width inside a fixed single-row Flex allocation, while a change
+that would move neighbouring content returns nil. Active hover replacements
+also decline before publication. The caller then uses its ordinary update
+transaction.
 A retained source record keeps its
 opaque handle; a new record binding invalidates earlier operations without
 breaking previously exported canonical input. Accepted paint marks computed

@@ -307,11 +307,16 @@ frame 接纳新 revision 与 client-state；下一次原子 prepared 发布前�
 底层裁剪和原生文本写入仍会分配输出相关产物，编译后的 wrapper 指令及预备
 publisher 本身不代表已经通过分配或延迟验收。
 
-混合 prepared-update cohort 在冷路径绑定固定成员的源单元与栅格指令，稀疏变化索引
-进入同一个保留 frame。同一 Host 的多个规格共享一份源记录；hook 前冻结调用方值，
-拒绝时恢复所有源和调用方单元。绘制指令保留 cascade 继承 provider 与原始栅格所有权；
-热路径只处理已绑定 primitive 行，不重建源或 Component 图。几何批次对每条记录只保存
-一次原值，使绘制、Text 与多个位置共享完整像素回滚。
+混合 prepared-update cohort 在冷路径绑定固定成员的源单元及拥有其像素的保留
+primitive；准备阶段不渲染。稀疏变化索引进入同一个保留 frame。同一 Host 的多个规格
+共享一份源记录；hook 前冻结调用方值，拒绝时恢复所有源和调用方单元。暂存后，应用
+重算变化样式成员及其后代的完整 cascade，并为每个被改写的节点保存快照，使回滚恢复
+源槽共享的原始单元。随后用普通渲染器在 host 内容上下文中渲染每个变化成员最近的
+记录所有者，增量与全量输出共用同一 box 实现。cohort 自有的渲染签名与 viewport
+memo 表跨应用保留，并沿变化节点的祖先路径失效。flow 所有者只替换像素变化的行，且
+必须保持原有行和像素区间；absolute 所有者不参与 flow，尺寸或行数变化时复用其记录槽，
+追加记录并隐藏多余记录。固定稀疏批次对每条记录只保存一次原值，使绘制、Text、尺寸
+与多个位置共享完整像素回滚。
 
 class 变体使用原有 source token 语法，冷编译私有 selector view 与有限候选索引；
 ECSS 始终匹配当前 subject。任何观察变化 token 的 rule/scope 都拒绝，避免多个 Host
@@ -319,11 +324,6 @@ ECSS 始终匹配当前 subject。任何观察变化 token 的 rule/scope 都拒
 状态 journal；没有相关状态 selector 或动态样式求值器时，press/focus/release 经保留
 frame 只发布元数据，不替换像素或 mount index。report bank 与 mount bank 分别推进，
 保证穿插元数据发布不会覆盖下一次几何回滚所依赖的 live index。
-
-边框指令读取预绑定的四边颜色单元。字体冷准备解析实际 normal/bold 及继承消费者，
-检查字形 shaping、间距和垂直度量；终端另用明确的固定 cell 证明。每个 raster 保留
-独立的绘制 face 快照；热更新只切换已绑定 fact 并重绘已知区域。未知字体输入或配置
-改变使证明失效，display guard 与 font-cache generation 防止复用过期度量。
 
 预备源记录保留精确 opaque handle，通过不可变索引 overlay 选择新的私有记录；
 操作有效性比较记录 identity。这保证旧树/索引及导出快照在 focus/active 元数据和后续

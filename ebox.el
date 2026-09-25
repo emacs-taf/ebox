@@ -854,29 +854,20 @@
 ;; covered; rules or scopes observing a changing class token require ordinary
 ;; publication, including relational combinations across cohort members.
 ;; Return an opaque operation or nil for unsupported canvas/dependencies.
-;; Supported geometry follows `ebox-geometry-apply'. Other admitted properties
-;; are effective inline :color, :background-color (alias :bgcolor), existing
-;; nonnil :hover-content, Text :content, finite canonical :class variants,
-;; uniform :border shorthand color changes with unchanged width/style, and
-;; :font-weight normal/bold when cold measurement proves the same allocation.
-;; Font proofs cover inherited facts, actual glyphs, ch spacing and vertical
-;; metrics in the current display environment. Unknown variants, changed Text
-;; inputs, named caller typography and independently composed nested font scopes
-;; require ordinary publication. Applying nil to :color, clearing hover-content
-;; or replacing active hover also declines.
-;; Text must be nonempty and contain no newline, carriage return or tab.
-;; Supported caller text properties are face, font-lock-face and display;
-;; display values may be strings, spaces or images subject to the same retained
-;; ownership and vertical-metric proof. Other rich-text forms decline.
-;; Replacement normally retains the Text span's pixel footprint. Its width may
-;; vary in a proven fixed parent allocation: one sole Text child, left aligned,
-;; no soft wrapping and height (lh 1). The parent's width must be independent of
-;; its content, either declared or allocated by a nonwrapping row Flex with
-;; positive growth, zero basis/min-width and no intrinsic max-width constraint.
-;; Cold preparation requires the initial Text to be fully visible with trailing
-;; fill; an empty, already clipped or exactly full initial allocation declines
-;; this fixed-slot route. Overflow hidden clips replacement text; otherwise it
-;; must fit. Changed vertical metrics or unproved ownership use ordinary updates.
+;; Admitted properties are inline :left, :top and :z-index on an absolute Host
+;; as in `ebox-geometry-apply', inline unit :width and :height on an absolute
+;; Host with unchanged units, :color, :background-color (alias :bgcolor),
+;; existing nonnil :hover-content, Text :content, finite canonical :class
+;; variants, uniform :border shorthand color changes with unchanged width and
+;; style, and :font-weight normal/bold.
+;; Apply recomputes the changed nodes' cascade, so nil :color restores the
+;; inherited value, and renders their nearest retained composition primitive
+;; with the ordinary renderer. An absolute Host may change its footprint. A
+;; flow primitive must keep its rows and pixel intervals: Text may vary inside
+;; a fixed-width parent allocation, while a change that would move adjacent
+;; flow content returns nil. Clearing hover-content, replacing active hover or
+;; producing pixels whose roles the mounted projection cannot represent also
+;; returns nil.
 ;; STAGE and ROLLBACK are paired zero-argument callbacks; AFTER-COMMIT runs once
 ;; after acceptance. Preparation does not advance the publication revision.
 ;; Prepare at mounted/structural/configuration boundaries and retain the cohort;

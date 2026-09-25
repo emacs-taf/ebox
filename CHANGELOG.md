@@ -19,10 +19,14 @@ All notable changes to Ebox are documented here.
 ### Changed
 
 - Prepared cohorts can publish coordinated selection classes, unchanged-thickness
-  border colors and measured normal/bold font variants with geometry, Text and
-  hover updates. Class values retain Ebox's canonical token grammar. Native
+  border colors, normal/bold font variants and nil color resets with geometry,
+  Text and hover updates. Absolute Hosts in a cohort can also resize and change
+  their content rows. Class values retain Ebox's canonical token grammar. Native
   focus/active metadata reuses the same publication authority when style
   dependencies are proven unchanged.
+- Prepared cohort preparation no longer precomputes rasters, so frameworks can
+  prepare again quickly after ordinary publications. Each apply renders only the
+  changed retained primitive with the ordinary renderer.
 
 - Framework integrations can prepare retained geometry operations for repeated
   absolute moves and stacking changes. Accepted operations preserve source

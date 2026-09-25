@@ -82,7 +82,7 @@ without rendering the former geometry again."
   width height records order z-values document-order targets
   base-lines rows saved-rows row-spines row-heads row-tails dirty output-spine
   pending batch-open order-dirty order-changed saved-texts modified-texts
-  saved-coordinates saved-z modified-geometry)
+  saved-coordinates saved-z modified-geometry saved-records saved-targets saved-count)
 
 (defun ebox-layer--program-prepare (entry host)
   "Compile retained composition ENTRY into a private primitive program.
@@ -154,6 +154,7 @@ This operation does not publish or change ENTRY."
        :saved-texts (make-vector count nil) :modified-texts (make-vector count nil)
        :saved-coordinates (make-vector (* 2 count) 0)
        :saved-z (make-vector count 0) :modified-geometry (make-vector count nil)
+       :saved-records (make-vector count nil)
        :output-spine (make-list height nil)))))
 
 (defun ebox-layer--program-strings (program)
@@ -290,6 +291,89 @@ saved once even when the same record changes repeatedly in one batch."
       (plist-put record :text text)))
   program)
 
+(defun ebox-layer--program-grow (program count)
+  "Extend PROGRAM's primitive storage to COUNT records, preserving indexes."
+  (let ((old (length (ebox-layer--program-records program))))
+    (when (> count old)
+      (cl-flet ((grow (vector fill) (vconcat vector (make-vector (- count old) fill))))
+        (setf (ebox-layer--program-records program) (grow (ebox-layer--program-records program) nil)
+              (ebox-layer--program-order program)
+              (vconcat (ebox-layer--program-order program) (number-sequence old (1- count)))
+              (ebox-layer--program-z-values program) (grow (ebox-layer--program-z-values program) 0)
+              (ebox-layer--program-document-order program)
+              (grow (ebox-layer--program-document-order program) 0)
+              (ebox-layer--program-saved-texts program) (grow (ebox-layer--program-saved-texts program) nil)
+              (ebox-layer--program-modified-texts program)
+              (grow (ebox-layer--program-modified-texts program) nil)
+              (ebox-layer--program-saved-coordinates program)
+              (vconcat (ebox-layer--program-saved-coordinates program) (make-vector (* 2 (- count old)) 0))
+              (ebox-layer--program-saved-z program) (grow (ebox-layer--program-saved-z program) 0)
+              (ebox-layer--program-modified-geometry program)
+              (grow (ebox-layer--program-modified-geometry program) nil)
+              (ebox-layer--program-saved-records program)
+              (grow (ebox-layer--program-saved-records program) nil)))
+      (let ((spines (ebox-layer--program-row-spines program)))
+        (dotimes (row (length spines))
+          (aset spines row (nconc (aref spines row) (make-list (- count old) nil))))))
+    program))
+
+(defun ebox-layer--program-replace-target (program id pieces x y)
+  "Stage ID's placed PIECES at origin X, Y as PROGRAM's complete footprint.
+PIECES are `ebox-layer--pieces' intervals of one positioned panel whose
+geometry does not participate in normal flow.  Existing primitive indexes
+are reused in order; missing ones are appended once and surplus ones stop
+painting.  Record identity, stacking and document order are preserved, and
+settlement restores the previous records and target vector on rejection."
+  (let* ((targets (ebox-layer--program-targets program))
+         (target (gethash id targets))
+         (count (length pieces))
+         (needed (max 0 (- count (length target))))
+         (first (length (ebox-layer--program-records program))))
+    (unless (and target (> (length target) 0))
+      (error "Ebox prepared panel has no primitive target: %S" id))
+    (setf (ebox-layer--program-pending program) t)
+    (when (> needed 0)
+      (unless (ebox-layer--program-saved-count program)
+        (setf (ebox-layer--program-saved-count program) first))
+      (ebox-layer--program-grow program (+ first needed))
+      (let* ((records (ebox-layer--program-records program))
+             (template (aref records (aref target 0)))
+             (z (aref (ebox-layer--program-z-values program) (aref target 0)))
+             (rank (aref (ebox-layer--program-document-order program) (aref target 0)))
+             (indexes (make-vector (+ (length target) needed) 0)))
+        (dotimes (offset (length target)) (aset indexes offset (aref target offset)))
+        (dotimes (offset needed)
+          (let ((index (+ first offset)))
+            (aset records index (list :node (plist-get template :node) :x 0 :y -1 :text ""
+                                      :source-start 0 :source-end 0 :source-row 0))
+            (aset (ebox-layer--program-z-values program) index z)
+            (aset (ebox-layer--program-document-order program) index rank)
+            (aset indexes (+ (length target) offset) index)))
+        (unless (assoc id (ebox-layer--program-saved-targets program))
+          (push (cons id target) (ebox-layer--program-saved-targets program)))
+        (puthash id indexes targets)
+        (setq target indexes)
+        (setf (ebox-layer--program-order-dirty program) t
+              (ebox-layer--program-order-changed program) t)))
+    (let ((records (ebox-layer--program-records program)) (tail pieces))
+      (dotimes (offset (length target))
+        (let* ((index (aref target offset))
+               (record (aref records index))
+               (piece (pop tail)))
+          (unless (aref (ebox-layer--program-saved-records program) index)
+            (aset (ebox-layer--program-saved-records program) index (copy-sequence record)))
+          (ebox-layer--program-mark-row program (plist-get record :y))
+          (if (null piece)
+              (plist-put record :y -1)
+            (plist-put record :text (plist-get piece :line))
+            (plist-put record :source-start (plist-get piece :start))
+            (plist-put record :source-end (plist-get piece :end))
+            (plist-put record :source-row (plist-get piece :y))
+            (plist-put record :x (+ x (plist-get piece :start)))
+            (plist-put record :y (+ y (plist-get piece :y)))
+            (ebox-layer--program-mark-row program (plist-get record :y))))))
+    target))
+
 (defun ebox-layer--program-render (program &optional rows-only)
   "Render PROGRAM's damaged rows using its prepared placement list spines.
 The row compositor still creates output strings and pixel clipping artifacts;
@@ -366,6 +450,13 @@ Rejection also handles an open batch or a failure before the first render."
           (texts (ebox-layer--program-modified-texts program))
           (saved-texts (ebox-layer--program-saved-texts program)))
       (dotimes (index (length records))
+        ;; A footprint snapshot follows any translation in the same batch.
+        (when-let* ((saved (aref (ebox-layer--program-saved-records program) index)))
+          (unless accepted
+            (let ((record (aref records index)))
+              (setcar record (car saved))
+              (setcdr record (cdr saved))))
+          (aset (ebox-layer--program-saved-records program) index nil))
         (when (aref geometry index)
           (unless accepted
             (let ((record (aref records index)))
@@ -377,7 +468,16 @@ Rejection also handles an open batch or a failure before the first render."
           (unless accepted
             (plist-put (aref records index) :text (aref saved-texts index)))
           (aset saved-texts index nil)
-          (aset texts index nil))))
+          (aset texts index nil)))
+      (unless accepted
+        (dolist (entry (ebox-layer--program-saved-targets program))
+          (puthash (car entry) (cdr entry) (ebox-layer--program-targets program)))
+        ;; Appended primitives stay allocated but can no longer paint.
+        (when-let* ((count (ebox-layer--program-saved-count program)))
+          (cl-loop for index from count below (length records)
+                   do (plist-put (aref records index) :y -1))))
+      (setf (ebox-layer--program-saved-targets program) nil
+            (ebox-layer--program-saved-count program) nil))
     (when (if accepted (ebox-layer--program-order-dirty program)
             (ebox-layer--program-order-changed program))
       (ebox-layer--program-sort program))
@@ -511,19 +611,25 @@ Nested scroll changes and source updates cannot use this root-only proof."
         (ebox-layer--piece-width-cache
          (or ebox-layer--piece-width-cache (make-hash-table :test #'eq)))
         pieces)
+    ;; Measure only the edges of maximal owned character runs.  Adjacent
+    ;; runs separated by zero-width foreign text merge below, as before.
     (cl-loop for line in lines for row from 0 do
-             (let ((start 0) (limit (length line)))
-               (while (< start limit)
-                 (let ((end (next-property-change start line limit)))
-                   (when (ebox-layer--owned-p line start region)
-                     (let ((x (ebox-layer--prefix-width line start))
-                           (right (ebox-layer--prefix-width line end)))
+             (let ((start 0) (limit (length line)) run)
+               (while (<= start limit)
+                 (let* ((end (and (< start limit) (next-property-change start line limit)))
+                        (owned (and end (ebox-layer--owned-p line start region))))
+                   (cond
+                    ((and owned (null run)) (setq run start))
+                    ((and run (not owned))
+                     (let ((x (ebox-layer--prefix-width line run))
+                           (right (ebox-layer--prefix-width line start)))
                        (when (> right x)
                          ;; Keep the full row as source so shaping and shared
                          ;; display objects are measured in their own context.
                          (push (list :line line :start x :end right :y row)
-                               pieces))))
-                   (setq start end)))))
+                               pieces)))
+                     (setq run nil)))
+                   (setq start (or end (1+ limit)))))))
     ;; Property boundaries must not become artificial glyph clipping edges.
     (let (merged)
       (dolist (piece (nreverse pieces))

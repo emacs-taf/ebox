@@ -429,14 +429,22 @@ clipping and native text writes still allocate output-related artifacts; compile
 wrapper instructions and the prepared publisher alone do not establish allocation
 or latency acceptance.
 
-The mixed prepared-update cohort cold-binds source cells and raster instructions
-for a fixed member set. Sparse changed-member indices feed one retained frame.
-Duplicate Host specifications share one source-record binding; stage snapshots
-caller values before hooks, and a rejected frame restores every source and caller
-cell. Paint recipes retain their computed inheritance providers and raw raster
-ownership. Warm replay touches bound primitive rows, without rebuilding a source
-or component graph. A fixed sparse geometry batch saves each record once, so
-paint, Text and multiple placements share complete pixel rollback.
+The mixed prepared-update cohort cold-binds source cells and the retained
+primitive owning each member's pixels; preparation renders nothing. Sparse
+changed-member indices feed one retained frame. Duplicate Host specifications
+share one source-record binding; stage snapshots caller values before hooks, and
+a rejected frame restores every source and caller cell. After staging, apply
+recomputes the complete cascade of changed style members and their descendants,
+snapshotting each rewritten node so rollback restores the exact cells that
+source slots share. It then renders each changed member's nearest record owner
+with the ordinary renderer in its host content context, so incremental and full
+output share one box implementation. Per-cohort render-signature and viewport
+memo tables survive between applies and are invalidated along the changed
+nodes' ancestor paths. A flow owner replaces only rows whose pixels changed and
+must keep its rows and pixel intervals. An absolute owner does not participate
+in flow, so a resize or row change reuses its record slots, appends records and
+hides surplus ones. A fixed sparse batch saves each record once, so paint, Text,
+resize and multiple placements share complete pixel rollback.
 
 Class variants compile to the existing source token grammar and a private
 selector view. Candidate indexes contain the finite class superset; ECSS always
@@ -447,13 +455,6 @@ journals. With no dependent state selectors or dynamic style evaluators, press,
 focus and release publish metadata through the retained frame without replacing
 pixels or mount indexes. The report and mount banks advance independently, so
 metadata between geometry updates cannot overwrite the live rollback index.
-
-Border recipes read prebound side-color cells. Font preparation resolves the
-actual normal/bold facts and inherited consumers, and checks glyph shaping,
-spacing and vertical metrics; the terminal uses its explicit fixed-cell proof.
-Each raster retains independent paint-face snapshots. Hot updates switch bound
-facts and repaint known regions; unknown typography or changed inputs invalidate
-that proof. Display guards and font-cache generations prevent stale metrics.
 
 Prepared source records preserve exact opaque handles while an immutable index
 overlay selects the new private record. Operation validity compares record
