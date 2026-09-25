@@ -1051,6 +1051,11 @@
       "purpose": "Parent property changes compose with Range reordering in either order while retaining focus and editable child handles."
     },
     {
+      "name": "ebox-host-properties-inherit-into-replaced-styled-subtrees",
+      "file": "tests/ebox-host-property-tests.el",
+      "purpose": "An inherited property update on a parent composes with same-candidate Range items that own styled Box children, reaching every new leaf."
+    },
+    {
       "name": "ebox-host-properties-preserve-text-and-structural-ownership",
       "file": "tests/ebox-host-property-tests.el",
       "purpose": "Property updates preserve text, refine retained structural replacements and do not resurrect removed owners."

@@ -5908,12 +5908,20 @@ style consumers; the Style Adapter computes their values exactly once later."
           (if (or (not (listp node)) (stringp node))
               node
             (let* ((node-id (plist-get node :node-id))
-                   (entry
+                   (base-node
                     (and node-id
+                         (ebox-runtime-index-get
+                          node-id (plist-get state :node-table))))
+                   ;; A node absent from the published base was created by
+                   ;; this candidate's own replacements.  The Range and
+                   ;; replacement indexes hold that object, so it is updated
+                   ;; in place: a copy would leave the indexed object and the
+                   ;; rendered tree disagreeing about its identity.
+                   (candidate-owned-p (null base-node))
+                   (entry
+                    (and base-node
                          (equal (ebox-tree-node-source-identity node)
-                                (ebox-tree-node-source-identity
-                                 (ebox-runtime-index-get
-                                  node-id (plist-get state :node-table))))
+                                (ebox-tree-node-source-identity base-node))
                          (gethash node-id patch-table)))
                    (patch (and entry
                                (ebox-incremental--candidate-property-update-node
@@ -5924,7 +5932,8 @@ style consumers; the Style Adapter computes their values exactly once later."
                           entry)))
                    (old-declarations
                     (ebox-style-node-declarations source-index node))
-                   (next (if (or entry inherited-input-changed-p)
+                   (next (if (and (not candidate-owned-p)
+                                  (or entry inherited-input-changed-p))
                              (copy-sequence node)
                            node)))
               (when entry
@@ -5954,8 +5963,6 @@ style consumers; the Style Adapter computes their values exactly once later."
                           (and entry
                                (ebox-style--inherited-declarations-changed-p
                                 old-declarations new-declarations)))))
-                (when (or entry inherited-input-changed-p)
-                  (ebox-tree--set-author-style-count next 1))
                 (let (child-replacements)
                   (dolist (child (ebox-tree--children-raw next))
                     (when (or descendant-input-changed-p
@@ -5969,6 +5976,15 @@ style consumers; the Style Adapter computes their values exactly once later."
                     (setq next
                           (ebox-tree-copy-with-direct-child-replacements
                            next (nreverse child-replacements)))))
+                ;; This node becomes a pending style consumer.  Its count is
+                ;; itself plus every pending descendant, including children
+                ;; replaced by the same candidate, so it is computed from the
+                ;; final children rather than assumed to be one.
+                (when (or entry inherited-input-changed-p)
+                  (ebox-tree--set-author-style-count
+                   next
+                   (1+ (cl-loop for child in (ebox-tree--children-raw next)
+                                sum (ebox-tree-author-style-count child)))))
                 ;; Inherited properties can copy a descendant that was already a
                 ;; replacement anchor.  Keep its trace on the final copy:
                 ;; indexing the earlier anchor would leave the committed node

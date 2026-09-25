@@ -124,6 +124,43 @@ CONTENT is text or child specs; (:range REF SPEC...) describes a child Range."
                              (a text nil (:tab-index 0) "A2"))))))
           (ebox-region-update handle :content "A2"))))))
 
+(ert-deftest ebox-host-properties-inherit-into-replaced-styled-subtrees ()
+  "An inherited property update composes with replaced items that own styled children.
+
+The replaced Range items are Boxes whose children carry their own author
+declarations, so the inherited color must reach every new leaf while the
+publication stays consistent."
+  (dolist (properties-first '(nil t))
+    (let* ((before (ebox-host-property-test--input
+                    '(panel column (:width (ch 24)) nil
+                            ((:range rows
+                                     (a row (:padding-left (ch 1)) nil
+                                        ((a1 text (:font-weight bold) nil "A1")
+                                         (a2 text (:font-weight bold) nil "A2")))
+                                     (b row (:padding-left (ch 1)) nil
+                                        ((b1 text (:font-weight bold) nil "B1"))))))))
+           (next (ebox-host-property-test--input
+                  '(panel column (:width (ch 24) :color "blue") nil nil)))
+           (items '((b row (:padding-left (ch 2)) nil
+                       ((b1 text (:font-weight bold) nil "B1")
+                        (b2 text (:font-weight bold) nil "B2")))
+                    (a row (:padding-left (ch 2)) nil
+                       ((a1 text (:font-weight bold) nil "A1"))))))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) before)
+        (let ((candidate (ebox-candidate-begin (current-buffer))))
+          (when properties-first
+            (ebox-candidate-update-host-properties candidate 'panel before next))
+          (ebox-candidate-replace-range-ref
+           candidate 'rows (apply #'ebox-host-property-test--input items))
+          (unless properties-first
+            (ebox-candidate-update-host-properties candidate 'panel before next))
+          (ebox-commit (current-buffer) candidate)
+          (ebox-host-property-test--matches
+           (ebox-host-property-test--input
+            (list 'panel 'column '(:width (ch 24) :color "blue") nil
+                  (list (append '(:range rows) items))))))))))
+
 (ert-deftest ebox-host-properties-preserve-text-and-structural-ownership ()
   "Property updates refine retained owners and cannot resurrect removed owners."
   (dolist (operation '(content parent remove root))

@@ -6,6 +6,12 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A property update that changes an inherited property (such as `:color`) on
+  a parent now composes with same-candidate Range replacements whose items own
+  styled Box children. Ebox used to reset the parent's pending style count to
+  one and copy the newly replaced items, which signalled a negative style count
+  or an unknown region at commit; candidate-owned items are now updated in
+  place and counts follow their final children.
 - Native drags merge bounded bursts of pending motion and publish their latest
   position without crossing release, cancellation or unrelated input. Locked
   gestures no longer publish movement after the ending press, and targets lost
