@@ -21,6 +21,24 @@
 (require 'ebox-property)
 (require 'ebox-reactive)
 
+(defvar ebox--pub--surface-id-counter 0)
+(defvar ebox--pub--object-id-counter 0)
+(defvar ebox--pub--mount-id-counter 0)
+
+(defvar ebox--pub--surface-transaction-id 0)
+(defvar ebox--pub--surfaces (make-hash-table :test #'eql :weakness 'value))
+(defvar ebox--pub--current-prepare-context nil)
+(defvar ebox--pub--surface-publishing nil)
+(defvar ebox--pub--surface-guarding-prepare nil)
+(defvar ebox--pub--surface-publication-step-function nil)
+(defvar ebox--pub--surface-precommit-step-function nil)
+(defvar ebox--pub--surface-cleanup-step-function nil)
+(defvar ebox--pub--content-published-ranges nil)
+
+(defvar-local ebox--pub--buffer-surfaces nil)
+(defvar-local ebox--pub--surface-character-tick 0)
+(defvar-local ebox--pub--surface-before-change-state nil)
+
 (define-error 'ebox--pub-surface-error "Ebox retained surface error")
 (define-error 'ebox--pub-invalid-surface-plan "Invalid Ebox surface plan"
   'ebox--pub-surface-error)
@@ -723,24 +741,6 @@ Native text/undo primitives may allocate; framework storage is cold-owned."
 Use the existing frame transaction so native focus/active metadata has the same
 revision, hook validation, observer delivery and rollback as pixel changes."
   (ebox--pub-frame-publish frame (ebox--pub-frame-output frame) client-state nil nil nil t))
-
-(defvar ebox--pub--surface-id-counter 0)
-(defvar ebox--pub--object-id-counter 0)
-(defvar ebox--pub--mount-id-counter 0)
-
-(defvar ebox--pub--surface-transaction-id 0)
-(defvar ebox--pub--surfaces (make-hash-table :test #'eql :weakness 'value))
-(defvar ebox--pub--current-prepare-context nil)
-(defvar ebox--pub--surface-publishing nil)
-(defvar ebox--pub--surface-guarding-prepare nil)
-(defvar ebox--pub--surface-publication-step-function nil)
-(defvar ebox--pub--surface-precommit-step-function nil)
-(defvar ebox--pub--surface-cleanup-step-function nil)
-(defvar ebox--pub--content-published-ranges nil)
-
-(defvar-local ebox--pub--buffer-surfaces nil)
-(defvar-local ebox--pub--surface-character-tick 0)
-(defvar-local ebox--pub--surface-before-change-state nil)
 
 (defconst ebox--pub--surface-producer-key '(ebox/publication . producer))
 (defconst ebox--pub--surface-extension-key 'ebox--pub-surface)
