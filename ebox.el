@@ -861,8 +861,10 @@
 ;; variants, uniform :border shorthand color changes with unchanged width and
 ;; style, :font-weight normal/bold, and :visibility visible/hidden.
 ;; Apply recomputes the changed nodes' cascade, so nil :color restores the
-;; inherited value, and renders their nearest retained composition primitive
-;; with the ordinary renderer. An absolute Host may change its footprint,
+;; inherited value; descendants recompute only while an inherited value or the
+;; projected font changed, so a paint change such as :visibility or
+;; :background-color leaves their styles intact. Apply then renders the changed
+;; nodes' nearest retained composition primitive with the ordinary renderer. An absolute Host may change its footprint,
 ;; including releasing it entirely while hidden and reclaiming it when shown. A
 ;; flow primitive must keep its rows and pixel intervals: Text may vary inside
 ;; a fixed-width parent allocation, while a change that would move adjacent

@@ -53,8 +53,9 @@ generation 保持为一个整体。普通 author 代码只需把这个值原样�
 子节点只写差异。参考示例正在讲解的属性仍然显式写出，即使它恰好采用默认值。
 
 eBox 自动继承 `:color`、`:font-family`、`:font-size`、`:font-weight`、
-`:font-style`、`:text-align`、`:wrap-mode` 和 `:visibility`。几何属性和背景色不继承；
-子节点未绘制背景时，可以透出父节点的背景。例如：
+`:font-style`、`:text-align` 和 `:wrap-mode`。几何属性、背景色和 `:visibility` 不继承；
+子节点未绘制背景时，可以透出父节点的背景；隐藏的盒子会压掉整个子树的墨迹，
+但不改变任何后代的计算样式。例如：
 
 ```elisp
 (ebox-build

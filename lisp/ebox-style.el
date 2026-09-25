@@ -271,7 +271,11 @@
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
      :validator wrap-mode)
-    (:name :visibility :id ebox/visibility :initial visible :inherits t
+    ;; A hidden box suppresses the ink of its whole subtree at paint time
+    ;; and focus checks every ancestor, so descendants never consult an
+    ;; inherited value; keeping it out of the cascade lets a visibility
+    ;; change publish without recomputing descendant styles.
+    (:name :visibility :id ebox/visibility :initial visible
      :contexts (box row column flex grid)
      :group paint :dirty-kind paint :signature paint)
     (:name :outer :id ebox/outer :initial block

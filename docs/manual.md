@@ -61,9 +61,10 @@ overrides. Reference panels still spell out the property they teach, even
 when its value is the default.
 
 Ebox inherits `:color`, `:font-family`, `:font-size`, `:font-weight`,
-`:font-style`, `:text-align`, `:wrap-mode`, and `:visibility`. Geometry and
-background colors do not inherit; an unpainted child can show its parent's
-background. For example:
+`:font-style`, `:text-align`, and `:wrap-mode`. Geometry, background colors,
+and `:visibility` do not inherit; an unpainted child can show its parent's
+background, and a hidden box suppresses its whole subtree's ink without
+changing any descendant's computed style. For example:
 
 ```elisp
 (ebox-build

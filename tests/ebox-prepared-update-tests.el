@@ -126,6 +126,50 @@
         (should (string-match-p "Value00" (buffer-string)))
         (ebox-prepared-update-test--assert-fresh)))))
 
+(ert-deftest ebox-prepared-update-toggles-visibility-over-deep-subtree ()
+  "Hiding and showing a Host with a deep subtree keeps every descendant fresh.
+Visibility is a paint boundary of the changed Host rather than an inherited
+value, so descendants keep their computed styles; an inherited paint change
+on the same Host still reaches descendants that inherit it while explicit
+overrides stay untouched."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (ch 40) :height (lh 8)
+           (text "Desk")
+           (box :id "panel" :position absolute :left (ch 2) :top (lh 1)
+                :width (ch 30) :height (lh 5) :z-index 1 :visibility visible
+                :color "#224466" :font-weight normal
+             (column
+              (row (text "Head") (text :color "#AA2222" "Own"))
+              (column (row (text "Body01")) (row (text "Body02")))
+              (row (text :font-weight bold "Foot")))))))
+      (let* ((operation
+              (ebox-update-prepare
+               (current-buffer) [["panel" [:visibility :color :font-weight]]]
+               #'ignore #'ignore))
+             (values [[hidden "#224466" normal]])
+             (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should operation)
+        (should (ebox-update-apply operation values [0]))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (should-not (string-match-p "Body02" (buffer-string)))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [visible "#224466" normal])
+        (should (ebox-update-apply operation values [0]))
+        (should (string-match-p "Body02" (buffer-string)))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [visible "#116633" bold])
+        (should (ebox-update-apply operation values [0]))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [hidden "#116633" bold])
+        (should (ebox-update-apply operation values [0]))
+        (aset values 0 [visible "#224466" normal])
+        (should (ebox-update-apply operation values [0]))
+        (ebox-prepared-update-test--assert-fresh)))))
+
 (ert-deftest ebox-prepared-update-shows-initially-hidden-positioned-panel ()
   "A panel mounted hidden stays addressable: prepared moves park it and a
 prepared visibility change paints it at its current placement."

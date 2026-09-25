@@ -35,6 +35,13 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- `:visibility` no longer inherits. A hidden box already suppresses its whole
+  subtree's ink and focus checks every ancestor, so descendants never consumed
+  the inherited value. Prepared paint publication recomputes a descendant's
+  cascade only while an ancestor's inherited value or projected font changed;
+  hiding, showing or recoloring the background of a Host with a large subtree
+  now restyles that Host alone. Stylesheets that relied on `:visibility`
+  cascading to a descendant's own computed value must hide the ancestor.
 - Prepared geometry and property publication settles a recomposited row whose
   pixels equal the accepted output before wrapper rendering and buffer
   writes. Restacking or moving a panel that occludes nothing no longer

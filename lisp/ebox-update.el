@@ -523,7 +523,10 @@ operation, or nil if a member cannot use the fixed retained canvas."
         (setcdr (cdr tail) nil)))))
 
 (defun ebox-update--restyle (operation node)
-  "Recompute NODE's cascade and its descendants' inherited consequences."
+  "Recompute NODE's cascade and its descendants' inherited consequences.
+Descendants recompute only while an inherited value or the projected font
+of their ancestor changed: a paint change confined to the changed Host, such
+as its background or visibility, leaves every descendant cascade intact."
   (let* ((state (ebox-update--cohort-state operation))
          (source (plist-get state :source-index))
          (parents (plist-get state :parent-table))
@@ -540,7 +543,9 @@ operation, or nil if a member cannot use the fixed retained canvas."
                           (ebox-source--index-node-subject source node))
                (throw 'unsupported nil))
              (ebox-update--snapshot-node operation node)
-             (let* ((style (ebox-surface--compute-node-style
+             (let* ((old-style (plist-get node :ebox-computed-style))
+                    (old-font (plist-get node :ebox-font-fact))
+                    (style (ebox-surface--compute-node-style
                             (ebox-tree-node-subject source node)
                             (ebox-tree-node-source-declarations source node)
                             parent-style scopes ebox-selector-view--current))
@@ -548,8 +553,12 @@ operation, or nil if a member cannot use the fixed retained canvas."
                (ebox-surface--project-font node style parent-font snapshot)
                (ebox-style-apply-computed node style snapshot)
                (let ((font (plist-get node :ebox-font-fact)))
-                 (ebox-tree-for-each-direct-child
-                  node (lambda (child) (visit child style font))))))))
+                 (unless (and old-style
+                              (equal old-font font)
+                              (equal (ebox-style--inherited-style-signature old-style)
+                                     (ebox-style--inherited-style-signature style)))
+                   (ebox-tree-for-each-direct-child
+                    node (lambda (child) (visit child style font)))))))))
       (visit node (plist-get parent :ebox-computed-style) (plist-get parent :ebox-font-fact)))))
 
 ;; Render signatures are recursive and memoized by node identity.  A change

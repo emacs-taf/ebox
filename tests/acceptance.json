@@ -1336,6 +1336,11 @@
       "purpose": "A failing stage reverses multiple caller cells and all source/display changes; retry succeeds and unsupported text footprint changes preserve the accepted generation."
     },
     {
+      "name": "ebox-prepared-update-toggles-visibility-over-deep-subtree",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "Hiding, showing and recoloring a positioned Host with a deep subtree through the prepared route matches a fresh render: visibility stays a paint boundary of the Host while inherited color and font-weight changes still reach descendants that inherit them."
+    },
+    {
       "name": "ebox-prepared-update-hides-and-shows-positioned-panel",
       "file": "tests/ebox-prepared-update-tests.el",
       "purpose": "A prepared visibility member hides a positioned panel's footprint and restores it with its geometry through the retained route, matching a fresh render."
