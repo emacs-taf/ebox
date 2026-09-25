@@ -178,16 +178,25 @@
 
 (defun ebox-update-effects--source (feature)
   "Describe FEATURE's checked-out source revision and uncommitted changes."
-  (let ((root (file-name-directory (locate-library (symbol-name feature)))))
-    (cl-labels ((git (&rest args)
+  (let* ((root (file-name-directory (locate-library (symbol-name feature))))
+         ;; An index-less `jj workspace add' checkout reports @- as its HEAD.
+         (jj (and (not (file-exists-p (expand-file-name ".git" root)))
+                  (file-directory-p (expand-file-name ".jj" root)))))
+    (cl-labels ((vcs (&rest args)
                   (with-temp-buffer
-                    (if (zerop (apply #'process-file "git" nil t nil "-C" root args))
+                    (if (zerop (if jj
+                                   (apply #'process-file "jj" nil t nil "--no-pager" "-R" root args)
+                                 (apply #'process-file "git" nil t nil "-C" root args)))
                         (buffer-string)
                       (error "Cannot identify source checkout: %s" feature)))))
       (list :package (symbol-name feature) :directory root
-            :revision (string-trim (git "rev-parse" "HEAD"))
-            :dirty (if (string-empty-p (git "status" "--porcelain")) :false t)
-            :working_diff_sha256 (secure-hash 'sha256 (git "diff" "HEAD"))))))
+            :revision (string-trim (if jj (vcs "log" "--no-graph" "-r" "@-" "-T" "commit_id")
+                                     (vcs "rev-parse" "HEAD")))
+            :dirty (if (string-empty-p (if jj (vcs "diff" "-r" "@" "--summary")
+                                         (vcs "status" "--porcelain")))
+                       :false t)
+            :working_diff_sha256 (secure-hash 'sha256 (if jj (vcs "diff" "-r" "@" "--git")
+                                                        (vcs "diff" "HEAD")))))))
 
 (defun ebox-update-effects--write (output report)
   "Write complete REPORT atomically at OUTPUT."
