@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- `ebox-update-prepare` binds a `:color`/`:background-color` cell whose value
+  is a paint slot by the slot's stable face. Previously, after
+  `ebox-paint-slot-apply-updates` changed the slot's specification, the
+  mounted engine copy no longer compared `equal` to the source declaration and
+  preparation was declined with `source-binding`.
 - A property update that changes an inherited property (such as `:color`) on
   a parent now composes with same-candidate Range replacements whose items own
   styled Box children. Ebox used to reset the parent's pending style count to

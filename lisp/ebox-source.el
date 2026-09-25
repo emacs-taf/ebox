@@ -13,6 +13,7 @@
 (require 'subr-x)
 (require 'ebox-text)
 (require 'ebox-interaction)
+(require 'ebox-paint)
 
 (declare-function ebox-style-schema-id "ebox-style" (name))
 
@@ -504,6 +505,14 @@ ROLLBACK restores that captured value.  All callbacks have fixed ownership."
   (setf (ebox-source--update-slots-selector-context slots) context)
   (aset (ebox-source--update-slots-value-cells slots) position (vector capture apply rollback)))
 
+(defun ebox-source--update-slots-value-equal-p (left right)
+  "Return non-nil when source value LEFT projects to engine value RIGHT.
+Paint slots are stable face addresses: a boundary copy of a slot with an
+older face specification still names the same paint contribution."
+  (if (and (ebox-paint-slot-p left) (ebox-paint-slot-p right))
+      (eq (ebox-paint-slot-face left) (ebox-paint-slot-face right))
+    (equal left right)))
+
 (defun ebox-source--update-slots-prepare (index node properties)
   "Prepare private source and value cells for NODE in INDEX.
 PROPERTIES fixes the incoming value-vector order.  Return slots carrying an
@@ -587,7 +596,8 @@ isolated from later writes."
            (t (throw 'unsupported nil)))
           (unless (memq property '(:content :class :border))
             (if (and source-cell (aref targets 0)
-                     (equal (car source-cell) (car (aref targets 0))))
+                     (ebox-source--update-slots-value-equal-p
+                      (car source-cell) (car (aref targets 0))))
                 (setq value (car source-cell))
               (if (memq property '(:box-sizing :position :layer :anchor :placement
                                   :width :min-width :max-width :height :min-height :max-height))

@@ -16,11 +16,13 @@
      (let ((ebox-viewport-width 160) (ebox-viewport-height 12))
        (with-temp-buffer ,@body))))
 
-(defun ebox-prepared-publication-test--input (&optional multi-row extra-host native-map)
+(defun ebox-prepared-publication-test--input (&optional multi-row extra-host native-map
+                                                       moving-style)
   "Build overlapping panels with explicit public Host identities.
 MULTI-ROW gives the moving panel three unequal text rows in a taller surface.
 EXTRA-HOST inserts another independently addressable positioned panel.
-NATIVE-MAP enables the moving panel's native input and logical focus."
+NATIVE-MAP enables the moving panel's native input and logical focus.
+MOVING-STYLE appends declarations to the moving panel's style."
   (let ((builder (ebox-source-builder-create)))
     (cl-labels
         ((box (identity style children &optional help)
@@ -52,7 +54,8 @@ NATIVE-MAP enables the moving panel's native input and logical focus."
                          "LOWER001" "lower"))
              (upper (box 'moving
                          `(:position absolute :left (ch 0) :top (lh 1)
-                           :width (ch 8) :height (lh ,(if multi-row 3 1)) :z-index 2)
+                           :width (ch 8) :height (lh ,(if multi-row 3 1)) :z-index 2
+                           ,@moving-style)
                          (if multi-row "UPPER001\nMIDDLE\nZ" "UPPER001") "upper"))
              (extra (and extra-host
                          (box 'inserted
@@ -219,6 +222,35 @@ NATIVE-MAP enables the moving panel's native input and logical focus."
         (should (ebox-geometry-apply operation [(ch 4) (lh 2) 2]))
         (should (eq caller-state 'after))
         (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (ebox-prepared-publication-test--assert-authority)))))
+
+(ert-deftest ebox-prepared-publication-binds-paint-slot-after-spec-update ()
+  "A paint slot keeps binding its prepared color cell after its face changes.
+Slots are stable face addresses; the specification they carry may differ
+between the source declaration and the mounted engine copy."
+  (ebox-prepared-publication-test--with-buffer
+    (let* ((slot (ebox-paint-slot-create '(:foreground "#336699")))
+           (specifications (vector (vector 'moving [:left :top :z-index :color])))
+           (values (vector (vector '(ch 0) '(lh 1) 2 slot)))
+           (changed (vector 0)))
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-prepared-publication-test--input nil nil nil (list :color slot)))
+      (let ((operation (ebox-update-prepare (current-buffer) specifications)))
+        (should operation)
+        (aset (aref values 0) 0 '(ch 6))
+        (should (ebox-update-apply operation values changed))
+        (ebox-prepared-publication-test--assert-authority))
+      (ebox-paint-slot-apply-updates
+       (current-buffer) (list (cons slot '(:foreground "#993366"))))
+      (ebox-region-update 'covered :color "#0088cc")
+      (let ((operation (ebox-update-prepare (current-buffer) specifications)))
+        (should operation)
+        (should (eq 'ready (plist-get (ebox-update-prepare-report (current-buffer))
+                                      :status)))
+        (aset (aref values 0) 0 '(ch 2))
+        (should (ebox-update-apply operation values changed))
+        (should (equal (plist-get (ebox-region-geometry 'moving) :left) '(ch 2)))
         (ebox-prepared-publication-test--assert-authority)))))
 
 (ert-deftest ebox-prepared-publication-reprepares-after-inserting-host ()
