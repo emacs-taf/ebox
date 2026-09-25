@@ -35,6 +35,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Prepared geometry and property publication settles a recomposited row whose
+  pixels equal the accepted output before wrapper rendering and buffer
+  writes. Restacking or moving a panel that occludes nothing no longer
+  rewrites every row it occupies.
 - Resizing positioned Hosts whose composition owner is the root (for example
   stacked tiling panes under a root-wide Host) publishes through the local
   span patch instead of rendering the whole surface twice. The root owner has

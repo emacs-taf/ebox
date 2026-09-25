@@ -411,15 +411,24 @@ accepted row baseline until settlement."
             (setcar tail record)
             (unless (aref heads row) (aset heads row tail))
             (aset tails row (cdr tail))))))
-    (dotimes (row height)
-      (when (aref dirty row)
-        ;; Keep the allocated spine intact.  The compositor receives the
-        ;; bounded prefix length rather than severing a reusable list tail.
-        (aset rows row
-              (ebox-composite-line
-               (if (< row (length base)) (aref base row) "")
-               (aref heads row) (ebox-layer--program-width program)
-               (aref tails row)))))
+    (let ((saved (ebox-layer--program-saved-rows program)))
+      (dotimes (row height)
+        (when (aref dirty row)
+          ;; Keep the allocated spine intact.  The compositor receives the
+          ;; bounded prefix length rather than severing a reusable list tail.
+          (let ((rendered (ebox-composite-line
+                           (if (< row (length base)) (aref base row) "")
+                           (aref heads row) (ebox-layer--program-width program)
+                           (aref tails row)))
+                (baseline (aref saved row)))
+            ;; Restacking or moving a record often leaves a row's accepted
+            ;; pixels identical.  Settle such rows here so wrappers, enclosing
+            ;; programs and the buffer never revisit them.
+            (if (and baseline (equal-including-properties rendered baseline))
+                (progn (aset rows row baseline)
+                       (aset saved row nil)
+                       (aset dirty row nil))
+              (aset rows row rendered))))))
     (unless rows-only
       (let ((tail (ebox-layer--program-output-spine program)))
         (dotimes (row height)

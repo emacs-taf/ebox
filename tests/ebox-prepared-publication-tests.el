@@ -224,6 +224,35 @@ MOVING-STYLE appends declarations to the moving panel's style."
         (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
         (ebox-prepared-publication-test--assert-authority)))))
 
+(ert-deftest ebox-prepared-publication-skips-rows-with-unchanged-pixels ()
+  "Restacking a panel that occludes nothing publishes no text or properties.
+Every row the panel occupies is recomposited, but rows whose pixels equal the
+accepted output are settled without a buffer write."
+  (ebox-prepared-publication-test--with-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-prepared-publication-test--input))
+    (let ((operation (ebox-geometry-prepare (current-buffer) 'moving [:left :top :z-index])))
+      (should operation)
+      (should (ebox-geometry-apply operation [(ch 10) (lh 1) 2]))
+      (let ((before (buffer-string))
+            (tick (buffer-modified-tick))
+            (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (ebox-geometry-apply operation [(ch 10) (lh 1) 0]))
+        (let ((publication (plist-get (ebox-buffer-update-report (current-buffer)) :publication)))
+          (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+          (should (= 0 (plist-get publication :text-operations)))
+          (should (= 0 (plist-get publication :property-operations)))
+          (should (= 0 (plist-get publication :touched-characters))))
+        (should (= tick (buffer-modified-tick)))
+        (should (equal-including-properties before (buffer-string)))
+        (ebox-prepared-publication-test--assert-authority))
+      ;; The restacked panel now yields to the covered one where they overlap.
+      (should (ebox-geometry-apply operation [(ch 0) (lh 1) 0]))
+      (should (> (plist-get (plist-get (ebox-buffer-update-report (current-buffer)) :publication)
+                            :touched-characters)
+                 0))
+      (should (ebox-host-ref-bounds (current-buffer) 'covered))
+      (ebox-prepared-publication-test--assert-authority))))
+
 (ert-deftest ebox-prepared-publication-binds-paint-slot-after-spec-update ()
   "A paint slot keeps binding its prepared color cell after its face changes.
 Slots are stable face addresses; the specification they carry may differ

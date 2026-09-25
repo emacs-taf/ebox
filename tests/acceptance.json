@@ -1226,6 +1226,11 @@
       "purpose": "Repreparing after an ordinary paint publication leaves the previous operation stale and preserves accepted pixels, bounds, report, revision and mount identity through a rejected move before a successful retry."
     },
     {
+      "name": "ebox-prepared-publication-skips-rows-with-unchanged-pixels",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Restacking a positioned panel that occludes nothing publishes zero text, property and touched-character operations while the accepted output, revision and Host bounds stay authoritative; overlapping restacks still repaint."
+    },
+    {
       "name": "ebox-prepared-publication-binds-paint-slot-after-spec-update",
       "file": "tests/ebox-prepared-publication-tests.el",
       "purpose": "A prepared :color cell bound to a paint slot stays preparable after the slot's face specification changes, matching the slot by its stable face rather than its copied specification."
