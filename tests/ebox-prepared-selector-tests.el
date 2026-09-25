@@ -127,5 +127,31 @@
         (should (= 1 (length (ebox-selector-query-all snapshot ".tab\\ active"))))
         (should-not (ebox-selector-query-all snapshot ".active"))))))
 
+(ert-deftest ebox-prepared-selector-reprepares-after-ordinary-commit ()
+  "An ordinary commit after prepared class writes keeps later cohorts bindable."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10)
+        (specifications
+         [["a" [:class :border] [[("tab" "active") ("tab")] nil]]
+          ["b" [:class :border] [[("tab") ("tab" "active")] nil]]])
+        (values [[("tab") ((px 1) solid "#DCE6F0")]
+                 [("tab" "active") ((px 1) solid "#68809A")]]))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-prepared-selector-test--input))
+      (let ((operation (ebox-update-prepare (current-buffer) specifications)))
+        (should operation)
+        (should (ebox-update-apply operation values [0 1]))
+        (ebox-commit (current-buffer)
+                     (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))
+        (ebox-prepared-selector-test--assert-render)
+        (should-not (ebox-update-valid-p operation))
+        (setq operation (ebox-update-prepare (current-buffer) specifications))
+        (should operation)
+        (aset values 0 [("tab" "active") ((px 1) solid "#68809A")])
+        (aset values 1 [("tab") ((px 1) solid "#DCE6F0")])
+        (should (ebox-update-apply operation values [0 1]))
+        (should (= 1 (length (ebox-selector-query-buffer (current-buffer) "#a.active"))))
+        (should-not (ebox-selector-query-buffer (current-buffer) "#b.active"))
+        (ebox-prepared-selector-test--assert-render)))))
+
 (provide 'ebox-prepared-selector-tests)
 ;;; ebox-prepared-selector-tests.el ends here

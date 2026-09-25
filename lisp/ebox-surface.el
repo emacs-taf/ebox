@@ -7871,14 +7871,20 @@ published runtime and must be consumed without clearing those shared nodes."
     ;; A prepared source write leaves immutable computed styles and their
     ;; inherited projections as stale derived data.  This ordinary boundary
     ;; owns a complete cold rebuild; never reuse local output or old caches.
-    (setq projection-kind nil source-isolated-p nil source-path-copied-p nil
-          state-overrides
-          (cl-loop for (key value) on state-overrides by #'cddr
-                   when (memq key '(:source-index :source-base-index
-                                    :viewport-width :viewport-height
-                                    :runtime-revision :display-signature
-                                    :logical-candidate-p :detached-identity-history))
-                   append (list key value))))
+    (let ((source-index (plist-get state-overrides :source-index)))
+      (setq projection-kind nil source-isolated-p nil source-path-copied-p nil
+            state-overrides
+            (cl-loop for (key value) on state-overrides by #'cddr
+                     when (memq key '(:source-base-index
+                                      :viewport-width :viewport-height
+                                      :runtime-revision :display-signature
+                                      :logical-candidate-p :detached-identity-history))
+                     append (list key value)))
+      ;; The rebuild projects a copied root.  Retain the supplied records, but
+      ;; derive document-order entries and subjects from the copied nodes.
+      (when source-index
+        (setq state-overrides
+              (plist-put state-overrides :source-base-index source-index)))))
   (if (stringp source)
       (let ((object
              (ebox--pub-object-ensure context nil ebox-surface--root-key

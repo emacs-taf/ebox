@@ -1359,6 +1359,11 @@
       "name": "ebox-prepared-selector-preserves-source-token-grammar",
       "file": "tests/ebox-prepared-selector-tests.el",
       "purpose": "Prepared class variants preserve the canonical source grammar for single strings, symbols, nil and flat token lists, including one token containing whitespace and snapshot isolation."
+    },
+    {
+      "name": "ebox-prepared-selector-reprepares-after-ordinary-commit",
+      "file": "tests/ebox-prepared-selector-tests.el",
+      "purpose": "An ordinary commit after prepared class writes invalidates the old cohort, renders like a fresh mount, and lets a new class cohort bind, publish and answer selector queries."
     }
   ]
 }
