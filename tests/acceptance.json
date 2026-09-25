@@ -416,6 +416,11 @@
       "purpose": "Root composition must not collect portals under a hidden flow ancestor."
     },
     {
+      "name": "ebox-layer-publication-root-owner-pane-resize-publishes-locally",
+      "file": "tests/ebox-layer-publication-tests.el",
+      "purpose": "Resizing stacked positioned panes owned by the root publishes through a local span patch instead of a full-surface render while matching a fresh render."
+    },
+    {
       "name": "ebox-layer-style-accepts-existing-box-layouts-only",
       "file": "tests/ebox-layer-style-tests.el",
       "purpose": "Every box layout accepts layer facts, while Text rejects every property."

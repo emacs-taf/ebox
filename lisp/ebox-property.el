@@ -28,6 +28,11 @@
 (defvar ebox-property--policies (make-hash-table :test #'eq)
   "Registered Ebox native property policies by namespaced id.")
 
+(defvar ebox-property--text-policies (make-hash-table :test #'eq)
+  "Direct text-property policies by Emacs property symbol.
+This caches `ebox-register-text-property' lookups; defining a policy
+clears it so a replaced `text/' policy is observed.")
+
 (defun ebox-property--canonical-id-p (id)
   "Return non-nil when ID is a namespaced property symbol."
   (and (symbolp id)
@@ -69,6 +74,7 @@
   "Register namespaced property ID using policy OPTIONS and return its policy."
   (let ((policy (ebox-property--build-policy id options)))
     (puthash id policy ebox-property--policies)
+    (clrhash ebox-property--text-policies)
     policy))
 
 (defun ebox-property-policy (id)
@@ -114,24 +120,44 @@
       (same left right))))
 
 (defun ebox-property--native-value-equal-p (left right)
-  "Compare native values LEFT and RIGHT while preserving callable identity."
+  "Compare native values LEFT and RIGHT while preserving callable identity.
+Keymaps compare by bindings, so this equality serves properties whose
+values are keymaps."
   (cond
    ((and (keymapp left) (keymapp right))
     (ebox-property--native-keymap-equal-p left right))
    ((or (functionp left) (functionp right)) (eq left right))
    (t (equal left right))))
 
+(defun ebox-property--native-plain-value-equal-p (left right)
+  "Compare native values LEFT and RIGHT of a property that never holds a keymap.
+Callables keep identity and every other value compares structurally.  A list
+such as `(keymap)' stored in `rear-nonsticky' satisfies `keymapp', so keymap
+comparison is reserved for the properties that actually bind keys."
+  (cond
+   ((or (functionp left) (functionp right)) (eq left right))
+   (t (equal left right))))
+
+(defconst ebox-property--keymap-text-properties '(keymap local-map)
+  "Emacs text properties whose values are keymaps.")
+
 (defun ebox-register-text-property (property)
   "Register and return a direct policy for Emacs PROPERTY."
-  (let* ((id (ebox-text-property-id property))
-         (existing (ebox-property-policy id)))
-    (or existing
-        (ebox-define-property-policy
-         id :equality #'ebox-property--native-value-equal-p
-         :merge (if (memq property '(face font-lock-face mouse-face))
-                    #'ebox-property--merge-face-values
-                  (lambda (_old new) new))
-         :projector (lambda (value) (list property value))))))
+  (or (gethash property ebox-property--text-policies)
+      (let* ((id (ebox-text-property-id property))
+             (policy
+              (or (ebox-property-policy id)
+                  (ebox-define-property-policy
+                   id :equality
+                   (if (memq property ebox-property--keymap-text-properties)
+                       #'ebox-property--native-value-equal-p
+                     #'ebox-property--native-plain-value-equal-p)
+                   :merge (if (memq property '(face font-lock-face mouse-face))
+                              #'ebox-property--merge-face-values
+                            (lambda (_old new) new))
+                   :projector (lambda (value) (list property value))))))
+        (puthash property policy ebox-property--text-policies)
+        policy)))
 
 (defun ebox-computed (function)
   "Return an explicit computed value source wrapping FUNCTION."

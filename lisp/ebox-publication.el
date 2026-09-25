@@ -3802,7 +3802,9 @@ use the same native-property policies as ordinary publication."
                                             always
                                             (memq (ebox-property-policy-equality
                                                    (ebox-register-text-property property))
-                                                  '(eq equal ebox-property--native-value-equal-p)))))
+                                                  '(eq equal
+                                                    ebox-property--native-value-equal-p
+                                                    ebox-property--native-plain-value-equal-p)))))
                            (ebox--pub--plan-props-equal-p left-props right-props)))
                (setq equal-p nil)))
            (let ((step

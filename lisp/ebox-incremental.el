@@ -6111,9 +6111,15 @@ every attempted commit consumes it even when later preparation fails."
       (error "Ebox candidate commit requires a live buffer: %S"
              buffer-or-name))
     (ebox-incremental--candidate-assert-current candidate buffer old-state)
-    (let ((prepared (ebox-incremental--with-phase 'source
-                      (ebox-incremental--prepare-logical-candidate
-                       buffer old-state candidate))))
+    ;; Source preparation and surface planning read the same published
+    ;; mounts; nothing publishes between them, so one snapshot cache serves
+    ;; both phases.
+    (let* ((ebox-incremental--mount-snapshot-cache
+            (or ebox-incremental--mount-snapshot-cache
+                (make-hash-table :test #'equal)))
+           (prepared (ebox-incremental--with-phase 'source
+                       (ebox-incremental--prepare-logical-candidate
+                        buffer old-state candidate))))
       (ebox-incremental--with-phase 'plan
         (ebox-incremental--surface-commit-input buffer old-state prepared)))))
 
@@ -11134,7 +11140,9 @@ publication root."
 runtime."
   (let* ((stale-styles-p (plist-get old-state :computed-styles-stale-p))
          (ebox-incremental--projection-rejections nil)
-         (ebox-incremental--mount-snapshot-cache (make-hash-table :test #'equal))
+         (ebox-incremental--mount-snapshot-cache
+          (or ebox-incremental--mount-snapshot-cache
+              (make-hash-table :test #'equal)))
          (ebox-incremental--allocated-slot-proof-cache
           (make-hash-table :test 'equal))
          (ebox--flex-slot-safety-cache (make-hash-table :test 'equal))

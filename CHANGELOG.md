@@ -30,6 +30,17 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Resizing positioned Hosts whose composition owner is the root (for example
+  stacked tiling panes under a root-wide Host) publishes through the local
+  span patch instead of rendering the whole surface twice. The root owner has
+  no enclosing content owners, so its retained owner suffix is accepted as
+  provably empty.
+- Text-property equality during commit compares only `keymap` and `local-map`
+  as keymaps. Sticky property-name lists such as `rear-nonsticky (keymap)` are
+  no longer treated as keymaps, and one candidate publication reuses a single
+  region mount snapshot across its source and plan phases. Tiled pane resizes
+  spend roughly a quarter less time in publication validation.
+
 - Prepared cohort restyles run only for members whose paint or class values
   changed. A geometry-only publish of a Host that also declares `:visibility`
   or a color no longer recomputes its cascade.

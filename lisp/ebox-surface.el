@@ -4640,11 +4640,17 @@ Render STATE's candidate into BUFFER's retained owner allocation."
               (ebox-buffer--rendered-owned-lines
                rendered (plist-get old-snapshot :region-ids) (length spans))
             rendered))
+         (root-owner-p
+          (equal owner-id
+                 (plist-get (plist-get state :root-node) :node-id)))
          (external-owners
           (and rendered
+               ;; The root owner has no enclosing content owners, so its
+               ;; retained suffix is provably empty rather than missing.
                (ebox-surface--retained-external-owner-suffix
                 buffer spans (plist-get old-snapshot :region-ids)
-                (plist-get proof :scroll-content-coordinate-p))))
+                (or (plist-get proof :scroll-content-coordinate-p)
+                    root-owner-p))))
          (rendered
           (and external-owners
                (ebox--add-content-owners rendered

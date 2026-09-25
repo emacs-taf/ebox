@@ -281,5 +281,42 @@ ordinary flow content is allowed to choose its own font presentation."
           (should (string-match-p "XY" (buffer-string)))
           (ebox-layer-publication-test--assert-fresh-properties))))))
 
+(defun ebox-layer-publication-test--tiled-input (split)
+  "Build a root-wide host with two stacked positioned panes split at SPLIT rows."
+  (ebox-build
+   `(box :id "root" :position relative :width (px 20) :height (lh 8)
+      (box :id "top" :position absolute :left (px 0) :top (lh 0)
+        :width (px 20) :height (lh ,split) :background-color "blue"
+        (box :id "top-text" "TOP"))
+      (box :id "bottom" :position absolute :left (px 0) :top (lh ,split)
+        :width (px 20) :height (lh ,(- 8 split)) :background-color "red"
+        (box :id "bottom-text" "BOTTOM")))))
+
+(ert-deftest ebox-layer-publication-root-owner-pane-resize-publishes-locally ()
+  "Resizing positioned panes owned by the root publishes a local span patch."
+  (cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
+             (lambda () nil)))
+    (let ((ebox-viewport-width 20) (ebox-viewport-height 8))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-layer-publication-test--tiled-input 4))
+        (ebox-buffer-set-observer (current-buffer) (lambda (_buffer _report)))
+        (dolist (split '(3 5 2))
+          (ebox-incremental-begin-batch (current-buffer))
+          (ebox-region-update "top" :height (list 'lh split))
+          (ebox-region-update "bottom" :top (list 'lh split)
+                              :height (list 'lh (- 8 split)))
+          (ebox-incremental-flush (current-buffer))
+          (let ((report (ebox-buffer-update-report (current-buffer))))
+            (ert-info ((format "split %d: %S" split
+                               (plist-get report :projection-rejections)))
+              (should (memq (plist-get report :projection-kind)
+                            '(owner-scoped span-patch)))))
+          (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                         (substring-no-properties
+                          (ebox-render
+                           (ebox-layer-publication-test--tiled-input split)))))
+          (ebox-layer-publication-test--assert-fresh-render))))))
+
 (provide 'ebox-layer-publication-tests)
 ;;; ebox-layer-publication-tests.el ends here
