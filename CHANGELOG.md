@@ -20,8 +20,11 @@ All notable changes to Ebox are documented here.
 
 - Prepared cohorts can publish coordinated selection classes, unchanged-thickness
   border colors, normal/bold font variants and nil color resets with geometry,
-  Text and hover updates. Absolute Hosts in a cohort can also resize and change
-  their content rows. Class values retain Ebox's canonical token grammar. Native
+  Text and hover updates. Absolute Hosts in a cohort can also resize, change
+  their content rows and toggle `:visibility`, releasing their footprint while
+  hidden. A panel mounted hidden stays a prepared member: its rows compile
+  ownership without painting, so a later `visible` publishes through the same
+  retained route. Class values retain Ebox's canonical token grammar. Native
   focus/active metadata reuses the same publication authority when style
   dependencies are proven unchanged.
 - Prepared cohort preparation no longer precomputes rasters, so frameworks can

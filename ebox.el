@@ -859,10 +859,11 @@
 ;; Host with unchanged units, :color, :background-color (alias :bgcolor),
 ;; existing nonnil :hover-content, Text :content, finite canonical :class
 ;; variants, uniform :border shorthand color changes with unchanged width and
-;; style, and :font-weight normal/bold.
+;; style, :font-weight normal/bold, and :visibility visible/hidden.
 ;; Apply recomputes the changed nodes' cascade, so nil :color restores the
 ;; inherited value, and renders their nearest retained composition primitive
-;; with the ordinary renderer. An absolute Host may change its footprint. A
+;; with the ordinary renderer. An absolute Host may change its footprint,
+;; including releasing it entirely while hidden and reclaiming it when shown. A
 ;; flow primitive must keep its rows and pixel intervals: Text may vary inside
 ;; a fixed-width parent allocation, while a change that would move adjacent
 ;; flow content returns nil. Clearing hover-content, replacing active hover or

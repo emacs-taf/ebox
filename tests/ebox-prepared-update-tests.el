@@ -97,6 +97,68 @@
         (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
         (ebox-prepared-update-test--assert-fresh)))))
 
+(ert-deftest ebox-prepared-update-hides-and-shows-positioned-panel ()
+  "A prepared visibility member removes and restores a panel's footprint."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (ch 30) :height (lh 5)
+           (text "Desk")
+           (box :id "panel" :position absolute :left (ch 2) :top (lh 1)
+                :width (ch 12) :height (lh 2) :z-index 1 :visibility visible
+                :color "#224466"
+             (text :id "label" "Value00")))))
+      (let* ((operation
+              (ebox-update-prepare
+               (current-buffer) [["panel" [:visibility :left]]]
+               #'ignore #'ignore))
+             (values [[hidden (ch 2)]])
+             (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should operation)
+        (should (ebox-update-apply operation values [0]))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (should-not (string-match-p "Value00" (buffer-string)))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [visible (ch 6)])
+        (should (ebox-update-apply operation values [0]))
+        (should (string-match-p "Value00" (buffer-string)))
+        (ebox-prepared-update-test--assert-fresh)))))
+
+(ert-deftest ebox-prepared-update-shows-initially-hidden-positioned-panel ()
+  "A panel mounted hidden stays addressable: prepared moves park it and a
+prepared visibility change paints it at its current placement."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (ch 30) :height (lh 5)
+           (text "Desk")
+           (box :id "panel" :position absolute :left (ch 2) :top (lh 1)
+                :width (ch 12) :height (lh 2) :z-index 1 :visibility hidden
+                :color "#224466"
+             (text :id "label" "Value00")))))
+      (should-not (string-match-p "Value00" (buffer-string)))
+      (let* ((operation
+              (ebox-update-prepare
+               (current-buffer) [["panel" [:visibility :left :top]]]
+               #'ignore #'ignore))
+             (values [[hidden (ch 4) (lh 2)]]))
+        (should operation)
+        (should (ebox-update-apply operation values [0]))
+        (should-not (string-match-p "Value00" (buffer-string)))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [visible (ch 4) (lh 2)])
+        (should (ebox-update-apply operation values [0]))
+        (should (string-match-p "Value00" (buffer-string)))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [hidden (ch 4) (lh 2)])
+        (should (ebox-update-apply operation values [0]))
+        (should-not (string-match-p "Value00" (buffer-string)))
+        (ebox-prepared-update-test--assert-fresh)))))
+
 (ert-deftest ebox-prepared-update-fits-variable-text-in-fixed-flex-allocation ()
   "A fixed status allocation accepts variable text and preserves adjacent controls."
   (let ((ebox-viewport-width 320) (ebox-viewport-height 10))

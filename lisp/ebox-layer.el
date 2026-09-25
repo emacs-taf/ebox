@@ -30,6 +30,12 @@
 (defvar ebox--intrinsic-layout-measurement)
 (defvar ebox--render-source-index)
 
+(defconst ebox-layer--parked-row -1000000
+  "Row of a retained primitive that must not paint.
+Hidden panels and released footprints park here.  The offset is far enough
+below any canvas that prepared translations can never bring a parked record
+back into the visible rows; only a footprint replacement re-places it.")
+
 (defvar ebox-layer--render-root nil
   "Root of this spatial materialization, never a live buffer root.")
 (defvar ebox-layer--portals nil
@@ -344,7 +350,8 @@ settlement restores the previous records and target vector on rejection."
         (dotimes (offset (length target)) (aset indexes offset (aref target offset)))
         (dotimes (offset needed)
           (let ((index (+ first offset)))
-            (aset records index (list :node (plist-get template :node) :x 0 :y -1 :text ""
+            (aset records index (list :node (plist-get template :node) :x 0
+                                      :y ebox-layer--parked-row :text ""
                                       :source-start 0 :source-end 0 :source-row 0))
             (aset (ebox-layer--program-z-values program) index z)
             (aset (ebox-layer--program-document-order program) index rank)
@@ -364,7 +371,7 @@ settlement restores the previous records and target vector on rejection."
             (aset (ebox-layer--program-saved-records program) index (copy-sequence record)))
           (ebox-layer--program-mark-row program (plist-get record :y))
           (if (null piece)
-              (plist-put record :y -1)
+              (plist-put record :y ebox-layer--parked-row)
             (plist-put record :text (plist-get piece :line))
             (plist-put record :source-start (plist-get piece :start))
             (plist-put record :source-end (plist-get piece :end))
@@ -475,7 +482,7 @@ Rejection also handles an open batch or a failure before the first render."
         ;; Appended primitives stay allocated but can no longer paint.
         (when-let* ((count (ebox-layer--program-saved-count program)))
           (cl-loop for index from count below (length records)
-                   do (plist-put (aref records index) :y -1))))
+                   do (plist-put (aref records index) :y ebox-layer--parked-row))))
       (setf (ebox-layer--program-saved-targets program) nil
             (ebox-layer--program-saved-count program) nil))
     (when (if accepted (ebox-layer--program-order-dirty program)
@@ -886,10 +893,10 @@ publication.  Nested root projections join this same candidate-local pass."
         (let ((node (pop queue)))
           (unless (gethash node panels)
             (ebox-layer--validate-child node host)
-            (let* ((text
-                    (unless (eq (plist-get node :visibility) 'hidden)
-                      (ebox--call-with-box-content-context
-                       host (lambda () (ebox--render-with-cache node)))))
+            ;; A hidden panel still renders so its rows compile ownership
+            ;; roles; its records park below the canvas and never paint.
+            (let* ((text (ebox--call-with-box-content-context
+                          host (lambda () (ebox--render-with-cache node))))
                    (raster (ebox-layer--prepare-raster node text)))
               (puthash node
                        (list :raster raster
@@ -903,13 +910,15 @@ publication.  Nested root projections join this same candidate-local pass."
                   (unless (or (gethash portal panels) (memq portal queue))
                     (setq queue (append queue (list portal))))))))))
       (dolist (node (nreverse order))
-        (let ((origin (resolve node)))
-          (when origin
+        (let ((origin (resolve node))
+              (hidden (eq (plist-get node :visibility) 'hidden)))
+          (when (or origin hidden)
             (dolist (piece (ebox-layer--raster-pieces
-                           (plist-get (gethash node panels) :raster)))
+                            (plist-get (gethash node panels) :raster)))
               (push (list :node node
-                          :x (+ (car origin) (plist-get piece :start))
-                          :y (+ (cadr origin) (plist-get piece :y))
+                          :x (if hidden 0 (+ (car origin) (plist-get piece :start)))
+                          :y (if hidden ebox-layer--parked-row
+                               (+ (cadr origin) (plist-get piece :y)))
                           :text (plist-get piece :line)
                           :source-start (plist-get piece :start)
                           :source-end (plist-get piece :end)

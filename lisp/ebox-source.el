@@ -572,7 +572,7 @@ isolated from later writes."
                   targets (vector source-cell) kind 'value))
            ((memq property '(:box-sizing :position :left :top :z-index :layer :anchor :placement
                              :width :min-width :max-width :height :min-height :max-height
-                             :color :background-color :bgcolor))
+                             :color :background-color :bgcolor :visibility))
             (setq source-cell
                   (cdr (plist-member (ebox-source-record-declarations record)
                                      (ebox-style-schema-id property)))

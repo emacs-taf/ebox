@@ -313,7 +313,7 @@ operation, or nil if a member cannot use the fixed retained canvas."
               (let ((property (aref keys key-index)))
                 (setq ebox-update--preparing-property property)
                 (unless (or (memq property ebox--region-geometry-properties)
-                            (memq property '(:content :color :background-color :bgcolor :hover-content :class :border :font-weight)))
+                            (memq property '(:content :color :background-color :bgcolor :hover-content :class :border :font-weight :visibility)))
                   (ebox-update--decline 'unsupported-property))
                 (when (memq property (ebox-update--group-properties group))
                   (user-error "Prepared Ebox cohort properties overlap for one Host"))
@@ -338,10 +338,10 @@ operation, or nil if a member cannot use the fixed retained canvas."
             (dotimes (key-index (length keys))
               (let ((property (aref keys key-index)))
                 (when (memq property '(:left :top :z-index)) (setq geometry t))
-                (when (memq property '(:color :background-color :bgcolor :border :font-weight))
+                (when (memq property '(:color :background-color :bgcolor :border :font-weight :visibility))
                   (setf (ebox-update--group-style-p group) t))
                 (when (memq property '(:content :color :background-color :bgcolor :hover-content :border :font-weight
-                                          :width :height))
+                                          :visibility :width :height))
                   (setq raster t))
                 (aset values key-index (copy-tree (ebox-update--current-value node property (plist-get state :source-index))))))
             (setf (ebox-update--group-properties group) keys
@@ -494,6 +494,9 @@ operation, or nil if a member cannot use the fixed retained canvas."
      ((memq property '(:color :background-color :bgcolor))
       (unless (or (null value) (stringp value) (ebox-paint-slot-p value)) (throw 'unsupported nil))
       (aset values index (if (stringp value) (copy-sequence value) value)))
+     ((eq property :visibility)
+      (unless (memq value '(visible hidden)) (throw 'unsupported nil))
+      (aset values index value))
      ((not (equal-including-properties value old)) (throw 'unsupported nil)))))
 
 ;; Restyling rewrites plist values in place and may append keys.  A snapshot
@@ -601,10 +604,11 @@ operation, or nil if a member cannot use the fixed retained canvas."
          (ebox--render-owned-text-values (make-hash-table :test #'eq))
          (ebox--surface-materialization-active t)
          (node (ebox-update--boundary-node boundary)))
-    (cl-letf (((symbol-function 'ebox--scroll-schedule-idle-prefetch) #'ignore))
-      (ebox--call-with-box-content-context
-       (ebox-update--boundary-host boundary)
-       (lambda () (ebox--render-with-cache node))))))
+    (unless (eq (plist-get node :visibility) 'hidden)
+      (cl-letf (((symbol-function 'ebox--scroll-schedule-idle-prefetch) #'ignore))
+        (ebox--call-with-box-content-context
+         (ebox-update--boundary-host boundary)
+         (lambda () (ebox--render-with-cache node)))))))
 
 (defun ebox-update--replace-boundary (operation boundary)
   "Replace BOUNDARY's retained primitives with its ordinary render.
@@ -715,8 +719,6 @@ roles the mounted projection cannot represent."
   (let* ((operation (ebox-geometry--operation-active-operation scene))
          (state (ebox-update--cohort-state operation)))
     (ebox-interaction--geometry-accept (ebox-geometry--operation-interaction scene))
-    (when (ebox-update--cohort-paint-changed operation)
-      (plist-put state :computed-styles-stale-p t))
     (dolist (key '(:layout-snapshots :layout-fragments :render-signature-cache))
       (when (hash-table-p (plist-get state key)) (clrhash (plist-get state key))))
     (dolist (key '(:surface-owned-ranges :surface-fragments
@@ -787,7 +789,7 @@ after acceptance."
                     (user-error "Prepared member values do not match their properties"))
                   (setf (ebox-update--group-dirty group) t)
                   (dotimes (key-index (length keys))
-                    (when (and (memq (aref keys key-index) '(:color :background-color :bgcolor :border :font-weight))
+                    (when (and (memq (aref keys key-index) '(:color :background-color :bgcolor :border :font-weight :visibility))
                                (not (equal-including-properties
                                      (aref incoming key-index)
                                      (ebox-update--group-current-value group (aref offsets key-index)))))
