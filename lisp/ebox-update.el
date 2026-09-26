@@ -767,7 +767,10 @@ nil when the rows do not respond elastically."
   (let ((shapes (ebox-elastic--learn-width rows-b width-b rows-a width-a)))
     (when shapes
       (let* ((node (ebox-update--boundary-node boundary))
-             (reindexed (and model (ebox-elastic--reindex model height)))
+             ;; The old height response only describes rows it still matches.
+             (reindexed (and model
+                             (ebox-elastic--matches-p model rows-a width-a height)
+                             (ebox-elastic--reindex model height)))
              (new (ebox-elastic--make-model
                    :rows shapes :wref width-b
                    :prefix (and reindexed (ebox-elastic--model-prefix model))

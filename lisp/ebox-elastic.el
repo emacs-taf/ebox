@@ -225,13 +225,18 @@ DELTA.  The result is (t . POSITIONS) with the positions that moved."
              (and ok (cons t (nreverse positions))))))))
 
 (defun ebox-elastic--shift-row (row delta positions)
-  "Return a copy of ROW whose POSITIONS are moved DELTA rows down."
+  "Return a copy of ROW whose POSITIONS are moved DELTA rows down.
+Return nil when a position carries no row number to move."
   (let ((copy (copy-sequence row)) (property ebox-elastic--shifting-property))
-    (unless (zerop delta)
-      (dolist (position positions)
-        (put-text-property position (1+ position) property
-                           (+ (get-text-property position property copy) delta) copy)))
-    copy))
+    (if (zerop delta)
+        copy
+      (catch 'unshiftable
+        (dolist (position positions)
+          (let ((value (and (< position (length copy))
+                            (get-text-property position property copy))))
+            (unless (integerp value) (throw 'unshiftable nil))
+            (put-text-property position (1+ position) property (+ value delta) copy)))
+        copy))))
 
 (defun ebox-elastic--learn-height (rows-a rows-b)
   "Learn the height response between ROWS-A and ROWS-B rendered at one width.
@@ -276,7 +281,7 @@ difference of the two indices."
   (let ((prefix (ebox-elastic--model-prefix model))
         (suffix (ebox-elastic--model-suffix model)))
     (cond
-     ((null prefix) index)
+     ((or (null prefix) (= height new-height)) index)
      ((< index prefix) index)
      ((>= index (- new-height suffix)) (- height (- new-height index)))
      (t (ebox-elastic--model-filler model)))))
@@ -345,7 +350,7 @@ learned height response or a row's width response is still incomplete."
                (widths (ebox-elastic--row-widths shape new-width reference))
                (copy (ebox-elastic--shift-row (aref source from) (- index from)
                                               (ebox-elastic--shifts-at model index new-height))))
-          (unless (or (null (ebox-elastic--row-runs shape)) widths) (setq out 'unknown))
+          (unless (and copy (or (null (ebox-elastic--row-runs shape)) widths)) (setq out 'unknown))
           (unless (eq out 'unknown)
             (cl-loop for run in (ebox-elastic--row-runs shape)
                      for value in widths
