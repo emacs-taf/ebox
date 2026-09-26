@@ -75,6 +75,13 @@ All notable changes to Ebox are documented here.
   about 42 instead of 88 ms in batch, so the whole cohort prepares in about
   90 ms (272 ms before this release).
 
+- A role compiled only as a cold ownership instruction, absent from every
+  raster of the prepared surface, reserves one spare interval per movable
+  layer instead of its object's full footprint; the pool still grows on
+  demand within the fixed bound. Desktop's four-window cohort allocates
+  about 18 700 instead of 28 700 mounts, and the scenarios that already
+  grew pools grow them the same number of times.
+
 - Structural publications (adding or removing layers, replacing a subtree)
   start from a private copy of the accepted render cache instead of an empty
   one, and cache signatures no longer depend on where rendering placed a

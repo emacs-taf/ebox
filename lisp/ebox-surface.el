@@ -6242,6 +6242,7 @@ intervals grows the exhausted pools through
         (layer-set (and layer-rasters (make-hash-table :test #'eq)))
         (layer-intervals (make-hash-table :test #'eq))
         (joined-intervals (make-hash-table :test #'eq))
+        (present (make-hash-table :test #'eq))
         (mount-count 0) descriptors full)
     (dotimes (index (length properties))
       (puthash (aref properties index) index property-indexes))
@@ -6308,6 +6309,7 @@ intervals grows the exhausted pools through
                        state node-objects region-objects)))))
               (puthash signature token signatures))
             (when (> (length token) 0)
+              (dotimes (index (length token)) (puthash (aref token index) t present))
               (put-text-property position end 'ebox--prepared-owners token raster))
             ;; Adjacent runs of one owner in a layer raster form one interval.
             (when layer-p
@@ -6354,6 +6356,11 @@ intervals grows the exhausted pools through
                   (capacity
                    (cond
                     ((memq owner full) (max 1 (length existing)))
+                    ;; A role compiled only as a cold instruction, absent
+                    ;; from every raster, starts with one interval per layer
+                    ;; and grows on demand.
+                    ((and layer-count (not (gethash owner present)))
+                     (max (length existing) (min bound (1+ layer-count))))
                     ;; Objects with no visible interval (hidden layers) keep
                     ;; the full bound so revealing them stays prepared.
                     ((and known (> known 0))
