@@ -89,6 +89,7 @@
              (box :flex 1 :text-align center "Panel title")
              (box :width (px 24) "o"))
            (box "Body line")
+           (box :text-align center (text :id "clock" "12:00:00"))
            (box "Footer"))
       (box :id "peer" :position absolute :left (px 300) :top (lh 3)
            :width (px 80) :height (lh 4) :z-index 1
@@ -126,6 +127,27 @@
                         ([(px 240) (lh 5) "#304050" "#FFD700"] [0])
                         ([(px 200) (lh 6) "#243447" "#F1F5F9"] [0])))
           (should (ebox-update-apply operation (vector (car step)) (cadr step)))
+          (ebox-resize-test--assert-fresh))))))
+
+(ert-deftest ebox-prepared-resize-framed-panel-survives-text-changes-between-axes ()
+  "Text edits between corner, height and width resizes never break later sizes."
+  (let ((ebox-viewport-width 400) (ebox-viewport-height 14))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-resize-test--framed-input))
+      (let ((operation (ebox-update-prepare
+                        (current-buffer) [["frame" [:width :height]] ["clock" [:content]]])))
+        (should operation)
+        (dolist (step '(([[(px 224) (lh 8)] ["12:00:00"]] [0])
+                        ([[(px 208) (lh 7)] ["12:00:00"]] [0])
+                        ([[(px 208) (lh 7)] ["Saturday, 26 September 2026 afternoon session"]] [1])
+                        ([[(px 248) (lh 7)] ["Saturday, 26 September 2026 afternoon session"]] [0])
+                        ([[(px 256) (lh 8)] ["Saturday, 26 September 2026 afternoon session"]] [0])
+                        ([[(px 248) (lh 9)] ["9"]] [0 1])
+                        ([[(px 232) (lh 10)] ["9"]] [0])
+                        ([[(px 232) (lh 10)] ["12:00:01"]] [1])
+                        ([[(px 200) (lh 6)] ["12:00:01"]] [0])))
+          (should (ebox-update-apply operation (car step) (cadr step)))
+          (should (equal (plist-get (ebox-region-geometry "frame") :width) (aref (aref (car step) 0) 0)))
           (ebox-resize-test--assert-fresh))))))
 
 (ert-deftest ebox-prepared-resize-framed-panel-rolls-back-after-replayed-sizes ()

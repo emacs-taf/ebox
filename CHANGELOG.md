@@ -26,6 +26,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A prepared absolute panel resize no longer signals `wrong-type-argument`
+  when its rows changed between size changes: the learned size response is
+  inherited only while it still describes the current rows, and a row whose
+  row number cannot be moved makes the replay fall back to an ordinary render.
 - `ebox-update-prepare` binds a `:color`/`:background-color` cell whose value
   is a paint slot by the slot's stable face. Previously, after
   `ebox-paint-slot-apply-updates` changed the slot's specification, the
