@@ -930,10 +930,26 @@ acceptance.  Preparation itself does not advance the publication revision."
                                surface state rasters
                                (max 8 (* 2 (ebox-layer--program-height program)))
                                (cl-loop for route across routes collect
-                                        (plist-get (ebox-geometry--route-wrapper route) :region-id)) rows))))
+                                        (plist-get (ebox-geometry--route-wrapper route) :region-id))
+                               rows
+                               ;; Unoccluded base and layer pixels, before
+                               ;; composition splits them.
+                               (cl-loop for route across routes
+                                        for layer = (ebox-geometry--route-program route)
+                                        append (append (ebox-layer--program-base-lines layer) nil)
+                                        append (cl-loop for record across
+                                                        (ebox-layer--program-records layer)
+                                                        collect (plist-get record :text)))
+                               (cl-loop for route across routes sum
+                                        (hash-table-count
+                                         (ebox-layer--program-targets
+                                          (ebox-geometry--route-program route))))))))
                     (setf (ebox-geometry--operation-projection operation) projection
                           (ebox-geometry--operation-frame operation)
                           (or (and reused-projection
+                                   (eq (ebox--pub-frame-slots
+                                        (ebox-geometry--operation-frame prior))
+                                       (ebox-surface--geometry-mount-slots projection))
                                    (ebox--pub-frame-refresh
                                     (ebox-geometry--operation-frame prior) state operation))
                               (ebox--pub-frame-prepare
@@ -943,6 +959,22 @@ acceptance.  Preparation itself does not advance the publication revision."
                 (with-current-buffer buffer
                   (setq ebox-geometry--session (or session operation)))
                 operation))))))))
+
+(defun ebox-geometry--fill (holder rendered rows dirty)
+  "Fill HOLDER's projection slots from RENDERED ROWS with DIRTY damage.
+An owner whose interval pool is exhausted grows within its fixed bound; its
+publication frame is then replaced over the grown slots before the retry.
+Return the active mount count, or nil when the bound cannot represent RENDERED."
+  (let ((projection (ebox-geometry--operation-projection holder))
+        count)
+    (while (and (null (setq count (ebox-surface--geometry-mount-fill
+                                   projection rendered rows dirty)))
+                (ebox-surface--geometry-mount-grow projection))
+      (setf (ebox-geometry--operation-frame holder)
+            (ebox--pub-frame-replace
+             (ebox-geometry--operation-frame holder)
+             (ebox-surface--geometry-mount-slots projection))))
+    count))
 
 ;;;###autoload
 (defun ebox-geometry-valid-p (operation)
@@ -1064,8 +1096,8 @@ source, display, revision, primitive geometry and paired caller state."
                    (root-route (aref (ebox-geometry--operation-routes operation)
                                      (1- (length (ebox-geometry--operation-routes operation)))))
                    (count (and rendered (ebox-incremental--with-phase 'projection
-                                                                      (ebox-surface--geometry-mount-fill
-                                                                       (ebox-geometry--operation-projection operation) rendered
+                                                                      (ebox-geometry--fill
+                                                                       operation rendered
                                                                        (ebox-geometry--route-lines root-route)
                                                                        (ebox-geometry--route-dirty root-route))))))
               (when (and count

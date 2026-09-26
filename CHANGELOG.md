@@ -48,6 +48,14 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Prepared geometry and cohort updates size each owner's interval pool from
+  its intervals in the current layer pixels instead of reserving the full
+  row bound for every owner, reducing a four-window Desktop preparation from
+  about 107,000 to 26,000 spare mounts (about 440 to 285 ms in batch, and
+  Desktop close from about 600 to 370 ms in the GUI). A later frame that needs
+  more intervals, such as a maximized window, grows only the exhausted pools
+  to the previous bound once and continues on the prepared route.
+
 - Grid column sizing no longer renders cells for their natural width when
   every track is fixed, `fr`, or a `minmax` with a fixed minimum and a fixed
   or `fr` maximum, since such tracks never read cell content. Flex base-size

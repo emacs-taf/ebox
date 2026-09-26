@@ -250,6 +250,25 @@ STAGE or ACCEPT.  Callbacks must not initiate another publication."
        :windows anchors :window-before (make-vector (length windows) nil)
        :previous-client-state (ebox--pub--surface-client-state surface)))))
 
+(defun ebox--pub-frame-replace (frame slots)
+  "Prepare a replacement for idle FRAME over its owner's grown SLOTS.
+The replacement keeps FRAME's surface, owner and callbacks and snapshots the
+current accepted generation.  FRAME's markers are released; the caller must
+discard FRAME and publish only through the returned frame."
+  (unless (and (ebox--pub-frame-p frame) (not (ebox--pub-frame-busy frame)))
+    (signal 'ebox--pub-surface-error (list :invalid-prepared-frame)))
+  (let ((next (ebox--pub-frame-prepare
+               (ebox--pub-frame-surface frame) slots (ebox--pub-frame-owner frame)
+               (ebox--pub-frame-stage frame) (ebox--pub-frame-rollback frame)
+               (ebox--pub-frame-accept frame)))
+        (windows (ebox--pub-frame-windows frame)))
+    (when (markerp (ebox--pub-frame-point frame))
+      (set-marker (ebox--pub-frame-point frame) nil))
+    (dotimes (index (length windows))
+      (when (markerp (aref windows index))
+        (set-marker (aref windows index) nil)))
+    next))
+
 (defun ebox--pub-frame-refresh (frame client-state owner &optional output)
   "Rebind FRAME's storage to its surface's accepted CLIENT-STATE and OWNER.
 The owning compiler must first prove that its topology and mount capacity

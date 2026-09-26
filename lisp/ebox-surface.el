@@ -6143,7 +6143,8 @@ Each owner appears at most once for one rendered fragment."
   "Compiled ownership instructions and fixed mount capacity for one surface."
   slots descriptors full epoch properties signature signatures role-instructions
   row-values row-heads row-tails row-entries active-row row-origin
-  surface topology-generation rasters raster-bank raster-capacity role-epoch)
+  surface topology-generation rasters raster-bank raster-capacity role-epoch
+  interval-bound exhausted)
 
 (cl-defstruct (ebox-surface--geometry-owner
                (:constructor ebox-surface--make-geometry-owner))
@@ -6184,7 +6185,8 @@ expose tags that were present only in a broader raster signature."
           (when (eq (aref roles slot) role) (aset program slot token)))))))
 
 (defun ebox-surface--geometry-mount-prepare
-    (surface state rasters interval-capacity &optional wrapper-region-ids rows)
+    (surface state rasters interval-capacity &optional wrapper-region-ids rows
+             layer-rasters layer-count)
   "Compile SURFACE ownership from STATE into owned raster copies RASTERS.
 RASTERS must be caller-owned strings: compilation adds immutable private
 owner tokens in place.  The compositor preserves those tokens while slicing
@@ -6196,7 +6198,15 @@ them for the first time.  This is the control-plane pass; ancestor traversal,
 tag interning and mount allocation never occur in the fill operation.
 Optional ROWS is the fixed final row vector, excluding structural newlines;
 the first RASTERS element must then be its complete joined output.  Its
-row interval cache is primed here without changing the complete mount pool."
+row interval cache is primed here without changing the complete mount pool.
+Optional LAYER-RASTERS lists the RASTERS elements holding unoccluded layer
+pixels and LAYER-COUNT the number of movable layers.  An owner visible in those
+pixels or in the joined ROWS then reserves twice its object's largest known
+interval count plus one interval per layer: a moved layer splits at most one
+interval per row.  The reservation never exceeds INTERVAL-CAPACITY plus the
+row count, which objects absent from every raster keep.  A frame needing more
+intervals grows the exhausted pools through
+`ebox-surface--geometry-mount-grow' up to that bound."
   (unless (and (integerp interval-capacity) (> interval-capacity 0))
     (error "Invalid prepared geometry interval capacity: %S" interval-capacity))
   (let ((owners (make-hash-table :test #'eq))
@@ -6209,7 +6219,12 @@ row interval cache is primed here without changing the complete mount pool."
                              (mapcar #'car ebox-region-types)))
         (node-objects (plist-get state :surface-node-object-table))
         (region-objects (plist-get state :region-surface-object-table))
+        (layer-set (and layer-rasters (make-hash-table :test #'eq)))
+        (layer-intervals (make-hash-table :test #'equal))
         descriptors full all-mounts)
+    (dolist (raster layer-rasters) (puthash raster t layer-set))
+    ;; The joined output separately bounds its owners, one interval per row run.
+    (when (and layer-set rows (car rasters)) (puthash (car rasters) 'joined layer-set))
     ;; Reuse accepted mount identities before allocating spare capacity.
     (dolist (mount (ebox--pub--surface-mounts surface))
       (let* ((object (ebox--pub--surface-mount-object mount))
@@ -6228,7 +6243,8 @@ row interval cache is primed here without changing the complete mount pool."
     (dolist (raster (cons (ebox--pub--shadow-surface-output surface) rasters))
       (unless (stringp raster) (error "Prepared geometry raster is not a string"))
       (remove-text-properties 0 (length raster) '(ebox--prepared-owners nil) raster)
-      (let ((position 0))
+      (let ((position 0) (layer-p (and layer-set (gethash raster layer-set)))
+            (previous []))
         (while (< position (length raster))
           (let* ((end (next-property-change position raster (length raster)))
                  (roles (ebox-surface--role-ids-at raster position))
@@ -6259,6 +6275,26 @@ row interval cache is primed here without changing the complete mount pool."
               (puthash signature token signatures))
             (when (> (length token) 0)
               (put-text-property position end 'ebox--prepared-owners token raster))
+            ;; Adjacent runs of one owner in a layer raster form one interval.
+            (when layer-p
+              (let ((pieces 1) (newline position))
+                (while (setq newline (and (< newline end)
+                                          (string-search "\n" raster newline)))
+                  (when (< newline end)
+                    (setq pieces (1+ pieces)))
+                  (setq newline (1+ newline)))
+                (dotimes (index (length token))
+                  (let* ((owner (aref token index))
+                         (key (if (eq layer-p 'joined) (list owner) owner)))
+                    (puthash key
+                             (+ (gethash key layer-intervals 0)
+                                (if (cl-find owner previous :test #'eq)
+                                    (1- pieces)
+                                  pieces))
+                             layer-intervals)))
+                (setq previous
+                      (if (and (> end position) (eq (aref raster (1- end)) ?\n))
+                          [] token))))
             (setq position end)))))
     ;; Raw rasters compile their exact role factors even when currently
     ;; occluded.  Enclosing wrappers can add their own roles around a later
@@ -6271,13 +6307,27 @@ row interval cache is primed here without changing the complete mount pool."
          state node-objects region-objects)))
     (maphash
      (lambda (_object entries)
-       (let ((binding (vector nil nil)))
+       (let ((binding (vector nil nil))
+             ;; Every role owner of one object shares that object's footprint.
+             (known (and layer-count
+                         (cl-loop for entry in entries
+                                  maximize
+                                  (max (length (ebox-surface--geometry-owner-mounts (cdr entry)))
+                                       (gethash (list (cdr entry)) layer-intervals 0)
+                                       (gethash (cdr entry) layer-intervals 0))))))
          (dolist (entry entries)
            (let* ((owner (cdr entry))
                   (existing (nreverse (ebox-surface--geometry-owner-mounts owner)))
-                  (capacity (if (memq owner full) (max 1 (length existing))
-                              (max (+ interval-capacity (length rows))
-                                   (length existing))))
+                  (bound (+ interval-capacity (length rows)))
+                  (capacity
+                   (cond
+                    ((memq owner full) (max 1 (length existing)))
+                    ;; Objects with no visible interval (hidden layers) keep
+                    ;; the full bound so revealing them stays prepared.
+                    ((and known (> known 0))
+                     (max (length existing)
+                          (min bound (+ (* 2 known) layer-count))))
+                    (t (max bound (length existing)))))
                   (mounts (make-vector capacity nil))
                   (index 0))
              (dolist (mount existing)
@@ -6331,12 +6381,15 @@ row interval cache is primed here without changing the complete mount pool."
               :topology-generation (plist-get state :geometry-topology-generation)
               :rasters (vector (make-hash-table :test #'eq :size (max 1 (length rasters)))
                                (make-hash-table :test #'eq :size (max 1 (length rasters))))
-              :raster-bank 0 :raster-capacity (length rasters) :role-epoch 0)))
+              :raster-bank 0 :raster-capacity (length rasters) :role-epoch 0
+              :interval-bound (+ interval-capacity (length rows)))))
         (dolist (raster rasters)
           (puthash raster t (aref (ebox-surface--geometry-mount-rasters projection) 0)))
         (when rows
-          (unless (ebox-surface--geometry-mount-update-rows projection (car rasters) rows nil)
-            (error "Prepared geometry row ownership exceeds its cold capacity")))
+          (while (not (ebox-surface--geometry-mount-update-rows
+                       projection (car rasters) rows nil))
+            (unless (ebox-surface--geometry-mount-grow projection)
+              (error "Prepared geometry row ownership exceeds its cold capacity"))))
         projection))))
 
 (defun ebox-surface--geometry-mount-known-roles-p (projection signature)
@@ -6420,8 +6473,12 @@ adopts the current accepted generation before these slots can be published."
             (puthash raster t next))
           (setq valid
                 (or (null rows)
-                    (ebox-surface--geometry-mount-update-rows
-                     projection (car rasters) rows nil)))
+                    (cl-loop
+                     (cond ((ebox-surface--geometry-mount-update-rows
+                             projection (car rasters) rows nil)
+                            (cl-return t))
+                           ((not (ebox-surface--geometry-mount-grow projection))
+                            (cl-return nil))))))
           (when valid
             (setf (ebox-surface--geometry-mount-raster-bank projection) next-bank)))
         valid))))
@@ -6451,7 +6508,11 @@ count; return the new count, or nil when this owner exhausts its cold pool."
           (let* ((used (ebox-surface--geometry-owner-used owner))
                  (mounts (ebox-surface--geometry-owner-mounts owner))
                  (offset (* 4 count)))
-            (when (< used (length mounts))
+            (if (>= used (length mounts))
+                (progn
+                  (cl-pushnew owner (ebox-surface--geometry-mount-exhausted projection)
+                              :test #'eq)
+                  count)
               (aset slots offset (aref mounts used))
               (aset slots (1+ offset) start)
               (aset slots (+ 2 offset) end)
@@ -6527,7 +6588,12 @@ All entries and their owner-specific free links belong to the cold mount pool."
         count)
        (t
         (let ((entry (ebox-surface--geometry-owner-free-entry owner)))
-          (when entry
+          ;; An exhausted pool keeps scanning so one retry grows every owner.
+          (if (null entry)
+              (progn
+                (cl-pushnew owner (ebox-surface--geometry-mount-exhausted projection)
+                            :test #'eq)
+                count)
             (setf (ebox-surface--geometry-owner-free-entry owner)
                   (aref entries (+ 4 entry)))
             (aset entries (+ 2 entry) start)
@@ -6612,10 +6678,67 @@ attempt's discarded pixels, so publication rollback needs no cache mutation."
                       (and (<= end size)
                            (ebox-surface--geometry-mount-scan
                             projection rendered offset end epoch 0)))
-                (when valid (aset values row text))))
+                (when (and valid (null (ebox-surface--geometry-mount-exhausted projection)))
+                  (aset values row text))))
             (setq offset end)))
       (setf (ebox-surface--geometry-mount-active-row projection) nil))
-    (and valid (= offset size))))
+    (and valid (= offset size)
+         (null (ebox-surface--geometry-mount-exhausted projection)))))
+
+(defun ebox-surface--geometry-mount-grow (projection)
+  "Grow PROJECTION's pools exhausted by the last fill to their fixed bound.
+New inactive mounts join each exhausted owner's free intervals and a complete
+slot vector replaces the old one, so the caller must prepare a new publication
+frame over those slots before retrying the fill.  Return non-nil when some
+pool grew; nil means the frame needs more intervals than the bound admits."
+  (let ((exhausted (ebox-surface--geometry-mount-exhausted projection))
+        (bound (ebox-surface--geometry-mount-interval-bound projection))
+        (entries (ebox-surface--geometry-mount-row-entries projection))
+        additions)
+    (setf (ebox-surface--geometry-mount-exhausted projection) nil)
+    (dolist (owner exhausted)
+      (let* ((mounts (ebox-surface--geometry-owner-mounts owner))
+             (size (length mounts))
+             (capacity (or bound 0)))
+        (when (and (not (ebox-surface--geometry-owner-full-p owner))
+                   (> capacity size))
+          (let ((next (make-vector capacity nil)))
+            (dotimes (index size) (aset next index (aref mounts index)))
+            (cl-loop for index from size below capacity do
+                     (let ((mount (ebox--pub-frame-mount-create
+                                   (ebox-surface--geometry-owner-object owner)
+                                   (ebox-surface--geometry-owner-tags owner))))
+                       (aset next index mount)
+                       (push (cons owner mount) additions)))
+            (setf (ebox-surface--geometry-owner-mounts owner) next)))))
+    (when additions
+      (setq additions (nreverse additions))
+      (when entries
+        (let* ((entry (length entries))
+               (grown (vconcat entries (make-vector (* 6 (length additions)) nil))))
+          (dolist (addition additions)
+            (let ((owner (car addition)))
+              (aset grown entry (cdr addition))
+              (aset grown (1+ entry) owner)
+              (aset grown (+ 4 entry) (ebox-surface--geometry-owner-free-entry owner))
+              (aset grown (+ 5 entry) (ebox-surface--geometry-owner-tags owner))
+              (setf (ebox-surface--geometry-owner-free-entry owner) entry)
+              (setq entry (+ entry 6))))
+          (setf (ebox-surface--geometry-mount-row-entries projection) grown)))
+      (let* ((descriptors (ebox-surface--geometry-mount-descriptors projection))
+             (count (cl-loop for owner across descriptors
+                             sum (length (ebox-surface--geometry-owner-mounts owner))))
+             (slots (make-vector (* 4 count) nil))
+             (index 0))
+        (cl-loop for owner across descriptors do
+                 (cl-loop for mount across (ebox-surface--geometry-owner-mounts owner) do
+                          (aset slots index mount)
+                          (aset slots (1+ index) 0)
+                          (aset slots (+ 2 index) 0)
+                          (aset slots (+ 3 index) (ebox--pub--surface-mount-tags mount))
+                          (setq index (+ index 4))))
+        (setf (ebox-surface--geometry-mount-slots projection) slots))
+      t)))
 
 (defun ebox-surface--geometry-mount-fill (projection rendered &optional rows dirty)
   "Fill PROJECTION's reusable active mount slots from RENDERED tokens.
@@ -6625,6 +6748,7 @@ offsets.  Return the active count, or nil if an interval pool is insufficient.
 Surface, fragment and text records span the complete primitive output.
 Strip private tokens only from successful RENDERED, preserving retained rows.
 No source/component traversal or temporary ownership records are constructed."
+  (setf (ebox-surface--geometry-mount-exhausted projection) nil)
   (let ((epoch (1+ (ebox-surface--geometry-mount-epoch projection)))
         (full (ebox-surface--geometry-mount-full projection))
         (count 0) (size (length rendered)))
@@ -6652,6 +6776,8 @@ No source/component traversal or temporary ownership records are constructed."
           (setq count nil))
       (setq count (ebox-surface--geometry-mount-scan
                    projection rendered 0 size epoch count)))
+    (when (ebox-surface--geometry-mount-exhausted projection)
+      (setq count nil))
     (when count
       (remove-text-properties 0 size '(ebox--prepared-owners nil) rendered))
     count))

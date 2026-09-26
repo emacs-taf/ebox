@@ -937,8 +937,8 @@ after acceptance."
                    (root-route (aref routes (1- (length routes))))
                    (mount-count
                     (and rendered (ebox-incremental--with-phase 'projection
-                                                                (ebox-surface--geometry-mount-fill
-                                                                 (ebox-geometry--operation-projection scene) rendered
+                                                                (ebox-geometry--fill
+                                                                 scene rendered
                                                                  (ebox-geometry--route-lines root-route) (ebox-geometry--route-dirty root-route))))))
               (when (and mount-count
                          (ebox-interaction--geometry-ready-p
