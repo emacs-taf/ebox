@@ -1348,6 +1348,11 @@
       "purpose": "Hiding, showing and recoloring a positioned Host with a deep subtree through the prepared route matches a fresh render: visibility stays a paint boundary of the Host while inherited color and font-weight changes still reach descendants that inherit them."
     },
     {
+      "name": "ebox-prepared-update-translates-without-repainting-repeated-paint",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "A mixed cohort whose paint and Text values repeat their displayed values only translates retained primitives and reports geometry work, while a changed color or Text still repaints or re-renders its boundary, matching a fresh render each time."
+    },
+    {
       "name": "ebox-prepared-update-hides-and-shows-positioned-panel",
       "file": "tests/ebox-prepared-update-tests.el",
       "purpose": "A prepared visibility member hides a positioned panel's footprint and restores it with its geometry through the retained route, matching a fresh render."

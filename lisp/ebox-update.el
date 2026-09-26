@@ -16,8 +16,10 @@
   group properties offsets variants)
 
 (cl-defstruct (ebox-update--group (:constructor ebox-update--make-group))
+  "One Host's prebound members.  DIRTY marks any changed member; REPAINT
+marks a changed raster value, the only change that re-renders BOUNDARY."
   node properties variants first-member slots values geometry-program x-factor
-  boundary style-p restyle resized crop class-slot hover-cell hover-old hover-owners dirty staged dx dy z)
+  boundary style-p restyle resized repaint crop class-slot hover-cell hover-old hover-owners dirty staged dx dy z)
 
 (cl-defstruct (ebox-update--boundary (:constructor ebox-update--make-boundary))
   "Nearest retained composition primitive owning a group's pixels.
@@ -30,7 +32,7 @@ panel does not participate in flow, so its complete footprint may change."
 (cl-defstruct (ebox-update--cohort (:constructor ebox-update--make-cohort))
   buffer state scene members groups boundaries marks epoch snapshots
   signatures viewport-nodes viewport-subtrees css-viewport-subtrees viewport-heights stage rollback after-commit report old-report old-revision old-stale
-  old-report-revision old-report-publication staged paint-changed)
+  old-report-revision old-report-publication old-report-kinds staged paint-changed)
 
 (defun ebox-update--node (buffer reference)
   "Resolve mounted BUFFER REFERENCE at the cold preparation boundary."
@@ -701,6 +703,24 @@ roles the mounted projection cannot represent."
            (ebox-layer--offset node :left host width)
            (ebox-layer--offset node :top host height)))))))
 
+(defun ebox-update--dirty-kinds (operation)
+  "Return the kinds of work OPERATION's current application performed.
+`geometry' translates or crops retained primitives, `selector' publishes a
+proved class change, `paint' recomputes a cascade and `span' re-renders a
+composition boundary."
+  (let ((groups (ebox-update--cohort-groups operation))
+        (boundaries (ebox-update--cohort-boundaries operation))
+        kinds)
+    (dotimes (index (length groups))
+      (let ((group (aref groups index)))
+        (when (ebox-update--group-dirty group)
+          (when (ebox-update--group-geometry-program group) (cl-pushnew 'geometry kinds))
+          (when (ebox-update--group-class-slot group) (cl-pushnew 'selector kinds))
+          (when (ebox-update--group-restyle group) (cl-pushnew 'paint kinds)))))
+    (dotimes (index (length boundaries))
+      (when (ebox-update--boundary-dirty (aref boundaries index)) (cl-pushnew 'span kinds)))
+    (nreverse kinds)))
+
 (defun ebox-update--stage (scene publication-report)
   "Stage SCENE's active cohort and its paired caller state."
   (let* ((operation (ebox-geometry--operation-active-operation scene))
@@ -714,11 +734,13 @@ roles the mounted projection cannot represent."
           (ebox-update--cohort-old-stale operation) (plist-get state :computed-styles-stale-p)
           (ebox-update--cohort-old-report-revision operation) (plist-get report :revision)
           (ebox-update--cohort-old-report-publication operation) (plist-get report :publication)
+          (ebox-update--cohort-old-report-kinds operation) (plist-get report :dirty-kinds)
           (ebox-update--cohort-staged operation) t)
     (ebox-interaction--geometry-stage (ebox-geometry--operation-interaction scene))
     (plist-put state :runtime-revision (1- (plist-get publication-report :new-revision)))
     (plist-put report :revision (plist-get publication-report :new-revision))
     (plist-put report :publication publication-report)
+    (plist-put report :dirty-kinds (ebox-update--dirty-kinds operation))
     (plist-put state :last-update-report report)
     (when (ebox-update--cohort-stage operation) (funcall (ebox-update--cohort-stage operation)))))
 
@@ -750,6 +772,7 @@ roles the mounted projection cannot represent."
       (plist-put state :computed-styles-stale-p (ebox-update--cohort-old-stale operation))
       (plist-put (ebox-update--cohort-report operation) :revision (ebox-update--cohort-old-report-revision operation))
       (plist-put (ebox-update--cohort-report operation) :publication (ebox-update--cohort-old-report-publication operation))
+      (plist-put (ebox-update--cohort-report operation) :dirty-kinds (ebox-update--cohort-old-report-kinds operation))
       (when (ebox-update--cohort-rollback operation) (funcall (ebox-update--cohort-rollback operation)))
       (setf (ebox-update--cohort-staged operation) nil))))
 
@@ -802,6 +825,7 @@ after acceptance."
                (keys (ebox-update--group-properties group)) (owned (ebox-update--group-values group)))
           (setf (ebox-update--group-dirty group) nil (ebox-update--group-staged group) nil
                 (ebox-update--group-resized group) nil (ebox-update--group-restyle group) nil
+                (ebox-update--group-repaint group) nil
                 (ebox-update--group-dx group) 0 (ebox-update--group-dy group) 0
                 (ebox-update--group-z group) (or (ebox-get node :z-index) 0))
           (dotimes (key-index (length keys))
@@ -827,14 +851,24 @@ after acceptance."
                   (unless (and (vectorp incoming) (= (length incoming) (length keys)))
                     (user-error "Prepared member values do not match their properties"))
                   (setf (ebox-update--group-dirty group) t)
+                  ;; Only a raster value that differs from the displayed one
+                  ;; re-renders the boundary; translation, crop and selector
+                  ;; changes keep their retained primitives.
                   (dotimes (key-index (length keys))
-                    (when (and (memq (aref keys key-index) '(:color :background-color :bgcolor :border :font-weight :visibility))
-                               (not (equal-including-properties
-                                     (aref incoming key-index)
-                                     (ebox-update--group-current-value group (aref offsets key-index)))))
-                      (setf (ebox-update--cohort-paint-changed operation) t
-                            (ebox-update--group-restyle group) t))
-                    (ebox-update--capture-value group (aref offsets key-index) (aref incoming key-index))))))
+                    (let* ((property (aref keys key-index))
+                           (value (aref incoming key-index))
+                           (offset (aref offsets key-index)))
+                      (when (and (memq property '(:content :hover-content :color :background-color :bgcolor
+                                                  :border :font-weight :visibility))
+                                 (not (equal-including-properties
+                                       value (ebox-update--group-current-value group offset))))
+                        (setf (ebox-update--group-repaint group) t)
+                        (unless (memq property '(:content :hover-content))
+                          (setf (ebox-update--cohort-paint-changed operation) t
+                                (ebox-update--group-restyle group) t)))
+                      (ebox-update--capture-value group offset value)))
+                  (when (ebox-update--group-resized group)
+                    (setf (ebox-update--group-repaint group) t)))))
             (with-current-buffer (ebox-update--cohort-buffer operation)
               (when ebox-interaction--hover-content-owner
                 (dotimes (index (length groups))
@@ -884,7 +918,8 @@ after acceptance."
                 (setf (ebox-update--boundary-dirty (aref boundaries index)) nil))
               (dotimes (index (length groups))
                 (let ((group (aref groups index)))
-                  (when (and (ebox-update--group-dirty group) (ebox-update--group-boundary group))
+                  (when (and (ebox-update--group-dirty group) (ebox-update--group-repaint group)
+                             (ebox-update--group-boundary group))
                     (setf (ebox-update--boundary-dirty (ebox-update--group-boundary group)) t))))
               (ebox-update--forget-signatures operation)
               (ebox-incremental--with-phase 'layout

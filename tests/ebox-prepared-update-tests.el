@@ -97,6 +97,37 @@
         (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
         (ebox-prepared-update-test--assert-fresh)))))
 
+(ert-deftest ebox-prepared-update-translates-without-repainting-repeated-paint ()
+  "Members whose raster values repeat only translate; a changed one repaints."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-prepared-update-test--input))
+      (let* ((operation
+              (ebox-update-prepare
+               (current-buffer) [["panel" [:left :top :z-index :color]] ["label" [:content]]]
+               #'ignore #'ignore))
+             (values [[(ch 4) (lh 2) 3 "#224466"] ["Value00"]])
+             (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should operation)
+        (should (ebox-update-apply operation values [0 1]))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal '(geometry) (plist-get (ebox-buffer-update-report (current-buffer)) :dirty-kinds)))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [(ch 6) (lh 1) 4 "#884422"])
+        (should (ebox-update-apply operation values [0]))
+        (let ((kinds (plist-get (ebox-buffer-update-report (current-buffer)) :dirty-kinds)))
+          (should (memq 'paint kinds)) (should (memq 'span kinds)))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 1 ["Value01"])
+        (should (ebox-update-apply operation values [1]))
+        (should (equal '(span) (plist-get (ebox-buffer-update-report (current-buffer)) :dirty-kinds)))
+        (should (string-match-p "Value01" (buffer-string)))
+        (ebox-prepared-update-test--assert-fresh)
+        ;; Repeating the displayed values after a repaint stays fresh too.
+        (should (ebox-update-apply operation values [0 1]))
+        (should (equal '(geometry) (plist-get (ebox-buffer-update-report (current-buffer)) :dirty-kinds)))
+        (ebox-prepared-update-test--assert-fresh)))))
+
 (ert-deftest ebox-prepared-update-hides-and-shows-positioned-panel ()
   "A prepared visibility member removes and restores a panel's footprint."
   (let ((ebox-viewport-width 240) (ebox-viewport-height 10))

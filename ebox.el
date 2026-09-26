@@ -889,7 +889,11 @@
 ;; acceptance or nil before publication for unsupported or stale work. Errors
 ;; restore source, pixels, bounds, revision and paired caller state. An
 ;; after-commit error propagates after acceptance. The ordinary update route is
-;; the fallback when allocation or dependency proofs no longer hold.
+;; the fallback when allocation or dependency proofs no longer hold. Only a
+;; raster member value that differs from the displayed one re-renders its
+;; Host's composition boundary; restacking, translation, crop and proved
+;; selector changes keep the retained primitives. The stored update report's
+;; :dirty-kinds lists the performed work: geometry, selector, paint and span.
 ;;
 ;; Function: ebox-geometry-prepare (buffer-or-name host-ref properties &optional stage rollback after-commit)
 ;;;###autoload (autoload 'ebox-geometry-prepare "ebox" nil nil)

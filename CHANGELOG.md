@@ -48,6 +48,14 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- `ebox-update-apply` re-renders a Host's composition boundary only when a
+  changed member supplies a raster value (`:content`, `:hover-content`,
+  `:color`, `:background-color`, `:border`, `:font-weight`, `:visibility` or
+  an uncropped size) that differs from the displayed one. A mixed cohort
+  whose members restack, translate or crop while repeating their paint now
+  costs only the retained geometry program. `ebox-buffer-update-report`'s
+  `:dirty-kinds` for a prepared update lists the work actually performed
+  (`geometry`, `selector`, `paint`, `span`) instead of a fixed set.
 - `:visibility` no longer inherits. A hidden box already suppresses its whole
   subtree's ink and focus checks every ancestor, so descendants never consumed
   the inherited value. Prepared paint publication recomputes a descendant's
