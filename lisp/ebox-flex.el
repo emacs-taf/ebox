@@ -929,18 +929,19 @@ Context-dependent declarations remain outside the render reuse proof."
 
 (defun ebox--flex-unrendered-measurement (source props axis)
   "Return SOURCE flex metrics that do not require intrinsic rendering.
-An explicit numeric basis fixes the base size.  Wrapped boxes on a row axis
-derive their minimum from declared constraints and the widest grapheme, while
-box heights use declared line constraints.  In those cases the final sized
-render can be the first render instead of rendering the whole subtree once for
-measurement and immediately rendering it again at the computed size."
+An explicit numeric basis fixes the base size.  The minimum is content-free
+when it is declared or when non-visible overflow makes the automatic minimum
+zero; wrapped boxes on a row axis derive it from the widest grapheme.  In those
+cases the final sized render can be the first render instead of rendering the
+whole subtree once for measurement and immediately rendering it again at the
+computed size."
   (let ((basis (plist-get props :flex-basis)))
     (when (and (ebox--flex-box-source-p source)
                (ebox--flex-fixed-basis-value-p basis)
-               (if (eq axis 'row)
-                   (ebox-style-soft-wrap-p (ebox-get source :wrap-mode))
-                 (or (ebox--flex-explicit-min-main-p source axis)
-                     (memq (ebox-get source :overflow) '(auto scroll hidden)))))
+               (or (ebox--flex-explicit-min-main-p source axis)
+                   (memq (ebox-get source :overflow) '(auto scroll hidden))
+                   (and (eq axis 'row)
+                        (ebox-style-soft-wrap-p (ebox-get source :wrap-mode)))))
       (let* ((min-main (ebox--flex-min-main source "" axis))
              (max-main (ebox--flex-max-main source axis))
              (base (ebox--flex-basis-main source "" axis basis))

@@ -48,6 +48,13 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Grid column sizing no longer renders cells for their natural width when
+  every track is fixed, `fr`, or a `minmax` with a fixed minimum and a fixed
+  or `fr` maximum, since such tracks never read cell content. Flex base-size
+  measurement likewise skips the natural render of an item with a numeric
+  `:flex-basis` whose main-axis minimum is declared or is zero because of
+  non-visible overflow. The final sized render is then the only render, which
+  roughly halves the cost of re-rendering a nested window chrome.
 - `ebox-update-apply` re-renders a Host's composition boundary only when a
   changed member supplies a raster value (`:content`, `:hover-content`,
   `:color`, `:background-color`, `:border`, `:font-weight`, `:visibility` or

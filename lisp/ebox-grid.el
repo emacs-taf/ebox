@@ -706,14 +706,20 @@ supplies font metrics, and AUTO-TRACK describes implicit tracks."
 
 (defun ebox-grid--content-independent-columns-p (tracks count available &optional children)
   "Return non-nil when TRACKS determine COUNT widths without cell content.
-Require a definite AVAILABLE width and explicit fixed/fr tracks.  CHILDREN
-must have zero automatic minima when fractional tracks are present."
+Require a definite AVAILABLE width and explicit fixed, fr or `minmax' tracks
+whose minimum is fixed and maximum is fixed or fr.  A bare fr track has an
+automatic minimum, so CHILDREN must then have zero automatic minima."
   (and (numberp available) (> available 0)
        (>= (length tracks) count)
        (cl-every (lambda (track)
-                   (memq (plist-get track :kind) '(fixed fr)))
+                   (pcase (plist-get track :kind)
+                     ((or 'fixed 'fr) t)
+                     ('minmax
+                      (and (eq (plist-get (plist-get track :min) :kind) 'fixed)
+                           (memq (plist-get (plist-get track :max) :kind)
+                                 '(fixed fr))))))
                  tracks)
-       (or (cl-every (lambda (track) (eq (plist-get track :kind) 'fixed)) tracks)
+       (or (cl-notany (lambda (track) (eq (plist-get track :kind) 'fr)) tracks)
            (cl-every
             (lambda (child)
               (and (ebox-box-node-p child)
