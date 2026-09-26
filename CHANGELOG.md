@@ -48,6 +48,14 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Prepared geometry wrappers look up their compiled property transformations
+  through a hash that reads every element of a signature. `sxhash-equal`
+  hashes only a vector's leading elements, and a signature's leading values
+  are mostly nil, so tables with hundreds of entries collapsed into about
+  sixty buckets and each dirty row scanned nested property values. A
+  four-window Desktop workspace switch drops from about 97 to 35 ms in batch
+  and from 87 to 47 ms in the GUI; window drags and resizes save 5–10 ms.
+
 - Structural publications (adding or removing layers, replacing a subtree)
   start from a private copy of the accepted render cache instead of an empty
   one, and cache signatures no longer depend on where rendering placed a

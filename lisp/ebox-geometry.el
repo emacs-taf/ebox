@@ -94,6 +94,26 @@ and scoped declarations.  Equal current values alone cannot prove ownership."
     (aset signature index (get-text-property position (aref properties index) string)))
   signature)
 
+(defun ebox-geometry--signature-hash (key)
+  "Hash every element of the sequence KEY.
+`sxhash-equal' reads only the first few elements of a vector or list, and a
+property signature's leading values are mostly nil, so a plain `equal' table
+degenerates into long bucket scans of nested property values."
+  (let ((hash 0))
+    (if (vectorp key)
+        (dotimes (index (length key))
+          (setq hash (logand (logxor (ash hash 5) (ash hash -50)
+                                     (sxhash-equal (aref key index)))
+                             #xffffffffffffff)))
+      (while (consp key)
+        (setq hash (logand (logxor (ash hash 5) (ash hash -50)
+                                   (sxhash-equal (car key)))
+                           #xffffffffffffff)
+              key (cdr key))))
+    hash))
+
+(define-hash-table-test 'ebox-geometry-signature #'equal #'ebox-geometry--signature-hash)
+
 (defun ebox-geometry--compile-wrapper (route &optional inner-domain)
   "Compile ROUTE's fixed chrome and finite content-property transformations.
 The generic Box renderer is used only here, before any geometry execution.
@@ -131,7 +151,7 @@ up front; an unknown later combination declines the prepared operation."
          (keys (if retained (append old-properties nil)
                  (copy-sequence '(face font-lock-face ebox-content ebox-content-owner ebox-content-owners
                                        ebox-bt ebox-bb))))
-         (samples (or retained (make-hash-table :test #'equal)))
+         (samples (or retained (make-hash-table :test 'ebox-geometry-signature)))
          (domain (and retained (ebox-geometry--route-domain route)))
          pending properties signature output rows)
     (unless (and (eq (ebox-get wrapper :text-align) 'left)
@@ -209,8 +229,8 @@ up front; an unknown later combination declines the prepared operation."
           (aset used-variants (1+ variant) t)))
       (dotimes (variant 8)
         (when (aref used-variants variant)
-          (unless (aref tables variant) (aset tables variant (make-hash-table :test #'equal)))
-          (unless (aref metadata-tables variant) (aset metadata-tables variant (make-hash-table :test #'equal)))
+          (unless (aref tables variant) (aset tables variant (make-hash-table :test 'ebox-geometry-signature)))
+          (unless (aref metadata-tables variant) (aset metadata-tables variant (make-hash-table :test 'ebox-geometry-signature)))
           (aset face-additions variant
                 (vconcat (append (and color (list (ebox-buffer--color-face color 'foreground)))
                                  (and background (list (ebox-buffer--color-face background 'background)))
