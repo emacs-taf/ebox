@@ -1378,9 +1378,14 @@
       "purpose": "A fixed Flex status allocation accepts variable-length titles, clips long content before adjacent controls, and restores prior content and revision on rejection."
     },
     {
-      "name": "ebox-prepared-update-declines-unproved-variable-text-allocation",
+      "name": "ebox-prepared-update-fits-variable-text-in-clipped-or-full-slot",
       "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Initially empty, clipped or full Text allocations decline unproved footprint changes without callbacks, source mutation, visible edits or revision advancement."
+      "purpose": "Initially clipped or exactly full fixed Text slots accept shorter and longer content through the prepared route, matching a fresh render each time."
+    },
+    {
+      "name": "ebox-prepared-update-declines-initially-empty-slot-atomically",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "An initially empty fixed Text slot declines text growth without callbacks, source mutation, visible edits or revision advancement."
     },
     {
       "name": "ebox-prepared-publication-native-state-retains-rollback-banks",

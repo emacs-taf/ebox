@@ -292,32 +292,51 @@ prepared visibility change paints it at its current placement."
           (should (= revision (ebox-surface-buffer-revision (current-buffer))))
           (should (equal-including-properties before (buffer-string))))))))
 
-(ert-deftest ebox-prepared-update-declines-unproved-variable-text-allocation ()
-  "Empty, initially clipped and full slots reject unproved width changes atomically."
+(defun ebox-prepared-update-test--status-slot (initial)
+  "Render a fixed status slot holding INITIAL text over a positioned panel."
+  (ebox-render-to-buffer
+   (current-buffer)
+   (ebox-build
+    `(column :width (ch 20) :height (lh 4)
+       (box :width (ch 8) :height (lh 1) :wrap-mode none :overflow hidden
+         (text :id "status" ,initial))
+       (box :id "panel" :position absolute :left (ch 0) :top (lh 2)
+            :width (ch 8) :height (lh 1) :z-index 1 "Panel")))))
+
+(ert-deftest ebox-prepared-update-fits-variable-text-in-clipped-or-full-slot ()
+  "Initially clipped and exactly full fixed slots accept shorter and longer text."
   (let ((ebox-viewport-width 160) (ebox-viewport-height 8))
-    (dolist (initial '("" "1234567890123456" "12345678"))
+    (dolist (initial '("1234567890123456" "12345678"))
       (with-temp-buffer
-        (ebox-render-to-buffer
-         (current-buffer)
-         (ebox-build
-          `(column :width (ch 20) :height (lh 4)
-             (box :width (ch 8) :height (lh 1) :wrap-mode none :overflow hidden
-               (text :id "status" ,initial))
-             (box :id "panel" :position absolute :left (ch 0) :top (lh 2)
-                  :width (ch 8) :height (lh 1) :z-index 1 "Panel"))))
-        (let* ((staged nil)
-               (operation (ebox-update-prepare
-                           (current-buffer) [["status" [:content]]]
-                           (lambda () (setq staged t)) #'ignore))
-               (before (buffer-string))
-               (revision (ebox-surface-buffer-revision (current-buffer)))
-               (snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))
-          (when operation (should-not (ebox-update-apply operation [["x"]] [0])))
-          (should-not staged)
-          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
-          (should (equal-including-properties before (buffer-string)))
-          (should (equal-including-properties
-                   snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input)))))))))
+        (ebox-prepared-update-test--status-slot initial)
+        (let ((operation (ebox-update-prepare
+                          (current-buffer) [["status" [:content]]] #'ignore #'ignore))
+              (values [["x"]]))
+          (should operation)
+          (dolist (text '("x" "1234567890123456" "12345678" "ab"))
+            (aset values 0 (vector text))
+            (should (ebox-update-apply operation values [0]))
+            (should (string-match-p "Panel" (buffer-string)))
+            (ebox-prepared-update-test--assert-fresh)))))))
+
+(ert-deftest ebox-prepared-update-declines-initially-empty-slot-atomically ()
+  "An initially empty fixed slot rejects text growth without any visible change."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 8))
+    (with-temp-buffer
+      (ebox-prepared-update-test--status-slot "")
+      (let* ((staged nil)
+             (operation (ebox-update-prepare
+                         (current-buffer) [["status" [:content]]]
+                         (lambda () (setq staged t)) #'ignore))
+             (before (buffer-string))
+             (revision (ebox-surface-buffer-revision (current-buffer)))
+             (snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))
+        (when operation (should-not (ebox-update-apply operation [["x"]] [0])))
+        (should-not staged)
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal-including-properties before (buffer-string)))
+        (should (equal-including-properties
+                 snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))))))
 
 (provide 'ebox-prepared-update-tests)
 ;;; ebox-prepared-update-tests.el ends here

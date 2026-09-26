@@ -30,8 +30,8 @@
   "One fixed wrapper and its containing plane in a compiled output route."
   program target wrapper first-row lines content-offset
   saved-lines dirty prefixes suffixes properties signature transforms variants
-  output-spine offsets damage damage-count domain template-key source-samples refresh-p
-  metadata-tables metadata-signature face-additions surface-properties)
+  output-spine offsets damage damage-count template-key refresh-p
+  paint surface-properties)
 
 (defvar-local ebox-geometry--session nil
   "One shared prepared canvas and publication frame for the mounted surface.")
@@ -114,11 +114,19 @@ degenerates into long bucket scans of nested property values."
 
 (define-hash-table-test 'ebox-geometry-signature #'equal #'ebox-geometry--signature-hash)
 
-(defun ebox-geometry--compile-wrapper (route &optional inner-domain)
-  "Compile ROUTE's fixed chrome and finite content-property transformations.
+(defconst ebox-geometry--decoration-properties
+  '(face mouse-face ebox--hover-style front-sticky rear-nonsticky
+    ebox-content ebox-content-owner ebox-content-owners ebox-bt ebox-bb)
+  "Properties the wrapper paint helpers may add to a primitive run.")
+
+(defun ebox-geometry--compile-wrapper (route &optional inner-properties)
+  "Compile ROUTE's fixed chrome and its content-property schema.
 The generic Box renderer is used only here, before any geometry execution.
-All source property combinations and clipping paint fallbacks are admitted
-up front; an unknown later combination declines the prepared operation."
+INNER-PROPERTIES is the enclosed route's output schema.  Every property that
+the program's primitives, the enclosed route or the paint helpers can carry
+joins the schema; the transformation of one property combination compiles
+when a dirty row first presents it (`ebox-geometry--compile-signature'), so
+preparing a wrapper no longer enumerates every combination up front."
   (let* ((wrapper (ebox-geometry--route-wrapper route))
          (program (ebox-geometry--route-program route))
          (height (ebox-layer--program-height program))
@@ -146,14 +154,12 @@ up front; an unknown later combination declines the prepared operation."
                                       :border-left-pixel :border-right-pixel :border-top-pixel :border-bottom-pixel
                                       :border-left-color :border-right-color :border-top-color :border-bottom-color))))
          (retained (and (equal template-key (ebox-geometry--route-template-key route))
-                        (ebox-geometry--route-source-samples route)))
+                        (ebox-geometry--route-properties route)))
          (old-properties (and retained (ebox-geometry--route-properties route)))
          (keys (if retained (append old-properties nil)
                  (copy-sequence '(face font-lock-face ebox-content ebox-content-owner ebox-content-owners
                                        ebox-bt ebox-bb))))
-         (samples (or retained (make-hash-table :test 'ebox-geometry-signature)))
-         (domain (and retained (ebox-geometry--route-domain route)))
-         pending properties signature output rows)
+         properties output rows)
     (unless (and (eq (ebox-get wrapper :text-align) 'left)
                  (eq (ebox-get wrapper :visibility) 'visible)
                  (= height (ebox--content-height wrapper height content)))
@@ -170,140 +176,60 @@ up front; an unknown later combination declines the prepared operation."
                (+ height offset (floor (ebox-get wrapper :padding-bottom-height))
                   (floor (ebox-get wrapper :margin-bottom-height))))
       (throw 'ebox-geometry-unsupported nil))
-    ;; Include paint-only clipping replacements and the neutral fill primitive.
-    ;; A width-adjusted display space keeps all its other property values.
-    (dolist (string (append inner-domain (cons " " (ebox-layer--program-strings program))))
+    ;; The neutral fill primitive and every program string contribute their
+    ;; source keys; clipping replacements keep a subset of those keys.
+    (dolist (string (cons " " (ebox-layer--program-strings program)))
       (let ((position 0))
         (while (< position (length string))
-          (let* ((props (text-properties-at position string))
-                 (paint (list 'face (plist-get props 'face)
-                              'font-lock-face (plist-get props 'font-lock-face))))
-            (dolist (sample (list props paint))
-              (let ((copy (copy-sequence sample)))
-                (dolist (property ebox-geometry--pass-through-properties)
-                  (cl-remf copy property))
-                (dolist (property '(face font-lock-face))
-                  (unless (plist-get copy property) (cl-remf copy property)))
-                (unless (gethash copy samples)
-                  (puthash copy t samples)
-                  (push copy pending))
-                (let ((tail copy))
-                  (while tail
-                    (cl-pushnew (car tail) keys)
-                    (setq tail (cddr tail))))))
-            (setq position (next-property-change position string (length string)))))))
+          (let ((tail (text-properties-at position string)))
+            (while tail
+              (unless (memq (car tail) ebox-geometry--pass-through-properties)
+                (cl-pushnew (car tail) keys))
+              (setq tail (cddr tail))))
+          (setq position (next-property-change position string (length string))))))
+    (dotimes (index (length inner-properties))
+      (cl-pushnew (aref inner-properties index) keys))
     (let ((tail surface-properties))
       (while tail (cl-pushnew (car tail) keys) (setq tail (cddr tail))))
-    ;; Surface decoration may introduce hover signatures and inherited native
-    ;; capabilities.  Discover their output keys once using the real helpers.
-    (dolist (props pending)
-      (let* ((probe (apply #'propertize "x" props))
-             (styled (ebox--apply-surface-properties
-                      (ebox--propertize-colors probe color background) surface-properties))
-             (tail (text-properties-at 0 styled)))
-        (while tail
-          (unless (memq (car tail) ebox-geometry--pass-through-properties)
-            (cl-pushnew (car tail) keys))
-          (setq tail (cddr tail)))))
-    (setq properties (vconcat keys) signature (make-vector (length keys) nil))
+    (dolist (key ebox-geometry--decoration-properties) (cl-pushnew key keys))
+    (setq properties (vconcat keys))
     (let* ((same-schema (and retained (equal properties old-properties)))
            (tables (if same-schema (ebox-geometry--route-transforms route) (make-vector 8 nil)))
            (prefixes (if retained (ebox-geometry--route-prefixes route) (make-vector height nil)))
            (suffixes (if retained (ebox-geometry--route-suffixes route) (make-vector height nil)))
-           (variants (if retained (ebox-geometry--route-variants route) (make-vector height 0)))
-           (used-variants (make-vector 8 nil))
-           (metadata-tables (if same-schema (ebox-geometry--route-metadata-tables route) (make-vector 8 nil)))
-           (metadata-signature (make-vector 5 nil))
-           (face-additions (make-vector 8 nil)))
-      (unless same-schema
-        (setq pending nil domain nil)
-        (maphash (lambda (props _) (push props pending)) samples))
-      ;; Only variants that occur in this fixed wrapper may feed its enclosing
-      ;; domain.  Inventing every top/bottom-border combination multiplies
-      ;; both preparation time and the following wrapper's property domain.
+           (variants (if retained (ebox-geometry--route-variants route) (make-vector height 0))))
       (dotimes (row height)
         (let ((variant (+ (if (and top-p (= row 0)) 2 0)
                           (if (and bottom-p (= row (1- height))) 4 0))))
           (aset variants row variant)
-          (aset used-variants variant t)
-          (aset used-variants (1+ variant) t)))
-      (dotimes (variant 8)
-        (when (aref used-variants variant)
-          (unless (aref tables variant) (aset tables variant (make-hash-table :test 'ebox-geometry-signature)))
-          (unless (aref metadata-tables variant) (aset metadata-tables variant (make-hash-table :test 'ebox-geometry-signature)))
-          (aset face-additions variant
-                (vconcat (append (and color (list (ebox-buffer--color-face color 'foreground)))
-                                 (and background (list (ebox-buffer--color-face background 'background)))
-                                 (and (/= 0 (logand variant 2))
-                                      (list (ebox-buffer--color-face (ebox-get wrapper :border-top-color) 'overline)))
-                                 (and (/= 0 (logand variant 4))
-                                      (list (ebox-buffer--color-face (ebox-get wrapper :border-bottom-color) 'underline))))))
-          (dolist (props pending)
-            (let* ((source (apply #'propertize "x" props))
-                   ;; A nonempty child-content sentinel models rows whose
-                   ;; other pieces already carry content, without filling this
-                   ;; piece's intentionally empty direct-content property.
-                   (probe (if (= 0 (logand variant 1))
-                              (concat (propertize "x" 'ebox-content 'ebox/geometry-sentinel) source)
-                            source))
-                   (owned (ebox--propertize-content-line probe region 0 " "))
-                   (painted (ebox--propertize-colors owned color background)))
-              (when (/= 0 (logand variant 2))
-                (setq painted (ebox--propertize-overline painted (ebox-get wrapper :border-top-color)))
-                (put-text-property 0 (length painted) 'ebox-bt region painted))
-              (when (/= 0 (logand variant 4))
-                (setq painted (ebox--propertize-underline painted (ebox-get wrapper :border-bottom-color)))
-                (put-text-property 0 (length painted) 'ebox-bb region painted))
-              (ebox--apply-surface-properties painted surface-properties)
-              (let* ((position (1- (length painted)))
-                     (changes nil))
-                (push (substring painted position) domain)
-                (dotimes (index (length properties))
-                  (let ((property (aref properties index)))
-                    (unless (equal (get-text-property 0 property source)
-                                   (get-text-property position property painted))
-                      (setq changes (cons property (cons (get-text-property position property painted) changes))))))
-                (puthash (copy-sequence (ebox-geometry--property-signature source 0 properties signature))
-                         (or changes 'ebox/unchanged) (aref tables variant))
-                (let ((metadata-properties [ebox-content ebox-content-owner ebox-content-owners ebox-bt ebox-bb])
-                      metadata-changes)
-                  (dotimes (meta-index 5)
-                    (let ((property (aref metadata-properties meta-index)))
-                      (aset metadata-signature meta-index (get-text-property 0 property source))
-                      (unless (equal (get-text-property 0 property source)
-                                     (get-text-property position property painted))
-                        (setq metadata-changes
-                              (cons property (cons (get-text-property position property painted) metadata-changes))))))
-                  (puthash (copy-sequence metadata-signature)
-                           (or metadata-changes 'ebox/unchanged) (aref metadata-tables variant))))))))
+          (dolist (direct '(0 1))
+            (unless (aref tables (+ variant direct))
+              (aset tables (+ variant direct)
+                    (make-hash-table :test 'ebox-geometry-signature))))))
       (unless retained
         (dotimes (row height)
           (let* ((line (aref rows (+ offset row)))
                  (end (- (length line) right-count)))
             (unless (<= left-count end) (throw 'ebox-geometry-unsupported nil))
             (aset prefixes row (substring line 0 left-count))
-            (aset suffixes row (substring line end))
-            (aset variants row (+ (if (and top-p (= row 0)) 2 0)
-                                  (if (and bottom-p (= row (1- height))) 4 0))))))
+            (aset suffixes row (substring line end)))))
       (setf (ebox-geometry--route-lines route) rows
             (ebox-geometry--route-saved-lines route) (make-vector (length rows) nil)
             (ebox-geometry--route-dirty route) (make-vector (length rows) nil)
             (ebox-geometry--route-prefixes route) prefixes
             (ebox-geometry--route-suffixes route) suffixes
             (ebox-geometry--route-properties route) properties
-            (ebox-geometry--route-signature route) signature
+            (ebox-geometry--route-signature route) (make-vector (length keys) nil)
             (ebox-geometry--route-transforms route) tables
             (ebox-geometry--route-variants route) variants
             (ebox-geometry--route-output-spine route) (make-list (length rows) nil)
             (ebox-geometry--route-offsets route) (make-vector (1+ (length rows)) 0)
             (ebox-geometry--route-damage route) (make-vector (* 4 (length rows)) 0)
-            (ebox-geometry--route-domain route) domain
             (ebox-geometry--route-template-key route) template-key
-            (ebox-geometry--route-source-samples route) samples
             (ebox-geometry--route-refresh-p route) nil
-            (ebox-geometry--route-metadata-tables route) metadata-tables
-            (ebox-geometry--route-metadata-signature route) metadata-signature
-            (ebox-geometry--route-face-additions route) face-additions
+            (ebox-geometry--route-paint route) (list region color background
+                                                     (ebox-get wrapper :border-top-color)
+                                                     (ebox-get wrapper :border-bottom-color))
             (ebox-geometry--route-surface-properties route) surface-properties)
       (when retained
         (dotimes (row height)
@@ -312,8 +238,59 @@ up front; an unknown later combination declines the prepared operation."
                  route row (aref (ebox-layer--program-rows program) row))))))
     output))
 
+(defun ebox-geometry--compile-signature (route variant source position table)
+  "Compile ROUTE's VARIANT transformation for SOURCE's run at POSITION.
+Paint one probe character through the same helpers the generic renderer
+uses, store the property changes in TABLE under the run's signature and
+return them.  A run whose source or painted properties fall outside the
+compiled schema declines the prepared operation."
+  (let* ((properties (ebox-geometry--route-properties route))
+         (paint (ebox-geometry--route-paint route))
+         (region (nth 0 paint)) (color (nth 1 paint)) (background (nth 2 paint))
+         (surface-properties (ebox-geometry--route-surface-properties route))
+         (tail (text-properties-at position source))
+         props)
+    (while tail
+      (let ((property (car tail)))
+        (unless (memq property ebox-geometry--pass-through-properties)
+          (unless (cl-position property properties) (throw 'ebox-geometry-unsupported nil))
+          (setq props (cons property (cons (cadr tail) props)))))
+      (setq tail (cddr tail)))
+    (let* ((probe (apply #'propertize "x" props))
+           ;; A nonempty child-content sentinel models rows whose other
+           ;; pieces already carry content, without filling this piece's
+           ;; intentionally empty direct-content property.
+           (probe (if (= 0 (logand variant 1))
+                      (concat (propertize "x" 'ebox-content 'ebox/geometry-sentinel) probe)
+                    probe))
+           (owned (ebox--propertize-content-line probe region 0 " "))
+           (painted (ebox--propertize-colors owned color background)))
+      (when (/= 0 (logand variant 2))
+        (setq painted (ebox--propertize-overline painted (nth 3 paint)))
+        (put-text-property 0 (length painted) 'ebox-bt region painted))
+      (when (/= 0 (logand variant 4))
+        (setq painted (ebox--propertize-underline painted (nth 4 paint)))
+        (put-text-property 0 (length painted) 'ebox-bb region painted))
+      (ebox--apply-surface-properties painted surface-properties)
+      (let ((last (1- (length painted))) changes)
+        (setq tail (text-properties-at last painted))
+        (while tail
+          (unless (or (memq (car tail) ebox-geometry--pass-through-properties)
+                      (cl-position (car tail) properties))
+            (throw 'ebox-geometry-unsupported nil))
+          (setq tail (cddr tail)))
+        (dotimes (index (length properties))
+          (let ((property (aref properties index)))
+            (unless (equal (get-text-property position property source)
+                           (get-text-property last property painted))
+              (setq changes (cons property (cons (get-text-property last property painted) changes))))))
+        (puthash (copy-sequence (ebox-geometry--property-signature
+                                 source position properties (ebox-geometry--route-signature route)))
+                 (or changes 'ebox/unchanged) table)))))
+
 (defun ebox-geometry--render-wrapper-row (route row source)
-  "Execute ROUTE's precompiled ROW wrapper on primitive SOURCE pixels."
+  "Execute ROUTE's ROW wrapper on primitive SOURCE pixels.
+Property combinations compile on first use and stay in the route's tables."
   (let* ((direct (not (text-property-not-all 0 (length source) 'ebox-content nil source)))
          (variant (+ (aref (ebox-geometry--route-variants route) row) (if direct 1 0)))
          (table (aref (ebox-geometry--route-transforms route) variant))
@@ -323,27 +300,10 @@ up front; an unknown later combination declines the prepared operation."
          (position 0) (limit (length source)))
     (while (< position limit)
       (let* ((next (next-property-change position source limit))
-             (changes (gethash (ebox-geometry--property-signature source position properties signature) table)))
-        (if changes
-            (unless (eq changes 'ebox/unchanged)
-              (add-text-properties position next changes result))
-          ;; Primitive repaint may change face/image/native values while
-          ;; retaining the already compiled ownership topology.  Replay only
-          ;; that metadata program and the wrapper's fixed paint/native layers.
-          (let* ((metadata-properties [ebox-content ebox-content-owner ebox-content-owners ebox-bt ebox-bb])
-                 (metadata-signature (ebox-geometry--route-metadata-signature route))
-                 (metadata (gethash (ebox-geometry--property-signature source position metadata-properties metadata-signature)
-                                    (aref (ebox-geometry--route-metadata-tables route) variant)))
-                 (faces (aref (ebox-geometry--route-face-additions route) variant)))
-            (unless metadata (throw 'ebox-geometry-unsupported nil))
-            (unless (eq metadata 'ebox/unchanged) (add-text-properties position next metadata result))
-            (dotimes (face-index (length faces))
-              (ebox--add-render-face! result position next (aref faces face-index) t))
-            (let ((tail (ebox-geometry--route-surface-properties route)))
-              (while tail
-                (ebox-interaction--fill-property result position next (car tail) (cadr tail))
-                (setq tail (cddr tail))))
-            (ebox-interaction--refresh-hover! result position next)))
+             (changes (or (gethash (ebox-geometry--property-signature source position properties signature) table)
+                          (ebox-geometry--compile-signature route variant source position table))))
+        (unless (eq changes 'ebox/unchanged)
+          (add-text-properties position next changes result))
         (setq position next)))
     (when direct
       (put-text-property 0 limit 'ebox-content-idx row result))
@@ -417,7 +377,7 @@ up front; an unknown later combination declines the prepared operation."
                   (ebox-geometry--route-refresh-p route))
               (progn
                 (ebox-geometry--compile-wrapper
-                 route (and (> index 0) (ebox-geometry--route-domain (aref routes (1- index)))))
+                 route (and (> index 0) (ebox-geometry--route-properties (aref routes (1- index)))))
                 (when (= index (1- (length routes)))
                   ;; The accepted surface is the authority for rows outside
                   ;; future damage.  A generic wrapper probe may normalize
@@ -614,7 +574,7 @@ additional prepared dependencies before they can use imperative execution."
                     (when (integerp row)
                       (setq first-row (if first-row (min first-row row) row)
                             last-row (if last-row (max last-row row) row)))))
-                (when (and valid (null (ebox-geometry--route-source-samples previous)))
+                (when (and valid (null (ebox-geometry--route-properties previous)))
                   (setf (ebox-geometry--route-lines previous)
                         (make-vector (1+ (- last-row first-row)) nil))))
               (when valid

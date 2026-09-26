@@ -415,9 +415,11 @@ publication-owned topology token can preserve compiled resources. The token is
 retained only for an explicit nonstructural dirty classification with no created,
 removed or moved publication objects. A later preparation refreshes raster rows
 and bindings without comparing the complete node tree. Matching fixed wrapper
-configuration reuses its property transforms; only newly encountered primitive
-property combinations are compiled. Only border variants present in the wrapper
-feed the enclosing domain. Exact role instructions include initially occluded
+configuration reuses its property transforms. Preparation records only the
+property schema a wrapper can encounter (program primitives, the enclosed
+route, surface properties and paint decorations); a primitive property
+combination compiles when a dirty row first presents it, and a combination
+outside the schema declines the prepared operation. Exact role instructions include initially occluded
 rasters, so exposing those pixels can reuse the mount pool. The frame adopts the
 accepted revision and client state while generic mounts remain authoritative
 until the next atomic prepared publication. Structural or unsupported changes

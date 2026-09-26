@@ -56,6 +56,17 @@ All notable changes to Ebox are documented here.
   four-window Desktop workspace switch drops from about 97 to 35 ms in batch
   and from 87 to 47 ms in the GUI; window drags and resizes save 5–10 ms.
 
+- Preparing a geometry wrapper no longer enumerates every source property
+  combination up front. Preparation records the property schema (program
+  primitives, the enclosed route, surface properties and paint decorations)
+  and compiles one combination when a dirty row first presents it; a row
+  whose source or painted properties fall outside that schema still declines
+  the prepared operation. Preparing the Desktop window cohort drops from
+  about 272 to 137 ms in batch, so the first drag after a structural change
+  stalls less and idle preparation completes between mouse moves. Initially
+  clipped or exactly full fixed Text slots now accept variable content
+  through the prepared route; only an initially empty slot still declines.
+
 - Structural publications (adding or removing layers, replacing a subtree)
   start from a private copy of the accepted render cache instead of an empty
   one, and cache signatures no longer depend on where rendering placed a
