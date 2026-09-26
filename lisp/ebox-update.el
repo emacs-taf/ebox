@@ -10,6 +10,7 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'ebox-geometry)
+(require 'ebox-elastic)
 (require 'ebox-update-selector)
 
 (cl-defstruct (ebox-update--member (:constructor ebox-update--make-member))
@@ -26,8 +27,10 @@ marks a changed raster value, the only change that re-renders BOUNDARY."
 NODE is rendered in HOST's content context with the ordinary renderer.  Its
 pieces replace NODE's primitive records in ROUTE's program.  A flow child
 must keep exactly the same source rows and pixel intervals; an absolute
-panel does not participate in flow, so its complete footprint may change."
-  node host route dirty)
+panel does not participate in flow, so its complete footprint may change.
+WIDTH and HEIGHT hold NODE's own size before the current application when
+a member changed it; PAINT marks any other changed raster value."
+  node host route dirty width height paint)
 
 (cl-defstruct (ebox-update--cohort (:constructor ebox-update--make-cohort))
   buffer state scene members groups boundaries marks epoch snapshots
@@ -625,8 +628,9 @@ as its background or visibility, leaves every descendant cascade intact."
         (setq node (ebox-runtime-index-get
                     (ebox-runtime-index-get (plist-get node :node-id) parents) nodes))))))
 
-(defun ebox-update--render-boundary (operation boundary)
-  "Render BOUNDARY's node in its host context from OPERATION's current nodes."
+(defun ebox-update--render-boundary (operation boundary &optional probe)
+  "Render BOUNDARY's node in its host context from OPERATION's current nodes.
+PROBE renders with private caches so a trial size leaves no memoized facts."
   (let* ((state (ebox-update--cohort-state operation))
          (scene (ebox-update--cohort-scene operation))
          (ebox-viewport-width (plist-get state :viewport-width))
@@ -636,9 +640,11 @@ as its background or visibility, leaves every descendant cascade intact."
          (ebox--region-box-table (ebox-geometry--operation-region-table scene))
          (ebox--scroll-global-state (ebox-geometry--operation-scroll-table scene))
          (ebox--render-runtime-revision (plist-get state :runtime-revision))
-         (ebox--render-cache-table (plist-get state :render-cache))
+         (ebox--render-cache-table (if probe (make-hash-table :test #'equal)
+                                     (plist-get state :render-cache)))
          (ebox--render-cache-allow-viewport-dependent t)
-         (ebox--render-cache-signature-cache (ebox-update--cohort-signatures operation))
+         (ebox--render-cache-signature-cache (if probe (make-hash-table :test #'eq)
+                                               (ebox-update--cohort-signatures operation)))
          (ebox--layout-fragments-table nil)
          (ebox--layout-fragments-reuse-p nil)
          (ebox-layer--previous-composition-cache nil)
@@ -661,9 +667,205 @@ as its background or visibility, leaves every descendant cascade intact."
          (ebox-update--boundary-host boundary)
          (lambda () (ebox--render-with-cache node)))))))
 
+(defun ebox-update--elastic-change (boundary)
+  "Return (OLD-WIDTH OLD-HEIGHT WIDTH HEIGHT) when BOUNDARY only changed size.
+Sizes are the node's pixel width and row height.  Return nil when another
+raster value changed, the node is not an absolute panel or its size is not
+expressed in whole pixels and rows."
+  (let* ((node (ebox-update--boundary-node boundary))
+         (width (ebox-get node :width)) (height (ebox-get node :height))
+         (old-width (or (ebox-update--boundary-width boundary) (car-safe (cdr-safe width))))
+         (old-height (or (ebox-update--boundary-height boundary) (car-safe (cdr-safe height)))))
+    (and (not (ebox-update--boundary-paint boundary))
+         (eq (plist-get node :position) 'absolute)
+         (eq (car-safe width) 'px) (eq (car-safe height) 'lh)
+         (integerp (car-safe (cdr-safe width))) (integerp (car-safe (cdr-safe height)))
+         (integerp old-width) (integerp old-height)
+         (or (/= old-width (cadr width)) (/= old-height (cadr height)))
+         (list old-width old-height (cadr width) (cadr height)))))
+
+(defun ebox-update--boundary-rows (records target)
+  "Return the rows RECORDS retain for TARGET in source order, or nil.
+Every row from the first to the last must have a placed primitive."
+  (let (rows)
+    (dotimes (position (length target))
+      (let ((record (aref records (aref target position))))
+        (when (>= (plist-get record :y) 0)
+          (let ((row (plist-get record :source-row)))
+            (unless (assq row rows) (push (cons row (plist-get record :text)) rows))))))
+    (setq rows (sort rows (lambda (a b) (< (car a) (car b)))))
+    (and rows (= (car (car rows)) 0)
+         (cl-loop for (row . _) in rows for index from 0 always (= row index))
+         (mapcar #'cdr rows))))
+
+(defun ebox-update--elastic-lines (operation boundary change rows)
+  "Return BOUNDARY's rows after size CHANGE replayed from the learned model.
+ROWS are the currently retained rows.  Return nil when no verified model
+covers the change."
+  (pcase-let* ((`(,old-width ,old-height ,width ,height) change)
+               (node (ebox-update--boundary-node boundary))
+               (model (ebox-elastic--model
+                       node (plist-get (ebox-update--cohort-state operation) :display-signature))))
+    (and model
+         (ebox-elastic--in-range-p model width height)
+         (ebox-elastic--matches-p model rows old-width old-height)
+         (ebox-elastic--synthesize model rows old-height width height))))
+
+(defun ebox-update--elastic-probe (operation boundary width height)
+  "Render BOUNDARY's node at a trial WIDTH by HEIGHT and return its rows."
+  (let* ((node (ebox-update--boundary-node boundary))
+         (width-cell (ebox-get node :width)) (height-cell (ebox-get node :height))
+         (saved-width (cadr width-cell)) (saved-height (cadr height-cell)))
+    (unwind-protect
+        (progn
+          (setcar (cdr width-cell) width) (setcar (cdr height-cell) height)
+          (let ((text (ebox-update--render-boundary operation boundary t)))
+            (and (stringp text) (ebox-string-lines text))))
+      (setcar (cdr width-cell) saved-width) (setcar (cdr height-cell) saved-height))))
+
+(defun ebox-update--elastic-verified-p (operation boundary model rows height trial-width trial-height)
+  "Whether MODEL predicts the render of BOUNDARY at TRIAL-WIDTH by TRIAL-HEIGHT.
+ROWS are HEIGHT rows that MODEL matches."
+  (let ((expected (ebox-elastic--synthesize model rows height trial-width trial-height))
+        (actual (ebox-update--elastic-probe operation boundary trial-width trial-height)))
+    (and expected actual (= (length expected) (length actual))
+         (cl-every #'ebox-elastic--rows-equal-p expected actual))))
+
+(defun ebox-update--elastic-limit (node property unit fallback)
+  "Return NODE's PROPERTY size in UNIT as an integer, else FALLBACK."
+  (let ((value (ebox-get node property)))
+    (if (and (eq (car-safe value) unit) (integerp (car-safe (cdr-safe value))))
+        (cadr value)
+      fallback)))
+
+(defun ebox-update--elastic-width-bound (operation boundary model rows width height trial)
+  "Return TRIAL when MODEL predicts BOUNDARY's render at TRIAL width, else WIDTH.
+ROWS are the HEIGHT rows rendered at WIDTH.  A trial whose odd total first
+reveals which run owns the odd pixel completes MODEL's shapes in place."
+  (let ((actual (ebox-update--elastic-probe operation boundary trial height))
+        (shapes (ebox-elastic--model-rows model)))
+    (if (not (and actual (= (length actual) (length rows))))
+        width
+      (when (cl-some (lambda (shape) (and (cdr (ebox-elastic--row-runs shape))
+                                          (null (ebox-elastic--row-ceil shape))))
+                     shapes)
+        (let ((refined (ebox-elastic--learn-width rows width actual trial)))
+          (when refined
+            (dotimes (index (length shapes))
+              (when (and (cdr (ebox-elastic--row-runs (aref shapes index)))
+                         (null (ebox-elastic--row-ceil (aref shapes index))))
+                (setf (ebox-elastic--row-ceil (aref shapes index))
+                      (ebox-elastic--row-ceil (aref refined index))))))))
+      (let ((expected (ebox-elastic--synthesize model rows height trial height)))
+        (if (and expected (cl-every #'ebox-elastic--rows-equal-p expected actual)) trial width)))))
+
+(defun ebox-update--elastic-learn-width (operation boundary model rows-a width-a rows-b width-b height program)
+  "Extend MODEL with the width response between ROWS-A and ROWS-B.
+ROWS-A and ROWS-B are the renders at WIDTH-A and WIDTH-B, both HEIGHT rows
+tall; MODEL may be nil.  Return the model with a verified width range, or
+nil when the rows do not respond elastically."
+  (let ((shapes (ebox-elastic--learn-width rows-b width-b rows-a width-a)))
+    (when shapes
+      (let* ((node (ebox-update--boundary-node boundary))
+             (reindexed (and model (ebox-elastic--reindex model height)))
+             (new (ebox-elastic--make-model
+                   :rows shapes :wref width-b
+                   :prefix (and reindexed (ebox-elastic--model-prefix model))
+                   :suffix (and reindexed (ebox-elastic--model-suffix model))
+                   :filler (and reindexed (ebox-elastic--model-filler model))
+                   :shifts (and reindexed (cdr reindexed))
+                   :filler-shifts (and reindexed (ebox-elastic--model-filler-shifts model))
+                   :hlow (if reindexed (ebox-elastic--model-hlow model) height)
+                   :hhigh (if reindexed (ebox-elastic--model-hhigh model) height)))
+             (low (min width-a width-b)) (high (max width-a width-b))
+             (floor (max (ebox-elastic--width-floor new)
+                         (ebox-update--elastic-limit node :min-width 'px 0)))
+             (ceiling (ebox-update--elastic-limit node :max-width 'px (ebox-layer--program-width program))))
+        (setf (ebox-elastic--model-whigh new)
+              (if (> ceiling high)
+                  (max high (ebox-update--elastic-width-bound operation boundary new rows-b width-b height ceiling))
+                high))
+        (setf (ebox-elastic--model-wlow new)
+              (if (< floor low)
+                  (min low (ebox-update--elastic-width-bound operation boundary new rows-b width-b height floor))
+                low))
+        new))))
+
+(defun ebox-update--elastic-learn-height (operation boundary model rows-a height-a rows-b height-b width program)
+  "Extend MODEL with the height response between ROWS-A and ROWS-B.
+ROWS-A and ROWS-B are the renders at HEIGHT-A and HEIGHT-B rows, both WIDTH
+wide; MODEL may be nil.  Return the model with a verified height range, or
+nil when the rows do not grow by repeated filler rows."
+  (let ((response (ebox-elastic--learn-height rows-a rows-b)))
+    (when response
+      (pcase-let* ((`(,prefix ,suffix ,filler ,shifts ,filler-shifts) response)
+                   (short (if (<= height-a height-b) rows-a rows-b))
+                   (height (length short))
+                   (node (ebox-update--boundary-node boundary))
+                   (reindexed (and model (ebox-elastic--reindex model height)))
+                   (widths (and reindexed
+                                (ebox-elastic--matches-p
+                                 (ebox-elastic--make-model :rows (car reindexed)
+                                                           :wref (ebox-elastic--model-wref model))
+                                 short width height)))
+                   (new (ebox-elastic--make-model
+                         :rows (if widths (car reindexed) (vconcat (mapcar #'ebox-elastic--fixed-row short)))
+                         :wref (if widths (ebox-elastic--model-wref model) width)
+                         :prefix prefix :suffix suffix :filler filler
+                         :shifts shifts :filler-shifts filler-shifts
+                         :wlow (if widths (ebox-elastic--model-wlow model) width)
+                         :whigh (if widths (ebox-elastic--model-whigh model) width)))
+                   (low (min height-a height-b)) (high (max height-a height-b))
+                   (floor (max (+ prefix suffix) (ebox-update--elastic-limit node :min-height 'lh 0)))
+                   (ceiling (ebox-update--elastic-limit node :max-height 'lh (ebox-layer--program-height program))))
+        (setf (ebox-elastic--model-hlow new)
+              (if (and (< floor low)
+                       (ebox-update--elastic-verified-p operation boundary new rows-b height-b width floor))
+                  floor low))
+        (setf (ebox-elastic--model-hhigh new)
+              (if (and (> ceiling high)
+                       (ebox-update--elastic-verified-p operation boundary new rows-b height-b width ceiling))
+                  ceiling high))
+        new))))
+
+(defun ebox-update--elastic-learn (operation boundary change rows lines program)
+  "Learn BOUNDARY's size response from the render LINES after CHANGE.
+ROWS are the rows retained before the change.  A change of one axis is
+learned directly; a change of both axes is learned through the model's
+replay of the already known axis."
+  (pcase-let* ((`(,old-width ,old-height ,width ,height) change)
+               (node (ebox-update--boundary-node boundary))
+               (signature (plist-get (ebox-update--cohort-state operation) :display-signature))
+               (model (ebox-elastic--model node signature))
+               (result nil))
+    (when (and lines (cl-every (lambda (line) (> (length line) 0)) lines))
+      (cond
+       ((= old-height height)
+        (when (= (length rows) (length lines))
+          (setq result (ebox-update--elastic-learn-width
+                        operation boundary model rows old-width lines width height program))))
+       ((= old-width width)
+        (setq result (ebox-update--elastic-learn-height
+                      operation boundary model rows old-height lines height width program)))
+       ((and model (ebox-elastic--matches-p model rows old-width old-height))
+        (let ((across (and (ebox-elastic--in-range-p model width old-height)
+                           (ebox-elastic--synthesize model rows old-height width old-height)))
+              (down (and (ebox-elastic--in-range-p model old-width height)
+                         (ebox-elastic--synthesize model rows old-height old-width height))))
+          (cond
+           (across (setq result (ebox-update--elastic-learn-height
+                                 operation boundary model across old-height lines height width program)))
+           ((and down (= (length down) (length lines)))
+            (setq result (ebox-update--elastic-learn-width
+                          operation boundary model down old-width lines width height program)))))))
+      (when result (ebox-elastic--remember node signature result)))))
+
 (defun ebox-update--replace-boundary (operation boundary)
   "Replace BOUNDARY's retained primitives with its ordinary render.
-Rows whose pixels are unchanged keep their primitives and damage.  Throw
+Rows whose pixels are unchanged keep their primitives and damage.  A pure
+size change of an absolute panel whose learned size response is verified
+for the new size replays that response instead of rendering, and every
+ordinary render after a size change teaches the response.  Throw
 `unsupported' when a flow child's footprint changes or new pixels contain
 roles the mounted projection cannot represent."
   (let* ((scene (ebox-update--cohort-scene operation))
@@ -674,8 +876,15 @@ roles the mounted projection cannot represent."
          (node (ebox-update--boundary-node boundary))
          (host (ebox-update--boundary-host boundary))
          (target (gethash (plist-get node :node-id) (ebox-layer--program-targets program)))
-         (text (ebox-update--render-boundary operation boundary))
-         (pieces (and (stringp text) (ebox-layer--pieces (ebox-string-lines text) node)))
+         (change (and target (ebox-update--elastic-change boundary)))
+         (rows (and change (ebox-update--boundary-rows records target)))
+         (lines (or (and rows (ebox-update--elastic-lines operation boundary change rows))
+                    (let ((text (ebox-update--render-boundary operation boundary)))
+                      (when (stringp text)
+                        (let ((lines (ebox-string-lines text)))
+                          (when rows (ebox-update--elastic-learn operation boundary change rows lines program))
+                          lines)))))
+         (pieces (and lines (ebox-layer--pieces lines node)))
          (keys (make-hash-table :test #'equal))
          (annotated (make-hash-table :test #'eq))
          (first-row nil) (offset nil) (same (> (length pieces) 0)))
@@ -830,6 +1039,13 @@ after acceptance."
             (ebox-update--cohort-snapshots operation) nil
             (ebox-update--cohort-paint-changed operation) nil
             (ebox-update--cohort-staged operation) nil)
+      (let ((boundaries (ebox-update--cohort-boundaries operation)))
+        (dotimes (index (length boundaries))
+          (let ((boundary (aref boundaries index)))
+            (setf (ebox-update--boundary-dirty boundary) nil
+                  (ebox-update--boundary-width boundary) nil
+                  (ebox-update--boundary-height boundary) nil
+                  (ebox-update--boundary-paint boundary) nil))))
       (dotimes (index (length groups))
         (let* ((group (aref groups index)) (node (ebox-update--group-node group))
                (keys (ebox-update--group-properties group)) (owned (ebox-update--group-values group)))
@@ -864,21 +1080,31 @@ after acceptance."
                   ;; Only a raster value that differs from the displayed one
                   ;; re-renders the boundary; translation, crop and selector
                   ;; changes keep their retained primitives.
-                  (dotimes (key-index (length keys))
-                    (let* ((property (aref keys key-index))
-                           (value (aref incoming key-index))
-                           (offset (aref offsets key-index)))
-                      (when (and (memq property '(:content :hover-content :color :background-color :bgcolor
-                                                  :border :font-weight :visibility))
-                                 (not (equal-including-properties
-                                       value (ebox-update--group-current-value group offset))))
-                        (setf (ebox-update--group-repaint group) t)
-                        (unless (memq property '(:content :hover-content))
-                          (setf (ebox-update--cohort-paint-changed operation) t
-                                (ebox-update--group-restyle group) t)))
-                      (ebox-update--capture-value group offset value)))
-                  (when (ebox-update--group-resized group)
-                    (setf (ebox-update--group-repaint group) t)))))
+                  (let* ((boundary (ebox-update--group-boundary group))
+                         (node (ebox-update--group-node group))
+                         (own (and boundary (eq node (ebox-update--boundary-node boundary)))))
+                    (dotimes (key-index (length keys))
+                      (let* ((property (aref keys key-index))
+                             (value (aref incoming key-index))
+                             (offset (aref offsets key-index))
+                             (old (ebox-update--group-current-value group offset)))
+                        (when (and (memq property '(:content :hover-content :color :background-color :bgcolor
+                                                    :border :font-weight :visibility))
+                                   (not (equal-including-properties value old)))
+                          (setf (ebox-update--group-repaint group) t)
+                          (when boundary (setf (ebox-update--boundary-paint boundary) t))
+                          (unless (memq property '(:content :hover-content))
+                            (setf (ebox-update--cohort-paint-changed operation) t
+                                  (ebox-update--group-restyle group) t)))
+                        (when (and own (memq property '(:width :height)) (consp old) (consp (cdr old)))
+                          (if (eq property :width)
+                              (setf (ebox-update--boundary-width boundary) (cadr old))
+                            (setf (ebox-update--boundary-height boundary) (cadr old))))
+                        (ebox-update--capture-value group offset value)))
+                    (when (ebox-update--group-resized group)
+                      (setf (ebox-update--group-repaint group) t)
+                      (when (and boundary (not own))
+                        (setf (ebox-update--boundary-paint boundary) t)))))))
             (with-current-buffer (ebox-update--cohort-buffer operation)
               (when ebox-interaction--hover-content-owner
                 (dotimes (index (length groups))
@@ -924,8 +1150,6 @@ after acceptance."
                            (ebox-update--group-restyle group))
                   (ebox-update--restyle operation (ebox-update--group-node group)))))
             (let ((boundaries (ebox-update--cohort-boundaries operation)))
-              (dotimes (index (length boundaries))
-                (setf (ebox-update--boundary-dirty (aref boundaries index)) nil))
               (dotimes (index (length groups))
                 (let ((group (aref groups index)))
                   (when (and (ebox-update--group-dirty group) (ebox-update--group-repaint group)

@@ -16,6 +16,13 @@ All notable changes to Ebox are documented here.
   translation program's rollback. Other size changes keep their existing
   boundary re-render or ordinary publication route, and unsupported values are
   declined before mutation. See the `ebox-geometry-apply` record in `ebox.el`.
+- Prepared `:width`/`:height` changes of a framed absolute panel, such as a
+  desktop window with a centered title and a body, replay the panel's learned
+  size response instead of re-rendering it. The response is learned from the
+  first ordinary renders, verified at the plane's limits, and checked against
+  the retained rows before every replay; any paint, content or font change
+  falls back to the ordinary render. Batch desktop window resizing drops from
+  about 36 ms to 14 ms per frame horizontally and from 20 ms to 9 ms vertically.
 
 ### Fixed
 

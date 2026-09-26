@@ -448,6 +448,22 @@ in flow, so a resize or row change reuses its record slots, appends records and
 hides surplus ones. A fixed sparse batch saves each record once, so paint, Text,
 resize and multiple placements share complete pixel rollback.
 
+A pure size change of an absolute owner may skip that render. `ebox-elastic`
+learns the owner's size response from two ordinary renders: a width change
+whose rows differ only by one fixed pixel space per row, or two equal halves
+around a centered child, and a height change that inserts copies of one
+filler row between a fixed prefix and suffix while renumbering the rows of
+the affected content cell. The learned model is verified by trial renders at
+the containing plane's limits and the node's declared minimum and maximum
+sizes, and each replay first checks that the retained rows still have the
+learned shape: property-free text, every other `display` value and the pixel
+widths of the fixed segments, so font, paint and content changes fall back to
+the ordinary render, which teaches the model again. Replays produce the same
+rows as the renderer, including the odd pixel of a centered title, so
+`tests/ebox-prepared-resize-tests.el` compares each result with a fresh render.
+Flow owners, clipped or non-integral sizes and changes that combine size
+with another raster value keep the ordinary render.
+
 Class variants compile to the existing source token grammar and a private
 selector view. Candidate indexes contain the finite class superset; ECSS always
 matches the current subject. Any rule/scope that observes a changing token is

@@ -77,6 +77,84 @@
         (should accepted)
         (ebox-resize-test--assert-fresh)))))
 
+(defun ebox-resize-test--framed-input (&optional width height)
+  "Build a plane holding a framed flex panel WIDTH by HEIGHT with a body peer."
+  (ebox-build
+   `(box :width (px 400) :height (lh 14) :background-color "#EAF0F6"
+      (box :id "frame" :position absolute :left (px 8) :top (lh 1)
+           :width (px ,(or width 200)) :height (lh ,(or height 6))
+           :background-color "#243447" :color "#F1F5F9" :z-index 2
+           (flex :flex-direction row :justify-content space-between :align-items center
+             (box :width (px 24) "x")
+             (box :flex 1 :text-align center "Panel title")
+             (box :width (px 24) "o"))
+           (box "Body line")
+           (box "Footer"))
+      (box :id "peer" :position absolute :left (px 300) :top (lh 3)
+           :width (px 80) :height (lh 4) :z-index 1
+           :background-color "#705070" "Independent peer"))))
+
+(ert-deftest ebox-prepared-resize-framed-panel-matches-fresh-render-at-every-size ()
+  "Repeated framed panel resizes equal fresh renders across parities and limits."
+  (let ((ebox-viewport-width 400) (ebox-viewport-height 14))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-resize-test--framed-input))
+      (let ((operation (ebox-update-prepare (current-buffer) [["frame" [:width :height]]])))
+        (should operation)
+        (dolist (value '([(px 208) (lh 6)] [(px 216) (lh 6)] [(px 217) (lh 6)] [(px 224) (lh 6)]
+                         [(px 224) (lh 7)] [(px 224) (lh 9)] [(px 224) (lh 4)] [(px 224) (lh 3)]
+                         [(px 232) (lh 5)] [(px 300) (lh 12)] [(px 60) (lh 3)] [(px 61) (lh 2)]
+                         [(px 200) (lh 6)] [(px 391) (lh 6)] [(px 392) (lh 13)] [(px 200) (lh 6)]))
+          (should (ebox-update-apply operation (vector value) [0]))
+          (should (equal (plist-get (ebox-region-geometry "frame") :width) (aref value 0)))
+          (should (equal (plist-get (ebox-region-geometry "frame") :height) (aref value 1)))
+          (ebox-resize-test--assert-fresh))))))
+
+(ert-deftest ebox-prepared-resize-framed-panel-follows-paint-between-resizes ()
+  "Paint and content changes between framed resizes appear in later sizes."
+  (let ((ebox-viewport-width 400) (ebox-viewport-height 14))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-resize-test--framed-input))
+      (let ((operation (ebox-update-prepare
+                        (current-buffer) [["frame" [:width :height :background-color :color]]])))
+        (should operation)
+        (dolist (step '(([(px 208) (lh 6) "#243447" "#F1F5F9"] [0])
+                        ([(px 216) (lh 7) "#243447" "#F1F5F9"] [0])
+                        ([(px 216) (lh 7) "#304050" "#F1F5F9"] [0])
+                        ([(px 224) (lh 8) "#304050" "#F1F5F9"] [0])
+                        ([(px 232) (lh 8) "#304050" "#FFD700"] [0])
+                        ([(px 240) (lh 5) "#304050" "#FFD700"] [0])
+                        ([(px 200) (lh 6) "#243447" "#F1F5F9"] [0])))
+          (should (ebox-update-apply operation (vector (car step)) (cadr step)))
+          (ebox-resize-test--assert-fresh))))))
+
+(ert-deftest ebox-prepared-resize-framed-panel-rolls-back-after-replayed-sizes ()
+  "A rejected framed resize after accepted ones restores its exact pixels."
+  (let ((ebox-viewport-width 400) (ebox-viewport-height 14))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-resize-test--framed-input))
+      (let* ((reject nil) (accepted nil)
+             (operation (ebox-update-prepare
+                         (current-buffer) [["frame" [:width :height]]]
+                         (lambda () (setq accepted t) (when reject (error "Reject resize")))
+                         (lambda () (setq accepted nil)))))
+        (should operation)
+        (dolist (value '([(px 208) (lh 6)] [(px 216) (lh 7)] [(px 224) (lh 8)]))
+          (should (ebox-update-apply operation (vector value) [0]))
+          (ebox-resize-test--assert-fresh))
+        (let ((before (buffer-string))
+              (revision (ebox-surface-buffer-revision (current-buffer))))
+          (setq reject t)
+          (should-error (ebox-update-apply operation (vector [(px 232) (lh 9)]) [0]))
+          (should-not accepted)
+          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (equal-including-properties before (buffer-string)))
+          (ebox-resize-test--assert-fresh)
+          (setq reject nil)
+          (should (ebox-update-apply operation (vector [(px 232) (lh 9)]) [0]))
+          (should accepted)
+          (ebox-resize-test--assert-fresh))))))
+
 (ert-deftest ebox-prepared-resize-declines-unproved-layout-and-capacity ()
   "Wrapping and dimensions beyond a prepared canvas never silently crop."
   (let ((ebox-viewport-width 240) (ebox-viewport-height 12))
