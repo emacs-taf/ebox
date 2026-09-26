@@ -67,6 +67,14 @@ All notable changes to Ebox are documented here.
   clipped or exactly full fixed Text slots now accept variable content
   through the prepared route; only an initially empty slot still declines.
 
+- Compiling prepared ownership (`ebox-surface--geometry-mount-prepare`)
+  gathers each raster run's role signature in one pass over its property
+  list, looks the token up by signature before rebuilding role lists, counts
+  layer intervals in identity-keyed tables and fills each owner's mount pool
+  with one liveness check. Desktop's four-window cohort ownership compiles in
+  about 42 instead of 88 ms in batch, so the whole cohort prepares in about
+  90 ms (272 ms before this release).
+
 - Structural publications (adding or removing layers, replacing a subtree)
   start from a private copy of the accepted render cache instead of an empty
   one, and cache signatures no longer depend on where rendering placed a

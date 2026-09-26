@@ -6234,13 +6234,17 @@ intervals grows the exhausted pools through
         (role-instructions (make-hash-table :test #'equal))
         (properties (vconcat '(ebox-overflow-foreground-source ebox-content-owners)
                              (mapcar #'cdr ebox-region-types)))
+        (property-indexes (make-hash-table :test #'eq))
         (role-names (vconcat '(overflow-foreground content-owner)
                              (mapcar #'car ebox-region-types)))
         (node-objects (plist-get state :surface-node-object-table))
         (region-objects (plist-get state :region-surface-object-table))
         (layer-set (and layer-rasters (make-hash-table :test #'eq)))
-        (layer-intervals (make-hash-table :test #'equal))
-        descriptors full all-mounts)
+        (layer-intervals (make-hash-table :test #'eq))
+        (joined-intervals (make-hash-table :test #'eq))
+        (mount-count 0) descriptors full)
+    (dotimes (index (length properties))
+      (puthash (aref properties index) index property-indexes))
     (dolist (raster layer-rasters) (puthash raster t layer-set))
     ;; The joined output separately bounds its owners, one interval per row run.
     (when (and layer-set rows (car rasters)) (puthash (car rasters) 'joined layer-set))
@@ -6266,22 +6270,33 @@ intervals grows the exhausted pools through
             (previous []))
         (while (< position (length raster))
           (let* ((end (next-property-change position raster (length raster)))
-                 (roles (ebox-surface--role-ids-at raster position))
-                 (token (gethash roles tokens 'ebox/unknown)))
+                 (plist (text-properties-at position raster))
+                 (signature (make-vector (length properties) nil))
+                 token)
+            ;; One pass over the run's plist gathers the role signature; an
+            ;; equal signature already interned its token and compiled every
+            ;; role it names, so most runs never rebuild role lists.
+            (while plist
+              (let ((index (gethash (car plist) property-indexes)))
+                (when index (aset signature index (cadr plist))))
+              (setq plist (cddr plist)))
+            (setq token (gethash signature signatures 'ebox/unknown))
             (when (eq token 'ebox/unknown)
-              (setq token
-                    (vconcat
-                     (mapcar
-                      (lambda (entry)
-                        (ebox-surface--geometry-owner-intern
-                         owners (car entry) (cadr entry)))
-                      (ebox-surface--fragment-owners
-                       roles state node-objects region-objects))))
-              (puthash roles token tokens))
-            (let ((signature (make-vector (length properties) nil)))
+              (let ((roles (ebox-surface--role-ids-at raster position)))
+                (setq token (gethash roles tokens 'ebox/unknown))
+                (when (eq token 'ebox/unknown)
+                  (setq token
+                        (vconcat
+                         (mapcar
+                          (lambda (entry)
+                            (ebox-surface--geometry-owner-intern
+                             owners (car entry) (cadr entry)))
+                          (ebox-surface--fragment-owners
+                           roles state node-objects region-objects))))
+                  (puthash roles token tokens)))
               (dotimes (index (length properties))
-                (let ((value (get-text-property position (aref properties index) raster)))
-                  (aset signature index (copy-tree value))
+                (let ((value (aref signature index)))
+                  (when (consp value) (aset signature index (copy-tree value)))
                   (if (= index 1)
                       (dolist (region value)
                         (ebox-surface--geometry-mount-prepare-role
@@ -6296,21 +6311,19 @@ intervals grows the exhausted pools through
               (put-text-property position end 'ebox--prepared-owners token raster))
             ;; Adjacent runs of one owner in a layer raster form one interval.
             (when layer-p
-              (let ((pieces 1) (newline position))
-                (while (setq newline (and (< newline end)
-                                          (string-search "\n" raster newline)))
-                  (when (< newline end)
-                    (setq pieces (1+ pieces)))
+              (let ((pieces 1) (newline position)
+                    (intervals (if (eq layer-p 'joined) joined-intervals layer-intervals)))
+                (while (< newline end)
+                  (when (eq (aref raster newline) ?\n) (setq pieces (1+ pieces)))
                   (setq newline (1+ newline)))
                 (dotimes (index (length token))
-                  (let* ((owner (aref token index))
-                         (key (if (eq layer-p 'joined) (list owner) owner)))
-                    (puthash key
-                             (+ (gethash key layer-intervals 0)
+                  (let ((owner (aref token index)))
+                    (puthash owner
+                             (+ (gethash owner intervals 0)
                                 (if (cl-find owner previous :test #'eq)
                                     (1- pieces)
                                   pieces))
-                             layer-intervals)))
+                             intervals)))
                 (setq previous
                       (if (and (> end position) (eq (aref raster (1- end)) ?\n))
                           [] token))))
@@ -6332,7 +6345,7 @@ intervals grows the exhausted pools through
                          (cl-loop for entry in entries
                                   maximize
                                   (max (length (ebox-surface--geometry-owner-mounts (cdr entry)))
-                                       (gethash (list (cdr entry)) layer-intervals 0)
+                                       (gethash (cdr entry) joined-intervals 0)
                                        (gethash (cdr entry) layer-intervals 0))))))
          (dolist (entry entries)
            (let* ((owner (cdr entry))
@@ -6352,41 +6365,43 @@ intervals grows the exhausted pools through
              (dolist (mount existing)
                (aset mounts index mount)
                (setq index (1+ index)))
-             (while (< index capacity)
-               (aset mounts index
-                     (ebox--pub-frame-mount-create
-                      (ebox-surface--geometry-owner-object owner)
-                      (ebox-surface--geometry-owner-tags owner)))
-               (setq index (1+ index)))
+             (ebox--pub-frame-mount-fill
+              mounts index
+              (ebox-surface--geometry-owner-object owner)
+              (ebox-surface--geometry-owner-tags owner))
              (setf (ebox-surface--geometry-owner-mounts owner) mounts
                    (ebox-surface--geometry-owner-full-p owner) (and (memq owner full) t)
                    (ebox-surface--geometry-owner-binding owner) binding
                    (ebox-surface--geometry-owner-direct-p owner)
                    (and (plist-get (ebox-surface--geometry-owner-tags owner) :ebox/region-id) t))
              (push owner descriptors)
-             (dotimes (i capacity) (push (aref mounts i) all-mounts))))))
+             (setq mount-count (+ mount-count capacity))))))
      owners)
-    (let ((slots (make-vector (* 4 (length all-mounts)) nil))
-          (entries (and rows (make-vector (* 6 (length all-mounts)) nil)))
+    (let ((slots (make-vector (* 4 mount-count) nil))
+          (entries (and rows (make-vector (* 6 mount-count) nil)))
           (index 0) (entry 0))
-      (dolist (mount all-mounts)
-        (aset slots index mount)
-        (aset slots (1+ index) 0)
-        (aset slots (+ 2 index) 0)
-        (aset slots (+ 3 index) (ebox--pub--surface-mount-tags mount))
-        (when entries
-          (let ((owner (ebox-surface--geometry-owner-intern
-                        owners (ebox--pub--surface-mount-object mount)
-                        (ebox--pub--surface-mount-tags mount))))
-            ;; Each cache entry belongs permanently to one mount and owner.
-            ;; Its link joins either one row's intervals or the owner's free pool.
-            (aset entries entry mount)
-            (aset entries (1+ entry) owner)
-            (aset entries (+ 4 entry) (ebox-surface--geometry-owner-free-entry owner))
-            (aset entries (+ 5 entry) (ebox-surface--geometry-owner-tags owner))
-            (setf (ebox-surface--geometry-owner-free-entry owner) entry))
-          (setq entry (+ entry 6)))
-        (setq index (+ index 4)))
+      ;; Slots list the most recently interned owner's last mount first.
+      (dolist (owner descriptors)
+        (let* ((mounts (ebox-surface--geometry-owner-mounts owner))
+               (tags (ebox-surface--geometry-owner-tags owner))
+               (position (length mounts)))
+          (while (> position 0)
+            (setq position (1- position))
+            (let ((mount (aref mounts position)))
+              (aset slots index mount)
+              (aset slots (1+ index) 0)
+              (aset slots (+ 2 index) 0)
+              (aset slots (+ 3 index) (ebox--pub--surface-mount-tags mount))
+              (when entries
+                ;; Each cache entry belongs permanently to one mount and owner.
+                ;; Its link joins either one row's intervals or the owner's free pool.
+                (aset entries entry mount)
+                (aset entries (1+ entry) owner)
+                (aset entries (+ 4 entry) (ebox-surface--geometry-owner-free-entry owner))
+                (aset entries (+ 5 entry) tags)
+                (setf (ebox-surface--geometry-owner-free-entry owner) entry)
+                (setq entry (+ entry 6)))
+              (setq index (+ index 4))))))
       (let ((projection
              (ebox-surface--make-geometry-mount
               :slots slots :descriptors (vconcat descriptors) :full (vconcat full)

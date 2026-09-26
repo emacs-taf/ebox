@@ -160,6 +160,21 @@ install either bank as the surface's authoritative mount projection."
    :id (cl-incf ebox--pub--mount-id-counter) :object object
    :start 0 :end 0 :tags tags :capability 'content))
 
+(defun ebox--pub-frame-mount-fill (mounts start object tags)
+  "Fill MOUNTS from index START with inactive content mounts for live OBJECT.
+Every mount shares the immutable TAGS.  One liveness check covers the whole
+pool, so preparing thousands of spare intervals stays cheap."
+  (unless (ebox--pub-object-live-p object)
+    (signal 'ebox--pub-stale-object (list object)))
+  (let ((index start) (count (length mounts)))
+    (while (< index count)
+      (aset mounts index
+            (ebox--pub--make-surface-mount
+             :id (cl-incf ebox--pub--mount-id-counter) :object object
+             :start 0 :end 0 :tags tags :capability 'content))
+      (setq index (1+ index)))
+    mounts))
+
 (defun ebox--pub--frame-bank (pool object-keys report)
   "Allocate one reusable mount bank for POOL, OBJECT-KEYS and REPORT."
   (let ((global (make-vector (length pool) nil))
