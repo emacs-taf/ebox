@@ -1061,9 +1061,28 @@ ranges are numeric snapshots; Ebox publication retains marker ownership."
 (defun ebox-surface-region-bounds (buffer region-id &optional roles)
   "Return numeric bounds for REGION-ID's Ebox publication mounts in BUFFER.
 ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
-  (when-let* ((mounts (ebox-surface-region-mounts buffer region-id roles)))
-    (cons (apply #'min (mapcar (lambda (mount) (plist-get mount :start)) mounts))
-          (apply #'max (mapcar (lambda (mount) (plist-get mount :end)) mounts)))))
+  (when-let* ((surface (ebox-surface--live-buffer-surface buffer))
+              (state (ebox--pub-surface-client-state surface))
+              (table (plist-get state :region-surface-object-table))
+              (object (gethash region-id table)))
+    (unless (ebox--pub-object-live-p object)
+      (signal 'ebox--pub-stale-object (list object)))
+    ;; Read the private mounts in place: only numbers leave this function,
+    ;; so the defensive tag copies of `ebox-surface-region-mounts' are unneeded.
+    (let (start end)
+      (dolist (mount (gethash object (ebox--pub--surface-mount-index
+                                      (ebox--pub--surface-object-surface object))))
+        (let ((tags (ebox--pub--surface-mount-tags mount)))
+          (when (if roles
+                    (and (equal (plist-get tags :ebox/region-id) region-id)
+                         (cl-intersection roles (plist-get tags :ebox/roles)))
+                  (or (equal (plist-get tags :ebox/region-id) region-id)
+                      (plist-get tags :ebox/descendant-output)))
+            (let ((from (ebox--pub--mount-position (ebox--pub--surface-mount-start mount)))
+                  (to (ebox--pub--mount-position (ebox--pub--surface-mount-end mount))))
+              (setq start (if start (min start from) from)
+                    end (if end (max end to) to))))))
+      (and start (cons start end)))))
 
 (defun ebox-surface--runtime-keys (state key)
   "Return hash keys stored under KEY in runtime STATE."

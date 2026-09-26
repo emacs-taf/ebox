@@ -48,6 +48,12 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Prepared-geometry interaction setup resolves each native keymap's declaring
+  node once per map and region set instead of once per text run, and
+  `ebox-surface-region-bounds` (used by `ebox-host-ref-bounds`) reads mount
+  extents without copying their tags. A four-window Desktop cohort
+  preparation drops from about 278 to 256 ms.
+
 - `ebox-update-prepare` may be abandoned by a quit or `while-no-input`. The
   accepted output and revision are unchanged, the report's `:reason` is
   `interrupted`, earlier prepared operations become invalid and the next
