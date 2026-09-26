@@ -16,9 +16,26 @@
   "Invalid Ebox paint slot declaration")
 
 (cl-defstruct (ebox-paint-slot
-               (:constructor ebox-paint--make-slot))
-  "Stable named-face address for one mutable Ebox paint contribution."
-  face spec installed-p)
+               (:constructor ebox-paint--make-slot)
+               (:copier nil))
+  "Stable named-face address for one mutable Ebox paint contribution.
+The mutable spec and installation state live on the face symbol, so copies
+of a slot share them and compare `equal' by address."
+  face)
+
+(defun ebox-paint-slot-spec (slot)
+  "Return SLOT's current face specification."
+  (get (ebox-paint-slot-face slot) 'ebox-paint-spec))
+
+(defun ebox-paint-slot-installed-p (slot)
+  "Return non-nil when SLOT is installed in a buffer face-remapping map."
+  (get (ebox-paint-slot-face slot) 'ebox-paint-installed-p))
+
+(defun ebox-paint--slot-set (slot spec installed-p)
+  "Record SPEC and INSTALLED-P as SLOT's shared state."
+  (let ((face (ebox-paint-slot-face slot)))
+    (put face 'ebox-paint-spec spec)
+    (put face 'ebox-paint-installed-p installed-p)))
 
 (defvar ebox-paint--slot-counter 0
   "Monotonic id source for private Ebox paint-slot faces.")
@@ -35,10 +52,8 @@
   "Create a stable paint slot initialized from anonymous face SPEC."
   (let* ((face (intern (format "ebox-paint-slot-%d"
                                (cl-incf ebox-paint--slot-counter))))
-         (slot (ebox-paint--make-slot
-                :face face
-                :spec (ebox-paint--face-spec spec)
-                :installed-p nil)))
+         (slot (ebox-paint--make-slot :face face)))
+    (ebox-paint--slot-set slot (ebox-paint--face-spec spec) nil)
     (make-face face)
     slot))
 
@@ -54,7 +69,7 @@
           (face-spec-reset-face face)
           (when next
             (face-spec-set face `((t ,next))))
-          (setf (ebox-paint-slot-spec slot) next))
+          (put face 'ebox-paint-spec next))
       (error
        (face-spec-reset-face face)
        (when previous
@@ -88,8 +103,7 @@ Return a rollback journal containing the previous buffer map and slot specs."
           (setq next (assq-delete-all face next))
           (when spec
             (push (list face spec) next))
-          (setf (ebox-paint-slot-spec slot) spec
-                (ebox-paint-slot-installed-p slot) t)))
+          (ebox-paint--slot-set slot spec t)))
       (prog1
           (list :buffer buffer
                 :face-remapping-alist (copy-tree face-remapping-alist)
@@ -105,8 +119,8 @@ Return a rollback journal containing the previous buffer map and slot specs."
                     (copy-tree
                      (plist-get journal :face-remapping-alist))))))
   (dolist (entry (reverse (plist-get journal :slot-specs)))
-    (setf (ebox-paint-slot-spec (nth 0 entry)) (copy-tree (nth 1 entry))
-          (ebox-paint-slot-installed-p (nth 0 entry)) (nth 2 entry)))
+    (ebox-paint--slot-set (nth 0 entry) (copy-tree (nth 1 entry))
+                          (nth 2 entry)))
   nil)
 
 (provide 'ebox-paint)

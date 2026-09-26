@@ -1243,6 +1243,11 @@
       "purpose": "A prepared :color cell bound to a paint slot stays preparable after the slot's face specification changes, matching the slot by its stable face rather than its copied specification."
     },
     {
+      "name": "ebox-paint-slot-copies-share-face-state",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "Copies of a paint slot compare equal and report the slot's current specification and installation state through updates and rollback."
+    },
+    {
       "name": "ebox-prepared-publication-reprepares-after-inserting-host",
       "file": "tests/ebox-prepared-publication-tests.el",
       "purpose": "Inserting a Host invalidates the previous prepared operation without mutation; fresh preparation includes the added Host in occlusion, visible bounds and fresh-render parity."

@@ -48,6 +48,19 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Structural publications (adding or removing layers, replacing a subtree)
+  start from a private copy of the accepted render cache instead of an empty
+  one, and cache signatures no longer depend on where rendering placed a
+  node's `:region-id`. Unchanged sibling subtrees reuse their rendered output:
+  closing a Desktop window renders about 31 instead of 65 ms of layout and
+  the whole close drops from about 194 to 158 ms in batch.
+
+- A paint slot keeps its specification and installation state on its face,
+  so copies of a slot compare `equal` and `ebox-paint-slot-spec` and
+  `ebox-paint-slot-installed-p` report the current state for every copy.
+  Previously a copied slot kept the state it had when copied. Code compiled
+  against the old slot layout must be recompiled.
+
 - Prepared-geometry interaction setup resolves each native keymap's declaring
   node once per map and region set instead of once per text run, and
   `ebox-surface-region-bounds` (used by `ebox-host-ref-bounds`) reads mount

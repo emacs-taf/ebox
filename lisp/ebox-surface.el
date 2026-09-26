@@ -7936,6 +7936,10 @@ identity."
               (copy-sequence previous-state)
             (ebox--new-buffer-render-state root))
           (copy-sequence state-overrides))))
+    (unless (or (memq projection-kind '(paint metadata))
+                (plist-member state-overrides :render-cache))
+      (when-let* ((cache (plist-get previous-state :render-cache)))
+        (plist-put state :render-cache (ebox--render-cache-copy cache))))
     (cl-remf state :paint-property-contributions)
     (cl-remf state :span-patch-retained-owned-ranges)
     (plist-put state :fractional-pixel-output-p

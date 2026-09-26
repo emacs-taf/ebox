@@ -68,7 +68,8 @@
 
 ;; Function: ebox-paint-slot-spec (slot)
 ;;;###autoload (autoload 'ebox-paint-slot-spec "ebox" nil nil)
-;; Return SLOT's current face specification.
+;; Return SLOT's current face specification. Copies of a slot address the same
+;; face and share its specification and installation state.
 
 ;; Function: ebox-paint-slot-installed-p (slot)
 ;;;###autoload (autoload 'ebox-paint-slot-installed-p "ebox" nil nil)

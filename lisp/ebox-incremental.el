@@ -601,6 +601,7 @@ Source publication snapshots keymaps; replacing one supplies a new identity.")
 (defun ebox--render-cache-plist-signature (node)
   "Return NODE's render-relevant plist signature."
   (let ((plist node)
+        region-id
         signature)
     (while plist
       (let ((key (pop plist))
@@ -610,10 +611,15 @@ Source publication snapshots keymaps; replacing one supplies a new identity.")
         ;; cache key that becomes unreachable as soon as that render records
         ;; its own proof, forcing every fixed descendant through layout again
         ;; on the first viewport update.
-        (unless (memq key '(:render-cache :surface-object
-                            :ebox-sequence-location
-                            :ebox-content-width-exact-p
-                            :ebox-content-layout-complete-p))
+        (cond
+         ((memq key '(:render-cache :surface-object
+                      :ebox-sequence-location
+                      :ebox-content-width-exact-p
+                      :ebox-content-layout-complete-p)))
+         ;; Rendering appends the region id while copies keep it in place;
+         ;; its identity, not its plist position, is part of the output.
+         ((eq key :region-id) (setq region-id (list key value)))
+         (t
           (push key signature)
           (push (cond
                  ((eq key :surface-properties)
@@ -626,8 +632,8 @@ Source publication snapshots keymaps; replacing one supplies a new identity.")
                        (ecss-computed-style-p value))
                   (ebox--render-cache-computed-style-signature value))
                  (t (ebox--render-cache-value-signature value)))
-                signature))))
-    (nreverse signature)))
+                signature)))))
+    (nconc (nreverse signature) region-id)))
 
 (defun ebox--render-cache-computed-style-signature (style)
   "Return the render-relevant projection of computed STYLE.

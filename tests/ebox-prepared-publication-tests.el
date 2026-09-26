@@ -282,6 +282,21 @@ between the source declaration and the mounted engine copy."
         (should (equal (plist-get (ebox-region-geometry 'moving) :left) '(ch 2)))
         (ebox-prepared-publication-test--assert-authority)))))
 
+(ert-deftest ebox-paint-slot-copies-share-face-state ()
+  "Copies of a paint slot address one face and report its shared state."
+  (with-temp-buffer
+    (let* ((slot (ebox-paint-slot-create '(:foreground "#336699")))
+           (copy (copy-sequence slot)))
+      (should-not (ebox-paint-slot-installed-p copy))
+      (let ((journal (ebox-paint-slot-apply-updates
+                      (current-buffer) (list (cons slot '(:foreground "#993366"))))))
+        (should (ebox-paint-slot-installed-p copy))
+        (should (equal (ebox-paint-slot-spec copy) '(:foreground "#993366")))
+        (should (equal copy slot))
+        (ebox-paint-slot-rollback-updates journal))
+      (should-not (ebox-paint-slot-installed-p copy))
+      (should (equal (ebox-paint-slot-spec copy) '(:foreground "#336699"))))))
+
 (ert-deftest ebox-prepared-publication-reprepares-after-inserting-host ()
   "An inserted Host invalidates preparation and participates in later occlusion."
   (ebox-prepared-publication-test--with-buffer
