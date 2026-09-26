@@ -265,10 +265,20 @@ cold admission."
       (with-current-buffer buffer
         (setq ebox-update--prepare-report
               (list :status 'unsupported :reason 'unavailable :binding-token token))))
-    (setq result (if buffer
-                     (with-current-buffer buffer
-                       (ebox-update--prepare buffer-or-name specifications stage rollback after-commit))
-                   (ebox-update--prepare buffer-or-name specifications stage rollback after-commit)))
+    (let (completed)
+      (unwind-protect
+          (setq result (if buffer
+                           (with-current-buffer buffer
+                             (ebox-update--prepare buffer-or-name specifications stage rollback after-commit))
+                         (ebox-update--prepare buffer-or-name specifications stage rollback after-commit))
+                completed t)
+        ;; A quit or `while-no-input' may leave the shared canvas half
+        ;; refreshed; accepted output is untouched, so the next pass is cold.
+        (unless (or completed (not (buffer-live-p buffer)))
+          (with-current-buffer buffer
+            (setq ebox-geometry--session nil
+                  ebox-update--prepare-report
+                  (list :status 'unsupported :reason 'interrupted :binding-token token))))))
     (when result
       (with-current-buffer buffer
         (setq ebox-update--prepare-report

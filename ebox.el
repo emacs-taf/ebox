@@ -875,6 +875,10 @@
 ;; after acceptance. Preparation does not advance the publication revision.
 ;; Prepare at mounted/structural/configuration boundaries and retain the cohort;
 ;; ordinary publications or changed binding tokens require cold refresh.
+;; Preparation never changes accepted buffer output, so a caller may run it
+;; under `while-no-input' or let a quit abandon it. A non-local exit discards
+;; the partially refreshed canvas; the report then has :reason interrupted, and
+;; the next preparation is cold while other prepared operations become invalid.
 ;;
 ;; Function: ebox-update-valid-p (operation)
 ;;;###autoload (autoload 'ebox-update-valid-p "ebox" nil nil)

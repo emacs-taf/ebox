@@ -97,6 +97,29 @@
         (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
         (ebox-prepared-update-test--assert-fresh)))))
 
+(ert-deftest ebox-prepared-update-recovers-after-abandoned-preparation ()
+  "A preparation left by a non-local exit keeps output and prepares cold again."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-prepared-update-test--input))
+      (let ((earlier (ebox-update-prepare (current-buffer) [["panel" [:left]]]))
+            (before (buffer-string))
+            (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should earlier)
+        (should-error (ebox-update-prepare
+                       (current-buffer) [["panel" [:left]] ["panel" [:left]]]))
+        (should (eq (plist-get (ebox-update-prepare-report (current-buffer)) :reason)
+                    'interrupted))
+        (should-not (ebox-update-valid-p earlier))
+        (should (equal-including-properties before (buffer-string)))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (let ((operation (ebox-update-prepare
+                          (current-buffer) [["panel" [:left :top]] ["label" [:content]]])))
+          (should operation)
+          (should (ebox-update-apply operation [[(ch 6) (lh 2)] ["Value03"]] [0 1]))
+          (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+          (ebox-prepared-update-test--assert-fresh))))))
+
 (ert-deftest ebox-prepared-update-translates-without-repainting-repeated-paint ()
   "Members whose raster values repeat only translate; a changed one repaints."
   (let ((ebox-viewport-width 240) (ebox-viewport-height 10))

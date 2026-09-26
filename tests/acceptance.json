@@ -1343,6 +1343,11 @@
       "purpose": "A failing stage reverses multiple caller cells and all source/display changes; retry succeeds and unsupported text footprint changes preserve the accepted generation."
     },
     {
+      "name": "ebox-prepared-update-recovers-after-abandoned-preparation",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "A preparation abandoned by a non-local exit reports interruption, leaves output and revision unchanged, invalidates earlier operations and the next preparation publishes correctly."
+    },
+    {
       "name": "ebox-prepared-update-toggles-visibility-over-deep-subtree",
       "file": "tests/ebox-prepared-update-tests.el",
       "purpose": "Hiding, showing and recoloring a positioned Host with a deep subtree through the prepared route matches a fresh render: visibility stays a paint boundary of the Host while inherited color and font-weight changes still reach descendants that inherit them."

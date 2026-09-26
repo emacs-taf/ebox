@@ -48,6 +48,12 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- `ebox-update-prepare` may be abandoned by a quit or `while-no-input`. The
+  accepted output and revision are unchanged, the report's `:reason` is
+  `interrupted`, earlier prepared operations become invalid and the next
+  preparation starts cold, so callers can compile cohorts without blocking
+  input.
+
 - Prepared geometry and cohort updates size each owner's interval pool from
   its intervals in the current layer pixels instead of reserving the full
   row bound for every owner, reducing a four-window Desktop preparation from
