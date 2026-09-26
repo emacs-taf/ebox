@@ -107,6 +107,22 @@
           (should (ebox-update-apply operation (vector value) [0]))
           (ebox-resize-test--assert-fresh))))))
 
+(ert-deftest ebox-prepared-resize-survives-appended-peer-primitives ()
+  "A crop keeps working after a peer's growing footprint appends primitives."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (ebox-resize-test--input))
+      (let ((operation (ebox-update-prepare
+                        (current-buffer) [["peer" [:height]] ["crop" [:width :height]]])))
+        (should operation)
+        (should (ebox-update-apply operation (vector [(lh 8)] [(px 96) (lh 4)]) [0]))
+        (ebox-resize-test--assert-fresh)
+        (dolist (value '([(px 160) (lh 6)] [(px 64) (lh 2)] [(px 96) (lh 4)]))
+          (should (ebox-update-apply operation (vector [(lh 8)] value) [1]))
+          (ebox-resize-test--assert-fresh))
+        (should (ebox-update-apply operation (vector [(lh 4)] [(px 96) (lh 4)]) [0]))
+        (ebox-resize-test--assert-fresh)))))
+
 (ert-deftest ebox-prepared-resize-keeps-focus-and-native-activation ()
   "Resize keeps the focused native target and its current activation binding."
   (let ((ebox-viewport-width 240) (ebox-viewport-height 12) (pressed 0))
