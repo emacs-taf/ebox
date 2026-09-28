@@ -37,7 +37,7 @@
     "ebox-layer.el" "ebox-layout.el"
     "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
     "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
-    "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
+    "ebox-native-commit.el" "ebox-native-ownership.el" "ebox-surface.el" "ebox-viewport.el"
     "ebox-dsl.el" "ebox-selector.el" "ebox-file.el" "ebox-spi.el" "ebox-runtime.el"
     "ebox-geometry.el" "ebox-update-selector.el" "ebox-elastic.el"
     "ebox-update.el"

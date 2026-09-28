@@ -6,11 +6,17 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Structural publications can retain unaffected objects and styles while the
+  optional native module keeps numeric fragment ownership, ancestor expansion
+  and interval merging. Indexed intervals pass directly to publication without
+  repeated intermediate range copies. Reports distinguish the ownership
+  backend from the layout backend; unavailable modules retain Elisp behavior.
 - Layer composition uses the optional native module for occlusion and
   visible source intervals, with bounded reusable storage and the same Unicode,
   text-property and rollback behavior in ordinary and prepared updates. Fixed
   display-space boundaries avoid repeated prefix measurement while joining damaged rows. Rebuild the optional
-  module for ABI `22:10:13` and restart Emacs; Elisp remains the fallback.
+  module with `M-x ebox-native-build` for ABI `23:10:13` and restart Emacs;
+  Elisp remains the fallback.
 - `ebox-geometry-prepare` and `ebox-update-prepare` compile `:width` and
   `:height` for a normal-layout absolute Box that contains only fixed Text:
   opaque string background, `overflow hidden`, `wrap-mode none`, left/top

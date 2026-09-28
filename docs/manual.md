@@ -884,6 +884,12 @@ execution, such as missing viewport dimensions or positioned nodes.
 not produce a supported result. Both retain normal Elisp rendering; a loaded
 native module alone does not establish that an interaction used it.
 
+`:ownership-backend` identifies interval construction for the accepted
+publication: `native` uses the numeric ownership module, `elisp` uses its
+equivalent Lisp implementation, and nil means the publication reused ownership
+without constructing new intervals. This is independent of the layout backend;
+a positioned scene can use native ownership while its layout remains in Elisp.
+
 The optional
 `:projection-rejections` field records local attempts as
 `(:projection KIND :reasons (REASON ...))`. It currently covers mixed local

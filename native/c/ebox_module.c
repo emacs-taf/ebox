@@ -164,7 +164,7 @@ ebox_module_version(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   (void) nargs;
   (void) args;
   (void) data;
-  static const char version[] = "22:10:13";
+  static const char version[] = "23:10:13";
   return env->make_string(env, version, (ptrdiff_t) (sizeof version - 1));
 }
 
@@ -1075,6 +1075,222 @@ ebox_module_compose_rows(emacs_env *env, ptrdiff_t nargs,
   }
 }
 
+/* Numeric ownership candidates never retain an emacs_value or global ref. */
+typedef struct { int64_t node, tag, start, end; } ebox_ownership_range;
+extern void *ebox_native_ownership_create(const int64_t *, size_t,
+                                          const int64_t *, size_t, size_t);
+extern void *ebox_native_ownership_fork(void *, const int64_t *, size_t,
+                                        const int64_t *, size_t,
+                                        const int64_t *, size_t,
+                                        const int64_t *, size_t);
+extern bool ebox_native_ownership_project(void *, const int64_t *, size_t,
+                                           const int64_t *, size_t,
+                                           const ebox_ownership_range **, size_t *);
+extern bool ebox_native_ownership_ranges(void *, const ebox_ownership_range **,
+                                         size_t *);
+extern void ebox_native_ownership_free(void *);
+
+#define EBOX_OWNERSHIP_SCALARS (4 * 1048576)
+typedef struct {
+  void *kernel;
+  int64_t *recipes, *runs;
+  size_t recipe_capacity, run_capacity;
+} ebox_ownership;
+
+static void
+ebox_ownership_finalizer(void *pointer)
+{
+  ebox_ownership *handle = pointer;
+  if (handle == NULL) return;
+  ebox_native_ownership_free(handle->kernel);
+  free(handle->recipes);
+  free(handle->runs);
+  free(handle);
+}
+
+static ebox_ownership *
+ebox_ownership_pointer(emacs_env *env, emacs_value value)
+{
+  if (env->get_user_finalizer(env, value) != ebox_ownership_finalizer)
+    return NULL;
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return NULL;
+  return env->get_user_ptr(env, value);
+}
+
+static bool
+ebox_ownership_values(emacs_env *env, emacs_value vector, ptrdiff_t count,
+                       int64_t **storage, size_t *capacity)
+{
+  if (count < 0 || count > EBOX_OWNERSHIP_SCALARS) return false;
+  if (count > 0 && env->vec_size(env, vector) < count) return false;
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return) return false;
+  size_t needed = count > 0 ? (size_t) count : 1;
+  if (*capacity < needed) {
+    int64_t *grown = realloc(*storage, needed * sizeof **storage);
+    if (grown == NULL) return false;
+    *storage = grown;
+    *capacity = needed;
+  }
+  for (ptrdiff_t index = 0; index < count; index++) {
+    intmax_t value = env->extract_integer(env, env->vec_get(env, vector, index));
+    if (env->non_local_exit_check(env) != emacs_funcall_exit_return) return false;
+    if (value < INT64_MIN || value > INT64_MAX) return false;
+    (*storage)[index] = (int64_t) value;
+  }
+  return true;
+}
+
+static ptrdiff_t
+ebox_ownership_vector_size(emacs_env *env, emacs_value vector)
+{
+  return env->is_not_nil(env, vector) ? env->vec_size(env, vector) : 0;
+}
+
+static emacs_value
+ebox_ownership_wrap(emacs_env *env, void *kernel)
+{
+  if (kernel == NULL) return ebox_nil(env);
+  ebox_ownership *handle = calloc(1, sizeof *handle);
+  if (handle == NULL) {
+    ebox_native_ownership_free(kernel);
+    return ebox_nil(env);
+  }
+  handle->kernel = kernel;
+  emacs_value result = env->make_user_ptr(env, ebox_ownership_finalizer, handle);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    ebox_ownership_finalizer(handle);
+  return result;
+}
+
+static emacs_value
+ebox_module_ownership_create(emacs_env *env, ptrdiff_t nargs,
+                              emacs_value *args, void *data)
+{
+  (void) nargs; (void) data;
+  ptrdiff_t parents = ebox_ownership_vector_size(env, args[0]);
+  ptrdiff_t regions = ebox_ownership_vector_size(env, args[1]);
+  intmax_t limit = env->extract_integer(env, args[2]);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return || limit < 1
+      || limit > 262144) return ebox_nil(env);
+  int64_t *p = NULL, *r = NULL;
+  size_t pc = 0, rc = 0;
+  void *kernel = NULL;
+  if (ebox_ownership_values(env, args[0], parents, &p, &pc)
+      && ebox_ownership_values(env, args[1], regions, &r, &rc))
+    kernel = ebox_native_ownership_create(p, (size_t) parents, r,
+                                          (size_t) regions, (size_t) limit);
+  free(p); free(r);
+  return ebox_ownership_wrap(env, kernel);
+}
+
+static emacs_value
+ebox_module_ownership_fork(emacs_env *env, ptrdiff_t nargs,
+                            emacs_value *args, void *data)
+{
+  (void) nargs; (void) data;
+  ebox_ownership *base = ebox_ownership_pointer(env, args[0]);
+  if (base == NULL || env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  int64_t *values[4] = {NULL, NULL, NULL, NULL};
+  size_t capacities[4] = {0, 0, 0, 0};
+  ptrdiff_t counts[4] = {0, 0, 0, 0};
+  void *kernel = NULL;
+  bool valid = true;
+  for (size_t index = 0; index < 4 && valid; index++) {
+    counts[index] = ebox_ownership_vector_size(env, args[index + 1]);
+    valid = env->non_local_exit_check(env) == emacs_funcall_exit_return
+      && ebox_ownership_values(env, args[index + 1], counts[index],
+                                 &values[index], &capacities[index]);
+  }
+  if (valid)
+    kernel = ebox_native_ownership_fork(base->kernel,
+      values[0], (size_t) counts[0], values[1], (size_t) counts[1],
+      values[2], (size_t) counts[2], values[3], (size_t) counts[3]);
+  for (size_t index = 0; index < 4; index++) free(values[index]);
+  return ebox_ownership_wrap(env, kernel);
+}
+
+static emacs_value
+ebox_ownership_write(emacs_env *env, emacs_value output,
+                       const ebox_ownership_range *ranges, size_t count)
+{
+  ptrdiff_t capacity = env->vec_size(env, output);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  if (capacity < (ptrdiff_t) (4 * count))
+    return env->make_integer(env, -(intmax_t) count);
+  for (size_t index = 0; index < count; index++) {
+    ptrdiff_t offset = (ptrdiff_t) (4 * index);
+    env->vec_set(env, output, offset, env->make_integer(env, ranges[index].node));
+    env->vec_set(env, output, offset + 1, env->make_integer(env, ranges[index].tag));
+    env->vec_set(env, output, offset + 2, env->make_integer(env, ranges[index].start));
+    env->vec_set(env, output, offset + 3, env->make_integer(env, ranges[index].end));
+    if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+      return ebox_nil(env);
+  }
+  return env->make_integer(env, (intmax_t) count);
+}
+
+static emacs_value
+ebox_module_ownership_project(emacs_env *env, ptrdiff_t nargs,
+                               emacs_value *args, void *data)
+{
+  (void) nargs; (void) data;
+  ebox_ownership *handle = ebox_ownership_pointer(env, args[0]);
+  if (handle == NULL || env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  intmax_t recipe_count = env->extract_integer(env, args[2]);
+  intmax_t run_count = env->extract_integer(env, args[4]);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return
+      || recipe_count < 0 || recipe_count > EBOX_OWNERSHIP_SCALARS
+      || run_count < 0 || run_count > 262144) return ebox_nil(env);
+  if (!ebox_ownership_values(env, args[1], (ptrdiff_t) recipe_count,
+                               &handle->recipes, &handle->recipe_capacity)
+      || !ebox_ownership_values(env, args[3], (ptrdiff_t) (3 * run_count),
+                                  &handle->runs, &handle->run_capacity))
+    return ebox_nil(env);
+  if (env->should_quit(env)) {
+    env->non_local_exit_signal(env, env->intern(env, "quit"), ebox_nil(env));
+    return ebox_nil(env);
+  }
+  const ebox_ownership_range *ranges = NULL;
+  size_t count = 0;
+  if (!ebox_native_ownership_project(handle->kernel, handle->recipes,
+        (size_t) recipe_count, handle->runs, (size_t) (3 * run_count),
+        &ranges, &count)) return ebox_nil(env);
+  return ebox_ownership_write(env, args[5], ranges, count);
+}
+
+static emacs_value
+ebox_module_ownership_read(emacs_env *env, ptrdiff_t nargs,
+                            emacs_value *args, void *data)
+{
+  (void) nargs; (void) data;
+  ebox_ownership *handle = ebox_ownership_pointer(env, args[0]);
+  if (handle == NULL || env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  const ebox_ownership_range *ranges = NULL;
+  size_t count = 0;
+  if (!ebox_native_ownership_ranges(handle->kernel, &ranges, &count))
+    return ebox_nil(env);
+  return ebox_ownership_write(env, args[1], ranges, count);
+}
+
+static emacs_value
+ebox_module_ownership_release(emacs_env *env, ptrdiff_t nargs,
+                               emacs_value *args, void *data)
+{
+  (void) nargs; (void) data;
+  ebox_ownership *handle = ebox_ownership_pointer(env, args[0]);
+  if (handle != NULL && env->non_local_exit_check(env) == emacs_funcall_exit_return) {
+    env->set_user_ptr(env, args[0], NULL);
+    if (env->non_local_exit_check(env) == emacs_funcall_exit_return)
+      ebox_ownership_finalizer(handle);
+  }
+  return ebox_nil(env);
+}
+
 static int
 ebox_bind_function(emacs_env *env, const char *name, ptrdiff_t min_arity,
                    ptrdiff_t max_arity, emacs_function function,
@@ -1141,6 +1357,21 @@ ebox_module_init_impl(struct emacs_runtime *runtime)
       ebox_bind_function(env, "ebox-native--module-release-compositor", 1, 1,
                          ebox_module_release_compositor,
                          "Release private layer scratch storage without waiting for GC.") ||
+      ebox_bind_function(env, "ebox-native--module-ownership-create", 3, 3,
+                         ebox_module_ownership_create,
+                         "Create a bounded numeric ownership index.") ||
+      ebox_bind_function(env, "ebox-native--module-ownership-fork", 5, 5,
+                         ebox_module_ownership_fork,
+                         "Fork ownership topology with sparse numeric changes.") ||
+      ebox_bind_function(env, "ebox-native--module-ownership-project", 6, 6,
+                         ebox_module_ownership_project,
+                         "Project numeric role programs and runs into owner ranges.") ||
+      ebox_bind_function(env, "ebox-native--module-ownership-read", 2, 2,
+                         ebox_module_ownership_read,
+                         "Copy projected owner ranges into caller storage.") ||
+      ebox_bind_function(env, "ebox-native--module-ownership-release", 1, 1,
+                         ebox_module_ownership_release,
+                         "Release a numeric ownership candidate.") ||
       ebox_bind_function(env, "ebox-native--module-confirm-frame", 4, 4,
                          ebox_module_confirm_frame,
                          "Confirm one published native layout frame.") ||

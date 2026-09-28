@@ -126,6 +126,11 @@ producer result to the active prepare transaction."
 (cl-defstruct (ebox--pub--surface-mount (:constructor ebox--pub--make-surface-mount))
   id object start end tags capability anchor)
 
+(cl-defstruct (ebox--pub-indexed-ranges
+               (:constructor ebox--pub--make-indexed-ranges))
+  "Owned flat candidate ranges, materialized as plists only on demand."
+  values count reverse-p)
+
 (defun ebox--pub--mount-position (position)
   "Return numeric POSITION for a marker or coordinate mount endpoint."
   (if (markerp position) (marker-position position) position))
@@ -998,7 +1003,8 @@ validates every object, range, scope, and publication phase."
             (list :context-not-current context ebox--pub--current-prepare-context)))
   (unless (and (ebox--pub-surface-plan-p plan)
                (stringp rendered)
-               (proper-list-p ranges))
+               (or (proper-list-p ranges)
+                   (ebox--pub-indexed-ranges-p ranges)))
     (ebox--pub--signal 'ebox--pub-invalid-surface-plan
             (list :retained-content plan rendered ranges)))
   (ebox--pub--make-retained-content-candidate
@@ -1260,6 +1266,24 @@ unchanged."
   (and (<= (length prefix) (length path))
        (equal prefix (cl-subseq path 0 (length prefix)))))
 
+(defun ebox--pub-context-reuse-membership
+    (context objects bindings removed changed)
+  "Reuse accepted OBJECTS and BINDINGS membership in candidate CONTEXT.
+The caller proves complete REMOVED and CHANGED object sets from an immutable
+source delta.  CHANGED objects keep identity but select their bindings anew.
+Both candidate tables are private; rollback never mutates the accepted sets."
+  (ebox--pub--validate-prepare-context context)
+  (unless (and (hash-table-p objects) (hash-table-p bindings))
+    (error "Retained object projection lacks accepted membership"))
+  (setf (ebox--pub--context-retained context) (copy-hash-table objects)
+        (ebox--pub--context-bindings context) (copy-hash-table bindings))
+  (dolist (object removed)
+    (remhash object (ebox--pub--context-retained context)))
+  (dolist (object (append removed changed))
+    (dolist (binding (ebox--pub-binding-owner-bindings object))
+      (remhash binding (ebox--pub--context-bindings context))))
+  context)
+
 (defun ebox--pub-object-reuse-subtree (context root)
   "Reuse a proven unchanged live subtree in CONTEXT.  ROOT must be a live
 object already owned by CONTEXT's surface.  The subtree's objects and live
@@ -1341,6 +1365,58 @@ candidate and will not be mutated or exposed to caller mutation after this
 call.  Ebox transfers those values without copying; failed candidates
 discard the transferred values with the rest of their prepare state."
   (ebox--pub--attach-content-ranges context leaf ranges nil))
+
+(defun ebox--pub-indexed-ranges-create (values count)
+  "Take ownership of COUNT flat ranges in VALUES without copying them.
+Each four slots hold OBJECT, TAGS, START and END.  VALUES and its tag values
+must remain immutable after this call, including throughout publication and
+rollback.  The caller must finish resolving numeric identities first.
+Coordinates are relative to the attached text leaf."
+  (unless (and (vectorp values) (integerp count) (<= 0 count)
+               (<= count (/ (length values) 4)))
+    (ebox--pub--signal 'ebox--pub-invalid-content-range
+                      (list :indexed-range-count count)))
+  (ebox--pub--make-indexed-ranges :values values :count count))
+
+(defun ebox--pub-indexed-ranges-materialize (indexed)
+  "Return a plist view of immutable INDEXED without changing its generation.
+This derived view is for local proofs that require the ordinary range
+interface.  It shares immutable tag values with the indexed generation."
+  (unless (ebox--pub-indexed-ranges-p indexed)
+    (ebox--pub--signal 'wrong-type-argument
+                      (list 'ebox--pub-indexed-ranges-p indexed)))
+  (let ((values (ebox--pub-indexed-ranges-values indexed))
+        (count (ebox--pub-indexed-ranges-count indexed))
+        (reverse-p (ebox--pub-indexed-ranges-reverse-p indexed)) ranges)
+    (dotimes (index count)
+      (let ((offset (* (if reverse-p (- count index 1) index) 4)))
+        (push (list :object (aref values offset)
+                    :start (aref values (+ offset 2))
+                    :end (aref values (+ offset 3))
+                    :tags (aref values (1+ offset)))
+              ranges)))
+    (nreverse ranges)))
+
+(defun ebox--pub-object-attach-content-ranges-indexed (context leaf indexed)
+  "Attach owned INDEXED ranges to LEAF in CONTEXT without range copies.
+Object and coordinate validation has the same semantics as ordinary owned
+attachments.  Leaf bounds are checked when final mount specs are prepared."
+  (ebox--pub--validate-context-object context leaf)
+  (unless (ebox--pub-indexed-ranges-p indexed)
+    (ebox--pub--signal 'wrong-type-argument
+                      (list 'ebox--pub-indexed-ranges-p indexed)))
+  (let ((values (ebox--pub-indexed-ranges-values indexed))
+        (attachments (ebox--pub--context-content-range-attachments context)))
+    (dotimes (index (ebox--pub-indexed-ranges-count indexed))
+      (let* ((offset (* index 4))
+             (object (aref values offset)))
+        (ebox--pub--validate-context-object context object)
+        (ebox--pub--validate-content-range
+         (aref values (+ offset 2)) (aref values (+ offset 3)))
+        (unless (gethash object (ebox--pub--context-retained context))
+          (ebox--pub-object-retain context object))))
+    (puthash leaf (cons indexed (gethash leaf attachments)) attachments))
+  indexed)
 
 (defun ebox--pub--touch-context-binding (context binding)
   "Record BINDING as touched by CONTEXT."
@@ -1622,18 +1698,35 @@ candidate."
                 (leaf-length (- (plist-get record :end)
                                 (plist-get record :start))))
             (dolist (attachment range-attachments)
-              (let ((start (plist-get attachment :start))
-                    (end (plist-get attachment :end)))
-                (unless (and (<= end leaf-length)
-                             (<= start end))
-                  (ebox--pub--signal 'ebox--pub-invalid-content-range
-                          (list :start start :end end
-                                :leaf-length leaf-length)))
-                (push (list :object (plist-get attachment :object)
-                            :start (+ leaf-start start)
-                            :end (+ leaf-start end)
-                            :tags (plist-get attachment :tags))
-                      specs)))))))
+              (if (ebox--pub-indexed-ranges-p attachment)
+                  (let ((values (ebox--pub-indexed-ranges-values attachment))
+                        (count (ebox--pub-indexed-ranges-count attachment))
+                        (reverse-p (ebox--pub-indexed-ranges-reverse-p attachment)))
+                    (dotimes (index count)
+                      (let* ((offset (* (if reverse-p (- count index 1) index) 4))
+                             (start (aref values (+ offset 2)))
+                             (end (aref values (+ offset 3))))
+                        (unless (and (<= end leaf-length) (<= start end))
+                          (ebox--pub--signal 'ebox--pub-invalid-content-range
+                                            (list :start start :end end
+                                                  :leaf-length leaf-length)))
+                        (push (list :object (aref values offset)
+                                    :start (+ leaf-start start)
+                                    :end (+ leaf-start end)
+                                    :tags (aref values (1+ offset)))
+                              specs))))
+                (let ((start (plist-get attachment :start))
+                      (end (plist-get attachment :end)))
+                  (unless (and (<= end leaf-length)
+                               (<= start end))
+                    (ebox--pub--signal 'ebox--pub-invalid-content-range
+                            (list :start start :end end
+                                  :leaf-length leaf-length)))
+                  (push (list :object (plist-get attachment :object)
+                              :start (+ leaf-start start)
+                              :end (+ leaf-start end)
+                              :tags (plist-get attachment :tags))
+                        specs))))))))
     (nreverse specs)))
 
 (defun ebox--pub--plan-record-mount-specs (records _capability context)
@@ -1997,20 +2090,31 @@ phases."
               (gethash text-leaf
                        (ebox--pub--context-content-range-attachments
                         context))))
-      (ebox--pub--validate-context-object context text-leaf)
-      (dolist (range ranges)
-        (let
-            ((object (plist-get range :object))
-             (start (plist-get range :start))
-             (end (plist-get range :end)))
-          (ebox--pub--validate-context-object context object)
-          (ebox--pub--validate-content-range start end)
-          (unless (<= end (length rendered))
-            (ebox--pub--signal 'ebox--pub-invalid-content-range
-                    (list :start start :end end :leaf-length
-                          (length rendered))))))
-      (puthash text-leaf ranges
-               (ebox--pub--context-content-range-attachments context)))
+      (if (ebox--pub-indexed-ranges-p ranges)
+          ;; The legacy retained path installs its natural range list
+          ;; directly; mount preparation reverses that attachment list.
+          ;; Preserve that exact order with a private view, leaving the
+          ;; client's immutable descriptor and backing vector unchanged.
+          (ebox--pub-object-attach-content-ranges-indexed
+           context text-leaf
+           (ebox--pub--make-indexed-ranges
+            :values (ebox--pub-indexed-ranges-values ranges)
+            :count (ebox--pub-indexed-ranges-count ranges)
+            :reverse-p (not (ebox--pub-indexed-ranges-reverse-p ranges))))
+        (ebox--pub--validate-context-object context text-leaf)
+        (dolist (range ranges)
+          (let
+              ((object (plist-get range :object))
+               (start (plist-get range :start))
+               (end (plist-get range :end)))
+            (ebox--pub--validate-context-object context object)
+            (ebox--pub--validate-content-range start end)
+            (unless (<= end (length rendered))
+              (ebox--pub--signal 'ebox--pub-invalid-content-range
+                      (list :start start :end end :leaf-length
+                            (length rendered))))))
+        (puthash text-leaf ranges
+                 (ebox--pub--context-content-range-attachments context))))
     (let*
         ((length (length rendered))
          (records

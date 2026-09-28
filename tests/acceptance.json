@@ -1466,6 +1466,36 @@
       "name": "ebox-prepared-selector-reprepares-after-ordinary-commit",
       "file": "tests/ebox-prepared-selector-tests.el",
       "purpose": "An ordinary commit after prepared class writes invalidates the old cohort, renders like a fresh mount, and lets a new class cohort bind, publish and answer selector queries."
+    },
+    {
+      "name": "ebox-layer-topology-preserves-publication-without-native",
+      "file": "tests/ebox-layer-topology-tests.el",
+      "purpose": "Subtree and Range replacements with pane growth and shrink retain sibling native targets, focused source identity, occlusion, rollback and retry through the Elisp backend."
+    },
+    {
+      "name": "ebox-layer-topology-native-matches-elisp-publication",
+      "file": "tests/ebox-layer-topology-tests.el",
+      "purpose": "Optional native layered subtree and Range replacements match fresh Elisp text, display properties, Host bounds and activation through successful and rejected topology changes."
+    },
+    {
+      "name": "ebox-layer-topology-preserves-relational-style-effects",
+      "file": "tests/ebox-layer-topology-tests.el",
+      "purpose": "Pane topology changes propagate structural-selector and inherited style effects into retained siblings while preserving atomic source and focus rollback."
+    },
+    {
+      "name": "ebox-layer-topology-native-preserves-relational-style-effects",
+      "file": "tests/ebox-layer-topology-tests.el",
+      "purpose": "Optional native topology publication preserves complete relational-selector effects and fresh Elisp rendering, ownership, focus and rollback."
+    },
+    {
+      "name": "ebox-layer-topology-retains-shared-scope-membership",
+      "file": "tests/ebox-layer-topology-tests.el",
+      "purpose": "Range membership and pane height changes preserve an unchanged shared-scope root, exclude matching nonmembers, update inherited paint in retained children and roll back atomically."
+    },
+    {
+      "name": "ebox-layer-topology-native-retains-shared-scope-membership",
+      "file": "tests/ebox-layer-topology-tests.el",
+      "purpose": "Optional native publication preserves shared ECSS scope membership, inherited child paint, sibling focus and fresh Elisp ownership through rejected and accepted pane topology changes."
     }
   ]
 }

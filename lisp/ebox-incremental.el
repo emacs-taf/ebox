@@ -7660,6 +7660,8 @@ certificate."
                 t)))
            (_source-index
             (progn
+              (plist-put candidate-index :removed-node-ids
+                         (plist-get local-preparation :removed-node-ids))
               (plist-put candidate-index :source-index
                          candidate-source-index)
               (plist-put candidate-index :selector-id-table
@@ -7812,6 +7814,7 @@ certificate."
                      styles-prepared-p)
                 :styles-prepared-p styles-prepared-p
                 :style-node-ids style-node-ids
+                :candidate-subject-table candidate-subject-table
                 :index candidate-index
                 :dirty-set dirty-set
                 :display-signature current-display-signature
@@ -9171,22 +9174,26 @@ the retained margin-box width only when the owner's layout style is unchanged."
                       owner-id (plist-get old-state :node-table)))
            (node (ebox-runtime-index-get
                   owner-id (plist-get candidate-state :node-table)))
-           (snapshot (ebox-incremental--cached-layout-snapshot-details
-                      buffer owner-id))
+           ;; A structural replacement cannot use a topology-stable span.
+           ;; Reject that shape before materializing every published mount
+           ;; and ancestor allocation merely to discover the same mismatch.
+           (snapshot (and old-node node
+                          (ebox-incremental--same-root-surface-identity-p
+                           old-state candidate-state)
+                          (ebox-incremental--span-patch-identity-stable-p
+                           buffer old-state candidate-state prepared owner-id)
+                          (ebox-incremental--cached-layout-snapshot-details
+                           buffer owner-id)))
            (spans (plist-get snapshot :buffer-spans))
            (allocated-width
             (plist-get (plist-get snapshot :external-footprint-signature)
                        :max-line-pixel-width))
-           (ancestors (ebox-incremental--ancestor-slot-signature
-                       buffer old-state candidate-state owner-id)))
+           (ancestors (and snapshot (ebox-incremental--ancestor-slot-signature
+                                    buffer old-state candidate-state owner-id))))
       (when (and old-node node snapshot spans ancestors
                  (numberp allocated-width)
                  (equal (ebox-incremental--layout-slot-style-signature old-node)
                         (ebox-incremental--layout-slot-style-signature node))
-                 (ebox-incremental--same-root-surface-identity-p
-                  old-state candidate-state)
-                 (ebox-incremental--span-patch-identity-stable-p
-                  buffer old-state candidate-state prepared owner-id)
                  (or (not path-copied-p)
                      (not (ebox-incremental--candidate-shares-published-node-p
                            old-state node)))
@@ -10939,6 +10946,8 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                 (plist-get candidate-state :runtime-revision)
                 :display-signature (plist-get prepared :display-signature)
                 :source-index (plist-get candidate-state :source-index)
+                :previous-native-ownership-state
+                (plist-get old-state :native-ownership-state)
                 :scroll-state-table (plist-get prepared :scroll-state-table)
                 :previous-layer-composition-cache
                 (plist-get old-state :layer-composition-cache)
@@ -10961,6 +10970,21 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                 (plist-get prepared :computed-participation-validated-p)
                 :detached-identity-history
                 (plist-get prepared :detached-identity-history)))))
+    (setq overrides
+          (plist-put overrides :touched-node-ids
+                     (plist-get prepared :touched-node-ids)))
+    (setq overrides
+          (plist-put overrides :removed-node-ids
+                     (plist-get prepared :removed-node-ids)))
+    (when (and (plist-get prepared :logical-candidate-p)
+               (plist-get prepared :styles-prepared-p)
+               (plist-get prepared :touched-node-ids)
+               (not (plist-get old-state :computed-styles-stale-p)))
+      (setq overrides
+            (plist-put overrides :object-projection-delta
+                       (list :subjects (plist-get prepared :candidate-subject-table)
+                             :style-node-ids (plist-get prepared :style-node-ids))))
+      (plist-put overrides :runtime-index-prepared-p t))
     (setq overrides
           (plist-put overrides :native-touched-node-ids
                      (or (plist-get candidate-state
@@ -11002,7 +11026,8 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                          '(paint span-patch owner-scoped scroll-patch
                            formatting-context-reflow mixed-owner-reflow
                            native-frame)))
-             (not (plist-get prepared :runtime-index-complete-p)))
+             (not (plist-get prepared :runtime-index-complete-p))
+             (not (plist-get overrides :object-projection-delta)))
         overrides
       (append
        overrides
