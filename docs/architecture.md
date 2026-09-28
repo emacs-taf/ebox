@@ -444,8 +444,8 @@ ownership tokens map raster slices directly to retained objects and ancestors;
 changed rows refresh visible intervals in a fixed mount pool while unchanged row
 intervals shift by their retained character offsets. Publication receives known
 old/new damage ranges, edits them from the end, and updates only their property
-runs. Private ownership tokens are stripped before publication. Source preparation owns private declaration cells
-shared with the mounted node's numeric geometry. Snapshot export freezes these
+runs. Private ownership tokens are stripped before publication. Source preparation owns separate private declaration and runtime numeric
+cells, which each stage synchronizes explicitly. Snapshot export freezes these
 cells; a subsequent general publication reads the latest declarations and
 rebuilds invalidated fragment proofs. External buffer hooks still run, and their
 unexpected writes reject the publication.
@@ -493,8 +493,11 @@ changed-member indices feed one retained frame. Duplicate Host specifications
 share one source-record binding; stage snapshots caller values before hooks, and
 a rejected frame restores every source and caller cell. After staging, apply
 recomputes the complete cascade of changed style members and their descendants,
-snapshotting each rewritten node so rollback restores the exact cells that
-source slots share. It then renders each changed member's nearest record owner
+snapshotting each rewritten node so rollback restores its previous projection.
+Prepared numeric units have separate source and runtime storage. Each stage
+explicitly writes both, because cascade application may replace a node's unit
+value; rollback restores the source number, previous projected value and reusable
+runtime unit together. It then renders each changed member's nearest record owner
 with the ordinary renderer in its host content context, so incremental and full
 output share one box implementation. Per-cohort render-signature and viewport
 memo tables survive between applies and are invalidated along the changed

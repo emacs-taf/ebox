@@ -31,7 +31,7 @@ MUTABLE-PREPARED-P marks private live source cells, never exported by sharing."
 (cl-defstruct (ebox-source--update-slots
                (:constructor ebox-source--update-slots-create))
   "Prepared private source/node cells with reusable value rollback storage."
-  index handle kinds source-cells node-cells value-cells old-values staged-count
+  index handle kinds source-cells node-cells node-units value-cells old-values staged-count
   selector-context)
 
 (cl-defstruct (ebox-source-handle
@@ -538,6 +538,7 @@ isolated from later writes."
            (kinds (make-vector count nil))
            (source-cells (make-vector count nil))
            (node-cells (make-vector count nil))
+           (node-units (make-vector count nil))
            (value-cells (make-vector count nil))
            (old-values (make-vector count nil))
            (seen (make-hash-table :test #'eq))
@@ -610,9 +611,16 @@ isolated from later writes."
           (aset kinds position kind)
           (aset source-cells position source-cell)
           (aset node-cells position targets)
-          (aset old-values position (pcase kind ('unit (cadr value))
+          ;; Unit undo retains the source number, previous node projection and
+          ;; private runtime number independently of cascade-owned unit lists.
+          (aset old-values position (pcase kind ('unit (vector (cadr value) nil (cadr value)))
                                       ('border (make-vector 5 nil)) (_ value)))
-          (when (eq kind 'unit) (aset value-cells position (cdr value)))))
+          (when (eq kind 'unit)
+            (aset value-cells position (cdr value))
+            ;; Source declarations and projected runtime values have separate
+            ;; ownership.  Cascade application can replace the node's value
+            ;; with a computed unit; a later stage must project explicitly.
+            (aset node-units position (copy-sequence value)))))
       (when (zerop mutable-count) (throw 'unsupported nil))
       (let* ((replacement handle)
              (builder (ebox-source-builder-create))
@@ -638,7 +646,9 @@ isolated from later writes."
           (unless (memq (aref kinds position) '(fixed class border))
             (let* ((source (aref source-cells position))
                    (targets (aref node-cells position))
-                   (value (if source (car source) (aref old-values position))))
+                   (value (if (eq (aref kinds position) 'unit)
+                              (aref node-units position)
+                            (if source (car source) (aref old-values position)))))
               (dotimes (target (length targets))
                 (setcar (aref targets target) value))))
           (when (eq (aref kinds position) 'border)
@@ -647,7 +657,7 @@ isolated from later writes."
                       (car (aref (aref source-cells position) side))))))
         (ebox-source--update-slots-create
          :index candidate :handle replacement :kinds kinds
-         :source-cells source-cells :node-cells node-cells
+         :source-cells source-cells :node-cells node-cells :node-units node-units
          :value-cells value-cells :old-values old-values :staged-count 0)))))
 
 (defun ebox-source--update-slots-current-p (slots index)
@@ -675,15 +685,24 @@ candidate record, node, plist, unit cell or undo graph is allocated here."
         (old-values (ebox-source--update-slots-old-values slots))
         (value-cells (ebox-source--update-slots-value-cells slots))
         (node-cells (ebox-source--update-slots-node-cells slots))
+        (node-units (ebox-source--update-slots-node-units slots))
         (source-cells (ebox-source--update-slots-source-cells slots)))
     (setf (ebox-source--update-slots-staged-count slots) 0)
     (while (< position (length kinds))
       (cond
        ((eq (aref kinds position) 'unit)
-        (let ((cell (aref value-cells position)))
-          (aset old-values position (car cell))
+        (let ((cell (aref value-cells position))
+              (target (aref (aref node-cells position) 0))
+              (unit (aref node-units position))
+              (undo (aref old-values position))
+              (number (cadr (aref values position))))
+          (aset undo 0 (car cell))
+          (aset undo 1 (car target))
+          (aset undo 2 (cadr unit))
           (setf (ebox-source--update-slots-staged-count slots) (1+ position))
-          (setcar cell (cadr (aref values position)))))
+          (setcar cell number)
+          (setcar (cdr unit) number)
+          (setcar target unit)))
        ((eq (aref kinds position) 'value)
         (let* ((source (aref source-cells position))
                (targets (aref node-cells position))
@@ -720,12 +739,15 @@ candidate record, node, plist, unit cell or undo graph is allocated here."
         (old-values (ebox-source--update-slots-old-values slots))
         (value-cells (ebox-source--update-slots-value-cells slots))
         (node-cells (ebox-source--update-slots-node-cells slots))
+        (node-units (ebox-source--update-slots-node-units slots))
         (source-cells (ebox-source--update-slots-source-cells slots)))
     (while (< position (ebox-source--update-slots-staged-count slots))
       (let ((value (aref old-values position)))
         (cond
          ((eq (aref kinds position) 'unit)
-          (setcar (aref value-cells position) value))
+          (setcar (aref value-cells position) (aref value 0))
+          (setcar (cdr (aref node-units position)) (aref value 2))
+          (setcar (aref (aref node-cells position) 0) (aref value 1)))
          ((eq (aref kinds position) 'value)
           (let ((source (aref source-cells position))
                 (targets (aref node-cells position)))

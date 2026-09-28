@@ -31,6 +31,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Prepared moves and resizes keep the mounted geometry synchronized after a
+  colour or focus repaint recomputes styles. Repeated updates no longer reuse
+  stale coordinates and accumulate displacement; rejected updates restore both
+  source values and the previous runtime projection.
+
 - Positioned layers reject ordinary Text/Box descendants whose resolved
   canonical font exceeds their containing plane's row height. Previously only
   positioned nodes were checked, allowing a larger descendant font to stretch

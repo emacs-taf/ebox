@@ -15,6 +15,7 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-prepared-coordinates-survive-paint-scroll-resize-and-retry", "file": "tests/ebox-prepared-coordinate-tests.el", "purpose": "Paint recalculation followed by repeated move, resize and rollback keeps public geometry, exported canonical source and visible output identical."},
     {"name": "ebox-layer-rejects-tall-descendant-fonts-before-publication", "file": "tests/ebox-layer-publication-tests.el", "purpose": "On a graphical display, explicit and inherited descendant fonts exceeding the positioned plane row height reject render and commit without changing accepted pixels, revision or live targets; smaller fonts, same-height bold and independent flow remain allowed."},
     {"name": "ebox-layer-positioned-host-allows-small-and-bold-descendants", "file": "tests/ebox-layer-publication-tests.el", "purpose": "Positioned rows allow smaller descendant fonts and bold text whose resolved line height fits the containing plane."},
     {"name": "ebox-prepared-selector-rebinds-after-scroll-publication", "file": "tests/ebox-prepared-selector-tests.el", "purpose": "Repeated native scrolling allows prepared class and height rebinding, preserves unique selector results and exported snapshots, and restores classes, scroll state and pixels on rejection."},
