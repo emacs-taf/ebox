@@ -16,6 +16,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+
+(declare-function ebox--pub--signal "ebox-publication" (condition data &optional trailer))
 (require 'ebox-text)
 (require 'ebox-transaction)
 
@@ -1128,12 +1130,17 @@ failures in phase order."
 
 (defun ebox--pub--resignal-transaction-primary (primary-condition failures)
   "Re-signal PRIMARY-CONDITION with ordered rollback FAILURES attached."
-  (signal (car primary-condition)
-          (if failures
-              (append (cdr primary-condition)
-                      (list ebox--pub--transaction-condition-trailer-tag
-                            (list :rollback-failures failures)))
-            (cdr primary-condition))))
+  (let* ((condition (car primary-condition))
+         (data (cdr primary-condition))
+         (trailer (when failures
+                    (list ebox--pub--transaction-condition-trailer-tag
+                          (list :rollback-failures failures)))))
+    ;; Rollback keys and secondary conditions can retain callback graphs too.
+    ;; Bound only publication-owned conditions; application errors preserve
+    ;; the data supplied by their caller.
+    (if (memq 'ebox--pub-surface-error (get condition 'error-conditions))
+        (ebox--pub--signal condition data trailer)
+      (signal condition (if trailer (append data trailer) data)))))
 
 (defun ebox--pub--transaction-condition-trailer (condition property)
   "Return PROPERTY from the exact transaction trailer of CONDITION.

@@ -31,6 +31,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Publication rejection diagnostics no longer expose live surface, mount or
+  callback graphs. Ordinary Emacs error reporting can print these failures
+  without expanding cyclic data; the error type and rollback remain unchanged.
 - Retained Host property and selector updates preserve position, stacking,
   anchoring and container layout effects during incremental classification.
   These changes now schedule geometry work instead of being treated as

@@ -152,10 +152,69 @@ install either bank as the surface's authoritative mount projection."
   output revision tick owner stage rollback accept point point-before windows window-before modified
   start end report previous-report previous-client-state active-count busy)
 
+(defun ebox--pub--signal (condition data &optional trailer)
+  "Signal CONDITION with bounded, detached publication diagnostic DATA.
+Live publication records contain cycles through their mounts and callbacks.
+Never export those records, attributed strings, or arbitrary caller graphs
+into an error that Emacs may print without `print-circle'.  Error types and
+transaction handling remain unchanged; DATA is diagnostic, not authority.
+Optional TRAILER has a separate budget so primary data cannot hide rollback
+metadata or its delimiter."
+  (let ((remaining 64))
+    (cl-labels
+        ((text (value)
+           (let ((end (min 128 (length value))))
+             (concat (substring-no-properties value 0 end)
+                     (and (< end (length value)) "…"))))
+         (value (item depth)
+           (cl-decf remaining)
+           (cond
+            ((< remaining 0) :omitted)
+            ((null item) nil)
+            ((stringp item) (text item))
+            ((symbolp item)
+             (if (<= (length (symbol-name item)) 128) item
+               (text (symbol-name item))))
+            ((integerp item)
+             (if (<= most-negative-fixnum item most-positive-fixnum) item
+               :large-integer))
+            ((numberp item) item)
+            ((ebox--pub-surface-p item)
+             (list :surface-id (value (ebox--pub--surface-id item) (1+ depth))
+                   :revision (value (ebox--pub--surface-revision item) (1+ depth))))
+            ((ebox--pub-object-p item)
+             (list :object-id (value (ebox--pub--surface-object-id item) (1+ depth))))
+            ((ebox--pub--surface-mount-p item)
+             (list :mount-id (value (ebox--pub--surface-mount-id item) (1+ depth))
+                   :start (value (ebox--pub--mount-position
+                                  (ebox--pub--surface-mount-start item)) (1+ depth))
+                   :end (value (ebox--pub--mount-position
+                                (ebox--pub--surface-mount-end item)) (1+ depth))))
+            ((bufferp item) (list :buffer (and (buffer-name item)
+                                              (text (buffer-name item)))))
+            ((markerp item) (list :marker (marker-position item)))
+            ((hash-table-p item) (list :hash-table-count (hash-table-count item)))
+            ((recordp item) (list :record (value (type-of item) (1+ depth))))
+            ((vectorp item) (list :vector-length (length item)))
+            ((and (consp item) (< depth 6))
+             (let ((tail item) (count 0) result)
+               (while (and (consp tail) (< count 12) (> remaining 0))
+                 (push (value (car tail) (1+ depth)) result)
+                 (setq tail (cdr tail) count (1+ count)))
+               (when tail (push :omitted result))
+               (nreverse result)))
+            ((consp item) :omitted)
+            (t (list :type (value (type-of item) (1+ depth)))))))
+      (let ((primary (value data 0)))
+        (setq remaining 64)
+        (signal condition (if trailer
+                              (append primary (value trailer 0))
+                            primary))))))
+
 (defun ebox--pub-frame-mount-create (object tags)
   "Prepare an inactive content mount for live OBJECT with immutable TAGS."
   (unless (ebox--pub-object-live-p object)
-    (signal 'ebox--pub-stale-object (list object)))
+    (ebox--pub--signal 'ebox--pub-stale-object (list object)))
   (ebox--pub--make-surface-mount
    :id (cl-incf ebox--pub--mount-id-counter) :object object
    :start 0 :end 0 :tags tags :capability 'content))
@@ -165,7 +224,7 @@ install either bank as the surface's authoritative mount projection."
 Every mount shares the immutable TAGS.  One liveness check covers the whole
 pool, so preparing thousands of spare intervals stays cheap."
   (unless (ebox--pub-object-live-p object)
-    (signal 'ebox--pub-stale-object (list object)))
+    (ebox--pub--signal 'ebox--pub-stale-object (list object)))
   (let ((index start) (count (length mounts)))
     (while (< index count)
       (aset mounts index
@@ -205,7 +264,7 @@ STAGE or ACCEPT.  Callbacks must not initiate another publication."
                (or (null accept) (functionp accept))
                (or (null accept) rollback)
                (eq (null stage) (null rollback)))
-    (signal 'ebox--pub-surface-error (list :invalid-prepared-frame)))
+    (ebox--pub--signal 'ebox--pub-surface-error (list :invalid-prepared-frame)))
   (let* ((count (/ (length slots) 4))
          (pool (make-vector count nil))
          (lookup (make-hash-table :test #'eq))
@@ -232,7 +291,7 @@ STAGE or ACCEPT.  Callbacks must not initiate another publication."
                      (integerp (ebox--pub--surface-mount-start mount))
                      (integerp (ebox--pub--surface-mount-end mount))
                      (not (gethash mount lookup)))
-          (signal 'ebox--pub-surface-error (list :invalid-frame-mount mount)))
+          (ebox--pub--signal 'ebox--pub-surface-error (list :invalid-frame-mount mount)))
         ;; One-based entries leave nil available for a missing pool member.
         (puthash mount (1+ i) lookup)
         (aset pool i mount)
@@ -241,7 +300,7 @@ STAGE or ACCEPT.  Callbacks must not initiate another publication."
           (push object objects))))
     (dolist (mount (ebox--pub--surface-mounts surface))
       (unless (gethash mount lookup)
-        (signal 'ebox--pub-surface-error (list :missing-frame-mount mount))))
+        (ebox--pub--signal 'ebox--pub-surface-error (list :missing-frame-mount mount))))
     (setq objects (vconcat objects))
     (let* ((buffer (ebox--pub--surface-buffer surface))
            (windows (get-buffer-window-list buffer nil t))
@@ -271,7 +330,7 @@ The replacement keeps FRAME's surface, owner and callbacks and snapshots the
 current accepted generation.  FRAME's markers are released; the caller must
 discard FRAME and publish only through the returned frame."
   (unless (and (ebox--pub-frame-p frame) (not (ebox--pub-frame-busy frame)))
-    (signal 'ebox--pub-surface-error (list :invalid-prepared-frame)))
+    (ebox--pub--signal 'ebox--pub-surface-error (list :invalid-prepared-frame)))
   (let ((next (ebox--pub-frame-prepare
                (ebox--pub-frame-surface frame) slots (ebox--pub-frame-owner frame)
                (ebox--pub-frame-stage frame) (ebox--pub-frame-rollback frame)
@@ -539,7 +598,7 @@ constructed.  Strings and native undo records are buffer-write primitives."
                  (= (- end start) (length rendered))
                  (ebox--pub--shadow-text-range-equal-p
                   rendered 0 (length rendered) buffer start end))
-      (signal 'ebox--pub-publication-mismatch (list :prepared-frame surface)))))
+      (ebox--pub--signal 'ebox--pub-publication-mismatch (list :prepared-frame surface)))))
 
 (defun ebox--pub--frame-capture-view (frame)
   "Capture editor anchors into FRAME's preallocated marker storage."
@@ -782,11 +841,11 @@ revision, hook validation, observer delivery and rollback as pixel changes."
 (defun ebox--pub--normalize-surface-observers (observers)
   "Validate OBSERVERS and return them once each, in declaration order."
   (unless (listp observers)
-    (signal 'wrong-type-argument (list 'listp observers)))
+    (ebox--pub--signal 'wrong-type-argument (list 'listp observers)))
   (let (normalized)
     (dolist (observer observers)
       (unless (functionp observer)
-        (signal 'wrong-type-argument (list 'functionp observer)))
+        (ebox--pub--signal 'wrong-type-argument (list 'functionp observer)))
       (unless (memq observer normalized)
         (push observer normalized)))
     (nreverse normalized)))
@@ -804,17 +863,17 @@ revision, hook validation, observer delivery and rollback as pixel changes."
 (defun ebox--pub--validate-plan-fields (kind text props children capability)
   "Validate plan KIND, TEXT, PROPS, CHILDREN, and CAPABILITY."
   (unless kind
-    (signal 'ebox--pub-invalid-surface-plan (list :kind kind)))
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan (list :kind kind)))
   (unless (or (null text) (stringp text))
-    (signal 'ebox--pub-invalid-surface-plan (list :text text)))
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan (list :text text)))
   (unless (ebox--pub--plist-shape-p props)
-    (signal 'ebox--pub-invalid-surface-plan (list :props props)))
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan (list :props props)))
   (unless (and (listp children) (cl-every #'ebox--pub-surface-plan-p children))
-    (signal 'ebox--pub-invalid-surface-plan (list :children children)))
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan (list :children children)))
   (when (and text children)
-    (signal 'ebox--pub-invalid-surface-plan (list :text-and-children kind)))
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan (list :text-and-children kind)))
   (unless (memq capability '(nil content))
-    (signal 'ebox--pub-capability-error (list capability))))
+    (ebox--pub--signal 'ebox--pub-capability-error (list capability))))
 
 (defun ebox--pub--validate-sibling-keys (children)
   "Reject duplicate explicit keys among CHILDREN."
@@ -822,13 +881,13 @@ revision, hook validation, observer delivery and rollback as pixel changes."
     (dolist (child children)
       (when-let* ((key (ebox--pub-surface-plan-key child)))
         (when (gethash key seen)
-          (signal 'ebox--pub-duplicate-object-key (list key)))
+          (ebox--pub--signal 'ebox--pub-duplicate-object-key (list key)))
         (puthash key t seen)))))
 
 (defun ebox--pub--validate-surface-plan-tree (plan)
   "Validate PLAN recursively without copying its caller-owned values."
   (unless (ebox--pub-surface-plan-p plan)
-    (signal 'wrong-type-argument (list 'ebox--pub-surface-plan-p plan)))
+    (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-surface-plan-p plan)))
   (let ((children (ebox--pub-surface-plan-children plan)))
     (ebox--pub--validate-plan-fields
      (ebox--pub-surface-plan-kind plan)
@@ -846,7 +905,7 @@ revision, hook validation, observer delivery and rollback as pixel changes."
 top-level snapshot so repeated source identities retain one copied identity
 across sibling nodes without canonicalizing equal values."
   (unless (ebox--pub-surface-plan-p plan)
-    (signal 'wrong-type-argument (list 'ebox--pub-surface-plan-p plan)))
+    (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-surface-plan-p plan)))
   (let* ((cache (or cache (make-hash-table :test #'eq)))
          (children
           (mapcar (lambda (child)
@@ -903,7 +962,7 @@ after this call.  CLIENT-STATE is opaque producer state.  Use
 `ebox--pub-surface-result-create' for ordinary caller-owned plans."
   (ebox--pub--validate-prepare-context context)
   (unless (eq context ebox--pub--current-prepare-context)
-    (signal 'ebox--pub-owned-result-error
+    (ebox--pub--signal 'ebox--pub-owned-result-error
             (list :context-not-current context ebox--pub--current-prepare-context)))
   (ebox--pub--make-surface-result
    (ebox--pub--validate-surface-plan-tree plan) client-state t context))
@@ -923,12 +982,12 @@ narrow: callers must prove that object topology is unchanged; Ebox still
 validates every object, range, scope, and publication phase."
   (ebox--pub--validate-prepare-context context)
   (unless (eq context ebox--pub--current-prepare-context)
-    (signal 'ebox--pub-owned-result-error
+    (ebox--pub--signal 'ebox--pub-owned-result-error
             (list :context-not-current context ebox--pub--current-prepare-context)))
   (unless (and (ebox--pub-surface-plan-p plan)
                (stringp rendered)
                (proper-list-p ranges))
-    (signal 'ebox--pub-invalid-surface-plan
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan
             (list :retained-content plan rendered ranges)))
   (ebox--pub--make-retained-content-candidate
    :plan plan :rendered rendered :ranges ranges
@@ -940,7 +999,7 @@ validates every object, range, scope, and publication phase."
   "Compose ordered relative CONTRIBUTIONS over RENDERED.  Each contribution
 contains `:start', `:end', and direct `:props'."
   (unless (proper-list-p contributions)
-    (signal 'ebox--pub-invalid-content-range
+    (ebox--pub--signal 'ebox--pub-invalid-content-range
             (list :property-contributions contributions)))
   (let ((result (copy-sequence rendered))
         (limit (length rendered)))
@@ -950,11 +1009,11 @@ contains `:start', `:end', and direct `:props'."
             (props (plist-get contribution :props)))
         (unless (and (integerp start) (integerp end)
                      (<= 0 start) (<= start end) (<= end limit))
-          (signal 'ebox--pub-invalid-content-range
+          (ebox--pub--signal 'ebox--pub-invalid-content-range
                   (list :property-contribution contribution
                         :leaf-length limit)))
         (unless (ebox--pub--plist-shape-p props)
-          (signal 'ebox--pub-invalid-surface-plan
+          (ebox--pub--signal 'ebox--pub-invalid-surface-plan
                   (list :property-contribution-props props)))
         (cl-loop for (property value) on props by #'cddr
                  do
@@ -1045,7 +1104,7 @@ contains `:start', `:end', and direct `:props'."
   (if key
       (let ((seen (ebox--pub--context-child-table context parent)))
         (when (gethash key seen)
-          (signal 'ebox--pub-duplicate-object-key (list key)))
+          (ebox--pub--signal 'ebox--pub-duplicate-object-key (list key)))
         (puthash key t seen)
         key)
     (list :position (ebox--pub--context-next-position context parent) :kind kind)))
@@ -1054,18 +1113,18 @@ contains `:start', `:end', and direct `:props'."
   "Validate PARENT for candidate CONTEXT."
   (when parent
     (unless (ebox--pub-object-p parent)
-      (signal 'wrong-type-argument (list 'ebox--pub-object-p parent)))
+      (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-object-p parent)))
     (unless (eq (ebox--pub--surface-object-surface parent)
                 (ebox--pub--context-surface context))
-      (signal 'ebox--pub-cross-surface-object (list parent)))
+      (ebox--pub--signal 'ebox--pub-cross-surface-object (list parent)))
     (unless (gethash (ebox--pub--surface-object-path parent)
                      (ebox--pub--context-objects context))
-      (signal 'ebox--pub-stale-object (list parent)))))
+      (ebox--pub--signal 'ebox--pub-stale-object (list parent)))))
 
 (defun ebox--pub--validate-prepare-context (context)
   "Signal unless CONTEXT is active."
   (unless (and (ebox--pub-prepare-context-p context) (ebox--pub--context-active context))
-    (signal 'ebox--pub-invalid-prepare-context (list context))))
+    (ebox--pub--signal 'ebox--pub-invalid-prepare-context (list context))))
 
 (defun ebox--pub--new-candidate-object (context parent key kind path)
   "Create a candidate object for KEY and KIND in CONTEXT below PARENT at PATH."
@@ -1083,7 +1142,7 @@ contains `:start', `:end', and direct `:props'."
   (ebox--pub--validate-prepare-context context)
   (ebox--pub--validate-context-parent context parent)
   (unless kind
-    (signal 'ebox--pub-invalid-surface-plan (list :kind kind)))
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan (list :kind kind)))
   (let* ((segment (ebox--pub--object-path-segment context parent key kind))
          (path (append (and parent (ebox--pub--surface-object-path parent))
                        (list segment)))
@@ -1107,7 +1166,7 @@ contains `:start', `:end', and direct `:props'."
 predicate does not copy mount tags; use `ebox--pub-object-mounts' when
 callers need the public coordinate and metadata snapshots."
   (unless (ebox--pub-object-live-p object)
-    (signal 'ebox--pub-stale-object (list object)))
+    (ebox--pub--signal 'ebox--pub-stale-object (list object)))
   (and (gethash object
                 (ebox--pub--surface-mount-index
                  (ebox--pub--surface-object-surface object)))
@@ -1118,7 +1177,7 @@ callers need the public coordinate and metadata snapshots."
 plist with `:start', `:end', and `:tags'.  Marker objects remain private so
 callers cannot mutate Ebox's publication coordinates."
   (unless (ebox--pub-object-live-p object)
-    (signal 'ebox--pub-stale-object (list object)))
+    (ebox--pub--signal 'ebox--pub-stale-object (list object)))
   (let* ((surface (ebox--pub--surface-object-surface object))
          (mounts (gethash object (ebox--pub--surface-mount-index surface))))
     (mapcar
@@ -1155,7 +1214,7 @@ identity may be promoted."
                    (ebox--pub--context-surface context))
                (or (gethash object (ebox--pub--context-touched context))
                    (gethash object (ebox--pub--context-retained context))))
-    (signal 'ebox--pub-stale-object (list object))))
+    (ebox--pub--signal 'ebox--pub-stale-object (list object))))
 
 (defun ebox--pub-object-retain (context object)
   "Retain candidate OBJECT in CONTEXT even when it owns no output fragment."
@@ -1170,14 +1229,14 @@ caller owns the proof that identity, parent path, output, and lifecycle are
 unchanged."
   (ebox--pub--validate-prepare-context context)
   (unless (ebox--pub-object-p object)
-    (signal 'wrong-type-argument (list 'ebox--pub-object-p object)))
+    (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-object-p object)))
   (let* ((surface (ebox--pub--context-surface context))
          (path (ebox--pub--surface-object-path object))
          (objects (ebox--pub--context-objects context)))
     (unless (and (ebox--pub-object-live-p object)
                  (eq (ebox--pub--surface-object-surface object) surface)
                  (eq object (gethash path objects)))
-      (signal 'ebox--pub-stale-object (list object)))
+      (ebox--pub--signal 'ebox--pub-stale-object (list object)))
     (puthash object t (ebox--pub--context-retained context))
     (dolist (binding (ebox--pub-binding-owner-bindings object))
       (when (ebox--pub-binding-live-p binding)
@@ -1197,20 +1256,20 @@ The caller must still provide a complete candidate plan and prove that the
 subtree's identity, output, and lifecycle are unchanged."
   (ebox--pub--validate-prepare-context context)
   (unless (ebox--pub-object-p root)
-    (signal 'wrong-type-argument (list 'ebox--pub-object-p root)))
+    (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-object-p root)))
   (let* ((surface (ebox--pub--context-surface context))
          (path (ebox--pub--surface-object-path root))
          (objects (ebox--pub--context-objects context)))
     (unless (and (ebox--pub-object-live-p root)
                  (eq root (gethash path objects)))
-      (signal 'ebox--pub-stale-object (list root)))
+      (ebox--pub--signal 'ebox--pub-stale-object (list root)))
     (maphash
      (lambda (_candidate-path object)
        (when (ebox--pub--object-path-prefix-p
               path (ebox--pub--surface-object-path object))
          (unless (and (eq (ebox--pub--surface-object-surface object) surface)
                       (ebox--pub-object-live-p object))
-           (signal 'ebox--pub-stale-object (list object)))
+           (ebox--pub--signal 'ebox--pub-stale-object (list object)))
          (puthash object t (ebox--pub--context-retained context))
          (dolist (binding (ebox--pub-binding-owner-bindings object))
            (when (ebox--pub-binding-live-p binding)
@@ -1222,7 +1281,7 @@ subtree's identity, output, and lifecycle are unchanged."
   "Signal unless START and END describe a nonempty local leaf range."
   (unless (and (integerp start) (integerp end)
                (>= start 0) (> end start))
-    (signal 'ebox--pub-invalid-content-range (list :start start :end end))))
+    (ebox--pub--signal 'ebox--pub-invalid-content-range (list :start start :end end))))
 
 (defun ebox--pub--copy-content-range-tags (tags &optional copies)
   "Return a defensive copy of non-nil content-range TAGS.  COPIES, when
@@ -1277,7 +1336,7 @@ discard the transferred values with the rest of their prepare state."
     (unless (and (ebox--pub-object-p owner)
                  (eq (ebox--pub--surface-object-surface owner)
                      (ebox--pub--context-surface context)))
-      (signal 'ebox--pub-cross-surface-object (list owner)))
+      (ebox--pub--signal 'ebox--pub-cross-surface-object (list owner)))
     (puthash binding t (ebox--pub--context-bindings context))))
 
 (defun ebox--pub--plist-overlay (parent child &optional owned-p)
@@ -1327,7 +1386,7 @@ transfers candidate-local property values through the render pass."
                  (setq offset (+ offset (length text)))))
              (let ((object (gethash path (ebox--pub--context-objects context))))
                (unless object
-                 (signal 'ebox--pub-orphan-object (list path)))
+                 (ebox--pub--signal 'ebox--pub-orphan-object (list path)))
                (push (list :path path :object object :start begin :end offset
                            :props props :tags (ebox--pub-surface-plan-tags node)
                            :leaf (null children))
@@ -1374,18 +1433,18 @@ transfers candidate-local property values through the render pass."
     (maphash
      (lambda (path _present)
        (unless (gethash path actual)
-        (signal 'ebox--pub-orphan-object (list :missing path))))
+        (ebox--pub--signal 'ebox--pub-orphan-object (list :missing path))))
      expected)
     (maphash
      (lambda (path object)
        (unless (or (gethash path expected)
                    (gethash object (ebox--pub--context-retained context)))
-         (signal 'ebox--pub-orphan-object (list :extra path))))
+         (ebox--pub--signal 'ebox--pub-orphan-object (list :extra path))))
      actual)
     (maphash
      (lambda (fragment _attachments)
        (unless (gethash (ebox--pub--surface-object-path fragment) expected)
-         (signal 'ebox--pub-orphan-object
+         (ebox--pub--signal 'ebox--pub-orphan-object
                  (list :unplanned-fragment
                        (ebox--pub--surface-object-path fragment)))))
      (ebox--pub--context-fragment-attachments context))))
@@ -1394,7 +1453,7 @@ transfers candidate-local property values through the render pass."
   "Validate PLAN recursively against mount CAPABILITY."
   (let ((declared (ebox--pub-surface-plan-capability plan)))
     (when (and declared (not (eq declared capability)))
-      (signal 'ebox--pub-capability-error (list declared capability)))
+      (ebox--pub--signal 'ebox--pub-capability-error (list declared capability)))
     (dolist (child (ebox--pub-surface-plan-children plan))
       (ebox--pub--validate-plan-capability child capability))))
 
@@ -1407,7 +1466,7 @@ transfers candidate-local property values through the render pass."
                  (eq context ebox--pub--current-prepare-context)
                  (eq context (ebox--pub-commit-batch-context value))
                  (not (ebox--pub-commit-batch-consumed-p value)))
-      (signal 'ebox--pub-owned-result-error (list value context)))
+      (ebox--pub--signal 'ebox--pub-owned-result-error (list value context)))
     (setf (ebox--pub-commit-batch-consumed-p value) t
           (ebox--pub-commit-batch-context value) nil)
     (list :commit-batch value))
@@ -1418,7 +1477,7 @@ transfers candidate-local property values through the render pass."
                  (eq context
                      (ebox--pub-retained-content-candidate-context value))
                  (not (ebox--pub-retained-content-candidate-consumed-p value)))
-      (signal 'ebox--pub-owned-result-error (list value context)))
+      (ebox--pub--signal 'ebox--pub-owned-result-error (list value context)))
     (setf (ebox--pub-retained-content-candidate-consumed-p value) t
           (ebox--pub-retained-content-candidate-context value) nil)
     (list :retained-content value))
@@ -1431,7 +1490,7 @@ transfers candidate-local property values through the render pass."
                          (eq context ebox--pub--current-prepare-context)
                          (eq context (ebox--pub-surface-result-owner-context value))
                          (not (ebox--pub-surface-result-consumed-p value)))
-              (signal 'ebox--pub-owned-result-error (list value context)))
+              (ebox--pub--signal 'ebox--pub-owned-result-error (list value context)))
               (let ((plan (ebox--pub-surface-result-plan value))
                   (client-state (ebox--pub-surface-result-client-state value)))
               (setf (ebox--pub-surface-result-consumed-p value) t
@@ -1447,7 +1506,7 @@ transfers candidate-local property values through the render pass."
               (plist-get options :client-state)
             (ebox--pub--surface-client-state surface))
           nil))
-   (t (signal 'ebox--pub-invalid-surface-plan (list value)))))
+   (t (ebox--pub--signal 'ebox--pub-invalid-surface-plan (list value)))))
 
 (defun ebox--pub--context-binding-removals (context objects)
   "Return default-lifecycle bindings omitted from CONTEXT among OBJECTS."
@@ -1545,7 +1604,7 @@ candidate."
                 specs))
         (when range-attachments
           (unless (plist-get record :leaf)
-            (signal 'ebox--pub-invalid-content-range
+            (ebox--pub--signal 'ebox--pub-invalid-content-range
                     (list :leaf leaf :reason 'not-a-text-leaf)))
           (let ((leaf-start (plist-get record :start))
                 (leaf-length (- (plist-get record :end)
@@ -1555,7 +1614,7 @@ candidate."
                     (end (plist-get attachment :end)))
                 (unless (and (<= end leaf-length)
                              (<= start end))
-                  (signal 'ebox--pub-invalid-content-range
+                  (ebox--pub--signal 'ebox--pub-invalid-content-range
                           (list :start start :end end
                                 :leaf-length leaf-length)))
                 (push (list :object (plist-get attachment :object)
@@ -1592,7 +1651,7 @@ candidate."
                                (ebox--pub--ranges-overlap-p
                                 (car range) (cdr range) start end))
                              ranges)
-                (signal 'ebox--pub-capability-error
+                (ebox--pub--signal 'ebox--pub-capability-error
                         (list :cross-surface-overlap
                               (ebox--pub--surface-id other)))))))))))
 
@@ -1622,7 +1681,7 @@ candidate."
           (unless (= before-tick
                      (with-current-buffer buffer
                        (buffer-modified-tick)))
-            (signal 'ebox--pub-producer-buffer-mutation
+            (ebox--pub--signal 'ebox--pub-producer-buffer-mutation
                     (list (ebox--pub--surface-id surface))))
           result)
       (ebox--pub--cancel-change-group-safely group))))
@@ -1630,16 +1689,16 @@ candidate."
 (defun ebox--pub--normalize-surface-scopes (surface objects)
   "Return validated retained OBJECTS owned by SURFACE."
   (unless (and (proper-list-p objects) objects)
-    (signal 'wrong-type-argument (list 'non-empty-proper-list-p objects)))
+    (ebox--pub--signal 'wrong-type-argument (list 'non-empty-proper-list-p objects)))
   (setq objects
         (cl-delete-duplicates (copy-sequence objects) :test #'eq))
   (dolist (object objects)
     (unless (ebox--pub-object-p object)
-      (signal 'wrong-type-argument (list 'ebox--pub-object-p object)))
+      (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-object-p object)))
     (unless (ebox--pub-object-live-p object)
-      (signal 'ebox--pub-stale-object (list object)))
+      (ebox--pub--signal 'ebox--pub-stale-object (list object)))
     (unless (eq (ebox--pub--surface-object-surface object) surface)
-      (signal 'ebox--pub-cross-surface-object (list object surface))))
+      (ebox--pub--signal 'ebox--pub-cross-surface-object (list object surface))))
   objects)
 
 (defun ebox--pub--coalesce-ranges (ranges)
@@ -1683,7 +1742,7 @@ return offsets from the surface start."
         (let ((start (ebox--pub--mount-position (ebox--pub--surface-mount-start mount)))
               (end (ebox--pub--mount-position (ebox--pub--surface-mount-end mount))))
           (unless (and start end)
-            (signal 'ebox--pub-stale-mount (list object)))
+            (ebox--pub--signal 'ebox--pub-stale-mount (list object)))
           (push (cons (- start base) (- end base)) ranges))))
     (ebox--pub--coalesce-ranges ranges)))
 
@@ -1868,7 +1927,7 @@ or `root'."
      ((eq (plist-get options :on-mismatch) 'root)
       (list :patches nil :fallback t))
      (t
-      (signal 'ebox--pub-scope-mismatch
+      (ebox--pub--signal 'ebox--pub-scope-mismatch
               (list :surface (ebox--pub--surface-id surface)
                     :old-ranges old-ranges :new-ranges new-ranges))))))
 
@@ -1881,7 +1940,7 @@ surface topology as the committed plan.  Its text and content attachments
 are still validated and published through the ordinary Ebox transaction
 phases."
   (when initial
-    (signal 'ebox--pub-invalid-surface-plan
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan
             (list :retained-content-initial t)))
   nil
   (let*
@@ -1915,7 +1974,7 @@ phases."
              (equal (ebox--pub-surface-plan-key plan)
                     (ebox--pub-surface-plan-key
                      (ebox--pub--surface-plan surface))))
-      (signal 'ebox--pub-invalid-surface-plan
+      (ebox--pub--signal 'ebox--pub-invalid-surface-plan
               (list :retained-content-topology plan)))
     (ebox--pub--validate-plan-capability plan
                                          (ebox--pub--surface-capability
@@ -1935,7 +1994,7 @@ phases."
           (ebox--pub--validate-context-object context object)
           (ebox--pub--validate-content-range start end)
           (unless (<= end (length rendered))
-            (signal 'ebox--pub-invalid-content-range
+            (ebox--pub--signal 'ebox--pub-invalid-content-range
                     (list :start start :end end :leaf-length
                           (length rendered))))))
       (puthash text-leaf ranges
@@ -1991,7 +2050,7 @@ phases."
                  (lambda (left right)
                    (< (ebox--pub--surface-object-id left)
                       (ebox--pub--surface-object-id right)))))
-        (signal 'ebox--pub-orphan-object
+        (ebox--pub--signal 'ebox--pub-orphan-object
                 (list :retained-content-object-set)))
       (ebox--pub--make-prepared-surface :surface surface :context
                                         context :plan plan :rendered
@@ -2073,7 +2132,7 @@ a proof miss."
                          (gethash object (ebox--pub--context-retained context)))
                      (integerp start) (integerp end)
                      (<= 0 start end target-extent))
-          (signal 'ebox--pub-surface-error
+          (ebox--pub--signal 'ebox--pub-surface-error
                   (list :commit-mount-range start end target-extent)))
         (if (and retainable mount
                  (integerp (ebox--pub--surface-mount-start mount))
@@ -2119,13 +2178,13 @@ a proof miss."
     (surface candidate context scope-objects input initial)
   "Prepare strict equal-coordinate CANDIDATE for stable SURFACE topology."
   (when initial
-    (signal 'ebox--pub-invalid-surface-plan
+    (ebox--pub--signal 'ebox--pub-invalid-surface-plan
             (list :commit-batch-initial t)))
   (unless
       (and t
            (plist-get (ebox--pub--surface-options surface)
                       :coordinate-mounts))
-    (signal 'ebox--pub-capability-error
+    (ebox--pub--signal 'ebox--pub-capability-error
             (list :commit-batch-coordinate-surface)))
   (let*
       ((batch candidate)
@@ -2170,13 +2229,13 @@ a proof miss."
          (or (not reuse-mount-projection-p)
              (= (ebox--pub-commit-batch-base-extent batch)
                 (ebox--pub-commit-batch-target-extent batch))))
-      (signal 'ebox--pub-surface-error
+      (ebox--pub--signal 'ebox--pub-surface-error
               (list :unsupported-commit-batch batch)))
     (unless
         (or reuse-mount-projection-p
             (ebox--pub--commit-batch-stable-object-set-p surface
                                                          objects))
-      (signal 'ebox--pub-orphan-object (list :commit-batch-object-set)))
+      (ebox--pub--signal 'ebox--pub-orphan-object (list :commit-batch-object-set)))
     (when reuse-mount-projection-p
       (ebox--pub--discard-new-objects context))
     (ebox--pub--make-prepared-surface :surface surface :context
@@ -2204,7 +2263,7 @@ a proof miss."
 mount and INITIAL is non-nil for first publication."
   (ebox--pub--validate-surface-buffer surface initial)
   (when (and (not initial) (ebox--pub--surface-stale surface))
-    (signal 'ebox--pub-stale-mount
+    (ebox--pub--signal 'ebox--pub-stale-mount
             (list (ebox--pub--surface-id surface))))
   (let*
       ((scope-request (ebox--pub--surface-scope-request surface))
@@ -2322,10 +2381,10 @@ mount and INITIAL is non-nil for first publication."
 (defun ebox--pub--validate-live-surface (surface)
   "Signal unless SURFACE is live and its buffer exists."
   (unless (ebox--pub-surface-p surface)
-    (signal 'wrong-type-argument (list 'ebox--pub-surface-p surface)))
+    (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-surface-p surface)))
   (unless (and (ebox--pub--surface-live surface)
                (buffer-live-p (ebox--pub--surface-buffer surface)))
-    (signal 'ebox--pub-dead-surface (list (and (ebox--pub-surface-p surface)
+    (ebox--pub--signal 'ebox--pub-dead-surface (list (and (ebox--pub-surface-p surface)
                                         (ebox--pub--surface-id surface))))))
 
 (defun ebox--pub-surface-live-p (surface)
@@ -2336,7 +2395,7 @@ mount and INITIAL is non-nil for first publication."
 (defun ebox--pub-surface-revision (surface)
   "Return SURFACE's committed revision."
   (unless (ebox--pub-surface-p surface)
-    (signal 'wrong-type-argument (list 'ebox--pub-surface-p surface)))
+    (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-surface-p surface)))
   (ebox--pub--surface-revision surface))
 
 (defun ebox--pub-surface-client-state (surface)
@@ -2359,12 +2418,12 @@ replacement is retained."
   (unless (and (integerp base-revision) (>= base-revision 0)
                (integerp target-revision)
                (= target-revision (1+ base-revision)))
-    (signal 'ebox--pub-surface-error
+    (ebox--pub--signal 'ebox--pub-surface-error
             (list :commit-revision base-revision target-revision)))
   (unless (and (integerp base-extent) (>= base-extent 0)
                (integerp target-extent) (>= target-extent 0)
                (proper-list-p patches) (proper-list-p coordinate-patches))
-    (signal 'ebox--pub-surface-error
+    (ebox--pub--signal 'ebox--pub-surface-error
             (list :commit-extents base-extent target-extent)))
   (let ((old-cursor 0) (new-cursor 0) copy coordinate-copy)
     (dolist (patch patches)
@@ -2381,7 +2440,7 @@ replacement is retained."
                         (- new-start new-cursor))
                      (stringp replacement)
                      (= (length replacement) (- new-end new-start)))
-          (signal 'ebox--pub-surface-error (list :commit-patch patch)))
+          (ebox--pub--signal 'ebox--pub-surface-error (list :commit-patch patch)))
         (let ((candidate
                (if (plist-member patch :property-contributions)
                    (copy-sequence patch)
@@ -2396,7 +2455,7 @@ replacement is retained."
         (setq old-cursor old-end new-cursor new-end)))
     (unless (= (- base-extent old-cursor)
                (- target-extent new-cursor))
-      (signal 'ebox--pub-surface-error
+      (ebox--pub--signal 'ebox--pub-surface-error
               (list :commit-tail old-cursor new-cursor)))
     (setq old-cursor 0 new-cursor 0)
     (dolist (patch coordinate-patches)
@@ -2410,13 +2469,13 @@ replacement is retained."
                      (<= new-cursor new-start new-end target-extent)
                      (= (- old-start old-cursor)
                         (- new-start new-cursor)))
-          (signal 'ebox--pub-surface-error
+          (ebox--pub--signal 'ebox--pub-surface-error
                   (list :commit-coordinate-patch patch)))
         (push patch coordinate-copy)
         (setq old-cursor old-end new-cursor new-end)))
     (unless (= (- base-extent old-cursor)
                (- target-extent new-cursor))
-      (signal 'ebox--pub-surface-error
+      (ebox--pub--signal 'ebox--pub-surface-error
               (list :commit-coordinate-tail old-cursor new-cursor)))
     (ebox--pub--make-commit-batch
      :base-revision base-revision :target-revision target-revision
@@ -2434,11 +2493,11 @@ replacement is retained."
                (ebox--pub-commit-batch-p batch)
                (not (ebox--pub-commit-batch-context batch))
                (not (ebox--pub-commit-batch-consumed-p batch)))
-    (signal 'ebox--pub-owned-result-error (list :commit-batch context batch)))
+    (ebox--pub--signal 'ebox--pub-owned-result-error (list :commit-batch context batch)))
   (when (and mount-specs-p reuse-mount-projection)
-    (signal 'ebox--pub-surface-error (list :conflicting-commit-mount-projection)))
+    (ebox--pub--signal 'ebox--pub-surface-error (list :conflicting-commit-mount-projection)))
   (unless (proper-list-p mount-specs)
-    (signal 'ebox--pub-surface-error (list :commit-mount-specs)))
+    (ebox--pub--signal 'ebox--pub-surface-error (list :commit-mount-specs)))
   (setf (ebox--pub-commit-batch-context batch) context
         (ebox--pub-commit-batch-mount-specs batch) mount-specs
         (ebox--pub-commit-batch-exact-mount-specs-p batch) mount-specs-p
@@ -2479,7 +2538,7 @@ Return the actual (TEXT-OPERATIONS . PROPERTY-OPERATIONS) counts."
                   (cl-incf text-operations)
                   (unless (ebox--pub--validate-published-content-range
                            buffer (+ start prefix) inserted)
-                    (signal 'ebox--pub-publication-mismatch
+                    (ebox--pub--signal 'ebox--pub-publication-mismatch
                             (list :commit-patch patch)))))
               ;; Keep undo recording for the standalone public batch API as
               ;; well as transaction publication.  Host property hooks are
@@ -2504,7 +2563,7 @@ Return the actual (TEXT-OPERATIONS . PROPERTY-OPERATIONS) counts."
     (let ((actual (- (marker-position (ebox--pub--surface-end surface)) base))
           (expected (ebox--pub-commit-batch-target-extent batch)))
       (unless (= actual expected)
-        (signal 'ebox--pub-publication-mismatch
+        (ebox--pub--signal 'ebox--pub-publication-mismatch
                 (list :commit-extent :actual actual :expected expected))))
     (dolist (patch (ebox--pub-commit-batch-patches batch))
       (let ((start (+ base (plist-get patch :new-start)))
@@ -2513,7 +2572,7 @@ Return the actual (TEXT-OPERATIONS . PROPERTY-OPERATIONS) counts."
         (unless (ebox--pub--text-property-semantic-equal-p
                  (with-current-buffer buffer (buffer-substring start end))
                  replacement)
-          (signal 'ebox--pub-publication-mismatch
+          (ebox--pub--signal 'ebox--pub-publication-mismatch
                   (list :commit-patch patch)))))))
 
 (defun ebox--pub--commit-batch-validate-mounts (surface batch mounts)
@@ -2525,37 +2584,37 @@ Return the actual (TEXT-OPERATIONS . PROPERTY-OPERATIONS) counts."
       (let ((start (ebox--pub--mount-position (ebox--pub--surface-mount-start mount)))
             (end (ebox--pub--mount-position (ebox--pub--surface-mount-end mount))))
         (unless (and start end (<= base start end limit))
-          (signal 'ebox--pub-publication-mismatch
+          (ebox--pub--signal 'ebox--pub-publication-mismatch
                   (list :commit-mount mount)))))))
 
 (defun ebox--pub--validate-surface-buffer (surface initial)
   "Validate SURFACE's buffer before prepare; INITIAL permits a candidate."
   (let ((buffer (ebox--pub--surface-buffer surface)))
     (unless (buffer-live-p buffer)
-      (signal 'ebox--pub-dead-surface (list (ebox--pub--surface-id surface))))
+      (ebox--pub--signal 'ebox--pub-dead-surface (list (ebox--pub--surface-id surface))))
     (when (buffer-base-buffer buffer)
-      (signal 'ebox-unsupported-buffer (list :indirect buffer)))
+      (ebox--pub--signal 'ebox-unsupported-buffer (list :indirect buffer)))
     (unless (or initial (ebox--pub--surface-live surface))
-      (signal 'ebox--pub-dead-surface (list (ebox--pub--surface-id surface))))
+      (ebox--pub--signal 'ebox--pub-dead-surface (list (ebox--pub--surface-id surface))))
     (with-current-buffer buffer
       (when (and buffer-read-only
                  (not (plist-get (ebox--pub--surface-options surface)
                                  :inhibit-read-only)))
-        (signal 'buffer-read-only (list buffer))))))
+        (ebox--pub--signal 'buffer-read-only (list buffer))))))
 
 (defun ebox--pub--surface-range (surface)
   "Return SURFACE's live start and end positions."
   (let ((start (marker-position (ebox--pub--surface-start surface)))
         (end (marker-position (ebox--pub--surface-end surface))))
     (unless (and start end)
-      (signal 'ebox--pub-stale-mount (list (ebox--pub--surface-id surface))))
+      (ebox--pub--signal 'ebox--pub-stale-mount (list (ebox--pub--surface-id surface))))
     (cons start end)))
 
 (defun ebox--pub--create-surface (buffer capability options)
   "Create an unmounted BUFFER surface with CAPABILITY and OPTIONS."
   nil
   (when (buffer-base-buffer buffer)
-    (signal 'ebox-unsupported-buffer (list :indirect buffer)))
+    (ebox--pub--signal 'ebox-unsupported-buffer (list :indirect buffer)))
   (let*
       ((range
         (with-current-buffer buffer
@@ -2630,7 +2689,7 @@ markers; use it only when host edits make the whole content surface stale
 and all writes are published through Ebox publication.  Return a surface handle."
   (let* ((target (get-buffer buffer))
          (_live (unless (buffer-live-p target)
-                  (signal 'ebox-unsupported-buffer (list buffer))))
+                  (ebox--pub--signal 'ebox-unsupported-buffer (list buffer))))
          (capability (or (plist-get options :capability)
                          (and (ebox--pub-surface-plan-p plan-or-producer)
                               (ebox--pub-surface-plan-capability plan-or-producer))
@@ -2657,7 +2716,7 @@ SURFACE and a defensive REPORT copy after each successful publication.
 Adding the same function more than once has no effect."
   (ebox--pub--validate-live-surface surface)
   (unless (functionp observer)
-    (signal 'wrong-type-argument (list 'functionp observer)))
+    (ebox--pub--signal 'wrong-type-argument (list 'functionp observer)))
   (unless (memq observer (ebox--pub--surface-observers surface))
     (setf (ebox--pub--surface-observers surface)
           (append (ebox--pub--surface-observers surface) (list observer))))
@@ -2668,7 +2727,7 @@ Adding the same function more than once has no effect."
 function that is not registered has no effect."
   (ebox--pub--validate-live-surface surface)
   (unless (functionp observer)
-    (signal 'wrong-type-argument (list 'functionp observer)))
+    (ebox--pub--signal 'wrong-type-argument (list 'functionp observer)))
   (setf (ebox--pub--surface-observers surface)
         (delq observer (ebox--pub--surface-observers surface)))
   surface)
@@ -2692,7 +2751,7 @@ when the caller reads the scalar summary from the surface instead."
                            (plist-get options :return-report)
                          t)))
     (unless (memq on-mismatch '(error root))
-      (signal 'wrong-type-argument
+      (ebox--pub--signal 'wrong-type-argument
               (list '(member error root) on-mismatch)))
     (ebox--pub--call-with-transaction
      (lambda ()
@@ -2806,7 +2865,7 @@ non-nil."
   (when (and (equal (ebox--pub-binding-key binding) ebox--pub--surface-producer-key)
              (ebox--pub-surface-p (ebox--pub-binding-owner binding)))
     (unless (ebox--pub--prepared-surface-p new)
-      (signal 'ebox--pub-invalid-surface-plan (list :producer-result new)))
+      (ebox--pub--signal 'ebox--pub-invalid-surface-plan (list :producer-result new)))
     (let* ((table (ebox--pub--surface-prepared-table))
            (surface (ebox--pub-binding-owner binding))
            (previous (gethash surface table)))
@@ -3038,7 +3097,7 @@ layer and signals before the transaction can commit."
       (unless (and (<= (point-min) start) (<= end (point-max))
                    (equal (buffer-substring-no-properties start end)
                           (substring-no-properties rendered)))
-        (signal 'ebox--pub-publication-mismatch
+        (ebox--pub--signal 'ebox--pub-publication-mismatch
                 (list :buffer buffer :start start :end end)))
       (ebox--pub--text-property-semantic-equal-p
        (buffer-substring start end) rendered))))
@@ -3117,7 +3176,7 @@ disagree on identity, the requested scope cannot publish that group change."
                         (unless (and (ebox--pub--property-value-equal-p
                                       'mouse-face value actual)
                                      (or (not found) (eq identity actual)))
-                          (signal 'ebox--pub-scope-mismatch
+                          (ebox--pub--signal 'ebox--pub-scope-mismatch
                                   (list :mouse-face-group start end)))
                         (setq identity actual found t
                               cursor (next-single-property-change
@@ -3132,7 +3191,7 @@ disagree on identity, the requested scope cannot publish that group change."
                                (eq identity
                                    (get-text-property (+ base neighbor)
                                                       'mouse-face buffer)))
-                      (signal 'ebox--pub-scope-mismatch
+                      (ebox--pub--signal 'ebox--pub-scope-mismatch
                               (list :mouse-face-boundary start end))))
                   (unless (eq identity value)
                     (put-text-property start end 'mouse-face identity rendered)
@@ -3411,7 +3470,7 @@ delete/insert preserves the authoritative property runs."
     (when changed
       (with-current-buffer buffer
         (unless (ebox--pub--validate-published-content-range buffer start rendered)
-          (signal 'ebox--pub-publication-mismatch
+          (ebox--pub--signal 'ebox--pub-publication-mismatch
                   (list :surface (ebox--pub--surface-id surface)
                         :reason 'retained-content-properties)))))
     (if changed 1 0)))
@@ -3755,7 +3814,7 @@ non-nil, keep snapshot markers for rollback."
         (progn
           (dolist (buffer buffers)
             (unless (buffer-live-p buffer)
-              (signal 'ebox--pub-dead-surface (list buffer)))
+              (ebox--pub--signal 'ebox--pub-dead-surface (list buffer)))
             (setq handle (nconc handle (prepare-change-group buffer))))
           (activate-change-group handle)
           (setq success t)
@@ -3992,7 +4051,7 @@ evidence with precommit validation without copying output."
                  (plist-get (ebox--pub--surface-report surface) :commit-batch)
                  (plist-get (ebox--pub--surface-report surface)
                             :retained-mount-state))
-      (signal 'ebox--pub-surface-error
+      (ebox--pub--signal 'ebox--pub-surface-error
               (list :invalid-retained-batch-precommit
                     (ebox--pub--surface-id surface))))))
 
@@ -4010,7 +4069,7 @@ evidence with precommit validation without copying output."
                   (with-current-buffer buffer
                     (ebox--pub--text-property-semantic-equal-p
                      expected (buffer-substring (car range) (cdr range)))))
-          (signal 'ebox--pub-publication-mismatch
+          (ebox--pub--signal 'ebox--pub-publication-mismatch
                   (list :surface (ebox--pub--surface-id surface)
                         :reason 'candidate-output)))))))
 
@@ -4021,7 +4080,7 @@ that validated their candidate inputs. Do not reconstruct and audit those
 indexes after publication; callbacks can affect the public buffer, whose
 complete text and properties still require boundary validation."
   (unless (gethash 'change-group state)
-    (signal 'ebox--pub-surface-error (list :invalid-precommit-state)))
+    (ebox--pub--signal 'ebox--pub-surface-error (list :invalid-precommit-state)))
   (dolist (entry (gethash 'snapshots state))
     (let* ((prepared (car entry))
            (snapshot (cdr entry))
@@ -4040,7 +4099,7 @@ complete text and properties still require boundary validation."
                       (1+ (ebox--pub--surface-snapshot-revision snapshot)))
                    (not (ebox--pub--context-active
                          (ebox--pub--prepared-surface-context prepared))))
-        (signal 'ebox--pub-surface-error
+        (ebox--pub--signal 'ebox--pub-surface-error
                 (list :invalid-published-generation
                       (ebox--pub--surface-id surface))))
       (when (ebox--pub--prepared-surface-retained-mount-state-p prepared)
@@ -4155,7 +4214,7 @@ complete text and properties still require boundary validation."
                      (setq ebox--pub--surface-transaction-id
                            (gethash 'surface-transaction-id-before state))))))
         (when failures
-          (signal 'ebox--pub-surface-rollback-error
+          (ebox--pub--signal 'ebox--pub-surface-rollback-error
                   (list :failures (nreverse failures)))))))
 
 (defun ebox--pub--surface-finalize-killed-rollback ()
@@ -4175,7 +4234,7 @@ complete text and properties still require boundary validation."
                (push (list (ebox--pub--surface-id surface) failure)
                      failures))))))
       (when failures
-        (signal 'ebox--pub-surface-rollback-error
+        (ebox--pub--signal 'ebox--pub-surface-rollback-error
                 (list :finalize-failures (nreverse failures)))))))
 
 (defun ebox--pub--finalize-object-lifecycle (prepared)
@@ -4326,7 +4385,7 @@ complete text and properties still require boundary validation."
   "Remove SURFACE's content and runtime state, returning its publication report."
   (ebox--pub--validate-live-surface surface)
   (when ebox--pub--transaction-active
-    (signal 'ebox--pub-surface-error
+    (ebox--pub--signal 'ebox--pub-surface-error
             (list :unmount-during-transaction)))
   (let*
       ((journals (ebox--pub--unmount-journals surface))
@@ -4358,7 +4417,7 @@ complete text and properties still require boundary validation."
 (defun ebox--pub-surface-report (surface)
   "Return a defensive copy of SURFACE's latest generic commit report."
   (unless (ebox--pub-surface-p surface)
-    (signal 'wrong-type-argument (list 'ebox--pub-surface-p surface)))
+    (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-surface-p surface)))
   (ebox-text--copy-property-value (ebox--pub--surface-report surface)))
 
 (defun ebox--pub-surface-report-summary (surface)
@@ -4367,7 +4426,7 @@ The returned plist contains only numbers, symbols, booleans, or nil.  Use
 `ebox--pub-surface-report' when callers need arbitrary report payloads or a
 defensive snapshot of nested values."
   (unless (ebox--pub-surface-p surface)
-    (signal 'wrong-type-argument (list 'ebox--pub-surface-p surface)))
+    (ebox--pub--signal 'wrong-type-argument (list 'ebox--pub-surface-p surface)))
   (let ((report (ebox--pub--surface-report surface)))
     (list :transaction-id (plist-get report :transaction-id)
           :text-operations (plist-get report :text-operations)

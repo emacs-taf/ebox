@@ -215,6 +215,12 @@ fresh root
 
 The candidate is either fully published or discarded. A failed render, Ebox publication write, Ebox participant, or publication callback preserves the previous buffer text, properties, Ebox publication revision, Ebox runtime identity, scroll state, and last successful report. If the target buffer is killed during publication, teardown is authoritative and rollback never resurrects it.
 
+Publication-generated conditions carry detached diagnostics: retained record IDs,
+numeric coordinates, short strings without properties, and bounded collections.
+They never expose live surface or callback graphs to Emacs error reporting.
+Condition types and rollback order are preserved; caller-generated conditions
+keep their original data. Diagnostic payloads are not live-state capabilities.
+
 Projection planning shares numeric Ebox publication mount snapshots across its local proofs.
 This read view exists only during one planning pass and is discarded before Ebox publication
 publishes coordinates. It neither replaces Ebox publication's authoritative mounts nor changes
