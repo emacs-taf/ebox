@@ -109,7 +109,9 @@ Use `ebox-update-selector-value-p' to distinguish an admitted nil from a miss."
   (if (ebox-source-table-p table) (ebox-source--table-materialize table) (copy-hash-table table)))
 
 (defun ebox-update-selector--context (index)
-  "Return INDEX's shared private selector context, preparing it once."
+  "Return INDEX's shared private selector context, preparing it once.
+Bindings find canonical query entries by opaque source handle, so runtime
+node copies do not invalidate otherwise unchanged source/subject facts."
   (or (ebox-source--index-prepared-selector-context index)
       (let* ((view (ebox-update-selector--table-copy (ebox-source--index-selector-view index)))
              (subjects (ebox-update-selector--table-copy (ebox-source--index-subjects index)))
@@ -127,7 +129,11 @@ Use `ebox-update-selector-value-p' to distinguish an admitted nil from a miss."
                  (subject (gethash (plist-get node :ebox-source-handle) nodes)))
             (plist-put copy :subject subject)
             (push copy query-entries)
-            (puthash node (cons node (plist-get entry :path)) entries)
+            ;; Runtime projections may copy nodes without changing their
+            ;; canonical source identity.  Class bindings use the same stable
+            ;; handle as source-record and selector-subject lookup.
+            (puthash (plist-get node :ebox-source-handle)
+                     (cons node (plist-get entry :path)) entries)
             (puthash node rank ranks)
             (setq rank (1+ rank))))
         (setq candidate
@@ -163,8 +169,7 @@ the prebound raw-value cell.  Query candidate supersets are built here once."
          (handle (ebox-source--update-slots-handle slots))
          (record (ebox-source--index-record candidate handle))
          (subject (ebox-source--index-node-subject candidate (ebox-update-selector--proof-node proof)))
-         (node (ebox-update-selector--proof-node proof))
-         (entry (gethash node (ebox-update-selector--context-entries context)))
+         (entry (gethash handle (ebox-update-selector--context-entries context)))
          (table (ebox-source--index-selector-class-table candidate))
          (ranks (ebox-update-selector--context-ranks context))
          (raw-cell (aref (aref (ebox-source--update-slots-node-cells slots) position) 0))
@@ -176,7 +181,7 @@ the prebound raw-value cell.  Query candidate supersets are built here once."
                           (1- (ebox-update-selector--proof-initial proof))))
     (dotimes (variant (length (ebox-update-selector--proof-tokens proof)))
       (dolist (token (aref (ebox-update-selector--proof-tokens proof) variant))
-        (unless (assq node (gethash token table))
+        (unless (assq (car entry) (gethash token table))
           (puthash token
                    (sort (cons entry (copy-sequence (gethash token table)))
                          (lambda (left right) (< (gethash (car left) ranks) (gethash (car right) ranks))))

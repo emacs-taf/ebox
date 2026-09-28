@@ -195,5 +195,67 @@
                                         (point-min) (point-max))))
         (ebox-prepared-selector-test--assert-render)))))
 
+(ert-deftest ebox-prepared-selector-rebinds-after-scroll-publication ()
+  "Scrolling preserves class bindings, unique selector matches and atomic resize."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 12)
+        (specifications [["panel" [:class :height] [["cold" "hot"] nil]]]))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (px 100) :height (lh 10) :overflow hidden
+              (box :id "panel" :class "cold" :position absolute
+                   :left (px 0) :top (lh 1) :width (px 40) :height (lh 2)
+                   :z-index 1 :overflow scroll
+                   (text "A1\nA2\nA3\nA4\nA5")))))
+      (let* ((region (plist-get (car (ebox-selector-query-buffer (current-buffer) "#panel")) :region-id))
+             (operation (ebox-update-prepare (current-buffer) specifications)))
+        (should operation)
+        (should (ebox-update-apply operation [["hot" (lh 2)]] [0]))
+        (dotimes (_ 3)
+          (goto-char (point-min))
+          (search-forward "A1")
+          (backward-char 2)
+          (ebox-scroll-down 1)
+          (should (= 1 (plist-get (ebox-scroll-state region) :scroll-offset)))
+          (should-not (ebox-update-valid-p operation))
+          (goto-char (point-min))
+          (search-forward "A2")
+          (backward-char 2)
+          (ebox-scroll-up 1)
+          (should (= 0 (plist-get (ebox-scroll-state region) :scroll-offset)))
+          (let* ((before (buffer-string))
+                 (revision (ebox-surface-buffer-revision (current-buffer)))
+                 (snapshot (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))
+                 (reject t) (state 'before))
+            (setq operation
+                  (ebox-update-prepare
+                   (current-buffer) specifications
+                   (lambda ()
+                     (setq state 'after)
+                     (when reject (error "Reject class after scroll")))
+                   (lambda () (setq state 'before))))
+            (should operation)
+            (should-error (ebox-update-apply operation [["cold" (lh 5)]] [0]))
+            (should (eq state 'before))
+            (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+            (should (equal-including-properties before (buffer-string)))
+            (should (= 1 (length (ebox-selector-query-buffer (current-buffer) ".hot"))))
+            (should-not (ebox-selector-query-buffer (current-buffer) ".cold"))
+            (should (= 0 (plist-get (ebox-scroll-state region) :scroll-offset)))
+            (setq reject nil)
+            (should (ebox-update-apply operation [["cold" (lh 5)]] [0]))
+            (should (eq state 'after))
+            (should-not (ebox-scroll-state region))
+            (should (= 1 (length (ebox-selector-query-buffer (current-buffer) ".cold"))))
+            (should-not (ebox-selector-query-buffer (current-buffer) ".hot"))
+            (should (= 1 (length (ebox-selector-query-all snapshot ".hot"))))
+            (should-not (ebox-selector-query-all snapshot ".cold"))
+            (ebox-prepared-selector-test--assert-render)
+            (should (ebox-update-apply operation [["hot" (lh 2)]] [0]))
+            (should (= 1 (length (ebox-selector-query-buffer (current-buffer) ".hot"))))
+            (should (= 2 (plist-get (ebox-scroll-state region) :content-height)))
+            (ebox-prepared-selector-test--assert-render)))))))
+
 (provide 'ebox-prepared-selector-tests)
 ;;; ebox-prepared-selector-tests.el ends here

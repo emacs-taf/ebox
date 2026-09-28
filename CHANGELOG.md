@@ -31,6 +31,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Prepared class updates can be rebound after scrolling copies runtime nodes.
+  Selector bindings follow stable source handles, retain unique query results
+  and keep class, geometry and scroll rollback consistent.
 - Retained children with their own text color now inherit changes to a parent's
   font size, weight and style. Failed publications preserve the prior inherited
   typography and allow a subsequent update to retry.

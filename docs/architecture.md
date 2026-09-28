@@ -531,7 +531,10 @@ those samples keep the ordinary renderer's result and do not create a model
 whose row indices would refer to absent shapes.
 
 Class variants compile to the existing source token grammar and a private
-selector view. Candidate indexes contain the finite class superset; ECSS always
+selector view. Bindings resolve canonical query entries by opaque source handle,
+so a scroll projection's copied runtime node retains the same source/subject
+identity. Reusing that canonical entry also avoids duplicate class candidates.
+Candidate indexes contain the finite class superset; ECSS always
 matches the current subject. Any rule/scope that observes a changing token is
 rejected, so several Hosts cannot jointly activate an unproved relational rule.
 Native focus/active uses the same private source/subject cells and fixed state

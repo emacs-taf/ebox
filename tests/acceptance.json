@@ -15,6 +15,7 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-prepared-selector-rebinds-after-scroll-publication", "file": "tests/ebox-prepared-selector-tests.el", "purpose": "Repeated native scrolling allows prepared class and height rebinding, preserves unique selector results and exported snapshots, and restores classes, scroll state and pixels on rejection."},
     {"name": "ebox-cascade-values-inherit-font-updates-through-explicit-colors", "file": "tests/ebox-cascade-values-tests.el", "purpose": "Retained descendants with explicit colors inherit font size, weight and style changes exactly like fresh rendering."},
     {"name": "ebox-cascade-values-font-inheritance-survives-publication-rejection", "file": "tests/ebox-cascade-values-tests.el", "purpose": "A rejected font publication restores visible styles and revision and allows subsequent inherited typography updates."},
     {"name": "ebox-cascade-values-retain-styles-through-structural-updates", "file": "tests/ebox-cascade-values-tests.el", "purpose": "Structural sibling changes retain explicit paint while later parent colour and typography changes still update inherited output."},

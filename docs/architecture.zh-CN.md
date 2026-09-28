@@ -371,7 +371,9 @@ absolute 所有者的纯尺寸变化可以跳过这次渲染。`ebox-elastic` �
 两次学习样本的实际行数必须分别等于声明高度。min/max 钳制或 content-box 装饰
 打破这一对应关系时，保留普通渲染的结果，不创建会索引不存在行形状的尺寸模型。
 
-class 变体使用原有 source token 语法，冷编译私有 selector view 与有限候选索引；
+class 变体使用原有 source token 语法，冷编译私有 selector view 与有限候选索引。
+绑定通过 opaque source handle 查找规范查询条目，因此滚动投影复制 runtime node
+不会改变其 source/subject 身份；复用同一规范条目也避免 class 候选重复。
 ECSS 始终匹配当前 subject。任何观察变化 token 的 rule/scope 都拒绝，避免多个 Host
 合批时触发未证明的关系规则。原生 focus/active 共用私有 source/subject 单元及固定
 状态 journal；没有相关状态 selector 或动态样式求值器时，press/focus/release 经保留
