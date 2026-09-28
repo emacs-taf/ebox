@@ -138,5 +138,52 @@
   (should-error (ebox-canonical-box-configuration 'row '(ebox/flex-direction column)))
   (should-error (ebox-canonical-box-configuration 'flex '(ebox/flex-direction invalid))))
 
+(defun ebox-cascade-value-test--retained-input (color extra &optional weight)
+  "Build a retained tree with COLOR, optional EXTRA sibling and font WEIGHT."
+  (ebox-build
+   `(column :id "root" :width (ch 30) :color ,color :font-weight ,(or weight 'normal)
+      (box :id "fixed" :color "#116633" (text "Explicit"))
+      (box :id "inherited" (text "Inherited"))
+      ,@(when extra '((text :id "extra" :color "#773311" "Extra"))))))
+
+(ert-deftest ebox-cascade-values-retain-styles-through-structural-updates ()
+  "Stable explicit paint and inherited paint stay fresh across sibling changes."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-cascade-value-test--retained-input "#224466" nil))
+    (dolist (change '(("#224466" t normal) ("#224466" nil normal)
+                      ("#662244" t normal) ("#882211" nil bold)
+                      ("#224466" t normal)))
+      (let ((input (apply #'ebox-cascade-value-test--retained-input change)))
+        (ebox-commit (current-buffer) input)
+        (should (equal (ebox-cascade-value-test--appearance (buffer-string))
+                       (ebox-cascade-value-test--appearance (ebox-render input))))))
+    ;; A later parent mutation still reaches the retained inherited binding.
+    (ebox-region-update "root" :color "#225588")
+    (should
+     (equal (ebox-cascade-value-test--appearance (buffer-string))
+            (ebox-cascade-value-test--appearance
+             (ebox-render (ebox-cascade-value-test--retained-input "#225588" t)))))))
+
+(ert-deftest ebox-cascade-values-reject-inherited-change-without-poisoning-reuse ()
+  "Rejected parent paint and sibling changes restore later style dependencies."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-cascade-value-test--retained-input "#224466" nil))
+    (ebox-commit (current-buffer) (ebox-cascade-value-test--retained-input "#224466" t))
+    (let ((before (buffer-string))
+          (revision (ebox-surface-buffer-revision (current-buffer))))
+      (should-error
+       (ebox-commit (current-buffer)
+                    (ebox-cascade-value-test--retained-input "#AA3311" nil)
+                    (lambda (_report) (error "Reject parent paint"))))
+      (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+      (should (equal-including-properties before (buffer-string))))
+    (dolist (color '("#337799" "#446622"))
+      (let ((input (ebox-cascade-value-test--retained-input color t)))
+        (ebox-commit (current-buffer) input)
+        (should (equal (ebox-cascade-value-test--appearance (buffer-string))
+                       (ebox-cascade-value-test--appearance (ebox-render input))))))))
+
 (provide 'ebox-cascade-values-tests)
 ;;; ebox-cascade-values-tests.el ends here

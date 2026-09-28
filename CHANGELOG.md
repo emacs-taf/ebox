@@ -31,6 +31,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Structural updates retain unchanged computed-style bindings instead of
+  treating every explicitly coloured child as a parent-colour transition.
+  Actual inherited colour and typography changes still follow the cascade.
+
 - Resizing a positioned panel whose declared height is clamped by min/max
   constraints or expanded by content-box decoration no longer indexes missing
   elastic rows. Such samples keep their ordinary render until declared and

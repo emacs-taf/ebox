@@ -1993,7 +1993,7 @@ shape returns nil so the caller uses the full ECSS computation."
                          old-parent-style)
                         (ebox-style--inherited-style-signature
                          new-parent-style)))
-        (let ((values (copy-tree (ecss-computed-style-values style)))
+        (let ((values (ecss-computed-style-values style))
               (active (copy-sequence
                        (ecss-computed-style-active-properties style)))
               (specified (copy-sequence
@@ -2025,39 +2025,34 @@ foreground value; fonts, custom properties, and all other inherited facts must
 
 (defun ebox-style--theme-parent-delta-computed
     (style declarations old-parent-style new-parent-style)
-  "Return a copied STYLE when a static parent changes only Theme color.
+  "Return an updated STYLE when a static parent changes only Theme color.
 For an explicit child color, STYLE is reusable unchanged.  For an inherited
 child color, the copied value follows NEW-PARENT-STYLE.  OLD-PARENT-STYLE and
 NEW-PARENT-STYLE must have identical non-color inherited fingerprints; any
-provenance or parent-shape mismatch returns nil for normal ECSS computation."
+provenance or parent-shape mismatch returns nil for normal ECSS computation.
+An unchanged parent color is not a delta: return nil so the caller can reuse
+the existing style binding, its compute function and dependency graph."
   (when (and (ecss-computed-style-p style)
+             (not (eq old-parent-style new-parent-style))
              (proper-list-p declarations)
              (not (ebox-style--deferred-declarations-p declarations))
              (ecss-computed-style-p old-parent-style)
-             (ecss-computed-style-p new-parent-style)
-             (equal
-              (ebox-style--inherited-style-signature-without-theme-color
-               old-parent-style)
-              (ebox-style--inherited-style-signature-without-theme-color
-               new-parent-style)))
-    (if (ecss-computed-style-specified-p style 'ebox/color)
-        (ecss-computed-style-copy-with-values
-         style (ecss-computed-style-values style))
-      (when (and (equal (ecss-computed-style-value
-                         style 'ebox/color)
-                        (ecss-computed-style-value
-                         old-parent-style 'ebox/color))
-                 (not (equal (ecss-computed-style-value
-                              old-parent-style 'ebox/color)
-                             (ecss-computed-style-value
-                              new-parent-style 'ebox/color))))
-        (let ((values (copy-tree (ecss-computed-style-values style))))
-          (setq values
-                (plist-put values 'ebox/color
-                           (copy-tree
-                            (ecss-computed-style-value
-                             new-parent-style 'ebox/color))))
-          (ecss-computed-style-copy-with-values style values))))))
+             (ecss-computed-style-p new-parent-style))
+    (let ((old-color (ecss-computed-style-value old-parent-style 'ebox/color))
+          (new-color (ecss-computed-style-value new-parent-style 'ebox/color)))
+      (when (and (not (equal old-color new-color))
+                 (equal
+                  (ebox-style--inherited-style-signature-without-theme-color old-parent-style)
+                  (ebox-style--inherited-style-signature-without-theme-color new-parent-style)))
+        (if (ecss-computed-style-specified-p style 'ebox/color)
+            style
+          (when (equal (ecss-computed-style-value style 'ebox/color) old-color)
+            ;; The public values accessor already detaches mutable values.
+            ;; Only the inherited value changes before the immutable result
+            ;; is constructed; no second intermediate tree copy is needed.
+            (let ((values (ecss-computed-style-values style)))
+              (setq values (plist-put values 'ebox/color new-color))
+              (ecss-computed-style-copy-with-values style values))))))))
 
 (defun ebox-style--theme-inherited-delta-computed
     (style declarations old-parent-style new-parent-style)

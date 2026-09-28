@@ -97,7 +97,10 @@ Query entries and lookup tables may remain lazy; style evaluation already has
 coherent candidate relationships and does not rebuild them merely for a query cache.
 
 Cascade reuse compares mounting source identity, rules, target membership and
-inherited values. For subject-local selectors, each binding retains its own
+inherited values. A parent colour delta requires an actual change in the
+computed parent foreground. Unchanged parent styles keep the retained compute
+function and dependency graph; explicit child foregrounds retain their immutable
+style when only the parent colour changes. For subject-local selectors, each binding retains its own
 ordered rule inputs, membership and ancestor identity chain. Adding or removing
 another member does not invalidate an unaffected binding. Subject metadata,
 scope roots, applicable rule revisions and inherited bindings still participate
