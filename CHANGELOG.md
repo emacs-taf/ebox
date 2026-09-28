@@ -36,6 +36,9 @@ All notable changes to Ebox are documented here.
   stale coordinates and accumulate displacement; rejected updates restore both
   source values and the previous runtime projection.
 
+- Host bounds and positions exclude leading/trailing structural newlines.
+  A Row control following another flow child now resolves to its painted
+  character and native keymap instead of the preceding line separator.
 - Positioned layers reject ordinary Text/Box descendants whose resolved
   canonical font exceeds their containing plane's row height. Previously only
   positioned nodes were checked, allowing a larger descendant font to stretch

@@ -459,5 +459,68 @@
       (should (eq (ebox-focused-host-ref) 'a))
       (should (looking-at "AAA")))))
 
+(ert-deftest ebox-host-positions-exclude-flow-separators-for-native-input ()
+  "A wrapped Row resolves to painted text across native input, updates and rollback."
+  (save-window-excursion
+    (dolist (margin '(nil ((lh 1) (ch 2))))
+      (with-temp-buffer
+        (set-window-buffer (selected-window) (current-buffer))
+        (let ((activations 0) ref)
+          (cl-labels
+              ((input (prefix)
+                 (ebox-build
+                  `(column
+                    (text :id "prefix" ,prefix)
+                    (row :id "control" :tab-index 0 ,@(and margin (list :margin margin))
+                         :keymap ,(ebox-keymap-create
+                                   :activate (lambda ()
+                                               (setq activations (1+ activations))
+                                               (ebox-region-update
+                                                "mark" :content
+                                                (if (cl-oddp activations) "[x]" "[ ]"))))
+                         (text :id "mark" "[ ]") (text " Toggle"))
+                    (text "After"))))
+               (position ()
+                 (let* ((bounds (ebox-host-ref-bounds (current-buffer) ref))
+                        (start (ebox-host-ref-position (current-buffer) ref)))
+                   (should bounds)
+                   (should (= start (car bounds)))
+                   (should (eq (char-after start) ?\[))
+                   (should-not (eq (char-before (cdr bounds)) ?\n))
+                   (should (keymapp (get-text-property start 'keymap)))
+                   start)))
+            (ebox-render-to-buffer (current-buffer) (input "Before"))
+            (setq ref (ebox-focus-first))
+            (should ref)
+            (should (= (point) (position)))
+            (ebox-activate (position))
+            (should (= activations 1))
+            (should (= (point) (position)))
+            (let* ((target (position))
+                   (window (selected-window))
+                   (press (list 'down-mouse-1 (list window target '(1 . 1) 0)))
+                   (release (list 'mouse-1 (list window target '(1 . 1) 1))))
+              (should (eq (key-binding (vector press) nil nil target)
+                          (lookup-key (get-text-property target 'keymap) [down-mouse-1])))
+              (let ((command (key-binding (vector release) nil nil target)))
+                (should (eq command (lookup-key (get-text-property target 'keymap) [mouse-1])))
+                (funcall command release)))
+            (should (= activations 2))
+            (ebox-region-update "prefix" :content "Longer before\nSecond line")
+            (ebox-focus ref)
+            (should (= (point) (position)))
+            (let ((before (buffer-string))
+                  (bounds (ebox-host-ref-bounds (current-buffer) ref))
+                  (revision (ebox-surface-buffer-revision (current-buffer))))
+              (should-error
+               (ebox-commit (current-buffer) (input "Rejected prefix")
+                            (lambda (_report) (error "Reject control movement"))))
+              (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+              (should (equal bounds (ebox-host-ref-bounds (current-buffer) ref)))
+              (should (equal-including-properties before (buffer-string)))
+              (should (= (point) (position))))
+            (ebox-activate (position))
+            (should (= activations 3))))))))
+
 (provide 'ebox-focus-tests)
 ;;; ebox-focus-tests.el ends here

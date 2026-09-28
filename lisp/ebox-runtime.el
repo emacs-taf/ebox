@@ -5080,13 +5080,26 @@ surface handle."
   "Return live integer bounds for HOST-REF in BUFFER-OR-NAME.
 
 The result is a `(START . END)' pair spanning the referenced runtime node's
-rendered border-box characters (excluding margins), or nil when the buffer,
+rendered border-box characters (excluding margins and structural newlines),
+or nil when the buffer,
 reference, or live Ebox publication mounts no longer exist.  HOST-REF is
 opaque and compared with `equal'."
   (when-let* ((buffer (ebox--host-ref-buffer buffer-or-name))
-              (node (ebox--host-ref-node buffer host-ref)))
-    (or (ebox--host-ref-role-bounds buffer node)
-        (ebox--host-ref-mount-bounds buffer node))))
+              (node (ebox--host-ref-node buffer host-ref))
+              (bounds (or (ebox--host-ref-role-bounds buffer node)
+                          (ebox--host-ref-mount-bounds buffer node))))
+    ;; Publication intervals can own the structural newline preceding a flow
+    ;; child.  It is not a painted border-box character or a native input
+    ;; target.  Keep that bookkeeping extent private to the publisher.
+    (with-current-buffer buffer
+      (save-restriction
+        (widen)
+        (let ((start (car bounds)) (end (cdr bounds)))
+          (while (and (< start end) (eq (char-after start) ?\n))
+            (setq start (1+ start)))
+          (while (and (< start end) (eq (char-before end) ?\n))
+            (setq end (1- end)))
+          (when (< start end) (cons start end)))))))
 
 ;;;###autoload
 (defun ebox-host-ref-position (buffer-or-name host-ref)

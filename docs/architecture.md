@@ -625,6 +625,11 @@ distinguishes cached motion from actual prefix extension.
 
 ## Identity and coordinates
 
+Public Host bounds trim structural line separators from the publication mount
+extent. Those separators remain publisher bookkeeping, but do not become the
+first Host position used by focus or native input callers. Interior gaps still
+belong to the enclosing numeric span; no consumer reconstructs mount ownership.
+
 Keys are local to a sibling collection. Declarative source trees never own live Ebox publication objects, markers, or buffer coordinates. A live logical `:id` resolves through `ebox-region-resolve` to an opaque handle tied to one Ebox publication surface object; mounting the same source in two buffers therefore yields distinct handles. Region and host-ref positions are generation-bound; after a buffer mutation, callers must obtain fresh positions from the public accessor. Buffer markers, display spans, and text properties are publication facts, not source-tree identity.
 
 Native activation and optional interaction navigation resolve declaring keymap

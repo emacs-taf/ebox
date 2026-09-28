@@ -440,6 +440,10 @@ playground scroll evaluator 验证 fresh-render parity，并区分缓存滚动�
 
 ## Identity 与坐标
 
+公开 Host bounds 从发布挂载区间两端排除结构换行。分隔符仍归发布器记账，但不能
+成为焦点或原生输入调用方使用的 Host 首位置。内部空隙仍包含在外包数值区间内，
+消费者不需要重新推导挂载归属。
+
 Key 只在同级兄弟集合内有效。声明式 source tree 不拥有 live Ebox publication object、marker 或 buffer 坐标。live 逻辑 `:id` 通过 `ebox-region-resolve` 解析为绑定某个 Ebox publication surface object 的不透明 handle；同一 source 挂载到两个 buffer 时会得到不同 handle。Region 与 host-ref 位置绑定于 generation；buffer 变更后调用者必须通过公共 accessor 重新获得位置。Buffer marker、display span 和 text property 是发布事实，不是 source tree identity。
 
 原生输入边界只在 reader 调用期间保留当前 surface 与目标身份，接受结果和恢复

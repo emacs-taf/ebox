@@ -487,7 +487,8 @@
 ;; Return live integer bounds for HOST-REF in BUFFER-OR-NAME.
 ;;
 ;; The result is a `(START . END)' pair spanning the referenced runtime node's
-;; rendered border-box characters (excluding margins), or nil when the buffer,
+;; rendered border-box characters (excluding margins and structural newlines),
+;; or nil when the buffer,
 ;; reference, or live Ebox publication mounts no longer exist.  HOST-REF is opaque and
 ;; compared with `equal'.
 ;;
