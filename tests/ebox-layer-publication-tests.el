@@ -228,11 +228,8 @@
       (ebox-region-update "lower" :content content)
       (ebox-layer-publication-test--assert-fresh-properties))))
 
-(ert-deftest ebox-layer-positioned-host-allows-nonpositioned-font-descendants ()
-  "A positioned host may contain ordinary text with a different font metric.
-
-Only positioned descendants must share the containing host's line height;
-ordinary flow content is allowed to choose its own font presentation."
+(ert-deftest ebox-layer-positioned-host-allows-small-and-bold-descendants ()
+  "Smaller fonts and same-height bold text can share a positioned row grid."
   (ebox-layer-publication-test--with-buffer
     (ebox-render-to-buffer
      (current-buffer)
@@ -317,6 +314,49 @@ ordinary flow content is allowed to choose its own font presentation."
                           (ebox-render
                            (ebox-layer-publication-test--tiled-input split)))))
           (ebox-layer-publication-test--assert-fresh-render))))))
+
+(ert-deftest ebox-layer-rejects-tall-descendant-fonts-before-publication ()
+  "Graphical layer fonts cannot stretch another pane's rows on initial or later render."
+  (skip-unless (display-graphic-p))
+  (let ((ebox-viewport-width 400) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (cl-labels
+          ((input (content)
+             (ebox-build
+              `(box :width (px 400) :height (lh 6) :overflow hidden
+                    (box :id "panel" :position absolute :left (px 0) :top (lh 1)
+                         :width (px 160) :height (lh 2) :z-index 1
+                         ,content)
+                    (box :id "peer" :position absolute :left (px 200) :top (lh 1)
+                         :width (px 160) :height (lh 2) :z-index 2 "Peer")))))
+        (ebox-render-to-buffer (current-buffer) (input '(text :font-weight bold "Title")))
+        (let ((before (buffer-string))
+              (revision (ebox-surface-buffer-revision (current-buffer)))
+              (report (ebox-buffer-update-report (current-buffer)))
+              (peer (ebox-region-resolve (current-buffer) "peer")))
+          (dolist (content '((text :font-size 128 "Tall text")
+                             (box :font-size 128 (text "Inherited tall text"))
+                             (column (box (text :font-size 128 "Nested tall text")))))
+            (let ((candidate (input content)))
+              (should-error (ebox-render candidate) :type 'error)
+              (let* ((condition (should-error (ebox-commit (current-buffer) candidate) :type 'error))
+                     (print-circle nil) (print-length nil) (print-level nil)
+                     (message (error-message-string condition)))
+                (should (string-match-p "line height" message))
+                (should (< (length message) 512)))
+              (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+              (should (equal report (ebox-buffer-update-report (current-buffer))))
+              (should (equal-including-properties before (buffer-string)))))
+          (ebox-region-update peer :content "Peer still live")
+          (should (string-match-p "Peer still live"
+                                  (buffer-substring-no-properties (point-min) (point-max)))))
+        (should (ebox-commit (current-buffer) (input '(text :font-size 8 "Small text"))))
+        (should (ebox-commit (current-buffer) (input '(text :font-weight bold "Title"))))
+        ;; An independent flow document owns its line heights; its large
+        ;; font does not belong to a positioned plane's shared row grid.
+        (should (string-match-p "Independent"
+                                (substring-no-properties
+                                 (ebox-render (ebox-build '(column (text :font-size 128 "Independent")))))))))))
 
 (provide 'ebox-layer-publication-tests)
 ;;; ebox-layer-publication-tests.el ends here

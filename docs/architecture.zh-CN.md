@@ -273,6 +273,12 @@ span、owner-scoped、formatting-context 或 mixed 局部输出被拒绝时，pr
 
 ## 覆盖层合成
 
+定位子树共享所属平面的物理文本行网格。现有 placement 遍历在生成图层记录前，
+检查所有后代（包括普通 Text 与 Box）的规范字体实际行高不超过宿主。大字体会在
+实际发布前拒绝候选，较小字体及行高相同的粗体不会扩大行网格。定位子树以外的普通
+流保留独立字体布局。此证明使用规范字体事实，不认证调用方提供的任意 face 属性或
+逐字形的 fontset 回退。内置 UI 标记还必须在用户字体配置中通过实际物理行高验证。
+
 公共几何边界是 `ebox-region-update-geometry` 与 `ebox-region-geometry`。它们只暴露
 Box 所有的位置、尺寸、边界和堆叠事实，并沿用现有 retained candidate 与 publication
 事务。调用方的属性表会先校验并复制到一个 candidate，按 geometry 分类，再遵循普通

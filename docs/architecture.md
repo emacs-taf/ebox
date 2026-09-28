@@ -374,6 +374,16 @@ If any proof condition fails, the update uses the ordinary safe projection path.
 
 ## Layer composition
 
+A positioned subtree paints on its containing plane's physical text-row grid.
+The existing placement traversal checks every descendant's resolved canonical
+font height, including ordinary Text and Box nodes, against the host's height
+before producing layer records. Larger fonts reject the candidate before live
+publication; smaller fonts and same-height bold do not widen the grid. Flow
+outside positioned subtrees retains its independent font layout. This proof
+uses canonical font facts and does not certify caller-supplied face properties
+or per-glyph fontset fallbacks. Built-in UI marks must also fit the measured
+physical row in the user's font configuration.
+
 The public geometry boundary is `ebox-region-update-geometry` and
 `ebox-region-geometry`. These functions expose only Box-owned positioning,
 size, bounds, and stacking facts through the existing retained candidate and

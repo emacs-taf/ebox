@@ -949,6 +949,10 @@
 ;; Render canonical INPUT to a multi-line string through Ebox publication.
 ;; INPUT atomically carries one typed Text/Box root and its source generation.
 ;; The materialized surface is ephemeral and creates no live buffer state.
+;; Positioned layer descendants must fit the containing plane's resolved
+;; canonical font line height; larger fonts signal before publication.  Fontset
+;; glyph fallback and caller face properties require separate display checks.
+;; Caller-supplied face text properties are outside this font capability check.
 ;;
 ;; Function: ebox-render-burst-begin ()
 ;;;###autoload (autoload 'ebox-render-burst-begin "ebox" nil nil)

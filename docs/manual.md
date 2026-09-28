@@ -342,8 +342,14 @@ Missing or invisible anchors do not paint a panel; ambiguous IDs and placement
 dependency cycles are errors.
 
 Composition uses horizontal pixels and one shared vertical text-row grid.
-Positioned descendants must not exceed their containing host's effective font
-line height; smaller glyphs are allowed inside the fixed row. Whole supported clusters survive cuts; partially covered glyphs/images
+Every Text/Box descendant of a positioned layer, including ordinary flow
+content, must fit its containing host's resolved canonical font line height.
+Larger fonts reject rendering before publication; smaller fonts and same-height
+bold remain allowed inside the fixed row. This check covers canonical font
+properties, not arbitrary caller-supplied face text properties or glyph-specific
+fontset fallbacks. Use canonical declarations for this validation and check
+physical row heights when choosing control glyphs. Whole supported clusters
+survive cuts; partially covered glyphs/images
 are replaced with noninteractive space retaining the source faces (including
 background paint), and fixed display spaces can be shortened. Blank canvas
 outside the source remains neutral.

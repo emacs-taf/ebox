@@ -31,6 +31,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Positioned layers reject ordinary Text/Box descendants whose resolved
+  canonical font exceeds their containing plane's row height. Previously only
+  positioned nodes were checked, allowing a larger descendant font to stretch
+  neighboring panes. Smaller fonts and same-height bold remain supported.
 - Prepared class updates can be rebound after scrolling copies runtime nodes.
   Selector bindings follow stable source handles, retain unique query results
   and keep class, geometry and scroll rollback consistent.

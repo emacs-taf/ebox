@@ -865,17 +865,17 @@ Nested scroll changes and source updates cannot use this root-only proof."
   "Check text backend placement contracts for NODE inside HOST."
   (ebox-layer-validate-node node)
   (when (ebox-layer-positioned-p node)
-    (cl-labels ((check (child)
-                  (when (ebox-layer-positioned-p child)
-                    (when (> (ebox--size-line-height child)
-                             (ebox--size-line-height host))
-                      (error "Ebox positioned boxes must share their host's line height (node=%S node-height=%S host=%S host-height=%S)"
-                             (plist-get child :ebox-type)
-                             (ebox--size-line-height child)
-                             (plist-get host :ebox-type)
-                             (ebox--size-line-height host))))
-                  (mapc #'check (ebox-tree-node-children child))))
-      (check node))))
+    (let ((limit (ebox--size-line-height host)))
+      (cl-labels ((check (child)
+                    ;; Ordinary descendants still paint on the containing
+                    ;; plane's physical text rows.  A larger descendant font
+                    ;; would stretch every sibling layer on the same row.
+                    (let ((height (ebox--size-line-height child)))
+                      (when (> height limit)
+                        (error "Ebox layered content exceeds its plane's line height (node=%S height=%s limit=%s)"
+                               (plist-get child :ebox-type) height limit)))
+                    (mapc #'check (ebox-tree-node-children child))))
+        (check node)))))
 
 (defun ebox-layer-validate-node (node)
   "Validate NODE's placement combinations independently of visibility."
