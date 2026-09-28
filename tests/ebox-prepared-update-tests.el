@@ -338,5 +338,58 @@ prepared visibility change paints it at its current placement."
         (should (equal-including-properties
                  snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))))))
 
+(ert-deftest ebox-prepared-update-explains-canvas-admission-without-publication ()
+  "Cold admission reports bounded proof facts without publishing or staging."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 8))
+    (dolist
+        (case
+         '(((box :width (ch 20) :height (lh 2) :overflow hidden
+              (text "First\nSecond\nThird")
+              (box :id "panel" :position absolute :left (ch 0) :top (lh 0)
+                   :width (ch 5) :height (lh 1) :z-index 1 "Panel"))
+            wrapper content-height)
+           ((box :width (ch 20) :height (lh 5)
+              (box :position relative :width (ch 20) :height (lh 5)
+                (box :id "panel" :position absolute :layer root
+                     :left (ch 0) :top (lh 0) :width (ch 5) :height (lh 1)
+                     :z-index 1 "Panel")))
+            route root-portals)
+           ((box :width (ch 20) :height (lh 5)
+              (box :id "panel" :width (ch 5) :height (lh 1) "Panel"))
+            geometry positioned-host)))
+      (with-temp-buffer
+        (ebox-render-to-buffer (current-buffer) (ebox-build (car case)))
+        (let ((before (buffer-string))
+              (revision (ebox-surface-buffer-revision (current-buffer)))
+              staged)
+          (should-not
+           (ebox-update-prepare (current-buffer) [["panel" [:left]]]
+                                (lambda () (setq staged t)) #'ignore))
+          (let* ((report (ebox-update-prepare-report (current-buffer)))
+                 (detail (plist-get report :detail)))
+            (should (eq (plist-get report :status) 'unsupported))
+            (should (eq (plist-get report :reason) 'fixed-canvas))
+            (should (eq (plist-get detail :phase) (nth 1 case)))
+            (should (eq (plist-get detail :reason) (nth 2 case)))
+            (should (<= (length detail) 20))
+            (cl-loop for (_key value) on detail by #'cddr
+                     do (should (or (symbolp value) (numberp value))))
+            (when (eq (nth 2 case) 'content-height)
+              (should (= (plist-get detail :plane-height) 3))
+              (should (= (plist-get detail :content-height) 2)))
+            (setcar (cdr detail) 'changed)
+            (should (eq (plist-get (plist-get (ebox-update-prepare-report (current-buffer))
+                                              :detail) :phase)
+                        (nth 1 case))))
+          (should-not staged)
+          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (equal-including-properties before (buffer-string))))
+        ;; A new accepted canvas reports readiness, with no old rejection.
+        (ebox-render-to-buffer (current-buffer) (ebox-prepared-update-test--input))
+        (should (ebox-update-prepare (current-buffer) [["panel" [:left]]]))
+        (let ((report (ebox-update-prepare-report (current-buffer))))
+          (should (eq (plist-get report :status) 'ready))
+          (should-not (plist-get report :detail)))))))
+
 (provide 'ebox-prepared-update-tests)
 ;;; ebox-prepared-update-tests.el ends here

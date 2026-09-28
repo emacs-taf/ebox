@@ -41,6 +41,23 @@
   (ebox-geometry--operation-interaction
    (ebox-geometry--operation-session operation)))
 
+(defvar ebox-geometry--admission-detail nil
+  "Dynamically bound one-cell sink for the first cold admission failure.
+Its value contains only bounded scalar facts, never retained runtime data.")
+
+(defvar ebox-geometry--admission-depth nil
+  "Containing-plane depth during cold wrapper compilation, starting at zero.")
+
+(defun ebox-geometry--record-admission (phase reason &rest facts)
+  "Record the first cold PHASE rejection REASON and bounded scalar FACTS."
+  (when (and (consp ebox-geometry--admission-detail)
+             (null (car ebox-geometry--admission-detail)))
+    (setcar ebox-geometry--admission-detail
+            (append (list :phase phase :reason reason)
+                    (when ebox-geometry--admission-depth
+                      (list :depth ebox-geometry--admission-depth))
+                    facts))))
+
 (defun ebox-geometry--wrapper (node)
   "Compile NODE's fixed wrapper independently of its child layout."
   (let ((wrapper (copy-sequence node)))
@@ -160,10 +177,20 @@ preparing a wrapper no longer enumerates every combination up front."
                  (copy-sequence '(face font-lock-face ebox-content ebox-content-owner ebox-content-owners
                                        ebox-bt ebox-bb))))
          properties output rows)
-    (unless (and (eq (ebox-get wrapper :text-align) 'left)
-                 (eq (ebox-get wrapper :visibility) 'visible)
-                 (= height (ebox--content-height wrapper height content)))
+    (unless (eq (ebox-get wrapper :text-align) 'left)
+      (ebox-geometry--record-admission 'wrapper 'text-alignment
+                                      :text-align (ebox-get wrapper :text-align))
       (throw 'ebox-geometry-unsupported nil))
+    (unless (eq (ebox-get wrapper :visibility) 'visible)
+      (ebox-geometry--record-admission 'wrapper 'visibility
+                                      :visibility (ebox-get wrapper :visibility))
+      (throw 'ebox-geometry-unsupported nil))
+    (let ((content-height (ebox--content-height wrapper height content)))
+      (unless (= height content-height)
+        (ebox-geometry--record-admission
+         'wrapper 'content-height :plane-height height :content-height content-height
+         :overflow (ebox-get wrapper :overflow))
+        (throw 'ebox-geometry-unsupported nil)))
     (if retained
         (setq rows (copy-sequence (ebox-geometry--route-lines route)))
       (plist-put wrapper :content content)
@@ -171,10 +198,18 @@ preparing a wrapper no longer enumerates every combination up front."
             rows (vconcat (ebox-string-lines output))))
     (when (and (ebox-geometry--route-lines route)
                (/= (length rows) (length (ebox-geometry--route-lines route))))
+      (ebox-geometry--record-admission
+       'wrapper 'retained-row-count :actual-rows (length rows)
+       :expected-rows (length (ebox-geometry--route-lines route)))
       (throw 'ebox-geometry-unsupported nil))
     (unless (= (length rows)
                (+ height offset (floor (ebox-get wrapper :padding-bottom-height))
                   (floor (ebox-get wrapper :margin-bottom-height))))
+      (ebox-geometry--record-admission
+       'wrapper 'output-row-count :actual-rows (length rows)
+       :plane-height height :content-offset offset
+       :bottom-padding (floor (ebox-get wrapper :padding-bottom-height))
+       :bottom-margin (floor (ebox-get wrapper :margin-bottom-height)))
       (throw 'ebox-geometry-unsupported nil))
     ;; The neutral fill primitive and every program string contribute their
     ;; source keys; clipping replacements keep a subset of those keys.
@@ -210,7 +245,11 @@ preparing a wrapper no longer enumerates every combination up front."
         (dotimes (row height)
           (let* ((line (aref rows (+ offset row)))
                  (end (- (length line) right-count)))
-            (unless (<= left-count end) (throw 'ebox-geometry-unsupported nil))
+            (unless (<= left-count end)
+              (ebox-geometry--record-admission
+               'wrapper 'horizontal-chrome :row row :characters (length line)
+               :left-characters left-count :right-characters right-count)
+              (throw 'ebox-geometry-unsupported nil))
             (aset prefixes row (substring line 0 left-count))
             (aset suffixes row (substring line end)))))
       (setf (ebox-geometry--route-lines route) rows
@@ -376,8 +415,9 @@ Property combinations compile on first use and stay in the route's tables."
           (if (or (null (ebox-geometry--route-prefixes route))
                   (ebox-geometry--route-refresh-p route))
               (progn
-                (ebox-geometry--compile-wrapper
-                 route (and (> index 0) (ebox-geometry--route-properties (aref routes (1- index)))))
+                (let ((ebox-geometry--admission-depth index))
+                  (ebox-geometry--compile-wrapper
+                   route (and (> index 0) (ebox-geometry--route-properties (aref routes (1- index))))))
                 (when (= index (1- (length routes)))
                   ;; The accepted surface is the authority for rows outside
                   ;; future damage.  A generic wrapper probe may normalize
@@ -543,14 +583,24 @@ additional prepared dependencies before they can use imperative execution."
          (root-id (plist-get root :node-id))
          (cache (plist-get state :layer-composition-cache))
          (nodes (plist-get state :node-table)))
+    (cond
+     ((not (eq (plist-get node :position) 'absolute))
+      (ebox-geometry--record-admission 'route 'position))
+     ((plist-get state :root-portals-p)
+      (ebox-geometry--record-admission 'route 'root-portals))
+     ((plist-get state :scroll-region-ids)
+      (ebox-geometry--record-admission 'route 'scroll-regions))
+     ((not (hash-table-p cache))
+      (ebox-geometry--record-admission 'route 'composition-cache)))
     (when (and (eq (plist-get node :position) 'absolute)
                (not (plist-get state :root-portals-p))
                (not (plist-get state :scroll-region-ids))
                (hash-table-p cache))
       (let ((child-id id) (host-id (ebox-runtime-index-get id parents))
-            routes (valid t) previous)
+            routes (valid t) previous (depth 0))
         (while (and host-id valid)
-          (let* ((host (ebox-runtime-index-get host-id nodes))
+          (let* ((ebox-geometry--admission-depth depth)
+                 (host (ebox-runtime-index-get host-id nodes))
                  (entry (gethash (cons host-id 'final) cache))
                  (program (and entry (ebox-layer--program-prepare entry host)))
                  (target (and program
@@ -562,6 +612,12 @@ additional prepared dependencies before they can use imperative execution."
                              (lambda (record)
                                (plist-get (plist-get record :node) :anchor))
                              (plist-get entry :records)))))
+            (unless valid
+              (ebox-geometry--record-admission
+               'route (cond ((null entry) 'containing-plane)
+                            ((null program) 'composition-program)
+                            ((or (null target) (= (length target) 0)) 'target)
+                            (t 'anchor))))
             (when valid
               (when previous
                 (dotimes (offset (length target))
@@ -570,6 +626,10 @@ additional prepared dependencies before they can use imperative execution."
                          (row (plist-get record :source-row)))
                     (unless (and (integerp row)
                                  (= 0 (plist-get record :source-start)))
+                      (ebox-geometry--record-admission
+                       'route 'source-row-mapping
+                       :record offset :source-row (and (integerp row) row)
+                       :source-start (plist-get record :source-start))
                       (setq valid nil))
                     (when (integerp row)
                       (setq first-row (if first-row (min first-row row) row)
@@ -599,9 +659,11 @@ additional prepared dependencies before they can use imperative execution."
                         (ebox-geometry--route-first-row route) first-row
                         (ebox-geometry--route-refresh-p route) reuse)
                   (push route routes)
-                  (setq previous route child-id host-id
+                  (setq previous route child-id host-id depth (1+ depth)
                         host-id (unless (equal host-id root-id)
                                   (ebox-runtime-index-get host-id parents))))))))
+        (unless (and valid routes (equal child-id root-id))
+          (ebox-geometry--record-admission 'route 'root-route :depth depth))
         (when (and valid routes (equal child-id root-id))
           (vconcat (nreverse routes)))))))
 
@@ -807,6 +869,14 @@ acceptance.  Preparation itself does not advance the publication revision."
           (user-error "Ebox property is not geometry: %S" (aref keys index)))
         (when (cl-position (aref keys index) keys :end index)
           (user-error "Ebox prepared geometry properties must be unique")))
+      (unless program
+        (ebox-geometry--record-admission
+         'geometry (cond ((null state) 'unmounted)
+                         ((not (equal display-signature (plist-get state :display-signature)))
+                          'display-context)
+                         ((null node) 'missing-host)
+                         ((null surface) 'surface)
+                         (t 'containing-plane))))
       (when program
         (let* ((units (make-vector (length keys) nil))
                (fixed (make-vector (length keys) nil))
@@ -814,6 +884,8 @@ acceptance.  Preparation itself does not advance the publication revision."
                                 (ebox-layer--program-targets program)))
                (containing-box (ebox-geometry--route-wrapper (aref routes 0)))
                (x-factor 1) (supported (and target (> (length target) 0))))
+          (unless supported
+            (ebox-geometry--record-admission 'geometry 'target))
           (dotimes (index (length keys))
             (let* ((key (aref keys index)) (value (ebox-get node key)))
               (aset fixed index (copy-tree value))
@@ -825,15 +897,21 @@ acceptance.  Preparation itself does not advance the publication revision."
                       (aset units index (car value))
                       (setq x-factor (if (eq (car value) 'px) 1
                                        (ebox--size-pixels '(ch 1) containing-box 'width))))
+                  (ebox-geometry--record-admission 'geometry 'horizontal-unit :property key)
                   (setq supported nil)))
                ((eq key :top)
                 (if (and (consp value) (eq (car value) 'lh)
                          (numberp (cadr value)))
                     (aset units index 'lh)
+                  (ebox-geometry--record-admission 'geometry 'vertical-unit :property key)
                   (setq supported nil)))
                ((eq key :z-index)
-                (unless (integerp value) (setq supported nil))))))
-          (when (and supported (ebox-geometry--inline-slots-p state node keys))
+                (unless (integerp value)
+                  (ebox-geometry--record-admission 'geometry 'stacking-value :property key)
+                  (setq supported nil))))))
+          (when (and supported
+                     (or (ebox-geometry--inline-slots-p state node keys)
+                         (progn (ebox-geometry--record-admission 'geometry 'inline-winner) nil)))
             (unless (plist-get state :geometry-topology-generation)
               (plist-put state :geometry-topology-generation (list 'ebox/geometry-topology)))
             (let* ((source-slots
@@ -851,6 +929,8 @@ acceptance.  Preparation itself does not advance the publication revision."
                             :scroll-table (make-hash-table :test #'equal)
                             :viewport-cache (make-hash-table :test #'eq)
                             :content-cache (make-hash-table :test #'eq))))))
+              (unless source-slots
+                (ebox-geometry--record-admission 'geometry 'source-binding))
               (when operation
                 (setf (ebox-geometry--operation-session operation) (or session operation)
                       (ebox-geometry--operation-node operation) node

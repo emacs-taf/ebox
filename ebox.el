@@ -842,6 +842,9 @@
 ;; unsupported or stale; :reason names its result; :binding-token identifies
 ;; the context. When a specific specification is rejected, :member is its
 ;; zero-based index and :property identifies the rejected property when known.
+;; A fixed-canvas rejection may include :detail: :phase, :reason and bounded
+;; scalar facts about the failed proof. It contains no retained objects or
+;; rendered text. Details explain admission; they do not authorize execution.
 ;; An unsupported member may be cached until the binding token or declared
 ;; variants change. Stale admission requires control-plane refresh.
 ;;

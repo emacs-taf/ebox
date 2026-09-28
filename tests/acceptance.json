@@ -15,6 +15,7 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-prepared-update-explains-canvas-admission-without-publication", "file": "tests/ebox-prepared-update-tests.el", "purpose": "Prepared admission explains unsupported canvas proofs with bounded detached scalar facts and does not publish or stage caller state."},
     {"name": "ebox-prepared-geometry-preserves-overlapping-unicode-and-retry", "file": "tests/ebox-geometry-tests.el", "purpose": "Overlapping retained panes preserve Unicode, display runs, input and rejected-update recovery."},
     {"name": "ebox-prepared-geometry-keeps-exact-large-offscreen-coordinates", "file": "tests/ebox-geometry-tests.el", "purpose": "Large exact offscreen coordinates preserve source values and recover visible placement."},
     {"name": "ebox-prepared-resize-preserves-shaped-text-and-replacement-spaces", "file": "tests/ebox-prepared-resize-tests.el", "purpose": "Non-cell-aligned crops preserve combining text, mixed Unicode, fixed replacement spaces and changed content."},

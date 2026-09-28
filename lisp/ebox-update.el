@@ -213,8 +213,10 @@ only compares captured fields and returns the existing object."
 The defensive plist contains :status (ready, unsupported or stale), :reason,
 :binding-token and, when a particular member was rejected, :member and
 :property.  Unsupported members may be excluded until the binding token or
-their declared variant configuration changes.  A stale report requests a
-control-plane refresh; it never authorizes use of the previous operation."
+their declared variant configuration changes.  A fixed-canvas rejection can
+also include :detail with :phase, :reason and bounded scalar facts about the
+failed proof; it contains no retained objects or rendered text.  A stale
+report requests a control-plane refresh and never authorizes the old operation."
   (let ((buffer (ebox--host-ref-buffer buffer-or-name)))
     (when buffer
       (with-current-buffer buffer (copy-tree ebox-update--prepare-report)))))
@@ -237,15 +239,18 @@ control-plane refresh; it never authorizes use of the previous operation."
       (setq ebox-update--preparing-member (ebox-update--group-first-member group)
             ebox-update--preparing-property property))))
 
-(defun ebox-update--decline (reason &optional stale)
-  "Reject the active cold preparation with REASON and optional STALE status."
+(defun ebox-update--decline (reason &optional stale detail)
+  "Reject cold preparation with REASON, optional STALE status and scalar DETAIL."
   (when (buffer-live-p ebox-update--preparing-buffer)
     (with-current-buffer ebox-update--preparing-buffer
       (setq ebox-update--prepare-report
             (list :status (if stale 'stale 'unsupported) :reason reason
                   :binding-token (and ebox-update--binding-token
                                       (ebox-update--binding-public-token ebox-update--binding-token))
-                  :member ebox-update--preparing-member :property ebox-update--preparing-property))))
+                  :member ebox-update--preparing-member :property ebox-update--preparing-property))
+      (when detail
+        (setq ebox-update--prepare-report
+              (plist-put ebox-update--prepare-report :detail detail)))))
   (throw 'unsupported nil))
 
 ;;;###autoload
@@ -343,15 +348,19 @@ operation, or nil if a member cannot use the fixed retained canvas."
                       (append (ebox-update--group-variants group) (list (and variants (aref variants key-index)))))))
             (aset members index (ebox-update--make-member :group group :properties (copy-sequence keys) :variants (and variants (copy-tree variants t)))))))
       (setq ebox-update--preparing-member nil ebox-update--preparing-property nil)
-      (setq groups (vconcat (nreverse groups))
-            scene (ebox-update--scene
-                   buffer state nodes
-                   (cl-loop for group across groups
-                            when (and (cl-intersection (ebox-update--group-properties group)
-                                                       '(:width :height))
-                                      (ebox-geometry--crop-candidate-p (ebox-update--group-node group)))
-                            return (ebox-update--group-node group))))
-      (unless scene (ebox-update--decline 'fixed-canvas))
+      (let ((ebox-geometry--admission-detail (list nil)))
+        (setq groups (vconcat (nreverse groups))
+              scene (ebox-update--scene
+                     buffer state nodes
+                     (cl-loop for group across groups
+                              when (and (cl-intersection (ebox-update--group-properties group)
+                                                         '(:width :height))
+                                        (ebox-geometry--crop-candidate-p (ebox-update--group-node group)))
+                              return (ebox-update--group-node group))))
+        (unless scene
+          (ebox-update--decline 'fixed-canvas nil
+                                (or (car ebox-geometry--admission-detail)
+                                    '(:phase geometry :reason positioned-host)))))
       (let ((routes (ebox-geometry--operation-routes scene))
             (boundaries (make-hash-table :test #'eq)))
         (dotimes (index (length groups))

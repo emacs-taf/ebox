@@ -470,6 +470,15 @@ handle either preparation or application declining with one ordinary batch:
        (ebox-region-update "label" :color "#0088cc" :content "Ready")))))
 ```
 
+When preparation returns nil, inspect `ebox-update-prepare-report`. A
+`fixed-canvas` rejection can include a bounded `:detail` plist identifying
+the failed `:phase` and `:reason`, with scalar facts such as containing-plane
+`:depth` (zero for the innermost plane), expected/actual row counts or
+content height. This distinguishes display context, positioning, containing
+plane, portal/scroll dependencies and wrapper constraints without exporting
+runtime objects or rendered text. A successful new preparation clears the
+previous rejection. The existing unsupported/stale handling remains required.
+
 The cohort uses the shared fixed canvas from prepared geometry. Its supported
 properties and values are defined by `ebox-update-prepare` in
 [the API inventory](../ebox.el). Preparation binds source cells to retained
