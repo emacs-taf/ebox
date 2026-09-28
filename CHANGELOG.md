@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Layer composition uses the optional native module for occlusion and
+  visible source intervals, with bounded reusable storage and the same Unicode,
+  text-property and rollback behavior in ordinary and prepared updates. Fixed
+  display-space boundaries avoid repeated prefix measurement while joining damaged rows. Rebuild the optional
+  module for ABI `22:10:13` and restart Emacs; Elisp remains the fallback.
 - `ebox-geometry-prepare` and `ebox-update-prepare` compile `:width` and
   `:height` for a normal-layout absolute Box that contains only fixed Text:
   opaque string background, `overflow hidden`, `wrap-mode none`, left/top
@@ -309,7 +314,7 @@ All notable changes to Ebox are documented here.
 
 - Native scrolling composes across ordinary wrappers, sibling containers and
   nested containers. Each region retains its own complete content and offset.
-  Rebuild the optional module for ABI `21:10:13` and restart Emacs.
+  Rebuild the optional module and restart Emacs.
 
 - Native viewport heights support `vh` and height `calc` addition/subtraction,
   including nested Box constraints and column Flex bases. Window resize keeps

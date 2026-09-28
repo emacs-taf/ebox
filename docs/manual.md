@@ -438,6 +438,12 @@ budget or allocation-free rendering; clipping and native text publication still
 have their own measured costs. Fixed wrapper decoration, ownership projection and
 publication reuse compiled resources and process damaged rows.
 
+When a compatible optional module is available, ordinary and prepared layers
+compute visible source intervals in native code. Text properties, glyph measurement,
+buffer writes and rollback keep the same contract. No application changes are needed;
+unavailable modules and unsupported numeric capacities use the Elisp compositor.
+After updating the native module, restart Emacs before reusing mounted surfaces.
+
 Frameworks with related paint, Text and geometry effects can prepare one cohort
 with `ebox-update-prepare` after mounting or a structural/configuration update.
 Keep the cohort for subsequent interactions. Each specification is

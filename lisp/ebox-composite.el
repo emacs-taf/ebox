@@ -71,22 +71,25 @@ glyph's display, interaction and semantic ownership properties."
          space)))
     space))
 
-(defun ebox-composite--join (parts)
+(defun ebox-composite--join (parts &optional stop)
   "Join PARTS while retaining their separately measured pixel extents.
 A neutral zero-pixel display boundary prevents adjacent EQ replacement runs
-from collapsing or independently shaped source fragments from reshaping."
+from collapsing or independently shaped source fragments from reshaping.
+STOP is the first unused tail of an optional reusable PARTS spine."
   (let ((result "") (width 0))
-    (dolist (part parts result)
-      (unless (equal part "")
-        (let* ((next-width (+ width (ebox--string-pixel-width part)))
-               (joined (concat result part)))
-          (setq result
-                (if (= (ebox--string-pixel-width joined) next-width)
-                    joined
-                  (concat result
-                          (propertize " " 'display '(space :width (0)))
-                          part))
-                width next-width))))))
+    (while (and parts (not (eq parts stop)))
+      (let ((part (pop parts)))
+        (unless (equal part "")
+          (let* ((next-width (+ width (ebox--string-pixel-width part)))
+                 (joined (concat result part)))
+            (setq result
+                  (if (= (ebox--string-pixel-width joined) next-width)
+                      joined
+                    (concat result
+                            (propertize " " 'display '(space :width (0)))
+                            part))
+                  width next-width)))))
+    result))
 
 (defun ebox-composite--fit (line start end left right)
   "Fit LINE from START through END in its original [LEFT, RIGHT) pixels.

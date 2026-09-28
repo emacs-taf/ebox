@@ -1,3 +1,4 @@
+mod compositor;
 mod layout;
 pub mod sequence;
 

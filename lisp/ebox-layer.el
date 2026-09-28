@@ -15,6 +15,7 @@
 (declare-function ebox--ensure-region-id "ebox" (box))
 (declare-function ebox--substring-pixel-width "ebox-measure" (string start end))
 (declare-function ebox--string-pixel-width "ebox-measure" (string))
+(declare-function ebox--display-space-width "ebox-measure" (display))
 (declare-function ebox-string-lines "ebox" (string))
 (declare-function ebox-lines-join "ebox" (lines))
 (declare-function ebox--render-with-cache "ebox" (node &optional width probe))
@@ -26,6 +27,12 @@
 (declare-function ebox--record-rendered-uniform-width "ebox-layout" (rendered width))
 (declare-function ebox--record-rendered-intrinsic-size "ebox-layout" (rendered width height))
 (declare-function ebox-pixel-space "ebox" (pixels))
+(declare-function ebox-native-reflow-layout-ready-p "ebox-native-reflow" ())
+(declare-function ebox-native--module-create-compositor "ebox_native_reflow"
+                  (count height width))
+(declare-function ebox-native--module-compose-rows "ebox_native_reflow"
+                  (handle changes count order dirty output))
+(declare-function ebox-native--module-release-compositor "ebox_native_reflow" (handle))
 (defvar ebox-region-types)
 (defvar ebox--intrinsic-layout-measurement)
 (defvar ebox--render-source-index)
@@ -89,7 +96,129 @@ without rendering the former geometry again."
   base-lines rows saved-rows row-spines row-heads row-tails dirty output-spine
   pending batch-open order-dirty order-changed saved-texts modified-texts
   saved-coordinates saved-z modified-geometry saved-records saved-targets saved-count
-  saved-ends modified-ends slice-indexes)
+  saved-ends modified-ends slice-indexes native native-dirty)
+
+(defun ebox-layer--native-prepare (count height width)
+  "Prepare optional numeric composition storage for COUNT records and HEIGHT.
+WIDTH is the fixed pixel allocation.  Text and publication stay Elisp-owned."
+  (when (and (require 'ebox-native-reflow nil t)
+             (ebox-native-reflow-layout-ready-p)
+             (fboundp 'ebox-native--module-create-compositor))
+    (when-let* ((handle (ebox-native--module-create-compositor count height (float width))))
+      (vector handle (make-vector (* 5 count) 0)
+              (make-vector (* 4 (+ (* 2 count) height)) 0)
+              (make-list (1+ (* 2 count)) nil)
+              (make-list (1+ (* 4 count)) nil)))))
+
+(defun ebox-layer--native-join (parts stop storage)
+  "Join prepared PARTS through STOP, using reusable STORAGE at fixed spaces.
+A replacement space separates shaping contexts.  Equal nonzero display spaces
+still need the ordinary joiner's zero-pixel separator to prevent coalescing.
+Any unproved boundary uses the ordinary measured join, preserving its output."
+  (let ((source parts) (tail storage) previous last-cell result unsupported)
+    (unwind-protect
+        (progn
+          (while (and source (not (eq source stop)) (not unsupported))
+            (let ((part (car source)))
+              (unless (equal part "")
+                (when previous
+                  (let* ((left (get-text-property (1- (length previous)) 'display previous))
+                         (right (get-text-property 0 'display part))
+                         (left-width (ebox--display-space-width left))
+                         (right-width (ebox--display-space-width right)))
+                    (if (not (or left-width right-width))
+                        (setq unsupported t)
+                      (when (and left-width (eq left right) (/= left-width 0))
+                        (setcar tail (propertize " " 'display '(space :width (0))))
+                        (setq tail (cdr tail))))))
+                (setcar tail part)
+                (setq last-cell tail tail (cdr tail) previous part)))
+            (setq source (cdr source)))
+          (setq result
+                (if unsupported
+                    (ebox-composite--join parts stop)
+                  (if (null last-cell) ""
+                    (setcdr last-cell nil)
+                    (unwind-protect (apply #'concat storage)
+                      (setcdr last-cell tail))))))
+      (let ((clear storage))
+        (while (not (eq clear tail)) (setcar clear nil) (setq clear (cdr clear)))))
+    result))
+
+(defun ebox-layer--program-disable-native (program)
+  "Keep PROGRAM's ordinary compositor when a numeric capability is exceeded."
+  (setf (ebox-layer--program-native program) nil)
+  (unless (ebox-layer--program-row-spines program)
+    (let ((spines (make-vector (ebox-layer--program-height program) nil)))
+      (dotimes (row (length spines))
+        (aset spines row (make-list (length (ebox-layer--program-records program)) nil)))
+      (setf (ebox-layer--program-row-spines program) spines)))
+  nil)
+
+(defun ebox-layer--program-render-native (program)
+  "Compose PROGRAM's dirty intervals with its optional retained native kernel.
+The module retains only a numeric cache and bounded scratch arrays.  Source
+strings, glyph fitting and property values never cross that boundary."
+  (catch 'ebox-layer-native-declined
+    (when-let* ((native (ebox-layer--program-native program)))
+      (let* ((records (ebox-layer--program-records program))
+             (changed (ebox-layer--program-native-dirty program))
+             (input (aref native 1)) (output (aref native 2))
+             (dirty (ebox-layer--program-dirty program))
+             (rows (ebox-layer--program-rows program))
+             (saved (ebox-layer--program-saved-rows program))
+             (ebox-composite--prepared-lines (ebox-layer--program-slice-indexes program))
+             (count 0) (cursor 0))
+        (dotimes (index (length records))
+          (when (aref changed index)
+            (let* ((record (aref records index)) (offset (* count 5))
+                   (row (plist-get record :y))
+                   (x (plist-get record :x))
+                   (start (or (plist-get record :source-start) 0))
+                   (end (or (plist-get record :source-end)
+                            (ebox--string-pixel-width (plist-get record :text)))))
+              ;; Larger exact Lisp integers must not be rounded through doubles.
+              (unless (and (<= (abs x) 9007199254740991)
+                           (<= 0 start end 9007199254740991)
+                           (<= (abs (+ x (- end start))) 9007199254740991)
+                           (<= (abs (- x start)) 9007199254740991))
+                (throw 'ebox-layer-native-declined
+                       (ebox-layer--program-disable-native program)))
+              (aset input offset index)
+              (aset input (+ offset 1) (float x))
+              (aset input (+ offset 2)
+                    (if (and (integerp row) (<= 0 row) (< row (length rows))) row -1))
+              (aset input (+ offset 3) (float start))
+              (aset input (+ offset 4) (float end))
+              (setq count (1+ count)))))
+        (let ((end (* 4 (ebox-native--module-compose-rows
+                         (aref native 0) input count
+                         (ebox-layer--program-order program) dirty output))))
+          (dotimes (row (length rows))
+            (when (aref dirty row)
+              (let* ((parts (aref native 3)) (tail parts)
+                     (baseline (aref saved row)))
+                (unwind-protect
+                    (progn
+                      (while (and (< cursor end) (= (aref output cursor) row))
+                        (let ((index (aref output (+ cursor 1)))
+                              (left (aref output (+ cursor 2)))
+                              (right (aref output (+ cursor 3))))
+                          (setcar tail
+                                  (if (< index 0)
+                                      (ebox-pixel-space (- right left))
+                                    (ebox-composite-slice
+                                     (plist-get (aref records index) :text) left right)))
+                          (setq tail (cdr tail) cursor (+ cursor 4))))
+                      (let ((rendered (ebox-layer--native-join parts tail (aref native 4))))
+                        (if (and baseline (equal-including-properties rendered baseline))
+                            (progn (aset rows row baseline) (aset saved row nil) (aset dirty row nil))
+                          (aset rows row rendered))))
+                  ;; Failed glyph fitting must not retain transient property graphs.
+                  (let ((clear parts))
+                    (while (not (eq clear tail)) (setcar clear nil) (setq clear (cdr clear)))))))))
+        (fillarray changed nil)
+        t))))
 
 (defun ebox-layer--program-prepare (entry host)
   "Compile retained composition ENTRY into a private primitive program.
@@ -115,12 +244,13 @@ This operation does not publish or change ENTRY."
               (plist-get entry :records)))
            (count (length source))
            (height (plist-get entry :height))
+           (native (ebox-layer--native-prepare count height (plist-get entry :width)))
            (records (make-vector count nil))
            (order (make-vector count 0))
            (z-values (make-vector count 0))
            (document-order (make-vector count 0))
            (targets (make-hash-table :test #'equal))
-           (row-spines (make-vector height nil))
+           (row-spines (unless native (make-vector height nil)))
            (ordinal 0)
            (node-order (make-hash-table :test #'equal))
            (strings (make-hash-table :test #'eq))
@@ -147,15 +277,16 @@ This operation does not publish or change ENTRY."
           (setq ordinal (1+ ordinal))))
       (maphash (lambda (id indexes)
                  (puthash id (vconcat (nreverse indexes)) targets)) targets)
-      (dotimes (row height)
-        (aset row-spines row (make-list count nil)))
+      (unless native
+        (dotimes (row height)
+          (aset row-spines row (make-list count nil))))
       (ebox-layer--make-program
        :width (plist-get entry :width) :height height
        :records records :order order :z-values z-values
        :document-order document-order :targets targets
        :base-lines []
        :rows (vconcat (mapcar #'copy-sequence
-                             (append (plist-get entry :rows) nil)))
+                              (append (plist-get entry :rows) nil)))
        :saved-rows (make-vector height nil)
        :row-spines row-spines :row-heads (make-vector height nil)
        :row-tails (make-vector height nil) :dirty (make-vector height nil)
@@ -165,6 +296,8 @@ This operation does not publish or change ENTRY."
        :saved-records (make-vector count nil)
        :saved-ends (make-vector count 0) :modified-ends (make-vector count nil)
        :slice-indexes slice-indexes
+       :native native
+       :native-dirty (make-vector count t)
        :output-spine (make-list height nil)))))
 
 (defun ebox-layer--program-strings (program)
@@ -269,6 +402,7 @@ translation is allowed.  No component or Box traversal is needed."
           (plist-put record :x (+ old-x dx))
           (plist-put record :y (+ old-y dy))
           (aset zs index z)
+          (aset (ebox-layer--program-native-dirty program) index t)
           (ebox-layer--program-mark-row program (+ old-y dy))
           (unless (= z old-z)
             (setf (ebox-layer--program-order-dirty program) t
@@ -295,6 +429,7 @@ Coordinates, native ownership and rollback stay with the same program."
           (aset (ebox-layer--program-saved-ends program) index old)
           (aset (ebox-layer--program-modified-ends program) index t))
         (ebox-layer--program-mark-row program (plist-get record :y))
+        (aset (ebox-layer--program-native-dirty program) index t)
         (plist-put record :source-end end))))
   program)
 
@@ -317,6 +452,7 @@ saved once even when the same record changes repeatedly in one batch."
         (aset (ebox-layer--program-saved-texts program) record-index old)
         (aset (ebox-layer--program-modified-texts program) record-index t))
       (ebox-layer--program-mark-row program (plist-get record :y))
+      (aset (ebox-layer--program-native-dirty program) record-index t)
       (plist-put record :text text)))
   program)
 
@@ -345,9 +481,18 @@ saved once even when the same record changes repeatedly in one batch."
               (grow (ebox-layer--program-saved-ends program) 0)
               (ebox-layer--program-modified-ends program)
               (grow (ebox-layer--program-modified-ends program) nil)))
+      (setf (ebox-layer--program-native program)
+            (ebox-layer--native-prepare count (ebox-layer--program-height program)
+                                        (ebox-layer--program-width program))
+            (ebox-layer--program-native-dirty program) (make-vector count t))
       (let ((spines (ebox-layer--program-row-spines program)))
-        (dotimes (row (length spines))
-          (aset spines row (nconc (aref spines row) (make-list (- count old) nil))))))
+        (if spines
+            (dotimes (row (length spines))
+              (aset spines row (nconc (aref spines row) (make-list (- count old) nil))))
+          (unless (ebox-layer--program-native program)
+            (setq spines (make-vector (ebox-layer--program-height program) nil))
+            (dotimes (row (length spines)) (aset spines row (make-list count nil)))
+            (setf (ebox-layer--program-row-spines program) spines)))))
     program))
 
 (defun ebox-layer--program-replace-target (program id pieces x y)
@@ -397,6 +542,7 @@ settlement restores the previous records and target vector on rejection."
           (unless (aref (ebox-layer--program-saved-records program) index)
             (aset (ebox-layer--program-saved-records program) index (copy-sequence record)))
           (ebox-layer--program-mark-row program (plist-get record :y))
+          (aset (ebox-layer--program-native-dirty program) index t)
           (if (null piece)
               (plist-put record :y ebox-layer--parked-row)
             (plist-put record :text (plist-get piece :line))
@@ -409,7 +555,7 @@ settlement restores the previous records and target vector on rejection."
     target))
 
 (defun ebox-layer--program-render (program &optional rows-only)
-  "Render PROGRAM's damaged rows using its prepared placement list spines.
+  "Render PROGRAM's damaged rows using prepared numeric or placement storage.
 The row compositor still creates output strings and pixel clipping artifacts;
 those primitive costs remain measurable independently from preparation.
 A batch must be closed before rendering; repeated renders preserve the first
@@ -426,37 +572,39 @@ accepted row baseline until settlement."
          (base (ebox-layer--program-base-lines program))
          (rows (ebox-layer--program-rows program))
          (ebox-composite--prepared-lines (ebox-layer--program-slice-indexes program)))
-    (dotimes (row height)
-      (when (aref dirty row)
-        (aset heads row nil)
-        (aset tails row (aref spines row))))
-    (dotimes (offset (length order))
-      (let* ((record (aref records (aref order offset)))
-             (row (plist-get record :y)))
-        (when (and (integerp row) (<= 0 row) (< row height)
-                   (aref dirty row))
-          (let ((tail (aref tails row)))
-            (setcar tail record)
-            (unless (aref heads row) (aset heads row tail))
-            (aset tails row (cdr tail))))))
-    (let ((saved (ebox-layer--program-saved-rows program)))
+    (unless (ebox-layer--program-render-native program)
+      (setq spines (ebox-layer--program-row-spines program))
       (dotimes (row height)
         (when (aref dirty row)
-          ;; Keep the allocated spine intact.  The compositor receives the
-          ;; bounded prefix length rather than severing a reusable list tail.
-          (let ((rendered (ebox-composite-line
-                           (if (< row (length base)) (aref base row) "")
-                           (aref heads row) (ebox-layer--program-width program)
-                           (aref tails row)))
-                (baseline (aref saved row)))
-            ;; Restacking or moving a record often leaves a row's accepted
-            ;; pixels identical.  Settle such rows here so wrappers, enclosing
-            ;; programs and the buffer never revisit them.
-            (if (and baseline (equal-including-properties rendered baseline))
-                (progn (aset rows row baseline)
-                       (aset saved row nil)
-                       (aset dirty row nil))
-              (aset rows row rendered))))))
+          (aset heads row nil)
+          (aset tails row (aref spines row))))
+      (dotimes (offset (length order))
+        (let* ((record (aref records (aref order offset)))
+               (row (plist-get record :y)))
+          (when (and (integerp row) (<= 0 row) (< row height)
+                     (aref dirty row))
+            (let ((tail (aref tails row)))
+              (setcar tail record)
+              (unless (aref heads row) (aset heads row tail))
+              (aset tails row (cdr tail))))))
+      (let ((saved (ebox-layer--program-saved-rows program)))
+        (dotimes (row height)
+          (when (aref dirty row)
+            ;; Keep the allocated spine intact.  The compositor receives the
+            ;; bounded prefix length rather than severing a reusable list tail.
+            (let ((rendered (ebox-composite-line
+                             (if (< row (length base)) (aref base row) "")
+                             (aref heads row) (ebox-layer--program-width program)
+                             (aref tails row)))
+                  (baseline (aref saved row)))
+              ;; Restacking or moving a record often leaves a row's accepted
+              ;; pixels identical.  Settle such rows here so wrappers, enclosing
+              ;; programs and the buffer never revisit them.
+              (if (and baseline (equal-including-properties rendered baseline))
+                  (progn (aset rows row baseline)
+                         (aset saved row nil)
+                         (aset dirty row nil))
+                (aset rows row rendered)))))))
     (unless rows-only
       (let ((tail (ebox-layer--program-output-spine program)))
         (dotimes (row height)
@@ -486,6 +634,9 @@ Every target piece retains its pixel interval and placement."
   "Accept or restore all PROGRAM's pending primitive changes as one unit.
 Rejection also handles an open batch or a failure before the first render."
   (when (ebox-layer--program-pending program)
+    ;; A rejected candidate cannot become the module's next source baseline.
+    ;; Refresh its numeric cache from restored authoritative records on next use.
+    (unless accepted (fillarray (ebox-layer--program-native-dirty program) t))
     (let ((records (ebox-layer--program-records program))
           (zs (ebox-layer--program-z-values program))
           (coordinates (ebox-layer--program-saved-coordinates program))
@@ -781,6 +932,26 @@ host's rows; an unidentifiable host disables the cache."
   (when-let* ((id (ebox-layer--stable-node-id host)))
     (cons id phase)))
 
+(defun ebox-layer--compose-native-rows (ordered width height base-lines rows dirty)
+  "Compose candidate ORDERED intervals into dirty ROWS with the shared kernel.
+WIDTH, HEIGHT and BASE-LINES describe the candidate plane.  Ordinary rendering
+owns this scratch program for one evaluation; no published cache is mutated."
+  (let ((count (+ (length ordered) (length base-lines))))
+    (when-let* ((native (and ordered (cl-position t dirty)
+                            (ebox-layer--native-prepare count height width))))
+      (let* ((bases (cl-loop for text in base-lines for row from 0
+                             collect (list :x 0 :y row :text text
+                                           :source-start 0 :source-end width)))
+             (program (ebox-layer--make-program
+                       :width width :height height
+                       :records (vconcat bases ordered)
+                       :order (vconcat (number-sequence 0 (1- count)))
+                       :rows rows :dirty dirty :saved-rows (make-vector height nil)
+                       :native native :native-dirty (make-vector count t)
+                       :slice-indexes (make-hash-table :test #'eq))))
+        (unwind-protect (ebox-layer--program-render-native program)
+          (ebox-native--module-release-compositor (aref native 0)))))))
+
 (defun ebox-layer--compose-rows (host records width height &optional phase base-lines)
   "Compose HOST's visible RECORDS in a WIDTH by HEIGHT content canvas.
 When the caller binds the retained and candidate ledgers and an immutable
@@ -791,6 +962,7 @@ BASE-LINES, when present, are completed flow rows below every paint record."
   (let* ((phase (or phase ebox-layer--composition-phase))
          (ordered (ebox-layer--ordered-records host records))
          (rows (make-vector height nil))
+         (dirty (make-vector height nil))
          (signatures (make-vector height nil))
          (key (ebox-layer--compose-cache-key host phase))
          (previous (and ebox-layer--composition-context
@@ -825,10 +997,16 @@ BASE-LINES, when present, are completed flow rows below every paint record."
                    (equal-including-properties
                     signature (aref old-signatures row)))))
         (aset signatures row signature)
-        (aset rows row
-              (if reusable-p
-                  (aref old-rows row)
-                (ebox-composite-line base-row placements width)))))
+        (if reusable-p
+            (aset rows row (aref old-rows row))
+          (aset dirty row t)
+          (aset rows row placements))))
+    (unless (ebox-layer--compose-native-rows ordered width height retained-base-lines rows dirty)
+      (let ((bases retained-base-lines))
+        (dotimes (row height)
+          (let ((base (or (pop bases) "")))
+            (when (aref dirty row)
+              (aset rows row (ebox-composite-line base (aref rows row) width)))))))
     (when cacheable-p
       (puthash key (list :context ebox-layer--composition-context
                          :width width :height height

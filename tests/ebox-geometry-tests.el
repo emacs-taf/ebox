@@ -13,10 +13,8 @@
 (defmacro ebox-geometry-test--with-buffer (&rest body)
   "Run BODY in an isolated mounted Ebox buffer."
   (declare (indent 0) (debug t))
-  `(cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
-              (lambda () nil)))
-     (let ((ebox-viewport-width 160) (ebox-viewport-height 12))
-       (with-temp-buffer ,@body))))
+  `(let ((ebox-viewport-width 160) (ebox-viewport-height 12))
+     (with-temp-buffer ,@body)))
 
 (defun ebox-geometry-test--input ()
   "Return a fixed layered Box used by the geometry acceptance tests."
@@ -79,8 +77,10 @@
 (defun ebox-geometry-test--assert-current-render ()
   "Compare committed pixels and native properties with a fresh source render."
   (let ((actual (buffer-string))
-        (expected (ebox-render
-                   (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))
+        (expected (cl-letf (((symbol-function 'ebox-native-reflow-layout-ready-p)
+                             (lambda () nil)))
+                    (ebox-render
+                     (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input)))))
     (should (equal (substring-no-properties actual) (substring-no-properties expected)))
     (dotimes (position (length actual))
       (dolist (property '(display face font-lock-face keymap help-echo mouse-face pointer))
@@ -291,6 +291,68 @@
   (ebox-geometry-test--reject-display-change
    (lambda () (face-remap-add-relative 'default :height 1.4))
    (lambda () (face-remap-add-relative 'default :height 1.1))))
+
+(ert-deftest ebox-prepared-geometry-preserves-overlapping-unicode-and-retry ()
+  "Overlapping panes retain glyphs, paint and input after clipping and rejection."
+  (ebox-geometry-test--with-buffer
+    (let* ((reject nil) (activated nil)
+           (replacement '(space :width (7)))
+           (text (concat "中é👩‍💻🇨🇳" (propertize "xx" 'display replacement)
+                         (propertize "yy" 'display replacement 'face 'bold)
+                         "終\nsecond row")))
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        `(box :width (px 160) :height (lh 8) :background-color "#101820"
+           (text "Underlying normal flow")
+           ,@(cl-loop for index below 7 collect
+                      `(box :id ,(format "pane-%s" index) :position absolute
+                            :left (px ,(* index 13)) :top (lh ,(mod index 3))
+                            :width (px 48) :height (lh 3) :wrap-mode none
+                            :overflow hidden :background-color "#283850"
+                            :z-index ,(mod index 3)
+                            :keymap ,(let ((id index))
+                                       (ebox-keymap-create
+                                        :activate (lambda () (setq activated id))))
+                            ,(concat (format "P%s " index) text))))))
+      (let ((operation
+             (ebox-geometry-prepare
+              (current-buffer) "pane-3" [:left :top :z-index]
+              (lambda () (when reject (error "Reject overlapping panes"))) #'ignore)))
+        (should operation)
+        (dolist (values '([(px 7.5) (lh 1) 9]
+                          [(px -13) (lh -1) 2]
+                          [(px 145) (lh 6) 4]
+                          [(px 20) (lh 2) -2]
+                          [(px 0) (lh 0) 12]))
+          (should (ebox-geometry-apply operation values))
+          (ebox-geometry-test--assert-current-render))
+        (let ((before (buffer-string))
+              (revision (ebox-surface-buffer-revision (current-buffer))))
+          (setq reject t)
+          (should-error (ebox-geometry-apply operation [(px 66) (lh 3) 20]))
+          (should (equal-including-properties before (buffer-string)))
+          (should (= revision (ebox-surface-buffer-revision (current-buffer)))))
+        (setq reject nil)
+        ;; Retry different geometry; neither the rejected cache nor its z order wins.
+        (should (ebox-geometry-apply operation [(px 32) (lh 1) 8]))
+        (ebox-geometry-test--assert-current-render)
+        (ebox-activate
+         (save-excursion (goto-char (point-min)) (search-forward "P3 ") (- (point) 3)))
+        (should (eql activated 3))))))
+
+(ert-deftest ebox-prepared-geometry-keeps-exact-large-offscreen-coordinates ()
+  "Optional numeric acceleration never rounds an exact offscreen source value."
+  (ebox-geometry-test--with-buffer
+    (ebox-render-to-buffer (current-buffer) (ebox-geometry-test--input))
+    (let ((operation (ebox-geometry-prepare (current-buffer) "panel" [:left :top])))
+      (should operation)
+      (should (ebox-geometry-apply operation (vector (list 'px (1+ (expt 2 54))) '(lh 1))))
+      (should (equal (plist-get (ebox-region-geometry "panel") :left)
+                     (list 'px (1+ (expt 2 54)))))
+      (ebox-geometry-test--assert-current-render)
+      (should (ebox-geometry-apply operation [(px 12) (lh 1)]))
+      (ebox-geometry-test--assert-current-render))))
 
 (provide 'ebox-geometry-tests)
 ;;; ebox-geometry-tests.el ends here

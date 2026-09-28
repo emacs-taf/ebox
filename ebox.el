@@ -709,6 +709,8 @@
 ;; Function: ebox-native-reflow-runtime-report ()
 ;;;###autoload (autoload 'ebox-native-reflow-runtime-report "ebox" nil nil)
 ;; Return exact evidence for the native module active in this Emacs.
+;; Eligible layer composition shares this module with native reflow;
+;; text properties and live publication remain owned by Emacs and Ebox.
 ;;
 ;; Function: ebox-native-status ()
 ;;;###autoload (autoload 'ebox-native-status "ebox" nil t)

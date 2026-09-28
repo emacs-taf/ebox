@@ -176,7 +176,7 @@ Ebox 内部持有发布与回滚。框架通过 SPI v3 与 `ebox-publication/v1`
 
 ## 可选 native 模块
 
-Rust 模块只加速符合条件的 reflow；它不是正确性的依赖，并有完全等价的 Elisp
+Rust 模块加速符合条件的 reflow 和图层合成；它不是正确性的依赖，并有完全等价的 Elisp
 fallback。Ebox 加载时不会自动构建它。
 
 ```elisp

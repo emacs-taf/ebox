@@ -164,7 +164,7 @@ ebox_module_version(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   (void) nargs;
   (void) args;
   (void) data;
-  static const char version[] = "21:10:13";
+  static const char version[] = "22:10:13";
   return env->make_string(env, version, (ptrdiff_t) (sizeof version - 1));
 }
 
@@ -909,6 +909,172 @@ ebox_module_release(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   return ebox_true(env);
 }
 
+/* This handle owns only numeric scratch storage. No emacs_value escapes a call. */
+typedef struct {
+  size_t index;
+  double x;
+  int64_t row;
+  double start, end;
+} ebox_composite_change;
+
+typedef struct {
+  size_t row;
+  int64_t source;
+  double start, end;
+} ebox_composite_span;
+
+extern void *ebox_native_compositor_create(size_t count, size_t height, double width);
+extern bool ebox_native_compositor_run(
+  void *pointer, const ebox_composite_change *changes, size_t change_count,
+  const size_t *order, size_t count, const unsigned char *dirty, size_t height,
+  const ebox_composite_span **output, size_t *output_count);
+extern void ebox_native_compositor_free(void *pointer);
+
+typedef struct {
+  void *kernel;
+  size_t count, height;
+  ebox_composite_change *changes;
+  size_t *order;
+  unsigned char *dirty;
+} ebox_compositor;
+
+static void
+ebox_compositor_finalizer(void *pointer)
+{
+  ebox_compositor *handle = pointer;
+  if (handle == NULL) return;
+  ebox_native_compositor_free(handle->kernel);
+  free(handle->changes);
+  free(handle->order);
+  free(handle->dirty);
+  free(handle);
+}
+
+static emacs_value
+ebox_module_create_compositor(emacs_env *env, ptrdiff_t nargs,
+                               emacs_value *args, void *data)
+{
+  (void) nargs; (void) data;
+  intmax_t count = env->extract_integer(env, args[0]);
+  intmax_t height = env->extract_integer(env, args[1]);
+  double width = env->extract_float(env, args[2]);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  if (count < 0 || count > 16384 || height < 0 || height > 8192)
+    return ebox_nil(env);
+  ebox_compositor *handle = calloc(1, sizeof *handle);
+  if (handle == NULL) return ebox_nil(env);
+  handle->count = (size_t) count;
+  handle->height = (size_t) height;
+  handle->changes = calloc(count ? (size_t) count : 1, sizeof *handle->changes);
+  handle->order = calloc(count ? (size_t) count : 1, sizeof *handle->order);
+  handle->dirty = calloc(height ? (size_t) height : 1, sizeof *handle->dirty);
+  handle->kernel = ebox_native_compositor_create(handle->count, handle->height, width);
+  if (handle->changes == NULL || handle->order == NULL || handle->dirty == NULL
+      || handle->kernel == NULL) {
+    ebox_compositor_finalizer(handle);
+    return ebox_nil(env);
+  }
+  emacs_value result = env->make_user_ptr(env, ebox_compositor_finalizer, handle);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    ebox_compositor_finalizer(handle);
+  return result;
+}
+
+static emacs_value
+ebox_module_release_compositor(emacs_env *env, ptrdiff_t nargs,
+                               emacs_value *args, void *data)
+{
+  (void) nargs; (void) data;
+  if (env->get_user_finalizer(env, args[0]) != ebox_compositor_finalizer) {
+    if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+      return ebox_nil(env);
+    static const char message[] = "Invalid native compositor handle";
+    return ebox_signal_error(env, message, sizeof message - 1);
+  }
+  void *handle = env->get_user_ptr(env, args[0]);
+  env->set_user_ptr(env, args[0], NULL);
+  if (env->non_local_exit_check(env) == emacs_funcall_exit_return)
+    ebox_compositor_finalizer(handle);
+  return ebox_nil(env);
+}
+
+static emacs_value
+ebox_module_compose_rows(emacs_env *env, ptrdiff_t nargs,
+                         emacs_value *args, void *data)
+{
+  (void) nargs; (void) data;
+  if (env->get_user_finalizer(env, args[0]) != ebox_compositor_finalizer) {
+    if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+      return ebox_nil(env);
+    static const char message[] = "Invalid native compositor handle";
+    return ebox_signal_error(env, message, sizeof message - 1);
+  }
+  ebox_compositor *handle = env->get_user_ptr(env, args[0]);
+  intmax_t count = env->extract_integer(env, args[2]);
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  if (handle == NULL || count < 0 || (uintmax_t) count > handle->count)
+    goto invalid;
+  if (env->vec_size(env, args[1]) < count * 5
+      || env->vec_size(env, args[3]) != (ptrdiff_t) handle->count
+      || env->vec_size(env, args[4]) != (ptrdiff_t) handle->height
+      || env->vec_size(env, args[5]) < (ptrdiff_t) (4 * (2 * handle->count + handle->height)))
+    goto invalid;
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  for (size_t i = 0; i < (size_t) count; i++) {
+    intmax_t index = env->extract_integer(env, env->vec_get(env, args[1], (ptrdiff_t) i * 5));
+    ebox_composite_change *change = &handle->changes[i];
+    change->index = (size_t) index;
+    change->x = env->extract_float(env, env->vec_get(env, args[1], (ptrdiff_t) i * 5 + 1));
+    change->row = (int64_t) env->extract_integer(env, env->vec_get(env, args[1], (ptrdiff_t) i * 5 + 2));
+    change->start = env->extract_float(env, env->vec_get(env, args[1], (ptrdiff_t) i * 5 + 3));
+    change->end = env->extract_float(env, env->vec_get(env, args[1], (ptrdiff_t) i * 5 + 4));
+    if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+      return ebox_nil(env);
+    if (index < 0 || (uintmax_t) index >= handle->count) goto invalid;
+  }
+  for (size_t i = 0; i < handle->count; i++) {
+    intmax_t index = env->extract_integer(env, env->vec_get(env, args[3], (ptrdiff_t) i));
+    if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+      return ebox_nil(env);
+    if (index < 0 || (uintmax_t) index >= handle->count) goto invalid;
+    handle->order[i] = (size_t) index;
+  }
+  for (size_t i = 0; i < handle->height; i++)
+    handle->dirty[i] = env->is_not_nil(env, env->vec_get(env, args[4], (ptrdiff_t) i));
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  if (env->should_quit(env)) {
+    env->non_local_exit_signal(env, env->intern(env, "quit"), ebox_nil(env));
+    return ebox_nil(env);
+  }
+  const ebox_composite_span *spans = NULL;
+  size_t span_count = 0;
+  if (!ebox_native_compositor_run(handle->kernel, handle->changes, (size_t) count,
+                                   handle->order, handle->count, handle->dirty,
+                                   handle->height, &spans, &span_count))
+    goto invalid;
+  for (size_t i = 0; i < span_count; i++) {
+    ptrdiff_t offset = (ptrdiff_t) i * 4;
+    env->vec_set(env, args[5], offset, env->make_integer(env, (intmax_t) spans[i].row));
+    env->vec_set(env, args[5], offset + 1, env->make_integer(env, spans[i].source));
+    env->vec_set(env, args[5], offset + 2, env->make_float(env, spans[i].start));
+    env->vec_set(env, args[5], offset + 3, env->make_float(env, spans[i].end));
+    if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+      return ebox_nil(env);
+  }
+  return env->make_integer(env, (intmax_t) span_count);
+ invalid:
+  if (env->non_local_exit_check(env) != emacs_funcall_exit_return)
+    return ebox_nil(env);
+  {
+    static const char message[] = "Invalid native layer composition input";
+    return ebox_signal_error(env, message, sizeof message - 1);
+  }
+}
+
 static int
 ebox_bind_function(emacs_env *env, const char *name, ptrdiff_t min_arity,
                    ptrdiff_t max_arity, emacs_function function,
@@ -966,6 +1132,15 @@ ebox_module_init_impl(struct emacs_runtime *runtime)
       ebox_bind_function(env, "ebox-native--module-flex-size-lines", 3, 3,
                          ebox_module_flex_size_lines,
                          "Calculate pure native Flex geometry lines.") ||
+      ebox_bind_function(env, "ebox-native--module-create-compositor", 3, 3,
+                         ebox_module_create_compositor,
+                         "Prepare bounded retained layer geometry storage.") ||
+      ebox_bind_function(env, "ebox-native--module-compose-rows", 6, 6,
+                         ebox_module_compose_rows,
+                         "Compose dirty layer intervals into reusable output storage.") ||
+      ebox_bind_function(env, "ebox-native--module-release-compositor", 1, 1,
+                         ebox_module_release_compositor,
+                         "Release private layer scratch storage without waiting for GC.") ||
       ebox_bind_function(env, "ebox-native--module-confirm-frame", 4, 4,
                          ebox_module_confirm_frame,
                          "Confirm one published native layout frame.") ||

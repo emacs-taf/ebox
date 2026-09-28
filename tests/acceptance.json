@@ -15,6 +15,8 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-prepared-geometry-preserves-overlapping-unicode-and-retry", "file": "tests/ebox-geometry-tests.el", "purpose": "Overlapping retained panes preserve Unicode, display runs, input and rejected-update recovery."},
+    {"name": "ebox-prepared-geometry-keeps-exact-large-offscreen-coordinates", "file": "tests/ebox-geometry-tests.el", "purpose": "Large exact offscreen coordinates preserve source values and recover visible placement."},
     {"name": "ebox-prepared-resize-preserves-shaped-text-and-replacement-spaces", "file": "tests/ebox-prepared-resize-tests.el", "purpose": "Non-cell-aligned crops preserve combining text, mixed Unicode, fixed replacement spaces and changed content."},
     {"name": "ebox-prepared-resize-crops-and-restores-fixed-text", "file": "tests/ebox-prepared-resize-tests.el", "purpose": "Prepared width and height changes preserve source snapshots, clipped text and overlapping peer output."},
     {"name": "ebox-prepared-resize-rolls-back-and-retries", "file": "tests/ebox-prepared-resize-tests.el", "purpose": "Rejected resize restores accepted geometry, display and paired caller state before retry."},

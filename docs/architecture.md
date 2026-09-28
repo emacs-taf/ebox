@@ -377,6 +377,22 @@ output without extracting child strings; changed rows cut only uncovered
 intervals from original sources. This avoids clipping every flow child before
 the visibility decision and clipping those intermediate strings a second time.
 Normal flow, relative offsets, portal placement and z ordering share this path.
+
+Prepared planes may delegate their numeric occlusion sweep to the optional
+native module. Each plane owns bounded scratch storage; sparse placement
+changes refresh a numeric cache and the module returns visible source intervals
+for damaged rows into a reusable vector. It owns no Lisp values, source strings,
+buffer state or publication baseline. Rejection refreshes that cache from the
+restored source records before reuse. Capacity or exact-coordinate limits select
+the ordinary compositor. Glyph clipping and property materialization retain the
+same Emacs implementation. Fixed display-space boundaries allow one string join;
+unproved shaping boundaries retain the ordinary measured join, including its
+zero-pixel separators for equal replacement runs.
+Ordinary layer rendering uses the same kernel for changed rows with
+candidate-owned scratch storage, released at the end of that evaluation rather
+than deferred to GC; it never mutates the published composition ledger.
+Unchanged rows retain their existing signature-based reuse.
+
 When flow children have no relative movement and every positioned record is
 above the flow's z order, completed flow rows form the bottom composition plane.
 They supply anchor geometry directly and remain intact outside overlay coverage.
