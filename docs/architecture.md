@@ -447,11 +447,13 @@ accepted revision and client state while generic mounts remain authoritative
 until the next atomic prepared publication. Structural or unsupported changes
 use fresh preparation.
 
-This path currently compiles translation and stacking for fixed planes. Resize,
-anchor, portal and scroll dependencies still decline before staging. Primitive
-clipping and native text writes still allocate output-related artifacts; compiled
-wrapper instructions and the prepared publisher alone do not establish allocation
-or latency acceptance.
+This path compiles translation and stacking for fixed planes. A scroll viewport
+inside a retained raster moves with its owner without changing its content-relative
+offset or producer. An active scroll viewport on the containing-plane route still
+declines because its offset and clipping do not have compiled wrapper instructions.
+Anchors and portals retain their separate admission requirements. Primitive clipping
+and native text writes still allocate output-related artifacts; prepared execution
+alone does not establish allocation or latency acceptance.
 
 The mixed prepared-update cohort cold-binds source cells and the retained
 primitive owning each member's pixels; preparation renders nothing. Sparse
@@ -469,6 +471,21 @@ must keep its rows and pixel intervals. An absolute owner does not participate
 in flow, so a resize or row change reuses its record slots, appends records and
 hides surplus ones. A fixed sparse batch saves each record once, so paint, Text,
 resize and multiple placements share complete pixel rollback.
+
+A boundary re-render uses a private scroll-state bank. Its initial metadata includes
+completed idle prefix work, and render-time prefetch changes stay isolated. The
+existing prepared publication stages that bank, the buffer's scroll-region inventory
+and matching global entries together with its pixels; rejection restores all three
+and any scroll offsets clamped during rendering. Accepted frames reuse the retired
+bank and refresh prefetch scheduling after publication. Thus paint or size changes
+can replace scroll viewport metadata and producers while unrelated panes keep their
+offsets. Placement-only frames leave scroll metadata untouched. Boundaries with
+active scroll state use ordinary raster rendering for resize: pixel-only elastic
+synthesis does not establish a matching viewport or producer. An underfilled
+boundary may learn an elastic response only while every size-validation render
+also remains without scroll state. Trial renders use isolated scroll metadata and
+restore any clamped node offsets; a remembered pixel model from another binding
+does not serve as this proof.
 
 A pure size change of an absolute owner may skip that render. `ebox-elastic`
 learns the owner's size response from two ordinary renders: a width change

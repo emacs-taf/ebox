@@ -16,7 +16,8 @@
                (:constructor ebox-geometry--make-operation))
   "One mounted geometry program with cold-owned execution and undo storage."
   buffer surface state node properties units source-slots
-  program target region-table scroll-table projection frame values
+  program target region-table scroll-table scroll-timers projection frame values
+  scroll-before-table scroll-before-regions scroll-before-global scroll-pending-p scroll-staged-p
   viewport-cache content-cache
   routes interaction session active-operation frame-stage frame-rollback frame-accept
   interaction-stage interaction-rollback interaction-accept
@@ -399,6 +400,7 @@ Property combinations compile on first use and stay in the route's tables."
            (ebox--render-source-index (plist-get state :source-index))
            (ebox--region-box-table (ebox-geometry--operation-region-table operation))
            (ebox--scroll-global-state (ebox-geometry--operation-scroll-table operation))
+           (ebox--scroll-idle-prefetch-timers (ebox-geometry--operation-scroll-timers operation))
            (ebox--css-viewport-dependent-subtree-cache
             (ebox-geometry--operation-viewport-cache operation))
            (ebox--box-content-render-cache (ebox-geometry--operation-content-cache operation))
@@ -573,10 +575,130 @@ OPERATION and the publication report; no pixel or mount authority is replaced."
                                          :layer-composition-cache))
       (when (plist-member state key) (plist-put state key nil)))))
 
+(defun ebox-geometry--scroll-begin (scene)
+  "Prepare SCENE's private scroll bank before any raster is re-rendered.
+The current global entries include any completed idle prefix work.  Copy their
+metadata cells; retained lines stay read-only and ordinary rendering owns new
+producer state.  Placement-only frames never enter this path."
+  (unless (ebox-geometry--operation-scroll-pending-p scene)
+    (let* ((state (ebox-geometry--operation-state scene))
+           (before (plist-get state :scroll-state-table))
+           (regions (plist-get state :scroll-region-ids))
+           (candidate (ebox-geometry--operation-scroll-table scene))
+           (global (ebox-geometry--operation-scroll-before-global scene)))
+      (when (eq candidate before)
+        (error "Prepared scroll candidate aliases the accepted state"))
+      (clrhash candidate)
+      (clrhash global)
+      (dolist (region regions)
+        (when-let* ((current (or (gethash region ebox--scroll-global-state)
+                                (and before (gethash region before)))))
+          (puthash region (gethash region ebox--scroll-global-state) global)
+          (puthash region (copy-sequence current) candidate)))
+      (setf (ebox-geometry--operation-scroll-before-table scene) before
+            (ebox-geometry--operation-scroll-before-regions scene) regions
+            (ebox-geometry--operation-scroll-pending-p scene) t
+            (ebox-geometry--operation-scroll-staged-p scene) nil))))
+
+(defun ebox-geometry--scroll-stage (scene)
+  "Install SCENE's candidate scroll bank with the prepared publication.
+The publisher's rollback callback restores both runtime and global entries."
+  (when (ebox-geometry--operation-scroll-pending-p scene)
+    (let* ((state (ebox-geometry--operation-state scene))
+           (candidate (ebox-geometry--operation-scroll-table scene))
+           (global (ebox-geometry--operation-scroll-before-global scene))
+           (buffer (ebox-geometry--operation-buffer scene))
+           regions)
+      (setf (ebox-geometry--operation-scroll-staged-p scene) t)
+      (dolist (region (ebox-geometry--operation-scroll-before-regions scene))
+        (remhash region ebox--scroll-global-state))
+      (maphash
+       (lambda (region scroll)
+         (unless (gethash region global)
+           (puthash region (gethash region ebox--scroll-global-state) global))
+         (plist-put scroll :buffer buffer)
+         (puthash region scroll ebox--scroll-global-state)
+         (push region regions))
+       candidate)
+      (plist-put state :scroll-state-table candidate)
+      (plist-put state :scroll-region-ids regions))))
+
+(defun ebox-geometry--scroll-rollback (scene)
+  "Restore SCENE's accepted scroll state after a rejected publication."
+  (when (ebox-geometry--operation-scroll-staged-p scene)
+    (let ((state (ebox-geometry--operation-state scene))
+          (buffer (ebox-geometry--operation-buffer scene)))
+      (maphash (lambda (region _scroll) (remhash region ebox--scroll-global-state))
+               (ebox-geometry--operation-scroll-table scene))
+      ;; Buffer teardown is authoritative even when it happens in STAGE.
+      (when (and (buffer-live-p buffer)
+                 (eq (ebox-geometry--operation-surface scene)
+                     (ebox-surface--live-buffer-surface buffer)))
+        (maphash (lambda (region scroll)
+                   (if scroll (puthash region scroll ebox--scroll-global-state)
+                     (remhash region ebox--scroll-global-state)))
+                 (ebox-geometry--operation-scroll-before-global scene))
+        (plist-put state :scroll-state-table (ebox-geometry--operation-scroll-before-table scene))
+        (plist-put state :scroll-region-ids (ebox-geometry--operation-scroll-before-regions scene)))
+      (setf (ebox-geometry--operation-scroll-staged-p scene) nil))))
+
+(defun ebox-geometry--scroll-settle (scene accepted)
+  "Retire SCENE's scroll journal after the publisher has returned ACCEPTED."
+  (when (ebox-geometry--operation-scroll-pending-p scene)
+    (if (not accepted) (ebox-geometry--scroll-rollback scene)
+      (let ((before (ebox-geometry--operation-scroll-before-table scene))
+            (state (ebox-geometry--operation-state scene)))
+        ;; The newly accepted table is now public.  Reuse only the retired
+        ;; table as the next candidate bank, never the accepted metadata.
+        (setf (ebox-geometry--operation-scroll-table scene)
+              (or before (make-hash-table :test #'equal)))
+        (dolist (region (ebox-geometry--operation-scroll-before-regions scene))
+          (unless (gethash region (plist-get state :scroll-state-table))
+            (ebox--scroll-cancel-idle-prefetch region)))
+        (dolist (region (plist-get state :scroll-region-ids))
+          (ebox--scroll-schedule-idle-prefetch region))))
+    (setf (ebox-geometry--operation-scroll-before-table scene) nil
+          (ebox-geometry--operation-scroll-before-regions scene) nil
+          (ebox-geometry--operation-scroll-pending-p scene) nil
+          (ebox-geometry--operation-scroll-staged-p scene) nil)
+    (clrhash (ebox-geometry--operation-scroll-before-global scene))))
+
+(defun ebox-geometry--scroll-admission-facts (state node)
+  "Summarize STATE's scroll ancestry relative to positioned NODE."
+  (let ((regions (plist-get state :scroll-region-ids))
+        (table (plist-get state :region-box-table))
+        (parents (plist-get state :parent-table))
+        (nodes (plist-get state :node-table))
+        (target (plist-get node :node-id))
+        (ancestors (make-hash-table :test #'equal))
+        (ancestor-count 0) (descendant-count 0) (positioned-count 0)
+        (unknown-count 0))
+    (let ((id target))
+      (while id
+        (puthash id t ancestors)
+        (setq id (ebox-runtime-index-get id parents))))
+    (dolist (region regions)
+      (let* ((scroll (and (hash-table-p table) (gethash region table)))
+             (id (plist-get scroll :node-id))
+             under-target positioned)
+        (if (null id) (setq unknown-count (1+ unknown-count))
+          (when (gethash id ancestors) (setq ancestor-count (1+ ancestor-count)))
+          (while id
+            (when (equal id target) (setq under-target t))
+            (when (eq (plist-get (ebox-runtime-index-get id nodes) :position) 'absolute)
+              (setq positioned t))
+            (setq id (ebox-runtime-index-get id parents)))
+          (when under-target (setq descendant-count (1+ descendant-count)))
+          (when positioned (setq positioned-count (1+ positioned-count))))))
+    (list :scroll-count (length regions) :ancestor-scroll-count ancestor-count
+          :target-scroll-count descendant-count :positioned-scroll-count positioned-count
+          :unknown-scroll-count unknown-count)))
+
 (defun ebox-geometry--root-program (state node &optional prior-routes)
   "Return a compiled containing-plane route for positioned NODE in STATE.
-Admission is conservative: anchors, portals and scroll producers require
-additional prepared dependencies before they can use imperative execution."
+Admission is conservative: anchors, portals and scrollable containing planes
+require additional prepared dependencies.  Scrollers inside retained rasters
+keep their content-relative state independently of the raster's placement."
   (let* ((root (plist-get state :root-node))
          (parents (plist-get state :parent-table))
          (id (plist-get node :node-id))
@@ -588,13 +710,10 @@ additional prepared dependencies before they can use imperative execution."
       (ebox-geometry--record-admission 'route 'position))
      ((plist-get state :root-portals-p)
       (ebox-geometry--record-admission 'route 'root-portals))
-     ((plist-get state :scroll-region-ids)
-      (ebox-geometry--record-admission 'route 'scroll-regions))
      ((not (hash-table-p cache))
       (ebox-geometry--record-admission 'route 'composition-cache)))
     (when (and (eq (plist-get node :position) 'absolute)
                (not (plist-get state :root-portals-p))
-               (not (plist-get state :scroll-region-ids))
                (hash-table-p cache))
       (let ((child-id id) (host-id (ebox-runtime-index-get id parents))
             routes (valid t) previous (depth 0))
@@ -608,16 +727,22 @@ additional prepared dependencies before they can use imperative execution."
                  first-row last-row)
             (setq valid
                   (and target (> (length target) 0)
+                       (not (member (plist-get host :region-id)
+                                    (plist-get state :scroll-region-ids)))
                        (not (cl-some
                              (lambda (record)
                                (plist-get (plist-get record :node) :anchor))
                              (plist-get entry :records)))))
             (unless valid
-              (ebox-geometry--record-admission
-               'route (cond ((null entry) 'containing-plane)
-                            ((null program) 'composition-program)
-                            ((or (null target) (= (length target) 0)) 'target)
-                            (t 'anchor))))
+              (let ((scroll-p (member (plist-get host :region-id)
+                                      (plist-get state :scroll-region-ids))))
+                (apply #'ebox-geometry--record-admission
+                       'route (cond ((null entry) 'containing-plane)
+                                    ((null program) 'composition-program)
+                                    ((or (null target) (= (length target) 0)) 'target)
+                                    (scroll-p 'scroll-containing-plane)
+                                    (t 'anchor))
+                       (and scroll-p (ebox-geometry--scroll-admission-facts state node)))))
             (when valid
               (when previous
                 (dotimes (offset (length target))
@@ -927,6 +1052,8 @@ acceptance.  Preparation itself does not advance the publication revision."
                             :stylesheet-epoch ebox-style--stylesheet-epoch
                             :region-table (copy-hash-table (plist-get state :region-box-table))
                             :scroll-table (make-hash-table :test #'equal)
+                            :scroll-timers (make-hash-table :test #'equal)
+                            :scroll-before-global (make-hash-table :test #'equal)
                             :viewport-cache (make-hash-table :test #'eq)
                             :content-cache (make-hash-table :test #'eq))))))
               (unless source-slots

@@ -30,7 +30,7 @@ must keep exactly the same source rows and pixel intervals; an absolute
 panel does not participate in flow, so its complete footprint may change.
 WIDTH and HEIGHT hold NODE's own size before the current application when
 a member changed it; PAINT marks any other changed raster value."
-  node host route dirty width height paint)
+  node host route dirty width height paint scroll-nodes scroll-sensitive elastic-scroll-safe)
 
 (cl-defstruct (ebox-update--cohort (:constructor ebox-update--make-cohort))
   buffer state scene members groups boundaries marks epoch snapshots
@@ -122,6 +122,17 @@ input; ordinary layout keeps its existing publication route."
 ;; Retained primitives record their row and pixel interval in the containing
 ;; plane.  An ordinary render of the boundary node proves that a change keeps
 ;; this footprint, so only record text changes and composition stays fixed.
+(defun ebox-update--scroll-nodes (node)
+  "Collect NODE's potential scroll owners at the cold boundary.
+Underfilled owners are included: a resize or content change may create their
+first scroll state, and rendering may clamp their retained offset."
+  (let (result)
+    (cl-labels ((visit (node)
+                  (when (eq (ebox-get node :overflow) 'scroll) (push node result))
+                  (ebox-tree-for-each-direct-child node #'visit)))
+      (visit node))
+    result))
+
 (defun ebox-update--bind-boundary (state routes node table)
   "Return NODE's nearest boundary owning primitive records in ROUTES.
 TABLE shares one boundary among all groups rendered by the same node."
@@ -137,13 +148,20 @@ TABLE shares one boundary among all groups rendered by the same node."
             (when (and target (> (length target) 0))
               (setq found
                     (or (gethash node table)
-                        (puthash node
-                                 (ebox-update--make-boundary
-                                  :node node :route index
-                                  :host (ebox-runtime-index-get
-                                         (plist-get (ebox-geometry--route-wrapper route) :node-id)
-                                         nodes))
-                                 table)))))
+                        (let ((scroll-nodes (ebox-update--scroll-nodes node)))
+                          (puthash node
+                                   (ebox-update--make-boundary
+                                    :node node :route index :scroll-nodes scroll-nodes
+                                    :scroll-sensitive
+                                    (and (cl-some (lambda (owner)
+                                                    (gethash (plist-get owner :region-id)
+                                                             (plist-get state :scroll-state-table)))
+                                                  scroll-nodes)
+                                         t)
+                                    :host (ebox-runtime-index-get
+                                           (plist-get (ebox-geometry--route-wrapper route) :node-id)
+                                           nodes))
+                                   table))))))
           (setq index (1+ index)))
         (unless found
           (setq node (ebox-runtime-index-get (ebox-runtime-index-get id parents) nodes)))))
@@ -647,7 +665,17 @@ PROBE renders with private caches so a trial size leaves no memoized facts."
          (ebox--render-display-signature (plist-get state :display-signature))
          (ebox--render-source-index (plist-get state :source-index))
          (ebox--region-box-table (ebox-geometry--operation-region-table scene))
-         (ebox--scroll-global-state (ebox-geometry--operation-scroll-table scene))
+         (ebox--scroll-global-state
+          (if probe
+              (let ((table (make-hash-table :test #'equal)))
+                (maphash (lambda (region scroll) (puthash region (copy-sequence scroll) table))
+                         (ebox-geometry--operation-scroll-table scene))
+                table)
+            (ebox-geometry--operation-scroll-table scene)))
+         (scroll-snapshots (and probe
+                                (mapcar (lambda (owner) (cons owner (copy-sequence owner)))
+                                        (ebox-update--boundary-scroll-nodes boundary))))
+         (ebox--scroll-idle-prefetch-timers (ebox-geometry--operation-scroll-timers scene))
          (ebox--render-runtime-revision (plist-get state :runtime-revision))
          (ebox--render-cache-table (if probe (make-hash-table :test #'equal)
                                      (plist-get state :render-cache)))
@@ -670,11 +698,20 @@ PROBE renders with private caches so a trial size leaves no memoized facts."
          (ebox--render-owned-text-values (make-hash-table :test #'eq))
          (ebox--surface-materialization-active t)
          (node (ebox-update--boundary-node boundary)))
-    (unless (eq (plist-get node :visibility) 'hidden)
-      (cl-letf (((symbol-function 'ebox--scroll-schedule-idle-prefetch) #'ignore))
-        (ebox--call-with-box-content-context
-         (ebox-update--boundary-host boundary)
-         (lambda () (ebox--render-with-cache node)))))))
+    (unwind-protect
+        (unless (eq (plist-get node :visibility) 'hidden)
+          (prog1
+              (cl-letf (((symbol-function 'ebox--scroll-schedule-idle-prefetch) #'ignore))
+                (ebox--call-with-box-content-context
+                 (ebox-update--boundary-host boundary)
+                 (lambda () (ebox--render-with-cache node))))
+            (when (cl-some (lambda (owner)
+                             (gethash (plist-get owner :region-id) ebox--scroll-global-state))
+                           (ebox-update--boundary-scroll-nodes boundary))
+              (setf (ebox-update--boundary-scroll-sensitive boundary) t
+                    (ebox-update--boundary-elastic-scroll-safe boundary) nil))))
+      (dolist (entry scroll-snapshots)
+        (ebox-update--restore-node (car entry) (cdr entry))))))
 
 (defun ebox-update--elastic-change (boundary)
   "Return (OLD-WIDTH OLD-HEIGHT WIDTH HEIGHT) when BOUNDARY only changed size.
@@ -686,6 +723,8 @@ expressed in whole pixels and rows."
          (old-width (or (ebox-update--boundary-width boundary) (car-safe (cdr-safe width))))
          (old-height (or (ebox-update--boundary-height boundary) (car-safe (cdr-safe height)))))
     (and (not (ebox-update--boundary-paint boundary))
+         ;; Active scroll viewport metadata requires ordinary rendering.
+         (not (ebox-update--boundary-scroll-sensitive boundary))
          (eq (plist-get node :position) 'absolute)
          (eq (car-safe width) 'px) (eq (car-safe height) 'lh)
          (integerp (car-safe (cdr-safe width))) (integerp (car-safe (cdr-safe height)))
@@ -716,6 +755,8 @@ covers the change."
                (model (ebox-elastic--model
                        node (plist-get (ebox-update--cohort-state operation) :display-signature))))
     (and model
+         (or (null (ebox-update--boundary-scroll-nodes boundary))
+             (ebox-update--boundary-elastic-scroll-safe boundary))
          (ebox-elastic--in-range-p model width height)
          (ebox-elastic--matches-p model rows old-width old-height)
          (ebox-elastic--synthesize model rows old-height width height))))
@@ -848,7 +889,9 @@ replay of the already known axis."
   (pcase-let* ((`(,old-width ,old-height ,width ,height) change)
                (node (ebox-update--boundary-node boundary))
                (signature (plist-get (ebox-update--cohort-state operation) :display-signature))
-               (model (ebox-elastic--model node signature))
+               (model (and (or (null (ebox-update--boundary-scroll-nodes boundary))
+                               (ebox-update--boundary-elastic-scroll-safe boundary))
+                           (ebox-elastic--model node signature)))
                (result nil))
     (when (and lines (cl-every (lambda (line) (> (length line) 0)) lines))
       (cond
@@ -870,7 +913,11 @@ replay of the already known axis."
            ((and down (= (length down) (length lines)))
             (setq result (ebox-update--elastic-learn-width
                           operation boundary model down old-width lines width height program)))))))
-      (when result (ebox-elastic--remember node signature result)))))
+      (when (and result (not (ebox-update--boundary-scroll-sensitive boundary)))
+        ;; All renderer trials for this learned range remained underfilled.
+        ;; A previously remembered pixel model alone is not this scroll proof.
+        (setf (ebox-update--boundary-elastic-scroll-safe boundary) t)
+        (ebox-elastic--remember node signature result)))))
 
 (defun ebox-update--replace-boundary (operation boundary)
   "Replace BOUNDARY's retained primitives with its ordinary render.
@@ -894,7 +941,8 @@ roles the mounted projection cannot represent."
                     (let ((text (ebox-update--render-boundary operation boundary)))
                       (when (stringp text)
                         (let ((lines (ebox-string-lines text)))
-                          (when rows (ebox-update--elastic-learn operation boundary change rows lines program))
+                          (when (and rows (not (ebox-update--boundary-scroll-sensitive boundary)))
+                            (ebox-update--elastic-learn operation boundary change rows lines program))
                           lines)))))
          (pieces (and lines (ebox-layer--pieces lines node)))
          (keys (make-hash-table :test #'equal))
@@ -968,6 +1016,7 @@ composition boundary."
           (ebox-update--cohort-old-report-kinds operation) (plist-get report :dirty-kinds)
           (ebox-update--cohort-staged operation) t)
     (ebox-interaction--geometry-stage (ebox-geometry--operation-interaction scene))
+    (ebox-geometry--scroll-stage scene)
     (plist-put state :runtime-revision (1- (plist-get publication-report :new-revision)))
     (plist-put report :revision (plist-get publication-report :new-revision))
     (plist-put report :publication publication-report)
@@ -996,6 +1045,7 @@ composition boundary."
   (let* ((operation (ebox-geometry--operation-active-operation scene))
          (state (ebox-update--cohort-state operation)))
     (ebox-update--restore-source operation)
+    (ebox-geometry--scroll-rollback scene)
     (when (ebox-update--cohort-staged operation)
       (ebox-interaction--geometry-rollback (ebox-geometry--operation-interaction scene))
       (plist-put state :runtime-revision (ebox-update--cohort-old-revision operation))
@@ -1171,6 +1221,9 @@ after acceptance."
               (ebox-incremental--with-phase 'layout
                 (dotimes (index (length boundaries))
                   (when (ebox-update--boundary-dirty (aref boundaries index))
+                    (ebox-geometry--scroll-begin scene)
+                    (dolist (node (ebox-update--boundary-scroll-nodes (aref boundaries index)))
+                      (ebox-update--snapshot-node operation node))
                     (ebox-update--replace-boundary operation (aref boundaries index))))))
             (dotimes (index (length routes))
               (ebox-layer--program-batch-end (ebox-geometry--route-program (aref routes index))))
@@ -1197,6 +1250,7 @@ after acceptance."
                                                      (ebox-geometry--operation-frame scene) rendered (ebox-update--cohort-state operation) mount-count
                                                      (ebox-geometry--route-damage root-route) (ebox-geometry--route-damage-count root-route)))))))
         (unless result (ebox-update--restore-source operation))
+        (ebox-geometry--scroll-settle scene (and result t))
         (dotimes (index (length routes))
           (let ((route (aref routes index)))
             (ebox-layer--program-settle (ebox-geometry--route-program route) (and result t))

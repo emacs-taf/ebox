@@ -35,6 +35,11 @@ All notable changes to Ebox are documented here.
   anchoring and container layout effects during incremental classification.
   These changes now schedule geometry work instead of being treated as
   display-neutral metadata, preserving visible output and interaction targets.
+- Scroll viewports inside positioned panes no longer disable prepared updates
+  for the entire surface. Movement preserves their offsets and input identity;
+  pane paint and size changes publish scroll metadata with the visible result,
+  including rollback and later scrolling. Scrolling containing planes still
+  require ordinary publication.
 - A prepared absolute panel resize no longer signals `wrong-type-argument`
   when its rows changed between size changes: the learned size response is
   inherited only while it still describes the current rows, and a row whose

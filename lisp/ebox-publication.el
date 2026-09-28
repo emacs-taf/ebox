@@ -2739,7 +2739,14 @@ when the caller reads the scalar summary from the surface instead."
 
 (defun ebox--pub--surface-buffer-killed ()
   "Dispose every retained surface owned by the current buffer."
-  (let ((surfaces ebox--pub--buffer-surfaces))
+  ;; A prepared frame has no general binding journal.  Buffer death is an
+  ;; irreversible lifecycle boundary, so let binding disposal own its normal
+  ;; cleanup transactions instead of joining that frame's nonexistent journal.
+  ;; Ordinary publication keeps its existing killed-surface rollback handling.
+  (let* ((surfaces ebox--pub--buffer-surfaces)
+         (ebox--pub--transaction-active
+          (and (not ebox--pub--prepared-frame-active) ebox--pub--transaction-active))
+         (ebox--pub--prepared-frame-active nil))
     (setq ebox--pub--buffer-surfaces nil)
     (dolist (surface surfaces) (ebox--pub--teardown-surface surface t))))
 

@@ -429,8 +429,10 @@ It does not cache every possible size, rasterize the interface as an image,
 or postpone application state or input-target publication.
 
 Ordinary publication is still required for wrapping, child layout, decorated
-window shells, out-of-capacity sizes, anchors, root portals and scroll
-dependencies without a prepared implementation. Unsupported input is declined
+window shells, out-of-capacity sizes, anchors, root portals and scrolling
+containing planes without a prepared implementation. A scroll viewport inside
+a retained pane does not prevent prepared translation or stacking: its offset
+and subsequent scrolling remain attached to that pane. Unsupported input is declined
 before publication, not silently converted into clipping. Source, style,
 font and display changes retain the same invalidation and rollback contract.
 Reusing placement storage does not certify a latency
@@ -479,7 +481,12 @@ plane, portal/scroll dependencies and wrapper constraints without exporting
 runtime objects or rendered text. A successful new preparation clears the
 previous rejection. The existing unsupported/stale handling remains required.
 
-The cohort uses the shared fixed canvas from prepared geometry. Its supported
+The cohort uses the shared fixed canvas from prepared geometry. Scroll viewports
+inside its retained panes also support ordinary boundary paint and size rendering;
+their viewport metadata and continuation state are published and rolled back with
+the pane's pixels. Resizing a boundary with active scrolling uses the ordinary
+renderer; an underfilled boundary can retain elastic resizing when the size
+validation also proves that no scroll viewport is required. Its supported
 properties and values are defined by `ebox-update-prepare` in
 [the API inventory](../ebox.el). Preparation binds source cells to retained
 primitives; output is rendered only when a change is applied. Cold preparation

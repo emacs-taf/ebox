@@ -850,7 +850,11 @@
 ;;
 ;; Function: ebox-update-prepare (buffer-or-name specifications &optional stage rollback after-commit)
 ;;;###autoload (autoload 'ebox-update-prepare "ebox" nil nil)
-;; Prepare a fixed mixed primitive cohort. SPECIFICATIONS is a vector of
+;; Prepare a fixed mixed primitive cohort. Scroll viewports inside retained
+;; panes keep offsets through movement and publish new viewport/producer state
+;; atomically when their boundary is repainted or resized. A scrolling
+;; containing plane without compiled viewport mapping still declines.
+;; SPECIFICATIONS is a vector of
 ;; [HOST-REF PROPERTY-VECTOR] members; one Host may have disjoint members.
 ;; An optional third VARIANT-VECTOR aligns with properties; class slots contain
 ;; finite canonical class token/list values and other slots contain nil. A

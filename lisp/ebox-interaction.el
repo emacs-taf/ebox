@@ -1572,7 +1572,10 @@ would need general rendering."
 
 (defun ebox-interaction--geometry-rollback (capability)
   "Restore CAPABILITY's saved source and interaction slots without reading mounts."
-  (when (ebox-interaction--geometry-staged capability)
+  ;; Teardown owns a dead buffer's interaction lifetime.  Do not enter it or
+  ;; restore its owners: the outer transaction must still reach caller rollback.
+  (when (and (ebox-interaction--geometry-staged capability)
+             (buffer-live-p (ebox-interaction--geometry-buffer capability)))
     (with-current-buffer (ebox-interaction--geometry-buffer capability)
       (when (ebox-interaction--geometry-state-slots capability)
         (ebox-source--interaction-slots-rollback (ebox-interaction--geometry-state-slots capability)))
@@ -1598,8 +1601,8 @@ would need general rendering."
     (ebox-interaction--geometry-sync-owners capability)
     (when-let* ((focus (ebox-interaction--geometry-focus capability)))
       (setf (ebox-interaction--geometry-target-position focus)
-            (ebox-interaction--geometry-old-focus-position capability)))
-    (setf (ebox-interaction--geometry-staged capability) nil)))
+            (ebox-interaction--geometry-old-focus-position capability))))
+  (setf (ebox-interaction--geometry-staged capability) nil))
 
 (defun ebox-interaction--focus-index (state)
   "Return a cached navigation vector and owner ranks for published STATE."

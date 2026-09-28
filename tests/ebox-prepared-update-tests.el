@@ -391,5 +391,238 @@ prepared visibility change paints it at its current placement."
           (should (eq (plist-get report :status) 'ready))
           (should-not (plist-get report :detail)))))))
 
+(ert-deftest ebox-prepared-update-retains-scrolling-through-move-paint-and-resize ()
+  "Pane geometry, paint and resize preserve scroll authority and later input."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (px 100) :height (lh 10) :overflow hidden
+           (box :id "panel" :position absolute :left (px 0) :top (lh 1)
+                :width (px 40) :height (lh 2) :z-index 1 :overflow scroll
+                :color "#224466"
+             (text "A1\nA2\nA3\nA4\nA5")))))
+      (let* ((region (plist-get (car (ebox-selector-query-buffer (current-buffer) "#panel")) :region-id))
+             (scroll (lambda (down)
+                       (goto-char (point-min))
+                       (re-search-forward "A[1-5]")
+                       (backward-char 2)
+                       (if down (ebox-scroll-down 1) (ebox-scroll-up 1))))
+             (specifications [["panel" [:left :top :z-index :color :width :height]]])
+             (values [[(px 8) (lh 2) 2 "#224466" (px 40) (lh 2)]])
+             operation)
+        (should (= 2 (plist-get (ebox-scroll-state region) :content-height)))
+        (funcall scroll t)
+        (should (= 1 (plist-get (ebox-scroll-state region) :scroll-offset)))
+        (setq operation (ebox-update-prepare (current-buffer) specifications))
+        (should operation)
+        (should (ebox-update-apply operation values [0]))
+        (should (= 1 (plist-get (ebox-scroll-state region) :scroll-offset)))
+        (should (string-match-p "A2" (buffer-substring-no-properties (point-min) (point-max))))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset (aref values 0) 3 "#882244")
+        (should (ebox-update-apply operation values [0]))
+        (should (= 1 (plist-get (ebox-scroll-state region) :scroll-offset)))
+        (ebox-prepared-update-test--assert-fresh)
+        (funcall scroll t)
+        (should (= 2 (plist-get (ebox-scroll-state region) :scroll-offset)))
+        (should-not (ebox-update-valid-p operation))
+        (setq operation (ebox-update-prepare (current-buffer) specifications))
+        (should operation)
+        (aset (aref values 0) 5 '(lh 4))
+        (should (ebox-update-apply operation values [0]))
+        (should (= 4 (plist-get (ebox-scroll-state region) :content-height)))
+        (should (= 1 (plist-get (ebox-scroll-state region) :scroll-offset)))
+        (ebox-prepared-update-test--assert-fresh)
+        (funcall scroll nil)
+        (should (= 0 (plist-get (ebox-scroll-state region) :scroll-offset)))
+        (setq operation (ebox-update-prepare (current-buffer) specifications))
+        (should operation)
+        (aset (aref values 0) 5 '(lh 5))
+        (should (ebox-update-apply operation values [0]))
+        (should-not (ebox-scroll-state region))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset (aref values 0) 5 '(lh 2))
+        (should (ebox-update-apply operation values [0]))
+        (should (= 2 (plist-get (ebox-scroll-state region) :content-height)))
+        (funcall scroll t)
+        (should (= 1 (plist-get (ebox-scroll-state region) :scroll-offset)))
+        (ebox-prepared-update-test--assert-fresh)))))
+
+(ert-deftest ebox-prepared-update-rolls-back-scroll-resize-and-retries ()
+  "Rejected pane resizing restores scroll pixels, offset, focus and metadata."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (let ((pressed 0))
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(box :width (px 100) :height (lh 10) :overflow hidden
+             (box :id "panel" :position absolute :left (px 0) :top (lh 1)
+                  :width (px 40) :height (lh 2) :z-index 1 :overflow scroll
+                  :tab-index 0 :keymap ,(ebox-keymap-create :activate (lambda () (setq pressed (1+ pressed))))
+               (text "A1\nA2\nA3\nA4\nA5")))))
+        (let* ((region (plist-get (car (ebox-selector-query-buffer (current-buffer) "#panel")) :region-id))
+               (focus (ebox-focus-first))
+               (reject t) staged-height
+               (operation
+                (ebox-update-prepare
+                 (current-buffer) [["panel" [:left :height]]]
+                 (lambda ()
+                   (setq staged-height (plist-get (ebox-scroll-state region) :content-height))
+                   (when reject (error "Reject prepared scroll resize")))
+                 #'ignore))
+               (values [[(px 8) (lh 4)]])
+               (before (buffer-string))
+               (revision (ebox-surface-buffer-revision (current-buffer))))
+          (should operation)
+          (should-error (ebox-update-apply operation values [0]))
+          (should (= 4 staged-height))
+          (should (= 2 (plist-get (ebox-scroll-state region) :content-height)))
+          (should (= 0 (plist-get (ebox-scroll-state region) :scroll-offset)))
+          (should (equal focus (ebox-focused-host-ref)))
+          (should (equal-including-properties before (buffer-string)))
+          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (ebox-update-valid-p operation))
+          (setq reject nil)
+          (should (ebox-update-apply operation values [0]))
+          (should (= 4 (plist-get (ebox-scroll-state region) :content-height)))
+          (should (equal focus (ebox-focused-host-ref)))
+          (ebox-activate)
+          (should (= pressed 1))
+          (goto-char (point-min)) (search-forward "A1") (backward-char 2)
+          (ebox-scroll-down 1)
+          (should (= 1 (plist-get (ebox-scroll-state region) :scroll-offset)))
+          (ebox-prepared-update-test--assert-fresh))))))
+
+(ert-deftest ebox-prepared-update-declines-scroll-containing-plane ()
+  "Scrolling ancestors still decline when their viewport has no compiled route."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 8))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (ch 20) :height (lh 2) :overflow scroll
+           (text "First\nSecond\nThird")
+           (box :id "panel" :position absolute :left (ch 0) :top (lh 0)
+                :width (ch 5) :height (lh 1) :z-index 1 "Panel"))))
+      (let ((before (buffer-string))
+            (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should-not (ebox-update-prepare (current-buffer) [["panel" [:left]]]))
+        (let ((detail (plist-get (ebox-update-prepare-report (current-buffer)) :detail)))
+          (should (eq (plist-get detail :reason) 'scroll-containing-plane))
+          (should (= 1 (plist-get detail :ancestor-scroll-count))))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal-including-properties before (buffer-string)))))))
+
+(ert-deftest ebox-prepared-update-preserves-long-scroll-continuation-and-siblings ()
+  "Moved and repainted long panes keep scroll continuation and sibling offsets."
+  (let ((ebox-viewport-width 220) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        `(box :width (px 200) :height (lh 10) :overflow hidden
+           (box :id "panel" :position absolute :left (px 0) :top (lh 1)
+                :width (px 80) :height (lh 5) :z-index 1 :color "#224466"
+             (column :id "rows" :width stretch :height (lh 3) :overflow scroll
+               ,@(cl-loop for row below 80 collect (format "Row%02d" row))))
+           (box :id "peer" :position absolute :left (px 110) :top (lh 1)
+                :width (px 60) :height (lh 2) :z-index 2 :overflow scroll
+             "Peer0\nPeer1\nPeer2\nPeer3"))))
+      (let* ((rows (plist-get (car (ebox-selector-query-buffer (current-buffer) "#rows")) :region-id))
+             (peer (plist-get (car (ebox-selector-query-buffer (current-buffer) "#peer")) :region-id))
+             (specifications [["panel" [:left :color :width]]])
+             (values [[(px 8) "#882244" (px 80)]])
+             (reject t) operation)
+        (goto-char (point-min)) (search-forward "Peer0") (backward-char 5)
+        (ebox-scroll-down 1)
+        (should (= 1 (plist-get (ebox-scroll-state peer) :scroll-offset)))
+        (setq operation (ebox-update-prepare
+                         (current-buffer) specifications
+                         (lambda () (when reject (error "Reject long scroll repaint"))) #'ignore))
+        (should operation)
+        (let ((before (buffer-string)))
+          (should-error (ebox-update-apply operation values [0]))
+          (should (equal-including-properties before (buffer-string)))
+          (should (= 0 (plist-get (ebox-scroll-state rows) :scroll-offset)))
+          (should (= 1 (plist-get (ebox-scroll-state peer) :scroll-offset))))
+        (setq reject nil)
+        (should (ebox-update-apply operation values [0]))
+        (should (= 1 (plist-get (ebox-scroll-state peer) :scroll-offset)))
+        (goto-char (point-min)) (search-forward "Row00") (backward-char 5)
+        (ebox-scroll-down 25)
+        (should (= 25 (plist-get (ebox-scroll-state rows) :scroll-offset)))
+        (should (= 1 (plist-get (ebox-scroll-state peer) :scroll-offset)))
+        (should (string-match-p "Row25" (buffer-substring-no-properties (point-min) (point-max))))
+        (setq operation (ebox-update-prepare (current-buffer) specifications))
+        (should operation)
+        (aset (aref values 0) 2 '(px 72))
+        (should (ebox-update-apply operation values [0]))
+        (goto-char (point-min)) (search-forward "Row25") (backward-char 5)
+        (ebox-scroll-down 35)
+        (should (= 60 (plist-get (ebox-scroll-state rows) :scroll-offset)))
+        (should (= 1 (plist-get (ebox-scroll-state peer) :scroll-offset)))
+        (should (string-match-p "Row60" (buffer-substring-no-properties (point-min) (point-max))))
+        (ebox-prepared-update-test--assert-fresh)))))
+
+(ert-deftest ebox-prepared-update-creates-scroll-after-underfilled-resizes ()
+  "An initially underfilled pane starts scrolling when a later resize clips it."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (px 100) :height (lh 8) :overflow hidden
+           (box :id "panel" :position absolute :left (px 0) :top (lh 1)
+                :width (px 40) :height (lh 4) :z-index 1 :overflow scroll
+                :min-width (px 8) :min-height (lh 1)
+             "A1\nA2\nA3"))))
+      (let* ((region (plist-get (car (ebox-selector-query-buffer (current-buffer) "#panel")) :region-id))
+             (operation (ebox-update-prepare (current-buffer) [["panel" [:width :height]]]))
+             (values [[(px 48) (lh 4)]]))
+        (should operation)
+        (should-not (ebox-scroll-state region))
+        (should (ebox-update-apply operation values [0]))
+        (aset (aref values 0) 0 '(px 56))
+        (should (ebox-update-apply operation values [0]))
+        (should-not (ebox-scroll-state region))
+        (aset (aref values 0) 1 '(lh 2))
+        (should (ebox-update-apply operation values [0]))
+        (should (= 2 (plist-get (ebox-scroll-state region) :content-height)))
+        (goto-char (point-min)) (search-forward "A1") (backward-char 2)
+        (ebox-scroll-down 1)
+        (should (= 1 (plist-get (ebox-scroll-state region) :scroll-offset)))
+        (should (string-match-p "A3" (buffer-substring-no-properties (point-min) (point-max))))
+        (ebox-prepared-update-test--assert-fresh)))))
+
+(ert-deftest ebox-prepared-update-scroll-rollback-does-not-revive-killed-buffer ()
+  "Teardown restores paired caller state without reviving a scroll owner."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 8)
+        (caller 'before)
+        (buffer (generate-new-buffer " *Ebox scroll teardown test*")))
+    (unwind-protect
+        (with-current-buffer buffer
+          (ebox-render-to-buffer
+           buffer
+           (ebox-build
+            '(box :width (px 100) :height (lh 6) :overflow hidden
+               (box :id "panel" :position absolute :left (px 0) :top (lh 1)
+                    :width (px 40) :height (lh 2) :z-index 1 :overflow scroll
+                 "A1\nA2\nA3\nA4"))))
+          (let* ((region (plist-get (car (ebox-selector-query-buffer buffer "#panel")) :region-id))
+                 (operation (ebox-update-prepare buffer [["panel" [:height]]]
+                                                 (lambda ()
+                                                   (setq caller 'after)
+                                                   (kill-buffer buffer))
+                                                 (lambda () (setq caller 'before)))))
+            (should operation)
+            (should-error (ebox-update-apply operation [[(lh 3)]] [0]))
+            (should-not (buffer-live-p buffer))
+            (should (eq caller 'before))
+            (should-not (ebox-scroll-state region))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (provide 'ebox-prepared-update-tests)
 ;;; ebox-prepared-update-tests.el ends here
