@@ -15,6 +15,7 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-prepared-publication-reprepares-after-growing-text-output", "file": "tests/ebox-prepared-publication-tests.el", "purpose": "Growing and shrinking ordinary Text output can reprepare geometry without losing mount authority, and rejected moves restore output and state before retry and native activation."},
     {"name": "ebox-publication-error-rollback-diagnostics-remain-printable", "file": "tests/ebox-publication-error-tests.el", "purpose": "Secondary rollback failures with cyclic caller payloads remain safely printable for ordinary and prepared publication rejection while surface recovery completes."},
     {"name": "ebox-publication-error-rollback-diagnostics-preserve-order", "file": "tests/ebox-publication-error-tests.el", "purpose": "Multiple failed transaction rollbacks preserve the primary condition type, readable failure order and restored participant state without exposing cyclic callback payloads."},
     {"name": "ebox-publication-error-ordinary-output-rejection-is-printable", "file": "tests/ebox-publication-error-tests.el", "purpose": "Ordinary publication rejection prints safely with default Emacs error settings and preserves the previous output, revision and live target."},

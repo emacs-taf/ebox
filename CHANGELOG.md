@@ -31,6 +31,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Prepared movement can be rebuilt after ordinary Text updates expand a
+  positioned pane into more rows. Growing its retained mount pool now preserves
+  the accepted publication generation and its rollback baseline instead of
+  rejecting the new frame with a missing-mount error.
 - Publication rejection diagnostics no longer expose live surface, mount or
   callback graphs. Ordinary Emacs error reporting can print these failures
   without expanding cyclic data; the error type and rollback remain unchanged.

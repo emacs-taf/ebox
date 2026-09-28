@@ -666,5 +666,75 @@ between the source declaration and the mounted engine copy."
       (should (equal (get-text-property (match-beginning 0) 'face)
                      '(:foreground "#ff0000"))))))
 
+(ert-deftest ebox-prepared-publication-reprepares-after-growing-text-output ()
+  "Expanded ordinary Text output permits prepared moves, rejection and retry."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 30) (activations 0))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        `(box :width (px 160) :height (lh 30)
+              (box :id "moving" :position absolute :left (px 2) :top (lh 1)
+                   :width (px 60) :height (lh 24) :z-index 1
+                   :background-color "#223344" :tab-index 0
+                   :keymap ,(ebox-keymap-create
+                             :activate (lambda () (setq activations (1+ activations))))
+                   (text :id "content" "Before"))
+              (box :id "peer" :position absolute :left (px 80) :top (lh 1)
+                   :width (px 60) :height (lh 1) :z-index 2 "Peer"))))
+      (let ((moving-ref (ebox-focus-first))
+            (previous (ebox-geometry-prepare (current-buffer) "moving" [:left])))
+        (should previous)
+        (should (ebox-geometry-apply previous [(px 12)]))
+        (dolist (line-count '(20 1 22))
+          (ebox-region-update
+           "content" :content
+           (mapconcat (lambda (line) (format "Line%d" line))
+                      (number-sequence 1 line-count) "\n"))
+          (should-not (ebox-geometry-valid-p previous))
+          (let* ((before (buffer-string))
+                 (revision (ebox-surface-buffer-revision (current-buffer)))
+                 (report (ebox-buffer-update-report (current-buffer)))
+                 (geometry (ebox-region-geometry "moving"))
+                 (bounds (ebox-host-ref-bounds (current-buffer) moving-ref))
+                 (state 'before) (reject t)
+                 (operation
+                  (ebox-geometry-prepare
+                   (current-buffer) "moving" [:left]
+                   (lambda ()
+                     (setq state 'after)
+                     (when reject (error "Reject expanded output move")))
+                   (lambda () (setq state 'before)))))
+            (should operation)
+            (should bounds)
+            (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+            (should (equal-including-properties before (buffer-string)))
+            (should-error (ebox-geometry-apply operation [(px 4)]))
+            (should (eq state 'before))
+            (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+            (should (equal report (ebox-buffer-update-report (current-buffer))))
+            (should (equal geometry (ebox-region-geometry "moving")))
+            (should (equal bounds (ebox-host-ref-bounds (current-buffer) moving-ref)))
+            (should (equal-including-properties before (buffer-string)))
+            (should (ebox-geometry-valid-p operation))
+            (setq reject nil)
+            (should (ebox-geometry-apply operation [(px 4)]))
+            (should (eq state 'after))
+            (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+            (let ((expected (ebox-render (plist-get
+                                         (ebox-surface-buffer-snapshot (current-buffer)) :input)))
+                  (actual (buffer-string)))
+              (should (equal (substring-no-properties actual)
+                             (substring-no-properties expected)))
+              (dotimes (position (length actual))
+                (dolist (property '(display face keymap pointer help-echo mouse-face))
+                  (should (equal (get-text-property position property actual)
+                                 (get-text-property position property expected))))))
+            (should (ebox-geometry-apply operation [(px 12)]))
+            (setq previous operation))))
+      (should (ebox-focus-first))
+      (let ((last-input-event ?\r)) (call-interactively (key-binding (kbd "RET"))))
+      (should (= activations 1)))))
+
 (provide 'ebox-prepared-publication-tests)
 ;;; ebox-prepared-publication-tests.el ends here

@@ -432,6 +432,14 @@ cells; a subsequent general publication reads the latest declarations and
 rebuilds invalidated fragment proofs. External buffer hooks still run, and their
 unexpected writes reject the publication.
 
+When an ordinary update retains topology but replaces authoritative mount
+records, frame refresh adopts that accepted generation. An expanded interval
+pool replaces only a current frame and must contain its complete previous pool.
+The ordinary publisher's accepted mounts remain the rollback baseline even
+when they differ from the compiled pool. Initial preparation still requires
+every authoritative mount; topology or generation failure cannot authorize
+pool reuse.
+
 Eligible targets in the same containing-plane route share one mounted scene,
 mount pool, publication frame and interaction capability. Preparing another
 target binds only its scalar source cells, value storage and callbacks. The

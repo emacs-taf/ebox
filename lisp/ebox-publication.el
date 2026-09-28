@@ -246,7 +246,8 @@ pool, so preparing thousands of spare intervals stays cheap."
       (puthash (aref object-keys i) nil index))
     (vector global local index (copy-tree report))))
 
-(defun ebox--pub-frame-prepare (surface slots owner stage rollback accept)
+(defun ebox--pub-frame-prepare (surface slots owner stage rollback accept
+                                       &optional previous-frame)
   "Prepare reusable publication storage for SURFACE and mutable SLOTS.
 SLOTS contains fixed-capacity quadruples [MOUNT START END TAGS].  MOUNT
 records are the complete cold pool; subsequent publication may reorder
@@ -255,7 +256,11 @@ character offsets.  STAGE, ROLLBACK and ACCEPT are once-bound functions
 called with OWNER and the publication report; nil means no callback.
 STAGE publishes the matching owner state.  ACCEPT performs bounded final
 authority writes.  ROLLBACK restores both, including a partially failed
-STAGE or ACCEPT.  Callbacks must not initiate another publication."
+STAGE or ACCEPT.  Callbacks must not initiate another publication.
+PREVIOUS-FRAME, when supplied, authenticates a pool expansion after that frame
+has adopted the current surface generation.  The new pool must contain its
+complete old pool; the accepted surface may still use an ordinary publisher's
+different mount records, which remain the first publication's rollback base."
   (ebox--pub--validate-live-surface surface)
   (unless (and (not ebox--pub--transaction-active)
                (vectorp slots) (= (% (length slots) 4) 0)
@@ -265,6 +270,10 @@ STAGE or ACCEPT.  Callbacks must not initiate another publication."
                (or (null accept) rollback)
                (eq (null stage) (null rollback)))
     (ebox--pub--signal 'ebox--pub-surface-error (list :invalid-prepared-frame)))
+  (when previous-frame
+    (unless (and (ebox--pub-frame-current-p previous-frame)
+                 (eq surface (ebox--pub-frame-surface previous-frame)))
+      (ebox--pub--signal 'ebox--pub-surface-error (list :invalid-frame-predecessor))))
   (let* ((count (/ (length slots) 4))
          (pool (make-vector count nil))
          (lookup (make-hash-table :test #'eq))
@@ -298,9 +307,12 @@ STAGE or ACCEPT.  Callbacks must not initiate another publication."
         (unless (gethash object seen)
           (puthash object t seen)
           (push object objects))))
-    (dolist (mount (ebox--pub--surface-mounts surface))
-      (unless (gethash mount lookup)
-        (ebox--pub--signal 'ebox--pub-surface-error (list :missing-frame-mount mount))))
+    (mapc
+     (lambda (mount)
+       (unless (gethash mount lookup)
+         (ebox--pub--signal 'ebox--pub-surface-error (list :missing-frame-mount mount))))
+     (if previous-frame (ebox--pub-frame-pool previous-frame)
+       (ebox--pub--surface-mounts surface)))
     (setq objects (vconcat objects))
     (let* ((buffer (ebox--pub--surface-buffer surface))
            (windows (get-buffer-window-list buffer nil t))
@@ -334,7 +346,7 @@ discard FRAME and publish only through the returned frame."
   (let ((next (ebox--pub-frame-prepare
                (ebox--pub-frame-surface frame) slots (ebox--pub-frame-owner frame)
                (ebox--pub-frame-stage frame) (ebox--pub-frame-rollback frame)
-               (ebox--pub-frame-accept frame)))
+               (ebox--pub-frame-accept frame) frame))
         (windows (ebox--pub-frame-windows frame)))
     (when (markerp (ebox--pub-frame-point frame))
       (set-marker (ebox--pub-frame-point frame) nil))

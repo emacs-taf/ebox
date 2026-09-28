@@ -1134,11 +1134,12 @@ acceptance.  Preparation itself does not advance the publication revision."
                     (setf (ebox-geometry--operation-projection operation) projection
                           (ebox-geometry--operation-frame operation)
                           (or (and reused-projection
-                                   (eq (ebox--pub-frame-slots
-                                        (ebox-geometry--operation-frame prior))
-                                       (ebox-surface--geometry-mount-slots projection))
-                                   (ebox--pub-frame-refresh
-                                    (ebox-geometry--operation-frame prior) state operation))
+                                   (when-let* ((frame (ebox--pub-frame-refresh
+                                                      (ebox-geometry--operation-frame prior)
+                                                      state operation)))
+                                     (let ((slots (ebox-surface--geometry-mount-slots projection)))
+                                       (if (eq (ebox--pub-frame-slots frame) slots) frame
+                                         (ebox--pub-frame-replace frame slots)))))
                               (ebox--pub-frame-prepare
                                surface (ebox-surface--geometry-mount-slots projection)
                                operation #'ebox-geometry--dispatch-stage #'ebox-geometry--dispatch-rollback
