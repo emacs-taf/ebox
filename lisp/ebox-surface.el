@@ -2833,11 +2833,11 @@ namespace."
                    (and local-context-stable-p
                         (ebox-surface--subject-local-equal-p
                          subject (plist-get old-state :subject))))))
+         ;; Parent bindings are mutable and have already been evaluated for
+         ;; this candidate.  Compare against the committed immutable value,
+         ;; never the old binding's now-current last value.
          (old-parent-style
-          (and old-state
-               (plist-get old-state :parent-binding)
-               (ebox--pub-binding-last-value
-                (plist-get old-state :parent-binding))))
+          (and old-state (plist-get old-state :parent-style)))
          (new-parent-style
           (and parent-binding (ebox--pub-binding-last-value parent-binding)))
          (theme-explicit-delta-style
@@ -2890,12 +2890,14 @@ namespace."
                 (plist-put reused-state :node node)
                 (plist-put reused-state :parent-style-state
                            parent-style-state)
+                (plist-put reused-state :parent-style new-parent-style)
                 reused-state)
             (let ((new-state
                    (list :selector-tree-token selector-tree-token
                          :subject-style-context subject-style-context
                          :declarations (copy-tree declarations)
                          :parent-binding parent-binding
+                         :parent-style new-parent-style
                          :parent-style-state parent-style-state
                          :inherited-dependency-count
                          (if theme-parent-delta-p

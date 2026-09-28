@@ -97,7 +97,12 @@ Query entries and lookup tables may remain lazy; style evaluation already has
 coherent candidate relationships and does not rebuild them merely for a query cache.
 
 Cascade reuse compares mounting source identity, rules, target membership and
-inherited values. A parent colour delta requires an actual change in the
+inherited values. Each style state keeps the immutable parent style observed by
+that generation. Parent bindings may already contain a candidate value when a
+child is visited; their mutable last value cannot stand in for the committed
+inheritance input. This keeps Theme color shortcuts from retaining stale fonts
+when a parent typography change also reaches explicitly colored children.
+A parent colour delta requires an actual change in the
 computed parent foreground. Unchanged parent styles keep the retained compute
 function and dependency graph; explicit child foregrounds retain their immutable
 style when only the parent colour changes. For subject-local selectors, each binding retains its own

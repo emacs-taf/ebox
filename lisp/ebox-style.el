@@ -2031,7 +2031,8 @@ child color, the copied value follows NEW-PARENT-STYLE.  OLD-PARENT-STYLE and
 NEW-PARENT-STYLE must have identical non-color inherited fingerprints; any
 provenance or parent-shape mismatch returns nil for normal ECSS computation.
 An unchanged parent color is not a delta: return nil so the caller can reuse
-the existing style binding, its compute function and dependency graph."
+the existing style binding, its compute function and dependency graph.
+Inherited color activation or removal also uses normal ECSS computation."
   (when (and (ecss-computed-style-p style)
              (not (eq old-parent-style new-parent-style))
              (proper-list-p declarations)
@@ -2046,7 +2047,13 @@ the existing style binding, its compute function and dependency graph."
                   (ebox-style--inherited-style-signature-without-theme-color new-parent-style)))
         (if (ecss-computed-style-specified-p style 'ebox/color)
             style
-          (when (equal (ecss-computed-style-value style 'ebox/color) old-color)
+          (when (and (equal (ecss-computed-style-value style 'ebox/color) old-color)
+                     ;; Initial/active transitions change projection metadata,
+                     ;; not just one inherited value; use the full cascade.
+                     (eq (not (memq 'ebox/color
+                                    (ecss-computed-style-active-properties style)))
+                         (not (memq 'ebox/color
+                                    (ecss-computed-style-active-properties new-parent-style)))))
             ;; The public values accessor already detaches mutable values.
             ;; Only the inherited value changes before the immutable result
             ;; is constructed; no second intermediate tree copy is needed.

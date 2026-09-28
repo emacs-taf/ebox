@@ -31,6 +31,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Retained children with their own text color now inherit changes to a parent's
+  font size, weight and style. Failed publications preserve the prior inherited
+  typography and allow a subsequent update to retry.
+
 - Structural updates retain unchanged computed-style bindings instead of
   treating every explicitly coloured child as a parent-colour transition.
   Actual inherited colour and typography changes still follow the cascade.

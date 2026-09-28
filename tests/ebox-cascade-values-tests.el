@@ -185,5 +185,64 @@
         (should (equal (ebox-cascade-value-test--appearance (buffer-string))
                        (ebox-cascade-value-test--appearance (ebox-render input))))))))
 
+(defun ebox-cascade-value-test--font-tree (&rest properties)
+  "Build colored descendants which inherit parent font PROPERTIES."
+  (ebox-build
+   (append
+    '(column :id "root")
+    (unless (plist-member properties :color) '(:color "#223344"))
+    properties
+    '((text "Plain")
+      (column :color "#446688"
+              (text "Inherited")
+              (text :color "#884466" "Colored")
+              (text :font-size 14 "Fixed"))))))
+
+(ert-deftest ebox-cascade-values-inherit-font-updates-through-explicit-colors ()
+  "Retained colored children inherit font changes exactly like fresh rendering."
+  (with-temp-buffer
+    (ebox-render-to-buffer (current-buffer)
+                          (ebox-cascade-value-test--font-tree))
+    (dolist (properties
+             (list '(:font-size 20)
+                   '(:font-size 16 :font-weight bold)
+                   '(:font-size 24 :font-weight normal :font-style italic)
+                   (list :font-size (ecss-wide-value 'initial)
+                         :font-weight 'normal :font-style 'normal)))
+      (apply #'ebox-region-update "root" properties)
+      (should
+       (equal
+        (ebox-cascade-value-test--appearance (buffer-string))
+        (ebox-cascade-value-test--appearance
+         (ebox-render (apply #'ebox-cascade-value-test--font-tree properties))))))))
+
+(ert-deftest ebox-cascade-values-font-inheritance-survives-publication-rejection ()
+  "Rejecting a font publication preserves inherited styles for the next update."
+  (with-temp-buffer
+    (let* ((buffer (current-buffer))
+           (before (ebox-cascade-value-test--font-tree :font-size 16))
+           (next (ebox-cascade-value-test--font-tree :font-size 24)))
+      (ebox-render-to-buffer buffer before)
+      (let ((text (buffer-string))
+            (revision (ebox-surface-buffer-revision buffer)))
+        (should-error
+         (ebox-framework-spi-update
+          buffer next (lambda (_report) (user-error "Reject inherited font"))
+          (lambda (_report) nil))
+         :type 'user-error)
+        (should (equal-including-properties text (buffer-string)))
+        (should (= revision (ebox-surface-buffer-revision buffer)))
+        (ebox-commit buffer next)
+        (should
+         (equal (ebox-cascade-value-test--appearance (buffer-string))
+                (ebox-cascade-value-test--appearance (ebox-render next)))))
+      (ebox-region-update "root" :font-size 20 :color "#667788")
+      (should
+       (equal
+        (ebox-cascade-value-test--appearance (buffer-string))
+        (ebox-cascade-value-test--appearance
+         (ebox-render (ebox-cascade-value-test--font-tree
+                       :font-size 20 :color "#667788"))))))))
+
 (provide 'ebox-cascade-values-tests)
 ;;; ebox-cascade-values-tests.el ends here
