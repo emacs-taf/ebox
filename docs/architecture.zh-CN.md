@@ -363,6 +363,9 @@ absolute 所有者的纯尺寸变化可以跳过这次渲染。`ebox-elastic` �
 `tests/ebox-prepared-resize-tests.el` 将每次结果与全新渲染比较。flow 所有者、
 裁剪或非整数尺寸，以及尺寸与其他光栅值同时变化的情况仍使用普通渲染。
 
+两次学习样本的实际行数必须分别等于声明高度。min/max 钳制或 content-box 装饰
+打破这一对应关系时，保留普通渲染的结果，不创建会索引不存在行形状的尺寸模型。
+
 class 变体使用原有 source token 语法，冷编译私有 selector view 与有限候选索引；
 ECSS 始终匹配当前 subject。任何观察变化 token 的 rule/scope 都拒绝，避免多个 Host
 合批时触发未证明的关系规则。原生 focus/active 共用私有 source/subject 单元及固定

@@ -893,7 +893,13 @@ replay of the already known axis."
                                (ebox-update--boundary-elastic-scroll-safe boundary))
                            (ebox-elastic--model node signature)))
                (result nil))
-    (when (and lines (cl-every (lambda (line) (> (length line) 0)) lines))
+    ;; Min/max constraints, content-box decoration and clipping can make
+    ;; declared heights differ from materialized rows.  The model indexes
+    ;; complete rows by those heights, so neither sample proves a response
+    ;; unless the declared and rendered extents agree.  Keep the ordinary
+    ;; render in that case; there is no learned response to replay.
+    (when (and lines (= (length rows) old-height) (= (length lines) height)
+               (cl-every (lambda (line) (> (length line) 0)) lines))
       (cond
        ((= old-height height)
         (when (= (length rows) (length lines))

@@ -258,5 +258,58 @@
             (should (ebox-geometry-apply operation (vector (list 'px width) '(lh 4))))
             (ebox-resize-test--assert-fresh)))))))
 
+(ert-deftest ebox-prepared-resize-respects-materialized-height-constraints ()
+  "Constrained and decorated heights keep width/height updates fresh and atomic."
+  (dolist (case '((40 :max-height (lh 20))
+                  (6 :min-height (lh 12))
+                  (14 :box-sizing content-box :padding ((lh 1) (px 2)))))
+    (let ((ebox-viewport-width 400) (ebox-viewport-height 40))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(box :width (px 400) :height (lh 40) :overflow hidden
+                (box :id "panel" :position absolute :left (px 0) :top (lh 0)
+                     :width (px 120) :height (lh ,(car case))
+                     ,@(cdr case) :z-index 1 :overflow hidden
+                     :background-color "#223344"
+                     (flex :flex-direction row :justify-content space-between
+                           (box "X") (box "Panel") (box "O"))
+                     (box "Body") (box "Footer")))))
+        (let* ((reject nil) (state 'before)
+               (operation
+                (ebox-update-prepare
+                 (current-buffer) [["panel" [:width :height]]]
+                 (lambda ()
+                   (setq state 'after)
+                   (when reject (error "Reject constrained resize")))
+                 (lambda () (setq state 'before)))))
+          (should operation)
+          ;; The first width change previously indexed a 20-row response as
+          ;; 40 rows when max-height constrained the declared panel height.
+          (dolist (width '(122 118 160 202 198))
+            (should (ebox-update-apply
+                     operation (vector (vector (list 'px width) (list 'lh (car case)))) [0]))
+            (should (equal (plist-get (ebox-region-geometry "panel") :width) (list 'px width)))
+            (ebox-resize-test--assert-fresh))
+          (dolist (height '(14 18 40 6 20))
+            (let ((before (buffer-string))
+                  (revision (ebox-surface-buffer-revision (current-buffer)))
+                  (report (ebox-buffer-update-report (current-buffer)))
+                  (geometry (ebox-region-geometry "panel"))
+                  (values (vector (vector '(px 180) (list 'lh height)))))
+              (setq reject t state 'before)
+              (should-error (ebox-update-apply operation values [0]))
+              (should (eq state 'before))
+              (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+              (should (equal report (ebox-buffer-update-report (current-buffer))))
+              (should (equal geometry (ebox-region-geometry "panel")))
+              (should (equal-including-properties before (buffer-string)))
+              (setq reject nil)
+              (should (ebox-update-apply operation values [0]))
+              (should (eq state 'after))
+              (should (equal (plist-get (ebox-region-geometry "panel") :height) (list 'lh height)))
+              (ebox-resize-test--assert-fresh))))))))
+
 (provide 'ebox-prepared-resize-tests)
 ;;; ebox-prepared-resize-tests.el ends here

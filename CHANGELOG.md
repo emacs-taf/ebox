@@ -31,6 +31,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Resizing a positioned panel whose declared height is clamped by min/max
+  constraints or expanded by content-box decoration no longer indexes missing
+  elastic rows. Such samples keep their ordinary render until declared and
+  materialized heights agree, preserving size updates and rollback.
 - Prepared movement can be rebuilt after ordinary Text updates expand a
   positioned pane into more rows. Growing its retained mount pool now preserves
   the accepted publication generation and its rollback baseline instead of

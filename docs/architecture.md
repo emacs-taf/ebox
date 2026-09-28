@@ -517,6 +517,11 @@ rows as the renderer, including the odd pixel of a centered title, so
 Flow owners, clipped or non-integral sizes and changes that combine size
 with another raster value keep the ordinary render.
 
+Both learning samples must materialize exactly their declared row heights.
+Min/max clamping or content-box decoration can break that correspondence;
+those samples keep the ordinary renderer's result and do not create a model
+whose row indices would refer to absent shapes.
+
 Class variants compile to the existing source token grammar and a private
 selector view. Candidate indexes contain the finite class superset; ECSS always
 matches the current subject. Any rule/scope that observes a changing token is
