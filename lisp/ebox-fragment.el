@@ -124,11 +124,19 @@ Backend marker and buffer span data are intentionally excluded."
           (setq signature (plist-put signature field value)))))
     signature))
 
+(defun ebox-fragment--registry-signature-keys (signature)
+  "Return computed engine keys owned by registry SIGNATURE classification.
+Typography is represented separately by its resolved font fact, and
+shorthands have already expanded before a computed node is inspected."
+  (delete-dups
+   (cl-loop for property in ebox-style--property-definitions
+            when (and (eq (plist-get property :signature) signature)
+                      (not (plist-get property :shorthand))
+                      (not (eq (plist-get property :group) 'typography)))
+            append (ebox-style--definition-engine-targets property))))
+
 (defconst ebox--paint-style-signature-keys
-  '(:color :bgcolor :visibility
-    :text-decoration-line :text-decoration-color :text-decoration-style
-    :border-left-color :border-right-color
-    :border-top-color :border-bottom-color)
+  (ebox-fragment--registry-signature-keys 'paint)
   "Box properties that affect paint without changing layout geometry.")
 
 (defconst ebox--typography-style-signature-keys
@@ -136,23 +144,15 @@ Backend marker and buffer span data are intentionally excluded."
   "Typography properties whose resolved metrics may change geometry.")
 
 (defconst ebox--geometry-style-signature-keys
-  (append
-   '(:box-sizing
-     :width :min-width :max-width
-     :height :min-height :max-height)
-   ebox--typography-style-signature-keys
-   '(:padding-left-pixel :padding-right-pixel
-     :padding-top-height :padding-bottom-height
-     :margin-left-pixel :margin-right-pixel
-     :margin-top-height :margin-bottom-height
-     :border-left-pixel :border-left-style
-     :border-right-pixel :border-right-style
-     :border-top-pixel :border-top-style
-     :border-bottom-pixel :border-bottom-style
-     :text-align :vertical-align
-     :overflow :wrap-mode
-     :flex-props :flex-participation))
-  "Style signature keys that require layout or owner rerender work.")
+  (delete-dups
+   (append
+    (ebox-fragment--registry-signature-keys 'layout)
+    ebox--typography-style-signature-keys
+    '(:vertical-align :flex-props :flex-participation)))
+  "Computed engine fields that require layout or owner rerender work.
+The style registry owns the property-to-engine mapping.  Typography compares
+its resolved font fact rather than declarations; container and item fields
+are collected from their computed runtime owners by the node signature.")
 
 (defconst ebox--structure-style-signature-keys
   '(:display)
@@ -174,12 +174,27 @@ Backend marker and buffer span data are intentionally excluded."
 (defun ebox-fragment-node-style-signature (node)
   "Return NODE's display, layout, flex, and paint style signature."
   (when (listp node)
-    (let ((signature (list :display (ebox--computed-display node))))
-      (when-let* ((style-node (ebox-fragment-style-source-node node)))
-        (dolist (key ebox--style-signature-keys)
-          (when (plist-member style-node key)
-            (setq signature
-                  (plist-put signature key (plist-get style-node key)))))
+    (let* ((signature (list :display (ebox--computed-display node)))
+           (style-node (ebox-fragment-style-source-node node))
+           (config (plist-get node :ebox-layout-config))
+           ;; Typed containers own computed child-layout properties in
+           ;; LayoutConfig; legacy containers carry them in :props.  Read
+           ;; these effective values, not declarations, alongside frame and
+           ;; item fields so cascade-only changes have complete render effects.
+           (layout-props (if config (ebox-layout-config-props config)
+                           (plist-get node :props))))
+      (dolist (key ebox--style-signature-keys)
+        (when-let* ((entry (or (plist-member node key)
+                              (and (not (eq node style-node))
+                                   (plist-member style-node key))
+                              (plist-member layout-props key))))
+          ;; Pure Text and previously untouched Boxes can omit optional
+          ;; placement defaults.  Materializing an identical schema default
+          ;; during style preparation must not invent a geometry change.
+          (let ((default (plist-member ebox-style--box-runtime-defaults key)))
+            (unless (and default (equal (cadr entry) (cadr default)))
+              (setq signature (plist-put signature key (cadr entry)))))))
+      (when style-node
         (when-let* ((participation (ebox--flex-participation-props style-node)))
           (setq signature
                 (plist-put signature :flex-participation participation))))

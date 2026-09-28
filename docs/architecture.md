@@ -56,6 +56,12 @@ whether its current display contains fractional widths. An integral intermediate
 result keeps that evidence for the next update. Computed-effect normalization
 also preserves already classified selector metadata; normalizing a retained
 state twice must not turn a display-neutral interaction into a root update.
+Computed render-effect signatures derive their engine fields from the style
+registry. Box frame and item effects use their projected node values, container
+effects use the computed LayoutConfig, and typography uses the resolved font
+fact. Position, stacking, anchoring, and track/alignment changes therefore
+remain geometry effects even when a selector change is their only source
+delta; unchanged computed values do not become render work.
 
 The style graph is owned by one published node generation. Complete object
 projection selects only states whose objects and bindings belong to that

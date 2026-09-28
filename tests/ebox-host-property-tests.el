@@ -219,5 +219,134 @@ publication stays consistent."
             (ebox-host-property-test--matches (apply #'input step))
             (setq previous next)))))))
 
+(ert-deftest ebox-host-properties-classify-positioned-effects-and-rollback ()
+  "Computed positioning changes preserve geometry work, hits and rollback."
+  (dolist (change '((:left (ch 1) (ch 5))
+                    (:top (lh 1) (lh 4))
+                    (:position absolute static)
+                    (:z-index 2 -1)
+                    (:layer local root)
+                    (:anchor nil anchor-a)
+                    (:placement bottom-start top-start)))
+    (let* ((activated nil)
+           (target-map (ebox-keymap-create
+                        :activate (lambda () (setq activated 'target))))
+           (base-map (ebox-keymap-create
+                      :activate (lambda () (setq activated 'base))))
+           (key (car change))
+           (before-style
+            (plist-put
+             (list :position 'absolute :left '(ch 1) :top '(lh 1)
+                   :width '(ch 4) :height '(lh 1) :z-index 2 :layer 'local
+                   :anchor (when (eq key :placement) 'anchor-a)
+                   :placement 'bottom-start)
+             key (cadr change)))
+           (after-style (plist-put (copy-tree before-style) key (caddr change))))
+      (cl-labels
+          ((target (style)
+             `(target box ,style (:keymap ,target-map)
+                      ((target-text text nil nil "MOVE"))))
+           (scene (style)
+             (ebox-host-property-test--input
+              `(root box (:position relative :width (ch 16) :height (lh 8)) nil
+                     ((heading text nil nil "HEADER")
+                      (host box (:position relative :width (ch 16) :height (lh 7)) nil
+                            ((under box (:position absolute :width (ch 16)
+                                                   :height (lh 7) :z-index 0)
+                                    (:keymap ,base-map)
+                                    ((under-text text nil nil
+                                                 "0123456789ABCDEF\n0123456789ABCDEF\n0123456789ABCDEF\n0123456789ABCDEF\n0123456789ABCDEF\n0123456789ABCDEF\n0123456789ABCDEF")))
+                             (anchor-a box (:position absolute :left (ch 2)
+                                                      :top (lh 2) :width (ch 4)
+                                                      :height (lh 1) :z-index 1)
+                                       (:keymap ,base-map)
+                                       ((anchor-text text nil nil "BASE")))
+                             ,(target style)))))))
+           (candidate (previous next)
+             (let ((candidate (ebox-candidate-begin (current-buffer))))
+               (ebox-candidate-update-host-properties
+                candidate 'target previous next)
+               candidate)))
+        (with-temp-buffer
+          (let* ((previous (scene before-style))
+                 (next (ebox-host-property-test--input (target after-style))))
+            (ebox-render-to-buffer (current-buffer) previous)
+            (ebox-buffer-set-observer (current-buffer) (lambda (_buffer _report)))
+            (let ((accepted (ebox-host-property-test--visible (buffer-string)))
+                  (revision (plist-get (ebox-surface-buffer-snapshot
+                                        (current-buffer)) :revision)))
+              (should-error
+               (ebox-commit (current-buffer) (candidate previous next)
+                            (lambda (_report) (error "Reject positioned update"))))
+              (should (equal accepted
+                             (ebox-host-property-test--visible (buffer-string))))
+              (should (= revision (plist-get (ebox-surface-buffer-snapshot
+                                              (current-buffer)) :revision)))
+              (ebox-activate (ebox-host-ref-position (current-buffer) 'target) t)
+              (should (eq activated 'target)))
+            (ebox-commit (current-buffer) (candidate previous next))
+            (let ((report (ebox-buffer-update-report (current-buffer))))
+              (ert-info ((format "Positioned property %S: %S" key report))
+                (should (memq 'geometry (plist-get report :dirty-kinds)))
+                (should (memq key (plist-get report :dirty-keys)))))
+            (ebox-host-property-test--matches (scene after-style))
+            (setq activated nil)
+            (goto-char (point-min))
+            (if (search-forward "MOVE" nil t)
+                (progn
+                  (ebox-activate (- (point) 4) t)
+                  (should (eq activated 'target)))
+              (should (eq key :z-index))
+              (goto-char (point-min))
+              (should (search-forward "0123" nil t))
+              (ebox-activate (- (point) 4) t)
+              (should (eq activated 'base)))
+            ;; Repeating the exact author value creates no geometry effect.
+            (ebox-commit (current-buffer) (candidate next next))
+            (should-not (memq 'geometry
+                              (plist-get (ebox-buffer-update-report (current-buffer))
+                                         :dirty-kinds)))
+            (ebox-host-property-test--matches (scene after-style))))))))
+
+(ert-deftest ebox-host-properties-classify-computed-container-effects ()
+  "Selector-driven frame and LayoutConfig changes publish their computed effects."
+  (dolist (case '((box :left (ch 0) (ch 4)
+                      (:position relative :width (ch 24) :height (lh 3)))
+                  (flex :justify-content flex-start flex-end
+                        (:width (ch 24) :height (lh 3)))
+                  (grid :grid-template-columns ((ch 4) (ch 4)) ((ch 8) (ch 4))
+                        (:width (ch 24) :height (lh 3)))))
+    (pcase-let ((`(,tag ,key ,old-value ,new-value ,style) case))
+      (cl-labels
+          ((input (class &optional omit-children)
+             (ebox-host-property-test--input
+              `(root box (:width (ch 32) :height (lh 5)) nil
+                     ((panel ,tag ,style nil
+                             ,(unless omit-children
+                                '((first box (:width (ch 4)) nil
+                                         ((first-text text nil nil "AAAA")))
+                                  (second box (:width (ch 4)) nil
+                                          ((second-text text nil nil "BBBB")))))
+                             ,class (("&" ,key ,old-value)
+                                     ("&.shift" ,key ,new-value))))))))
+        (with-temp-buffer
+          (let* ((previous (input nil))
+                 (next (input "shift" t))
+                 (candidate nil)
+                 (before nil))
+            (ebox-render-to-buffer (current-buffer) previous)
+            (setq before (ebox-host-property-test--visible (buffer-string)))
+            (ebox-buffer-set-observer (current-buffer) (lambda (_buffer _report)))
+            (setq candidate (ebox-candidate-begin (current-buffer)))
+            (ebox-candidate-update-host-properties candidate 'panel previous next)
+            (ebox-commit (current-buffer) candidate)
+            (let ((report (ebox-buffer-update-report (current-buffer))))
+              (ert-info ((format "Computed property %S: %S" key report))
+                (should (memq 'geometry (plist-get report :dirty-kinds)))
+                (should (memq key (plist-get report :dirty-keys)))))
+            (should-not (equal before
+                               (ebox-host-property-test--visible (buffer-string))))
+            (ebox-host-property-test--matches (input "shift"))))))))
+
 (provide 'ebox-host-property-tests)
 ;;; ebox-host-property-tests.el ends here

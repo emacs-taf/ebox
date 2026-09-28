@@ -31,6 +31,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Retained Host property and selector updates preserve position, stacking,
+  anchoring and container layout effects during incremental classification.
+  These changes now schedule geometry work instead of being treated as
+  display-neutral metadata, preserving visible output and interaction targets.
 - A prepared absolute panel resize no longer signals `wrong-type-argument`
   when its rows changed between size changes: the learned size response is
   inherited only while it still describes the current rows, and a row whose
