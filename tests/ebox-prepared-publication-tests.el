@@ -88,6 +88,115 @@ MOVING-STYLE appends declarations to the moving panel's style."
           (should (equal (ebox-host-ref-bounds live ref)
                          (ebox-host-ref-bounds (current-buffer) ref))))))))
 
+(ert-deftest ebox-prepared-publication-preserves-sparse-roles-through-many-occluders ()
+  "Sparse chrome and dense content retain ownership through fragmented exposure."
+  (dolist (cohort '(nil t))
+    (ebox-prepared-publication-test--with-buffer
+      (let ((activated 0) reject saved-caller (caller 0)
+            (builder (ebox-source-builder-create))
+            (refs '(surface covered moving bar-1 bar-2 bar-3 bar-4)))
+        (cl-labels
+            ((box (identity style children &optional keymap)
+               (let* ((declarations (ebox-style-compile-form 'box style))
+                      (interactions (and keymap (list :keymap keymap :tab-index 0)))
+                      (handle (ebox-source-builder-bind
+                               builder :identity identity :key identity :id identity
+                               :declarations declarations :interactions interactions)))
+                 (apply #'ebox-box-create
+                        (append (ebox-canonical-box-configuration 'box declarations)
+                                (list :source-handle handle :source-builder builder
+                                      :owned-facts (ebox-canonical-facts-from-declarations
+                                                    'box declarations interactions)
+                                      :children children)))))
+             (apply-values (operation values)
+               (if cohort
+                   (ebox-update-apply operation (vector values) [0])
+                 (ebox-geometry-apply operation values)))
+             (valid-p (operation)
+               (if cohort (ebox-update-valid-p operation)
+                 (ebox-geometry-valid-p operation)))
+             (text (identity value)
+               (ebox-text-create
+                :value value :source-handle
+                (ebox-source-builder-bind builder :identity identity)
+                :owned-facts (ebox-canonical-facts-from-declarations 'text nil))))
+          (let* ((map (ebox-keymap-create :activate (lambda () (cl-incf activated))))
+                 (covered
+                  (box 'covered
+                       '(:position absolute :left (ch 0) :top (lh 1)
+                                   :width (ch 78) :height (lh 30) :z-index 0
+                                   :background-color "blue" :padding ((lh 1) (ch 1))
+                                   :border ((px 1) solid "white"))
+                       (list (text 'content (mapconcat (lambda (_row) "OWNED CONTENT")
+                                                       (number-sequence 1 28) "\n")))
+                       map))
+                 (bars
+                  (cl-loop for ref in '(moving bar-1 bar-2 bar-3 bar-4)
+                           for index from 1 collect
+                           (box ref
+                                `(:position absolute :left (ch 84) :top (lh 2)
+                                            :width (ch 3) :height (lh 28) :z-index ,index
+                                            :background-color "red")
+                                (list (text (list ref 'title) "BAR")))))
+                 (root (box 'surface '(:width (ch 90) :height (lh 38)
+                                              :padding ((lh 1) (ch 1))
+                                              :border ((px 1) solid "gray"))
+                            (cons covered bars))))
+            (ebox-render-to-buffer
+                (current-buffer)
+              (ebox-canonical-input-create (list root) (ebox-source-builder-finish builder))))
+          ;; A cohort also borrows a scene first created by public geometry,
+          ;; including a second target whose operation copies that scene.
+          (when cohort
+            (should (ebox-geometry-prepare (current-buffer) 'moving [:left]))
+            (should (ebox-geometry-prepare (current-buffer) 'bar-4 [:left])))
+          (let ((operations
+                 (mapcar
+                  (lambda (ref)
+                    (let ((operation
+                           (let ((stage (lambda ()
+                                          (cl-incf caller)
+                                          (when reject (error "Reject fragmented exposure"))))
+                                 (rollback (lambda () (setq caller saved-caller))))
+                             (if cohort
+                                 (ebox-update-prepare
+                                  (current-buffer) (vector (vector ref [:left :top :z-index]))
+                                  stage rollback)
+                               (ebox-geometry-prepare
+                                (current-buffer) ref [:left :top :z-index] stage rollback)))))
+                      (should operation)
+                      operation))
+                  '(moving bar-1 bar-2 bar-3 bar-4))))
+            ;; Multiple tall occluders split the same content and border owners
+            ;; on many rows; moving them away rejoins those intervals.
+            (dolist (direction '(in out in))
+              (cl-loop for operation in (cl-subseq operations 0 3) for index from 1 do
+                       (let ((values (vector (list 'ch (if (eq direction 'in)
+                                                           (* index 12) 84))
+                                             '(lh 2) index))
+                             (before (buffer-string))
+                             (revision (ebox-surface-buffer-revision (current-buffer)))
+                             (bounds (mapcar (lambda (ref)
+                                               (ebox-host-ref-bounds (current-buffer) ref))
+                                             refs)))
+                         (setq reject t saved-caller caller)
+                         (should-error (apply-values operation values))
+                         (should (= caller saved-caller))
+                         (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+                         (should (equal-including-properties before (buffer-string)))
+                         (should (equal bounds
+                                        (mapcar (lambda (ref)
+                                                  (ebox-host-ref-bounds (current-buffer) ref))
+                                                refs)))
+                         (should (valid-p operation))
+                         (setq reject nil)
+                         (should (apply-values operation values))
+                         (ebox-prepared-publication-test--assert-authority))))
+            (let ((position (ebox-host-ref-position (current-buffer) 'covered)))
+              (should position)
+              (ebox-activate position t)
+              (should (= activated 1)))))))))
+
 (ert-deftest ebox-prepared-publication-reveals-occluded-host-and-wrapper-bounds ()
   "Prepared moves update exposed Host bounds, interactions and fixed wrapper edges."
   (ebox-prepared-publication-test--with-buffer

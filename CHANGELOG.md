@@ -35,6 +35,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Prepared geometry reserves sparse border and interaction roles from their own
+  raster intervals, reducing cold mount allocation while retaining bounded growth.
+  Shared prepared targets remain usable after a pool expansion is rejected and
+  rolled back.
 - Metadata-only focus and pressed updates retain the current layer composition
   baseline. Panel replacements requiring complete stylesheet computation verify
   their full computed effects before reusing other layers.

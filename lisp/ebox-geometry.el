@@ -1169,6 +1169,9 @@ continues to reject these scenes, including reuse of an existing scene."
 An owner whose interval pool is exhausted grows within its fixed bound; its
 publication frame is then replaced over the grown slots before the retry.
 Return the active mount count, or nil when the bound cannot represent RENDERED."
+  ;; Operations copy scalar bindings but share one publication frame.  A grown
+  ;; pool replaces that frame even when this attempt subsequently rolls back.
+  (setq holder (ebox-geometry--operation-session holder))
   (let ((projection (ebox-geometry--operation-projection holder))
         count)
     (while (and (null (setq count (ebox-surface--geometry-mount-fill
@@ -1313,7 +1316,8 @@ source, display, revision, primitive geometry and paired caller state."
                 (setq result
                       (ebox-incremental--with-phase 'transaction
                                                     (ebox--pub-frame-publish
-                                                     (ebox-geometry--operation-frame operation) rendered
+                                                     (ebox-geometry--operation-frame
+                                                      (ebox-geometry--operation-session operation)) rendered
                                                      (ebox-geometry--operation-state operation) count
                                                      (ebox-geometry--route-damage root-route)
                                                      (ebox-geometry--route-damage-count root-route))))))

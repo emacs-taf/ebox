@@ -461,8 +461,12 @@ The prepared publisher remains inside the existing surface authority. It reuses
 two mount/index banks, callback bindings, reports and rollback storage. Cold
 ownership tokens map raster slices directly to retained objects and ancestors;
 changed rows refresh visible intervals in a fixed mount pool while unchanged row
-intervals shift by their retained character offsets. Publication receives known
-old/new damage ranges, edits them from the end, and updates only their property
+intervals shift by their retained character offsets. Each measured owner/tag
+combination reserves capacity from its own raster intervals; sparse chrome does
+not inherit the largest content footprint of another role on the same object.
+Existing authoritative mounts and the common growth bound remain intact.
+Publication receives known old/new damage ranges, edits them from the end, and
+updates only their property
 runs. Private ownership tokens are stripped before publication. Source preparation owns separate private declaration and runtime numeric
 cells, which each stage synchronizes explicitly. Snapshot export freezes these
 cells; a subsequent general publication reads the latest declarations and
@@ -472,6 +476,8 @@ unexpected writes reject the publication.
 When an ordinary update retains topology but replaces authoritative mount
 records, frame refresh adopts that accepted generation. An expanded interval
 pool replaces only a current frame and must contain its complete previous pool.
+That replacement belongs to the shared scene, so every prepared target uses the
+same frame after either acceptance or rollback.
 The ordinary publisher's accepted mounts remain the rollback baseline even
 when they differ from the compiled pool. Initial preparation still requires
 every authoritative mount; topology or generation failure cannot authorize

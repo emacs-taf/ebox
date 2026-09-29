@@ -6257,10 +6257,11 @@ the first RASTERS element must then be its complete joined output.  Its
 row interval cache is primed here without changing the complete mount pool.
 Optional LAYER-RASTERS lists the RASTERS elements holding unoccluded layer
 pixels and LAYER-COUNT the number of movable layers.  An owner visible in those
-pixels or in the joined ROWS then reserves twice its object's largest known
-interval count plus one interval per layer: a moved layer splits at most one
+pixels or in the joined ROWS then reserves twice its own known interval
+count plus one interval per layer: a moved layer splits at most one
 interval per row.  The reservation never exceeds INTERVAL-CAPACITY plus the
-row count, which objects absent from every raster keep.  A frame needing more
+row count.  An owner without its own interval evidence retains the object's
+known footprint as a conservative fallback.  A frame needing more
 intervals grows the exhausted pools through
 `ebox-surface--geometry-mount-grow' up to that bound."
   (unless (and (integerp interval-capacity) (> interval-capacity 0))
@@ -6379,16 +6380,24 @@ intervals grows the exhausted pools through
     (maphash
      (lambda (_object entries)
        (let ((binding (vector nil nil))
-             ;; Every role owner of one object shares that object's footprint.
-             (known (and layer-count
-                         (cl-loop for entry in entries
-                                  maximize
-                                  (max (length (ebox-surface--geometry-owner-mounts (cdr entry)))
-                                       (gethash (cdr entry) joined-intervals 0)
-                                       (gethash (cdr entry) layer-intervals 0))))))
+             ;; A role without measured intervals still has its object's
+             ;; footprint as a conservative cold bound.  Measured roles must
+             ;; not inherit unrelated border/content interval counts.
+             (object-known
+              (and layer-count
+                   (cl-loop for entry in entries
+                            maximize
+                            (max (length (ebox-surface--geometry-owner-mounts (cdr entry)))
+                                 (gethash (cdr entry) joined-intervals 0)
+                                 (gethash (cdr entry) layer-intervals 0))))))
          (dolist (entry entries)
            (let* ((owner (cdr entry))
                   (existing (nreverse (ebox-surface--geometry-owner-mounts owner)))
+                  (owner-known (max (length existing)
+                                    (gethash owner joined-intervals 0)
+                                    (gethash owner layer-intervals 0)))
+                  (known (and layer-count
+                              (if (> owner-known 0) owner-known object-known)))
                   (bound (+ interval-capacity (length rows)))
                   (capacity
                    (cond
