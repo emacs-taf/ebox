@@ -487,5 +487,36 @@ publication stays consistent."
                  (plist-get (ebox-surface-buffer-snapshot buffer) :input))))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
+(ert-deftest ebox-host-properties-change-root-layer-membership-with-peer-paint ()
+  "Root layer insertion/removal and multiple panel paints share one exact commit."
+  (cl-labels
+      ((scene (open color)
+         (ebox-host-property-test--input
+          `(root box (:width (ch 24) :height (lh 8) :overflow hidden) nil
+                 ((left box (:position absolute :left (ch 0) :top (lh 1)
+                                       :width (ch 10) :height (lh 3) :z-index 1
+                                       :background-color ,color)
+                        nil ((left-text text nil nil "LEFT")))
+                  (right box (:position absolute :left (ch 12) :top (lh 1)
+                                        :width (ch 10) :height (lh 3) :z-index 2
+                                        :background-color ,color)
+                         nil ((right-text text nil nil "RIGHT")))
+                  ,@(when open
+                      '((dialog box (:position absolute :layer root :left (ch 6)
+                                               :top (lh 2) :width (ch 12) :height (lh 4)
+                                               :z-index 3 :background-color "white")
+                                nil ((dialog-text text nil nil "DIALOG"))))))
+                 nil (("box + box" :color "blue"))))))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (scene nil "gray"))
+      (dolist (step '((t "red") (nil "green") (t "yellow")))
+        (let ((candidate (ebox-candidate-begin (current-buffer)))
+              (next (apply #'scene step)))
+          (ebox-candidate-replace-host-ref candidate 'root next)
+          (ebox-commit (current-buffer) candidate)
+          (ebox-host-property-test--matches next)
+          (should (eq (and (ebox-host-ref-position (current-buffer) 'dialog) t)
+                      (car step))))))))
+
 (provide 'ebox-host-property-tests)
 ;;; ebox-host-property-tests.el ends here

@@ -10908,6 +10908,32 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
         :native-committed-owned-ranges
         (plist-get state :native-committed-owned-ranges)))
 
+(defun ebox-incremental--layer-raster-owner (entry dirty-set parents old-parents)
+  "Return (OWNER) when DIRTY-SET can stay in one absolute target of ENTRY.
+PARENTS and OLD-PARENTS resolve candidate and removed source paths.  Nil
+rejects a spatial change outside a target or across targets.  A list with a
+nil owner leaves metadata-only effects undecided until styles are computed;
+this source filter never certifies unchanged computed styles."
+  (catch 'outside
+    (let ((targets (make-hash-table :test 'equal)) target)
+      (dolist (record (plist-get entry :records))
+        (let ((node (plist-get record :node)))
+          ;; Anchor dependencies can propagate beyond the changed panel.
+          (when (plist-get node :anchor) (throw 'outside nil))
+          (when (eq (plist-get node :position) 'absolute)
+            (puthash (plist-get node :node-id) t targets))))
+      (dolist (dirty dirty-set)
+        (unless (eq (plist-get dirty :dirty-kind) 'metadata)
+          (let ((id (plist-get dirty :node-id)) owner)
+            (while (and id (not owner))
+              (when (gethash id targets) (setq owner id))
+              (setq id (or (ebox-runtime-index-get id parents)
+                           (ebox-runtime-index-get id old-parents))))
+            (unless (and owner (or (null target) (equal target owner)))
+              (throw 'outside nil))
+            (setq target owner))))
+      (list target))))
+
 (defun ebox-incremental--layer-raster-proof (old-state prepared candidate-state)
   "Prove one absolute panel owns every spatial effect in PREPARED.
 The panel may replace its descendants.  Its containing root plane, normal
@@ -10922,8 +10948,7 @@ reuses layout pixels; ordinary object projection and publication still run."
          (cache (plist-get old-state :layer-composition-cache))
          (entry (and (hash-table-p cache)
                      (gethash (cons root-id 'final) cache)))
-         (targets (make-hash-table :test 'equal))
-         target valid)
+         target)
     (when (and entry (or (plist-get entry :flow-output)
                         (plist-get entry :base-lines))
                (eql (plist-get old-state :layer-composition-revision)
@@ -10935,24 +10960,9 @@ reuses layout pixels; ordinary object projection and publication still run."
                (equal root-id (plist-get (plist-get old-state :root-node) :node-id))
                (not (member (plist-get root :region-id)
                             (plist-get old-state :scroll-region-ids))))
-      (setq valid t)
-      (dolist (record (plist-get entry :records))
-        (let ((node (plist-get record :node)))
-          ;; Anchor dependencies can propagate beyond the changed panel.
-          (when (plist-get node :anchor) (setq valid nil))
-          (when (eq (plist-get node :position) 'absolute)
-            (puthash (plist-get node :node-id) t targets))))
-      (dolist (dirty (plist-get prepared :dirty-set))
-        (unless (eq (plist-get dirty :dirty-kind) 'metadata)
-          (let ((id (plist-get dirty :node-id)) owner)
-            (while (and id (not owner))
-              (when (gethash id targets) (setq owner id))
-              (setq id (or (ebox-runtime-index-get id parents)
-                           (ebox-runtime-index-get id old-parents))))
-            (if (and owner (or (null target) (equal target owner)))
-                (setq target owner)
-              (setq valid nil)))))
-      (when (and valid target)
+      (setq target (car (ebox-incremental--layer-raster-owner
+                         entry (plist-get prepared :dirty-set) parents old-parents)))
+      (when target
         (let ((old (ebox-runtime-index-get target old-nodes))
               (next (ebox-runtime-index-get target nodes))
               (discard (make-hash-table :test 'equal)))
@@ -11016,9 +11026,14 @@ reuses layout pixels; ordinary object projection and publication still run."
                      (eql (plist-get old-state :layer-composition-revision)
                           (plist-get old-state :runtime-revision))
                      (hash-table-p (plist-get old-state :layer-composition-cache))
-                     (gethash
-                      (cons (plist-get (plist-get old-state :root-node) :node-id) 'final)
-                      (plist-get old-state :layer-composition-cache))
+                     (when-let* ((entry
+                                  (gethash
+                                   (cons (plist-get (plist-get old-state :root-node) :node-id) 'final)
+                                   (plist-get old-state :layer-composition-cache))))
+                       (ebox-incremental--layer-raster-owner
+                        entry (plist-get prepared :dirty-set)
+                        (plist-get candidate-state :parent-table)
+                        (plist-get old-state :parent-table)))
                      (list old-state prepared))
                 :layer-recompose-p
                 (and (fboundp 'ebox-layer-host-p)

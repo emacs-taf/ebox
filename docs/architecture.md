@@ -392,6 +392,9 @@ Later materialization copies a shared ledger's hash spine before writing.
 When styles require complete projection, the same computed-effect classifier
 checks the full styled closure before admitting raster reuse, including effects
 outside the changed source subtree. A missing or stale ledger declines reuse.
+Source changes already outside one retained absolute panel reject that deferred
+request before complete effect classification. Metadata with unresolved styles
+remains undecided until the same full computed closure is checked.
 
 A positioned subtree paints on its containing plane's physical text-row grid.
 The existing placement traversal checks every descendant's resolved canonical
