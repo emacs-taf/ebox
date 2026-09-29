@@ -699,10 +699,6 @@ Ebox 的观测总时长；transaction 包含其余提交／Ebox publication 工�
 定位节点；`:native-fallback-reason` 说明原生执行尝试未能生成受支持结果的原因。
 两者均保留正常的 Elisp 渲染。模块已经加载，不代表某次交互实际使用了原生布局。
 
-`:ownership-backend` 说明已接受发布的归属区间计算方式：`native` 使用数值归属模块，
-`elisp` 使用等价 Lisp 实现，nil 表示本次直接复用归属而未重新计算区间。
-它与布局后端独立；定位场景可以由 Lisp 布局、同时使用原生归属计算。
-
 可选字段 `:projection-rejections` 以
 `(:projection KIND :reasons (REASON ...))` 记录局部尝试。目前覆盖混合局部规划，
 以及已选局部计划在生成输出时退回普通投影的情况：

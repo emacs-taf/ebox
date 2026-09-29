@@ -120,16 +120,6 @@ and applies current styles to every node before native layout consumes it.
 Retained object identity alone never certifies style reuse; stable native
 updates still require the planner's prepared-style contract.
 
-Ordinary layered publications can also retain unaffected objects and style
-bindings independently of their pixel renderer. Admission requires a complete
-source delta, stable retained identities and parent edges, static style
-dependencies, and the complete affected inheritance closure. Finite scoped
-membership changes must preserve the ordered rules and membership of every
-unaffected subject. Changed bindings consume the prepared style once through
-their normal dependency and rollback journals. Candidate membership tables
-are copied before modification. Root composition may still run; this object
-projection proof does not establish a local layout or constant-time update.
-
 Canonical selector-metadata changes prepare the complete candidate style tree,
 including nodes styled only by rules. Both renderers receive the complete computed
 effects before planning, including changed nodes outside the source delta.
@@ -238,22 +228,6 @@ numeric coordinates, short strings without properties, and bounded collections.
 They never expose live surface or callback graphs to Emacs error reporting.
 Condition types and rollback order are preserved; caller-generated conditions
 keep their original data. Diagnostic payloads are not live-state capabilities.
-
-The optional native ownership index consumes numeric node/parent and region
-maps plus interned role programs. It expands ancestors, deduplicates owners and
-merges adjacent equal-tag intervals in one batch. Lisp retains the opaque
-objects and exact tags; Rust holds no Emacs values or buffer authority. Each
-candidate forks an immutable numeric baseline, applies topology deltas and
-invalidates dependent programs. Only programs used by the new output survive.
-Metadata-only updates retain this baseline for the next structural update.
-Unavailable modules and refused capacities use the equivalent Lisp path.
-
-The native result vector becomes an immutable indexed range descriptor after
-Lisp resolves its numeric identities. Publication consumes it directly when
-building final mount specifications, preserving existing interval order and
-rollback. A plist view is materialized only when a local coordinate proof
-needs it. This avoids intermediate attachment and snapshot copies; final
-mounts and Emacs text/property writes retain their existing owner.
 
 Projection planning shares numeric Ebox publication mount snapshots across its local proofs.
 This read view exists only during one planning pass and is discarded before Ebox publication

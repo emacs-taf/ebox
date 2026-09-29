@@ -21,7 +21,6 @@
 (require 'ebox-incremental)
 (require 'ebox-runtime-index)
 (require 'ebox-publication)
-(require 'ebox-native-ownership)
 
 (defvar ebox-region-types)
 (declare-function ebox--runtime-node-ids "ebox" (node))
@@ -595,123 +594,10 @@ owned; no per-fragment substring is allocated."
 (defun ebox-surface--style-state-table (previous-state)
   "Copy PREVIOUS-STATE style states for candidate binding lookup.
 Complete object projection selects the new generation's owned subset."
-  (if-let* ((previous (plist-get previous-state :style-binding-states)))
-      (copy-hash-table previous)
-    (make-hash-table :test 'eq :weakness 'key)))
-
-(defun ebox-surface--object-delta-ready-p (root previous-state overrides)
-  "Prove OVERRIDES' object delta preserves every unvisited subtree of ROOT."
-  (let* ((proof (plist-get overrides :object-projection-delta))
-         (ids (plist-get overrides :touched-node-ids))
-         (nodes (plist-get overrides :node-table))
-         (parents (plist-get overrides :parent-table))
-         (old-nodes (plist-get previous-state :node-table))
-         (old-parents (plist-get previous-state :parent-table))
-         (touched (make-hash-table :test 'eql)))
-    (and proof ids
-         (hash-table-p (plist-get proof :subjects))
-         (ebox-runtime-index-like-p nodes)
-         (ebox-runtime-index-like-p parents)
-         (hash-table-p (plist-get previous-state :surface-node-object-table))
-         (hash-table-p (plist-get previous-state :surface-projection-objects))
-         (hash-table-p (plist-get previous-state :surface-projection-bindings))
-         (or (plist-get proof :static-bindings-validated-p)
-             (when (ebox-incremental--static-style-bindings-p previous-state)
-               (plist-put proof :static-bindings-validated-p t)))
-         (equal (plist-get root :node-id)
-                (plist-get (plist-get previous-state :root-node) :node-id))
-         (progn
-           (dolist (id ids) (puthash id t touched))
-           (cl-every
-            (lambda (id)
-              (let ((node (ebox-runtime-index-get id nodes))
-                    (old (ebox-runtime-index-get id old-nodes)))
-                (and node
-                     ;; Changed parent paths or object kinds require their
-                     ;; own identity migration, outside this first delta.
-                     (or (null old)
-                         (and (eq (plist-get node :ebox-type) (plist-get old :ebox-type))
-                              (equal (ebox-tree-node-author-key
-                                      (plist-get previous-state :source-index) old)
-                                     (ebox-tree-node-author-key
-                                      (plist-get overrides :source-index) node))
-                              (equal (ebox-runtime-index-get id parents)
-                                     (ebox-runtime-index-get id old-parents))))
-                     ;; An inherited change must include every immediate
-                     ;; child in the prepared closure; repeat at that child.
-                     (or (null old)
-                         (and (equal (plist-get old :ebox-font-fact)
-                                     (plist-get node :ebox-font-fact))
-                              (equal (ebox-style--inherited-style-signature
-                                      (plist-get old :ebox-computed-style))
-                                     (ebox-style--inherited-style-signature
-                                      (plist-get node :ebox-computed-style))))
-                         (let ((complete t))
-                           (ebox-tree-for-each-direct-child
-                            node (lambda (child)
-                                   (unless (gethash (plist-get child :node-id) touched)
-                                     (setq complete nil))))
-                           complete)))))
-            ids)))))
-
-(defvar ebox-surface--prepared-object-styles-p nil
-  "Non-nil while installing a proved static candidate style closure.")
-
-(defun ebox-surface--project-object-delta
-    (context root source-index previous-state overrides node-root style-states
-             bindings-by-subject states-by-subject stylesheet-signature selector-token)
-  "Project a proved ordinary source delta without visiting retained subtrees."
-  (let* ((ebox-surface--prepared-object-styles-p t)
-         (nodes (plist-get overrides :node-table))
-         (parents (plist-get overrides :parent-table))
-         (ids (plist-get overrides :touched-node-ids))
-         (removed-ids (plist-get overrides :removed-node-ids))
-         (proof (plist-get overrides :object-projection-delta))
-         (subjects (plist-get proof :subjects))
-         (old-objects (plist-get previous-state :surface-node-object-table))
-         (objects (copy-hash-table old-objects))
-         (resolved (make-hash-table :test 'eql))
-         changed removed)
-    (dolist (id ids)
-      (when-let* ((object (gethash id old-objects))) (push object changed)))
-    (dolist (id removed-ids)
-      (when-let* ((object (gethash id old-objects)))
-        (push object removed)
-        (remhash object style-states))
-      (remhash id objects))
-    (ebox--pub-context-reuse-membership
-     context (plist-get previous-state :surface-projection-objects)
-     (plist-get previous-state :surface-projection-bindings) removed changed)
-    (ebox--pub-object-retain context node-root)
-    (cl-labels
-        ((seed-parent (id)
-           (when (and id (not (gethash id resolved)))
-             (let* ((node (ebox-runtime-index-get id nodes))
-                    (subject (ebox-tree-node-subject source-index node))
-                    (object (gethash id objects))
-                    (state (and object (gethash object style-states))))
-               (seed-parent (ebox-runtime-index-get id parents))
-               (when state
-                 (puthash subject (plist-get state :binding) bindings-by-subject)
-                 (puthash subject state states-by-subject))
-               (puthash id t resolved)))))
-      (dolist (id ids)
-        (let* ((node (ebox-runtime-index-get id nodes))
-               (parent-id (ebox-runtime-index-get id parents)))
-          (seed-parent parent-id)
-          (let ((object (ebox--pub-object-ensure
-                         context (if parent-id (gethash parent-id objects) node-root)
-                         (ebox-surface--node-key node) (ebox-surface--node-kind node))))
-            (ebox--pub-object-retain context object)
-            (plist-put node :surface-object object)
-            (puthash id object objects)
-            (ebox-surface--apply-node-style
-             source-index object node subjects bindings-by-subject states-by-subject
-             style-states stylesheet-signature selector-token t)
-            (puthash id t resolved)))))
-    (unless (gethash (plist-get root :node-id) objects)
-      (error "Candidate object delta lost its root"))
-    objects))
+  (let ((table (make-hash-table :test 'eq :weakness 'key)))
+    (when-let* ((previous (plist-get previous-state :style-binding-states)))
+      (maphash (lambda (object state) (puthash object state table)) previous))
+    table))
 
 (defun ebox-surface--project-style-states (context states node-objects)
   "Return STATES owned by CONTEXT's candidate NODE-OBJECTS and bindings.
@@ -1231,10 +1117,6 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
                (:runtime-revision . ,(plist-get state :runtime-revision))
                (:projection-kind . ,(plist-get state :projection-kind))
                (:native-frame-kind . ,(plist-get state :native-frame-kind))
-               (:ownership-backend
-                . ,(and (eql (plist-get state :ownership-backend-revision)
-                             (ebox--pub-surface-revision surface))
-                        (plist-get state :ownership-backend)))
                (:native-declined-reason . ,(plist-get state :native-render-declined))
                (:surface-revision . ,(ebox--pub-surface-revision surface))
                (:publication-scope . ebox--pub-surface)
@@ -1853,11 +1735,6 @@ PREVIOUS-STATE's node-object table."
          (range-splice-p
           (and (eq projection-kind 'mixed-owner-reflow)
                (ebox-surface--mixed-range-splice-p state-overrides)))
-         (object-delta-p
-          (and (null projection-kind)
-               (plist-get previous-state :layered-p)
-               (ebox-surface--object-delta-ready-p root previous-state state-overrides)))
-         object-delta-table
          (retained-span-style-p
           ;; Variable content can change its slot's text extent without
           ;; changing the already prepared cascade.  Rebuilding subjects here
@@ -1907,7 +1784,6 @@ PREVIOUS-STATE's node-object table."
          (states-by-subject (make-hash-table :test 'eq))
          (subjects-required-p
           (and style-required-p
-               (not object-delta-p)
                (not (eq projection-kind 'metadata))
                (not retained-native-style-p)
                (not (or retained-span-style-p
@@ -1962,12 +1838,6 @@ PREVIOUS-STATE's node-object table."
         (when (plist-member state-overrides key)
           (plist-put state-overrides key (make-hash-table :test 'eq)))))
     (cond
-     (object-delta-p
-      (setq object-delta-table
-            (ebox-surface--project-object-delta
-             context root source-index previous-state state-overrides node-root
-             style-state-table bindings-by-subject states-by-subject
-             stylesheet-signature selector-tree-token)))
      ;; Retained Ebox publication identity does not certify a node's candidate style.
      ;; Topology changes with cascade work use the same complete projection as
      ;; ordinary rendering before native layout consumes the styled nodes.
@@ -2024,8 +1894,6 @@ PREVIOUS-STATE's node-object table."
                        viewport-reflow viewport-reflow-mixed-scroll))
                previous-state)
           :source-index source-index
-          :object-projection-delta object-delta-p
-          :node-object-table object-delta-table
           :objects-by-node objects-by-node
           :style-binding-states style-state-table
           ;; Local computation can omit style bindings, but publication must
@@ -2142,7 +2010,6 @@ children again."
   (when style-required-p
     (setq source-index
           (ebox-tree-style-source-index root source-index ebox--render-root-parent-kind)))
-  (setq node-objects (or (plist-get projection :node-object-table) node-objects))
   (let* ((ebox-selector-view--current (ebox-source--index-selector-view source-index))
          (ebox-selector-view--topology (ebox-source--index-selector-topology source-index))
          (node-root (plist-get projection :node-root))
@@ -2168,8 +2035,6 @@ children again."
     (plist-put projection :source-index source-index)
     (plist-put projection :objects-by-node objects-by-node)
     (plist-put projection :retained-topology-state nil)
-    (plist-put projection :node-object-table nil)
-    (plist-put projection :object-projection-delta nil)
     (ebox--pub-object-retain context node-root)
     (ebox-surface--ensure-node-tree
      context node-root root source-index objects-by-node
@@ -2193,13 +2058,6 @@ children again."
 (defun ebox-surface--projection-result
     (context projection state output &optional projection-kind)
   "Complete CONTEXT PROJECTION for STATE from rendered OUTPUT."
-  ;; Metadata and retained-coordinate publications do not rebuild ownership.
-  ;; Carry their immutable numeric baseline forward so an intervening focus
-  ;; update does not make the next structural publication start cold again.
-  (when-let* ((previous (plist-get state :previous-native-ownership-state)))
-    (plist-put state :native-ownership-state previous))
-  (cl-remf state :previous-native-ownership-state)
-  (plist-put state :ownership-backend nil)
   (let* ((surface-root (plist-get projection :surface-root))
          (objects-by-node (plist-get projection :objects-by-node))
          (retained-topology (plist-get projection :retained-topology-state))
@@ -2234,8 +2092,7 @@ children again."
                                (not (plist-get (car proofs) :range-splice-p))))))
                (plist-get state :span-patch-retained-owned-ranges)))
          (node-objects
-          (or (plist-get projection :node-object-table)
-              (plist-get retained-topology :surface-node-object-table)
+          (or (plist-get retained-topology :surface-node-object-table)
               (and scroll-fast-p
                    (plist-get state :surface-node-object-table))
               (ebox-surface--node-object-table objects-by-node)))
@@ -2252,12 +2109,8 @@ children again."
     (cl-remf state :paint-property-contributions)
     (cl-remf state :span-patch-retained-owned-ranges)
     (plist-put state :surface-node-object-table node-objects)
-    ;; Candidate membership tables are no longer mutated after preparation.
-    ;; Keep their accepted identities as the next delta's copy-on-write base.
-    (plist-put state :surface-projection-objects (ebox--pub--context-retained context))
-    (plist-put state :surface-projection-bindings (ebox--pub--context-bindings context))
     (plist-put state :region-surface-object-table region-objects)
-    (unless (or retained-topology (plist-get projection :object-projection-delta))
+    (unless retained-topology
       (plist-put state :style-binding-states
                  (ebox-surface--project-style-states
                   context (plist-get state :style-binding-states) node-objects)))
@@ -2408,9 +2261,7 @@ record precedes logical ownership ranges, matching Ebox's normal content
 projection order; fragment and surface records follow unchanged."
   (unless records
     (error "Ebox native commit has no target mount records"))
-  (append (list (car records))
-          (ebox-surface--owned-range-list owned-ranges)
-          (cdr records)))
+  (append (list (car records)) owned-ranges (cdr records)))
 
 (defun ebox-surface--native-commit-batch
     (context state mount-records owned-ranges &optional retain-mount-state-p)
@@ -2561,7 +2412,7 @@ one large replacement and needlessly rewrite the rows between them."
                                :new-start start :new-end end)
                          intervals))))
              owner-set)
-          (dolist (range (ebox-surface--owned-range-list previous-owned-ranges))
+          (dolist (range previous-owned-ranges)
             (when (gethash (plist-get range :object) owner-set)
               (when-let* ((new-start
                           (ebox-surface--rebase-coordinate
@@ -2963,10 +2814,6 @@ namespace."
           (ebox-tree-node-source-declarations source-index node))
          (old-state (gethash object style-state-table))
          (old-binding (and old-state (plist-get old-state :binding)))
-         (prepared-existing-style
-          (and ebox-surface--prepared-object-styles-p old-state old-binding
-               (plist-get node :ebox-candidate-computed-style-p)
-               (plist-get node :ebox-computed-style)))
          (subject-style-context
           (and stylesheet-subject-local-p
                (ebox-surface--subject-style-context node subject stylesheet-signature)))
@@ -2994,8 +2841,7 @@ namespace."
          (new-parent-style
           (and parent-binding (ebox--pub-binding-last-value parent-binding)))
          (theme-explicit-delta-style
-          (and (not prepared-existing-style)
-               (not ebox-surface--rebuilding-computed-styles-p) old-state old-binding
+          (and (not ebox-surface--rebuilding-computed-styles-p) old-state old-binding
                selector-context-stable-p
                stylesheet-stable-p
                (ebox-style--theme-delta-computed
@@ -3005,8 +2851,7 @@ namespace."
                 old-parent-style
                 new-parent-style)))
          (theme-parent-delta-style
-          (and (not prepared-existing-style)
-               (not ebox-surface--rebuilding-computed-styles-p) old-state old-binding
+          (and (not ebox-surface--rebuilding-computed-styles-p) old-state old-binding
                (equal (plist-get old-state :declarations)
                       declarations)
                selector-context-stable-p
@@ -3069,7 +2914,6 @@ namespace."
               (plist-put
                new-state :compute
                (let ((captured new-state)
-                     (first-style prepared-existing-style)
                      (delta-style theme-delta-style)
                      (parent-delta-p theme-parent-delta-p)
                      (last-style (and old-binding
@@ -3095,17 +2939,7 @@ namespace."
                          (setq last-parent-style parent-style)
                          last-style))
                    (lambda ()
-                     (or (when first-style
-                           ;; Keep normal binding journals, dependency edges
-                           ;; and notifications.  The static delta compiler
-                           ;; already computed this exact candidate value;
-                           ;; only its first read consumes that value.
-                           (let ((value first-style))
-                             (setq first-style nil)
-                             (when (plist-get captured :parent-binding)
-                               (ebox--pub-binding-read (plist-get captured :parent-binding)))
-                             value))
-                         delta-style
+                     (or delta-style
                          (ebox-surface--compute-node-style
                           (plist-get captured :subject)
                           (plist-get captured :declarations)
@@ -3211,34 +3045,6 @@ style and never re-runs selector matching or cascade."
          (cl-loop for (property _value) on declarations by #'cddr
                   never (ebox-style--custom-property-p property)))))
 
-(defun ebox-surface--local-scope-delta-p (old-state index ids old-signature signature)
-  "Prove changed scoped membership affects only INDEX's prepared IDS.
-Global rules and unbounded scopes remain identical. Finite scope memberships
-may change only for touched or removed source identities; unaffected subjects
-must retain the same ordered roots, rule inputs and membership."
-  (let ((affected (make-hash-table :test 'equal))
-        (old-nodes (plist-get old-state :node-table))
-        (nodes (plist-get index :node-table)))
-    (dolist (id (append ids (plist-get index :removed-node-ids)))
-      (dolist (table (list old-nodes nodes))
-        (when-let* ((node (ebox-runtime-index-get id table))
-                    (handle (ebox-tree-node-source-handle node)))
-          (puthash (ebox-source--handle-id-view handle) t affected))))
-    (cl-labels
-        ((outside (value)
-           (let (scopes)
-             (dolist (entry (nth 2 value))
-               (let ((targets (plist-get entry :targets)))
-                 (if (eq targets t)
-                     (push entry scopes)
-                   (setq targets (cl-remove-if (lambda (id) (gethash id affected)) targets))
-                   (when targets
-                     (push (list :root (plist-get entry :root)
-                                 :rules (plist-get entry :rules) :targets targets)
-                           scopes)))))
-             (list (car value) (cadr value) (nreverse scopes)))))
-      (equal (outside old-signature) (outside signature)))))
-
 (defun ebox-surface-prepare-inline-candidate-styles
     (old-state candidate-index node-ids)
   "Prepare locally matched computed styles for candidate NODE-IDS.
@@ -3251,11 +3057,7 @@ path when matching can extend outside NODE-IDS.  Local scoped rules require
 unchanged mounting and membership facts; topology changes disable prior-style
 reuse for visited nodes.  Return the prepared
 source-handle-to-subject table when the requested local preparation completed."
-  (let* ((ebox--render-display-signature (ebox--current-display-signature))
-         (ebox-surface--font-window
-          (or ebox-surface--font-window
-              (ebox-surface--buffer-display-window (current-buffer))))
-         (source-index (plist-get candidate-index :source-index))
+  (let* ((source-index (plist-get candidate-index :source-index))
          (ebox-selector-view--current
           (ebox-source--index-selector-view source-index))
          (ebox-style--scopes
@@ -3263,10 +3065,7 @@ source-handle-to-subject table when the requested local preparation completed."
          (stylesheet-signature (ebox-surface--stylesheet-signature)))
     (when (and node-ids
                (not (plist-get old-state :computed-styles-stale-p))
-               (or (equal stylesheet-signature (plist-get old-state :stylesheet-signature))
-                   (ebox-surface--local-scope-delta-p
-                    old-state candidate-index node-ids
-                    (plist-get old-state :stylesheet-signature) stylesheet-signature))
+               (equal stylesheet-signature (plist-get old-state :stylesheet-signature))
                (ebox-surface--stylesheet-subject-local-p
                 stylesheet-signature t))
       (let ((old-nodes (plist-get old-state :node-table))
@@ -3334,7 +3133,6 @@ source-handle-to-subject table when the requested local preparation completed."
                                (ebox-tree-node-subject old-source-index old-node)))
                          (source-stable-p
                           (and old-node
-                               (equal stylesheet-signature (plist-get old-state :stylesheet-signature))
                                (or (null ebox-style--scopes)
                                    (eq (ebox-source--index-selector-topology new-source-index)
                                        (ebox-source--index-selector-topology old-source-index)))
@@ -3388,30 +3186,7 @@ source-handle-to-subject table when the requested local preparation completed."
           (dolist (node-id node-ids)
             (when (ebox-runtime-index-get node-id new-nodes)
               (resolve node-id))))
-        ;; A locally changed inherited value cannot certify a shared child
-        ;; that the candidate did not prepare.  Preserve the complete cascade
-        ;; fallback instead of letting a finite scope-membership change hide
-        ;; an inherited effect outside this closure.
-        (let ((complete t))
-          (maphash
-           (lambda (id style)
-             (let* ((node (ebox-runtime-index-get id new-nodes))
-                    (old (ebox-runtime-index-get id old-nodes))
-                    (old-style (and old (plist-get old :ebox-computed-style))))
-               (when (and old
-                          (not (and (eq style old-style)
-                                    (equal (plist-get old :ebox-font-fact)
-                                           (plist-get node :ebox-font-fact))))
-                          (or (not (equal (ebox-style--inherited-style-signature old-style)
-                                          (ebox-style--inherited-style-signature style)))
-                              (not (equal (plist-get old :ebox-font-fact)
-                                          (plist-get node :ebox-font-fact)))))
-                 (ebox-tree-for-each-direct-child
-                  node (lambda (child)
-                         (unless (gethash (plist-get child :node-id) resolved)
-                           (setq complete nil)))))))
-           resolved)
-          (and complete subjects-by-handle))))))
+        subjects-by-handle))))
 
 (defun ebox-surface-interaction-styles-unchanged-p (state source-index node-ids)
   "Prove that local interaction facts leave STATE's computed output unchanged.
@@ -7309,7 +7084,7 @@ widens heuristically.  The returned cons distinguishes an exact empty result
 from a failed proof."
   (catch 'miss
     (let (result)
-      (dolist (range (ebox-surface--owned-range-list ranges))
+      (dolist (range ranges)
         (let ((start (ebox-surface--rebase-coordinate
                       (plist-get range :start) patches))
               (end (ebox-surface--rebase-coordinate
@@ -7323,28 +7098,14 @@ from a failed proof."
                 result)))
       (cons t (nreverse result)))))
 
-(defun ebox-surface--owned-range-list (ranges)
-  "Materialize RANGES only for a proof requiring a plist view."
-  (if (ebox--pub-indexed-ranges-p ranges)
-      (ebox--pub-indexed-ranges-materialize ranges)
-    ranges))
-
-(defun ebox-surface--attach-owned-ranges (context leaf ranges)
-  "Attach immutable RANGES to LEAF without expanding indexed intervals."
-  (if (ebox--pub-indexed-ranges-p ranges)
-      (ebox--pub-object-attach-content-ranges-indexed context leaf ranges)
-    (ebox--pub-object-attach-content-ranges-owned context leaf ranges)))
-
 (defun ebox-surface--snapshot-owned-ranges (ranges)
   "Return an immutable client-state snapshot of candidate RANGES."
-  (if (ebox--pub-indexed-ranges-p ranges)
-      ranges
-    (mapcar (lambda (range)
+  (mapcar (lambda (range)
             (list :object (plist-get range :object)
                   :start (plist-get range :start)
                   :end (plist-get range :end)
                   :tags (copy-tree (plist-get range :tags))))
-            ranges)))
+          ranges))
 
 (defun ebox-surface--fragment-metadata (fragments &optional state)
   "Return FRAGMENTS as offsets into the Ebox-owned rendered text.  The mutable
@@ -7382,155 +7143,7 @@ paint-owner ancestor chain."
         (push copy metadata)
         (setq offset (+ offset length))))))
 
-(defun ebox-surface--ownership-index-records (index)
-  "Encode INDEX as numeric key/value pairs for a native candidate.
-The absent parent of a root is represented by zero."
-  (let (records)
-    (ebox-runtime-index-map
-     (lambda (key value)
-       (push key records)
-       (push (or value 0) records))
-     index)
-    (vconcat (nreverse records))))
-
-(defun ebox-surface--ownership-index-delta (previous current)
-  "Return numeric upserts and removals from PREVIOUS to CURRENT.
-The comparison is exact even when no sparse source proof is available.
-Unchanged immutable indexes require no traversal or encoding."
-  (let (upserts removed)
-    (unless (eq previous current)
-      (ebox-runtime-index-map
-       (lambda (key value)
-         (unless (equal value (ebox-runtime-index-get key previous 'ebox/missing))
-           (push key upserts)
-           (push (or value 0) upserts)))
-       current)
-      (ebox-runtime-index-map
-       (lambda (key _value)
-         (when (eq 'ebox/missing (ebox-runtime-index-get key current 'ebox/missing))
-           (push key removed)))
-       previous))
-    (cons (vconcat (nreverse upserts)) (vconcat (nreverse removed)))))
-
-(defun ebox-surface--ownership-parent-records (root parents)
-  "Encode ROOT and numeric PARENTS without retaining source node objects."
-  (let ((records (list 0 root)))
-    (ebox-runtime-index-map
-     (lambda (id parent)
-       (push id records)
-       (push parent records))
-     parents)
-    (vconcat (nreverse records))))
-
-(defun ebox-surface--ownership-parent-delta (previous root parents)
-  "Return exact topology changes from PREVIOUS to ROOT and PARENTS."
-  (let ((old-root (plist-get previous :root-id))
-        (old-parents (plist-get previous :parents))
-        upserts removed)
-    (unless (and (eql root old-root) (eq parents old-parents))
-      (ebox-runtime-index-map
-       (lambda (id parent)
-         (unless (equal parent (ebox-runtime-index-get id old-parents))
-           (push id upserts)
-           (push parent upserts)))
-       parents)
-      (unless (eql root old-root)
-        (push root upserts)
-        (push 0 upserts)
-        (unless (ebox-runtime-index-get old-root parents)
-          (push old-root removed)))
-      (ebox-runtime-index-map
-       (lambda (id _parent)
-         (unless (or (eql id root) (ebox-runtime-index-get id parents))
-           (push id removed)))
-       old-parents))
-    (cons (vconcat (nreverse upserts)) (vconcat (nreverse removed)))))
-
-(defun ebox-surface--native-run-ownership
-    (context leaf state node-objects attach-p visit-runs)
-  "Return a tagged native ownership result for STATE, or nil on refusal.
-Only numeric topology and role recipes cross the module boundary.  The
-candidate owns its engine; the accepted state's engine is never modified."
-  (when (ebox-native-ownership-available-p)
-    (let* ((root (plist-get (plist-get state :root-node) :node-id))
-           (parents (plist-get state :parent-table))
-           (regions (plist-get state :region-node-table))
-           (previous (or (plist-get state :previous-native-ownership-state)
-                         (plist-get state :native-ownership-state)))
-           engine prepared)
-      (when (and (integerp root)
-                 (ebox-runtime-index-like-p parents)
-                 (ebox-runtime-index-like-p regions))
-        (setq engine
-              (if previous
-                  (let ((parent-delta
-                         (ebox-surface--ownership-parent-delta previous root parents))
-                        (region-delta
-                         (ebox-surface--ownership-index-delta
-                          (plist-get previous :regions) regions)))
-                    (ebox-native-ownership-fork
-                     (plist-get previous :engine)
-                     (car parent-delta) (cdr parent-delta)
-                     (car region-delta) (cdr region-delta)))
-                (ebox-native-ownership-create
-                 (ebox-surface--ownership-parent-records root parents)
-                 (ebox-surface--ownership-index-records regions))))
-        ;; A capacity refusal permits a fresh cold candidate on the next
-        ;; publication rather than repeatedly forking an exhausted cache.
-        (plist-put state :native-ownership-state nil)
-        (cl-remf state :previous-native-ownership-state)
-        (when engine
-          (unwind-protect
-              (when (ebox-native-ownership-begin engine)
-                (let ((valid t) ranges)
-                  (funcall visit-runs
-                           (lambda (roles start end &optional layout-regions)
-                             (when valid
-                               (setq valid
-                                     (ebox-native-ownership-add-run
-                                      engine roles start end layout-regions)))))
-                  (when-let* ((result (and valid (ebox-native-ownership-finish engine))))
-                    (let ((values (cdr result)))
-                      (dotimes (index (car result))
-                        (let* ((offset (* index 4))
-                               (object (gethash (aref values offset) node-objects)))
-                          (unless object
-                            (error "Native ownership references an unknown node: %s"
-                                   (aref values offset)))
-                          (aset values offset object)
-                          (aset values (1+ offset)
-                                (ebox-native-ownership-tag
-                                 engine (aref values (1+ offset))))))
-                      (setq ranges (ebox--pub-indexed-ranges-create values (car result))))
-                    (when attach-p
-                      (ebox--pub-object-attach-content-ranges-indexed context leaf ranges))
-                    (plist-put state :native-ownership-state
-                               (list :engine engine :root-id root :parents parents
-                                     :regions regions))
-                    (plist-put state :ownership-backend 'native)
-                    (plist-put state :ownership-backend-revision
-                               (1+ (or (ebox--pub-surface-revision
-                                        (ebox--pub--context-surface context))
-                                       0)))
-                    (setq prepared t)
-                    (cons t ranges))))
-            (unless prepared (ebox-native-ownership-release engine))))))))
-
 (defun ebox-surface--owned-ranges-from-runs
-    (context leaf state node-objects region-objects attach-p visit-runs)
-  "Attach exact owner ranges from VISIT-RUNS, using the optional native index."
-  (let ((native (ebox-surface--native-run-ownership
-                 context leaf state node-objects attach-p visit-runs)))
-    (if native (cdr native)
-      (plist-put state :ownership-backend 'elisp)
-      (plist-put state :ownership-backend-revision
-                 (1+ (or (ebox--pub-surface-revision
-                          (ebox--pub--context-surface context))
-                         0)))
-      (ebox-surface--lisp-owned-ranges-from-runs
-       context leaf state node-objects region-objects attach-p visit-runs))))
-
-(defun ebox-surface--lisp-owned-ranges-from-runs
     (context leaf state node-objects region-objects attach-p visit-runs)
   "Attach merged ownership produced by VISIT-RUNS to candidate LEAF.
 VISIT-RUNS receives one callback accepting ROLE-IDS, START, END, and optional
@@ -7683,7 +7296,7 @@ all descendant ranges remain unchanged."
          (filtered
           (cl-remove-if (lambda (range)
                           (eq (plist-get range :object) owner))
-                        (ebox-surface--owned-range-list ranges))))
+                        ranges)))
     (when (and owner region-id (integerp block-start) (> block-end block-start))
       (push (list :object owner :start block-start :end block-end
                   :tags (list :ebox/region-id region-id
@@ -7760,7 +7373,7 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
                 (unless ranges
                   (error "Native retained frame has no ownership base"))
                 (when attach-p
-                  (ebox-surface--attach-owned-ranges
+                  (ebox--pub-object-attach-content-ranges-owned
                    context text-leaf ranges))
                 ranges))
              (native-template-p
@@ -7787,7 +7400,7 @@ NODE-OBJECTS and REGION-OBJECTS supply retained ownership ranges."
                 (if rebased
                     (let ((ranges (cdr rebased)))
                       (when attach-p
-                        (ebox-surface--attach-owned-ranges
+                        (ebox--pub-object-attach-content-ranges-owned
                          context text-leaf ranges))
                       ranges)
                   (ebox-surface--owned-ranges
@@ -8513,14 +8126,6 @@ published runtime and must be consumed without clearing those shared nodes."
              (retained-native-source-p
               (and retained-runtime-source-p
                    (eq projection-kind 'native-frame)))
-             (_object-delta-source
-              (when (and (null projection-kind)
-                         (plist-get previous-state :layered-p)
-                         (ebox-surface--object-delta-ready-p source previous-state state-overrides))
-                ;; Logical preparation copied changed ancestor paths. Keep
-                ;; the untouched nodes' accepted attachments intact; the
-                ;; delta projector writes only its copied/new node set.
-                (setq source-path-copied-p t)))
              (root (cond
                     ((plist-get previous-state :computed-styles-stale-p)
                      (let ((copy (ebox-surface--candidate-root source preserve-identities-p)))

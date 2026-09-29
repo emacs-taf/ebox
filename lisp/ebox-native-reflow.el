@@ -109,7 +109,7 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "23:10:13"
+(defconst ebox-native-reflow-abi-version "22:10:13"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -210,7 +210,6 @@ module while loading the package."
     "build.rs"
     "src/lib.rs"
     "src/layout.rs"
-    "src/ownership.rs"
     "c/ebox_module.c"
     "vendor/emacs-30/emacs-module.h")
   "Files required to compile the bundled native module source.")

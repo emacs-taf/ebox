@@ -208,8 +208,7 @@ markers. Older framework SPI records are rejected during initialization.
 
 ## Optional native module
 
-The Rust module accelerates eligible reflow, layer composition and fragment
-ownership interval construction.
+The Rust module accelerates eligible reflow and layer composition.
 It is optional and has an exact Elisp fallback. Ebox never builds it while loading.
 
 ```elisp
