@@ -939,12 +939,15 @@ acceptance.  Preparation itself does not advance the publication revision."
   (ebox-geometry--prepare buffer-or-name host-ref properties stage rollback after-commit))
 
 (defun ebox-geometry--prepare (buffer-or-name host-ref properties stage rollback
-                                            after-commit &optional fixed-portals-p)
+                                            after-commit &optional fixed-portals-p admit)
   "Compile HOST-REF in BUFFER-OR-NAME for PROPERTIES and paired callbacks.
 STAGE, ROLLBACK and AFTER-COMMIT follow `ebox-geometry-prepare'.
 Only the mixed-update provider supplies FIXED-PORTALS-P, after proving every
 member independent of the mounted root portals.  Public geometry preparation
-continues to reject these scenes, including reuse of an existing scene."
+continues to reject these scenes, including reuse of an existing scene.
+ADMIT, when non-nil, checks the chosen routes and crop before any source,
+interaction or publication storage is installed.  It must signal or exit
+non-locally when a member is unsupported."
   (unless (and (or (listp properties) (vectorp properties))
                (or (null stage) (functionp stage))
                (or (null rollback) (functionp rollback))
@@ -1053,6 +1056,7 @@ continues to reject these scenes, including reuse of an existing scene."
           (when (and supported
                      (or (ebox-geometry--inline-slots-p state node keys)
                          (progn (ebox-geometry--record-admission 'geometry 'inline-winner) nil)))
+            (when admit (funcall admit routes crop))
             (unless (plist-get state :geometry-topology-generation)
               (plist-put state :geometry-topology-generation (list 'ebox/geometry-topology)))
             (let* ((source-slots

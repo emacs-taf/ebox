@@ -526,8 +526,12 @@ content-only scene for placement changes.
 
 The mixed prepared-update cohort cold-binds source cells and the retained
 primitive owning each member's pixels; preparation renders nothing. Sparse
-changed-member indices feed one retained frame. Duplicate Host specifications
-share one source-record binding; stage snapshots caller values before hooks, and
+changed-member indices feed one retained frame. Admission proves every member
+against the chosen routes and crop before a cold scene binds
+source cells or allocates interaction, mount and publication-frame storage.
+The same member proofs run when reusing a scene; a rejection retains its
+member/property diagnostic without installing a partial session. Duplicate Host
+specifications share one source-record binding; stage snapshots caller values before hooks, and
 a rejected frame restores every source and caller cell. After staging, apply
 recomputes the complete cascade of changed style members and their descendants,
 snapshotting each rewritten node so rollback restores its previous projection.

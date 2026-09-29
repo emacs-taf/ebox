@@ -70,14 +70,19 @@ a member changed it; PAINT marks any other changed raster value."
         (ebox-source--update-slots-value (ebox-update--group-slots group) index)
       (ebox-update--current-value (ebox-update--group-node group) property))))
 
-(defun ebox-update--scene (buffer state nodes &optional resize-node fixed-portals-p)
+(defun ebox-update--scene (buffer state nodes &optional resize-node fixed-portals-p admit)
   "Return BUFFER's shared scene admitting NODES, preferring RESIZE-NODE.
 A requested fixed-content size binding prepares the crop primitive before
 input; ordinary layout keeps its existing publication route.
-FIXED-PORTALS-P records the content cohort's independent-portal proof."
+FIXED-PORTALS-P records the content cohort's independent-portal proof.
+ADMIT validates routes and crop before a cold scene allocates publication
+storage, and also validates additional members of a reused scene."
   (or (with-current-buffer buffer
-        (and (ebox-geometry--session-valid-p ebox-geometry--session)
-             ebox-geometry--session))
+        (when (ebox-geometry--session-valid-p ebox-geometry--session)
+          (when admit
+            (funcall admit (ebox-geometry--operation-routes ebox-geometry--session)
+                     (ebox-geometry--operation-crop ebox-geometry--session)))
+          ebox-geometry--session))
       (let ((parents (plist-get state :parent-table))
             (table (plist-get state :node-table)) anchor reference)
         (catch 'found
@@ -103,7 +108,7 @@ FIXED-PORTALS-P records the content cohort's independent-portal proof."
                                    buffer reference
                                    (if resize-node [:left :top :width :height]
                                      [:left :top :z-index])
-                                   nil nil nil fixed-portals-p)))
+                                   nil nil nil fixed-portals-p admit)))
               (ebox-geometry--operation-session operation)))))))
 
 (defun ebox-update--fixed-portal-protection (state)
@@ -351,6 +356,66 @@ cold admission."
               (list :status 'ready :reason nil :binding-token token))))
     result))
 
+(defun ebox-update--admit-groups (state members groups routes crop portal-protection)
+  "Prove MEMBERS and GROUPS against STATE's ROUTES before scene allocation.
+CROP is the selected fixed-content size primitive; PORTAL-PROTECTION guards
+independent content.  Return the shared raster-boundary table.  Only local
+group and proof records change; source, scene and publication stay untouched."
+  (let ((boundaries (make-hash-table :test #'eq)))
+    (dotimes (index (length groups))
+      (let* ((group (aref groups index))
+             (node (ebox-update--group-node group))
+             (keys (vconcat (ebox-update--group-properties group)))
+             (variants (vconcat (ebox-update--group-variants group)))
+             (values (make-vector (length keys) nil))
+             geometry raster)
+        (when (and crop (eq node (aref crop 0)))
+          (setf (ebox-update--group-crop group) crop))
+        (setq ebox-update--preparing-member (ebox-update--group-first-member group)
+              ebox-update--preparing-property nil)
+        (dotimes (key-index (length keys))
+          (let ((property (aref keys key-index)))
+            ;; A proved fixed-text crop resizes through the retained
+            ;; geometry program; every other size change re-renders the
+            ;; Host's composition boundary.
+            (when (or (memq property '(:left :top :z-index))
+                      (and (ebox-update--group-crop group) (memq property '(:width :height))))
+              (setq geometry t))
+            (when (memq property '(:color :background-color :bgcolor :border :font-weight :visibility))
+              (setf (ebox-update--group-style-p group) t))
+            (when (or (memq property '(:content :color :background-color :bgcolor :hover-content :border
+                                          :font-weight :visibility))
+                      (and (memq property '(:width :height)) (not (ebox-update--group-crop group))))
+              (setq raster t))
+            (aset values key-index (copy-tree (ebox-update--current-value node property (plist-get state :source-index))))))
+        (setf (ebox-update--group-properties group) keys
+              (ebox-update--group-variants group) variants
+              (ebox-update--group-values group) values)
+        ;; Translation writes placement directly, so only a proved inline
+        ;; winner may own it.  Paint recomputes the complete cascade.
+        (when geometry
+          (unless (ebox-geometry--inline-slots-p state node keys) (ebox-update--decline 'inline-winner))
+          (unless (ebox-update--geometry-binding group routes)
+            (ebox-update--decline 'geometry-target)))
+        (when-let* ((class-index (cl-position :class keys)))
+          (ebox-update--locate-member members group :class)
+          (let ((palette (aref variants class-index)))
+            (unless (and (vectorp palette) (> (length palette) 0))
+              (ebox-update--decline 'class-variants))
+            (let ((proof (ebox-update-selector-prepare state node palette)))
+              (unless proof (ebox-update--decline 'selector-dependency))
+              (setf (ebox-update--group-class-slot group) proof))))
+        (when raster
+          (ebox-update--locate-member members group nil t)
+          (let ((boundary (ebox-update--bind-boundary state routes node boundaries)))
+            (unless boundary (ebox-update--decline 'raster-boundary))
+            (when (and portal-protection
+                       (gethash (plist-get (ebox-update--boundary-node boundary) :node-id)
+                                portal-protection))
+              (ebox-update--decline 'fixed-canvas nil '(:phase route :reason root-portals)))
+            (setf (ebox-update--group-boundary group) boundary)))))
+    boundaries))
+
 (defun ebox-update--prepare (buffer-or-name specifications &optional stage rollback after-commit)
   "Compile BUFFER-OR-NAME's fixed SPECIFICATIONS into one primitive cohort.
 SPECIFICATIONS is a vector of [HOST-REF PROPERTY-VECTOR] members.  Duplicate
@@ -375,7 +440,7 @@ operation, or nil if a member cannot use the fixed retained canvas."
                  (or (ebox-update--binding-portal-protection ebox-update--binding-token)
                      (setf (ebox-update--binding-portal-protection ebox-update--binding-token)
                            (ebox-update--fixed-portal-protection state)))))
-           groups nodes scene)
+           groups nodes scene admitted-boundaries)
       (unless state (ebox-update--decline 'unmounted t))
       (when (eq portal-protection 'unsupported)
         (ebox-update--decline 'fixed-canvas nil '(:phase route :reason root-portals)))
@@ -427,65 +492,20 @@ operation, or nil if a member cannot use the fixed retained canvas."
                                                          '(:width :height))
                                         (ebox-geometry--crop-candidate-p (ebox-update--group-node group)))
                               return (ebox-update--group-node group))
-                     (and portal-protection t)))
+                     (and portal-protection t)
+                     (lambda (routes crop)
+                       (setq admitted-boundaries
+                             (ebox-update--admit-groups
+                              state members groups routes crop portal-protection))
+                       ;; Later scene failures belong to the canvas, rather
+                       ;; than the last member whose proof succeeded.
+                       (setq ebox-update--preparing-member nil
+                             ebox-update--preparing-property nil))))
         (unless scene
           (ebox-update--decline 'fixed-canvas nil
                                 (or (car ebox-geometry--admission-detail)
                                     '(:phase geometry :reason positioned-host)))))
-      (let ((routes (ebox-geometry--operation-routes scene))
-            (boundaries (make-hash-table :test #'eq)))
-        (dotimes (index (length groups))
-          (let* ((group (aref groups index))
-                 (node (ebox-update--group-node group))
-                 (keys (vconcat (ebox-update--group-properties group)))
-                 (variants (vconcat (ebox-update--group-variants group)))
-                 (values (make-vector (length keys) nil))
-                 (crop (ebox-geometry--operation-crop scene)) geometry raster)
-            (when (and crop (eq node (aref crop 0)))
-              (setf (ebox-update--group-crop group) crop))
-            (setq ebox-update--preparing-member (ebox-update--group-first-member group)
-                  ebox-update--preparing-property nil)
-            (dotimes (key-index (length keys))
-              (let ((property (aref keys key-index)))
-                ;; A proved fixed-text crop resizes through the retained
-                ;; geometry program; every other size change re-renders the
-                ;; Host's composition boundary.
-                (when (or (memq property '(:left :top :z-index))
-                          (and (ebox-update--group-crop group) (memq property '(:width :height))))
-                  (setq geometry t))
-                (when (memq property '(:color :background-color :bgcolor :border :font-weight :visibility))
-                  (setf (ebox-update--group-style-p group) t))
-                (when (or (memq property '(:content :color :background-color :bgcolor :hover-content :border
-                                              :font-weight :visibility))
-                          (and (memq property '(:width :height)) (not (ebox-update--group-crop group))))
-                  (setq raster t))
-                (aset values key-index (copy-tree (ebox-update--current-value node property (plist-get state :source-index))))))
-            (setf (ebox-update--group-properties group) keys
-                  (ebox-update--group-variants group) variants
-                  (ebox-update--group-values group) values)
-            ;; Translation writes placement directly, so only a proved inline
-            ;; winner may own it.  Paint recomputes the complete cascade.
-            (when geometry
-              (unless (ebox-geometry--inline-slots-p state node keys) (ebox-update--decline 'inline-winner))
-              (unless (ebox-update--geometry-binding group routes)
-                (ebox-update--decline 'geometry-target)))
-            (when-let* ((class-index (cl-position :class keys)))
-              (ebox-update--locate-member members group :class)
-              (let ((palette (aref variants class-index)))
-                (unless (and (vectorp palette) (> (length palette) 0))
-                  (ebox-update--decline 'class-variants))
-                (let ((proof (ebox-update-selector-prepare state node palette)))
-                  (unless proof (ebox-update--decline 'selector-dependency))
-                  (setf (ebox-update--group-class-slot group) proof))))
-            (when raster
-              (ebox-update--locate-member members group nil t)
-              (let ((boundary (ebox-update--bind-boundary state routes node boundaries)))
-                (unless boundary (ebox-update--decline 'raster-boundary))
-                (when (and portal-protection
-                           (gethash (plist-get (ebox-update--boundary-node boundary) :node-id)
-                                    portal-protection))
-                  (ebox-update--decline 'fixed-canvas nil '(:phase route :reason root-portals)))
-                (setf (ebox-update--group-boundary group) boundary)))))
+      (let ((boundaries admitted-boundaries))
         ;; All output proofs precede the equivalent private source rebinding.
         (dotimes (index (length groups))
           (let* ((group (aref groups index))

@@ -16,6 +16,7 @@
   ],
   "cases": [
     {"name": "ebox-prepared-publication-preserves-sparse-roles-through-many-occluders", "file": "tests/ebox-prepared-publication-tests.el", "purpose": "Geometry and update cohorts preserve sparse border and dense content ownership, Host bounds and native activation through repeated multi-panel occlusion, rejected publications, interval rejoining and retries."},
+    {"name": "ebox-prepared-update-rejection-preserves-following-admission", "file": "tests/ebox-prepared-update-tests.el", "purpose": "Cold and reused-scene rejection identifies unsupported geometry, class and raster members without changing canonical source, pixels, bounds, revision or later valid prepared operations."},
     {
       "name": "ebox-host-properties-replace-styled-panel-after-native-press",
       "file": "tests/ebox-host-property-tests.el",

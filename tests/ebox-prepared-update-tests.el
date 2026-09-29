@@ -624,5 +624,63 @@ prepared visibility change paints it at its current placement."
             (should-not (ebox-scroll-state region))))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
+(ert-deftest ebox-prepared-update-rejection-preserves-following-admission ()
+  "Cold and reused-scene rejection preserve source, pixels and later updates."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (dolist (case '((["bad" [:left]] inline-winner nil)
+                    (["flow" [:left]] geometry-target nil)
+                    (["label" [:class]] class-variants :class)
+                    (["label" [:class] [["off" "on"]]] selector-dependency :class)
+                    (["canvas" [:width]] raster-boundary nil)))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build
+          `(box :id "canvas" :width (ch 30) :height (lh 6)
+                :ecss (("#bad" :left ,(ecss-important '(px 2)))
+                       (".on" :color "#AA2233"))
+             (box :id "flow" :position relative :left (ch 0) :top (lh 0)
+                  :z-index 0 :width (ch 8) :height (lh 1) "Flow")
+             (box :id "bad" :position absolute :left (px 0) :top (lh 3)
+                  :z-index 1 :width (ch 8) :height (lh 1) "Bad")
+             (box :id "panel" :position absolute :left (ch 0) :top (lh 1)
+                  :z-index 1 :width (ch 12) :height (lh 1)
+               (text :id "label" :class "off" "Value00")))))
+        (let (operation staged)
+          (dotimes (attempt 2)
+            (let* ((before (buffer-string))
+                   (snapshot (ebox-surface-buffer-snapshot (current-buffer)))
+                   (revision (plist-get snapshot :revision))
+                   (bounds (ebox-host-ref-bounds (current-buffer) "panel")))
+              (should-not
+               (ebox-update-prepare
+                (current-buffer) (vector (car case) ["label" [:content]])
+                (lambda () (setq staged t)) #'ignore))
+              (let ((report (ebox-update-prepare-report (current-buffer))))
+                (should (eq (plist-get report :status) 'unsupported))
+                (should (eq (plist-get report :reason) (nth 1 case)))
+                (should (= (plist-get report :member) 0))
+                (should (eq (plist-get report :property) (nth 2 case))))
+              (should-not staged)
+              (should (equal-including-properties before (buffer-string)))
+              (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+              (should (equal bounds (ebox-host-ref-bounds (current-buffer) "panel")))
+              (should
+               (ebox-canonical-input-equal-p
+                (plist-get snapshot :input)
+                (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input)))
+              (if operation
+                  (should (ebox-update-valid-p operation))
+                (setq operation
+                      (ebox-update-prepare
+                       (current-buffer) [["panel" [:left]] ["label" [:content]]]))
+                (should operation))
+              (should (ebox-update-apply operation
+                                         (vector (vector (list 'ch (+ 2 attempt)))
+                                                 (vector (format "Value%02d" (1+ attempt))))
+                                         [0 1]))
+              (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+              (ebox-prepared-update-test--assert-fresh))))))))
+
 (provide 'ebox-prepared-update-tests)
 ;;; ebox-prepared-update-tests.el ends here
