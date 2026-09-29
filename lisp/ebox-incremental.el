@@ -6990,9 +6990,15 @@ candidate isolation contracts."
             (pcase-let ((`(,old-node ,new-node ,parent-id ,_children-changed)
                          entry))
               (let* ((node-id (plist-get new-node :node-id))
+                     ;; Runtime type counts are keyed by selector type, which
+                     ;; a canonical Box derives from its LayoutConfig rather
+                     ;; than from the storage tag `:ebox-type'.  Compare the
+                     ;; same fact the counters use: comparing storage tags
+                     ;; misses layout-kind changes and leaves the old bucket
+                     ;; counted after the node moved to another bucket.
                      (old-type (and old-node
-                                    (plist-get old-node :ebox-type)))
-                     (new-type (plist-get new-node :ebox-type))
+                                    (ebox-tree-node-selector-type old-node)))
+                     (new-type (ebox-tree-node-selector-type new-node))
                      (old-record
                       (and old-node
                            (ebox-incremental--candidate-node-region-record
