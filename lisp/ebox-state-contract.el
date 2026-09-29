@@ -316,6 +316,9 @@ rather than relying on an implicit default.")
     (:symbol ebox-layer--portals
      :reason dynamically-bound-render-collection
      :evidence let-bound-per-spatial-root-and-discarded-with-the-candidate-render)
+    (:symbol ebox-layer--retained-root-input
+     :reason dynamically-bound-render-proof-input
+     :evidence let-bound-for-one-candidate-render-and-never-retained-after-publication)
     (:symbol ebox-layer--piece-width-cache
      :reason dynamically-bound-composition-index
      :evidence let-bound-per-layer-host-and-never-retained-between-renders)

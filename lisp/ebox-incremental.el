@@ -7538,13 +7538,15 @@ must be recomputed in the next publication."
           :viewport-height-dependent-subtree-cache height-cache)))
 
 (defun ebox-incremental--computed-local-dirty-set
-    (old-state candidate-index dirty-set style-node-ids)
+    (old-state candidate-index dirty-set style-node-ids &optional complete-styles-p)
   "Return DIRTY-SET expressed as locally computed render effects.
 The Style Adapter has already consumed selector metadata and author
 declarations for nodes marked `:ebox-candidate-computed-style-p'.  For those
 nodes, retain ordinary source changes, record selector fields as metadata, and
 derive render changes from the computed fragment style signatures.
-STYLE-NODE-IDS bounds the nodes prepared by the Style Adapter."
+STYLE-NODE-IDS bounds the nodes prepared by the Style Adapter.
+COMPLETE-STYLES-P certifies that ordinary object projection has completed
+styles for that entire closure, without local preparation marker fields."
   (let ((old-nodes (plist-get old-state :node-table))
         (new-nodes (plist-get candidate-index :node-table))
         (source-dirty (make-hash-table :test 'equal))
@@ -7556,7 +7558,8 @@ STYLE-NODE-IDS bounds the nodes prepared by the Style Adapter."
     (dolist (node-id style-node-ids)
       (let ((new-node (ebox-runtime-index-get node-id new-nodes)))
         (when (and (not (gethash node-id source-dirty))
-                   (plist-get new-node :ebox-candidate-computed-style-p))
+                   (or complete-styles-p
+                       (plist-get new-node :ebox-candidate-computed-style-p)))
           (when-let* ((old-node (ebox-runtime-index-get node-id old-nodes))
                       (keys (ebox-fragment-plist-changed-keys
                              (ebox-fragment-node-style-signature old-node)
@@ -7576,7 +7579,8 @@ STYLE-NODE-IDS bounds the nodes prepared by the Style Adapter."
           (if (or (eq (plist-get entry :dirty-kind) 'structure)
                   (not old-node)
                   (not new-node)
-                  (not (plist-get new-node :ebox-candidate-computed-style-p)))
+                  (not (or complete-styles-p
+                           (plist-get new-node :ebox-candidate-computed-style-p))))
               entry
             (let* (;; Source-stage dirty planning already materialized this
                    ;; exact node-local delta.  Computed projection consumes it;
@@ -10904,6 +10908,78 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
         :native-committed-owned-ranges
         (plist-get state :native-committed-owned-ranges)))
 
+(defun ebox-incremental--layer-raster-proof (old-state prepared candidate-state)
+  "Prove one absolute panel owns every spatial effect in PREPARED.
+The panel may replace its descendants.  Its containing root plane, normal
+flow, and all other layers must keep their rendered inputs.  This proof only
+reuses layout pixels; ordinary object projection and publication still run."
+  (let* ((root (plist-get candidate-state :root-node))
+         (root-id (plist-get root :node-id))
+         (old-nodes (plist-get old-state :node-table))
+         (nodes (plist-get candidate-state :node-table))
+         (parents (plist-get candidate-state :parent-table))
+         (old-parents (plist-get old-state :parent-table))
+         (cache (plist-get old-state :layer-composition-cache))
+         (entry (and (hash-table-p cache)
+                     (gethash (cons root-id 'final) cache)))
+         (targets (make-hash-table :test 'equal))
+         target valid)
+    (when (and entry (or (plist-get entry :flow-output)
+                        (plist-get entry :base-lines))
+               (eql (plist-get old-state :layer-composition-revision)
+                    (plist-get old-state :runtime-revision))
+               (plist-get prepared :styles-prepared-p)
+               (not (plist-get old-state :computed-styles-stale-p))
+               (equal (plist-get old-state :display-signature)
+                      (plist-get prepared :display-signature))
+               (equal root-id (plist-get (plist-get old-state :root-node) :node-id))
+               (not (member (plist-get root :region-id)
+                            (plist-get old-state :scroll-region-ids))))
+      (setq valid t)
+      (dolist (record (plist-get entry :records))
+        (let ((node (plist-get record :node)))
+          ;; Anchor dependencies can propagate beyond the changed panel.
+          (when (plist-get node :anchor) (setq valid nil))
+          (when (eq (plist-get node :position) 'absolute)
+            (puthash (plist-get node :node-id) t targets))))
+      (dolist (dirty (plist-get prepared :dirty-set))
+        (unless (eq (plist-get dirty :dirty-kind) 'metadata)
+          (let ((id (plist-get dirty :node-id)) owner)
+            (while (and id (not owner))
+              (when (gethash id targets) (setq owner id))
+              (setq id (or (ebox-runtime-index-get id parents)
+                           (ebox-runtime-index-get id old-parents))))
+            (if (and owner (or (null target) (equal target owner)))
+                (setq target owner)
+              (setq valid nil)))))
+      (when (and valid target)
+        (let ((old (ebox-runtime-index-get target old-nodes))
+              (next (ebox-runtime-index-get target nodes))
+              (discard (make-hash-table :test 'equal)))
+          (when (and old next
+                     (eq (plist-get next :position) 'absolute)
+                     (equal (ebox--computed-display old)
+                            (ebox--computed-display next))
+                     (eq (plist-get old :layer) (plist-get next :layer))
+                     (equal (plist-get old :z-index) (plist-get next :z-index))
+                     (not (plist-get next :anchor))
+                     ;; A new nested portal would change the root plane's
+                     ;; membership instead of just this panel's raster.
+                     (not (cl-some #'ebox-layer-portals-p
+                                   (ebox-tree-node-children old)))
+                     (not (cl-some #'ebox-layer-portals-p
+                                   (ebox-tree-node-children next))))
+            (cl-labels ((discard-subtree (node)
+                          (puthash (plist-get node :node-id) t discard)
+                          (mapc #'discard-subtree (ebox-tree-node-children node))))
+              (discard-subtree old))
+            (let ((id target))
+              (while id
+                (puthash id t discard)
+                (setq id (ebox-runtime-index-get id old-parents))))
+            (list :root-id root-id :panel-id target :entry entry
+                  :cache cache :discard discard)))))))
+
 (defun ebox-incremental--surface-state-overrides
     (old-state prepared candidate-state projection-kind
              &optional span-proof source-path-copied-p formatting-proof)
@@ -10930,6 +11006,20 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
          (append
           (list :viewport-width (plist-get old-state :viewport-width)
                 :viewport-height (plist-get old-state :viewport-height)
+                :layer-raster-proof
+                (and (null projection-kind)
+                     (ebox-incremental--layer-raster-proof
+                      old-state prepared candidate-state))
+                :layer-raster-request
+                (and (null projection-kind)
+                     (not (plist-get prepared :styles-prepared-p))
+                     (eql (plist-get old-state :layer-composition-revision)
+                          (plist-get old-state :runtime-revision))
+                     (hash-table-p (plist-get old-state :layer-composition-cache))
+                     (gethash
+                      (cons (plist-get (plist-get old-state :root-node) :node-id) 'final)
+                      (plist-get old-state :layer-composition-cache))
+                     (list old-state prepared))
                 :layer-recompose-p
                 (and (fboundp 'ebox-layer-host-p)
                      (cl-some (lambda (proof)

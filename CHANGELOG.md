@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Replacing children inside one eligible absolute panel reuses the other
+  panels and completed root flow while recomposing their overlap. Root portals
+  without anchor dependencies use the same path; ordinary ownership and atomic
+  publication continue to handle new and removed controls.
 - Layer composition uses the optional native module for occlusion and
   visible source intervals, with bounded reusable storage and the same Unicode,
   text-property and rollback behavior in ordinary and prepared updates. Fixed
@@ -31,6 +35,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Metadata-only focus and pressed updates retain the current layer composition
+  baseline. Panel replacements requiring complete stylesheet computation verify
+  their full computed effects before reusing other layers.
 - Prepared moves and resizes keep the mounted geometry synchronized after a
   colour or focus repaint recomputes styles. Repeated updates no longer reuse
   stale coordinates and accumulate displacement; rejected updates restore both

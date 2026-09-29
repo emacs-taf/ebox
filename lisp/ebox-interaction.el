@@ -1046,7 +1046,7 @@ stop `:hover-content' from ever activating.
   next-focus next-active requested-focus next-position follow point staged
   old-focus old-active old-order old-cap-focus old-cap-active
   old-cap-focus-owner old-cap-active-owner old-revision old-report
-  old-report-revision old-report-publication)
+  old-report-revision old-report-publication old-layer-revision)
 
 (defun ebox-interaction--selector-native-state-mask (selector)
   "Return focus/active dependency bits in the public ECSS SELECTOR AST.
@@ -1284,6 +1284,8 @@ ownership lookup.  This cold pass adds no alternative mouse dispatch."
             (ebox-interaction--native-old-cap-focus-owner operation) (ebox-interaction--geometry-focus-owner capability)
             (ebox-interaction--native-old-cap-active-owner operation) (ebox-interaction--geometry-active-owner capability)
             (ebox-interaction--native-old-revision operation) (plist-get state :runtime-revision)
+            (ebox-interaction--native-old-layer-revision operation)
+            (plist-get state :layer-composition-revision)
             (ebox-interaction--native-old-report operation) (plist-get state :last-update-report)
             (ebox-interaction--native-old-report-revision operation) (plist-get report :revision)
             (ebox-interaction--native-old-report-publication operation) (plist-get report :publication)
@@ -1297,6 +1299,12 @@ ownership lookup.  This cold pass adds no alternative mouse dispatch."
       (setq ebox-interaction--focus-owner (ebox-interaction--native-next-focus operation)
             ebox-interaction--active-owner (ebox-interaction--native-next-active operation))
       (plist-put state :runtime-revision (1- (plist-get publication-report :new-revision)))
+      ;; This route proved selector independence and retains the exact output
+      ;; and mounts.  Advance only a previously current raster baseline.
+      (when (eql (ebox-interaction--native-old-layer-revision operation)
+                 (ebox-interaction--native-old-revision operation))
+        (plist-put state :layer-composition-revision
+                   (plist-get state :runtime-revision)))
       (plist-put report :revision (plist-get publication-report :new-revision))
       (plist-put report :publication publication-report)
       (plist-put state :last-update-report report)
@@ -1339,6 +1347,8 @@ ownership lookup.  This cold pass adds no alternative mouse dispatch."
             (ebox-interaction--geometry-focus-owner capability) (ebox-interaction--native-old-cap-focus-owner operation)
             (ebox-interaction--geometry-active-owner capability) (ebox-interaction--native-old-cap-active-owner operation))
       (plist-put state :runtime-revision (ebox-interaction--native-old-revision operation))
+      (plist-put state :layer-composition-revision
+                 (ebox-interaction--native-old-layer-revision operation))
       (plist-put state :last-update-report (ebox-interaction--native-old-report operation))
       (plist-put report :revision (ebox-interaction--native-old-report-revision operation))
       (plist-put report :publication (ebox-interaction--native-old-report-publication operation)))

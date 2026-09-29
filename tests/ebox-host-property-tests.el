@@ -348,5 +348,144 @@ publication stays consistent."
                                (ebox-host-property-test--visible (buffer-string))))
             (ebox-host-property-test--matches (input "shift"))))))))
 
+(ert-deftest ebox-host-properties-replace-positioned-subtrees-through-occlusion ()
+  "Local and root-layer replacements preserve occlusion, identity and rollback."
+  (dolist (portal '(nil t))
+    (dolist (relative '(nil t))
+      (let ((activated nil)
+            (background "BACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND\nBACKGROUND")
+            (maps (make-vector 5 nil)))
+	(dotimes (index 5)
+          (let ((value index))
+            (aset maps index (ebox-keymap-create
+                              :activate (lambda () (setq activated value))))))
+	(cl-labels
+            ((panel (count height)
+               `(panel column (:position absolute :layer ,(if portal 'root 'local)
+					 :left (ch 2) :top (lh 1) :width (ch 12)
+					 :height (lh ,height) :z-index 10
+					 :background-color "blue" :overflow scroll)
+                       nil
+                       ,(cl-loop for index below count
+				 collect `(,(intern (format "item-%d" index)) text nil
+                                           (:keymap ,(aref maps index))
+                                           ,(format "ITEM%d" index)))))
+             (scene (count height)
+               (ebox-host-property-test--input
+		`(root box (:width (ch 30) :height (lh 12) :overflow hidden) nil
+                       (,(if relative
+                             `(base box (:position relative :left (ch 1)
+                                                   :width (ch 29) :height (lh 12)) nil
+						   ((base-text text nil nil ,background)))
+                           `(base text nil nil ,background))
+			,(if portal
+                             `(host box (:height (lh 0) :overflow visible) nil
+                                    (,(panel count height)))
+                           (panel count height))
+			(overlay box (:position absolute :left (ch 8) :top (lh 2)
+						:width (ch 5) :height (lh 2) :z-index 20)
+				 nil ((overlay-text text nil nil "OVER!\nOVER!")))))))
+             (candidate (count height)
+               (let ((value (ebox-candidate-begin (current-buffer))))
+		 (ebox-candidate-replace-host-ref
+                  value 'panel (ebox-host-property-test--input (panel count height)))
+		 value)))
+          (with-temp-buffer
+            (ebox-render-to-buffer (current-buffer) (scene 2 3))
+            (dolist (step '((5 6) (5 3) (1 2) (4 5)))
+              (let ((accepted (ebox-host-property-test--visible (buffer-string)))
+                    (revision (plist-get (ebox-surface-buffer-snapshot
+                                          (current-buffer)) :revision))
+                    (position (ebox-host-ref-position (current-buffer) 'item-0)))
+		(should-error
+		 (ebox-commit (current-buffer) (apply #'candidate step)
+                              (lambda (_report) (error "Reject panel replacement"))))
+		(should (equal accepted
+                               (ebox-host-property-test--visible (buffer-string))))
+		(should (= revision (plist-get (ebox-surface-buffer-snapshot
+						(current-buffer)) :revision)))
+		(should (= position (ebox-host-ref-position (current-buffer) 'item-0)))
+		(setq activated nil)
+		(ebox-activate position t)
+		(should (eql activated 0)))
+              (ebox-commit (current-buffer) (apply #'candidate step))
+              (ebox-host-property-test--matches (apply #'scene step))
+              (goto-char (point-min))
+              (should (search-forward "OVER!" nil t))
+              (setq activated nil)
+              (ebox-activate (ebox-host-ref-position (current-buffer) 'item-0) t)
+              (should (eql activated 0))
+              (when (= (car step) 1)
+		(should-not (ebox-host-ref-position (current-buffer) 'item-4))))))))))
+
+(ert-deftest ebox-host-properties-replace-styled-panel-after-native-press ()
+  "Metadata, rejected structural updates and later signals keep exact pixels."
+  (let ((ebox-viewport-width 24) (ebox-viewport-height 10)
+        (buffer (generate-new-buffer " *ebox-panel-metadata*"))
+        (activated 0))
+    (unwind-protect
+        (save-window-excursion
+          (set-window-buffer (selected-window) buffer)
+          (with-current-buffer buffer
+            (let ((keymap (ebox-keymap-create :activate (lambda () (cl-incf activated)))))
+              (cl-labels
+                  ((panel (count)
+                     `(panel column (:position absolute :left (ch 0) :top (lh 0)
+                                               :width (ch 10) :height (lh 5)
+                                               :background-color "blue" :z-index 2)
+                             nil ,(cl-loop for index below count
+                                           collect `(,(intern (format "row-%d" index)) text nil
+                                                     (:keymap ,keymap :tab-index 0)
+                                                     ,(format "ROW%d" index)))))
+                   (scene (count)
+                     (ebox-host-property-test--input
+                      `(root box (:width (vw 100) :height (lh 8) :overflow hidden) nil
+                             (,(panel count)
+                              (peer box (:position absolute :left (calc (- (% 100) (ch 10)))
+                                         :top (lh 0) :width (ch 10) :height (lh 5)
+                                         :overflow scroll :z-index 1) nil
+                                    ((peer-text text nil nil "PEER0\nPEER1\nPEER2\nPEER3\nPEER4\nPEER5\nPEER6"))))
+                             nil (("#panel text + text" :color "red")))))
+                   (candidate ()
+                     (let ((value (ebox-candidate-begin buffer)))
+                       (ebox-candidate-replace-host-ref
+                        value 'panel (ebox-host-property-test--input (panel 4)))
+                       value)))
+                (ebox-render-to-buffer buffer (scene 2))
+                (should (ebox-geometry-prepare buffer 'panel [:left]))
+                (let* ((position (ebox-host-ref-position buffer 'row-0))
+                       (press (list 'down-mouse-1 (list (selected-window) position '(1 . 0) 0)))
+                       (release (list 'mouse-1 (list (selected-window) position '(1 . 0) 1)))
+                       (command (key-binding (vector press) nil nil position)))
+                  (cl-letf (((symbol-function 'read-event)
+                             (lambda (&rest _)
+                               (should (ebox-selector-query-buffer buffer ":active"))
+                               release)))
+                    (funcall command press)))
+                (should (= activated 1))
+                (should-not (ebox-selector-query-buffer buffer ":active"))
+                (let ((before (ebox-host-property-test--visible (buffer-string)))
+                      (revision (ebox-surface-buffer-revision buffer)))
+                  (should-error (ebox-commit buffer (candidate)
+                                             (lambda (_report) (error "Reject styled panel"))))
+                  (should (= revision (ebox-surface-buffer-revision buffer)))
+                  (should (equal before
+                                 (ebox-host-property-test--visible (buffer-string)))))
+                (ebox-commit buffer (candidate))
+                (ebox-host-property-test--matches (scene 4))
+                (goto-char (point-min))
+                (should (search-forward "PEER0" nil t))
+                (backward-char 5)
+                (ebox-scroll-down 1)
+                (should (string-match-p "PEER1" (buffer-substring-no-properties
+                                                (point-min) (point-max))))
+                (ebox-host-property-test--matches
+                 (plist-get (ebox-surface-buffer-snapshot buffer) :input))
+                (ebox-rerender-buffer-with-context buffer 30 10)
+                (setq ebox-viewport-width 30)
+                (ebox-host-property-test--matches
+                 (plist-get (ebox-surface-buffer-snapshot buffer) :input))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (provide 'ebox-host-property-tests)
 ;;; ebox-host-property-tests.el ends here

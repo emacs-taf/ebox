@@ -374,6 +374,25 @@ If any proof condition fails, the update uses the ordinary safe projection path.
 
 ## Layer composition
 
+A declarative replacement wholly inside one retained absolute panel may reuse
+the root plane's completed flow and other layer rasters, including an unanchored
+root portal. The panel's children may change identity, count and layout; its
+raster is rendered in the retained root content context before ordinary root
+composition and wrapper rendering. Display context, containing geometry, layer
+membership and stacking remain stable, and external anchor dependencies decline
+reuse. Prior rasters and records stay immutable. Ordinary object projection,
+ownership reconstruction and the publication transaction still establish the
+complete candidate, including newly created and removed children. The raster
+proof is consumed by its source transition and does not survive signal-driven
+producer reevaluation.
+Metadata-only publication retains the current composition ledger. Its runtime
+revision advances only when the accepted update proves unchanged layout output;
+native focus/pressed publication includes that revision in its rollback state.
+Later materialization copies a shared ledger's hash spine before writing.
+When styles require complete projection, the same computed-effect classifier
+checks the full styled closure before admitting raster reuse, including effects
+outside the changed source subtree. A missing or stale ledger declines reuse.
+
 A positioned subtree paints on its containing plane's physical text-row grid.
 The existing placement traversal checks every descendant's resolved canonical
 font height, including ordinary Text and Box nodes, against the host's height

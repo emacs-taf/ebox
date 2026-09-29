@@ -45,6 +45,9 @@ back into the visible rows; only a footprint replacement re-places it.")
 
 (defvar ebox-layer--render-root nil
   "Root of this spatial materialization, never a live buffer root.")
+
+(defvar ebox-layer--retained-root-input nil
+  "One candidate's proved panel replacement and current runtime state.")
 (defvar ebox-layer--portals nil
   "Candidate-local absolute nodes awaiting root composition.")
 
@@ -1163,11 +1166,82 @@ publication.  Nested root projections join this same candidate-local pass."
                         :source-row (plist-get piece :y)) records)))))
     records))
 
+(defun ebox-layer--render-retained-root (host)
+  "Recompose HOST from a proved changed panel and immutable prior rasters."
+  (when-let* (((eq host ebox-layer--render-root))
+              ((not ebox--intrinsic-layout-measurement))
+              (proof (car ebox-layer--retained-root-input))
+              ((equal (plist-get host :node-id) (plist-get proof :root-id)))
+              (state (cadr ebox-layer--retained-root-input))
+              (nodes (plist-get state :node-table))
+              (panel (ebox-runtime-index-get (plist-get proof :panel-id) nodes))
+              (entry (plist-get proof :entry))
+              ((equal (plist-get entry :context) ebox-layer--composition-context))
+              (flow (or (plist-get entry :flow-output)
+                        (and (plist-get entry :base-lines)
+                             (ebox-lines-join (plist-get entry :base-lines)))))
+              (flow-height (or (plist-get entry :flow-height)
+                               (length (plist-get entry :base-lines))))
+              (width (ebox--wrapper-content-viewport-pixel host))
+              ((= width (plist-get entry :width)))
+              (height (max flow-height
+                           (ceiling (ebox--content-height host flow-height flow))))
+              ((= height (plist-get entry :height))))
+    (let ((ebox-layer--retained-root-input nil)
+          (ebox-layer--piece-width-cache (make-hash-table :test #'eq))
+          (discard (plist-get proof :discard))
+          records)
+      ;; Keep prior entries only outside the replacement and its copied
+      ;; ancestors.  Every retained value is immutable; new entries belong
+      ;; exclusively to this candidate and disappear on rejection.
+      (maphash (lambda (key value)
+                 (unless (gethash (car key) discard)
+                   (puthash key value ebox-layer--composition-cache)))
+               (plist-get proof :cache))
+      (dolist (record (plist-get entry :records))
+        (unless (equal (plist-get (plist-get record :node) :node-id)
+                       (plist-get proof :panel-id))
+          (let ((copy (copy-sequence record)))
+            (plist-put copy :node
+                       (ebox-runtime-index-get
+                        (plist-get (plist-get record :node) :node-id) nodes))
+            (push copy records))))
+      (ebox-layer--validate-child panel host)
+      (let* ((text (ebox--call-with-box-content-context
+                    host (lambda () (ebox--render-with-cache panel))))
+             (raster (ebox-layer--prepare-raster panel text))
+             (origin (ebox-layer--absolute-origin
+                      panel host nil width height
+                      (ebox-layer--raster-width raster)
+                      (length (ebox-layer--raster-lines raster))))
+             (hidden (eq (plist-get panel :visibility) 'hidden)))
+        (dolist (piece (ebox-layer--raster-pieces raster))
+          (push (list :node panel
+                      :x (if hidden 0 (+ (car origin) (plist-get piece :start)))
+                      :y (if hidden ebox-layer--parked-row
+                           (+ (cadr origin) (plist-get piece :y)))
+                      :text (plist-get piece :line)
+                      :source-start (plist-get piece :start)
+                      :source-end (plist-get piece :end)
+                      :source-row (plist-get piece :y))
+                records)))
+      (let* ((output (ebox-lines-join
+                      (ebox-layer--compose-rows
+                       host records width height nil (plist-get entry :base-lines))))
+             (next (gethash (ebox-layer--compose-cache-key host 'final)
+                            ebox-layer--composition-cache)))
+        (plist-put next :flow-output flow)
+        (plist-put next :flow-height flow-height)
+        (ebox--record-rendered-intrinsic-size
+         (ebox--record-rendered-uniform-width output width)
+         width flow-height)))))
+
 (defun ebox-layer-render-children (host children renderer)
   "Compose HOST's CHILDREN using ordinary flow RENDERER.
 RENDERER accepts a child list.  Logical nodes are never reordered or removed.
 Only candidate-local lists of visible paint records are sorted."
-  (let* ((flow (cl-remove-if (lambda (child)
+  (or (ebox-layer--render-retained-root host)
+      (let* ((flow (cl-remove-if (lambda (child)
                                (eq (plist-get child :position) 'absolute)) children))
          (base (funcall renderer flow)))
     (if ebox--intrinsic-layout-measurement base
@@ -1210,10 +1284,17 @@ Only candidate-local lists of visible paint records are sorted."
             (setq base-lines lines)
           (setq records (nconc records (or flow-records
                                           (ebox-layer--flow-records host flow lines width height)))))
-        (ebox--record-rendered-intrinsic-size
-         (ebox--record-rendered-uniform-width
-          (ebox-lines-join (ebox-layer--compose-rows host records width height nil base-lines)) width)
-         width flow-height)))))
+        (let* ((output (ebox-lines-join
+                        (ebox-layer--compose-rows host records width height nil base-lines)))
+               (entry (and (hash-table-p ebox-layer--composition-cache)
+                           (gethash (ebox-layer--compose-cache-key host 'final)
+                                    ebox-layer--composition-cache))))
+          (when entry
+            (plist-put entry :flow-output base)
+            (plist-put entry :flow-height flow-height))
+          (ebox--record-rendered-intrinsic-size
+           (ebox--record-rendered-uniform-width output width)
+           width flow-height)))))))
 
 (provide 'ebox-layer)
 

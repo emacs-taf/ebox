@@ -1391,6 +1391,10 @@ non-nil."
          (plist-put new-state :surface surface)
          (plist-put new-state :runtime-revision
                     (1- (ebox--pub-surface-revision surface)))
+         (when (plist-get new-state :layer-composition-ready-p)
+           (plist-put new-state :layer-composition-revision
+                      (plist-get new-state :runtime-revision)))
+         (cl-remf new-state :layer-composition-ready-p)
          ;; Ebox publication now exposes this exact candidate revision, but the surrounding
          ;; transaction can still restore both Ebox publication and Ebox state.  Confirm the
          ;; private Rust frame here so a failure aborts publication and the
@@ -3642,6 +3646,19 @@ available during planning; replacements here belong only to the candidate."
     (ebox-surface--refresh-rendered-layout-snapshots state)
     rendered))
 
+(defun ebox-surface--complete-layer-raster-proof (request state)
+  "Resolve REQUEST after ordinary projection has computed all STATE styles.
+Use the shared effect classifier, including computed changes outside the
+source delta, before proving that one panel contains every render effect."
+  (let* ((old-state (car request))
+         (prepared (copy-sequence (cadr request)))
+         (effects (ebox-incremental--computed-local-dirty-set
+                   old-state state (plist-get prepared :dirty-set)
+                   (ebox-incremental--hash-keys (plist-get state :node-table)) t)))
+    (plist-put prepared :styles-prepared-p t)
+    (plist-put prepared :dirty-set effects)
+    (ebox-incremental--layer-raster-proof old-state prepared state)))
+
 (defun ebox-surface--render-candidate-node (state node &optional complete-lines-p)
   "Render NODE from candidate STATE in isolated Ebox side tables.
 COMPLETE-LINES-P requires a proven physical line origin for every output row."
@@ -3697,9 +3714,15 @@ COMPLETE-LINES-P requires a proven physical line origin for every output row."
           ;; are read-only; the fresh table is retained only after commit.
           (ebox-layer--previous-composition-cache
            (plist-get state :previous-layer-composition-cache))
+          (ebox-layer--retained-root-input nil)
           (ebox-layer--composition-cache
-           (or (plist-get state :layer-composition-cache)
-               (make-hash-table :test 'equal)))
+           (let ((cache (plist-get state :layer-composition-cache)))
+             ;; Metadata can share an immutable accepted ledger.  Any later
+             ;; materialization must own its hash spine before recording rows.
+             (if (and cache
+                      (eq cache (plist-get state :previous-layer-composition-cache)))
+                 (copy-hash-table cache)
+               (or cache (make-hash-table :test 'equal)))))
           (ebox-layer--composition-context
            (or (plist-get state :layer-composition-context)
                (list (plist-get state :viewport-width)
@@ -3723,6 +3746,14 @@ COMPLETE-LINES-P requires a proven physical line origin for every output row."
         (when (and (require 'ebox-native-commit nil t)
                    (not (ebox-surface--runtime-index-ready-p state)))
           (setq state (ebox-surface--finish-runtime-state state)))
+        (when (eq node (plist-get state :root-node))
+          (when-let* ((proof (or (plist-get state :layer-raster-proof)
+                                (and (plist-get state :layer-raster-request)
+                                     (ebox-surface--complete-layer-raster-proof
+                                      (plist-get state :layer-raster-request) state)))))
+            (setq ebox-layer--retained-root-input (list proof state))))
+        (cl-remf state :layer-raster-proof)
+        (cl-remf state :layer-raster-request)
         (let ((rendered
                (ebox-incremental--with-phase 'layout
                  (or (and (require 'ebox-native-commit nil t)
@@ -3748,6 +3779,10 @@ COMPLETE-LINES-P requires a proven physical line origin for every output row."
                      ebox--render-owned-text-values)
           (plist-put state :layer-composition-cache
                      ebox-layer--composition-cache)
+          (when (and (eq node (plist-get state :root-node))
+                     (gethash (cons (plist-get node :node-id) 'final)
+                              ebox-layer--composition-cache))
+            (plist-put state :layer-composition-ready-p t))
           rendered)))))
 
 (defun ebox-surface--attach-retained-node-objects (state)
@@ -7966,6 +8001,16 @@ identity."
         (plist-put state :render-cache (ebox--render-cache-copy cache))))
     (cl-remf state :paint-property-contributions)
     (cl-remf state :span-patch-retained-owned-ranges)
+    (cl-remf state :layer-composition-ready-p)
+    (when (eq projection-kind 'metadata)
+      ;; No layout pixels changed.  Preserve the current accepted ledger,
+      ;; not an older previous-generation cache or an empty candidate table.
+      (let ((cache (plist-get previous-state :layer-composition-cache)))
+        (plist-put state :layer-composition-cache cache)
+        (plist-put state :previous-layer-composition-cache cache)
+        (when (eql (plist-get previous-state :layer-composition-revision)
+                   (plist-get previous-state :runtime-revision))
+          (plist-put state :layer-composition-ready-p t))))
     (plist-put state :fractional-pixel-output-p
                (plist-get previous-state :fractional-pixel-output-p))
     (plist-put state :root-node root)
@@ -8625,14 +8670,23 @@ also bypass candidate copying and reconciliation without clearing those
 nodes."
   (lambda (context)
     (ebox-incremental--with-phase 'projection
-      (let ((buffer (and signals (ebox-surface--signals-buffer signals))))
+      (let ((buffer (and signals (ebox-surface--signals-buffer signals)))
+            (candidate-overrides state-overrides))
+        ;; The raster proof certifies this source transition only.  A later
+        ;; signal-driven evaluation of this retained producer may change the
+        ;; viewport or scrolling independently of that transition.
+        (when (or (plist-get state-overrides :layer-raster-proof)
+                  (plist-get state-overrides :layer-raster-request))
+          (setq state-overrides (copy-sequence state-overrides))
+          (cl-remf state-overrides :layer-raster-proof)
+          (cl-remf state-overrides :layer-raster-request))
         (if (buffer-live-p buffer)
             (with-current-buffer buffer
               (ebox-surface--project
-               context source previous-state preserve-identities-p state-overrides
+               context source previous-state preserve-identities-p candidate-overrides
                signals projection-kind source-isolated-p source-path-copied-p))
           (ebox-surface--project
-           context source previous-state preserve-identities-p state-overrides
+           context source previous-state preserve-identities-p candidate-overrides
            signals projection-kind source-isolated-p source-path-copied-p))))))
 
 (defun ebox-surface-materialize-ephemeral-string (source source-index)
