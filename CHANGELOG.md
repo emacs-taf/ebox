@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Prepared content updates can retain fixed, unanchored root overlays while
+  updating an independent underlying panel, including occluded text and input
+  ownership. Unsupported overlay dependencies keep ordinary publication.
 - Replacing children inside one eligible absolute panel reuses the other
   panels and completed root flow while recomposing their overlap. Root portals
   without anchor dependencies use the same path; ordinary ownership and atomic
@@ -38,6 +41,8 @@ All notable changes to Ebox are documented here.
 - Separate prepared update operations sharing a panel retain the latest sibling
   text and inherited paint when they alternate or retry a rejected publication.
   Their render memo invalidation now follows the shared scene's changed nodes.
+- Unsupported prepared members are rejected before scene storage is allocated;
+  rejection preserves the accepted source and permits later valid preparation.
 
 - Prepared geometry reserves sparse border and interaction roles from their own
   raster intervals with a small fixed allowance, reducing cold mount allocation.
