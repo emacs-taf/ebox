@@ -465,9 +465,11 @@ two mount/index banks, callback bindings, reports and rollback storage. Cold
 ownership tokens map raster slices directly to retained objects and ancestors;
 changed rows refresh visible intervals in a fixed mount pool while unchanged row
 intervals shift by their retained character offsets. Each measured owner/tag
-combination reserves capacity from its own raster intervals; sparse chrome does
-not inherit the largest content footprint of another role on the same object.
-Existing authoritative mounts and the common growth bound remain intact.
+combination initially reserves twice its known raster intervals plus one;
+sparse chrome does not inherit another role's footprint or a per-layer allowance.
+Owners without raster evidence retain their conservative cold reservation.
+Exhausted pools double up to the common bound while retaining every existing
+mount; each fill retries only after capacity has increased.
 Publication receives known old/new damage ranges, edits them from the end, and
 updates only their property
 runs. Private ownership tokens are stripped before publication. Source preparation owns separate private declaration and runtime numeric

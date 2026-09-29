@@ -6257,12 +6257,12 @@ the first RASTERS element must then be its complete joined output.  Its
 row interval cache is primed here without changing the complete mount pool.
 Optional LAYER-RASTERS lists the RASTERS elements holding unoccluded layer
 pixels and LAYER-COUNT the number of movable layers.  An owner visible in those
-pixels or in the joined ROWS then reserves twice its own known interval
-count plus one interval per layer: a moved layer splits at most one
-interval per row.  The reservation never exceeds INTERVAL-CAPACITY plus the
-row count.  An owner without its own interval evidence retains the object's
-known footprint as a conservative fallback.  A frame needing more
-intervals grows the exhausted pools through
+pixels or in the joined ROWS initially reserves twice its own known interval
+count plus one.  Further occlusion splits grow only exhausted owners.  The
+reservation never exceeds INTERVAL-CAPACITY plus the row count.  An owner
+without its own interval evidence retains the object's known footprint as a
+conservative fallback.  A frame needing more intervals grows exhausted pools
+through
 `ebox-surface--geometry-mount-grow' up to that bound."
   (unless (and (integerp interval-capacity) (> interval-capacity 0))
     (error "Invalid prepared geometry interval capacity: %S" interval-capacity))
@@ -6407,11 +6407,11 @@ intervals grows the exhausted pools through
                     ;; and grows on demand.
                     ((and layer-count (not (gethash owner present)))
                      (max (length existing) (min bound (1+ layer-count))))
-                    ;; Objects with no visible interval (hidden layers) keep
-                    ;; the full bound so revealing them stays prepared.
+                    ;; Measured roles reserve their own footprint.  Further
+                    ;; visible splits grow the same bounded owner pool.
                     ((and known (> known 0))
                      (max (length existing)
-                          (min bound (+ (* 2 known) layer-count))))
+                          (min bound (1+ (* 2 known)))))
                     (t (max bound (length existing)))))
                   (mounts (make-vector capacity nil))
                   (index 0))
@@ -6773,7 +6773,8 @@ attempt's discarded pixels, so publication rollback needs no cache mutation."
          (null (ebox-surface--geometry-mount-exhausted projection)))))
 
 (defun ebox-surface--geometry-mount-grow (projection)
-  "Grow PROJECTION's pools exhausted by the last fill to their fixed bound.
+  "Double PROJECTION's exhausted pools without exceeding their fixed bound.
+A zero-capacity pool gains one interval.  Existing mounts retain identity.
 New inactive mounts join each exhausted owner's free intervals and a complete
 slot vector replaces the old one, so the caller must prepare a new publication
 frame over those slots before retrying the fill.  Return non-nil when some
@@ -6786,7 +6787,7 @@ pool grew; nil means the frame needs more intervals than the bound admits."
     (dolist (owner exhausted)
       (let* ((mounts (ebox-surface--geometry-owner-mounts owner))
              (size (length mounts))
-             (capacity (or bound 0)))
+             (capacity (min (or bound 0) (max (1+ size) (* 2 size)))))
         (when (and (not (ebox-surface--geometry-owner-full-p owner))
                    (> capacity size))
           (let ((next (make-vector capacity nil)))
