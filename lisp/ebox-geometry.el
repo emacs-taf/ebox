@@ -25,7 +25,7 @@
   old-report-revision old-report-publication
   stylesheet stylesheet-epoch frame-window frame-font-frame display-snapshot
   frame-char-width frame-char-height window-width window-height
-  stage rollback after-commit staged-p crop)
+  stage rollback after-commit staged-p crop render-memos)
 
 (cl-defstruct (ebox-geometry--route (:constructor ebox-geometry--make-route))
   "One fixed wrapper and its containing plane in a compiled output route."
@@ -558,10 +558,24 @@ OPERATION and the publication report; no pixel or mount authority is replaced."
       (funcall (ebox-geometry--operation-rollback operation))))
   (setf (ebox-geometry--operation-staged-p operation) nil))
 
+(defun ebox-geometry--forget-render-memos (scene node)
+  "Invalidate SCENE's shared render facts for NODE and its ancestors."
+  (when-let* ((tables (ebox-geometry--operation-render-memos scene)))
+    (let* ((state (ebox-geometry--operation-state scene))
+           (parents (plist-get state :parent-table))
+           (nodes (plist-get state :node-table)))
+      (while node
+        (dotimes (index (length tables))
+          (remhash node (aref tables index)))
+        (setq node (ebox-runtime-index-get
+                    (ebox-runtime-index-get (plist-get node :node-id) parents) nodes))))))
+
 (defun ebox-geometry--accept (operation _report)
   "Retire OPERATION's generic derived geometry after successful staging."
   (setq operation (ebox-geometry--operation-active-operation operation))
   (ebox-interaction--geometry-accept (ebox-geometry--interaction operation))
+  (ebox-geometry--forget-render-memos
+   (ebox-geometry--operation-session operation) (ebox-geometry--operation-node operation))
   (let ((state (ebox-geometry--operation-state operation)))
     ;; These proofs describe the old published fragment coordinates.  Source
     ;; and object identity remain authoritative; a later general publication

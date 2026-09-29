@@ -545,9 +545,12 @@ explicitly writes both, because cascade application may replace a node's unit
 value; rollback restores the source number, previous projected value and reusable
 runtime unit together. It then renders each changed member's nearest record owner
 with the ordinary renderer in its host content context, so incremental and full
-output share one box implementation. Per-cohort render-signature and viewport
-memo tables survive between applies and are invalidated along the changed
-nodes' ancestor paths. A flow owner replaces only rows whose pixels changed and
+output share one box implementation. Render-signature and viewport memo tables
+belong to the shared scene, while cohorts own their invocation storage. Every
+cohort invalidates changed and restyled nodes and their ancestor paths before
+rendering and after rejection. Direct prepared geometry also invalidates its
+changed path on acceptance. Unrelated nodes retain their memoized facts, and
+operations sharing a raster see the same current source signatures. A flow owner replaces only rows whose pixels changed and
 must keep its rows and pixel intervals. An absolute owner does not participate
 in flow, so a resize or row change reuses its record slots, appends records and
 hides surplus ones. A fixed sparse batch saves each record once, so paint, Text,

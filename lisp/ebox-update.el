@@ -554,18 +554,28 @@ operation, or nil if a member cannot use the fixed retained canvas."
                 (setf (ebox-update--group-hover-owners group) refs)))))
         (unless (plist-member state :computed-styles-stale-p)
           (plist-put state :computed-styles-stale-p nil))
-        (let ((operation
+        (let* ((memos
+                (or (ebox-geometry--operation-render-memos scene)
+                    (setf (ebox-geometry--operation-render-memos scene)
+                          (vector (make-hash-table :test #'eq)
+                                  (make-hash-table :test #'eq)
+                                  (make-hash-table :test #'eq)
+                                  (make-hash-table :test #'eq)
+                                  (make-hash-table :test #'eq)))))
+               (operation
                (ebox-update--make-cohort
                 :buffer buffer :state state :scene scene :members members :groups groups
                 :boundaries (let (all)
                               (maphash (lambda (_node boundary) (push boundary all)) boundaries)
                               (vconcat all))
                 :marks (make-vector (length members) 0) :epoch 0
-                :signatures (make-hash-table :test #'eq)
-                :viewport-nodes (make-hash-table :test #'eq)
-                :viewport-subtrees (make-hash-table :test #'eq)
-                :css-viewport-subtrees (make-hash-table :test #'eq)
-                :viewport-heights (make-hash-table :test #'eq)
+                ;; These facts describe shared scene nodes.  Independent
+                ;; invocation cohorts must observe each other's invalidations.
+                :signatures (aref memos 0)
+                :viewport-nodes (aref memos 1)
+                :viewport-subtrees (aref memos 2)
+                :css-viewport-subtrees (aref memos 3)
+                :viewport-heights (aref memos 4)
                 :stage stage :rollback rollback :after-commit after-commit
                 :report (list :strategy 'owner-rerender :projection-kind 'prepared-update
                               :dirty-kinds '(geometry paint span) :prepared-update-p t
@@ -712,25 +722,15 @@ as its background or visibility, leaves every descendant cascade intact."
 ;; Render signatures are recursive and memoized by node identity.  A change
 ;; can alter only its own and its ancestors' memoized entries.
 (defun ebox-update--forget-signatures (operation)
-  "Drop OPERATION's memoized render facts along changed nodes' ancestor paths."
-  (let* ((state (ebox-update--cohort-state operation))
-         (parents (plist-get state :parent-table))
-         (nodes (plist-get state :node-table))
-         (tables (list (ebox-update--cohort-signatures operation)
-                       (ebox-update--cohort-viewport-nodes operation)
-                       (ebox-update--cohort-viewport-subtrees operation)
-                       (ebox-update--cohort-css-viewport-subtrees operation)
-                       (ebox-update--cohort-viewport-heights operation)))
+  "Drop shared render facts along OPERATION's changed ancestor paths."
+  (let* ((scene (ebox-update--cohort-scene operation))
          (groups (ebox-update--cohort-groups operation))
          (changed (mapcar #'car (ebox-update--cohort-snapshots operation))))
     (dotimes (index (length groups))
       (when (ebox-update--group-dirty (aref groups index))
         (push (ebox-update--group-node (aref groups index)) changed)))
     (dolist (node changed)
-      (while node
-        (dolist (table tables) (remhash node table))
-        (setq node (ebox-runtime-index-get
-                    (ebox-runtime-index-get (plist-get node :node-id) parents) nodes))))))
+      (ebox-geometry--forget-render-memos scene node))))
 
 (defun ebox-update--render-boundary (operation boundary &optional probe)
   "Render BOUNDARY's node in its host context from OPERATION's current nodes.

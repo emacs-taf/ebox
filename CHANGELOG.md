@@ -35,6 +35,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Separate prepared update operations sharing a panel retain the latest sibling
+  text and inherited paint when they alternate or retry a rejected publication.
+  Their render memo invalidation now follows the shared scene's changed nodes.
+
 - Prepared geometry reserves sparse border and interaction roles from their own
   raster intervals with a small fixed allowance, reducing cold mount allocation.
   Exhausted pools grow geometrically within the retained bound.

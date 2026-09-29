@@ -15,6 +15,7 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-prepared-update-cohorts-share-current-pane-content", "file": "tests/ebox-prepared-update-tests.el", "purpose": "Separate prepared operations sharing a pane keep the latest sibling text, inherited paint, canonical output and operation validity through alternating updates, rejected publication and retries."},
     {
       "name": "ebox-host-properties-change-root-layer-membership-with-peer-paint",
       "file": "tests/ebox-host-property-tests.el",

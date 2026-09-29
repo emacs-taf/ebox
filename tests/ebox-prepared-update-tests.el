@@ -26,6 +26,54 @@
         (should (equal (get-text-property position property actual)
                        (get-text-property position property expected)))))))
 
+(ert-deftest ebox-prepared-update-cohorts-share-current-pane-content ()
+  "Independent operations keep current sibling text and paint after rejection."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (ch 40) :height (lh 4)
+           (box :id "panel" :position absolute :left (ch 0) :top (lh 0)
+                :width (ch 24) :height (lh 2) :z-index 1 :color "#334455"
+             (text :id "status" "Selected 0")
+             (text :id "clock" "12:00:00"))
+           (box :id "peer" :position absolute :left (ch 28) :top (lh 0)
+                :width (ch 10) :height (lh 2) :z-index 2 :color "green"
+             "Peer"))))
+      (let* (reject
+             (selection
+              (ebox-update-prepare
+               (current-buffer) [["panel" [:color]] ["status" [:content]]]
+               (lambda () (when reject (error "Reject selection"))) #'ignore))
+             (clock (ebox-update-prepare (current-buffer) [["clock" [:content]]])))
+        (should selection)
+        (should clock)
+        (cl-labels ((apply-current (operation values changed)
+                      (should (ebox-update-valid-p selection))
+                      (should (ebox-update-valid-p clock))
+                      (should (ebox-update-apply operation values changed))
+                      (ebox-prepared-update-test--assert-fresh)))
+          (apply-current selection [["#AA2233"] ["Selected 1"]] [0 1])
+          (apply-current clock [["12:00:01"]] [0])
+          (apply-current selection [["#334455"] ["Selected 2"]] [0 1])
+          (let ((before (buffer-string))
+                (revision (ebox-surface-buffer-revision (current-buffer))))
+            (setq reject t)
+            (should-error
+             (ebox-update-apply selection [["#AA2233"] ["Selected 3"]] [0 1]))
+            (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+            (should (equal-including-properties before (buffer-string)))
+            (ebox-prepared-update-test--assert-fresh))
+          ;; The other operation can publish immediately after rejection,
+          ;; then continue after the rejected operation is retried.
+          (apply-current clock [["12:00:02"]] [0])
+          (setq reject nil)
+          (apply-current selection [["#AA2233"] ["Selected 3"]] [0 1])
+          (apply-current clock [["12:00:03"]] [0])
+          (apply-current selection [["#AA2233"] ["Selected 4"]] [1])
+          (apply-current clock [["12:00:04"]] [0]))))))
+
 (ert-deftest ebox-prepared-update-publishes-mixed-members-once ()
   "Geometry, inherited paint, native hover and Text advance one accepted revision."
   (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
