@@ -506,6 +506,18 @@ Anchors and portals retain their separate admission requirements. Primitive clip
 and native text writes still allocate output-related artifacts; prepared execution
 alone does not establish allocation or latency acceptance.
 
+Root portals admit a narrower content-only cohort when the mounted root's final
+composition retains every visible portal and no anchor dependency exists.
+Cold admission protects each portal, its descendants and logical ancestors;
+both the member and its nearest retained raster owner must lie outside that
+set. The root program retains portal records as fixed occlusion and input
+owners while independent content updates propagate their changed rows.
+Unsupported member specifications retain their member index, so a framework
+can remove them and prepare the independent content. This proof is cached only
+under the current binding capability; ordinary publication invalidates it and
+all operations. Public geometry preparation does not admit or reuse this
+content-only scene for placement changes.
+
 The mixed prepared-update cohort cold-binds source cells and the retained
 primitive owning each member's pixels; preparation renders nothing. Sparse
 changed-member indices feed one retained frame. Duplicate Host specifications

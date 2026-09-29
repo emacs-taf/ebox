@@ -882,6 +882,10 @@
 ;; flow content returns nil. Clearing hover-content, replacing active hover or
 ;; producing pixels whose roles the mounted projection cannot represent also
 ;; returns nil.
+;; Fixed unanchored root portals admit content-only members in independent
+;; branches whose retained raster owners also exclude the portals. The portal,
+;; its descendants and logical ancestors remain outside this narrow path;
+;; unsupported specifications retain their member index in the prepare report.
 ;; STAGE and ROLLBACK are paired zero-argument callbacks; AFTER-COMMIT runs once
 ;; after acceptance. Preparation does not advance the publication revision.
 ;; Prepare at mounted/structural/configuration boundaries and retain the cohort;

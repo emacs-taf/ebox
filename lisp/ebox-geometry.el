@@ -694,11 +694,13 @@ The publisher's rollback callback restores both runtime and global entries."
           :target-scroll-count descendant-count :positioned-scroll-count positioned-count
           :unknown-scroll-count unknown-count)))
 
-(defun ebox-geometry--root-program (state node &optional prior-routes)
+(defun ebox-geometry--root-program (state node &optional prior-routes fixed-portals-p)
   "Return a compiled containing-plane route for positioned NODE in STATE.
 Admission is conservative: anchors, portals and scrollable containing planes
-require additional prepared dependencies.  Scrollers inside retained rasters
-keep their content-relative state independently of the raster's placement."
+require additional prepared dependencies.  FIXED-PORTALS-P is the update
+provider's proof that all members leave the retained root portals unchanged.
+Scrollers inside retained rasters keep their content-relative state
+independently of the raster's placement."
   (let* ((root (plist-get state :root-node))
          (parents (plist-get state :parent-table))
          (id (plist-get node :node-id))
@@ -708,12 +710,12 @@ keep their content-relative state independently of the raster's placement."
     (cond
      ((not (eq (plist-get node :position) 'absolute))
       (ebox-geometry--record-admission 'route 'position))
-     ((plist-get state :root-portals-p)
+     ((and (plist-get state :root-portals-p) (not fixed-portals-p))
       (ebox-geometry--record-admission 'route 'root-portals))
      ((not (hash-table-p cache))
       (ebox-geometry--record-admission 'route 'composition-cache)))
     (when (and (eq (plist-get node :position) 'absolute)
-               (not (plist-get state :root-portals-p))
+               (or (not (plist-get state :root-portals-p)) fixed-portals-p)
                (hash-table-p cache))
       (let ((child-id id) (host-id (ebox-runtime-index-get id parents))
             routes (valid t) previous (depth 0))
@@ -934,6 +936,15 @@ PROPERTIES is a vector or list of geometry keywords.
 The cold preparation owns all placement and rollback storage.  STAGE and
 ROLLBACK are paired zero-argument callbacks; AFTER-COMMIT is called only after
 acceptance.  Preparation itself does not advance the publication revision."
+  (ebox-geometry--prepare buffer-or-name host-ref properties stage rollback after-commit))
+
+(defun ebox-geometry--prepare (buffer-or-name host-ref properties stage rollback
+                                            after-commit &optional fixed-portals-p)
+  "Compile HOST-REF in BUFFER-OR-NAME for PROPERTIES and paired callbacks.
+STAGE, ROLLBACK and AFTER-COMMIT follow `ebox-geometry-prepare'.
+Only the mixed-update provider supplies FIXED-PORTALS-P, after proving every
+member independent of the mounted root portals.  Public geometry preparation
+continues to reject these scenes, including reuse of an existing scene."
   (unless (and (or (listp properties) (vectorp properties))
                (or (null stage) (functionp stage))
                (or (null rollback) (functionp rollback))
@@ -945,6 +956,10 @@ acceptance.  Preparation itself does not advance the publication revision."
   (catch 'ebox-geometry-unsupported
     (let* ((buffer (ebox--host-ref-buffer buffer-or-name))
            (state (and buffer (ebox--buffer-render-state buffer)))
+           (_portal-admission
+            (when (and (plist-get state :root-portals-p) (not fixed-portals-p))
+              (ebox-geometry--record-admission 'route 'root-portals)
+              (throw 'ebox-geometry-unsupported nil)))
            (display-window (and buffer (get-buffer-window buffer t)))
            (display-frame (if display-window (window-frame display-window) (selected-frame)))
            (display-signature
@@ -981,7 +996,8 @@ acceptance.  Preparation itself does not advance the publication revision."
                                 old)))))
            (routes (or (and session (ebox-geometry--operation-routes session))
                        (and node surface (ebox-geometry--root-program
-                                          state node (and prior (ebox-geometry--operation-routes prior))))))
+                                          state node (and prior (ebox-geometry--operation-routes prior))
+                                          fixed-portals-p))))
            (crop (or (and session (ebox-geometry--operation-crop session))
                      (and (not session) routes (= (length routes) 1)
                           (cl-some (lambda (key) (memq key '(:width :height)))

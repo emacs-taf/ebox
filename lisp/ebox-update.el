@@ -70,10 +70,11 @@ a member changed it; PAINT marks any other changed raster value."
         (ebox-source--update-slots-value (ebox-update--group-slots group) index)
       (ebox-update--current-value (ebox-update--group-node group) property))))
 
-(defun ebox-update--scene (buffer state nodes &optional resize-node)
+(defun ebox-update--scene (buffer state nodes &optional resize-node fixed-portals-p)
   "Return BUFFER's shared scene admitting NODES, preferring RESIZE-NODE.
 A requested fixed-content size binding prepares the crop primitive before
-input; ordinary layout keeps its existing publication route."
+input; ordinary layout keeps its existing publication route.
+FIXED-PORTALS-P records the content cohort's independent-portal proof."
   (or (with-current-buffer buffer
         (and (ebox-geometry--session-valid-p ebox-geometry--session)
              ebox-geometry--session))
@@ -98,11 +99,49 @@ input; ordinary layout keeps its existing publication route."
                    (ebox--buffer-host-ref-table buffer))
           (setq reference (or reference (plist-get anchor :id)))
           (when reference
-            (when-let* ((operation (ebox-geometry-prepare
+            (when-let* ((operation (ebox-geometry--prepare
                                    buffer reference
                                    (if resize-node [:left :top :width :height]
-                                     [:left :top :z-index]))))
+                                     [:left :top :z-index])
+                                   nil nil nil fixed-portals-p)))
               (ebox-geometry--operation-session operation)))))))
+
+(defun ebox-update--fixed-portal-protection (state)
+  "Return the protected node IDs of STATE's fixed root portals.
+Return `unsupported' when anchors or missing retained portal records prevent
+proof.  Every portal, its descendants and its logical ancestors is protected;
+only content in an independent branch may use the existing fixed canvas."
+  (let* ((root (plist-get state :root-node))
+         (parents (plist-get state :parent-table))
+         (cache (plist-get state :layer-composition-cache))
+         (entry (and (hash-table-p cache)
+                     (gethash (cons (plist-get root :node-id) 'final) cache)))
+         (protected (make-hash-table :test #'equal))
+         (recorded (make-hash-table :test #'equal))
+         visible-portals anchored)
+    (dolist (record (plist-get entry :records))
+      (puthash (plist-get (plist-get record :node) :node-id) t recorded))
+    (cl-labels
+        ((visit
+          (node inside-portal visible)
+          (let* ((id (plist-get node :node-id))
+                 (portal (eq (plist-get node :layer) 'root))
+                 (visible (and visible (not (eq (plist-get node :visibility) 'hidden)))))
+            (when (plist-get node :anchor) (setq anchored t))
+            (when (or inside-portal portal) (puthash id t protected))
+            (when portal
+              (when visible (push id visible-portals))
+              (let ((ancestor (ebox-runtime-index-get id parents)))
+                (while ancestor
+                  (puthash ancestor t protected)
+                  (setq ancestor (ebox-runtime-index-get ancestor parents)))))
+            (dolist (child (ebox-tree-node-children node))
+              (visit child (or inside-portal portal) visible)))))
+      (visit root nil t))
+    (if (or anchored (not (vectorp (plist-get entry :rows)))
+            (cl-some (lambda (id) (not (gethash id recorded))) visible-portals))
+        'unsupported
+      protected)))
 
 (defun ebox-update--geometry-binding (group routes)
   "Bind GROUP's geometry to a fixed primitive target in ROUTES."
@@ -169,7 +208,8 @@ TABLE shares one boundary among all groups rendered by the same node."
 
 (cl-defstruct (ebox-update--binding (:constructor ebox-update--make-binding))
   "Opaque cold capability for mounted state and its measurement environment."
-  public-token buffer state stylesheet stylesheet-epoch font-epoch environment window width height)
+  public-token buffer state stylesheet stylesheet-epoch font-epoch environment window width height
+  portal-protection)
 
 (defvar-local ebox-update--binding-token nil
   "Current immutable prepared-binding capability for this mounted buffer.")
@@ -329,8 +369,16 @@ operation, or nil if a member cannot use the fixed retained canvas."
     (let* ((buffer (ebox--host-ref-buffer buffer-or-name))
            (state (and buffer (ebox--buffer-render-state buffer)))
            (groups-table (make-hash-table :test #'eq))
-           (members (make-vector (length specifications) nil)) groups nodes scene)
+           (members (make-vector (length specifications) nil))
+           (portal-protection
+            (and (plist-get state :root-portals-p)
+                 (or (ebox-update--binding-portal-protection ebox-update--binding-token)
+                     (setf (ebox-update--binding-portal-protection ebox-update--binding-token)
+                           (ebox-update--fixed-portal-protection state)))))
+           groups nodes scene)
       (unless state (ebox-update--decline 'unmounted t))
+      (when (eq portal-protection 'unsupported)
+        (ebox-update--decline 'fixed-canvas nil '(:phase route :reason root-portals)))
       (unless (equal (plist-get state :display-signature)
                      (append (ebox-geometry--operation-display-snapshot
                               (ebox-update--binding-environment ebox-update--binding-token)) nil))
@@ -348,6 +396,10 @@ operation, or nil if a member cannot use the fixed retained canvas."
             (user-error "Prepared member variants must align with its property vector"))
           (unless node (ebox-update--decline 'missing-host t))
           (setq keys (vconcat (mapcar (lambda (key) (if (eq key :bgcolor) :background-color key)) (append keys nil))))
+          (when (and portal-protection
+                     (or (not (equal keys [:content]))
+                         (gethash (plist-get node :node-id) portal-protection)))
+            (ebox-update--decline 'fixed-canvas nil '(:phase route :reason root-portals)))
           (let ((group (or (gethash node groups-table)
                            (let ((entry (ebox-update--make-group :node node :first-member index)))
                              (puthash node entry groups-table)
@@ -374,7 +426,8 @@ operation, or nil if a member cannot use the fixed retained canvas."
                               when (and (cl-intersection (ebox-update--group-properties group)
                                                          '(:width :height))
                                         (ebox-geometry--crop-candidate-p (ebox-update--group-node group)))
-                              return (ebox-update--group-node group))))
+                              return (ebox-update--group-node group))
+                     (and portal-protection t)))
         (unless scene
           (ebox-update--decline 'fixed-canvas nil
                                 (or (car ebox-geometry--admission-detail)
@@ -428,6 +481,10 @@ operation, or nil if a member cannot use the fixed retained canvas."
               (ebox-update--locate-member members group nil t)
               (let ((boundary (ebox-update--bind-boundary state routes node boundaries)))
                 (unless boundary (ebox-update--decline 'raster-boundary))
+                (when (and portal-protection
+                           (gethash (plist-get (ebox-update--boundary-node boundary) :node-id)
+                                    portal-protection))
+                  (ebox-update--decline 'fixed-canvas nil '(:phase route :reason root-portals)))
                 (setf (ebox-update--group-boundary group) boundary)))))
         ;; All output proofs precede the equivalent private source rebinding.
         (dotimes (index (length groups))

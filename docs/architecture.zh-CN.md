@@ -347,6 +347,13 @@ frame 接纳新 revision 与 client-state；下一次原子 prepared 发布前�
 底层裁剪和原生文本写入仍会分配输出相关产物，编译后的 wrapper 指令及预备
 publisher 本身不代表已经通过分配或延迟验收。
 
+当已挂载根的最终合成保留全部可见 portal 且不存在 anchor 依赖时，root portal
+场景允许范围更窄的纯 content cohort。冷路径保护每个 portal、其后代及逻辑祖先；
+成员和最近的保留栅格 owner 都必须位于保护集合之外。独立内容传播损伤行时，根
+程序继续保留 portal 记录及其遮挡和输入所有权。不支持的成员保留拒绝索引，框架
+可移除这些成员后准备独立内容。该证明只在当前 binding capability 内缓存；普通
+发布使证明和全部操作失效。公共几何准备仍不接纳或复用这种纯内容场景来改变位置。
+
 混合 prepared-update cohort 在冷路径绑定固定成员的源单元及拥有其像素的保留
 primitive；准备阶段不渲染。稀疏变化索引进入同一个保留 frame。同一 Host 的多个规格
 共享一份源记录；hook 前冻结调用方值，拒绝时恢复所有源和调用方单元。暂存后，应用
