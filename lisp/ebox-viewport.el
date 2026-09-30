@@ -24,6 +24,13 @@ The queue holds no buffers, runtime roots or sampled dimensions.")
 (defvar ebox--window-size-change-timer nil
   "The single owned task scheduled to drain viewport notifications.")
 
+(defvar ebox-viewport-settle-delay 0.12
+  "Seconds of quiet after the last size change before Ebox reflows.
+Dragging a frame edge fires size events faster than one reflow completes, so
+rendering every event queues reflow after reflow and freezes the session.
+Reschedule this trailing delay on each event; the drag then reflows once it
+settles instead of once per intermediate size.")
+
 (defun ebox-viewport-window-width (window)
   "Return Ebox's display-safe viewport width for live WINDOW."
   (and (window-live-p window)
@@ -65,10 +72,12 @@ The queue holds no buffers, runtime roots or sampled dimensions.")
         (cl-delete-if-not #'frame-live-p
                           ebox--window-size-change-pending-frames))
   (when (and ebox--window-size-change-pending-frames
-             (not ebox--window-size-change-in-progress)
-             (not ebox--window-size-change-timer))
+             (not ebox--window-size-change-in-progress))
+    (when ebox--window-size-change-timer
+      (cancel-timer ebox--window-size-change-timer))
     (setq ebox--window-size-change-timer
-          (run-at-time 0 nil #'ebox--window-size-change-drain))))
+          (run-at-time ebox-viewport-settle-delay nil
+                       #'ebox--window-size-change-drain))))
 
 (defun ebox--window-size-change-drain ()
   "Consume one frame batch, leaving nested notifications for a later task."
