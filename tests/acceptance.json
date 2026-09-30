@@ -139,6 +139,11 @@
       "purpose": "Paint and geometry updates keep an unrelated keyed peer outside full-root work."
     },
     {
+      "name": "ebox-definite-flex-slot-updates-keep-local-projection",
+      "file": "tests/ebox-core-render-tests.el",
+      "purpose": "Content and size writes in flex items with a definite main size keep an owner-scoped projection and match fresh rendering."
+    },
+    {
       "name": "ebox-css-flex-grid-reject-cross-axis-config-units",
       "file": "tests/ebox-css-flex-grid-tests.el",
       "purpose": "Typed configs reject cross-axis lengths, including nested track functions."

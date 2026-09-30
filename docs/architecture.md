@@ -252,6 +252,14 @@ Publication scope and projection strategy are independent: unscoped publication
 and an empty-range fallback still consume the planner's prepared projection and
 source ownership. Proven selector-only candidates retain the accepted tree;
 new interaction facts reside in their candidate source index.
+A flex item with an automatic basis keeps its own slot when its main size is
+definite and the published slot equals that size. A slot decided by growth or
+shrink still requires a fixed basis with a zero main minimum. Those proofs let
+the update publish the item's own slot instead of widening it to the containing
+formatting context; the surface still validates the complete replacement
+footprint before publication. Because a local render records paint origins, the
+render cache signature includes the paint-origin capture mode, so one cached
+render cannot authorize the other mode.
 Owner-scoped output uses the integral local patch directly when the published
 generation has no fractional pixel spaces. The raw allocation replay is kept
 only for generations whose sibling remainder requires it.

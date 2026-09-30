@@ -1068,6 +1068,7 @@ block-axis min-content and max-content contribution."
         ebox--intrinsic-layout-measurement
         ebox--inline-auto-width-intrinsic-p
         ebox--containing-wrap-mode
+        ebox--paint-origin-capture-p
         ebox--box-content-cache-purpose
         ebox--render-region-id))
 

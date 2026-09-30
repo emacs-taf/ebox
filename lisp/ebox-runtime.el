@@ -4725,22 +4725,22 @@ HANDLE."
                (eq (ebox--region-update-normalize-property (car expanded))
                    :scroll-offset))
           (ebox--surface-scroll-to-offset buffer region-id (cadr expanded))
-        (let* (;; Source-only text changes leave inline declarations and
-               ;; selector subjects unchanged.  Copy the owner path first;
-               ;; the existing slot/style proof decides whether it is safe
-               ;; to retain it.  A widened projection takes a private copy
-               ;; in `ebox-incremental-prepare-scoped-commit' before layout.
-               (content-only-p
-                (and (= (length expanded) 2)
-                     (eq (ebox--region-update-normalize-property
-                          (car expanded))
-                         :content)
-                     (stringp (cadr expanded))
-                     (ebox--region-update-direct-text-node candidate-box)
-                     (not (ebox-style-cascade-active-p))))
+        (let* (;; Content and size writes isolate the target subtree and its
+               ;; ancestor path.  The slot/style proofs authorize local layout;
+               ;; a widened projection copies the complete candidate before
+               ;; any renderer can mutate shared siblings.
+               (local-input-p
+                (and (not (ebox-style-cascade-active-p))
+                     (cl-loop for (key value) on expanded by #'cddr
+                              always
+                              (or (memq key '(:width :min-width :max-width
+                                              :height :min-height :max-height))
+                                  (and (eq key :content) (stringp value)
+                                       (ebox--region-update-direct-text-node
+                                        candidate-box))))))
                (candidate-root
                 (ebox--surface-region-candidate-root
-                 buffer state region-id content-only-p))
+                 buffer state region-id local-input-p))
                (applied
                 (ebox--surface-region-apply-props
                  candidate-root source-index

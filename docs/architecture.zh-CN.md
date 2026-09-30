@@ -228,6 +228,11 @@ author key 或兄弟位置判断身份。因此，插入状态标签时，后续
 owner 时保留完整渲染回退。
 发布范围与投影策略相互独立：非 scoped 发布和空范围回退仍消费规划器准备好的投影
 与源所有权。已证明仅改变选择器状态的候选保留已接受的树，新交互事实存于候选源索引。
+自动 basis 的 flex item 在主轴尺寸确定且已发布 slot 等于该尺寸时保留自己的 slot；
+由 grow 或 shrink 决定的 slot 仍要求 fixed basis 与主轴最小值 0。这类证明让更新
+发布 item 自己的 slot，不再扩大到包含它的格式化上下文；最终仍由 surface 校验
+完整替换 footprint。局部渲染会记录 paint origin，因此渲染缓存签名包含 paint-origin
+采集模式，两种模式的缓存输出不能互相授权。
 当已发布代没有 fractional pixel 间隙时，owner-scoped 输出直接使用整数局部 patch；只有
 需要保留兄弟余数的代才重放 raw allocation。
 仅供生产阶段使用的 paint-origin carrier 保留在局部 fragment ledger 和 raw allocation

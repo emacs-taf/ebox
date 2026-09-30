@@ -4722,7 +4722,8 @@ Render STATE's candidate into BUFFER's retained owner allocation."
           (and rendered
                (or (ebox-buffer--rendered-in-existing-slots
                     spans rendered nil t)
-                   (and (or (plist-get proof :scroll-content-coordinate-p)
+                   (and (or (plist-get proof :owner-reflow-p)
+                            (plist-get proof :scroll-content-coordinate-p)
                             (plist-get proof :complete-physical-lines-p))
                         (= (length spans) (length (ebox-string-lines rendered)))
                         (cl-every #'ebox--span-whole-line-p spans)

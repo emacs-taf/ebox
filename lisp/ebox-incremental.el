@@ -680,6 +680,7 @@ not what renders; two computations of the same declarations compare equal."
           (list ebox-viewport-height ebox--css-containing-height))
         ebox--intrinsic-layout-measurement
         ebox--inline-auto-width-intrinsic-p
+        ebox--paint-origin-capture-p
         (ebox--render-cache-own-body-signature node)))
 
 (defconst ebox--render-cache-placement-keys '(:left :top :z-index)
@@ -1684,13 +1685,6 @@ while validating one predicted root-width mutation against the new revision."
   (when-let* ((state (ebox--buffer-render-state buffer)))
     (ebox--buffer-viewport-dependent-node-id-axes buffer)
     (plist-get state :viewport-dependent-node-ids)))
-
-(defun ebox--invalidate-buffer-viewport-dependencies (buffer)
-  "Invalidate BUFFER's cached viewport dependency list."
-  (when-let* ((state (ebox--buffer-render-state buffer)))
-    (plist-put state :viewport-dependent-node-ids nil)
-    (plist-put state :viewport-dependent-node-id-axes nil)
-    (plist-put state :viewport-dependent-node-ids-ready nil)))
 
 (defun ebox--ensure-buffer-layout-snapshots (buffer)
   "Return BUFFER's layout snapshot table, creating it when needed."
@@ -3232,7 +3226,7 @@ patched."
 
 (defun ebox--flex-main-axis (flex-node)
   "Return FLEX-NODE's main axis."
-  (if (memq (plist-get (plist-get flex-node :props) :flex-direction)
+  (if (memq (plist-get (ebox-tree-layout-props flex-node) :flex-direction)
             '(column column-reverse))
       'column
     'row))
@@ -3383,15 +3377,24 @@ is still verified by the existing rendered slot-footprint proof."
 
 (defun ebox--flex-item-fixed-basis-content-allocation-stable-p
     (buffer node-id)
-  "Return whether NODE-ID has a content-independent fixed flex basis."
+  "Return whether NODE-ID has a content-independent used flex allocation.
+An auto basis with a definite main size is stable when its slot is at least
+that size: the automatic content minimum is capped by the declared size and
+cannot affect growth.  Shrunk slots still require a fixed basis and zero
+minimum, since changing content can otherwise alter shrink distribution."
   (when-let* ((node (ebox--buffer-runtime-node buffer node-id))
               (parent-id (ebox--runtime-parent-id buffer node-id))
               (parent (ebox--buffer-runtime-node buffer parent-id))
               ((eq (ebox--display-inner parent) 'flex))
               (child (ebox--flex-child-for-source-node parent node-id))
               (style-node (ebox-fragment-style-source-node node)))
-    (ebox--flex-fixed-basis-content-allocation-stable-p
-     style-node (ebox--flex-item-props child) (ebox--flex-main-axis parent))))
+    (let ((axis (ebox--flex-main-axis parent))
+          (props (ebox--flex-item-props child)))
+      (or (ebox--flex-fixed-basis-content-allocation-stable-p
+           style-node props axis)
+          (and (eq (plist-get props :flex-basis) 'auto)
+               (ebox--flex-main-definite-size-p style-node axis)
+               (ebox--flex-item-slot-at-declared-main-p buffer node-id))))))
 
 (defun ebox--flex-slot-allocation-stable-p
     (buffer node child axis current-main changed-keys)
@@ -3402,8 +3405,15 @@ the already published slot."
   (when-let* ((style-node (ebox-fragment-style-source-node node)))
     (let* ((item-props (ebox--flex-item-props child))
            (fixed-basis-p
-            (ebox--flex-fixed-basis-content-allocation-stable-p
-             style-node item-props axis)))
+            (or (ebox--flex-fixed-basis-content-allocation-stable-p
+                 style-node item-props axis)
+                (and (eq (plist-get item-props :flex-basis) 'auto)
+                     (ebox--flex-main-definite-size-p style-node axis)
+                     (when-let* ((declared
+                                  (ebox--flex-box-main-constraint
+                                   style-node axis
+                                   (if (eq axis 'row) :width :height))))
+                       (= current-main declared))))))
       (and changed-keys
            ;; A fixed basis plus zero main minimum makes content independent
            ;; of main allocation.  Admit cross-axis content changes to the
@@ -3444,11 +3454,7 @@ CHANGED-KEYS must prove that reusing the allocation is safe."
                      (ebox--spans-span-footprint-signature spans))))
               (widths (plist-get footprint :line-pixel-widths))
               ((and widths (> (length widths) 0))))
-    (let* ((container-props
-            (ebox--flex-container-content-props
-             (plist-get parent :props)
-             (plist-get parent :raw-props)
-             (plist-get parent :box)))
+    (let* ((container-props (ebox-tree-layout-props parent))
            (axis (ebox--flex-axis container-props))
            (main (if (eq axis 'row)
                      (apply #'max widths)
@@ -4411,7 +4417,6 @@ during `ebox-incremental-flush'."
                               :patch-count 0
                               :patch-ops nil
                               :flush-count 1))
-      (ebox--invalidate-buffer-viewport-dependencies buffer)
       (unless surface-publisher
         (error "Ebox batch has no Ebox publication surface publisher"))
       (let (report)
@@ -8886,7 +8891,12 @@ then Surface performs the one actual candidate render and complete footprint,
 role, overflow, and outside-complement validation.  ALLOW-SINGLE-P also selects
 an owner for one descendant after its narrower projection proof has failed."
   (when (and (or (> (length render-dirty-set) 1)
-                 (and allow-single-p (= (length render-dirty-set) 1)))
+                 (and (= (length render-dirty-set) 1)
+                      (or allow-single-p
+                          (cl-intersection
+                           (plist-get (car render-dirty-set) :changed-keys)
+                           '(:width :min-width :max-width
+                             :height :min-height :max-height)))))
              (cl-every
               (lambda (entry)
                 (and (eq (plist-get entry :dirty-kind) 'geometry)
@@ -8897,7 +8907,12 @@ an owner for one descendant after its narrower projection proof has failed."
              (mapcar
               (lambda (entry)
                 (ebox-incremental--nearest-fixed-basis-flex-item-owner-id
-                 buffer (plist-get entry :node-id)))
+                 buffer
+                 (if (cl-intersection
+                      (plist-get entry :changed-keys)
+                      '(:width :min-width :max-width :height :min-height :max-height))
+                     (ebox--runtime-parent-id buffer (plist-get entry :node-id))
+                   (plist-get entry :node-id))))
               render-dirty-set)))
            (owner-id (and (= (length owner-ids) 1) (car owner-ids))))
       (when (and owner-id
@@ -10521,7 +10536,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
              buffer owner-id))
            (snapshot
             (and old-node
-                 (if fixed-flex-slot-p
+                 (if (and fixed-flex-slot-p (not reflow-p))
                      (ebox-incremental--cached-allocation-snapshot
                       buffer owner-id)
                    (ebox-incremental--cached-layout-snapshot-details

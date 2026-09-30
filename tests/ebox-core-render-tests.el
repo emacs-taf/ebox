@@ -117,5 +117,66 @@
                 (should (= (plist-get peer-after :node-id) peer-node-id)))))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
+(defun ebox-core-render--presented-text (text)
+  "Return TEXT's visible characters and public presentation facts."
+  (list (substring-no-properties text)
+        (vconcat
+         (cl-loop for index below (length text)
+                  collect (mapcar (lambda (property)
+                                    (get-text-property index property text))
+                                  '(display face font-lock-face))))))
+
+(defun ebox-core-render--definite-slot-view (clock width)
+  "Build rows with a definite CLOCK slot and a definite meter at WIDTH%."
+  (ebox-build
+   `(flex :flex-direction column :width (px 40)
+          (flex :width stretch :height (lh 1) (text "Row A"))
+          (flex :width stretch :height (lh 1) (text "Row B"))
+          (flex :width stretch :height (lh 1) :align-items center
+                (box :id meter :width (% ,width) :flex-shrink 0
+                     :min-width (px 1) :background-color "#EC4141")
+                (box :width (% 100) :flex-grow 1 :min-width (px 0)
+                     :background-color "#232832"))
+          (box :id clock :height (lh 1) ,clock))))
+
+(defun ebox-core-render--assert-local-slot-update (buffer operation)
+  "Apply OPERATION to BUFFER and require one owner-scoped publication."
+  (funcall (cdr operation) (car operation))
+  (let ((report (ebox-buffer-update-report buffer)))
+    (ert-info ((format "projection=%S dirty=%S patch=%S"
+                       (plist-get report :projection-kind)
+                       (plist-get report :dirty-count)
+                       (plist-get report :patch-count)))
+      (should (memq (plist-get report :projection-kind)
+                    '(span-patch owner-scoped)))
+      (should (= (plist-get report :dirty-count) 1))
+      (should (= (plist-get report :patch-count) 1))
+      (should-not (plist-get report :publication-full-root)))))
+
+(ert-deftest ebox-definite-flex-slot-updates-keep-local-projection ()
+  "Content and size writes in definite flex slots stay owner-scoped.
+An automatic basis with a definite main size publishes its own slot instead
+of widening the update to the containing formatting context."
+  (let* ((ebox-native-reflow-module-path nil)
+         (live (ebox-render-to-buffer
+                (generate-new-buffer " *ebox-definite-slot-update*")
+                (ebox-core-render--definite-slot-view "0:00" 30)))
+         (fresh (ebox-core-render--definite-slot-view "9:59" 45)))
+    (unwind-protect
+        (with-current-buffer live
+          (ebox-core-render--assert-local-slot-update
+           live (cons (ebox-region-resolve live "clock")
+                      (lambda (handle)
+                        (ebox-region-update handle :content "9:59"))))
+          (ebox-core-render--assert-local-slot-update
+           live (cons (ebox-region-resolve live "meter")
+                      (lambda (handle)
+                        (ebox-region-update-geometry handle :width '(% 45)))))
+          (should (equal (ebox-core-render--presented-text (buffer-string))
+                         (ebox-core-render--presented-text (ebox-render fresh)))))
+      (when (buffer-live-p live)
+        (when (ebox-surface-buffer-mounted-p live) (ebox-unmount-buffer live))
+        (kill-buffer live)))))
+
 (provide 'ebox-core-render-tests)
 ;;; ebox-core-render-tests.el ends here
