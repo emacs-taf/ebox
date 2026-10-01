@@ -787,7 +787,9 @@ input session; consumers apply accepted values after the boundary returns.
 
 Primary-button drag tracking also lives in Ebox. Generated keymaps retain the
 declaring node at press time and reuse the same source identity/key resolution
-as focus when publication moves it. The native tracking loop delivers one
+as focus when publication moves it. A press whose published keymap names no
+live owner is not an Ebox gesture: tracking leaves it and its release to
+Emacs' ordinary mouse handling instead of failing the command. The native tracking loop delivers one
 start, changed motion positions, and one terminal end/cancel callback. It has
 no application position state, target registry or publication path of its own.
 Each consumer callback updates through ordinary public rendering operations.

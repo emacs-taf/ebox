@@ -849,6 +849,31 @@
         (should-error (ebox-activate position) :type 'user-error))
       (should (equal events '(child parent))))))
 
+(ert-deftest ebox-press-without-live-owner-is-unclaimed ()
+  "A press whose keymap names no live owner does not fail its command.
+Foreign maps can reach the text surface; Ebox leaves such a press and its
+release to Emacs instead of signalling that no drag target exists."
+  (let ((target (generate-new-buffer " *ebox-unowned-target*"))
+        (calls 0))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (let* ((window (selected-window))
+                 (map (ebox-keymap-create :activate (lambda () (cl-incf calls)))))
+            (ebox-render-to-buffer target (ebox-build '(column (text "ordinary text"))))
+            (set-window-buffer window target)
+            (with-current-buffer target
+              (setq buffer-read-only t)
+              (let ((inhibit-read-only t))
+                (put-text-property (point-min) (1+ (point-min)) 'keymap map)))
+            (cl-letf (((symbol-function 'read-event)
+                       (lambda (&rest _)
+                         (should (= calls 0))
+                         (list 'mouse-1 (list window 1 '(1 . 1) 0)))))
+              (ebox-interaction-test--dispatch-mouse 'down-mouse-1 window 1))
+            (should (= calls 0))))
+      (kill-buffer target))))
+
 (ert-deftest ebox-activate-follows-publication-and-unmount ()
   "Replaced and rejected callbacks follow the committed surface, then disappear on unmount."
   (with-temp-buffer

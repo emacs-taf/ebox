@@ -335,9 +335,11 @@ publishes `cancel'."
                                   :delta (cons (- (car position) (car start))
                                                (- (cdr position) (cdr start)))
                                   :reason (and (eq phase 'cancel) reason))))))
-            (unless (and owner identity (available))
-              (user-error "No enabled Ebox drag target at the press position"))
-            (unwind-protect
+            ;; A press whose published keymap has no live owner is not an
+            ;; Ebox gesture.  Leave its release to Emacs' ordinary mouse
+            ;; handling instead of failing the command that reached us.
+            (when (and owner identity (available))
+              (unwind-protect
                 (condition-case problem
                     (progn
                       (unless defer-active-p
@@ -439,7 +441,7 @@ publishes `cancel'."
                   (when (and started (not finished)) (emit 'cancel))
                 (when (and active-p (buffer-live-p buffer)
                            (eq surface (ebox-surface--live-buffer-surface buffer)))
-                  (ebox-interaction--set-active nil buffer))))))))))
+                  (ebox-interaction--set-active nil buffer)))))))))))
 
 (defun ebox-interaction--track-press (event)
   "Track EVENT until release and activate its retained owner when still hit."

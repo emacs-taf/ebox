@@ -41,6 +41,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A press whose published keymap names no live owner no longer fails with
+  "No enabled Ebox drag target at the press position". Ebox leaves such a press
+  and its release to Emacs' ordinary mouse handling.
 - Local owner updates can publish the owner's own paint and inherited font
   changes within a retained allocation. They render and validate the replacement
   spans, preserve current candidate styles and recompose unchanged ancestor paint.
