@@ -343,6 +343,18 @@ children. Once the final owner output preserves its footprint, substitution
 preserves each ancestor's allocation without rereading that ancestor's mounts
 or remeasuring its text. Changed inputs still reject local publication.
 
+A single prepared Box child-list replacement can also try that retained slot
+when both nonempty child lists have the same cardinality. The owner keeps its
+own layout inputs and ancestor allocation; static cascade preparation must
+succeed, with no scrolling or layer dependency. Cardinality only selects the
+candidate: the ordinary subtree renderer and exact footprint, parent-slot,
+overflow, enclosing-property and outside-complement validators still authorize
+publication. Changed descendants use their new region identities for local
+role validation, while the removed spans retain their old identities. Surface
+projects the object delta and publishes the spliced output through ordinary
+scoped reconciliation; fixed-object coordinate batches cannot add or retire
+these descendants. A changed exterior or missing proof keeps full rendering.
+
 For fractional pixel output, the retained generation also keeps pre-quantization
 layout text. An admitted owner patch uses that allocation and then quantizes the
 composed physical rows, preserving preceding siblings' fractional remainder.

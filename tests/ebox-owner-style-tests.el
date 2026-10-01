@@ -457,5 +457,99 @@ ALBUM-HEIGHT changes the album slot."
                     (ebox-owner-style-test--check (input "Native" size))))
               (ebox-unmount-buffer (current-buffer)))))))))
 
+(defun ebox-owner-style-test--replacement (variant &optional height)
+  "Describe a list with new child identities for VARIANT and optional HEIGHT."
+  `(records column (:width (ch 40) :background-color "#ddeeff") nil
+     (,(intern (format "first-%s" variant)) box
+      (:width stretch :height ,(or height '(lh 1))
+       :color ,(if (eq variant 'a) "#112233" "#992244"))
+      (:help-echo ,(symbol-name variant))
+      (,(intern (format "first-text-%s" variant)) text nil nil
+       ,(if (eq variant 'a) "Alpha" "中文 replacement")))
+     (,(intern (format "second-%s" variant)) box
+      (:width stretch :height (lh 1)) nil
+      (,(intern (format "second-text-%s" variant)) text nil nil
+       ,(if (eq variant 'a) "Bravo" "Delta")))))
+
+(defun ebox-owner-style-test--replacement-input (variant &optional height)
+  "Build a list VARIANT of HEIGHT between two unchanged owners."
+  (ebox-owner-style-test--canonical
+   `(root column (:width (ch 40) :color "#334455"
+                  :background-color "#eeeeee") nil
+      (heading text nil nil "Heading")
+      ,(ebox-owner-style-test--replacement variant height)
+      (footer box (:width stretch :height (lh 1))
+       (:help-echo "Retained footer")
+       (footer-text text nil nil "Footer")))))
+
+(defun ebox-owner-style-test--replace-children (variant &optional height)
+  "Prepare a new child list VARIANT of HEIGHT for the mounted records owner."
+  (let ((candidate (ebox-candidate-begin (current-buffer))))
+    (ebox-candidate-replace-host-ref
+     candidate 'records
+     (ebox-owner-style-test--canonical
+      (ebox-owner-style-test--replacement variant height)))
+    candidate))
+
+(ert-deftest ebox-same-size-child-replacement-publishes-scoped ()
+  "New child identities replace one owner's lines, with atomic rollback."
+  (let ((ebox-native-reflow-module-path nil))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             (current-buffer) (ebox-owner-style-test--replacement-input 'a))
+            (let* ((footer (ebox-region-resolve (current-buffer) "footer"))
+                   (footer-geometry (ebox-region-geometry footer)))
+              (dolist (variant '(b a b))
+                (let ((before (buffer-string))
+                      (revision (ebox-surface-buffer-revision (current-buffer)))
+                      reached-publication)
+                  (should-error
+                   (ebox-commit
+                    (current-buffer)
+                    (ebox-owner-style-test--replace-children variant)
+                    (lambda (_report)
+                      (setq reached-publication t)
+                      (error "Reject replacement"))))
+                  (should reached-publication)
+                  (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+                  (should (equal-including-properties before (buffer-string))))
+                (ebox-commit (current-buffer)
+                             (ebox-owner-style-test--replace-children variant))
+                (ebox-owner-style-test--local-report)
+                (let ((report (ebox-buffer-update-report (current-buffer))))
+                  (should (eq (plist-get report :strategy) 'span-patch))
+                  (should (= (plist-get report :dirty-count) 1))
+                  (should (= (plist-get report :patch-count) 1)))
+                (should (equal footer-geometry (ebox-region-geometry footer)))
+                (should (ebox-selector-query-buffer
+                         (current-buffer) (format "#first-%s" variant)))
+                (should (ebox-region-geometry
+                         (ebox-region-resolve
+                          (current-buffer) (format "first-%s" variant))))
+                (should-not (ebox-selector-query-buffer
+                             (current-buffer)
+                             (format "#first-%s" (if (eq variant 'a) 'b 'a))))
+                (ebox-owner-style-test--check
+                 (ebox-owner-style-test--replacement-input variant)))))
+        (ebox-unmount-buffer (current-buffer))))))
+
+(ert-deftest ebox-child-replacement-validates-exterior-size ()
+  "Equal child counts cannot authorize a replacement that grows the owner."
+  (let ((ebox-native-reflow-module-path nil))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             (current-buffer) (ebox-owner-style-test--replacement-input 'a))
+            (ebox-commit (current-buffer)
+                         (ebox-owner-style-test--replace-children 'b '(lh 2)))
+            (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                                   :projection-kind))
+            (ebox-owner-style-test--check
+             (ebox-owner-style-test--replacement-input 'b '(lh 2))))
+        (ebox-unmount-buffer (current-buffer))))))
+
 (provide 'ebox-owner-style-tests)
 ;;; ebox-owner-style-tests.el ends here

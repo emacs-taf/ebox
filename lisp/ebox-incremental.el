@@ -10720,6 +10720,63 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                   (plist-get old-state :layout-snapshot-detail-generation)
                   :static-cascade-p cascade-safe-p)))))))
 
+(defun ebox-incremental--child-replacement-proof
+    (buffer old-state candidate-state prepared)
+  "Prove one child replacement can try its retained owner allocation.
+Only a prepared, equal-cardinality replacement with unchanged owner inputs
+is admitted.  Surface renders the complete subtree and still validates exact
+span, parent-slot, overflow, enclosing-property and outside-complement facts."
+  (let* ((dirty-set (plist-get prepared :dirty-set))
+         (dirty (and (= (length dirty-set) 1) (car dirty-set)))
+         (owner-id (plist-get dirty :node-id))
+         (old-node (and owner-id
+                        (ebox-runtime-index-get
+                         owner-id (plist-get old-state :node-table))))
+         (new-node (and owner-id
+                        (ebox-runtime-index-get
+                         owner-id (plist-get candidate-state :node-table)))))
+    (when (and dirty old-node new-node
+               (eq (plist-get dirty :dirty-kind) 'structure)
+               (equal (plist-get dirty :changed-keys) '(:children))
+               (not (equal owner-id (ebox--buffer-root-node-id buffer)))
+               (eq (plist-get old-node :ebox-kind) 'box)
+               (eq (plist-get new-node :ebox-kind) 'box)
+               (ebox--node-children old-node)
+               (= (length (ebox--node-children old-node))
+                  (length (ebox--node-children new-node)))
+               (plist-get prepared :styles-prepared-p)
+               (plist-get prepared :touched-node-ids)
+               (equal (ebox-incremental--layout-slot-style-signature old-node)
+                      (ebox-incremental--layout-slot-style-signature new-node))
+               (ebox-incremental--same-root-surface-identity-p
+                old-state candidate-state)
+               (null (plist-get old-state :scroll-region-ids))
+               (null (plist-get candidate-state :scroll-region-ids))
+               (not (plist-get old-state :layered-p))
+               (not (ebox-layer-subtree-p new-node))
+               (not (ebox--node-visible-overflow-p old-node))
+               (not (ebox--node-visible-overflow-p new-node))
+               (ebox-incremental--cascade-local-owner-proof-p
+                old-state candidate-state dirty-set))
+      (when-let* ((snapshot
+                   (ebox-incremental--cached-layout-snapshot-details
+                    buffer owner-id))
+                  (spans (plist-get snapshot :buffer-spans))
+                  (ancestor-slot-signature
+                   (ebox-incremental--ancestor-slot-signature
+                    buffer old-state candidate-state owner-id)))
+        (list :owner-id owner-id :owner-ids (list owner-id)
+              :dirty-set dirty-set :changed-keys '(:children)
+              :snapshot snapshot :old-spans spans
+              :allocated-width
+              (plist-get (plist-get snapshot :external-footprint-signature)
+                         :max-line-pixel-width)
+              :ancestor-slot-signature ancestor-slot-signature
+              :layout-snapshot-detail-generation
+              (plist-get old-state :layout-snapshot-detail-generation)
+              :static-cascade-p t :owner-reflow-p t
+              :range-splice-p t :child-replacement-p t)))))
+
 (defun ebox-incremental--range-span-proof
     (buffer old-state prepared candidate-state owner-plan)
   "Return a strict equal-cardinality Range replacement proof, or nil."
@@ -11538,6 +11595,11 @@ runtime."
                 (mapcar (lambda (owner-id)
                           (ebox--patch-op 'paint-patch owner-id))
                         (plist-get mixed-proof :paint-owner-ids)))))
+         (child-replacement-proof
+          (and (not unprepared-style-p) (not layer-owner-plan)
+               (not native-program-p)
+               (ebox-incremental--child-replacement-proof
+                buffer old-state candidate-state prepared)))
          (owner-plan
           (cond
            (metadata-only-p nil)
@@ -11549,6 +11611,10 @@ runtime."
             (ebox-incremental--native-frame-plan
              buffer (plist-get prepared :dirty-set)))
            (mixed-owner-plan mixed-owner-plan)
+           (child-replacement-proof
+            (list (ebox--patch-op
+                   'span-patch (plist-get child-replacement-proof :owner-id)
+                   :dirty (plist-get prepared :dirty-set))))
            (formatting-proof
               (list
                (ebox--patch-op
@@ -11598,11 +11664,12 @@ runtime."
                (ebox-incremental--paint-projection-p
                 buffer old-state prepared candidate-state owner-plan)))))
          (span-proof
-          (unless (or stale-styles-p native-program-p
-                      (and structural-dirty-p (not layer-owner-plan))
-                      paint-p mixed-proof)
-            (ebox-incremental--span-patch-projection-proof
-             buffer old-state prepared candidate-state owner-plan)))
+          (or child-replacement-proof
+              (unless (or stale-styles-p native-program-p
+                          (and structural-dirty-p (not layer-owner-plan))
+                          paint-p mixed-proof)
+                (ebox-incremental--span-patch-projection-proof
+                 buffer old-state prepared candidate-state owner-plan))))
          (_refined-owner-plan
           (when-let* ((local-plan (plist-get span-proof :owner-plan)))
             (unless (eq owner-plan local-plan)
@@ -12003,23 +12070,34 @@ whether NEXT-ROOT shares untouched published nodes."
                      (plist-get prepared :dirty-set)))
                (ebox-incremental--formatting-context-reflow-proof
                 buffer old-state candidate-state prepared)))
+         (child-replacement-proof
+          (and (not stale-styles-p) (not layer-owner-plan)
+               (not scroll-transaction-p)
+               (ebox-incremental--child-replacement-proof
+                buffer old-state candidate-state prepared)))
          (owner-plan
-          (if stale-styles-p
-              (ebox-incremental--root-owner-plan buffer (plist-get prepared :dirty-set))
-           (if layer-owner-plan layer-owner-plan
-           (if formatting-proof
-              (list
-               (ebox--patch-op
-                'formatting-context-reflow
-                (plist-get formatting-proof :owner-id)
-                :dirty (plist-get formatting-proof :dirty-set)
-                :proof formatting-proof))
+          (cond
+           (stale-styles-p
+            (ebox-incremental--root-owner-plan buffer (plist-get prepared :dirty-set)))
+           (layer-owner-plan layer-owner-plan)
+           (child-replacement-proof
+            (list (ebox--patch-op
+                   'span-patch (plist-get child-replacement-proof :owner-id)
+                   :dirty (plist-get prepared :dirty-set))))
+           (formatting-proof
+            (list
+             (ebox--patch-op
+              'formatting-context-reflow
+              (plist-get formatting-proof :owner-id)
+              :dirty (plist-get formatting-proof :dirty-set)
+              :proof formatting-proof)))
+           (t
             (unless scroll-transaction-p
               (let ((ebox-incremental--candidate-state-for-slot-proof
                      candidate-state))
                 (ebox-incremental--layout-owner-plan
                  buffer old-state candidate-state
-                 (plist-get prepared :dirty-set))))))))
+                 (plist-get prepared :dirty-set)))))))
          (mixed-proof
           (and (not stale-styles-p) (not layer-owner-plan) (not scroll-transaction-p)
                (ebox-incremental--mixed-owner-proof
@@ -12035,16 +12113,17 @@ whether NEXT-ROOT shares untouched published nodes."
                (ebox-incremental--paint-projection-p
                 buffer old-state prepared candidate-state owner-plan)))
          (span-proof
-          (unless stale-styles-p
-           (if (and scroll-transaction-p skip-span-proof-p (not layer-owner-plan))
-              (ebox-incremental--scroll-content-span-proof
-               buffer old-state prepared candidate-state scroll-owner-id)
-            (unless (or paint-p mixed-proof)
-             (or (ebox-incremental--span-patch-projection-proof
-                 buffer old-state prepared candidate-state owner-plan
-                 path-copied-p)
-                (ebox-incremental--scroll-content-span-proof
-                 buffer old-state prepared candidate-state))))))
+          (or child-replacement-proof
+              (unless stale-styles-p
+                (if (and scroll-transaction-p skip-span-proof-p (not layer-owner-plan))
+                    (ebox-incremental--scroll-content-span-proof
+                     buffer old-state prepared candidate-state scroll-owner-id)
+                  (unless (or paint-p mixed-proof)
+                    (or (ebox-incremental--span-patch-projection-proof
+                         buffer old-state prepared candidate-state owner-plan
+                         path-copied-p)
+                        (ebox-incremental--scroll-content-span-proof
+                         buffer old-state prepared candidate-state)))))))
          (projection-kind
          (cond
            (mixed-proof 'mixed-owner-reflow)

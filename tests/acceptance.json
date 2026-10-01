@@ -15,6 +15,8 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-same-size-child-replacement-publishes-scoped", "file": "tests/ebox-owner-style-tests.el", "purpose": "Replacing a Box's child identities with same-size children publishes one scoped patch, matches fresh paint and properties, preserves peers, and rolls back rejected publications."},
+    {"name": "ebox-child-replacement-validates-exterior-size", "file": "tests/ebox-owner-style-tests.el", "purpose": "Equal child counts with a larger rendered footprint fall back to ordinary publication and match fresh rendering."},
     {"name": "ebox-owner-style-scroll-content-recomposes-paint", "file": "tests/ebox-owner-style-tests.el", "purpose": "Content-only length changes in a cached owner slot recompose paint from source, retain local projection with sibling row changes and match fresh rendering."},
     {"name": "ebox-owner-style-declines-content-beyond-cached-prefix", "file": "tests/ebox-owner-style-tests.el", "purpose": "A changed content owner beyond a retained lazy prefix lacks cache-coordinate evidence, declines local publication and matches fresh rendering."},
     {"name": "ebox-owner-style-composes-rows-with-retained-scroll-content", "file": "tests/ebox-owner-style-tests.el", "purpose": "Row paint and typography compose atomically with an album content owner inside a retained scroll cache, stay local and match fresh rendering after scrolling."},

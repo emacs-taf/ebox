@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Replacing a prepared Box's children with a same-count list can render and
+  publish only that subtree when its exact allocated size remains unchanged.
+  New controls receive current identities and properties; incompatible sizes,
+  scrolling, layers and unproved styles retain ordinary rendering and rollback.
 - `ebox-canonical-input-equal-outside-ranges-p` proves canonical equality outside
   explicitly selected child ranges or stable Host outputs, allowing frameworks
   to omit redundant ancestors while publishing those descendants atomically.

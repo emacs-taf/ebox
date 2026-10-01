@@ -82,13 +82,15 @@ The enclosing producer catches the decline and renders the complete root."
     (throw 'ebox/fractional-local-output nil))
   output)
 
-(defun ebox-surface--mixed-range-splice-p (state)
-  "Return non-nil when STATE's mixed proof contains one Range splice."
-  (let ((proof (plist-get (plist-get state :mixed-owner-proof) :geometry-proof)))
-    (or (plist-get proof :range-splice-p)
-        (cl-some (lambda (owner-proof)
-                   (plist-get owner-proof :range-splice-p))
-                 (plist-get proof :owner-proofs)))))
+(defun ebox-surface--topology-splice-p (state)
+  "Return non-nil when STATE's local proof replaces published descendants."
+  (or (cl-some (lambda (proof) (plist-get proof :child-replacement-p))
+               (plist-get state :owner-scoped-proofs))
+      (let ((proof (plist-get (plist-get state :mixed-owner-proof) :geometry-proof)))
+        (or (plist-get proof :range-splice-p)
+            (cl-some (lambda (owner-proof)
+                       (plist-get owner-proof :range-splice-p))
+                     (plist-get proof :owner-proofs))))))
 
 (declare-function ebox--render-layout "ebox-layout" (node))
 (declare-function ebox--maplines "ebox" (function string))
@@ -1737,8 +1739,8 @@ PREVIOUS-STATE's node-object table."
                    (plist-get previous-state :source-index))
               (ebox-tree-source-index root)))
          (range-splice-p
-          (and (eq projection-kind 'mixed-owner-reflow)
-               (ebox-surface--mixed-range-splice-p state-overrides)))
+          (and (memq projection-kind '(owner-scoped span-patch mixed-owner-reflow))
+               (ebox-surface--topology-splice-p state-overrides)))
          (retained-span-style-p
           ;; Variable content can change its slot's text extent without
           ;; changing the already prepared cascade.  Rebuilding subjects here
@@ -2088,7 +2090,7 @@ children again."
                         (eq (plist-get (plist-get state :mixed-owner-proof)
                                        :geometry-kind)
                             'span-patch)
-                        (not (ebox-surface--mixed-range-splice-p state)))
+                        (not (ebox-surface--topology-splice-p state)))
                    (and (memq projection-kind '(span-patch owner-scoped))
                         (null (plist-get state :paint-property-contributions))
                         (let ((proofs (plist-get state :owner-scoped-proofs)))
@@ -2152,7 +2154,10 @@ children again."
         (and native-retained-p
              (ebox-surface--native-patch-result
               context projection state output node-objects region-objects))
-        (and (or (null property-contributions) retained-owned-ranges)
+        ;; Coordinate batches require the published object set to stay fixed.
+        ;; Structural replacements use the ordinary scoped reconciliation.
+        (and (not (ebox-surface--topology-splice-p state))
+             (or (null property-contributions) retained-owned-ranges)
              (or (memq projection-kind
                        '(span-patch owner-scoped mixed-owner-reflow))
                  (and (eq projection-kind 'scroll-patch)
@@ -2161,8 +2166,8 @@ children again."
               context projection state output previous-owned-ranges
               property-contributions retained-owned-ranges))
         (let* ((range-splice-p
-                (and (eq projection-kind 'mixed-owner-reflow)
-                     (ebox-surface--mixed-range-splice-p state)))
+                (and (memq projection-kind '(owner-scoped span-patch mixed-owner-reflow))
+                     (ebox-surface--topology-splice-p state)))
                (prepared
                 (ebox-surface--surface-plan
                  context surface-root output state node-objects region-objects
@@ -2170,7 +2175,8 @@ children again."
                (plan (car prepared))
                (rendered (cadr prepared))
                (owned-ranges (nth 2 prepared)))
-          (or (and (null property-contributions)
+          (or (and (not range-splice-p)
+                   (null property-contributions)
                    (memq projection-kind
                           '(span-patch owner-scoped mixed-owner-reflow))
                    (when-let* ((batch
@@ -4742,7 +4748,13 @@ Render STATE's candidate into BUFFER's retained owner allocation."
          (rendered
           (if (and rendered (plist-get proof :owner-reflow-p))
               (ebox-buffer--rendered-owned-lines
-               rendered (plist-get old-snapshot :region-ids) (length spans))
+               rendered
+               (if (plist-get proof :child-replacement-p)
+                   ;; Candidate lines own the new descendants.  Old region
+                   ;; identities only describe the spans being removed.
+                   (ebox--node-all-region-ids node)
+                 (plist-get old-snapshot :region-ids))
+               (length spans))
             rendered))
          (root-owner-p
           (equal owner-id
@@ -5674,7 +5686,7 @@ causes the caller to use the ordinary full projection."
          ;; content result cannot carry their paint layers.  Preserve the
          ;; ordinary renderer before producing a cleaned paint baseline.
          (geometry-proof (and proof
-                              (not (ebox-surface--mixed-range-splice-p state))
+                              (not (ebox-surface--topology-splice-p state))
                               (plist-get proof :geometry-proof)))
          (geometry-kind (and proof (plist-get proof :geometry-kind)))
          (paint-owner-ids (and proof (plist-get proof :paint-owner-ids)))
@@ -8633,8 +8645,9 @@ published runtime and must be consumed without clearing those shared nodes."
                          (setq root private-root state-overrides private-overrides)))
                      ;; Range deltas already projected their complete object
                      ;; map, including newly registered keys in this context.
-                     (unless (and (eq projection-kind 'mixed-owner-reflow)
-                                  (ebox-surface--mixed-range-splice-p state))
+                     (unless (and (memq projection-kind
+                                        '(owner-scoped span-patch mixed-owner-reflow))
+                                  (ebox-surface--topology-splice-p state))
                        (setq projection
                              (ebox-surface--complete-projection
                               context root source-index
