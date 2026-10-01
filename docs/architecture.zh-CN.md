@@ -584,7 +584,8 @@ Ebox 支持显式 `px`、`%`、`vw`、`vh`、`ch`、`lh` 尺寸、padding、marg
 可选交互导航在当前渲染的 keymap owner 之间移动 point，读取已提交 surface，尊重
 narrowing 与不可见性，不安装按键绑定、焦点注册表或应用状态。action 与状态仍属于
 调用方。原生激活同样读取已提交 surface 与绘制祖先中的 keymap owner，显式 nil
-阻止祖先激活。不可访问、不可见和结构文本不能成为目标；归属校验后才执行命令，
+阻止祖先激活。绘制链上没有任何声明时，keymap 归属回退到发布该位置快照的节点，
+覆盖 Flex 间隙、padding 与裁剪尾格等排版填充格。不可访问、不可见和结构文本不能成为目标；归属校验后才执行命令，
 回调错误保持可观察，不另建目标注册表。
 
 逻辑焦点只有一个 buffer-local retained node owner。公共焦点变更拒绝加入活动中的

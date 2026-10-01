@@ -849,6 +849,36 @@
         (should-error (ebox-activate position) :type 'user-error))
       (should (equal events '(child parent))))))
 
+(ert-deftest ebox-activate-resolves-layout-filler-keymaps ()
+  "Filler cells activate the node that declared their keymap.
+A flex gap or a clipped surface's trailing cell can carry a node's keymap
+while its region belongs to an ancestor, so region ownership alone cannot
+name the owner."
+  (let (events)
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        (list 'column
+              (list 'flex
+                    :keymap (ebox-keymap-create
+                             :activate (lambda () (push 'flex events) 'flex-result))
+                    (list 'box :width '(ch 3) :height '(lh 1) (list 'text "A"))
+                    (list 'box :flex-grow 1 :flex-basis '(px 0) :min-width '(ch 0)
+                          :height '(lh 1) :overflow 'hidden (list 'text "label")))
+              (list 'box
+                    :keymap (ebox-keymap-create
+                             :activate (lambda () (push 'clipped events) 'clipped-result))
+                    :height '(lh 1) :width '(ch 20) :overflow 'scroll
+                    (list 'column (list 'text "row"))))))
+      (goto-char (point-min))
+      (search-forward "A")
+      (should (eq 'flex-result (ebox-activate (point))))
+      (goto-char (point-min))
+      (search-forward "row")
+      (should (eq 'clipped-result (ebox-activate (point))))
+      (should (equal events '(clipped flex))))))
+
 (ert-deftest ebox-press-without-live-owner-is-unclaimed ()
   "A press whose keymap names no live owner does not fail its command.
 Foreign maps can reach the text surface; Ebox leaves such a press and its

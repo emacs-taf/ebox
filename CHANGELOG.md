@@ -41,6 +41,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Primary-button ownership resolves a declarative node through its published
+  keymap snapshot when the pressed cell's paint chain reaches no declaration,
+  such as a flex gap, a box's padding or a clipped surface's trailing cell.
+  Those presses now activate the declaring node instead of falling through.
 - A press whose published keymap names no live owner no longer fails with
   "No enabled Ebox drag target at the press position". Ebox leaves such a press
   and its release to Emacs' ordinary mouse handling.

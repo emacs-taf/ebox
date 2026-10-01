@@ -789,6 +789,11 @@
       "purpose": "Activation uses committed native node keymaps, respects nested nil barriers and leaves point/window selection unchanged."
     },
     {
+      "name": "ebox-activate-resolves-layout-filler-keymaps",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Activation resolves flex gaps, padding and clipped trailing cells to the node that declared their keymap."
+    },
+    {
       "name": "ebox-press-without-live-owner-is-unclaimed",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "A primary-button press whose published keymap names no live owner stays with Emacs instead of failing the command."

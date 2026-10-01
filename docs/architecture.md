@@ -774,6 +774,9 @@ The mounted buffer mode owns the shared navigation and activation bindings.
 Native generated activation commands consult the live focus owner at point;
 explicit position activation and mouse callbacks retain physical targeting.
 Effective maps resolve through source ownership and ancestor nil barriers.
+When the pressed cell's paint chain reaches no declaration, published keymap
+ownership falls back to the node that published its snapshot, which covers
+layout filler cells such as flex gaps, padding and clipped trailing cells.
 A dynamic dispatch guard prevents a generated command from reentering target
 selection after `ebox-activate` has already chosen the committed command.
 Custom native bindings remain native commands. No consumer focus or input

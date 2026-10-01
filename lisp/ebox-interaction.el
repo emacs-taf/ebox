@@ -522,7 +522,9 @@ Inspect prefix and menu maps without invoking menu filters or enable forms."
 (defun ebox-interaction--navigation-owner (position state)
   "Resolve POSITION's live native keymap to its declaring node in STATE.
 Rendered region ownership and the retained parent index identify inheritance;
-an explicit nil on a descendant blocks an ancestor's declaration."
+an explicit nil on a descendant blocks an ancestor's declaration.  When the
+published regions reach no declaring node, as for layout-generated filler
+cells, the published snapshot index names the node that declared MAP."
   (when-let* ((map (get-text-property position 'keymap))
               ((keymapp map)))
     (or (ebox-interaction--native-keymap-owner state map)
@@ -540,7 +542,8 @@ an explicit nil on a descendant blocks an ancestor's declaration."
                          (and (cadr entry)
                               (ebox-interaction-surface-equal-p
                                (list 'keymap map) (list 'keymap (cadr entry)))
-                              node-id))))))))))
+                              node-id)))))
+            (ebox-interaction--published-keymap-owner state map))))))
 
 ;;;###autoload
 (defun ebox-activate (&optional position noerror)
@@ -550,6 +553,8 @@ first visible character.  Focus resolves its own or inherited map, ignoring
 an overlapping child's map.  Explicit POSITION always selects by that position.
 Only visible, accessible text belonging to a committed node keymap is eligible.
 Inherited maps use their declaring owner; an explicit nil keymap blocks it.
+A cell whose paint chain reaches no declaration resolves to the node that
+published its keymap snapshot.
 Buffer and overlay maps do not supply activation targets.  This function does
 not move point or select a window.  The command runs in the current buffer
 with RET as `last-input-event'; its result or error is returned unchanged.
@@ -1946,6 +1951,41 @@ render-cache and publication equality proofs."
             (ebox-text--freeze snapshot)
             (puthash keymap (cons log snapshot) ebox-interaction--published-keymaps))
           snapshot)))))
+
+(defvar ebox-interaction--keymap-owner-index nil
+  "Cons of the indexed client state and its keymap ownership hash.")
+
+(defun ebox-interaction--keymap-owner-index (state)
+  "Return STATE's published keymap snapshot to declaring node index.
+Layout-generated filler cells, such as flex gaps, padding and a surface's
+final cell, are painted without a region of the node that declared their
+keymap.  Region ownership therefore cannot resolve them, so each published
+snapshot records the node that declared it.  A snapshot declared by more
+than one node stays ambiguous; only the pressed position can choose."
+  (let ((memo ebox-interaction--keymap-owner-index))
+    (if (and (consp memo) (eq (car memo) state))
+        (cdr memo)
+      (let ((index (make-hash-table :test #'eq)))
+        (ebox-runtime-index-map
+         (lambda (node-id node)
+           (let* ((source (ebox-fragment-style-source-node node))
+                  (keymap (and source
+                               (plist-get (ebox-get source :surface-properties)
+                                          'keymap))))
+             (when keymap
+               (let* ((snapshot (ebox-interaction--published-keymap keymap))
+                      (existing (gethash snapshot index 'ebox-interaction--missing)))
+                 (if (eq existing 'ebox-interaction--missing)
+                     (puthash snapshot node-id index)
+                   (puthash snapshot :ambiguous index))))))
+         (plist-get state :node-table))
+        (setq ebox-interaction--keymap-owner-index (cons state index))
+        index))))
+
+(defun ebox-interaction--published-keymap-owner (state map)
+  "Return the node that published keymap snapshot MAP in STATE, or nil."
+  (let ((owner (gethash map (ebox-interaction--keymap-owner-index state))))
+    (and (not (eq owner :ambiguous)) owner)))
 
 (defun ebox-interaction--hover-face (value)
   "Validate hover declarations VALUE and return a native mouse face."

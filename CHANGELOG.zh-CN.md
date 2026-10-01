@@ -16,6 +16,9 @@ Ebox 的重要变化记录在这里。
 
 ### 修复
 
+- 按压位置的绘制链未到达任何 keymap 声明时（如 Flex 间隙、padding 与裁剪后的
+  尾格），主按钮归属改为通过已发布的 keymap 快照索引解析到声明节点，这些位置
+  的按压会正常触发所属节点。
 - 按键位置的已发布 keymap 不再对应存活节点时，按压不再报
   "No enabled Ebox drag target at the press position"，而是把这一次按压与释放
   留给 Emacs 的常规鼠标处理。
