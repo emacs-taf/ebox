@@ -3808,7 +3808,15 @@ COMPLETE-LINES-P requires a proven physical line origin for every output row."
          (objects (plist-get state :surface-node-object-table))
          (style-states (plist-get state :style-binding-states)))
     (dolist (owner-id owner-ids)
-      (when-let* ((node (and nodes (ebox-runtime-index-get owner-id nodes)))
+      (when-let* (((not (cl-some
+                        (lambda (proof)
+                          (and (equal owner-id (plist-get proof :owner-id))
+                               (plist-get proof :retained-owner-slot-p)))
+                        proofs)))
+                  ;; A rendered slot proof already validated the candidate's
+                  ;; style closure.  Its owner may itself have changed paint
+                  ;; or font; the published binding would restore old values.
+                  (node (and nodes (ebox-runtime-index-get owner-id nodes)))
                   (object (and objects (gethash owner-id objects)))
                   (style-state (and style-states
                                     (gethash object style-states)))
@@ -4502,8 +4510,17 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                (ebox-surface--owner-slot-render-node
                 buffer state owner-id old-snapshot allocated-width
                 variable-content-p role-owned-lines-p changed-keys)))
+         (owner-style-p
+          (and role-owned-lines-p
+               (cl-intersection
+                changed-keys
+                (append ebox--paint-style-signature-keys
+                        ebox--typography-style-signature-keys
+                        '(:font-family :font-size :font-weight :font-style
+                          :surface-properties)))))
          (retain-properties-p
-          (and (memq (plist-get state :projection-kind)
+          (and (not owner-style-p)
+               (memq (plist-get state :projection-kind)
                      '(span-patch owner-scoped mixed-owner-reflow))
                (or (ebox-surface--owner-needs-ancestor-paint-p state owner-id)
                    ;; Ancestors also contribute content ownership when
@@ -4515,6 +4532,15 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                         (ebox-runtime-index-get
                          owner-id (plist-get state :parent-table)))))))
     (when (and old-snapshot spans node render-node
+               ;; Changed local paint/font properties cannot be transported
+               ;; from the old publication.  Recompose unchanged ancestors on
+               ;; the newly rendered owner, then run the same strict span and
+               ;; role validator below.  Arbitrary enclosing surface properties
+               ;; still require the existing property-transport proof.
+               (or (not owner-style-p)
+                   (and previous-state
+                        (ebox-surface--owner-enclosing-paint-supported-p
+                         previous-state state owner-id)))
                ;; Detached geometry omits enclosing effects.  Mixed paint
                ;; only recomposes dirty paint owners, so unchanged ancestors
                ;; must also survive its geometry replacement.
@@ -4566,6 +4592,11 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                          (if retain-properties-p
                              owned-rendered
                            (ebox--add-content-owners owned-rendered owners))))
+                owned-rendered))
+             (owned-rendered
+              (if (and owned-rendered owner-style-p)
+                  (ebox-surface--layer-enclosing-paint
+                   buffer state owner-id spans owned-rendered)
                 owned-rendered))
              (replacement
               (and owned-rendered
@@ -4775,6 +4806,25 @@ Render STATE's candidate into BUFFER's retained owner allocation."
                     :external new-external :parent new-parent :roles new-roles
                     :overflow new-overflow :variable-content-p nil))))))
 
+(defun ebox-surface--owner-enclosing-paint-supported-p
+    (previous-state state owner-id)
+  "Return non-nil when OWNER-ID can recompose its unchanged enclosing paint."
+  (and (ebox-surface--unchanged-enclosing-effects-p
+        previous-state state owner-id)
+       ;; Arbitrary ancestor surface properties need a separate provenance
+       ;; proof; retain the existing full-render fallback.
+       (let ((parent (ebox-runtime-index-get
+                      owner-id (plist-get state :parent-table)))
+             (valid t))
+         (while (and valid parent)
+           (when (ebox-get (ebox-runtime-index-get
+                           parent (plist-get state :node-table))
+                          :surface-properties)
+             (setq valid nil))
+           (setq parent (ebox-runtime-index-get
+                         parent (plist-get state :parent-table))))
+         valid)))
+
 (defun ebox-surface--composed-owner-patch-candidate (buffer previous-state state proof)
   "Return PROOF's composed host replacement with only newly visible roles.
 Render candidate STATE against BUFFER and its PREVIOUS-STATE.
@@ -4783,21 +4833,8 @@ already allows that change while requiring identical external allocation.
 Enclosing effects must be unchanged; retained owner roles restore their paint
 contributions without copying the previous children's hidden properties."
   (let ((owner-id (plist-get proof :owner-id)))
-    (when (and (ebox-surface--unchanged-enclosing-effects-p
-                previous-state state owner-id)
-               ;; Arbitrary ancestor surface properties need a separate
-               ;; provenance proof; retain the existing full-render fallback.
-               (let ((parent (ebox-runtime-index-get
-                              owner-id (plist-get state :parent-table)))
-                     (valid t))
-                 (while (and valid parent)
-                   (when (ebox-get (ebox-runtime-index-get
-                                    parent (plist-get state :node-table))
-                                   :surface-properties)
-                     (setq valid nil))
-                   (setq parent (ebox-runtime-index-get
-                                 parent (plist-get state :parent-table))))
-                 valid))
+    (when (ebox-surface--owner-enclosing-paint-supported-p
+           previous-state state owner-id)
       ;; Paint-only preparation normally reuses visible descendant styles.
       ;; Occluded descendants have no visible fragments to refresh, so prepare
       ;; the isolated host's complete style closure before rendering it.
@@ -7972,7 +8009,7 @@ is a defensive snapshot of the published Ebox publication content."
   "Return non-nil when a proven projection preserves viewport dependency axes.
 PREVIOUS-STATE must own a completed axis index.  STATE-OVERRIDES must carry
 a strict owner proof whose changes are limited to content, Ebox publication
-surface properties, or paint.  Those values can change measurement or
+surface properties, paint, or typography.  They can change measurement and
 publication, but cannot introduce or remove a viewport expression or node
 identity."
   (let ((dirty-set
@@ -7991,7 +8028,12 @@ identity."
             (cl-every
              (lambda (key)
                (or (memq key '(:content :surface-properties))
-                   (memq key ebox--paint-style-signature-keys)))
+                   (memq key ebox--paint-style-signature-keys)
+                   ;; Font sizes are reference-pixel numbers, not viewport
+                   ;; expressions.  Resolved font facts change measurements,
+                   ;; but cannot change which layout inputs depend on an axis.
+                   (memq key ebox--typography-style-signature-keys)
+                   (memq key '(:font-family :font-size :font-weight :font-style))))
              (plist-get entry :changed-keys)))
           dirty-set))))
 

@@ -590,7 +590,8 @@ This is execution geometry, not a proof that the width is font-independent."
           (ebox-native-commit--root-frame-width root-box viewport-width)))
     (when (and (integerp viewport-width) (> viewport-width 0)
                (integerp viewport-height) (> viewport-height 0)
-               (integerp root-width) (> root-width 0))
+               (integerp root-width) (> root-width 0)
+               (ebox-native-commit--frame-heights-supported-p node))
       (append
        (list :key 1
              :viewport-width viewport-width
@@ -618,6 +619,18 @@ This is execution geometry, not a proof that the width is font-independent."
                (plist-get state :native-base-viewport-height)
                :base-root-width
                (plist-get state :native-base-root-width)))))))
+
+(defun ebox-native-commit--frame-heights-supported-p (node)
+  "Return non-nil when NODE's frame has compilable vertical size keywords.
+Check the complete frame, including unchanged descendants: native bootstrap
+compiles them too.  Horizontal stretch and automatic heights remain supported."
+  (and (cl-every
+        (lambda (key)
+          (not (memq (ebox-get node key)
+                     '(stretch min-content max-content fit-content))))
+        '(:height :min-height :max-height))
+       (cl-every #'ebox-native-commit--frame-heights-supported-p
+                 (ebox-tree--children-raw node))))
 
 (defun ebox-native-commit--apply-patches (source patches)
   "Return SOURCE with ordered native PATCHES applied."

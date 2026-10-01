@@ -9455,6 +9455,18 @@ an otherwise unchanged allocated ancestor look geometrically unstable."
       (cl-remf signature key))
     signature))
 
+(defun ebox-incremental--owner-span-style-signature (node)
+  "Return NODE's layout inputs for a rendered owner-span proof.
+Unlike an unchanged ancestor, the owner is rendered again and its replacement
+must pass Surface's footprint, role, overflow and outside-complement checks.
+Typography may therefore change inside its retained allocation; no layout
+property is omitted from this signature."
+  (let ((signature (ebox-incremental--layout-slot-style-signature node)))
+    (dolist (key (append ebox--typography-style-signature-keys
+                        '(:font-family :font-size :font-weight :font-style)))
+      (cl-remf signature key))
+    signature))
+
 (defun ebox-incremental--cached-layout-snapshot-details (buffer node-id)
   "Return transaction-local detailed layout snapshot for NODE-ID."
   (let* ((key (cons 'snapshot node-id))
@@ -9899,11 +9911,13 @@ remains the final gate."
           evidence)))))
 
 (defun ebox-incremental--owner-slot-stable-p
-    (buffer old-state candidate-state owner-id)
+    (buffer old-state candidate-state owner-id &optional rendered-typography-p)
   "Return OWNER-ID's retained parent-slot certificate, or nil.
 The owner and its parent must retain identity, child topology, layout style,
 and a normal Column allocation.  Candidate rendering remains responsible for
-proving that changed descendants still fit this slot exactly."
+proving that changed descendants still fit this slot exactly.
+RENDERED-TYPOGRAPHY-P permits the owner's own typography to change only for a
+whole-owner render whose replacement footprint will be validated by Surface."
   (let* ((old-nodes (plist-get old-state :node-table))
          (new-nodes (plist-get candidate-state :node-table))
          (old-parents (plist-get old-state :parent-table))
@@ -9923,8 +9937,11 @@ proving that changed descendants still fit this slot exactly."
          (eq (ebox-tree-display-inner new-parent) 'column)
          (ebox-incremental--node-child-ids-equal-p old-node new-node)
          (ebox-incremental--node-child-ids-equal-p old-parent new-parent)
-         (equal (ebox-incremental--layout-slot-style-signature old-node)
-                (ebox-incremental--layout-slot-style-signature new-node))
+         (if rendered-typography-p
+             (equal (ebox-incremental--owner-span-style-signature old-node)
+                    (ebox-incremental--owner-span-style-signature new-node))
+           (equal (ebox-incremental--layout-slot-style-signature old-node)
+                  (ebox-incremental--layout-slot-style-signature new-node)))
          (equal (ebox-incremental--layout-slot-style-signature old-parent)
                 (ebox-incremental--layout-slot-style-signature new-parent))
          (not (ebox-tree-node-visible-overflow-p old-node))
@@ -10514,16 +10531,15 @@ REFLOW-P permits descendant dimension changes inside the same allocated owner;
 Surface then rebuilds internal roles while checking its unchanged exterior."
   (when (and (= (length owner-plan) 1)
              (or (> (length (plist-get prepared :dirty-set)) 1)
-                 ;; A single leaf may need its allocator's filler to change.
-                 ;; Only a proper, content-independent Flex ancestor closes
-                 ;; that envelope; the ordinary leaf proof stays stricter.
+                 ;; The owner itself may change paint or typography.  A lone
+                 ;; descendant can also need its fixed Flex allocator's filler.
                  (and (= (length (plist-get prepared :dirty-set)) 1)
-                      (not (equal
-                            (plist-get (car owner-plan) :owner-id)
-                            (plist-get (car (plist-get prepared :dirty-set))
-                                       :node-id)))
-                      (ebox--flex-item-fixed-basis-content-allocation-stable-p
-                       buffer (plist-get (car owner-plan) :owner-id)))))
+                      (or (equal
+                           (plist-get (car owner-plan) :owner-id)
+                           (plist-get (car (plist-get prepared :dirty-set))
+                                      :node-id))
+                          (ebox--flex-item-fixed-basis-content-allocation-stable-p
+                           buffer (plist-get (car owner-plan) :owner-id))))))
     (let* ((operation (car owner-plan))
            (owner-id (plist-get operation :owner-id))
            (dirty-set (plist-get prepared :dirty-set))
@@ -10554,7 +10570,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
            (owner-slot-proof
             (and (not fixed-flex-ancestor-proof)
                  (ebox-incremental--owner-slot-stable-p
-                  buffer old-state candidate-state owner-id)))
+                  buffer old-state candidate-state owner-id (not reflow-p))))
            ;; A grouped patch publishes the owner as one unit.  Its retained
            ;; external allocation is therefore the canonical certificate;
            ;; probing each changed leaf repeats the same ancestor walk and
@@ -10619,10 +10635,11 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                          '(span-patch owner-rerender))
                    (cl-every
                     (lambda (entry)
-                      (and (eq (plist-get entry :dirty-kind) 'geometry)
+                      (and (memq (plist-get entry :dirty-kind) '(paint geometry))
                            (not (plist-get entry :children))
-                           (ebox--runtime-ancestor-id-p
-                            buffer owner-id (plist-get entry :node-id))
+                           (or (equal owner-id (plist-get entry :node-id))
+                               (ebox--runtime-ancestor-id-p
+                                buffer owner-id (plist-get entry :node-id)))
                            (cl-every
                             (lambda (key)
                               (or (eq key :content)
@@ -10650,10 +10667,13 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                                    (plist-get candidate-state :parent-table)))
                    (ebox-incremental--node-child-ids-equal-p
                     old-node new-node)
-                   (equal (ebox-incremental--layout-slot-style-signature
-                           old-node)
-                          (ebox-incremental--layout-slot-style-signature
-                           new-node))
+                   (if reflow-p
+                       (equal (ebox-incremental--layout-slot-style-signature
+                               old-node)
+                              (ebox-incremental--layout-slot-style-signature
+                               new-node))
+                     (equal (ebox-incremental--owner-span-style-signature old-node)
+                            (ebox-incremental--owner-span-style-signature new-node)))
                    (ebox-incremental--same-root-surface-identity-p
                     old-state candidate-state)
                    (ebox-incremental--owner-disjoint-from-scroll-p
@@ -10682,6 +10702,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                         :variable-content-max-width allocated-width
                         :role-owned-lines-p t
                         :retain-external-owner-suffix-p t
+                        :retained-owner-slot-p (and (not reflow-p) t)
                         :ancestor-slot-signature ancestor-slot-signature
                         :layout-snapshot-detail-generation
                         (plist-get old-state
@@ -10853,6 +10874,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                  ;; raw string length is not the geometry proof.
                  (cl-every (lambda (proof)
                              (or (plist-get proof :layer-recompose-p)
+                                 (plist-get proof :retained-owner-slot-p)
                                  (plist-get proof :variable-content-p)
                                  (let* ((dirty (car (plist-get proof :dirty-set)))
                                         (old-content

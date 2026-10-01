@@ -127,6 +127,10 @@ The check visits only nodes prepared by the Style Adapter. Native continuation
 uses the confirmed frame in the published fragment ledger and its root geometry;
 temporary render fields carry only the current unpublished result. A native plan
 requires an executable viewport before it can bypass ordinary projection.
+Its complete frame must also exclude vertical `stretch`, `min-content`,
+`max-content` and `fit-content` sizes, including height bounds on unchanged
+descendants. These compiler limitations select Elisp during planning, while
+horizontal stretch and supported automatic or definite heights remain native.
 
 Local style preparation reads the candidate's mounted scopes and compares them
 with the published context before reusing styles. Tree-dependent matching defers
@@ -260,6 +264,18 @@ formatting context; the surface still validates the complete replacement
 footprint before publication. Because a local render records paint origins, the
 render cache signature includes the paint-origin capture mode, so one cached
 render cannot authorize the other mode.
+Grouped span proofs can include the non-root owner's own paint and typography,
+including resolved inherited font facts, alongside descendant paint, content
+and surface-property changes. They still require a retained Column slot or
+content-independent Flex allocation, unchanged layout inputs and ordered child
+identities. Only the rendered owner's typography is excluded from its allocation
+style comparison; ancestor and canonical equality retain their strict contracts.
+Surface keeps the candidate's computed owner style, renders its complete spans,
+and recomposes proven unchanged enclosing paint instead of copying old local
+properties. Footprint, parent-slot, role, overflow and outside-complement checks
+still authorize publication. Unproved enclosing surface properties and changed
+allocations retain the ordinary fallback. Typography changes preserve the viewport
+dependency index because font sizes contain no viewport expressions.
 Owner-scoped output uses the integral local patch directly when the published
 generation has no fractional pixel spaces. The raw allocation replay is kept
 only for generations whose sibling remainder requires it.

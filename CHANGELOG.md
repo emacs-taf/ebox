@@ -41,6 +41,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Local owner updates can publish the owner's own paint and inherited font
+  changes within a retained allocation. They render and validate the replacement
+  spans, preserve current candidate styles and recompose unchanged ancestor paint.
+- Native commit planning declines frames containing intrinsic or stretch heights,
+  including height bounds on unchanged descendants, before attempting compilation.
 - Separate prepared update operations sharing a panel retain the latest sibling
   text and inherited paint when they alternate or retry a rejected publication.
   Their render memo invalidation now follows the shared scene's changed nodes.

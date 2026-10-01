@@ -95,6 +95,9 @@ Canonical 输入的选择器元数据变化会准备完整候选样式树，包�
 原生续用读取已发布 fragment ledger 中确认的 frame 及其根几何；
 临时渲染字段只承载当前尚未发布的结果。原生计划必须具备可执行的 viewport，
 才能跳过普通投影。
+完整 frame 还必须排除垂直 `stretch`、`min-content`、`max-content` 和
+`fit-content` 尺寸，包括未变化后代的高度上下限。这些编译器限制在规划时选择
+Elisp；水平 stretch 与受支持的自动或确定高度仍可使用原生路径。
 
 局部样式预计算读取候选的挂载作用域，并在复用前比较已发布上下文。依赖树关系
 的匹配交给完整投影；未完成的 author 样式转换在局部几何探测之前确定这一边界，
@@ -233,6 +236,14 @@ owner 时保留完整渲染回退。
 发布 item 自己的 slot，不再扩大到包含它的格式化上下文；最终仍由 surface 校验
 完整替换 footprint。局部渲染会记录 paint origin，因此渲染缓存签名包含 paint-origin
 采集模式，两种模式的缓存输出不能互相授权。
+Grouped span 证明允许非 root owner 自己的绘制与字体变化，包括已解析的继承
+font fact，并可组合后代的绘制、内容和 surface-property 更新。仍须保留 Column
+槽位或与内容无关的 Flex 分配、布局输入及有序子节点身份。只有重新渲染的 owner
+在分配样式比较中排除字体；祖先与 canonical 相等契约保持严格。
+Surface 保留候选已计算的 owner 样式，重新渲染完整 spans，并合成已证明不变的
+祖先绘制，不能复制旧的局部属性。footprint、parent-slot、角色、overflow 和外部
+补集校验仍决定能否发布。无法证明的祖先 surface properties 或改变的分配保留
+普通回退。字体大小不包含 viewport 表达式，因此这类变化沿用原有视口依赖索引。
 当已发布代没有 fractional pixel 间隙时，owner-scoped 输出直接使用整数局部 patch；只有
 需要保留兄弟余数的代才重放 raw allocation。
 仅供生产阶段使用的 paint-origin carrier 保留在局部 fragment ledger 和 raw allocation
