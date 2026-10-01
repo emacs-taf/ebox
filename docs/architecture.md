@@ -665,6 +665,27 @@ coordinates and mounted-buffer coordinates require separate proofs. Unsupported
 ancestor chains, partial visibility and failed footprint or wrapper proofs retain
 the ordinary fallback.
 
+An ordinary owner batch can combine grouped owners outside scroll boxes with
+content owners inside retained scroll windows. Each cached owner uses the
+ordinary span/grouped proof in cache coordinates, after proving its scroll
+identity, unchanged window and disjoint scroll dependencies in both trees.
+Cache planning may narrow the mounted owner partition, but cannot widen it.
+When hidden content lifts a provisional plan to the root, dirty entries can
+instead form proven scroll partitions and disjoint grouped row owners. An
+unresolved outside owner retains the ordinary root fallback.
+Cached owners rebuild their own properties and recompose proved unchanged
+enclosing paint; caches do not supply the mounted paint baseline required for
+property transport. The owner proof retains the changed keys needed to verify
+its Flex allocation.
+Surface validates and composes disjoint replacements per cache, regenerates
+the changed rendered content lines and their indexes, then validates every
+visible replacement together in mounted coordinates. Fully hidden owners
+change only the proven cache. Cache and buffer changes commit or roll back
+together; missing identities, incomplete owner evidence and nested cache
+chains retain the complete fallback. Complete layout binds scroll metadata
+and lazy producers back to its canonical runtime after rendering slot-sized
+copies, so the following update can prove their identity exactly.
+
 Classify cache hits before staging. A true prefix miss owns a copied target
 subtree and ancestor path, private indexes and registries, copied cache lines and
 freshly rebound producers. A producer must not mutate a published continuation

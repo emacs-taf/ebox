@@ -15,6 +15,12 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-owner-style-scroll-content-recomposes-paint", "file": "tests/ebox-owner-style-tests.el", "purpose": "Content-only length changes in a cached owner slot recompose paint from source, retain local projection with sibling row changes and match fresh rendering."},
+    {"name": "ebox-owner-style-declines-content-beyond-cached-prefix", "file": "tests/ebox-owner-style-tests.el", "purpose": "A changed content owner beyond a retained lazy prefix lacks cache-coordinate evidence, declines local publication and matches fresh rendering."},
+    {"name": "ebox-owner-style-composes-rows-with-retained-scroll-content", "file": "tests/ebox-owner-style-tests.el", "purpose": "Row paint and typography compose atomically with an album content owner inside a retained scroll cache, stay local and match fresh rendering after scrolling."},
+    {"name": "ebox-owner-style-hidden-scroll-content-rolls-back-with-rows", "file": "tests/ebox-owner-style-tests.el", "purpose": "Hidden cached content and visible row replacements roll back together, retry locally and reveal the correct content after scrolling."},
+    {"name": "ebox-owner-style-declines-replaced-scroll-identity", "file": "tests/ebox-owner-style-tests.el", "purpose": "Changing scroll box identity rejects the retained cache proof and matches fresh rendering through the complete fallback."},
+    {"name": "ebox-owner-style-declines-unproven-scroll-windows", "file": "tests/ebox-owner-style-tests.el", "purpose": "A partially mounted scroll content owner declines local projection when its replacement window cannot be proven, preserving fresh-render parity."},
     {"name": "ebox-owner-style-grid-row-keeps-one-line-slot", "file": "tests/ebox-owner-style-tests.el", "purpose": "A one-line Grid owner publishes its own paint/font changes, mixed paint-only descendants, variable text and native properties through one validated local slot."},
     {"name": "ebox-owner-style-publishes-paint-and-inherited-fonts-locally", "file": "tests/ebox-owner-style-tests.el", "purpose": "An owner's own paint, inherited font facts and descendant surface properties publish through its retained slot and match fresh rendering without weakening canonical equality."},
     {"name": "ebox-owner-style-rejection-preserves-published-generation", "file": "tests/ebox-owner-style-tests.el", "purpose": "Rejected local owner paint/font publication restores pixels and the accepted report before a successful local retry."},

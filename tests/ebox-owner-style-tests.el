@@ -218,6 +218,197 @@
                 (ebox-owner-style-test--check next)))
           (ebox-unmount-buffer (current-buffer)))))))
 
+(defun ebox-owner-style-test--album (selected &optional height ref)
+  "Describe scroll owner REF for SELECTED with optional HEIGHT."
+  (let ((ref (or ref 'album)))
+    `(,ref box (:width stretch :height (lh ,(or height 1)) :overflow hidden
+                :background-color ,(if (= selected 0) "#eeeeee" "#dddddd")) nil
+       (,(intern (format "%s-label" ref)) text nil nil
+        ,(format "%s %s" (if (eq ref 'album) "Album" (symbol-name ref))
+                 (if (= selected 0) "A" "Bravo"))))))
+
+(defun ebox-owner-style-test--scroll-input
+    (selected &optional scroll-id album-height)
+  "Build row owners beside scroll content for SELECTED and SCROLL-ID.
+ALBUM-HEIGHT changes the album slot."
+  (ebox-owner-style-test--canonical
+   `(root column (:width (ch 40) :height (lh 8)) nil
+      ,(ebox-owner-style-test--row 0 selected)
+      ,(ebox-owner-style-test--row 1 selected)
+      (,(or scroll-id 'scroll) column
+       (:width (ch 40) :height (lh 3) :overflow scroll) nil
+       ,(ebox-owner-style-test--album selected album-height)
+       ,(ebox-owner-style-test--album selected nil 'album-extra)
+       ,@(cl-loop for i below 8
+                  collect `(,(intern (format "scroll-row-%d" i)) box
+                            (:width stretch :height (lh 1) :overflow hidden) nil
+                            (,(intern (format "scroll-label-%d" i)) text nil nil
+                             ,(format "Scroll row %d" i)))))
+      (other-scroll column (:width (ch 40) :height (lh 2) :overflow scroll) nil
+       ,(ebox-owner-style-test--album selected nil 'other-album)
+       (other-first text nil nil "Other first")
+       (other-last text nil nil "Other last")))))
+
+(defun ebox-owner-style-test--scroll-candidate (selected &optional album-height)
+  "Change the row and cached album owners to SELECTED in one candidate."
+  (let ((candidate (ebox-candidate-begin (current-buffer))))
+    (dotimes (index 2)
+      (ebox-candidate-replace-host-ref
+       candidate (intern (format "row-%d" index))
+       (ebox-owner-style-test--canonical (ebox-owner-style-test--row index selected))))
+    (ebox-candidate-replace-host-ref
+     candidate 'album
+     (ebox-owner-style-test--canonical (ebox-owner-style-test--album selected album-height)))
+    (dolist (ref '(album-extra other-album))
+      (ebox-candidate-replace-host-ref
+       candidate ref
+       (ebox-owner-style-test--canonical (ebox-owner-style-test--album selected nil ref))))
+    candidate))
+
+(ert-deftest ebox-owner-style-composes-rows-with-retained-scroll-content ()
+  "Row styles and an album label publish locally with a retained scroll cache."
+  (let ((ebox-native-reflow-module-path nil))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer (current-buffer) (ebox-owner-style-test--scroll-input 0))
+            (dolist (selected '(1 0 1))
+              (ebox-commit (current-buffer) (ebox-owner-style-test--scroll-candidate selected))
+              (ebox-owner-style-test--local-report)
+              (ebox-owner-style-test--check (ebox-owner-style-test--scroll-input selected)))
+            ;; Revealing the original window again must use the updated cache.
+            (goto-char (point-min))
+            (search-forward "Album Bravo")
+            (backward-char 1)
+            (ebox-scroll-down 1)
+            (ebox-scroll-up 1)
+            (ebox-owner-style-test--check (ebox-owner-style-test--scroll-input 1)))
+        (ebox-unmount-buffer (current-buffer))))))
+
+(ert-deftest ebox-owner-style-hidden-scroll-content-rolls-back-with-rows ()
+  "Hidden cache changes and visible row changes commit and roll back together."
+  (let ((ebox-native-reflow-module-path nil)
+        (case-fold-search nil))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer (current-buffer) (ebox-owner-style-test--scroll-input 0))
+            (goto-char (point-min))
+            (search-forward "Album A")
+            (backward-char 1)
+            (ebox-scroll-down 1)
+            (let ((before (buffer-string))
+                  (report (ebox-buffer-update-report (current-buffer))))
+              (should-error
+               (ebox-commit (current-buffer) (ebox-owner-style-test--scroll-candidate 1)
+                            (lambda (_report) (error "Reject cached content"))))
+              (should (equal-including-properties before (buffer-string)))
+              (should (equal report (ebox-buffer-update-report (current-buffer)))))
+            (ebox-scroll-up 1)
+            (ebox-owner-style-test--check (ebox-owner-style-test--scroll-input 0))
+            (ebox-scroll-down 1)
+            (ebox-commit (current-buffer) (ebox-owner-style-test--scroll-candidate 1))
+            (ebox-owner-style-test--local-report)
+            (should-not (string-match-p "Album Bravo" (buffer-string)))
+            (ebox-scroll-up 1)
+            (ebox-owner-style-test--check (ebox-owner-style-test--scroll-input 1)))
+        (ebox-unmount-buffer (current-buffer))))))
+
+(ert-deftest ebox-owner-style-declines-replaced-scroll-identity ()
+  "Replacing the scroll box cannot reuse its old cached coordinate proof."
+  (let ((ebox-native-reflow-module-path nil))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer (current-buffer) (ebox-owner-style-test--scroll-input 0))
+            (let ((next (ebox-owner-style-test--scroll-input 1 'replacement-scroll)))
+              (ebox-commit (current-buffer) next)
+              (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                                     :projection-kind))
+              (ebox-owner-style-test--check next)))
+        (ebox-unmount-buffer (current-buffer))))))
+
+(ert-deftest ebox-owner-style-declines-unproven-scroll-windows ()
+  "A partially mounted owner cannot prove its complete replacement window."
+  (let ((ebox-native-reflow-module-path nil))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer
+             (current-buffer) (ebox-owner-style-test--scroll-input 0 nil 4))
+            (ebox-commit (current-buffer)
+                         (ebox-owner-style-test--scroll-candidate 1 4))
+            (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                                   :projection-kind))
+            (ebox-owner-style-test--check (ebox-owner-style-test--scroll-input 1 nil 4)))
+        (ebox-unmount-buffer (current-buffer))))))
+
+(ert-deftest ebox-owner-style-declines-content-beyond-cached-prefix ()
+  "An owner beyond the retained lazy prefix cannot authorize a cache patch."
+  (let ((ebox-native-reflow-module-path nil)
+        (ebox-viewport-width 40) (ebox-viewport-height 8)
+        (ebox-scroll-lazy-idle-prefetch-lines 0))
+    (cl-labels
+        ((input (selected)
+           (ebox-owner-style-test--canonical
+            `(root column (:width (ch 40) :height (lh 8)) nil
+               ,(ebox-owner-style-test--row 0 selected)
+               (scroll column (:width (ch 40) :height (vh 50) :overflow scroll) nil
+                ,@(cl-loop for index below 200
+                           collect `(,(intern (format "earlier-%d" index)) text nil nil "Earlier"))
+                ,(ebox-owner-style-test--album selected))))))
+      (with-temp-buffer
+        (unwind-protect
+            (progn
+              (ebox-render-to-buffer (current-buffer) (input 0))
+              (let ((candidate (ebox-candidate-begin (current-buffer))))
+                (ebox-candidate-replace-host-ref
+                 candidate 'row-0
+                 (ebox-owner-style-test--canonical (ebox-owner-style-test--row 0 1)))
+                (ebox-candidate-replace-host-ref
+                 candidate 'album
+                 (ebox-owner-style-test--canonical (ebox-owner-style-test--album 1)))
+                (ebox-commit (current-buffer) candidate))
+              (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                                     :projection-kind))
+              (ebox-owner-style-test--check (input 1)))
+          (ebox-unmount-buffer (current-buffer)))))))
+
+(ert-deftest ebox-owner-style-scroll-content-recomposes-paint ()
+  "Content-only cached text changes rebuild paint in a retained owner slot."
+  (let ((ebox-native-reflow-module-path nil)
+        (ebox-viewport-width 40) (ebox-viewport-height 8))
+    (cl-labels
+        ((album (label)
+           `(album box (:width stretch :height (lh 1) :overflow hidden
+                         :background-color "#cccccc") nil
+              (album-label text nil nil ,label)))
+         (input (selected label)
+           (ebox-owner-style-test--canonical
+            `(root column (:width (ch 40) :height (lh 8) :color "#123456"
+                           :background-color "#eeeeee") nil
+               ,(ebox-owner-style-test--row 0 selected)
+               (scroll column (:width (ch 40) :height (lh 3) :overflow scroll) nil
+                ,(album label)
+                ,@(cl-loop for index below 6
+                           collect `(,(intern (format "tail-%d" index)) text nil nil "Tail")))))))
+      (with-temp-buffer
+        (unwind-protect
+            (progn
+              (ebox-render-to-buffer (current-buffer) (input 0 "Album"))
+              (dolist (case '((1 "Longer album name") (0 "X") (1 "Album")))
+                (pcase-let ((`(,selected ,label) case)
+                            (candidate (ebox-candidate-begin (current-buffer))))
+                  (ebox-candidate-replace-host-ref
+                   candidate 'row-0
+                   (ebox-owner-style-test--canonical (ebox-owner-style-test--row 0 selected)))
+                  (ebox-candidate-replace-host-ref
+                   candidate 'album (ebox-owner-style-test--canonical (album label)))
+                  (ebox-commit (current-buffer) candidate)
+                  (ebox-owner-style-test--local-report)
+                  (ebox-owner-style-test--check (input selected label)))))
+          (ebox-unmount-buffer (current-buffer)))))))
+
 (ert-deftest ebox-native-plan-declines-intrinsic-and-stretch-heights ()
   "Unchanged descendant heights are checked before native frame execution."
   (skip-unless (ebox-native-reflow-layout-ready-p))

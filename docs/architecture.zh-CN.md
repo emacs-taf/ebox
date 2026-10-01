@@ -448,6 +448,20 @@ Nested owner 在 allocation 不变且通过证明时，可以只替换自己的 
 树。缓存内容坐标与 mounted buffer 坐标分别验证。不支持的祖先链、部分可见的 owner，
 以及 footprint 或 wrapper 证明失败的情况，保留普通 fallback。
 
+普通 owner batch 可以组合 scroll box 外的 grouped owner 与保留滚动窗口内的 content
+owner。先证明 scroll identity、窗口不变以及两代树中其他 scroll 依赖互不相交，再在缓存
+坐标中使用原有 span／grouped proof。缓存中的规划可以收窄 mounted owner 分区，不能
+扩大它。缓存 owner 重新生成自身属性，并重组已证明不变的祖先绘制；缓存不能提供属性
+搬运所需的 mounted paint baseline。Owner proof 保留变更键，供 Flex allocation 校验。
+隐藏内容将初步计划提升到 root 时，可将 dirty entry 重新分为已证明的 scroll 分区和
+与 scroll 无关的 grouped row owner；外部分区仍无法证明时保留普通 root fallback。
+Surface 按缓存分别验证并组合互不相交的替换，
+重新生成变化的 rendered content lines 及其索引，然后在 mounted 坐标中统一验证全部
+可见替换。完全隐藏的 owner 只修改已证明的缓存。缓存与 buffer 一起提交或回滚；
+identity 缺失、owner 证据不完整或嵌套缓存链仍完整回退。完整布局渲染 slot-sized 副本后，
+将 scroll metadata 和 lazy producer 绑定回该代 canonical runtime，供下一次更新严格
+验证 identity。
+
 必须在 staging 前区分 cache hit 与真实 prefix miss。Miss 使用复制的目标子树和祖先
 路径、私有 index 与 registry、复制的缓存行，以及重新绑定的 producer；producer
 不得在 Ebox publication commit 前修改已发布的 continuation。该隔离可能在 miss 时重建目标 prefix，

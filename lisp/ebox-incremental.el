@@ -10441,6 +10441,7 @@ metadata; this predicate only authorizes the local attempt."
                  (not (ebox--node-visible-overflow-p old-node))
                  (not (ebox--ancestor-own-overflow-visible-p buffer owner-id)))
         (list :owner-id owner-id :dirty-set (list dirty)
+              :changed-keys (copy-sequence changed-keys)
               :snapshot snapshot
               :ancestor-slot-signature ancestor-slot-signature
               :variable-content-p
@@ -10819,7 +10820,13 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                                          buffer (plist-get prepared :dirty-set) t))))
                         (ebox-incremental--grouped-owner-span-proof
                          buffer old-state prepared candidate-state
-                         (list operation))))))
+                         (list operation)))
+                      ;; Preserve the ordinary proof for disjoint owners.
+                      ;; Only a miss enters the retained cache coordinates.
+                      (ebox-incremental--scroll-content-span-proof
+                       buffer old-state prepared candidate-state nil owner-plan)
+                      (ebox-incremental--scroll-partitioned-owner-span-proof
+                       buffer old-state prepared candidate-state owner-plan path-copied-p))))
         (unless (plist-get proof :owner-ids)
           (setq proof
                 (plist-put proof :owner-ids
@@ -10827,6 +10834,7 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
         proof)
     (let ((remaining (copy-sequence (plist-get prepared :dirty-set)))
           proofs
+          scroll-proofs
           valid)
       (setq valid (and owner-plan t))
       (dolist (operation owner-plan)
@@ -10860,10 +10868,13 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                         buffer old-state local-prepared candidate-state
                         (list operation) path-copied-p)))
             (if proof
-                (dolist (owner-proof
-                         (or (plist-get proof :owner-proofs)
-                             (list proof)))
-                  (push owner-proof proofs))
+                (progn
+                  (when-let* ((cached (plist-get proof :scroll-content-proof)))
+                    (push cached scroll-proofs))
+                  (dolist (owner-proof
+                           (or (plist-get proof :owner-proofs)
+                               (list proof)))
+                    (push owner-proof proofs)))
               (setq valid nil)))))
       (setq valid (and valid (null remaining)))
       (setq proofs (nreverse proofs))
@@ -10909,6 +10920,9 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                (common-max (and capacities (apply #'max capacities))))
           (list :owner-ids owner-ids
               :owner-proofs proofs
+              :scroll-content-proof
+              (and scroll-proofs
+                   (list :patches (nreverse scroll-proofs) :owner-plan owner-plan))
               :variable-content-p
               variable-p
               :variable-content-max-width
@@ -10926,6 +10940,98 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
               (cl-every (lambda (proof)
                           (plist-get proof :static-cascade-p))
                         proofs)))))))
+
+(defun ebox-incremental--scroll-partitioned-owner-span-proof
+    (buffer old-state prepared candidate-state owner-plan &optional path-copied-p)
+  "Refine a root plan using proven scroll partitions and ordinary owners.
+Hidden scroll content can lift the mounted plan to the root before its cached
+allocation is considered.  Every dirty entry must belong to one stable scroll
+cache or be disjoint from all scroll boxes.  All resulting owners still pass
+the ordinary atomic span proof and Surface validation."
+  (let ((root-id (plist-get (plist-get old-state :root-node) :node-id))
+        (dirty-set (plist-get prepared :dirty-set)))
+    (when (and (plist-get old-state :scroll-region-ids)
+               (= (length owner-plan) 1)
+               (equal root-id (plist-get (car owner-plan) :owner-id))
+               dirty-set
+               ;; Only layout-driven root plans may be refined.  Pending
+               ;; author styles and mandatory cascade roots keep their boundary.
+               (= (ebox-tree-author-style-count (plist-get old-state :root-node))
+                  (ebox-tree-author-style-count (plist-get candidate-state :root-node)))
+               (not (ebox-incremental--cascade-root-owner-plan-p
+                     old-state candidate-state dirty-set))
+               (cl-every (lambda (dirty)
+                           (and (memq (plist-get dirty :dirty-kind) '(paint geometry))
+                                (not (plist-get dirty :children)))) dirty-set))
+      (let (groups outside (valid t))
+        (dolist (dirty dirty-set)
+          (when valid
+            (let* ((input (plist-put (copy-sequence prepared) :dirty-set (list dirty)))
+                   (id (plist-get dirty :node-id))
+                   (region (ebox-incremental--owner-scroll-content-region
+                            buffer old-state input candidate-state id)))
+              (cond
+               (region
+                (let ((group (assoc region groups)))
+                  (if group (push dirty (cdr group)) (push (list region dirty) groups))))
+               ((ebox-incremental--owner-disjoint-from-scroll-p
+                 buffer old-state input candidate-state id)
+                (push dirty outside))
+               (t (setq valid nil))))))
+        (when (and valid groups)
+          (let* ((ebox-incremental--candidate-state-for-slot-proof candidate-state)
+                 (outside (nreverse outside))
+                 (outside-plan (and outside (ebox-incremental--layout-owner-plan
+                                             buffer old-state candidate-state outside)))
+                 (outside-plan
+                  (if (cl-every
+                       (lambda (op)
+                         (ebox-incremental--owner-disjoint-from-scroll-p
+                          buffer old-state prepared candidate-state (plist-get op :owner-id)))
+                       outside-plan)
+                      outside-plan
+                    ;; Typography can lift a row to a formatting context that
+                    ;; also contains an unchanged scroll sibling.  Try each
+                    ;; actual dirty ancestor as a grouped owner instead; the
+                    ;; ordinary slot proof must still authorize that choice.
+                    (let ((ebox-incremental--buffer-render-state-override (cons buffer old-state)))
+                      (mapcar
+                       (lambda (id) (ebox--patch-op 'span-patch id))
+                       (delete-dups
+                        (mapcar
+                         (lambda (entry) (plist-get entry :node-id))
+                         (cl-remove-if
+                          (lambda (entry)
+                            (cl-some
+                             (lambda (other)
+                               (and (not (equal (plist-get entry :node-id) (plist-get other :node-id)))
+                                    (ebox--runtime-ancestor-id-p
+                                     buffer (plist-get other :node-id) (plist-get entry :node-id))))
+                             outside))
+                          outside)))))))
+                 (plan
+                  (append outside-plan
+                          (mapcar
+                           (lambda (group)
+                             (let* ((scroll (gethash (car group) (plist-get old-state :scroll-state-table)))
+                                    (id (plist-get (plist-get scroll :box) :node-id)))
+                               (ebox--patch-op 'span-patch id :dirty (nreverse (cdr group)))))
+                           groups))))
+            ;; A root scroll or an unresolved outside owner already received
+            ;; its ordinary attempt.  Do not recurse into that same plan.
+            (when (and (or (not outside) outside-plan)
+                       (not (cl-some (lambda (op) (equal root-id (plist-get op :owner-id))) plan)))
+              (when-let* ((proof (ebox-incremental--span-patch-projection-proof
+                                 buffer old-state prepared candidate-state plan path-copied-p)))
+                (let ((local-plan
+                       (mapcar (lambda (owner)
+                                 (ebox--patch-op 'span-patch (plist-get owner :owner-id)
+                                                 :dirty (plist-get owner :dirty-set)))
+                               (ebox-incremental--owner-proof-list proof))))
+                  (plist-put proof :owner-plan local-plan)
+                  (when-let* ((scroll-proof (plist-get proof :scroll-content-proof)))
+                    (plist-put scroll-proof :owner-plan local-plan)))
+                proof))))))))
 
 (defun ebox-incremental--owner-proof-list (proof)
   "Return PROOF as one uniform list of leaf owner proofs."
@@ -11497,6 +11603,12 @@ runtime."
                       paint-p mixed-proof)
             (ebox-incremental--span-patch-projection-proof
              buffer old-state prepared candidate-state owner-plan)))
+         (_refined-owner-plan
+          (when-let* ((local-plan (plist-get span-proof :owner-plan)))
+            (unless (eq owner-plan local-plan)
+              (setq owner-plan local-plan
+                    scope-node-ids (mapcar (lambda (op) (plist-get op :owner-id)) local-plan)
+                    report (ebox-incremental--layout-owner-report prepared local-plan candidate-state)))))
          (projection-kind
          (cond
            (native-program-p 'native-frame)
@@ -11590,50 +11702,127 @@ runtime."
     (setq base (plist-put base (pop overrides) (pop overrides))))
   base)
 
+(defun ebox-incremental--owner-scroll-content-region
+    (buffer old-state prepared candidate-state owner-id)
+  "Return OWNER-ID's single proven retained scroll ancestor region.
+The cache window and scroll identity must survive preparation in both trees.
+All other scroll boxes must remain disjoint from the owner.  Nested cache
+chains, changed offsets and invalidated lazy windows retain the full fallback."
+  (let* ((regions (plist-get old-state :scroll-region-ids))
+         (ancestors
+          (cl-remove-if-not
+           (lambda (region)
+             (let* ((scroll (gethash region (plist-get old-state :scroll-state-table)))
+                    (id (plist-get (plist-get scroll :box) :node-id)))
+               (and id
+                    (let ((ebox-incremental--buffer-render-state-override
+                           (cons buffer old-state)))
+                      (or (ebox--runtime-ancestor-id-p buffer id owner-id)
+                          (and (equal id owner-id)
+                               (cl-every
+                                (lambda (dirty)
+                                  (ebox--runtime-ancestor-id-p
+                                   buffer id (plist-get dirty :node-id)))
+                                (plist-get prepared :dirty-set))))))))
+           regions)))
+    (when (= (length ancestors) 1)
+      (let* ((region (car ancestors))
+             (scroll (gethash region (plist-get old-state :scroll-state-table)))
+             (next (gethash region (plist-get prepared :scroll-state-table)))
+             (box (plist-get scroll :box))
+             (next-box (plist-get next :box))
+             (id (plist-get box :node-id))
+             (base (copy-sequence old-state))
+             (input (copy-sequence prepared))
+             (table (copy-hash-table (plist-get prepared :scroll-state-table))))
+        (remhash region table)
+        (plist-put base :scroll-region-ids (remove region regions))
+        (plist-put input :scroll-state-table table)
+        (when (and next-box
+                   (eq (plist-get scroll :buffer) buffer)
+                   (eq box (plist-get (gethash region ebox--scroll-global-state) :box))
+                   (equal id (plist-get next-box :node-id))
+                   (eq box (ebox-runtime-index-get id (plist-get old-state :node-table)))
+                   (eq box (gethash region (plist-get old-state :region-box-table)))
+                   (eq next-box (ebox-runtime-index-get id (plist-get candidate-state :node-table)))
+                   (eq next-box (gethash region (plist-get candidate-state :region-box-table)))
+                   (let ((ebox-incremental--buffer-render-state-override
+                          (cons buffer candidate-state)))
+                     (and (or (equal id owner-id)
+                              (ebox--runtime-ancestor-id-p buffer id owner-id))
+                          (cl-every
+                           (lambda (dirty)
+                             (and (not (equal id (plist-get dirty :node-id)))
+                                  (ebox--runtime-ancestor-id-p
+                                   buffer id (plist-get dirty :node-id))))
+                           (plist-get prepared :dirty-set))))
+                   (eq (plist-get scroll :content-lines) (plist-get next :content-lines))
+                   (eq (plist-get scroll :rendered-content-lines)
+                       (plist-get next :rendered-content-lines))
+                   (equal (plist-get scroll :scroll-offset) (plist-get next :scroll-offset))
+                   (not (plist-get scroll :lazy-scroll-prefix-dirty))
+                   (not (plist-get next :lazy-scroll-prefix-dirty))
+                   (not (plist-get scroll :lazy-scroll-window-refresh-required))
+                   (not (plist-get next :lazy-scroll-window-refresh-required))
+                   (ebox-incremental--owner-disjoint-from-scroll-p
+                    buffer base input candidate-state owner-id))
+          region)))))
+
 (defun ebox-incremental--scroll-content-span-proof
-    (buffer old-state prepared candidate-state &optional scroll-owner-id)
-  "Prove one content owner in a retained root scroll's content coordinates.
+    (buffer old-state prepared candidate-state &optional scroll-owner-id content-owner-plan)
+  "Prove content owners in a retained scroll's cached coordinates.
 The visible buffer may contain only part of the scroll content.  Its cached
 lines are a separate coordinate space, so run the ordinary owner and footprint
 proofs there rather than treating invisible owners as zero-sized.  Nested
-scrolls, non-content changes and uncached/partial owners retain their ordinary
+cache chains, structural changes and uncached/partial owners retain the ordinary
 fallback.  The surface must still validate the complete cached replacement and
 the visible replacement independently before publishing either one.
 SCROLL-OWNER-ID instead proves one nested scroll viewport in that root cache;
-other scroll owners must be disjoint from the target."
+other scroll owners must be disjoint from the target.
+CONTENT-OWNER-PLAN proves one partition of an ordinary owner batch inside a
+retained scroll ancestor, using the same owner proofs in cache coordinates."
   (let* ((regions (plist-get old-state :scroll-region-ids))
          (root (plist-get old-state :root-node))
-         (region (if scroll-owner-id (plist-get root :region-id)
-                   (and (= (length regions) 1) (car regions))))
+         (region (cond
+                  (content-owner-plan
+                   (and (= (length content-owner-plan) 1)
+                        (ebox-incremental--owner-scroll-content-region
+                         buffer old-state prepared candidate-state
+                         (plist-get (car content-owner-plan) :owner-id))))
+                  (scroll-owner-id (plist-get root :region-id))
+                  ((= (length regions) 1) (car regions))))
          (scroll (and region (gethash region (plist-get old-state :scroll-state-table))))
          (next-scroll (and region (gethash region
-                                          (plist-get prepared :scroll-state-table))))
+                                           (plist-get prepared :scroll-state-table))))
          (dirty-set (plist-get prepared :dirty-set))
          (lines (plist-get scroll :content-lines)))
     (when (and region scroll next-scroll lines
                (eq (plist-get scroll :buffer) buffer)
-               (eq (plist-get scroll :box) root)
-               (eq (plist-get next-scroll :box)
-                   (plist-get candidate-state :root-node))
-               (if scroll-owner-id
-                   (and (not (equal scroll-owner-id (plist-get root :node-id)))
-                        (cl-every
-                         (lambda (id)
-                           (let ((owner (ebox--buffer-region-render-owner-node-id buffer id)))
-                             (or (equal id region) (equal owner scroll-owner-id)
-                                 (and owner
-                                      (not (ebox--runtime-ancestor-id-p buffer owner scroll-owner-id))
-                                      (not (ebox--runtime-ancestor-id-p buffer scroll-owner-id owner))))))
-                         regions))
-                 (= (hash-table-count (plist-get prepared :scroll-state-table)) 1))
-               (= (length dirty-set) 1)
-               (if scroll-owner-id
-                   (and (equal scroll-owner-id (plist-get (car dirty-set) :node-id))
-                        (cl-every (lambda (key)
-                                    (memq key '(:scroll-offset :ebox-scroll-offset-controlled-p)))
-                                  (plist-get (car dirty-set) :changed-keys)))
-                 (equal (plist-get (car dirty-set) :changed-keys) '(:content)))
-               (not (plist-get (car dirty-set) :children))
+               (or content-owner-plan
+                   (and (eq (plist-get scroll :box) root)
+                        (eq (plist-get next-scroll :box)
+                            (plist-get candidate-state :root-node))))
+               (or content-owner-plan
+                   (if scroll-owner-id
+                       (and (not (equal scroll-owner-id (plist-get root :node-id)))
+                            (cl-every
+                             (lambda (id)
+                               (let ((owner (ebox--buffer-region-render-owner-node-id buffer id)))
+                                 (or (equal id region) (equal owner scroll-owner-id)
+                                     (and owner
+                                          (not (ebox--runtime-ancestor-id-p buffer owner scroll-owner-id))
+                                          (not (ebox--runtime-ancestor-id-p buffer scroll-owner-id owner))))))
+                             regions))
+                     (= (hash-table-count (plist-get prepared :scroll-state-table)) 1)))
+               (or content-owner-plan (= (length dirty-set) 1))
+               (or content-owner-plan
+                   (if scroll-owner-id
+                       (and (equal scroll-owner-id (plist-get (car dirty-set) :node-id))
+                            (cl-every (lambda (key)
+                                        (memq key '(:scroll-offset :ebox-scroll-offset-controlled-p)))
+                                      (plist-get (car dirty-set) :changed-keys)))
+                     (equal (plist-get (car dirty-set) :changed-keys) '(:content))))
+               (cl-every (lambda (dirty) (not (plist-get dirty :children))) dirty-set)
                (not (plist-get scroll :lazy-scroll-prefix-dirty))
                (equal (plist-get scroll :scroll-offset)
                       (plist-get next-scroll :scroll-offset)))
@@ -11657,25 +11846,42 @@ other scroll owners must be disjoint from the target."
                  (ebox-incremental--candidate-state-for-slot-proof candidate)
                  (ebox--region-line-index (ebox--build-region-line-index scroll-owner-id))
                  (ebox--region-line-index-buffer (current-buffer))
-                 (plan (if scroll-owner-id
-                           (list (ebox--patch-op 'span-patch scroll-owner-id :dirty dirty-set))
-                         (ebox-incremental--layout-owner-plan
-                          (current-buffer) base candidate dirty-set)))
+                 ;; Preserve an allocated content owner, including its filler.
+                 ;; An invisible owner may instead have been lifted to the
+                 ;; scroll box itself; resolve that partition inside the cache.
+                 (plan (or (and content-owner-plan
+                                (not (equal
+                                      (plist-get (car content-owner-plan) :owner-id)
+                                      (plist-get (plist-get scroll :box) :node-id)))
+                                content-owner-plan)
+                           (if scroll-owner-id
+                               (list (ebox--patch-op 'span-patch scroll-owner-id :dirty dirty-set))
+                             (ebox-incremental--layout-owner-plan
+                              (current-buffer) base candidate dirty-set))))
                  (proof
                   (if scroll-owner-id
                       (when-let* ((snapshot (ebox--ensure-layout-snapshot-details
-                                            (current-buffer) scroll-owner-id))
+                                             (current-buffer) scroll-owner-id))
                                   ((plist-get snapshot :buffer-spans))
                                   (width (plist-get (plist-get snapshot :external-footprint-signature)
                                                     :max-line-pixel-width)))
                         (list :owner-id scroll-owner-id :snapshot snapshot
                               :allocated-width width :nested-scroll-patch-p t
                               :scroll-content-coordinate-p t))
-                    (ebox-incremental--span-patch-projection-proof
-                     (current-buffer) base input candidate plan))))
+                    (and (or (not content-owner-plan)
+                             (cl-every
+                              (lambda (operation)
+                                (ebox--patch-op-covers-node-p
+                                 (current-buffer) (car content-owner-plan)
+                                 (plist-get operation :owner-id) 'span-patch))
+                              plan))
+                         (ebox-incremental--span-patch-projection-proof
+                          (current-buffer) base input candidate plan)))))
             (when proof
               (plist-put proof :scroll-content-proof
                          (list :region-id region :lines lines :owner-plan plan
+                               :owner-ids (or (plist-get proof :owner-ids)
+                                              (list (plist-get proof :owner-id)))
                                :snapshots (plist-get base :layout-snapshots)
                                :line-index ebox--region-line-index))
               proof)))))))
