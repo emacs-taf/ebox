@@ -266,15 +266,25 @@ render cache signature includes the paint-origin capture mode, so one cached
 render cannot authorize the other mode.
 Grouped span proofs can include the non-root owner's own paint and typography,
 including resolved inherited font facts, alongside descendant paint, content
-and surface-property changes. They still require a retained Column slot or
-content-independent Flex allocation, unchanged layout inputs and ordered child
-identities. Only the rendered owner's typography is excluded from its allocation
-style comparison; ancestor and canonical equality retain their strict contracts.
+and surface-property changes. Horizontal border width/style changes additionally
+require an unchanged definite or stretched border-box width; changed fonts must
+not affect font-relative width, bounds or exterior margins. These proofs retain
+a Column slot or content-independent Flex allocation and ordered child identities.
+The owner's comparison excludes only the typography and proven horizontal border
+inputs being rendered; ancestor and canonical equality retain their strict contracts.
+For border restyles, planning absorbs inherited effects into their changed source
+owner before ordinary geometry promotion. Independent title/subtitle changes may
+share a small fixed-basis Flex owner. Every dirty entry must belong to the disjoint
+owner partition, so the batch can publish those slots atomically without promoting
+their common ancestor to the root. Root owners and missing allocation certificates
+remain ineligible for this proof.
 Surface keeps the candidate's computed owner style, renders its complete spans,
 and recomposes proven unchanged enclosing paint instead of copying old local
-properties. Footprint, parent-slot, role, overflow and outside-complement checks
-still authorize publication. Unproved enclosing surface properties and changed
-allocations retain the ordinary fallback. Typography changes preserve the viewport
+properties. Border changes use the owner reflow renderer to rebuild internal roles;
+the exact footprint, parent-slot, overflow and outside-complement checks still
+authorize publication. Intrinsic or content-box border growth, unproved enclosing
+surface properties and changed allocations retain the ordinary fallback when no
+stable enclosing owner can be proved. Typography changes preserve the viewport
 dependency index because font sizes contain no viewport expressions.
 Owner-scoped output uses the integral local patch directly when the published
 generation has no fractional pixel spaces. The raw allocation replay is kept

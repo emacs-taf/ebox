@@ -6,6 +6,10 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Sidebar selection changes can publish background, bold text and horizontal
+  borders together with a sibling header's title/subtitle through separate retained
+  slots, avoiding a full frame render. Each slot must keep its exact exterior
+  size; intrinsic or content-box growth retains ordinary layout and atomic rollback.
 - Replacing a prepared Box's children with a same-count list can render and
   publish only that subtree when its exact allocated size remains unchanged.
   New controls receive current identities and properties; incompatible sizes,

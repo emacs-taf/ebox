@@ -551,5 +551,155 @@ ALBUM-HEIGHT changes the album slot."
              (ebox-owner-style-test--replacement-input 'b '(lh 2))))
         (ebox-unmount-buffer (current-buffer))))))
 
+(defun ebox-owner-style-test--nav (index selected &optional sizing width)
+  "Describe entry INDEX for SELECTED with optional SIZING and WIDTH."
+  `(,(intern (format "nav-%d" index)) flex
+    (:width ,(or width 'stretch) :height (lh 2)
+     :box-sizing ,(or sizing 'border-box)
+     :align-items center :padding-inline (ch 1)
+     :font-weight ,(if (= index selected) 'bold 'normal)
+     :color ,(if (= index selected) "#ff1122" "#445566")
+     :background-color ,(if (= index selected) "#eedddd" "#dddddd")
+     ,@(when (= index selected) '(:border-left ((px 1) solid "#ff1122"))))
+    (:help-echo ,(if (= index selected) "Selected entry" "Choose entry"))
+    (,(intern (format "glyph-%d" index)) box (:width (ch 3) :height (lh 1)) nil
+     (,(intern (format "glyph-text-%d" index)) text nil nil "♫"))
+    (,(intern (format "nav-label-%d" index)) box
+     (:flex-grow 1 :flex-basis (px 0) :min-width (ch 0)
+      :height (lh 1) :overflow hidden) nil
+     (,(intern (format "nav-text-%d" index)) text nil nil
+      ,(if (= index 0) "Daily" "收藏")))))
+
+(defun ebox-owner-style-test--caption (selected)
+  "Describe a small allocated caption for SELECTED."
+  `(caption column (:flex-grow 1 :flex-basis (px 0) :min-width (ch 0)) nil
+     (caption-title text (:font-weight bold) nil
+      ,(if (= selected 0) "Daily" "收藏音乐"))
+     (caption-subtitle box (:height (lh 1) :overflow hidden) nil
+      (caption-detail text nil nil
+       ,(if (= selected 0) "Your daily recommendations" "Saved tracks")))))
+
+(defun ebox-owner-style-test--section-input (selected)
+  "Build sidebar restyles and a sibling caption for SELECTED."
+  (ebox-owner-style-test--canonical
+   `(root flex (:width (ch 80) :height (lh 10) :overflow hidden
+                :background-color "#eeeeee") nil
+      (sidebar column (:width (ch 24) :height (lh 10)) nil
+       ,(ebox-owner-style-test--nav 0 selected)
+       ,(ebox-owner-style-test--nav 1 selected))
+      (main column (:flex-grow 1 :flex-basis (px 0) :min-width (ch 0)
+                    :height (lh 10)) nil
+       (header flex (:width stretch :height (lh 2)) nil
+        ,(ebox-owner-style-test--caption selected)
+        (action box (:width (ch 8) :height (lh 1)) nil
+         (action-text text nil nil "Refresh")))
+       (records box (:width stretch :height (lh 4)) (:help-echo "Stable list")
+        (records-text text nil nil "Unchanged records"))))))
+
+(defun ebox-owner-style-test--section-candidate (selected)
+  "Replace the two navigation entries and caption with SELECTED."
+  (let ((candidate (ebox-candidate-begin (current-buffer))))
+    (dotimes (index 2)
+      (ebox-candidate-replace-host-ref
+       candidate (intern (format "nav-%d" index))
+       (ebox-owner-style-test--canonical (ebox-owner-style-test--nav index selected))))
+    (ebox-candidate-replace-host-ref
+     candidate 'caption
+     (ebox-owner-style-test--canonical (ebox-owner-style-test--caption selected)))
+    candidate))
+
+(ert-deftest ebox-owner-border-restyle-keeps-column-slot ()
+  "An owner's border, paint and inherited font can change its internal roles."
+  (let ((ebox-native-reflow-module-path nil))
+    (cl-labels ((input (selected)
+                 (ebox-owner-style-test--canonical
+                  `(root column (:width (ch 24)) nil
+                     ,(ebox-owner-style-test--nav 0 selected)
+                     (peer text nil nil "Unchanged peer")))))
+      (with-temp-buffer
+        (unwind-protect
+            (progn
+              (ebox-render-to-buffer (current-buffer) (input 1))
+              (dolist (selected '(0 1 0))
+                (let ((candidate (ebox-candidate-begin (current-buffer))))
+                  (ebox-candidate-replace-host-ref
+                   candidate 'nav-0
+                   (ebox-owner-style-test--canonical
+                    (ebox-owner-style-test--nav 0 selected)))
+                  (ebox-commit (current-buffer) candidate))
+                (ebox-owner-style-test--local-report)
+                (should (= 1 (plist-get (ebox-buffer-update-report (current-buffer))
+                                       :patch-count)))
+                (ebox-owner-style-test--check (input selected))))
+          (ebox-unmount-buffer (current-buffer)))))))
+
+(ert-deftest ebox-section-restyles-and-header-publish-disjoint-scopes ()
+  "Sidebar border restyles and variable caption text stay local and atomic."
+  (let ((ebox-native-reflow-module-path nil))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer (current-buffer)
+                                   (ebox-owner-style-test--section-input 0))
+            (let* ((peer (ebox-region-resolve (current-buffer) "records"))
+                   (geometry (ebox-region-geometry peer)))
+              (dolist (selected '(1 0 1))
+                (let ((before (buffer-string))
+                      (revision (ebox-surface-buffer-revision (current-buffer)))
+                      (report (ebox-buffer-update-report (current-buffer)))
+                      accepted)
+                  (should-error
+                   (ebox-commit
+                    (current-buffer) (ebox-owner-style-test--section-candidate selected)
+                    (lambda (_report) (setq accepted t) (error "Reject section"))))
+                  (should accepted)
+                  (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+                  (should (equal report (ebox-buffer-update-report (current-buffer))))
+                  (should (equal-including-properties before (buffer-string))))
+                (ebox-commit (current-buffer)
+                             (ebox-owner-style-test--section-candidate selected))
+                (ebox-owner-style-test--local-report)
+                (should (= 3 (plist-get (ebox-buffer-update-report (current-buffer))
+                                       :patch-count)))
+                (should (equal geometry (ebox-region-geometry peer)))
+                (ebox-owner-style-test--check
+                 (ebox-owner-style-test--section-input selected)))))
+        (ebox-unmount-buffer (current-buffer))))))
+
+(ert-deftest ebox-owner-border-restyle-declines-changing-exterior ()
+  "An intrinsic or content-box border cannot freeze a neighbouring Row slot."
+  (let ((ebox-native-reflow-module-path nil))
+    (dolist (sizing-width '((content-box (ch 12)) (border-box max-content)))
+      (pcase-let ((`(,sizing ,width) sizing-width))
+        (cl-labels ((input (selected)
+                     (ebox-owner-style-test--canonical
+                      `(root row (:width (ch 40)) nil
+                         ,(ebox-owner-style-test--nav 0 selected sizing width)
+                         (peer box (:width (ch 8)) nil
+                          (peer-text text nil nil "Peer"))))))
+          (with-temp-buffer
+            (unwind-protect
+                (progn
+                  (ebox-render-to-buffer (current-buffer) (input 1))
+                  (let* ((before (buffer-string))
+                         (peer-start (ebox-string-pixel-width
+                                      (substring before 0 (string-match "Peer" before))))
+                         (candidate (ebox-candidate-begin (current-buffer))))
+                    (ebox-candidate-replace-host-ref
+                     candidate 'nav-0
+                     (ebox-owner-style-test--canonical
+                      (ebox-owner-style-test--nav 0 0 sizing width)))
+                    (ebox-commit (current-buffer) candidate)
+                    ;; The border really changes the Row allocation: keeping
+                    ;; the old slot would leave the peer at the wrong pixel.
+                    (let ((after (buffer-string)))
+                      (should (> (ebox-string-pixel-width
+                                  (substring after 0 (string-match "Peer" after)))
+                                 peer-start))))
+                  (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                                         :projection-kind))
+                  (ebox-owner-style-test--check (input 0)))
+              (ebox-unmount-buffer (current-buffer)))))))))
+
 (provide 'ebox-owner-style-tests)
 ;;; ebox-owner-style-tests.el ends here

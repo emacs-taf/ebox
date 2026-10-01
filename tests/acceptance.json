@@ -15,6 +15,9 @@
     "tests/ebox-child-range-tests.el"
   ],
   "cases": [
+    {"name": "ebox-owner-border-restyle-keeps-column-slot", "file": "tests/ebox-owner-style-tests.el", "purpose": "A border-box owner's left border, background, inherited bold font and native help properties change locally inside one retained Column slot and match fresh rendering."},
+    {"name": "ebox-section-restyles-and-header-publish-disjoint-scopes", "file": "tests/ebox-owner-style-tests.el", "purpose": "Two sidebar restyles and sibling title/subtitle text publish three disjoint scoped owners, preserve a peer, match fresh rendering and roll back rejected publication before a local retry."},
+    {"name": "ebox-owner-border-restyle-declines-changing-exterior", "file": "tests/ebox-owner-style-tests.el", "purpose": "Intrinsic and content-box horizontal border changes without a stable exterior allocation decline scoped projection and preserve fresh-render parity beside a Row peer."},
     {"name": "ebox-same-size-child-replacement-publishes-scoped", "file": "tests/ebox-owner-style-tests.el", "purpose": "Replacing a Box's child identities with same-size children publishes one scoped patch, matches fresh paint and properties, preserves peers, and rolls back rejected publications."},
     {"name": "ebox-child-replacement-validates-exterior-size", "file": "tests/ebox-owner-style-tests.el", "purpose": "Equal child counts with a larger rendered footprint fall back to ordinary publication and match fresh rendering."},
     {"name": "ebox-owner-style-scroll-content-recomposes-paint", "file": "tests/ebox-owner-style-tests.el", "purpose": "Content-only length changes in a cached owner slot recompose paint from source, retain local projection with sibling row changes and match fresh rendering."},

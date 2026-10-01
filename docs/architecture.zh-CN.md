@@ -245,13 +245,20 @@ owner 时保留完整渲染回退。
 完整替换 footprint。局部渲染会记录 paint origin，因此渲染缓存签名包含 paint-origin
 采集模式，两种模式的缓存输出不能互相授权。
 Grouped span 证明允许非 root owner 自己的绘制与字体变化，包括已解析的继承
-font fact，并可组合后代的绘制、内容和 surface-property 更新。仍须保留 Column
-槽位或与内容无关的 Flex 分配、布局输入及有序子节点身份。只有重新渲染的 owner
-在分配样式比较中排除字体；祖先与 canonical 相等契约保持严格。
+font fact，并可组合后代的绘制、内容和 surface-property 更新。水平边框宽度和样式
+变化还要求 border-box 的确定宽度或 stretch 宽度不变；字体变化不得影响使用字体单位的
+宽度、宽度上下限或外侧 margin。仍须保留 Column 槽位或与内容无关的 Flex 分配及有序
+子节点身份。owner 的样式比较只排除将重新渲染的字体与已证明的水平边框输入；祖先与
+canonical 相等契约保持严格。
+边框样式更新在普通几何提升之前，把继承影响合并到变化的源 owner。独立的标题和副标题
+变化可共用一个较小的 fixed-basis Flex owner。所有 dirty entry 必须属于这些互不重叠的
+owner 分区，整批更新才能原子发布，无需将共同祖先提升到 root。root owner 和缺少分配
+证书的 owner 仍不满足这一证明。
 Surface 保留候选已计算的 owner 样式，重新渲染完整 spans，并合成已证明不变的
-祖先绘制，不能复制旧的局部属性。footprint、parent-slot、角色、overflow 和外部
-补集校验仍决定能否发布。无法证明的祖先 surface properties 或改变的分配保留
-普通回退。字体大小不包含 viewport 表达式，因此这类变化沿用原有视口依赖索引。
+祖先绘制，不能复制旧的局部属性。边框变化使用 owner reflow 渲染器重建内部角色；精确的
+footprint、parent-slot、overflow 和外部补集校验仍决定能否发布。内在宽度或 content-box
+边框导致的外部增长、无法证明的祖先 surface properties 及分配变化，在找不到稳定的外层
+owner 时仍走普通回退。字体大小不包含 viewport 表达式，因此这类变化沿用原有视口依赖索引。
 当已发布代没有 fractional pixel 间隙时，owner-scoped 输出直接使用整数局部 patch；只有
 需要保留兄弟余数的代才重放 raw allocation。
 仅供生产阶段使用的 paint-origin carrier 保留在局部 fragment ledger 和 raw allocation

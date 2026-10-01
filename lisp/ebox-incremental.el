@@ -9061,6 +9061,76 @@ an owner for one descendant after its narrower projection proof has failed."
             (or (ebox--runtime-parent-id buffer ancestor-id) root-id)))
     ancestor-id))
 
+(defun ebox-incremental--restyled-owner-plan
+    (buffer old-state candidate-state dirty-set)
+  "Select retained owners before border restyles promote DIRTY-SET to the root.
+Absorb inherited effects into their changed ancestor.  Independent text changes
+may use a fixed-basis Flex item or a normal Column slot.  These are tentative
+owners: grouped proofs and Surface still validate every replacement, including
+its exterior footprint and the disjoint union's complete dirty coverage."
+  (when (and (cl-some
+              (lambda (entry)
+                (cl-intersection (plist-get entry :changed-keys)
+                                 ebox-incremental--horizontal-border-keys))
+              dirty-set)
+             (cl-every
+              (lambda (entry)
+                (and (memq (plist-get entry :dirty-kind) '(paint geometry))
+                     (not (plist-get entry :children))))
+              dirty-set))
+    (let ((root-id (ebox--buffer-root-node-id buffer))
+          (parents (plist-get old-state :parent-table))
+          (old-nodes (plist-get old-state :node-table))
+          (new-nodes (plist-get candidate-state :node-table))
+          (dirty-ids (mapcar (lambda (entry) (plist-get entry :node-id)) dirty-set))
+          (valid t)
+          ops)
+      (dolist (entry dirty-set)
+        (when valid
+          (let* ((node-id (plist-get entry :node-id))
+                 (ancestor (ebox-runtime-index-get node-id parents)))
+            ;; A changed inherited font must be rendered at its source owner,
+            ;; never transplanted into a child using the old ancestor's style.
+            (while ancestor
+              (when (member ancestor dirty-ids) (setq node-id ancestor))
+              (setq ancestor (ebox-runtime-index-get ancestor parents)))
+            (unless (cl-some
+                     (lambda (op)
+                       (or (equal node-id (plist-get op :owner-id))
+                           (ebox--runtime-ancestor-id-p
+                            buffer (plist-get op :owner-id) node-id)))
+                     ops)
+              (when (eq (plist-get (ebox-runtime-index-get node-id old-nodes)
+                                  :ebox-kind) 'text)
+                (setq node-id
+                      (or (ebox-incremental--nearest-fixed-basis-flex-item-owner-id
+                           buffer node-id)
+                          (ebox-runtime-index-get node-id parents))))
+              (let (owner-id)
+                (while (and node-id (not owner-id) (not (equal node-id root-id)))
+                  (let ((old-node (ebox-runtime-index-get node-id old-nodes))
+                        (new-node (ebox-runtime-index-get node-id new-nodes)))
+                    (if (and old-node new-node
+                             (or (ebox-incremental--owner-slot-stable-p
+                                  buffer old-state candidate-state node-id t t)
+                                 (and (ebox--flex-item-fixed-basis-content-allocation-stable-p
+                                       buffer node-id)
+                                      (ebox-incremental--owner-border-width-stable-p
+                                       old-node new-node)
+                                      (equal (ebox-incremental--owner-span-style-signature
+                                              old-node t)
+                                             (ebox-incremental--owner-span-style-signature
+                                              new-node t))
+                                      (ebox-incremental--ancestor-slot-signature
+                                       buffer old-state candidate-state node-id))))
+                        (setq owner-id node-id)
+                      (setq node-id (ebox-runtime-index-get node-id parents)))))
+                (if owner-id
+                    (push (ebox--patch-op 'span-patch owner-id :dirty entry) ops)
+                  (setq valid nil)))))))
+      (when valid
+        (ebox-patch-plan-merge-ops parents (nreverse ops))))))
+
 (defun ebox-incremental--layout-owner-plan
     (buffer old-state candidate-state dirty-set)
   "Return BUFFER layout-owner plan from OLD-STATE to CANDIDATE-STATE for DIRTY-SET."
@@ -9084,8 +9154,10 @@ an owner for one descendant after its narrower projection proof has failed."
           (ebox--render-cache-scroll-state-restorable-p nil))
       (cl-letf (((symbol-function 'ebox--scroll-schedule-idle-prefetch)
                  (lambda (&rest _) nil)))
-        (ebox-incremental--declarative-tentative-patch-set
-         buffer render-dirty-set)))))
+        (or (ebox-incremental--restyled-owner-plan
+             buffer old-state candidate-state render-dirty-set)
+            (ebox-incremental--declarative-tentative-patch-set
+             buffer render-dirty-set))))))
 
 (defun ebox-incremental--layer-owner-plan
     (buffer old-state candidate-state dirty-set)
@@ -9455,17 +9527,50 @@ an otherwise unchanged allocated ancestor look geometrically unstable."
       (cl-remf signature key))
     signature))
 
-(defun ebox-incremental--owner-span-style-signature (node)
+(defconst ebox-incremental--horizontal-border-keys
+  '(:border-left-pixel :border-right-pixel :border-left-style :border-right-style)
+  "Border inputs whose internal roles can change in a retained border box.")
+
+(defun ebox-incremental--owner-span-style-signature (node &optional border-p)
   "Return NODE's layout inputs for a rendered owner-span proof.
 Unlike an unchanged ancestor, the owner is rendered again and its replacement
 must pass Surface's footprint, role, overflow and outside-complement checks.
-Typography may therefore change inside its retained allocation; no layout
-property is omitted from this signature."
+Typography may therefore change inside its retained allocation.  BORDER-P also
+permits horizontal border changes after proving a stable border-box width."
   (let ((signature (ebox-incremental--layout-slot-style-signature node)))
     (dolist (key (append ebox--typography-style-signature-keys
                         '(:font-family :font-size :font-weight :font-style)))
       (cl-remf signature key))
+    (when border-p
+      (dolist (key ebox-incremental--horizontal-border-keys)
+        (cl-remf signature key)))
     signature))
+
+(defun ebox-incremental--owner-border-width-stable-p (old-node new-node)
+  "Return non-nil if horizontal borders cannot change the owner's outer width.
+An unchanged border needs no special certificate.  Changed borders require
+border-box sizing and an unchanged definite or stretched width; intrinsic and
+content-box widths must be measured by ordinary layout."
+  (or (cl-every (lambda (key)
+                  (equal (ebox-get old-node key) (ebox-get new-node key)))
+                ebox-incremental--horizontal-border-keys)
+      (and (eq (ebox-get old-node :box-sizing) 'border-box)
+           (eq (ebox-get new-node :box-sizing) 'border-box)
+           (equal (ebox-get old-node :width) (ebox-get new-node :width))
+           ;; Replaying the old margin-box width must not hide a font-relative
+           ;; change in its declared width, bounds or exterior margins.
+           (or (equal (ebox-get old-node :ebox-font-fact)
+                      (ebox-get new-node :ebox-font-fact))
+               (cl-every
+                (lambda (key)
+                  (let ((value (ebox-get new-node key)))
+                    (or (not (ebox-size-value-p value t))
+                        (not (cl-intersection '(ch lh)
+                                              (ebox-size-dependencies value))))))
+                '(:width :min-width :max-width :margin-left-pixel :margin-right-pixel)))
+           (or (eq (ebox-get old-node :width) 'stretch)
+               (ebox--span-patch-definite-size-value-p
+                (ebox-get old-node :width))))))
 
 (defun ebox-incremental--cached-layout-snapshot-details (buffer node-id)
   "Return transaction-local detailed layout snapshot for NODE-ID."
@@ -9911,13 +10016,16 @@ remains the final gate."
           evidence)))))
 
 (defun ebox-incremental--owner-slot-stable-p
-    (buffer old-state candidate-state owner-id &optional rendered-typography-p)
+    (buffer old-state candidate-state owner-id
+            &optional rendered-typography-p rendered-border-p)
   "Return OWNER-ID's retained parent-slot certificate, or nil.
 The owner and its parent must retain identity, child topology, layout style,
 and a normal Column allocation.  Candidate rendering remains responsible for
 proving that changed descendants still fit this slot exactly.
 RENDERED-TYPOGRAPHY-P permits the owner's own typography to change only for a
-whole-owner render whose replacement footprint will be validated by Surface."
+whole-owner render whose replacement footprint will be validated by Surface.
+RENDERED-BORDER-P additionally permits horizontal border roles inside a proven
+unchanged border-box width."
   (let* ((old-nodes (plist-get old-state :node-table))
          (new-nodes (plist-get candidate-state :node-table))
          (old-parents (plist-get old-state :parent-table))
@@ -9937,9 +10045,13 @@ whole-owner render whose replacement footprint will be validated by Surface."
          (eq (ebox-tree-display-inner new-parent) 'column)
          (ebox-incremental--node-child-ids-equal-p old-node new-node)
          (ebox-incremental--node-child-ids-equal-p old-parent new-parent)
+         (or (not rendered-border-p)
+             (ebox-incremental--owner-border-width-stable-p old-node new-node))
          (if rendered-typography-p
-             (equal (ebox-incremental--owner-span-style-signature old-node)
-                    (ebox-incremental--owner-span-style-signature new-node))
+             (equal (ebox-incremental--owner-span-style-signature
+                     old-node rendered-border-p)
+                    (ebox-incremental--owner-span-style-signature
+                     new-node rendered-border-p))
            (equal (ebox-incremental--layout-slot-style-signature old-node)
                   (ebox-incremental--layout-slot-style-signature new-node)))
          (equal (ebox-incremental--layout-slot-style-signature old-parent)
@@ -10564,6 +10676,10 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
               (lambda (entry)
                 (copy-sequence (plist-get entry :changed-keys)))
               dirty-set)))
+           (border-p
+            (and (not reflow-p)
+                 (cl-intersection changed-keys
+                                  ebox-incremental--horizontal-border-keys)))
            (fixed-flex-ancestor-proof
             (and fixed-flex-slot-p
                  (ebox-incremental--ancestor-slot-signature
@@ -10571,7 +10687,8 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
            (owner-slot-proof
             (and (not fixed-flex-ancestor-proof)
                  (ebox-incremental--owner-slot-stable-p
-                  buffer old-state candidate-state owner-id (not reflow-p))))
+                  buffer old-state candidate-state owner-id
+                  (not reflow-p) border-p)))
            ;; A grouped patch publishes the owner as one unit.  Its retained
            ;; external allocation is therefore the canonical certificate;
            ;; probing each changed leaf repeats the same ancestor walk and
@@ -10648,6 +10765,8 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                                   (memq key ebox--paint-style-signature-keys)
                                   (memq key
                                         ebox--typography-style-signature-keys)
+                                  (and border-p
+                                       (memq key ebox-incremental--horizontal-border-keys))
                                   (and reflow-p
                                        (memq key '(:width :min-width :max-width
                                                    :height :min-height :max-height)))
@@ -10668,13 +10787,16 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                                    (plist-get candidate-state :parent-table)))
                    (ebox-incremental--node-child-ids-equal-p
                     old-node new-node)
+                   (or (not border-p)
+                       (ebox-incremental--owner-border-width-stable-p
+                        old-node new-node))
                    (if reflow-p
                        (equal (ebox-incremental--layout-slot-style-signature
                                old-node)
                               (ebox-incremental--layout-slot-style-signature
                                new-node))
-                     (equal (ebox-incremental--owner-span-style-signature old-node)
-                            (ebox-incremental--owner-span-style-signature new-node)))
+                     (equal (ebox-incremental--owner-span-style-signature old-node border-p)
+                            (ebox-incremental--owner-span-style-signature new-node border-p)))
                    (ebox-incremental--same-root-surface-identity-p
                     old-state candidate-state)
                    (ebox-incremental--owner-disjoint-from-scroll-p
@@ -10689,8 +10811,8 @@ Surface then rebuilds internal roles while checking its unchanged exterior."
                         :changed-keys (copy-sequence changed-keys)
                         :snapshot snapshot
                         :allocated-width allocated-width
-                        :owner-reflow-p reflow-p
-                        :range-splice-p reflow-p
+                        :owner-reflow-p (or reflow-p (and border-p t))
+                        :range-splice-p (or reflow-p (and border-p t))
                         :variable-content-p
                         (and (not reflow-p)
                              (null (plist-get old-state :scroll-region-ids))
