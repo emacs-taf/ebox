@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Prepared image content occupies a fixed character grid, with cached graphics
+  slices on graphical frames and truecolor half-block text via optional chafa
+  or ffmpeg elsewhere, followed by an ASCII placeholder. Preparation owns all
+  decoding; same-size cover changes publish one retained block without running
+  a converter during rendering. `ebox-image-info` reports the selected adapter.
 - Sidebar selection changes can publish background, bold text and horizontal
   borders together with a sibling header's title/subtitle through separate retained
   slots, avoiding a full frame render. Each slot must keep its exact exterior
@@ -49,6 +54,15 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A flex base-size measurement renders only flow children, so its output no
+  longer serves as the final paint for a subtree that contains an absolutely
+  positioned box; layout overlays survive a `vw`-sized ancestor instead of
+  being silently dropped.  The sized-render cache keeps measurement and final
+  output under separate keys for the same reason.
+- Content updates compare text properties as well as characters, so replacing
+  an image or a colored character grid no longer becomes a no-op. Local updates
+  regenerate formatted content under the existing ownership and rollback checks;
+  blank-line normalization preserves image display slices.
 - Primary-button ownership resolves a declarative node through its published
   keymap snapshot when the pressed cell's paint chain reaches no declaration,
   such as a flex gap, a box's padding or a clipped surface's trailing cell.

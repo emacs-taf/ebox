@@ -627,10 +627,14 @@ layout with viewport dependence."
 
 (defun ebox--flex-measured-render-context-compatible-p
     (source measured-viewport final-viewport)
-  "Return non-nil when SOURCE's measured render fits FINAL-VIEWPORT."
-  (or (ebox--flex-natural-render-reusable-p source)
-      (equal measured-viewport final-viewport)
-      (not (ebox--viewport-dependent-subtree-p source))))
+  "Return non-nil when SOURCE's measured render fits FINAL-VIEWPORT.
+A subtree with absolutely positioned boxes is never reusable: its base-size
+measurement renders only flow children, so reusing that output as final paint
+would silently drop every overlay in it."
+  (and (not (ebox-layer-absolute-subtree-p source))
+       (or (ebox--flex-natural-render-reusable-p source)
+           (equal measured-viewport final-viewport)
+           (not (ebox--viewport-dependent-subtree-p source)))))
 
 (defun ebox--flex-box-min-main (box rendered axis)
   "Return BOX's minimum renderable main-axis size for AXIS.
@@ -1118,7 +1122,9 @@ Return a sized render entry containing the rendered string and dimensions."
                    (= cross render-cross))
                (ebox--flex-measured-render-context-compatible-p
                 source render-viewport item-viewport)))
-         (cache-key (list axis main cross align))
+         ;; A measurement render omits absolute overlays; keep it under its
+         ;; own key so the final paint never reuses it.
+         (cache-key (list axis main cross align ebox--intrinsic-layout-measurement))
          (render-cache (plist-get item :render-cache))
          (cached (assoc cache-key render-cache))
          (natural-cached

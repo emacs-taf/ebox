@@ -1253,6 +1253,44 @@
 ;;;###autoload (autoload 'ebox-surface-update-buffer-viewport "ebox" nil nil)
 ;; Publish BUFFER for viewport WIDTH and optional HEIGHT through Ebox publication.
 ;;
+;; Function: ebox-image-prepare (source columns rows &key (adapter 'auto) (frame (selected-frame)) (converters ebox-image-converters))
+;;;###autoload (autoload 'ebox-image-prepare "ebox" nil nil)
+;; Prepare a local file or cached image descriptor for a positive integer cell
+;; area. Default :adapter auto tries graphics slices, then text converters, then
+;; an ASCII placeholder. :adapter text or placeholder skips earlier adapters.
+;; :frame defaults to the selected frame; :converters to ebox-image-converters.
+;; This explicit cold step owns all decoding/I/O. Equal preparations are cached;
+;; repeat after source or frame/font changes. Returns an opaque prepared value.
+;;
+;; Function: ebox-image-create (prepared builder &rest source-properties)
+;;;###autoload (autoload 'ebox-image-create "ebox" nil nil)
+;; Create one fixed-size canonical Box with owned Text from PREPARED in BUILDER.
+;; SOURCE-PROPERTIES accepts source-builder-bind metadata except :declarations;
+;; the image owns its dimensions, clipping and wrap policy. No I/O occurs here.
+;;
+;; Function: ebox-image-content (prepared)
+;;;###autoload (autoload 'ebox-image-content "ebox" nil nil)
+;; Return PREPARED's owned string for a cheap same-size :content update through
+;; ebox-region-update. Graphics descriptors and slices are immutable shared values.
+;; Ordinary candidate replacements and ebox-commit also retain block ownership.
+;;
+;; Function: ebox-image-info (prepared)
+;;;###autoload (autoload 'ebox-image-info "ebox" nil nil)
+;; Return a fresh plist with :adapter (graphics, text or placeholder), :converter
+;; (the successful converter name or nil), :columns and :rows.
+;;
+;; Function: ebox-image-cache-clear ()
+;;;###autoload (autoload 'ebox-image-cache-clear "ebox" nil nil)
+;; Release cached preparations without changing live content. Use after changing
+;; converter behavior or installing executables; the cache holds at most 64 rasters.
+;;
+;; Variable: ebox-image-converters
+;; Ordered (NAME . FUNCTION) preparation protocol. FUNCTION receives source,
+;; columns, rows and returns nil or exactly rows lines of columns half-blocks,
+;; each with a face plist of #RRGGBB foreground/background. Errors or malformed
+;; output try the next converter. Defaults try optional chafa, then ffmpeg.
+;; No converter runs in rendering or publication; nil permits only placeholder.
+;;
 ;; Function: ebox-text-create (&rest plist)
 ;;;###autoload (autoload 'ebox-text-create "ebox" nil nil)
 ;; Create a canonical TextNode from evaluated PLIST.
@@ -1378,6 +1416,7 @@
 (require 'ebox-native-reflow)
 (require 'ebox-geometry)
 (require 'ebox-update)
+(require 'ebox-image)
 
 (provide 'ebox)
 ;;; ebox.el ends here

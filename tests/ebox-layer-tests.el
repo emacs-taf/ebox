@@ -191,5 +191,28 @@
         (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
         (kill-buffer buffer)))))
 
+(ert-deftest ebox-layer-overlay-in-measured-flex-subtree-paints ()
+  "An absolute overlay survives a flex base-size measurement.
+A base-size measurement renders only flow children of a layer host; reusing
+that output for the final paint silently dropped every overlay in a subtree
+sized by a viewport-relative ancestor."
+  (let ((buffer (generate-new-buffer " *layer-measured-overlay*")))
+    (unwind-protect
+        (progn
+          (ebox-render-to-buffer
+           buffer
+           (ebox-build
+            `(flex :width (vw 100) :height (vh 100) :flex-direction column
+                   (flex :position relative :width (vw 100) :height (lh 1)
+                         :flex-direction row
+                         (box :width (ch 4) "Trac")
+                         (box :position absolute :left (px 0) :top (lh 0)
+                              :width (ch 4) "FILL")))))
+          (with-current-buffer buffer
+            (should (string-match-p "FILL" (buffer-string)))))
+      (when (buffer-live-p buffer)
+        (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
+        (kill-buffer buffer)))))
+
 (provide 'ebox-layer-tests)
 ;;; ebox-layer-tests.el ends here

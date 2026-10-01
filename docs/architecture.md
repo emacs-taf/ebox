@@ -2,6 +2,115 @@
 
 This document defines the low-level publication contract. It is independent of ETAF application state and must remain true for direct Ebox callers and higher-level packages alike.
 
+## Prepared image content
+
+`ebox-image-prepare SOURCE COLUMNS ROWS` is the single capability-selection
+entry point. It returns an opaque raster for a positive integer character area.
+`SOURCE` is a local file path or an Emacs `(image :type TYPE :file FILE)` /
+`(image :type TYPE :data BYTES)` descriptor. Preparation owns file reads,
+decoding and external processes. Missing, unreadable or unsupported images use
+the fallback; invalid arguments signal before publication. No remote files or
+new package dependencies are introduced.
+
+Selection order is graphics → text converters → placeholder. Graphics requires
+`display-graphic-p`, usable default-font metrics, an available image type and
+successful decoding at the requested size. `:adapter text` skips graphics;
+`:adapter placeholder` skips both. `ebox-image-info` reports `:adapter`
+(`graphics`, `text`, `placeholder`), `:converter`, `:columns` and `:rows`.
+
+Graphics preparation creates and decodes one image from owned source bytes at
+`columns × frame-char-width` by `rows × frame-char-height` pixels, with explicit
+scale 1 and no image margin. Every character carries
+`((slice X Y CELL-WIDTH LINE-HEIGHT) IMAGE)`. The integer `:ascent` percentage
+is rounded upward from the frame's default-font ascent divided by its line
+height, because redisplay truncates that percentage back to pixels. Metrics
+without an exactly representable ascent decline graphics. There is no minimum
+pixel height. All cells share the descriptor. Repeated renders
+reuse the exact immutable descriptor and slice values. Display-bearing spaces
+are visible content and cannot be collapsed into blank-line filler.
+
+Text preparation tries optional `chafa` first, requesting full RGB colors,
+only U+2580, exact stretched dimensions and a still frame with no terminal
+probing or cursor movement. ANSI colors become ordinary `face` properties.
+If unavailable, failing or malformed, `ffmpeg` scales one frame to `columns`
+by `2 × rows` RGB24 pixels; the upper pixel is the foreground and the lower
+pixel is the background of each `▀` cell. Both adapters stretch to the full
+allocation. Terminal color approximation is left to Emacs. If neither works,
+the documented monochrome placeholder is a grid of ASCII `.` characters,
+with the same dimensions and no process invocation of its own.
+
+`ebox-image-converters` is an ordered `(NAME . FUNCTION)` protocol, also
+accepted as `:converters` by preparation. A function receives source, columns
+and rows, and returns nil or an exact grid: rows separated by one newline,
+no final newline, columns U+2580 characters per row, and a `face` plist on
+each cell with `:foreground` and `:background` in `#RRGGBB` form. Errors and
+invalid grids try the next function. Only those color properties are adopted;
+converter-owned strings, faces and source descriptors are detached. No `display`,
+keymap, ownership or other converter-supplied property crosses the boundary.
+The fixture executables in acceptance test both default converters without
+requiring either installed tool.
+
+The cache holds at most 64 preparations, keyed by source identity, columns,
+rows, requested adapter/converter protocol and graphics metrics. File identity
+includes absolute/resolved path, size, modification/status times and inode;
+descriptor data participates by value. `ebox-image-cache-clear` refreshes
+converter configuration or installed capabilities without changing live content.
+Prepare again after a file, frame or font change; render on the prepared frame's
+default character grid. Buffer-local text scale and ancestor font-size overrides
+are not inputs to preparation. CSS sizing overrides can
+change the ordinary Box allocation and therefore require ordinary layout proof.
+
+`ebox-image-create PREPARED BUILDER &rest SOURCE-PROPERTIES` creates a canonical
+Box with one owned Text child. Its declarations fix `(ch columns)` / `(lh rows)`,
+hidden overflow and no wrapping. It accepts source-builder metadata, including
+`:identity`, `:id`, interactions and style scopes; callers cannot supply competing
+`:declarations`. This is ordinary content in Row, Column, Flex, Grid, clipping,
+source snapshots and rollback, with no second image-specific publication path.
+
+```elisp
+(let* ((cover (ebox-image-prepare "/music/cover.png" 24 12)) ; cold I/O
+       (builder (ebox-source-builder-create))
+       (node (ebox-image-create cover builder :identity 'cover :id "cover")))
+  (ebox-render-to-buffer
+   buffer
+   (ebox-canonical-input-create
+    (list node) (ebox-source-builder-finish builder))))
+
+;; Prepare outside the render/commit callback; publish only cached content.
+(let ((next (ebox-image-prepare "/music/next.png" 24 12)))
+  (ebox-region-update (ebox-region-resolve buffer "cover")
+                      :content (ebox-image-content next)))
+```
+
+`ebox-image-content` returns an owned string; its nested graphics display values
+are immutable and shared. A same-size source change uses ordinary `:content`
+updates or canonical replacement plus `ebox-commit`. No-op comparison includes
+text properties, so two all-space images or identically shaped half-block grids
+with different pixels are different content. Formatted content regenerates its
+own properties and recomposes proven enclosing paint rather than transporting
+old cell colors/slices. Existing allocation, role, ownership, output and rollback
+checks remain in force. The acceptance scenario for a 24×12 cover above a lyric
+requires a committed `span-patch`/`owner-scoped` projection, one dirty node, one
+patch and no full-root publication, then compares exported/fresh rendering.
+Dimension changes use node replacement and the normal layout planner.
+
+For 24×12, graphics preparation builds 288 slices and one decoded descriptor;
+text preparation builds 288 half-blocks from 576 RGB samples (1,728 raw bytes);
+placeholder preparation builds 288 ASCII cells. Each cached raster has 11
+newlines. Commit copies/publishes the prepared block and performs ordinary
+retained validation, with zero image creation or conversion. Preparation is a
+synchronous cold operation; callers can schedule it ahead of an interaction.
+
+`benchmarks/benchmark-image.el` measures cold preparation, a preparation cache
+hit, an owned content copy and a same-size commit separately. Run with the
+normal batch load paths and `-f ebox-image-benchmark-batch`. It uses real
+installed text converters and labels simulated batch graphics explicitly:
+those graphics numbers exclude native decoding and redisplay. Identical
+placeholder pixels correctly produce a no-op commit. A native SVG probe on
+Emacs 31.1 with 7×16 cells and a 13-pixel font ascent verified `:ascent 82`,
+16-pixel slice rows, and 208 pixels for twelve cover rows plus one lyric row.
+
+## Publication runtime
 
 Ebox owns one retained publication runtime. A prepared candidate is shared by
 projection, text/property writing and rollback; it is not translated into a

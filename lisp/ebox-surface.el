@@ -4508,6 +4508,18 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                          (push line result))))))
           (and valid (ebox-lines-join (nreverse result))))))))
 
+(defun ebox-surface--formatted-content-p (node)
+  "Return non-nil when NODE's source subtree contains text properties.
+Changing such content must render its own properties and recompose enclosing
+paint; the plain-text route may only transport unchanged published properties."
+  (if (ebox-text-node-p node)
+      (let* ((text (ebox-text-node-value node))
+             (length (length text)))
+        (and (> length 0)
+             (or (text-properties-at 0 text)
+                 (< (next-property-change 0 text length) length))))
+    (cl-some #'ebox-surface--formatted-content-p (ebox-tree-node-children node))))
+
 (defun ebox-surface--owner-patch-candidate
     (buffer state owner-id allocated-width
             &optional variable-content-p variable-content-max-width
@@ -4515,12 +4527,18 @@ Proof mismatches return nil; unexpected rendering errors propagate."
             retain-external-owner-suffix-p previous-state)
   "Return validated patch details for OWNER-ID, or nil."
   (let* ((cache-coordinates-p (plist-get state :scroll-content-coordinate-p))
+         (formatted-content-p
+          (and previous-state (memq :content changed-keys)
+               (or (ebox-surface--formatted-content-p
+                    (ebox-runtime-index-get owner-id (plist-get previous-state :node-table)))
+                   (ebox-surface--formatted-content-p
+                    (ebox-runtime-index-get owner-id (plist-get state :node-table))))))
          ;; A scroll cache has no publication paint baseline to transport.
          ;; Render the complete owner and recompose its proved enclosing paint,
          ;; as for grouped owner style changes, before the same span validator.
-         (role-owned-lines-p (or role-owned-lines-p cache-coordinates-p))
+         (role-owned-lines-p (or role-owned-lines-p cache-coordinates-p formatted-content-p))
          (retain-external-owner-suffix-p
-          (or retain-external-owner-suffix-p cache-coordinates-p))
+          (or retain-external-owner-suffix-p cache-coordinates-p formatted-content-p))
          (old-snapshot
           (and owner-id (ebox--ensure-layout-snapshot-details buffer owner-id)))
          (spans (and old-snapshot (plist-get old-snapshot :buffer-spans)))
@@ -4532,7 +4550,7 @@ Proof mismatches return nil; unexpected rendering errors propagate."
                 variable-content-p role-owned-lines-p changed-keys)))
          (owner-style-p
           (and role-owned-lines-p
-               (or cache-coordinates-p
+               (or cache-coordinates-p formatted-content-p
                    (cl-intersection
                     changed-keys
                     (append ebox--paint-style-signature-keys

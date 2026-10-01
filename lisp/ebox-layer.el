@@ -739,6 +739,15 @@ can consume the same artifact directly after their dependency validation."
   "Return non-nil when NODE opts into positioned box painting."
   (memq (plist-get node :position) '(relative absolute)))
 
+(defun ebox-layer-absolute-subtree-p (node)
+  "Return non-nil when NODE's subtree contains an absolutely positioned box.
+A base-size measurement renders only flow children, so its output omits these
+boxes and must never be reused as final paint."
+  (and (listp node)
+       (or (eq (plist-get node :position) 'absolute)
+           (cl-some #'ebox-layer-absolute-subtree-p
+                    (ebox-tree-node-children node)))))
+
 (defun ebox-layer-host-p (node)
   "Return non-nil when NODE composes positioned direct children."
   (and (eq (plist-get node :ebox-kind) 'box)

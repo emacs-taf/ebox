@@ -2,6 +2,93 @@
 
 本文定义底层发布合同。它独立于 ETAF 应用状态，直接使用 Ebox 的调用者和上层包都必须遵守。
 
+## 预准备图片内容
+
+`ebox-image-prepare SOURCE COLUMNS ROWS` 是统一的能力选择入口，返回占用正整数
+字符网格的不可变准备结果。`SOURCE` 可以是本地文件路径，或带 `:type` 与
+`:file` / `:data` 的 Emacs image descriptor。文件读取、解码和外部进程全部属于
+prepare 阶段；缺失、不可读或不支持的图片降级显示，参数错误则在发布前报错。
+不支持远程文件，不增加包依赖。
+
+选择顺序为 graphics → text converters → placeholder。Graphics 要求
+`display-graphic-p`、可用的默认字体度量、受支持的图片类型，以及按目标尺寸成功解码。
+`:adapter text` 跳过图形，`:adapter placeholder` 跳过前两级。
+`ebox-image-info` 返回 `:adapter`（graphics/text/placeholder）、`:converter`、
+`:columns` 和 `:rows`。
+
+图形准备阶段从自有源字节创建并解码一个 image，像素尺寸为
+`columns × frame-char-width` 和 `rows × frame-char-height`，显式指定 scale 1、
+margin 0。每个字符持有 `((slice X Y CELL-WIDTH LINE-HEIGHT) IMAGE)`，所有格子共享
+同一 descriptor。`:ascent` 是默认字体真实 ascent 与行高之比向上取整的百分比，
+因为 redisplay 会将百分比截断回整数像素；无法精确表达 ascent 的字体度量回退到
+文本适配器。没有硬编码的最小像素高度。重复渲染复用同一 descriptor 和不可变 slice 对象。
+带图片 display 的空格属于可见内容，不允许空行归一化将其替换成填充空格。
+
+文本适配器先尝试可选的 `chafa`，要求完整 RGB、仅使用 U+2580、拉伸到指定尺寸、
+只处理静态帧，禁用终端探测及光标移动，并把 ANSI 颜色转为普通 `face` 属性。
+不可用、失败或输出无效时，`ffmpeg` 将一帧缩放为 `columns × (2 × rows)` 的
+RGB24 像素：上像素成为每个 `▀` 的前景色，下像素成为背景色。两者都填满分配区域，
+终端的颜色近似由 Emacs 负责。两者都失败时，使用相同尺寸的 ASCII `.` 单色占位
+网格；占位器自身不启动进程。
+
+`ebox-image-converters` 是按顺序尝试的 `(NAME . FUNCTION)` 协议，也可通过
+prepare 的 `:converters` 提供。函数接收 source、columns、rows，返回 nil 或精确
+网格：行间一个换行、末尾无换行，每行 columns 个 `▀`，每格 `face` plist 包含
+`#RRGGBB` 格式的 `:foreground` 和 `:background`。异常或格式错误尝试下一个函数。
+只接收这两个颜色属性，复制转换器的字符串和颜色以及调用者的 descriptor；
+转换器不能注入 display、keymap、归属或其他属性。验收测试用可执行 fixture 测试
+两个默认转换器，无须安装 chafa 或 ffmpeg。
+
+缓存最多保留 64 份准备结果，键包含源身份、列数、行数、适配器/转换器协议和
+图形字体度量。文件身份包括绝对/解析路径、大小、修改及状态时间、inode；
+descriptor 的 data 按值参与比较。`ebox-image-cache-clear` 用于转换器配置或
+可用能力变化，不影响已发布内容。文件、frame 或字体变化后需要重新 prepare，
+渲染应使用准备时 frame 的默认字符网格；buffer 局部 text scale 和祖先 font-size
+覆盖不是 prepare 的输入。
+CSS 尺寸覆盖仍由普通 Box 布局证明负责。
+
+`ebox-image-create PREPARED BUILDER &rest SOURCE-PROPERTIES` 返回一个规范 Box，
+内部只有一个自有 Text 子节点，声明固定 `(ch columns)` / `(lh rows)`、hidden
+overflow 和禁止换行。它接受 source-builder 的身份、`:id`、交互、样式作用域等
+元数据，但不接受与固定尺寸冲突的 `:declarations`。Row、Column、Flex、Grid、
+裁剪、源快照和回滚均沿用普通内容合同，没有独立的图片发布通道。
+
+```elisp
+(let* ((cover (ebox-image-prepare "/music/cover.png" 24 12)) ; 冷路径 I/O
+       (builder (ebox-source-builder-create))
+       (node (ebox-image-create cover builder :identity 'cover :id "cover")))
+  (ebox-render-to-buffer
+   buffer
+   (ebox-canonical-input-create
+    (list node) (ebox-source-builder-finish builder))))
+
+;; 在渲染/提交回调以外准备；发布只使用缓存内容。
+(let ((next (ebox-image-prepare "/music/next.png" 24 12)))
+  (ebox-region-update (ebox-region-resolve buffer "cover")
+                      :content (ebox-image-content next)))
+```
+
+`ebox-image-content` 返回自有字符串，内部图形 display 值不可变并共享。同尺寸换图
+通过普通 `:content` 更新或规范节点替换加 `ebox-commit` 发布。no-op 判断包含文本
+属性，因此字符同为空格或半块而像素不同仍是内容变化。带属性的内容重新生成自有
+属性并组合已证明的祖先绘制，不运输旧像素颜色或 slice。分配、角色、归属、输出
+验证和原子回滚检查全部保留。24×12 封面加歌词的验收要求已提交报告为
+`span-patch` / `owner-scoped` 投影、一个 dirty node、一个 patch、无 full-root
+发布，并与导出源及全新渲染比较。尺寸变化使用节点替换和常规布局规划。
+
+24×12 的图形准备成本为一个已解码 descriptor 和 288 个 slice；文本准备为
+576 个 RGB 样本（1,728 原始字节）转成 288 个半块；占位器生成 288 个 ASCII 格。
+每份缓存网格含 11 个换行。commit 复制并发布准备好的块，执行普通保留式验证，
+不创建 image、不运行转换器。prepare 是同步冷操作，调用者可在交互前调度。
+
+`benchmarks/benchmark-image.el` 分别测量冷准备、准备缓存命中、自有内容复制和同尺寸
+commit。使用常规 batch load path 并调用 `-f ebox-image-benchmark-batch`；文本使用
+实际已安装的转换器，batch 图形明确标记为模拟，耗时不含原生解码和 redisplay。
+相同占位像素正确地产生 no-op commit。Emacs 31.1 的原生 SVG 检查使用 7×16 字符格、
+13 像素字体 ascent，确认 `:ascent 82` 对应 16 像素 slice 行，十二行封面加一行歌词
+共 208 像素。
+
+## 发布运行时
 
 Ebox 自己持有保留式发布运行时。投影、文本/属性写入与回滚共享同一份已准备候选，
 不再转换成另一个包的 target-entry 或 outcome 对象图。发布器只接受 content surface，

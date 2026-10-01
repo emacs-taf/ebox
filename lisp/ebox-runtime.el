@@ -35,7 +35,7 @@
     "ebox-child-range.el" "ebox-tree.el" "ebox-measure.el"
     "ebox-fragment.el" "ebox-render-context.el" "ebox-composite.el"
     "ebox-layer.el" "ebox-layout.el"
-    "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el"
+    "ebox-flex.el" "ebox-grid.el" "ebox-canonical.el" "ebox-image.el"
     "ebox-buffer-backend.el" "ebox-patch-plan.el" "ebox-incremental.el"
     "ebox-native-commit.el" "ebox-surface.el" "ebox-viewport.el"
     "ebox-dsl.el" "ebox-selector.el" "ebox-file.el" "ebox-spi.el" "ebox-runtime.el"
@@ -629,19 +629,21 @@ explicitly cleared so invisible content cannot retain an active hit surface."
   (mapcar function lines))
 
 (defun ebox--line-has-non-content-properties-p (line)
-  "Return non-nil when LINE carries properties other than content markers."
+  "Return non-nil when LINE carries data beyond markers and display spaces.
+Image slices and other replacement display values are visible content even
+when their underlying characters are spaces."
   (catch 'found
     (let ((pos 0)
           (len (length line)))
       (while (< pos len)
         (let ((props (text-properties-at pos line)))
           (while props
-            (let ((prop (pop props)))
-              (pop props)
-              (unless (memq prop '(display
-                                    ebox-content ebox-content-idx
-                                    ebox-content-owner
-                                    ebox-content-owners))
+            (let ((prop (pop props))
+                  (value (pop props)))
+              (unless (or (memq prop '(ebox-content ebox-content-idx
+                                      ebox-content-owner ebox-content-owners))
+                          (and (eq prop 'display)
+                               (or (null value) (eq (car-safe value) 'space))))
                 (throw 'found t)))))
         (setq pos (or (next-property-change pos line) len))))
     nil))
@@ -4309,8 +4311,8 @@ shape stable before and after the first incremental update."
                           source-index (ebox-tree-node-source-handle box)))))
               style-changed-p
               (and content-seen
-                   (not (equal (ebox--region-update-content-value box)
-                               content-value))))
+                   (not (equal-including-properties
+                         (ebox--region-update-content-value box) content-value))))
           :unknown-keys (nreverse unknown-keys))))
 
 (defun ebox--schedule-runtime-prewarm-after-batch-flush
@@ -4421,9 +4423,11 @@ cannot be changed through the unpublished batch root."
                       (eq target-key :surface-properties)
                       (memq target-key ebox--region-update-longhand-props))
              when (or (not (funcall
-                             (if (eq target-key :surface-properties)
-                                 #'ebox-surface--retained-property-value-equal-p
-                               #'equal)
+                             (cond
+                              ((eq target-key :surface-properties)
+                               #'ebox-surface--retained-property-value-equal-p)
+                              ((eq target-key :content) #'equal-including-properties)
+                              (t #'equal))
                              (if (eq target-key :content)
                                       (ebox--region-update-content-value box)
                                     (ebox-get box target-key))
