@@ -1064,6 +1064,16 @@ Consumers link to this contract instead of maintaining another copy of its order
 
 ### Compose property and structural updates
 
+Before coalescing nested output replacements, a framework can compare their
+canonical inputs with `ebox-canonical-input-equal-outside-ranges-p`. Supply only
+child Range references being replaced in the same candidate. The optional Host
+references cover single-root outputs replaced through retained Host addresses.
+The comparison preserves every unmasked node and source fact, text properties,
+anchor membership and order. Host masks also preserve root identity and kind.
+A true result permits omitting the surrounding replacement; it does not publish
+the masked changes or prove that their layout effects remain local. The ordinary
+`ebox-canonical-input-equal-p` remains an exact whole-input comparison.
+
 Frameworks use `ebox-candidate-update-host-properties` when an existing Host's
 own declarations change. Supply canonical previous and next authored inputs;
 the previous input describes the captured base, including on repeated calls.

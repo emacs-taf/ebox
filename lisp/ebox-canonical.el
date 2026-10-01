@@ -227,6 +227,97 @@ canonical inputs, not additional source authority."
                    (ebox-source--index-record right-index right-handle))))
                left-handles right-handles)))))
 
+(defun ebox-canonical-input-equal-outside-ranges-p
+    (left right range-refs &optional host-refs)
+  "Compare canonical LEFT and RIGHT outside child ranges in RANGE-REFS.
+Only the contents of matching Box child anchors may differ.  Anchor order,
+unmasked nodes and their immutable source facts must remain equal including
+text properties.  Offsets may shift only by the sizes of masked contents.
+HOST-REFS optionally masks entire single-root outputs addressed by source
+identity instead of a child anchor.  Their identity, kind and position must
+still match.  Root anchors are compared exactly.  Inputs are never modified.
+Callers must publish every masked change in the same atomic candidate."
+  (if (not (or range-refs host-refs))
+      (ebox-canonical-input-equal-p left right)
+    (and
+     (ebox-canonical-input-p left)
+     (ebox-canonical-input-p right)
+     (equal-including-properties
+      (ebox-canonical-input--range-anchors left)
+      (ebox-canonical-input--range-anchors right))
+     (let ((masked (make-hash-table :test #'equal))
+           (hosts (make-hash-table :test #'equal))
+           (left-index (ebox-canonical-input--source-index left))
+           (right-index (ebox-canonical-input--source-index right)))
+       (dolist (ref range-refs) (puthash ref t masked))
+       (dolist (ref host-refs) (puthash ref t hosts))
+       (cl-labels
+           ((node-equal
+             (a b)
+             (let ((a-handle (ebox-node-source-handle a))
+                   (b-handle (ebox-node-source-handle b)))
+               (and
+                (equal-including-properties
+                 (ebox-source--handle-id-view a-handle)
+                 (ebox-source--handle-id-view b-handle))
+                (if (gethash (ebox-source--handle-id-view a-handle) hosts)
+                    (eq (ebox-node-kind a) (ebox-node-kind b))
+                  (and
+                   (equal-including-properties
+                    (ebox-source--index-record left-index a-handle)
+                   (ebox-source--index-record right-index b-handle))
+                   (if (and (ebox-box-node-p a) (ebox-box-node-p b))
+                       (and
+                        (equal-including-properties
+                         (ebox-canonical--without-keys
+                          a '(:children :ebox-child-sequence))
+                         (ebox-canonical--without-keys
+                          b '(:children :ebox-child-sequence)))
+                        (forest-equal
+                         (ebox-box-node-children a) (ebox-box-node-children b)
+                         (ebox-box-node-range-anchors a)
+                         (ebox-box-node-range-anchors b)))
+                     (equal-including-properties a b)))))))
+            (forest-equal
+             (a b a-anchors b-anchors)
+             (let ((a-length (length a)) (b-length (length b))
+                   (a-offset 0) (b-offset 0))
+               (and
+                (= (length a-anchors) (length b-anchors))
+                (cl-every
+                 (lambda (a-anchor b-anchor)
+                   (let ((a-before (plist-get a-anchor :before))
+                         (a-after (plist-get a-anchor :after))
+                         (b-before (plist-get b-anchor :before))
+                         (b-after (plist-get b-anchor :after)))
+                     (and
+                      (integerp a-before) (integerp a-after)
+                      (integerp b-before) (integerp b-after)
+                      (<= a-offset a-before a-after a-length)
+                      (<= b-offset b-before b-after b-length)
+                      (= (- a-before a-offset) (- b-before b-offset))
+                      (equal-including-properties
+                       (ebox-canonical--without-keys a-anchor '(:before :after))
+                       (ebox-canonical--without-keys b-anchor '(:before :after)))
+                      (cl-loop repeat (- a-before a-offset)
+                               always (node-equal (pop a) (pop b)))
+                      (if (gethash (plist-get a-anchor :ref) masked)
+                          (progn
+                            (setq a (nthcdr (- a-after a-before) a)
+                                  b (nthcdr (- b-after b-before) b))
+                            t)
+                        (and (= (- a-after a-before) (- b-after b-before))
+                             (cl-loop repeat (- a-after a-before)
+                                      always (node-equal (pop a) (pop b)))))
+                      (setq a-offset a-after b-offset b-after))))
+                 a-anchors b-anchors)
+                (= (length a) (length b))
+                (cl-every #'node-equal a b)))))
+         ;; Canonical construction orders source handles by forest preorder,
+         ;; so comparing each retained node also proves source identity order.
+         (forest-equal (ebox-canonical-input--nodes left)
+                       (ebox-canonical-input--nodes right) nil nil))))))
+
 (defun ebox-canonical--source-handle (plist context)
   "Return the one opaque source handle from PLIST for CONTEXT."
   (let ((handle (ebox-canonical--required-field

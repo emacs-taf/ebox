@@ -278,6 +278,17 @@
 ;; indexes are deliberately excluded because they are projections of these
 ;; canonical inputs, not additional source authority.
 ;;
+;; Function: ebox-canonical-input-equal-outside-ranges-p (left right range-refs &optional host-refs)
+;;;###autoload (autoload 'ebox-canonical-input-equal-outside-ranges-p "ebox" nil nil)
+;; Compare canonical inputs excluding contents of matching Box child anchors
+;; named by RANGE-REFS. All other nodes, anchor order and immutable source facts
+;; must remain equal including text properties; root anchors compare exactly.
+;; Does not mutate inputs. The caller must publish every masked change in the
+;; same atomic candidate. Missing, moved or reordered anchors are not masked.
+;; HOST-REFS can additionally mask single-root outputs replaced through their
+;; Host references in that candidate. Root source identity, kind and position
+;; must still agree; every other node and its source facts compare exactly.
+;;
 ;; Function: ebox-canonical-input-import-roots (input roots builder)
 ;;;###autoload (autoload 'ebox-canonical-input-import-roots "ebox" nil nil)
 ;; Import INPUT facts owned by selected top-level ROOTS into BUILDER.

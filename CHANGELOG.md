@@ -6,6 +6,9 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- `ebox-canonical-input-equal-outside-ranges-p` proves canonical equality outside
+  explicitly selected child ranges or stable Host outputs, allowing frameworks
+  to omit redundant ancestors while publishing those descendants atomically.
 - Prepared content updates can retain fixed, unanchored root overlays while
   updating an independent underlying panel, including occluded text and input
   ownership. Unsupported overlay dependencies keep ordinary publication.
