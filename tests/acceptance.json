@@ -171,6 +171,11 @@
       "purpose": "Canonical comparison masks only named child contents, preserving range order, membership, unmasked text properties and immutable source facts without changing exact equality."
     },
     {
+      "name": "ebox-prepared-update-keeps-disjoint-panels-preparable",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "Prepared canvases for two disjoint absolute panels stay valid after either is prepared and apply alternately, matching fresh rendering."
+    },
+    {
       "name": "ebox-prepared-update-cohorts-share-current-pane-content",
       "file": "tests/ebox-prepared-update-tests.el",
       "purpose": "Separate prepared operations sharing a pane keep the latest sibling text, inherited paint, canonical output and operation validity through alternating updates, rejected publication and retries."

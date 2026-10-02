@@ -158,15 +158,56 @@
                        (current-buffer) [["panel" [:left]] ["panel" [:left]]]))
         (should (eq (plist-get (ebox-update-prepare-report (current-buffer)) :reason)
                     'interrupted))
-        (should-not (ebox-update-valid-p earlier))
+        ;; A failed preparation leaves unrelated prepared canvases alone.
+        (should (ebox-update-valid-p earlier))
         (should (equal-including-properties before (buffer-string)))
         (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (ebox-update-apply earlier [[(ch 3)]] [0]))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (ebox-prepared-update-test--assert-fresh)
+        (setq revision (ebox-surface-buffer-revision (current-buffer)))
         (let ((operation (ebox-update-prepare
                           (current-buffer) [["panel" [:left :top]] ["label" [:content]]])))
           (should operation)
           (should (ebox-update-apply operation [[(ch 6) (lh 2)] ["Value03"]] [0 1]))
           (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
           (ebox-prepared-update-test--assert-fresh))))))
+
+(ert-deftest ebox-prepared-update-keeps-disjoint-panels-preparable ()
+  "Prepared canvases for disjoint panels stay valid and apply alternately.
+One surface keeps several retained panels alive, so using one panel must not
+retire another panel's prepared operation."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        '(box :width (ch 40) :height (lh 5)
+           (box :id "left" :position absolute :left (ch 1) :top (lh 1)
+                :width (ch 10) :height (lh 2) :z-index 1 :color "#224466"
+             (text :id "left-label" "Left00"))
+           (box :id "right" :position absolute :left (ch 20) :top (lh 1)
+                :width (ch 10) :height (lh 2) :z-index 2 :color "#662244"
+                :visibility visible
+             (text :id "right-label" "Right00")))))
+      (let* ((left (ebox-update-prepare (current-buffer) [["left" [:color]] ["left-label" [:content]]]))
+             (right (ebox-update-prepare (current-buffer) [["right" [:visibility]] ["right-label" [:content]]]))
+             (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should left)
+        (should right)
+        ;; Preparing the second panel must keep the first operation usable.
+        (should (ebox-update-valid-p left))
+        (should (ebox-update-valid-p right))
+        (should (ebox-update-apply left [["#AA2233"] ["Left01"]] [0 1]))
+        (should (ebox-update-valid-p right))
+        (ebox-prepared-update-test--assert-fresh)
+        (should (ebox-update-apply right [[hidden] ["Right01"]] [0 1]))
+        (should (ebox-update-valid-p left))
+        (should (= (+ revision 2) (ebox-surface-buffer-revision (current-buffer))))
+        (ebox-prepared-update-test--assert-fresh)
+        (should (ebox-update-apply left [["#224466"] ["Left02"]] [0 1]))
+        (should (ebox-update-apply right [[visible] ["Right02"]] [0 1]))
+        (ebox-prepared-update-test--assert-fresh)))))
 
 (ert-deftest ebox-prepared-update-translates-without-repainting-repeated-paint ()
   "Members whose raster values repeat only translate; a changed one repaints."

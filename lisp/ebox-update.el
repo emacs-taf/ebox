@@ -78,11 +78,20 @@ FIXED-PORTALS-P records the content cohort's independent-portal proof.
 ADMIT validates routes and crop before a cold scene allocates publication
 storage, and also validates additional members of a reused scene."
   (or (with-current-buffer buffer
-        (when (ebox-geometry--session-valid-p ebox-geometry--session)
-          (when admit
-            (funcall admit (ebox-geometry--operation-routes ebox-geometry--session)
-                     (ebox-geometry--operation-crop ebox-geometry--session)))
-          ebox-geometry--session))
+        ;; Try every live canvas before building one.  One mounted surface can
+        ;; keep several disjoint retained panels; alternating between them must
+        ;; not invalidate the other panels' prepared bindings.  A candidate
+        ;; that cannot admit the members declines locally and the next one is
+        ;; tried.
+        (catch 'ebox-scene-admitted
+          (dolist (candidate (ebox-geometry--valid-sessions))
+            (when (catch 'unsupported
+                    (when admit
+                      (funcall admit (ebox-geometry--operation-routes candidate)
+                               (ebox-geometry--operation-crop candidate)))
+                    t)
+              (setq ebox-geometry--session candidate)
+              (throw 'ebox-scene-admitted candidate)))))
       (let ((parents (plist-get state :parent-table))
             (table (plist-get state :node-table)) anchor reference)
         (catch 'found

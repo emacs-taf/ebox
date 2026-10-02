@@ -35,7 +35,16 @@
   paint surface-properties)
 
 (defvar-local ebox-geometry--session nil
-  "One shared prepared canvas and publication frame for the mounted surface.")
+  "Most recently used prepared canvas for the mounted surface.")
+
+(defvar-local ebox-geometry--session-cache nil
+  "Prepared canvases of the mounted surface, most recently used first.
+One buffer can keep several disjoint retained panels alive; a prepared member
+set tries the cached canvases before building a new one, so alternating
+between regions does not force a cold rebuild.")
+
+(defconst ebox-geometry--session-cache-limit 8
+  "Most prepared canvases retained for one mounted surface.")
 
 (defsubst ebox-geometry--interaction (operation)
   "Return OPERATION's shared current interaction capability."
@@ -993,11 +1002,13 @@ non-locally when a member is unsupported."
            (keys (vconcat properties))
            (session (and node surface (eq (plist-get node :position) 'absolute)
                          (with-current-buffer buffer
-                           (and (ebox-geometry--session-valid-p ebox-geometry--session)
-                                (gethash (plist-get node :node-id)
-                                         (ebox-layer--program-targets
-                                          (ebox-geometry--operation-program ebox-geometry--session)))
-                                ebox-geometry--session))))
+                           (cl-find-if
+                            (lambda (candidate)
+                              (and (ebox-geometry--session-valid-p candidate)
+                                   (gethash (plist-get node :node-id)
+                                            (ebox-layer--program-targets
+                                             (ebox-geometry--operation-program candidate)))))
+                            (cons ebox-geometry--session ebox-geometry--session-cache)))))
            (prior (and (not session) node surface
                        (with-current-buffer buffer
                          (let ((old ebox-geometry--session))
@@ -1179,7 +1190,15 @@ non-locally when a member is unsupported."
                                operation #'ebox-geometry--dispatch-stage #'ebox-geometry--dispatch-rollback
                                #'ebox-geometry--dispatch-accept)))))
                 (with-current-buffer buffer
-                  (setq ebox-geometry--session (or session operation)))
+                  (setq ebox-geometry--session (or session operation))
+                  (setq ebox-geometry--session-cache
+                        (cons ebox-geometry--session
+                              (delq ebox-geometry--session ebox-geometry--session-cache)))
+                  (when (> (length ebox-geometry--session-cache)
+                           ebox-geometry--session-cache-limit)
+                    (setq ebox-geometry--session-cache
+                          (cl-subseq ebox-geometry--session-cache
+                                     0 ebox-geometry--session-cache-limit))))
                 operation))))))))
 
 (defun ebox-geometry--fill (holder rendered rows dirty)
@@ -1215,15 +1234,17 @@ This bounded check does not traverse a component or Box tree."
        (ebox-geometry--session-valid-p (ebox-geometry--operation-session operation))))
 
 (defun ebox-geometry--session-valid-p (operation)
-  "Return whether the shared canvas OPERATION still owns its surface."
+  "Return whether prepared OPERATION still owns its surface.
+A surface may keep several canvases at once, so validity is membership in the
+session cache plus the shared state, style and display checks."
   (and (ebox-geometry--operation-p operation)
        (buffer-live-p (ebox-geometry--operation-buffer operation))
        (with-current-buffer (ebox-geometry--operation-buffer operation)
-         (eq operation ebox-geometry--session))
-       (eq (ebox-geometry--operation-state operation)
-           (ebox--buffer-render-state (ebox-geometry--operation-buffer operation)))
-       (eq (ebox-geometry--operation-stylesheet operation) ebox-style-stylesheet)
-       (= (ebox-geometry--operation-stylesheet-epoch operation) ebox-style--stylesheet-epoch)
+         (and (memq operation ebox-geometry--session-cache)
+              (eq (ebox-geometry--operation-state operation)
+                  (ebox--buffer-render-state (ebox-geometry--operation-buffer operation)))
+              (eq (ebox-geometry--operation-stylesheet operation) ebox-style-stylesheet)
+              (= (ebox-geometry--operation-stylesheet-epoch operation) ebox-style--stylesheet-epoch)))
        (ebox-geometry--display-current-p operation)
        (let ((frame (ebox-geometry--operation-frame-font-frame operation))
              (window (ebox-geometry--operation-frame-window operation)))
@@ -1235,6 +1256,17 @@ This bounded check does not traverse a component or Box tree."
                        (= (window-pixel-width window) (ebox-geometry--operation-window-width operation))
                        (= (window-pixel-height window) (ebox-geometry--operation-window-height operation))))))
        (ebox--pub-frame-current-p (ebox-geometry--operation-frame operation))))
+
+(defun ebox-geometry--valid-sessions ()
+  "Return the current buffer's live prepared canvases, newest first.
+Also drop invalid entries from the cache."
+  (let (valid)
+    (dolist (operation (cons ebox-geometry--session ebox-geometry--session-cache))
+      (when (and operation (not (memq operation valid))
+                 (ebox-geometry--session-valid-p operation))
+        (push operation valid)))
+    (setq ebox-geometry--session-cache (nreverse valid))
+    valid))
 
 ;;;###autoload
 (defun ebox-geometry-apply (operation values)

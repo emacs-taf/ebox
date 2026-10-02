@@ -54,6 +54,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A mounted surface keeps every prepared canvas alive instead of only the
+  most recently used one.  Preparing a panel no longer retires another
+  panel's prepared operation, and a failed preparation leaves unrelated
+  operations valid.  A member set tries the cached canvases before building
+  a cold one.
 - A prepared geometry mount reserves each owner's interval pools from the
   composed raster's measured maximum instead of the anchored plane's program
   height. A short anchored panel whose background shows between many children
