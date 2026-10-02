@@ -662,13 +662,18 @@ when they differ from the compiled pool. Initial preparation still requires
 every authoritative mount; topology or generation failure cannot authorize
 pool reuse.
 
-Eligible targets in the same containing-plane route share one mounted scene,
-mount pool, publication frame and interaction capability. Preparing another
-target binds only its scalar source cells, value storage and callbacks. The
-shared frame dispatches to that target for the current publication; another
-prepared target does not invalidate the scene or restart its composition.
-Source-handle changes refresh the one shared interaction capability in the cold
-plane. An ordinary publication invalidates operation bindings, while a
+Eligible targets in one containing plane share one prepared canvas: its mounted
+scene, mount pool, publication frame and interaction capability. Preparing
+another target in that plane binds only its scalar source cells, value storage
+and callbacks; another prepared target does not restart the composition. A
+mounted surface keeps the canvases of several planes at once in a per-buffer
+cache, newest first. A member set reuses only the canvas compiled for its own
+containing plane, because another canvas could bind a shared ancestor as the
+boundary and then fail to replay its pixels; members that need another plane
+are left for their own cohort. Validity is cache membership plus the shared
+state, style and display checks, and the most recently used canvas serves
+interaction publishing and native focus. Source-handle changes refresh that
+capability in the cold plane. An ordinary publication invalidates operation bindings, while a
 publication-owned topology token can preserve compiled resources. The token is
 retained only for an explicit nonstructural dirty classification with no created,
 removed or moved publication objects. A later preparation refreshes raster rows
@@ -682,6 +687,14 @@ rasters, so exposing those pixels can reuse the mount pool. The frame adopts the
 accepted revision and client state while generic mounts remain authoritative
 until the next atomic prepared publication. Structural or unsupported changes
 use fresh preparation.
+
+Cold compilation reads the state's layer composition ledger, and a prepared
+publication clears it.  A canvas can therefore be compiled only while every
+containing plane between its anchor and the root still has a recorded
+composition, and one publication has one writer, so alternate writes to two
+canvases in the same generation are not supported.  Hang anchors directly on
+the root plane, or on a plane the ledger records, and publish one region at a
+time.
 
 This path compiles translation and stacking for fixed planes. A scroll viewport
 inside a retained raster moves with its owner without changing its content-relative
