@@ -7336,7 +7336,9 @@ fn render_grid_row(
             LayoutContext {
                 viewport_width: width,
                 viewport_width_known: true,
-                inline_auto_width_intrinsic: false,
+                // A text cell keeps its natural width like the Elisp grid
+                // renderer: the track clips it instead of rewrapping it.
+                inline_auto_width_intrinsic: !matches!(source, LayoutNode::Box { .. }),
                 ..context
             },
             intrinsic,
@@ -8236,7 +8238,17 @@ fn render_node_body(
             wrap_mode,
             ..
         } => {
-            let width = measured_max_width(content);
+            // A Text node fills its containing block: wrap at the available
+            // content width when the context supplies one.  Intrinsic
+            // measurement and inline auto-width contexts keep the natural
+            // width, and the tape keeps the measured width per line.
+            let width = if context.inline_auto_width_intrinsic
+                || !context.viewport_width_known
+            {
+                measured_max_width(content)
+            } else {
+                context.viewport_width.max(0)
+            };
             let mut lines = measured_lines(content, width, *wrap_mode);
             for (index, line) in lines.iter_mut().enumerate() {
                 line.own_content(*region_id, index as i64);

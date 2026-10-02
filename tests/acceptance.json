@@ -1869,6 +1869,21 @@
       "name": "ebox-inline-box-composes-every-material-child",
       "file": "tests/ebox-core-render-tests.el",
       "purpose": "A normal Box composes every inline child into one wrapped flow with and without the optional native layout module."
+    },
+    {
+      "name": "ebox-display-inline-runs-wrap-like-one-text",
+      "file": "tests/ebox-display-tests.el",
+      "purpose": "The same text wraps identically whether one Text or several inline runs hold it, including CJK character wrapping."
+    },
+    {
+      "name": "ebox-display-column-text-fills-the-column-width",
+      "file": "tests/ebox-display-tests.el",
+      "purpose": "A Column wraps a soft-wrapping Text item to the column content width in native and Elisp layout alike."
+    },
+    {
+      "name": "ebox-display-values-cross-the-native-boundary",
+      "file": "tests/ebox-display-tests.el",
+      "purpose": "Fixed pixel display spaces and one-cell image slices keep identical text and display properties through the native layout."
     }
   ]
 }

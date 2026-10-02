@@ -1121,7 +1121,11 @@ Return its empty inline extent through `ebox--box-content-empty-width'."
     content))
 
 (defun ebox--normal-text-units (string wrap-mode)
-  "Return inline flow units for Text STRING under WRAP-MODE."
+  "Return inline flow units for Text STRING under WRAP-MODE.
+Word mode keeps ordinary words atomic and emits each CJK grapheme cluster as
+its own unit, so a paragraph wraps identically whether a composer publishes
+it as one Text or as several inline Text children.  Char mode emits every
+grapheme cluster."
   (let ((lines (ebox-string-lines string)) units)
     (cl-loop for line in lines
              for line-tail on lines
@@ -1139,22 +1143,29 @@ Return its empty inline extent through `ebox--box-content-empty-width'."
                   (let ((position 0)
                         (limit (length line)))
                     (while (< position limit)
-                      (let* ((space-p
-                              (not (null
-                                    (memq (aref line position) '(?\s ?\t)))))
-                             (end position))
-                        (while (and (< end limit)
-                                    (eq (not (null
-                                              (memq (aref line end)
-                                                    '(?\s ?\t))))
-                                        space-p))
-                          (setq end (1+ end)))
-                        (let ((part (substring line position end)))
-                          (push (list :kind (if space-p 'space 'word)
-                                      :rendered part
-                                      :width (ebox--string-pixel-width part))
-                                units))
-                        (setq position end)))))
+                      (let* ((char (aref line position))
+                             (space-p (not (null (memq char '(?\s ?\t))))))
+                        (if (and (not space-p) (ebox--cjk-char-p char))
+                            (let* ((end (ebox--grapheme-cluster-end line position))
+                                   (part (substring line position end)))
+                              (push (list :kind 'char :rendered part
+                                          :width (ebox--string-pixel-width part))
+                                    units)
+                              (setq position end))
+                          (let ((end position))
+                            (while (and (< end limit)
+                                        (not (ebox--cjk-char-p (aref line end)))
+                                        (eq (not (null
+                                                  (memq (aref line end)
+                                                        '(?\s ?\t))))
+                                            space-p))
+                              (setq end (1+ end)))
+                            (let ((part (substring line position end)))
+                              (push (list :kind (if space-p 'space 'word)
+                                          :rendered part
+                                          :width (ebox--string-pixel-width part))
+                                    units))
+                            (setq position end)))))))
              unless (null (cdr line-tail))
              do (push '(:kind break) units))
     (nreverse units)))
@@ -2068,11 +2079,11 @@ Internal implementation of `ebox-render' for box nodes."
 (defvar ebox--surface-materialization-active nil
   "Non-nil while an Ebox Ebox publication producer is running raw layout.")
 
-(defun ebox--render-text-node (node)
-  "Render canonical TextNode NODE without entering Box geometry."
-  (let* ((region-id (or ebox--render-region-id
-                        (ebox--ensure-region-id node)))
-         (value (copy-sequence (plist-get node :ebox-text-value)))
+(defun ebox--paint-text-content (node)
+  "Return NODE's text content with typography, paint and surface applied.
+This composition is shared by the ordinary text renderer and the native
+compiler's inline fusion, so both paint an identical string."
+  (let* ((value (copy-sequence (plist-get node :ebox-text-value)))
          (styled
           (ebox--propertize-text-decoration
            (ebox--propertize-typography value node) node))
@@ -2080,10 +2091,15 @@ Internal implementation of `ebox-render' for box nodes."
           (if (or (ebox-get node :color) (ebox-get node :bgcolor))
               (ebox--propertize-colors
                styled (ebox-get node :color) (ebox-get node :bgcolor))
-            styled))
-         (surfaced
-          (ebox--apply-surface-properties
-           painted (ebox-interaction--node-surface-properties node)))
+            styled)))
+    (ebox--apply-surface-properties
+     painted (ebox-interaction--node-surface-properties node))))
+
+(defun ebox--render-text-node (node)
+  "Render canonical TextNode NODE without entering Box geometry."
+  (let* ((region-id (or ebox--render-region-id
+                        (ebox--ensure-region-id node)))
+         (surfaced (ebox--paint-text-content node))
          (fallback (ebox--pixel-blank 0 1))
          (rendered
           (ebox-lines-join

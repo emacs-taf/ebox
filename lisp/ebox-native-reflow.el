@@ -64,6 +64,10 @@
 (declare-function ebox-layout-config-kind "ebox-layout-config" (config))
 (declare-function ebox-layout-config-props "ebox-layout-config" (config))
 (declare-function ebox-tree-node-children "ebox-tree" (node))
+(declare-function ebox-tree-display-outer "ebox-tree" (node))
+(declare-function ebox--box-layout-kind "ebox-layout" (box))
+(declare-function ebox--box-content-node "ebox-layout" (box))
+(declare-function ebox--paint-text-content "ebox-layout" (node))
 (declare-function ebox-buffer--font-face "ebox-buffer-backend" (style))
 (declare-function ebox-buffer--text-decoration-face
                   "ebox-buffer-backend" (style))
@@ -440,7 +444,6 @@ TEMPLATE-P selects the native property-template comparison and hash."
 (defconst ebox-native-reflow--unsafe-opaque-properties
   '(category
     composition
-    display
     insert-behind-hooks
     insert-in-front-hooks
     invisible
@@ -452,7 +455,8 @@ These properties can change layout indirectly or execute code during string
 materialization.  Editing metadata such as `keymap', `mouse-face',
 `help-echo', `read-only', sticky boundaries, closures, and application-owned
 properties remains opaque to Rust and is restored by Emacs after proof
-validation.")
+validation.  `display' is likewise opaque, but only for the layout-neutral
+values accepted by `ebox-native-reflow--display-cell-width'.")
 
 (defvar ebox-native-reflow--compile-root-node nil
   "Root node whose native layout document is currently being compiled.")
@@ -1523,6 +1527,38 @@ copied separately; no pending frame or registered Rust document is inherited."
                (list :key key :payload payload :delay-ms delay)))
            frames)))))
 
+(defun ebox-native-reflow--display-cell-width (display)
+  "Return the exact pixel width DISPLAY gives one character cell, or nil.
+The native IR lays text out from measured pixel widths, so a display value
+may cross the Rust boundary only when it replaces exactly one cell whose
+footprint the compiler has already measured.  Two forms qualify: a fixed
+pixel space, whose width Emacs substitutes for the character and which the
+layout tape itself emits for KP-formatted text; and one slice of an image
+whose frame is exactly the frame's character box, which is how the Ebox
+image adapter paints a cell grid.  Replacement strings, conditional forms,
+raise, and other layout-dependent or code-running values keep the Elisp
+renderer."
+  (cond
+   ((and (consp display)
+         (eq (car display) 'space)
+         (= (length display) 3)
+         (eq (nth 1 display) :width)
+         (consp (nth 2 display))
+         (null (cdr (nth 2 display)))
+         (numberp (car (nth 2 display)))
+         (>= (car (nth 2 display)) 0)
+         (= (car (nth 2 display)) (floor (car (nth 2 display)))))
+    (floor (car (nth 2 display))))
+   ((and (consp display)
+         (consp (car display))
+         (eq (car (car display)) 'slice)
+         (= (length (car display)) 5)
+         (cl-every #'integerp (cdr (car display)))
+         (imagep (cadr display))
+         (= (nth 3 (car display)) (frame-char-width))
+         (= (nth 4 (car display)) (frame-char-height)))
+    (nth 3 (car display)))))
+
 (defun ebox-native-reflow--validate-property-template (properties label)
   "Validate opaque text PROPERTIES for LABEL."
   (unless (and (proper-list-p properties)
@@ -1539,6 +1575,11 @@ copied separately; no pending frame or registered Rust document is inherited."
                         ebox-native-reflow--unsafe-opaque-properties))
           (error "Native reflow %s cannot carry unsafe property %S"
                  label property))
+        (when (and (eq property 'display)
+                   (null (ebox-native-reflow--display-cell-width
+                          (car tail))))
+          (error "Native reflow %s cannot carry unsafe display value %S"
+                 label (car tail)))
         (pop tail)))))
 
 (defun ebox-native-reflow--register-property-template (properties label)
@@ -1661,28 +1702,54 @@ copied separately; no pending frame or registered Rust document is inherited."
              (template-id
               (ebox-native-reflow--register-property-template
                properties "source"))
+             (display (plist-get properties 'display))
+             (display-width
+              (and display (ebox-native-reflow--display-cell-width display)))
              (plain (substring-no-properties line position next))
              (cache-key
+              ;; A display run measures exactly one character cell, so key its
+              ;; reuse on the display's own width and paint: hashing the image
+              ;; bytes embedded in every cell would cost several times the
+              ;; measurement this cache replaces.
               (list ebox-native-reflow--compile-display-signature
-                    properties plain))
+                    (if display
+                        (list display-width (plist-get properties 'face))
+                      properties)
+                    plain))
              (missing (make-symbol "native-source-clusters-missing"))
              (measured
               (gethash cache-key ebox-native-reflow--source-cluster-cache
                        missing)))
+        (when display
+          ;; Emacs replaces one display run once, so a run that spans several
+          ;; graphemes cannot be measured cluster by cluster.  Image hosts
+          ;; publish one cell per run; anything wider keeps the Elisp renderer.
+          (unless (= (ebox--grapheme-cluster-end line position) next)
+            (error "Native reflow display run must cover one grapheme cluster")))
         (when (eq measured missing)
           (setq measured
-                (vconcat
-                 (mapcar
-                  (lambda (cluster)
-                    (setq cluster (copy-sequence cluster))
-                    (plist-put cluster :text
-                               (substring-no-properties
-                                (plist-get cluster :text)))
-                    (ebox-native-reflow--compile-cluster cluster))
-                  (append
-                   (ebox--grapheme-clusters
-                    (substring line position next))
-                   nil))))
+                (if display
+                    ;; The display's own footprint is the measured width; the
+                    ;; predicated value is one cell, and asking Emacs to
+                    ;; measure a sliced cell costs ~100us per cell.
+                    (vector
+                     (ebox-native-reflow--compile-cluster
+                      (list :text plain
+                            :width display-width
+                            :cjk (ebox--cjk-char-p (aref plain 0))
+                            :space (= (aref plain 0) ?\s))))
+                  (vconcat
+                   (mapcar
+                    (lambda (cluster)
+                      (setq cluster (copy-sequence cluster))
+                      (plist-put cluster :text
+                                 (substring-no-properties
+                                  (plist-get cluster :text)))
+                      (ebox-native-reflow--compile-cluster cluster))
+                    (append
+                     (ebox--grapheme-clusters
+                      (substring line position next))
+                     nil)))))
           (when (>= (hash-table-count
                      ebox-native-reflow--source-cluster-cache)
                     ebox-native-reflow--source-cluster-cache-limit)
@@ -2108,6 +2175,168 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                        (plist-get props :column-gap) 'horizontal)
           :children (vconcat children))))
 
+(defun ebox-native-reflow--transparent-inline-box-p (box)
+  "Return non-nil when BOX adds no geometry, paint or state of its own.
+Such a box only groups inline children, so the native compiler may fuse the
+whole group into one measured Text without losing a visible contribution."
+  (and (eq (ebox-get box :ebox-kind) 'box)
+       (eq (ebox--box-layout-kind box) 'normal)
+       (null (ebox--box-content-node box))
+       (not (eq (ebox-get box :visibility) 'hidden))
+       (eq (ebox-tree-display-outer box) 'inline)
+       (memq (ebox-get box :width) '(nil auto))
+       (memq (ebox-get box :height) '(nil auto))
+       (memq (ebox-get box :min-width) '(nil auto))
+       (memq (ebox-get box :max-width) '(nil none auto))
+       (memq (ebox-get box :min-height) '(nil auto))
+       (memq (ebox-get box :max-height) '(nil none auto))
+       (memq (ebox-get box :overflow) '(nil scroll))
+       (null (ebox-get box :position))
+       (null (ebox-get box :bgcolor))
+       (cl-every (lambda (edge)
+                   (zerop (or (ebox-get box edge) 0)))
+                 '(:padding-left-pixel :padding-right-pixel
+                   :padding-top-height :padding-bottom-height
+                   :margin-left-pixel :margin-right-pixel
+                   :margin-top-height :margin-bottom-height
+                   :border-left-pixel :border-right-pixel
+                   :border-top-pixel :border-bottom-pixel))))
+
+(defun ebox-native-reflow--fusable-inline-node-p (node)
+  "Return non-nil when NODE is inline text the native compiler can fuse."
+  (pcase (ebox-get node :ebox-kind)
+    ('text (not (eq (ebox-get node :visibility) 'hidden)))
+    ('box
+     (let ((children (ebox-tree-node-children node)))
+       (and (= (length children) 1)
+            (ebox-native-reflow--transparent-inline-box-p node)
+            (eq (ebox-tree-display-outer (car children)) 'inline)
+            (ebox-native-reflow--fusable-inline-node-p (car children)))))
+    (_ nil)))
+
+(defun ebox-native-reflow--fusable-inline-children-p (box children)
+  "Return non-nil when BOX's inline CHILDREN can fuse into one text flow."
+  (and (cdr children)
+       (not (eq (ebox-get box :wrap-mode) 'kp))
+       (cl-every (lambda (child)
+                   (and (eq (ebox-tree-display-outer child) 'inline)
+                        (ebox-native-reflow--fusable-inline-node-p child)))
+                 children)))
+
+(defun ebox-native-reflow--fuse-inline-text (node state)
+  "Push NODE's painted inline text onto STATE, or return nil.
+STATE is a cons whose car collects painted string parts and whose cdr holds
+the first Text node, which owns the fused content region.  Return nil as soon
+as one node needs representation beyond inline text; the caller then keeps
+the Elisp renderer."
+  (pcase (ebox-get node :ebox-kind)
+    ('text
+     (unless (eq (ebox-get node :visibility) 'hidden)
+       (let ((painted (ebox--paint-text-content node)))
+         (unless (string-empty-p painted)
+           (push painted (car state))
+           (unless (cdr state) (setcdr state node)))
+         t)))
+    ('box
+     (let ((children (ebox-tree-node-children node)))
+       (and (= (length children) 1)
+            (eq (ebox-tree-display-outer (car children)) 'inline)
+            (ebox-native-reflow--transparent-inline-box-p node)
+            (ebox-native-reflow--fuse-inline-text (car children) state))))
+    (_ nil)))
+
+(defun ebox-native-reflow--compile-fused-inline-text (box children)
+  "Compile BOX's inline CHILDREN into one measured native Text node, or nil.
+The fused node carries each run's paint as per-cluster property templates, so
+the native engine can lay out a styled paragraph through its ordinary single
+Text representation instead of declining the whole document."
+  (when (and (cdr children)
+             (not (eq (ebox-get box :wrap-mode) 'kp))
+             (cl-every (lambda (child)
+                         (eq (ebox-tree-display-outer child) 'inline))
+                       children))
+    (let ((state (cons nil nil)))
+      (when (cl-every (lambda (child)
+                        (ebox-native-reflow--fuse-inline-text child state))
+                      children)
+        (let ((content (apply #'concat (nreverse (car state))))
+              (owner (cdr state)))
+          (when (and owner (not (string-empty-p content)))
+            (list :type "text"
+                  ;; The fused content is owned by BOX, not by the first run:
+                  ;; the publication materializer resolves the content region
+                  ;; back to its canonical node, so a run's region would
+                  ;; publish only that run's text.  `compile-box' substitutes
+                  ;; the Box region when this is nil.
+                  :region-id nil
+                  :content (ebox-native-reflow--compile-text content)
+                  :typography-style :null
+                  :foreground-style :null
+                  :surface-template-id :null
+                  :wrap-mode "none")))))))
+
+(defun ebox-native-reflow--normal-box-parts-supported-p (box children)
+  "Return non-nil when BOX's mixed CHILDREN compile through native parts."
+  (let ((valid t)
+        (inline-count 0))
+    (dolist (child children)
+      (if (eq (ebox-tree-display-outer child) 'inline)
+          (progn
+            (unless (ebox-native-reflow--fusable-inline-node-p child)
+              (setq valid nil))
+            (cl-incf inline-count)
+            (when (and (> inline-count 1)
+                       (eq (ebox-get box :wrap-mode) 'kp))
+              (setq valid nil)))
+        (progn
+          (setq inline-count 0)
+          (unless (ebox-native-reflow--native-node-supported-p child)
+            (setq valid nil)))))
+    valid))
+
+(defun ebox-native-reflow--compile-normal-box-parts (box children)
+  "Compile a normal BOX's inline groups and block CHILDREN into one part.
+The Elisp renderer keeps consecutive inline children on one flow and stacks
+block children vertically; this returns one Text part for each inline group,
+the compiled block children in order, and collapses a single part.  Return
+nil when a child needs representation the native IR cannot express."
+  (let ((parts nil)
+         (group nil)
+         (valid t))
+    (cl-labels
+        ((flush-group
+          ()
+          (when group
+            (let* ((members (nreverse group))
+                   (part (if (cdr members)
+                             (ebox-native-reflow--compile-fused-inline-text
+                              box members)
+                           (ebox-native-reflow--compile-node
+                            (car members)))))
+              (if part
+                  (push part parts)
+                (setq valid nil)))
+            (setq group nil)))
+         (visit
+          (child)
+          (if (eq (ebox-tree-display-outer child) 'inline)
+              (if (ebox-native-reflow--fusable-inline-node-p child)
+                  (push child group)
+                (setq valid nil))
+            (progn
+              (flush-group)
+              (when valid
+                (push (ebox-native-reflow--compile-node child) parts))))))
+      (dolist (child children)
+        (when valid (visit child)))
+      (when valid (flush-group)))
+    (when valid
+      (let ((parts (nreverse parts)))
+        (pcase parts
+          ('() nil)
+          (`(,only) only)
+          (_ (list :type "column" :children (vconcat parts))))))))
+
 (defun ebox-native-reflow--compile-typed-box-child (box)
   "Compile canonical BOX's typed child layout, or return nil."
   (let* ((ebox-native-reflow--compile-size-node box)
@@ -2121,7 +2350,9 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
        (pcase children
          ('() nil)
          (`(,child) (ebox-native-reflow--compile-node child))
-         (_ (error "Native reflow does not yet compile multi-child Normal Box"))))
+         (_
+          (or (ebox-native-reflow--compile-normal-box-parts box children)
+              (error "Native reflow does not yet compile multi-child Normal Box")))))
       ((or 'row 'column)
        (ebox-native-reflow--compile-typed-axis-children
         kind config children))
@@ -2177,16 +2408,6 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
           (and typed-box-p
                (ebox-layout-config-kind
                 (plist-get box :ebox-layout-config))))
-         (_inline-children-proof
-          ;; An inline Box composes its material children on one flow through
-          ;; `ebox--render-normal-box-children', including soft wrapping at
-          ;; child boundaries.  The native IR represents one fused child per
-          ;; Box, so a Box with more than one child delegates to the Elisp
-          ;; renderer instead of dropping the siblings.
-          (when (and typed-box-p
-                     (memq typed-layout-kind '(nil normal))
-                     (cdr (ebox-tree-node-children box)))
-            (error "Native reflow delegates an inline Box with multiple children to the Elisp renderer")))
          (source-child (plist-get box :ebox-content-node))
          (child (if (or child-override-p child-resolved-p)
                     child-override
@@ -2275,7 +2496,9 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
                  (or kp-content (ebox-get box :content) "")
                  (and kp-content t))))
      :content-region-id
-     (if fused-text-p (plist-get child :region-id) :null)
+     (if fused-text-p
+         (or (plist-get child :region-id) region-id)
+       :null)
      :content-typography-style
      (if fused-text-p (plist-get child :typography-style) :null)
      :content-foreground-style
@@ -2572,7 +2795,10 @@ Grid retains the ordinary two-dimensional renderer."
               (children (ebox-tree-node-children node)))
           (and
            (pcase kind
-             ('normal (<= (length children) 1))
+             ('normal
+              (or (<= (length children) 1)
+                  (ebox-native-reflow--normal-box-parts-supported-p
+                   node children)))
              ((or 'row 'column)
               t)
              ('flex t)
@@ -2601,9 +2827,12 @@ Grid retains the ordinary two-dimensional renderer."
          (children (ebox-tree-node-children box)))
     (pcase kind
       ('normal
-       (and children
-            (ebox-native-reflow--compiled-scene-child
-             fragments (car children))))
+       (pcase children
+         ('() nil)
+         (`(,child) (ebox-native-reflow--compiled-scene-child fragments child))
+         (_
+          (or (ebox-native-reflow--compile-normal-box-parts box children)
+              (error "Native reflow does not yet compile multi-child Normal Box")))))
       ((or 'row 'column)
        (ebox-native-reflow--compile-typed-axis-children
         kind config children fragments))
@@ -4133,14 +4362,7 @@ plist supplied by the caller."
                         value style-faces)
                  (error "Native reflow tape has an invalid face value")))
               ('display
-               (unless (and (proper-list-p value)
-                            (= (length value) 3)
-                            (eq (nth 0 value) 'space)
-                            (eq (nth 1 value) :width)
-                            (proper-list-p (nth 2 value))
-                            (= (length (nth 2 value)) 1)
-                            (integerp (car (nth 2 value)))
-                            (>= (car (nth 2 value)) 0))
+               (unless (ebox-native-reflow--display-cell-width value)
                  (error "Native reflow tape has an invalid display value")))
               ('ebox-content-idx
                (unless (and complete-p (integerp value) (>= value 0))

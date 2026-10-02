@@ -99,5 +99,81 @@
           (should (eq buffer called)))
       (kill-buffer buffer))))
 
+(defun ebox-display--display-runs (string)
+  "Return STRING's `display' property runs as (VALUE . LENGTH) pairs."
+  (let ((position 0) (limit (length string)) runs)
+    (while (< position limit)
+      (let ((value (get-text-property position 'display string))
+            (next (or (next-single-property-change
+                       position 'display string limit)
+                      limit)))
+        (when value
+          (push (cons value (- next position)) runs))
+        (setq position next)))
+    (nreverse runs)))
+
+(ert-deftest ebox-display-inline-runs-wrap-like-one-text ()
+  "The same content wraps identically whether one or several runs hold it."
+  (dolist (width '(40 24 17))
+    (let* ((text "中文与 words 内容更多一些的第二段文本，换行位置应当一致")
+           (single-form (list 'box :width (list 'px width) :wrap-mode 'word text))
+           (runs-form (list 'box :width (list 'px width) :wrap-mode 'word
+                            (list 'text (substring text 0 8))
+                            (list 'text (substring text 8 21))
+                            (list 'text (substring text 21)))))
+      (should (equal (substring-no-properties (ebox-render (ebox-build single-form)))
+                     (substring-no-properties (ebox-render (ebox-build runs-form))))))))
+
+(ert-deftest ebox-display-column-text-fills-the-column-width ()
+  "A Column wraps a soft-wrapping Text item to the column content width."
+  (let* ((ebox-viewport-width 92)
+         (ebox-viewport-height 20)
+         (text (concat "作者 ETAF Contributors  ·  日期 2026-10-03  ·  "
+                       "版本 1.0.0  ·  许可 GPL-3.0-or-later  ·  状态 稳定"))
+         (form (list 'column :width (list 'ch 92) (list 'text text)))
+         projection)
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer) (ebox-build form)
+       (list :observer (lambda (_buffer report)
+                         (when (eq (plist-get report :provider) 'ebox)
+                           (setq projection (plist-get report :projection-kind))))))
+      (when (ebox-native-reflow-layout-ready-p)
+        (should (eq projection 'native-frame)))
+      (should (equal (substring-no-properties (buffer-string))
+                     (substring-no-properties
+                      (ebox-render (ebox-build form))))))))
+
+(ert-deftest ebox-display-values-cross-the-native-boundary ()
+  "Fixed pixel spaces and one-cell image slices stay identical through native."
+  (let* ((char-width (max 1 (frame-char-width)))
+         (line-height (max 1 (frame-char-height)))
+         (png (base64-decode-string
+               (concat "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+                       "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")))
+         (image (create-image png 'png t :width char-width :height line-height))
+         (text (concat
+                "A" (propertize " " 'display (list 'space :width (list 11)))
+                "B" (propertize " " 'display
+                                 (list (list 'slice 0 0 char-width line-height)
+                                       image))
+                "C"))
+         (form (list 'box :width (list 'ch 40) :wrap-mode 'word text))
+         projection)
+    (with-temp-buffer
+      (let ((ebox-viewport-width 40) (ebox-viewport-height 20))
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-build form)
+         (list :observer (lambda (_buffer report)
+                           (when (eq (plist-get report :provider) 'ebox)
+                             (setq projection (plist-get report :projection-kind)))))))
+      (when (ebox-native-reflow-layout-ready-p)
+        (should (eq projection 'native-frame)))
+      (let ((reference (ebox-render (ebox-build form))))
+        (should (equal (substring-no-properties (buffer-string))
+                       (substring-no-properties reference)))
+        (should (equal (ebox-display--display-runs (buffer-string))
+                       (ebox-display--display-runs reference)))))))
+
 (provide 'ebox-display-tests)
 ;;; ebox-display-tests.el ends here

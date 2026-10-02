@@ -589,6 +589,26 @@ ebox_fragment_flat_vector(emacs_env *env, const unsigned char *bytes,
   return vector;
 }
 
+/* An error tape carries its diagnostic as a length-prefixed body message.
+   Surface that message instead of a generic parse failure. */
+static bool
+ebox_error_tape_message(const unsigned char *bytes, size_t length,
+                        const char **message, size_t *message_length)
+{
+  static const size_t header_length = 112;
+  uint16_t flags = 0;
+  uint32_t body_length = 0;
+  if (length < header_length + 4 || memcmp(bytes, "EBXT", 4) != 0
+      || !ebox_read_u16(bytes, length, 6, &flags)
+      || (flags & 1) != 0
+      || !ebox_read_u32(bytes, length, header_length, &body_length)
+      || (size_t) body_length > length - (header_length + 4))
+    return false;
+  *message = (const char *) bytes + header_length + 4;
+  *message_length = (size_t) body_length;
+  return true;
+}
+
 static emacs_value
 ebox_module_render_frame(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
                          void *data)
@@ -610,6 +630,15 @@ ebox_module_render_frame(emacs_env *env, ptrdiff_t nargs, emacs_value *args,
   size_t record_count = 0;
   if (!ebox_fragment_section(output.data, output.len, &fragment_start,
                              &fragment_length, &record_count)) {
+    const char *tape_message = NULL;
+    size_t tape_message_length = 0;
+    if (ebox_error_tape_message(output.data, output.len, &tape_message,
+                                &tape_message_length)) {
+      emacs_value signal =
+        ebox_signal_error(env, tape_message, tape_message_length);
+      ebox_native_bytes_free(output);
+      return signal;
+    }
     ebox_native_bytes_free(output);
     static const char message[] = "Native frame has an invalid effect tape";
     return ebox_signal_error(env, message, sizeof message - 1);
@@ -654,6 +683,15 @@ ebox_module_render_session_frame(emacs_env *env, ptrdiff_t nargs,
   size_t record_count = 0;
   if (!ebox_fragment_section(output.data, output.len, &fragment_start,
                              &fragment_length, &record_count)) {
+    const char *tape_message = NULL;
+    size_t tape_message_length = 0;
+    if (ebox_error_tape_message(output.data, output.len, &tape_message,
+                                &tape_message_length)) {
+      emacs_value signal =
+        ebox_signal_error(env, tape_message, tape_message_length);
+      ebox_native_bytes_free(output);
+      return signal;
+    }
     ebox_native_bytes_free(output);
     static const char message[] =
       "Native retained frame has an invalid effect tape";
