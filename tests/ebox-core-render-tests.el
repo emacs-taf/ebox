@@ -178,5 +178,22 @@ of widening the update to the containing formatting context."
         (when (ebox-surface-buffer-mounted-p live) (ebox-unmount-buffer live))
         (kill-buffer live)))))
 
+(ert-deftest ebox-inline-box-composes-every-material-child ()
+  "A normal Box composes all of its inline children into one wrapped flow.
+The native layout proof declines this form, so the same output comes from
+the ordinary Elisp renderer with and without the optional module."
+  (dolist (module-path (list ebox-native-reflow-module-path nil))
+    (let ((ebox-native-reflow-module-path module-path)
+          (ebox-viewport-width 600)
+          (ebox-viewport-height 40))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build '(box :width (ch 40) :wrap-mode word
+                           (text "A ")
+                           (text :font-weight bold "B")
+                           (text " C"))))
+        (should (equal "A B C " (substring-no-properties (buffer-string))))))))
+
 (provide 'ebox-core-render-tests)
 ;;; ebox-core-render-tests.el ends here

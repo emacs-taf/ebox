@@ -2177,6 +2177,16 @@ cross-axis stretch and item gap remain explicit without legacy runtime nodes."
           (and typed-box-p
                (ebox-layout-config-kind
                 (plist-get box :ebox-layout-config))))
+         (_inline-children-proof
+          ;; An inline Box composes its material children on one flow through
+          ;; `ebox--render-normal-box-children', including soft wrapping at
+          ;; child boundaries.  The native IR represents one fused child per
+          ;; Box, so a Box with more than one child delegates to the Elisp
+          ;; renderer instead of dropping the siblings.
+          (when (and typed-box-p
+                     (memq typed-layout-kind '(nil normal))
+                     (cdr (ebox-tree-node-children box)))
+            (error "Native reflow delegates an inline Box with multiple children to the Elisp renderer")))
          (source-child (plist-get box :ebox-content-node))
          (child (if (or child-override-p child-resolved-p)
                     child-override

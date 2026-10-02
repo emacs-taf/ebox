@@ -1864,6 +1864,11 @@
       "name": "ebox-layer-overlay-in-measured-flex-subtree-paints",
       "file": "tests/ebox-layer-tests.el",
       "purpose": "An absolutely positioned overlay inside a viewport-relative flex subtree still paints, so a reused base-size measurement can no longer drop it."
+    },
+    {
+      "name": "ebox-inline-box-composes-every-material-child",
+      "file": "tests/ebox-core-render-tests.el",
+      "purpose": "A normal Box composes every inline child into one wrapped flow with and without the optional native layout module."
     }
   ]
 }
