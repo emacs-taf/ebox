@@ -25,8 +25,12 @@ pub(crate) fn atom_plan_work() -> AtomPlanWork {
 
 #[path = "line_plan.rs"]
 mod line_plan;
-pub(crate) use line_plan::LinePlanWork;
-use line_plan::{BoxProjectionSlot, FrameSpec, LineOp, LinePlan, PlanChange, ProjectionState};
+pub(crate) use line_plan::{LinePlanWork, PlanChange};
+use line_plan::{BoxProjectionSlot, FrameSpec, LineOp, LinePlan, ProjectionState};
+
+#[path = "publication.rs"]
+mod publication;
+pub(crate) use publication::{fragment_starts, encode_retained_patch};
 
 pub(crate) fn reset_line_plan_work() {
     line_plan::reset_work();
@@ -88,7 +92,7 @@ pub(crate) fn resolver_lookups() -> u64 {
 }
 
 const LAYOUT_VERSION: u32 = 2;
-pub const TAPE_VERSION: u16 = 13;
+pub const TAPE_VERSION: u16 = 14;
 pub const TAPE_HEADER_LEN: usize = 112;
 pub const MIN_TAPE_BYTES: usize = TAPE_HEADER_LEN + 5;
 const TAPE_MAGIC: &[u8; 4] = b"EBXT";
@@ -2570,7 +2574,7 @@ type FragmentRoles = Vec<(&'static str, i64)>;
 type FragmentOwnershipSpan = (u64, u64, FragmentRoles);
 type RegionMountKey = (i64, Vec<&'static str>);
 type RegionMountSpan = (RegionMountKey, u64, u64);
-type FragmentStyleDelta = Vec<(usize, Vec<u32>)>;
+type FragmentPaintDelta = Vec<(usize, Vec<u32>, Vec<u32>)>;
 
 fn propagated_fragment_roles(fragments: &[FragmentTemplate]) -> Vec<Vec<(&'static str, i64)>> {
     let mut propagated = vec![Vec::new(); fragments.len()];
@@ -2636,10 +2640,10 @@ fn fragment_region_mount_projection(fragments: &[FragmentTemplate]) -> Vec<Regio
     spans
 }
 
-fn fragment_style_delta(
+fn fragment_paint_delta(
     old: &[FragmentTemplate],
     target: &[FragmentTemplate],
-) -> Option<FragmentStyleDelta> {
+) -> Option<FragmentPaintDelta> {
     if old.len() != target.len() {
         return None;
     }
@@ -2651,12 +2655,12 @@ fn fragment_style_delta(
             || old.roles != target.roles
             || old.content_owner != target.content_owner
             || old.content_index != target.content_index
-            || old.property_template_ids != target.property_template_ids
         {
             return None;
         }
-        if old.style_ids != target.style_ids {
-            delta.push((index, target.style_ids.clone()));
+        if old.style_ids != target.style_ids
+            || old.property_template_ids != target.property_template_ids {
+            delta.push((index, target.property_template_ids.clone(), target.style_ids.clone()));
         }
     }
     Some(delta)
@@ -4077,24 +4081,17 @@ fn encode_patch_replacement_body(
 fn encode_patch_combined_payload(
     replacement: &[u8],
     metadata: Option<&RootMetadataPayload>,
-    fragment_style_delta: Option<&FragmentStyleDelta>,
+    fragment_paint_delta: Option<&FragmentPaintDelta>,
     max_bytes: usize,
 ) -> Result<Vec<u8>, String> {
     let metadata_literal = metadata.map_or("nil", |payload| payload.literal.as_str());
-    let style_delta_literal = fragment_style_delta.map(|delta| {
+    let paint_delta_literal = fragment_paint_delta.map(|delta| {
         let entries = delta
             .iter()
-            .map(|(index, style_ids)| {
-                let ids = style_ids
-                    .iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                if ids.is_empty() {
-                    format!("({index})")
-                } else {
-                    format!("({index} {ids})")
-                }
+            .map(|(index, property_ids, style_ids)| {
+                let ids = |values: &[u32]| values.iter().map(u32::to_string)
+                    .collect::<Vec<_>>().join(" ");
+                format!("({index} ({}) ({}))", ids(property_ids), ids(style_ids))
             })
             .collect::<Vec<_>>()
             .join(" ");
@@ -4105,7 +4102,7 @@ fn encode_patch_combined_payload(
         .and_then(|size| size.checked_add(1))
         .and_then(|size| size.checked_add(metadata_literal.len()))
         .and_then(|size| {
-            style_delta_literal
+            paint_delta_literal
                 .as_ref()
                 .map_or(Some(size), |literal| size.checked_add(1 + literal.len()))
         })
@@ -4119,7 +4116,7 @@ fn encode_patch_combined_payload(
     payload.extend_from_slice(replacement);
     payload.push(b' ');
     payload.extend_from_slice(metadata_literal.as_bytes());
-    if let Some(literal) = style_delta_literal {
+    if let Some(literal) = paint_delta_literal {
         payload.push(b' ');
         payload.extend_from_slice(literal.as_bytes());
     }
@@ -4138,7 +4135,7 @@ struct EmacsCommitBatch {
     reuse_fragment_template: bool,
     reuse_ownership_template: bool,
     reuse_mount_projection: bool,
-    fragment_style_delta: Option<FragmentStyleDelta>,
+    fragment_paint_delta: Option<FragmentPaintDelta>,
 }
 
 fn coalesce_publication_edits(edits: &[SpanEdit]) -> Vec<SpanEdit> {
@@ -4229,13 +4226,13 @@ fn build_emacs_commit_batch(
             fragment_region_mount_projection(old)
                 == fragment_region_mount_projection(&target.fragments)
         });
-    let fragment_style_delta = if reuse_fragment_template {
+    let fragment_paint_delta = if reuse_fragment_template {
         None
     } else {
         old_fragments
             .as_ref()
             .zip(metadata_payload.as_ref())
-            .and_then(|(old, target)| fragment_style_delta(old, &target.fragments))
+            .and_then(|(old, target)| fragment_paint_delta(old, &target.fragments))
     };
     let replacements = encode_patch_replacement_body(
         &target.characters,
@@ -4246,20 +4243,20 @@ fn build_emacs_commit_batch(
     let combined_payload = encode_patch_combined_payload(
         &replacements,
         metadata_payload.as_ref(),
-        fragment_style_delta.as_ref(),
+        fragment_paint_delta.as_ref(),
         payload_limit,
     )?;
     let metadata_records = metadata_payload
         .as_ref()
         .map_or(0, |payload| payload.record_count);
-    let fragment_records = if reuse_fragment_template || fragment_style_delta.is_some() {
+    let fragment_records = if reuse_fragment_template || fragment_paint_delta.is_some() {
         0
     } else {
         metadata_payload
             .as_ref()
             .map_or(0, |payload| payload.fragment_count)
     };
-    let fragment_bytes = if reuse_fragment_template || fragment_style_delta.is_some() {
+    let fragment_bytes = if reuse_fragment_template || fragment_paint_delta.is_some() {
         Vec::new()
     } else {
         metadata_payload.as_mut().map_or_else(Vec::new, |payload| {
@@ -4276,7 +4273,7 @@ fn build_emacs_commit_batch(
         reuse_fragment_template,
         reuse_ownership_template,
         reuse_mount_projection,
-        fragment_style_delta,
+        fragment_paint_delta,
     })
 }
 
@@ -4307,13 +4304,24 @@ pub(crate) fn encode_layout_patch_tape_with_scroll(
         max_bytes,
         scroll.filter(|_| identity.complete),
     )?;
+    encode_commit_batch(
+        &batch, identity, target.style_count, target.line_count,
+        old.characters.len() as u64, target.characters.len() as u64, max_bytes,
+    )
+}
+
+fn encode_commit_batch(
+    batch: &EmacsCommitBatch,
+    identity: TapeIdentity,
+    style_count: u32,
+    line_count: u32,
+    base_character_count: u64,
+    target_character_count: u64,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
     let patch_count = count_u32(batch.publication_edits.len(), "patches")?;
     let coordinate_patch_count =
         count_u32(batch.core.coordinate_edits.len(), "coordinate patches")?;
-    let target_character_count = u64::try_from(target.characters.len())
-        .map_err(|_| "Native layout patch character count overflow".to_owned())?;
-    let base_character_count = u64::try_from(old.characters.len())
-        .map_err(|_| "Native layout patch base character count overflow".to_owned())?;
     let mut writer = TapeWriter::new(max_bytes)?;
     writer.push_u64(base_character_count)?;
     writer.push_u32(patch_count)?;
@@ -4325,7 +4333,7 @@ pub(crate) fn encode_layout_patch_tape_with_scroll(
         u32::from(batch.reuse_fragment_template)
             | (u32::from(batch.reuse_ownership_template) << 1)
             | (u32::from(batch.reuse_mount_projection) << 2)
-            | (u32::from(batch.fragment_style_delta.is_some()) << 3),
+            | (u32::from(batch.fragment_paint_delta.is_some()) << 3),
     )?;
     writer.push_u64(
         u64::try_from(batch.metadata_records)
@@ -4363,8 +4371,8 @@ pub(crate) fn encode_layout_patch_tape_with_scroll(
         identity,
         true,
         true,
-        target.style_count,
-        target.line_count,
+        style_count,
+        line_count,
         target_character_count,
     ))
 }

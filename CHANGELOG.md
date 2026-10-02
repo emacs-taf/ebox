@@ -33,7 +33,7 @@ All notable changes to Ebox are documented here.
   visible source intervals, with bounded reusable storage and the same Unicode,
   text-property and rollback behavior in ordinary and prepared updates. Fixed
   display-space boundaries avoid repeated prefix measurement while joining damaged rows. Rebuild the optional
-  module for ABI `22:10:13` and restart Emacs; Elisp remains the fallback.
+  module for ABI `23:10:14` and restart Emacs; Elisp remains the fallback.
 - `ebox-geometry-prepare` and `ebox-update-prepare` compile `:width` and
   `:height` for a normal-layout absolute Box that contains only fixed Text:
   opaque string background, `overflow hidden`, `wrap-mode none`, left/top
@@ -54,6 +54,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Native row updates with stable coordinates expand only changed line programs
+  and adjoining guards. Property-template and style changes share retained
+  fragment ownership, while unchanged scopes and publication identities avoid
+  repeated scene-wide preparation. Synchronous commits no longer create worker
+  threads; asynchronous preparation still uses its bounded pool.
 - A flex base-size measurement renders only flow children, so its output no
   longer serves as the final paint for a subtree that contains an absolutely
   positioned box; layout overlays survive a `vw`-sized ancestor instead of
@@ -73,8 +78,9 @@ All notable changes to Ebox are documented here.
 - Local owner updates can publish the owner's own paint and inherited font
   changes within a retained allocation. They render and validate the replacement
   spans, preserve current candidate styles and recompose unchanged ancestor paint.
-- Native commit planning declines frames containing intrinsic or stretch heights,
-  including height bounds on unchanged descendants, before attempting compilation.
+- Native commit planning declines unsupported Grid shapes and frames containing
+  intrinsic or stretch heights, including height bounds on unchanged descendants,
+  before attempting compilation.
 - Separate prepared update operations sharing a panel retain the latest sibling
   text and inherited paint when they alternate or retry a rejected publication.
   Their render memo invalidation now follows the shared scene's changed nodes.

@@ -2104,7 +2104,7 @@ than exposing a runtime region table to callers."
                      (ebox-surface--buffer-client-state buffer)))
          (source (and state (plist-get state :source-index)))
          specs)
-    (when (and state source)
+    (when (and state source (> (ebox-source--index-hover-content-count source) 0))
       (maphash
        (lambda (ref node-id)
          (when-let* ((node (ebox--buffer-runtime-node buffer node-id))

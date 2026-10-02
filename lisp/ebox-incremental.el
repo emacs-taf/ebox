@@ -6491,14 +6491,18 @@ All actual style effects and changed display constraints use normal planning."
              box)))))
 
 (defun ebox-incremental--candidate-adjust-region-box-count
-    (table node delta)
-  "Adjust TABLE's box-object region count for NODE by DELTA."
+    (table node delta &optional shared-base)
+  "Return TABLE with NODE's box-object count adjusted by DELTA.
+Copy before writing when TABLE is the immutable SHARED-BASE."
   (when (eq (and (listp node) (plist-get node :ebox-type)) 'box)
+    (when (eq table shared-base)
+      (setq table (copy-hash-table table)))
     (let* ((region-id (ebox--ensure-region-id node))
            (count (+ (or (gethash region-id table) 0) delta)))
       (if (> count 0)
           (puthash region-id count table)
-        (remhash region-id table)))))
+        (remhash region-id table))))
+  table)
 
 (defun ebox-incremental--candidate-region-box-count-table (root)
   "Return complete box-object region multiplicities below legacy ROOT."
@@ -6935,8 +6939,8 @@ candidate isolation contracts."
                 (ebox-incremental--candidate-copy-index-table
                  old-state :parent-table 'equal))
                (region-id-set
-                (ebox-incremental--candidate-copy-index-table
-                 old-state :region-id-set 'equal))
+                (or (plist-get old-state :region-id-set)
+                    (make-hash-table :test 'equal)))
                (region-node-table
                 (ebox-incremental--candidate-copy-index-table
                  old-state :region-node-table 'equal))
@@ -6944,15 +6948,26 @@ candidate isolation contracts."
                 (plist-get old-state :region-box-count-table))
                (region-box-count-table
                 (if (hash-table-p old-region-box-count-table)
-                    (copy-hash-table old-region-box-count-table)
+                    old-region-box-count-table
                   (ebox-incremental--candidate-region-box-count-table
                    candidate-root)))
                (region-box-table
                 (ebox-incremental--candidate-region-box-table old-state))
                (host-ref-table
-                (copy-hash-table
-                 (ebox-source--index-host-ref-table-view
-                  (plist-get old-state :source-index))))
+                (let ((base (ebox-source--index-host-ref-table-view
+                             (plist-get old-state :source-index))))
+                  (if (and (null removed)
+                           (cl-every
+                            (lambda (entry)
+                              (let ((old (car entry)) (new (cadr entry)))
+                                (and old
+                                     (equal (plist-get old :node-id)
+                                            (plist-get new :node-id))
+                                     (equal (ebox-tree-node-source-identity old)
+                                            (ebox-tree-node-source-identity new)))))
+                            touched))
+                      base
+                    (copy-hash-table base))))
                (runtime-type-count-table
                 (ebox-incremental--candidate-copy-index-table
                  old-state :runtime-type-count-table 'eq))
@@ -6974,8 +6989,9 @@ candidate isolation contracts."
                           (ebox-incremental--candidate-node-region-record node)))
                 (puthash (car record) t affected-region-ids))
               (when (hash-table-p old-region-box-count-table)
-                (ebox-incremental--candidate-adjust-region-box-count
-                 region-box-count-table node -1))))
+                (setq region-box-count-table
+                      (ebox-incremental--candidate-adjust-region-box-count
+                       region-box-count-table node -1 old-region-box-count-table)))))
           ;; Remove every old Host binding before installing any new one.
           ;; Final candidate trees may legally exchange two unique refs; a
           ;; per-node remove/install loop would reject that valid final state
@@ -7024,8 +7040,10 @@ candidate isolation contracts."
                 (when (and old-record (not stable-unique-region-p))
                   (puthash (car old-record) t affected-region-ids)
                   (when (hash-table-p old-region-box-count-table)
-                    (ebox-incremental--candidate-adjust-region-box-count
-                     region-box-count-table old-node -1)))
+                    (setq region-box-count-table
+                          (ebox-incremental--candidate-adjust-region-box-count
+                           region-box-count-table old-node -1
+                           old-region-box-count-table))))
                 (setq node-table
                       (ebox-runtime-index-put node-id new-node node-table))
                 (when (or (null old-node) (not (eq old-type new-type)))
@@ -7050,8 +7068,10 @@ candidate isolation contracts."
                   (puthash (car new-record) t affected-region-ids))
                 (when (and (hash-table-p old-region-box-count-table)
                            (not stable-unique-region-p))
-                  (ebox-incremental--candidate-adjust-region-box-count
-                   region-box-count-table new-node 1)))))
+                  (setq region-box-count-table
+                        (ebox-incremental--candidate-adjust-region-box-count
+                         region-box-count-table new-node 1
+                         old-region-box-count-table))))))
           (maphash
            (lambda (region-id _present)
              (when (or (not (hash-table-p old-region-box-count-table))
@@ -7064,6 +7084,9 @@ candidate isolation contracts."
                           1))
                (puthash region-id t ambiguous-region-ids)))
            affected-region-ids)
+          (when (and (> (hash-table-count affected-region-ids) 0)
+                     (eq region-id-set (plist-get old-state :region-id-set)))
+            (setq region-id-set (copy-hash-table region-id-set)))
           (maphash
            (lambda (region-id _present)
              (remhash region-id region-id-set)
@@ -7079,7 +7102,10 @@ candidate isolation contracts."
                         (ebox-incremental--candidate-node-region-record
                          (nth 1 entry))))
               (pcase-let ((`(,region-id ,owner-id ,box) record))
-                (puthash region-id t region-id-set)
+                (unless (gethash region-id region-id-set)
+                  (when (eq region-id-set (plist-get old-state :region-id-set))
+                    (setq region-id-set (copy-hash-table region-id-set)))
+                  (puthash region-id t region-id-set))
                 (unless (ebox-runtime-index-get region-id region-node-table)
                   (setq region-node-table
                         (ebox-runtime-index-put
@@ -7814,7 +7840,8 @@ certificate."
           (list :root candidate-root
                 :logical-candidate-p logical-candidate-p
                 :touched-node-ids
-                (plist-get local-preparation :touched-node-ids)
+                (and (not interaction-source-changed-p)
+                     (plist-get local-preparation :touched-node-ids))
                 :removed-node-ids
                 (plist-get local-preparation :removed-node-ids)
                 :range-metrics (plist-get local-preparation :range-metrics)
@@ -9420,6 +9447,12 @@ Identity, ancestry and display constraints must match OLD-STATE.  This proof
 permits retaining scroll and layer pixels because none of their inputs changed."
   (and (plist-get prepared :styles-prepared-p)
        (plist-get prepared :dirty-set)
+       ;; Reject render effects before inspecting the complete retained graph.
+       (cl-every (lambda (entry)
+                   (and (eq (plist-get entry :dirty-kind) 'metadata)
+                        (plist-get entry :metadata-changed-keys)
+                        (null (plist-get entry :changed-keys))))
+                 (plist-get prepared :dirty-set))
        ;; Prepared values cannot replace an independently reactive stylesheet
        ;; binding that may still recompute during this publication.
        (ebox-incremental--static-style-bindings-p old-state)
@@ -9442,18 +9475,15 @@ permits retaining scroll and layer pixels because none of their inputs changed."
          valid)
        (cl-every
         (lambda (entry)
-          (and (eq (plist-get entry :dirty-kind) 'metadata)
-               (plist-get entry :metadata-changed-keys)
-               (null (plist-get entry :changed-keys))
-               ;; A deferred declaration can retain its old computed value
-               ;; until the binding is evaluated by Surface. Only selector
-               ;; metadata, not changed author declarations, qualifies here.
-               (let* ((id (plist-get entry :node-id))
-                      (old-node (ebox-runtime-index-get id (plist-get old-state :node-table)))
-                      (new-node (ebox-runtime-index-get id (plist-get candidate-state :node-table))))
-                 (ebox-style-declarations-equal-p
-                  (ebox-tree-node-source-declarations (plist-get old-state :source-index) old-node)
-                  (ebox-tree-node-source-declarations (plist-get candidate-state :source-index) new-node)))))
+          ;; A deferred declaration can retain its old computed value until
+          ;; Surface evaluates the binding.  Changed author declarations do
+          ;; not qualify even when their current computed value is equal.
+          (let* ((id (plist-get entry :node-id))
+                 (old-node (ebox-runtime-index-get id (plist-get old-state :node-table)))
+                 (new-node (ebox-runtime-index-get id (plist-get candidate-state :node-table))))
+            (ebox-style-declarations-equal-p
+             (ebox-tree-node-source-declarations (plist-get old-state :source-index) old-node)
+             (ebox-tree-node-source-declarations (plist-get candidate-state :source-index) new-node))))
         (plist-get prepared :dirty-set))))
 
 (defun ebox-incremental--hash-key-set-equal-p (left right)
@@ -11219,7 +11249,8 @@ the ordinary atomic span proof and Surface validation."
 
 (defun ebox-incremental--native-runtime-overrides (state)
   "Return the retained native runtime facts owned by STATE."
-  (list :native-buffer-scroll-p
+  (list :native-capability-nodes (plist-get state :native-capability-nodes)
+        :native-buffer-scroll-p
         (plist-get state :native-buffer-scroll-p)
         :native-scroll-producers (plist-get state :native-scroll-producers)
         :native-scroll-offset-dirty (plist-get state :native-scroll-offset-dirty)

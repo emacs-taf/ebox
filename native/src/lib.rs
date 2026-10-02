@@ -440,22 +440,48 @@ impl LayoutSource {
         previous: Option<&RetainedFrame>,
         changes: Option<&SourceChanges>,
         scroll_producers: bool,
-    ) -> Result<(LayoutTape, Option<Arc<RetainedFrame>>), String> {
+    ) -> Result<(FrameOutput, Option<layout::PlanChange>), String> {
         match self {
             Self::Full(document) => {
                 if changes.is_some() {
                     return Err("Native source changes require a retained document".to_owned());
                 }
-                Ok((document.layout_tape(context, root_width)?, None))
+                Ok((
+                    FrameOutput::Tape(Arc::new(document.layout_tape(context, root_width)?)),
+                    None,
+                ))
             }
             Self::Retained(document) => {
-                let frame = if scroll_producers {
+                let (frame, change) = if scroll_producers {
                     document.render_frame_with_scroll(previous, changes, context, root_width)?
                 } else {
                     document.render_frame(previous, changes, context, root_width)?
                 };
-                Ok((frame.materialize_tape(), Some(frame)))
+                Ok((FrameOutput::Retained(frame), change))
             }
+        }
+    }
+}
+
+/// Confirm only the current output, not a materialized copy of every retained line.
+#[derive(Clone, Debug)]
+enum FrameOutput {
+    Tape(Arc<LayoutTape>),
+    Retained(Arc<RetainedFrame>),
+}
+
+impl FrameOutput {
+    fn retained(&self) -> Option<&RetainedFrame> {
+        match self {
+            Self::Tape(_) => None,
+            Self::Retained(frame) => Some(frame),
+        }
+    }
+
+    fn materialize(&self) -> LayoutTape {
+        match self {
+            Self::Tape(tape) => (**tape).clone(),
+            Self::Retained(frame) => frame.materialize_tape(),
         }
     }
 }
@@ -475,8 +501,8 @@ struct ConfirmedBaseline {
     identity: BaselineIdentity,
     document: LayoutSource,
     document_revision: u64,
-    tape: LayoutTape,
-    retained_frame: Option<Arc<RetainedFrame>>,
+    frame: FrameOutput,
+    fragment_starts: Option<Arc<[u64]>>,
     styles: Vec<layout::StyleTemplate>,
 }
 
@@ -485,8 +511,8 @@ struct PendingBaseline {
     confirmed_identity: BaselineIdentity,
     document: LayoutSource,
     document_revision: u64,
-    tape: LayoutTape,
-    retained_frame: Option<Arc<RetainedFrame>>,
+    frame: FrameOutput,
+    fragment_starts: Option<Arc<[u64]>>,
     styles: Vec<layout::StyleTemplate>,
 }
 
@@ -686,8 +712,14 @@ impl Session {
         if workers == 0 || max_jobs == 0 || max_results == 0 || max_result_bytes == 0 {
             return Err("Native reflow capacities must be positive".to_owned());
         }
-        let available = thread::available_parallelism().map_or(1, usize::from);
-        let worker_count = workers.min(available).min(max_jobs).max(1);
+        let worker_count = if workers == 1 {
+            // One worker fits every nonempty CPU allocation. Avoid the OS
+            // affinity/capacity query on synchronous, single-worker forks.
+            1
+        } else {
+            let available = thread::available_parallelism().map_or(1, usize::from);
+            workers.min(available).min(max_jobs).max(1)
+        };
         let shared = Arc::new(Shared {
             id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
             alive: AtomicBool::new(true),
@@ -726,23 +758,6 @@ impl Session {
             job_available: Condvar::new(),
             result_available: Condvar::new(),
         });
-        let mut handles = Vec::with_capacity(worker_count);
-        for index in 0..worker_count {
-            let worker_shared = Arc::clone(&shared);
-            let spawn = thread::Builder::new()
-                .name(format!("ebox-native-reflow-{index}"))
-                .spawn(move || worker_loop(worker_shared));
-            match spawn {
-                Ok(handle) => handles.push(handle),
-                Err(error) => {
-                    shared.request_stop();
-                    for handle in handles {
-                        let _ = handle.join();
-                    }
-                    return Err(format!("Native reflow worker spawn failed: {error}"));
-                }
-            }
-        }
         let layout_document = shared
             .state
             .lock()
@@ -752,10 +767,41 @@ impl Session {
             .map(|baseline| baseline.document.clone());
         Ok(Box::new(Self {
             shared,
-            workers: Mutex::new(Some(handles)),
+            // Synchronous retained publication needs no queue workers.  A
+            // fork remains a fully isolated session without spawning and
+            // joining a thread for each local frame.
+            workers: Mutex::new(Some(Vec::new())),
             layout_document: Mutex::new(layout_document),
             worker_count,
         }))
+    }
+
+    fn ensure_workers(&self) -> Result<(), String> {
+        let mut workers = self.workers.lock().unwrap_or_else(|poison| poison.into_inner());
+        if !self.shared.alive.load(Ordering::Acquire) {
+            return Err("Native reflow session is closed".to_owned());
+        }
+        let handles = workers.as_mut().ok_or("Native reflow session is closed")?;
+        if !handles.is_empty() {
+            return Ok(());
+        }
+        for index in 0..self.worker_count {
+            let shared = Arc::clone(&self.shared);
+            match thread::Builder::new()
+                .name(format!("ebox-native-reflow-{index}"))
+                .spawn(move || worker_loop(shared))
+            {
+                Ok(handle) => handles.push(handle),
+                Err(error) => {
+                    self.shared.request_stop();
+                    for handle in handles.drain(..) {
+                        let _ = handle.join();
+                    }
+                    return Err(format!("Native reflow worker spawn failed: {error}"));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn fork_confirmed(&self) -> Result<Box<Self>, String> {
@@ -864,6 +910,9 @@ impl Session {
                 }
             };
             prepared.push(job);
+        }
+        if !prepared.is_empty() {
+            self.ensure_workers()?;
         }
 
         let mut state = self
@@ -1218,8 +1267,8 @@ impl Session {
             identity,
             document: pending.document,
             document_revision: pending.document_revision,
-            tape: pending.tape,
-            retained_frame: pending.retained_frame,
+            frame: pending.frame,
+            fragment_starts: pending.fragment_starts,
             styles: pending.styles,
         }));
         Ok(true)
@@ -1302,7 +1351,7 @@ impl Session {
         let confirmed_baseline_bytes = state
             .confirmed_baseline
             .as_ref()
-            .map_or(0, |baseline| std::mem::size_of_val(&baseline.tape));
+            .map_or(0, |baseline| std::mem::size_of_val(&baseline.frame));
         SessionStats {
             session_id: self.shared.id,
             workers: self.worker_count,
@@ -1604,9 +1653,9 @@ fn render_layout_payload(
             type LayoutRenderOutcome = Result<
                 (
                     Vec<u8>,
-                    LayoutTape,
+                    FrameOutput,
                     Vec<layout::StyleTemplate>,
-                    Option<Arc<RetainedFrame>>,
+                    Option<Arc<[u64]>>,
                     bool,
                     u64,
                     u64,
@@ -1625,7 +1674,7 @@ fn render_layout_payload(
                         root_width_override.then_some(root_width),
                         confirmed_baseline
                             .as_ref()
-                            .and_then(|baseline| baseline.retained_frame.as_deref()),
+                            .and_then(|baseline| baseline.frame.retained()),
                         source_changes.as_ref(),
                         scroll_producers,
                     )
@@ -1652,76 +1701,109 @@ fn render_layout_payload(
                             )
                         })
                         .cloned();
+                    let (target, change) = render_target()?;
+                    if let (Some(baseline), Some(next), Some(change)) =
+                        (base_hit.as_ref(), target.retained(), change.as_ref())
+                    {
+                        if let (Some(old), Some(boundaries)) =
+                            (baseline.frame.retained(), baseline.fragment_starts.as_ref())
+                        {
+                            if let Some(bytes) = layout::encode_retained_patch(
+                                old,
+                                next,
+                                change,
+                                boundaries,
+                                &target_styles,
+                                identity,
+                                output,
+                            )? {
+                                return Ok((
+                                    bytes,
+                                    target,
+                                    target_styles,
+                                    Some(Arc::clone(boundaries)),
+                                    true,
+                                    0,
+                                    1,
+                                ));
+                            }
+                        }
+                    }
+                    // Only a proof miss materializes the complete frame. The
+                    // candidate is still unpublished, so the ordinary encoder
+                    // remains the single semantic and failure fallback.
+                    let target_tape = target.materialize();
+                    let boundaries = target
+                        .retained()
+                        .map(|_| layout::fragment_starts(&target_tape))
+                        .transpose()?;
+                    let scroll = target.retained().and_then(|frame| frame.scroll_plans());
                     if require_confirmed_patch_base && base_hit.is_none() {
-                        let (target, retained_frame) = render_target()?;
                         let bytes = layout::encode_layout_tape_with_scroll(
-                            target.clone(),
+                            target_tape,
                             &target_styles,
                             identity,
                             output.root_metadata,
                             output.max_bytes,
-                            retained_frame
-                                .as_ref()
-                                .and_then(|frame| frame.scroll_plans()),
+                            scroll,
                         )?;
-                        return Ok((bytes, target, target_styles, retained_frame, false, 0, 1));
+                        return Ok((bytes, target, target_styles, boundaries, false, 0, 1));
                     }
-                    let (old, baseline_hit, base_renders) = if let Some(baseline) = base_hit {
-                        (baseline.tape.clone(), true, 0)
-                    } else {
-                        (
-                            document.layout_tape(
-                                base_context,
-                                base_root_width_override.then_some(base_root_width),
-                            )?,
-                            false,
-                            1,
-                        )
-                    };
-                    let (target, retained_frame) = render_target()?;
+                    let (old, baseline_hit, base_renders) =
+                        if let Some(baseline) = base_hit.as_ref() {
+                            (baseline.frame.materialize(), true, 0)
+                        } else {
+                            (
+                                document.layout_tape(
+                                    base_context,
+                                    base_root_width_override.then_some(base_root_width),
+                                )?,
+                                false,
+                                1,
+                            )
+                        };
                     let bytes = layout::encode_layout_patch_tape_with_scroll(
                         old,
-                        target.clone(),
+                        target_tape,
                         &target_styles,
                         identity,
                         output.root_metadata,
                         output.max_bytes,
-                        retained_frame
-                            .as_ref()
-                            .and_then(|frame| frame.scroll_plans())
-                            .map(|scroll| {
-                                (
-                                    scroll,
-                                    confirmed_baseline
-                                        .as_ref()
-                                        .filter(|_| baseline_hit)
-                                        .and_then(|base| base.retained_frame.as_ref())
-                                        .and_then(|frame| frame.scroll_plans()),
-                                )
-                            }),
+                        scroll.map(|scroll| {
+                            (
+                                scroll,
+                                base_hit
+                                    .as_ref()
+                                    .and_then(|base| base.frame.retained())
+                                    .and_then(|frame| frame.scroll_plans()),
+                            )
+                        }),
                     )?;
                     Ok((
                         bytes,
                         target,
                         target_styles,
-                        retained_frame,
+                        boundaries,
                         baseline_hit,
                         base_renders,
                         1,
                     ))
                 } else {
-                    let (target, retained_frame) = render_target()?;
+                    let (target, _) = render_target()?;
+                    let target_tape = target.materialize();
+                    let boundaries = target
+                        .retained()
+                        .map(|_| layout::fragment_starts(&target_tape))
+                        .transpose()?;
                     let bytes = layout::encode_layout_tape_with_scroll(
-                        target.clone(),
+                        target_tape,
                         &target_styles,
                         identity,
                         output.root_metadata,
                         output.max_bytes,
-                        retained_frame
-                            .as_ref()
-                            .and_then(|frame| frame.scroll_plans()),
+                        target.retained().and_then(|frame| frame.scroll_plans()),
                     )?;
-                    Ok((bytes, target, target_styles, retained_frame, false, 0, 1))
+                    Ok((bytes, target, target_styles, boundaries, false, 0, 1))
                 }
             }));
             let resolver_lookups =
@@ -1732,9 +1814,9 @@ fn render_layout_payload(
             match result {
                 Ok(Ok((
                     bytes,
-                    tape,
+                    frame,
                     styles,
-                    retained_frame,
+                    fragment_starts,
                     baseline_hit,
                     base_renders,
                     target_renders,
@@ -1744,8 +1826,8 @@ fn render_layout_payload(
                         confirmed_identity: pending_identity,
                         document: document.clone(),
                         document_revision: document_target_revision,
-                        tape,
-                        retained_frame,
+                        frame,
+                        fragment_starts,
                         styles,
                     }),
                     baseline_hit,

@@ -1481,9 +1481,22 @@ Query entries and document-order lookup views remain stale until queried."
                         (nreverse result))))
           (dolist (entry touched)
             (let* ((node (nth 1 entry))
-                   (subject (node-subject (ebox-tree-node-source-handle node))))
+                   (handle (ebox-tree-node-source-handle node))
+                   (subject (node-subject handle))
+                   (old-subject (and (car entry)
+                                     (ebox-source--index-node-subject old-index (car entry)))))
               (when subject
-                (setf (ebox-selector-subject-children subject) (semantic-children node))))))
+                (setf (ebox-selector-subject-children subject)
+                      (if (and old-subject (not (nth 3 entry)))
+                          (ebox-selector-subject-children old-subject)
+                        (semantic-children node)))
+                ;; Inline paint changes do not replace selector identities.
+                ;; Reuse the whole immutable subject when its local facts and
+                ;; relationships match, including the ordered child tokens.
+                (when (equal subject old-subject)
+                  (puthash (ebox-selector-subject-token subject) old-subject added-view)
+                  (puthash (ebox-source--handle-id-view handle) old-subject added-subjects)
+                  (puthash handle old-subject added-node-subjects))))))
         (let* ((view (ebox-source--table-overlay
                       base-view added-view removed-tokens
                       (+ (- (ebox-source--table-size base-view) (hash-table-count removed-tokens))

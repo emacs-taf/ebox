@@ -47,7 +47,8 @@ MUTABLE-PREPARED-P marks private live source cells, never exported by sharing."
 Only privately prepared records permit bounded source-value mutation."
   records handle-records order subjects node-subjects entries root-subject selector-view selector-topology
   selector-id-table selector-class-table selector-type-table host-ref-table
-  derived-stale-p prepared-selector-context)
+  derived-stale-p prepared-selector-context (scope-count 0) scope-generation
+  (hover-content-count 0))
 
 (cl-defstruct (ebox-source-builder
                (:constructor ebox-source--make-builder)
@@ -163,18 +164,27 @@ Only privately prepared records permit bounded source-value mutation."
 
 (defun ebox-source--table-overlay (base added removed count)
   "Return bounded persistent BASE overlaid by ADDED and REMOVED with COUNT."
-  (let ((depth (1+ (ebox-source-table-depth base))))
-    (if (< depth ebox-source--persistent-max-depth)
+  (let ((depth (1+ (ebox-source-table-depth base)))
+        (missing (make-symbol "ebox-source-absent")))
+    (cond
+     ((and (= count (ebox-source-table-count base))
+           (cl-loop for key being the hash-keys of removed
+                    always (not (eq (gethash key added missing) missing)))
+           (cl-loop for key being the hash-keys of added using (hash-values value)
+                    always (eq value (ebox-source--table-get base key missing))))
+      base)
+     ((< depth ebox-source--persistent-max-depth)
         (ebox-source--make-table
          :base base :added added :removed removed :count count
          :test (ebox-source-table-test base) :depth depth
-         :memo (make-hash-table :test (ebox-source-table-test base)))
+         :memo (make-hash-table :test (ebox-source-table-test base))))
+     (t
       (let ((flat (ebox-source--table-materialize base)))
         (maphash (lambda (key _value) (remhash key flat)) removed)
         (maphash (lambda (key value) (puthash key value flat)) added)
         (unless (= (hash-table-count flat) count)
           (error "Ebox persistent source table count is inconsistent"))
-        (ebox-source--flat-table flat (ebox-source-table-test base))))))
+        (ebox-source--flat-table flat (ebox-source-table-test base)))))))
 
 (defun ebox-source--order-apply (handles replacements removed appended)
   "Apply order delta to HANDLES and return a fresh exact order."
@@ -865,6 +875,24 @@ facts on the canonical node."
                  :derived-stale-p t))))
         (cons candidate new-handle)))))
 
+(defun ebox-source--record-has-scope-p (record)
+  "Return non-nil when RECORD defines local rules or a shared scope root."
+  (and record (or (ebox-source-record-ecss record)
+                  (ebox-source-record-ecss-scope-roots record))))
+
+(defun ebox-source--record-hover-content-p (record)
+  "Return non-nil when RECORD declares hover content."
+  (and record (plist-get (ebox-source-record-interactions record) :hover-content)))
+
+(defun ebox-source--record-scopes-equal-p (left right)
+  "Return non-nil when LEFT and RIGHT preserve scope definitions and membership."
+  (and left right
+       (equal (ebox-source-record-ecss left) (ebox-source-record-ecss right))
+       (equal (ebox-source-record-ecss-targets left) (ebox-source-record-ecss-targets right))
+       (equal (ebox-source-record-ecss-scopes left) (ebox-source-record-ecss-scopes right))
+       (equal (ebox-source-record-ecss-scope-roots left)
+              (ebox-source-record-ecss-scope-roots right))))
+
 (defun ebox-source-builder-finish (builder)
   "Seal BUILDER and return its fact-only immutable source index."
   (ebox-source--builder-assert-open builder)
@@ -879,6 +907,11 @@ facts on the canonical node."
     (ebox-source--make-index
      :records (ebox-source--flat-table records #'equal)
      :handle-records (ebox-source--flat-table handle-records #'eq)
+     :scope-generation (make-symbol "ebox-source-scopes")
+     :hover-content-count (cl-loop for record being the hash-values of handle-records
+                                   count (ebox-source--record-hover-content-p record))
+     :scope-count (cl-loop for record being the hash-values of handle-records
+                           count (ebox-source--record-has-scope-p record))
      :order order)))
 
 (defun ebox-source-handle-id (handle)
@@ -902,6 +935,11 @@ facts on the canonical node."
    :records (ebox-source--index-records index)
    :handle-records (ebox-source--index-handle-records index)
    :order (ebox-source--index-order index)
+   :scope-count (ebox-source--index-scope-count index)
+   :hover-content-count (ebox-source--index-hover-content-count index)
+   :scope-generation (if (eq subjects (ebox-source--index-subjects index))
+                         (ebox-source--index-scope-generation index)
+                       (make-symbol "ebox-source-scopes"))
    :subjects (ebox-source--table-seal subjects #'equal)
    :node-subjects (ebox-source--table-seal node-subjects #'eq)
    :entries entries :root-subject root-subject
@@ -924,6 +962,9 @@ facts on the canonical node."
     (ebox-source--make-index
      :records (ebox-source--index-records index)
      :handle-records (ebox-source--index-handle-records index)
+     :scope-count (ebox-source--index-scope-count index)
+     :scope-generation (make-symbol "ebox-source-scopes")
+     :hover-content-count (ebox-source--index-hover-content-count index)
      :order (if local-handles
                 (ebox-source--make-order
                  :handles (copy-sequence handles)
@@ -949,6 +990,9 @@ facts on the canonical node."
    :records (ebox-source--index-records index)
    :handle-records (ebox-source--index-handle-records index)
    :order (ebox-source--index-order index)
+   :scope-count (ebox-source--index-scope-count index)
+   :scope-generation (ebox-source--index-scope-generation index)
+   :hover-content-count (ebox-source--index-hover-content-count index)
    :selector-topology (ebox-source--index-selector-topology index)
    :selector-view (ebox-source--index-selector-view index)
    :subjects (ebox-source--index-subjects index)
@@ -1022,6 +1066,28 @@ for nonstructural changes; structural changes supply FINAL-ORDER."
         (unless (gethash handle replacement-values)
           (error "Structural source insertion requires a final document order"))))
     (ebox-source--make-index
+     :hover-content-count
+     (+ (ebox-source--index-hover-content-count index)
+        (cl-loop for record being the hash-values of added-handle-records
+                 count (ebox-source--record-hover-content-p record))
+        (- (cl-loop for handle being the hash-keys of removed-handles
+                    count (ebox-source--record-hover-content-p
+                           (ebox-source--index-record index handle)))))
+     :scope-generation
+     (if (and (null final-order)
+              (cl-loop for pair in replacement-pairs
+                       always (ebox-source--record-scopes-equal-p
+                               (ebox-source--index-record index (car pair))
+                               (gethash (cdr pair) added-handle-records))))
+         (ebox-source--index-scope-generation index)
+       (make-symbol "ebox-source-scopes"))
+     :scope-count
+     (+ (ebox-source--index-scope-count index)
+        (cl-loop for record being the hash-values of added-handle-records
+                 count (ebox-source--record-has-scope-p record))
+        (- (cl-loop for handle being the hash-keys of removed-handles
+                    count (ebox-source--record-has-scope-p
+                           (ebox-source--index-record index handle)))))
      :records
      (ebox-source--table-overlay
       (ebox-source--index-records index) added-records removed-identities

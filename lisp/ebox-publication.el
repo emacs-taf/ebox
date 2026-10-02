@@ -119,7 +119,7 @@ producer result to the active prepare transaction."
                (:constructor ebox--pub--make-prepare-context)
                (:conc-name ebox--pub--context-))
   "Short-lived candidate identity and attachment owner."
-  surface objects touched retained bindings attachments fragment-attachments
+  surface objects touched retained retained-subtrees bindings attachments fragment-attachments
   content-range-attachments child-seen
   child-positions new-objects created-anchors active ephemeral)
 
@@ -1084,12 +1084,6 @@ contains `:start', `:end', and direct `:props'."
               (cl-every #'identity
                         (cl-mapcar #'ebox--pub--plan-equal-p a b))))))
 
-(defun ebox--pub--hash-copy (table)
-  "Return a shallow copy of hash TABLE."
-  (let ((copy (make-hash-table :test (hash-table-test table))))
-    (maphash (lambda (key value) (puthash key value copy)) table)
-    copy))
-
 (defun ebox--pub--context-parent-key (context parent)
   "Return the child-table key for PARENT in CONTEXT."
   (or parent (ebox--pub--context-surface context)))
@@ -1206,7 +1200,7 @@ identity may be promoted."
   (ebox--pub--make-prepare-context
    :surface surface
    :objects (if (ebox--pub--surface-objects surface)
-                (ebox--pub--hash-copy (ebox--pub--surface-objects surface))
+                (copy-hash-table (ebox--pub--surface-objects surface))
               (make-hash-table :test #'equal))
    :touched (make-hash-table :test #'eq)
    :retained (make-hash-table :test #'eq)
@@ -1218,6 +1212,34 @@ identity may be promoted."
    :child-positions (make-hash-table :test #'eq)
    :active t :ephemeral ephemeral))
 
+(defun ebox--pub--context-subtree-retained-p (context object)
+  "Return non-nil when an authenticated retained subtree contains OBJECT.
+Only live identities from this prepare context's snapshot can inherit the
+subtree proof; a newly ensured replacement never inherits it by path alone."
+  (and (ebox--pub--context-retained-subtrees context)
+       (ebox--pub-object-live-p object)
+       (eq (ebox--pub--surface-object-surface object)
+           (ebox--pub--context-surface context))
+       (eq object (gethash (ebox--pub--surface-object-path object)
+                           (ebox--pub--context-objects context)))
+       (cl-some (lambda (root)
+                  (ebox--pub--object-path-prefix-p
+                   (ebox--pub--surface-object-path root)
+                   (ebox--pub--surface-object-path object)))
+                (ebox--pub--context-retained-subtrees context))))
+
+(defun ebox--pub--context-object-retained-p (context object)
+  "Return non-nil when CONTEXT retains OBJECT individually or by subtree."
+  (or (gethash object (ebox--pub--context-retained context))
+      (ebox--pub--context-subtree-retained-p context object)))
+
+(defun ebox--pub--context-binding-retained-p (context binding)
+  "Return non-nil when CONTEXT selects BINDING or its unchanged subtree."
+  (or (gethash binding (ebox--pub--context-bindings context))
+      (and (ebox--pub-binding-live-p binding)
+           (ebox--pub--context-subtree-retained-p
+            context (ebox--pub-binding-owner binding)))))
+
 (defun ebox--pub--validate-context-object (context object)
   "Require OBJECT to be a candidate in active CONTEXT."
   (ebox--pub--validate-prepare-context context)
@@ -1225,7 +1247,7 @@ identity may be promoted."
                (eq (ebox--pub--surface-object-surface object)
                    (ebox--pub--context-surface context))
                (or (gethash object (ebox--pub--context-touched context))
-                   (gethash object (ebox--pub--context-retained context))))
+                   (ebox--pub--context-object-retained-p context object)))
     (ebox--pub--signal 'ebox--pub-stale-object (list object))))
 
 (defun ebox--pub-object-retain (context object)
@@ -1273,20 +1295,13 @@ subtree's identity, output, and lifecycle are unchanged."
          (path (ebox--pub--surface-object-path root))
          (objects (ebox--pub--context-objects context)))
     (unless (and (ebox--pub-object-live-p root)
+                 (eq (ebox--pub--surface-object-surface root) surface)
                  (eq root (gethash path objects)))
       (ebox--pub--signal 'ebox--pub-stale-object (list root)))
-    (maphash
-     (lambda (_candidate-path object)
-       (when (ebox--pub--object-path-prefix-p
-              path (ebox--pub--surface-object-path object))
-         (unless (and (eq (ebox--pub--surface-object-surface object) surface)
-                      (ebox--pub-object-live-p object))
-           (ebox--pub--signal 'ebox--pub-stale-object (list object)))
-         (puthash object t (ebox--pub--context-retained context))
-         (dolist (binding (ebox--pub-binding-owner-bindings object))
-           (when (ebox--pub-binding-live-p binding)
-             (puthash binding t (ebox--pub--context-bindings context))))))
-     objects))
+    ;; The committed surface owns the complete live subtree.  Retain that
+    ;; proof instead of copying all its identities and bindings per frame.
+    ;; Ordinary plan validation expands membership only when it needs it.
+    (cl-pushnew root (ebox--pub--context-retained-subtrees context) :test #'eq))
   root)
 
 (defun ebox--pub--validate-content-range (start end)
@@ -1328,7 +1343,7 @@ mutation cannot alter an earlier attachment."
                               (ebox--pub--copy-content-range-tags tags copies)
                             tags))
               added)
-        (unless (gethash object (ebox--pub--context-retained context))
+        (unless (ebox--pub--context-object-retained-p context object)
           (ebox--pub-object-retain context object))))
     (puthash leaf (nconc added attachments)
              (ebox--pub--context-content-range-attachments context)))
@@ -1439,7 +1454,7 @@ transfers candidate-local property values through the render pass."
     (maphash
      (lambda (_path object)
        (when (or (gethash object (ebox--pub--context-touched context))
-                 (gethash object (ebox--pub--context-retained context)))
+                 (ebox--pub--context-object-retained-p context object))
          (puthash (ebox--pub--surface-object-path object) object actual)))
      (ebox--pub--context-objects context))
     (maphash
@@ -1450,7 +1465,7 @@ transfers candidate-local property values through the render pass."
     (maphash
      (lambda (path object)
        (unless (or (gethash path expected)
-                   (gethash object (ebox--pub--context-retained context)))
+                   (ebox--pub--context-object-retained-p context object))
          (ebox--pub--signal 'ebox--pub-orphan-object (list :extra path))))
      actual)
     (maphash
@@ -1522,11 +1537,12 @@ transfers candidate-local property values through the render pass."
 
 (defun ebox--pub--context-binding-removals (context objects)
   "Return default-lifecycle bindings omitted from CONTEXT among OBJECTS."
-  (cl-loop for object in objects append
-           (cl-loop for binding in (ebox--pub-binding-owner-bindings object)
-                    unless (or (gethash binding (ebox--pub--context-bindings context))
-                               (eq (ebox--pub-binding-lifecycle binding) 'retain))
-                    collect binding)))
+  (cl-loop for object in objects
+           unless (ebox--pub--context-subtree-retained-p context object)
+           append (cl-loop for binding in (ebox--pub-binding-owner-bindings object)
+                           unless (or (gethash binding (ebox--pub--context-bindings context))
+                                      (eq (ebox--pub-binding-lifecycle binding) 'retain))
+                           collect binding)))
 
 (defun ebox--pub--context-live-objects (surface)
   "Return SURFACE's current objects."
@@ -1573,7 +1589,7 @@ transfers candidate-local property values through the render pass."
     (maphash
      (lambda (_path object)
        (when (or (gethash object (ebox--pub--context-touched context))
-                 (gethash object (ebox--pub--context-retained context)))
+                 (ebox--pub--context-object-retained-p context object))
          (push object objects)))
      (ebox--pub--context-objects context))
     objects))
@@ -2141,7 +2157,7 @@ a proof miss."
              (end (plist-get spec :end)))
         (unless (and (ebox--pub-object-p object)
                      (or (gethash object (ebox--pub--context-touched context))
-                         (gethash object (ebox--pub--context-retained context)))
+                         (ebox--pub--context-object-retained-p context object))
                      (integerp start) (integerp end)
                      (<= 0 start end target-extent))
           (ebox--pub--signal 'ebox--pub-surface-error
@@ -3989,11 +4005,17 @@ evidence with precommit validation without copying output."
               (base-equal-p old-position (length base)
                             new-position (- actual-end actual-start)))))))
 
-(defun ebox--pub--shadow-surface-output (surface)
-  "Return SURFACE's current text and direct properties as one snapshot."
+(defun ebox--pub--shadow-surface-output (surface &optional journals)
+  "Return SURFACE's current text and direct properties as one snapshot.
+Reuse an exact full-range snapshot from this transaction's JOURNALS."
   (pcase-let ((`(,start . ,end) (ebox--pub--surface-range surface)))
-    (with-current-buffer (ebox--pub--surface-buffer surface)
-      (buffer-substring start end))))
+    (let ((buffer (ebox--pub--surface-buffer surface)))
+      (or (cl-loop for (journal-buffer journal-start journal-end output) in journals
+                   when (and (eq buffer journal-buffer)
+                             (= start journal-start) (= end journal-end))
+                   return output)
+          (with-current-buffer buffer
+            (buffer-substring start end))))))
 
 (defun ebox--pub--shadow-target-output (prepared old-output)
   "Return PREPARED's expected output using the retained baseline OLD-OUTPUT."
@@ -4021,8 +4043,12 @@ evidence with precommit validation without copying output."
         ;; No second target-entry graph or copied client state is constructed.
         (dolist (candidate prepared)
           (ebox--pub--assign-prepared-mount-ids candidate)
+          ;; No writer or client callback runs between journal capture and
+          ;; this boundary.  Rollback and shadow validation may therefore
+          ;; share the same immutable full-range snapshot, rather than
+          ;; copying every unchanged property interval twice.
           (let ((old (ebox--pub--shadow-surface-output
-                      (ebox--pub--prepared-surface-surface candidate))))
+                      (ebox--pub--prepared-surface-surface candidate) journals)))
             (setf (ebox--pub--prepared-surface-baseline-output candidate) old
                   (ebox--pub--prepared-surface-expected-output candidate)
                   (ebox--pub--shadow-target-output candidate old))))

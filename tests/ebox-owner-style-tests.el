@@ -106,6 +106,111 @@
       (should-not (plist-get report :native-fallback-reason))
       (should-not (plist-get report :publication-full-root)))))
 
+(defun ebox-owner-style-test--linear-row (index active &optional text height)
+  "Describe fixed row INDEX with ACTIVE paint, TEXT and HEIGHT."
+  `(,(intern (format "line-%d" index)) box
+    (:height ,(or height '(lh 1)) :overflow hidden
+     :background-color ,(if active "#223344" "#ddeeff")
+     :font-weight ,(if active 'bold 'normal)) nil
+    (,(intern (format "text-%d" index)) text nil nil
+     ,(or text (format "Row %02d 汉字 é ABC" index)))))
+
+(defun ebox-owner-style-test--linear-input (active &optional changed text height)
+  "Build twelve rows with ACTIVE indices and optional CHANGED row content."
+  (ebox-owner-style-test--canonical
+   `(lines column (:width (ch 60) :item-gap (lh 0)) nil
+     ,@(cl-loop for index below 12
+                collect (ebox-owner-style-test--linear-row
+                         index (memq index active)
+                         (and (eq index changed) text)
+                         (and (eq index changed) height))))))
+
+(ert-deftest ebox-owner-style-linear-updates-match-fresh-rendering ()
+  "Disjoint row restyles, changing extents and later local edits agree with fresh output."
+  (dolist (module-path (list ebox-native-reflow-module-path nil))
+    (let ((ebox-native-reflow-module-path module-path)
+          (ebox-viewport-width 600) (ebox-viewport-height 40)
+          active)
+      (with-temp-buffer
+        (unwind-protect
+            (progn
+              (ebox-render-to-buffer (current-buffer)
+                                    (ebox-owner-style-test--linear-input active))
+              ;; Exercise first, middle and terminal seams, and two disjoint
+              ;; changes within the same atomic candidate.
+              (dolist (next '((0) (5 11) (1 8) nil (0 11) (6)))
+                (let ((candidate (ebox-candidate-begin (current-buffer))))
+                  (dotimes (index 12)
+                    (unless (eq (not (null (memq index active)))
+                                (not (null (memq index next))))
+                      (ebox-candidate-update-host-properties
+                       candidate (intern (format "line-%d" index))
+                       (ebox-owner-style-test--canonical
+                        (ebox-owner-style-test--linear-row index (memq index active)))
+                       (ebox-owner-style-test--canonical
+                        (ebox-owner-style-test--linear-row index (memq index next))))))
+                  (ebox-commit (current-buffer) candidate))
+                (setq active next)
+                (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                                       :native-fallback-reason))
+                (ebox-owner-style-test--check
+                 (ebox-owner-style-test--linear-input active)))
+              ;; A coordinate-changing frame cannot reuse the previous line
+              ;; publication proof. Subsequent fixed-coordinate changes must
+              ;; use the new committed baseline, including clipped content.
+              (dolist (case '(("Longer 中文 content" (lh 2))
+                              ("X" (lh 1)) ("X" (lh 1))))
+                (let ((candidate (ebox-candidate-begin (current-buffer)))
+                      (previous-active (memq 5 active)))
+                  (setq active (if previous-active nil '(5)))
+                  (ebox-candidate-replace-host-ref
+                   candidate 'line-6
+                   (ebox-owner-style-test--canonical
+                    (ebox-owner-style-test--linear-row 6 nil (car case) (cadr case))))
+                  (ebox-commit (current-buffer) candidate)
+                  (let ((patch (ebox-candidate-begin (current-buffer))))
+                    (ebox-candidate-update-host-properties
+                     patch 'line-5
+                     (ebox-owner-style-test--canonical
+                      (ebox-owner-style-test--linear-row 5 previous-active))
+                     (ebox-owner-style-test--canonical
+                      (ebox-owner-style-test--linear-row 5 active)))
+                    (ebox-commit (current-buffer) patch)))
+                (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                                       :native-fallback-reason))
+                (ebox-owner-style-test--check
+                 (ebox-owner-style-test--linear-input active 6 (car case) (cadr case)))))
+          (ebox-unmount-buffer (current-buffer)))))))
+
+(ert-deftest ebox-owner-style-linear-rejection-retains-the-patch-base ()
+  "Rejected row paint preserves the committed frame and the following retry."
+  (let ((ebox-viewport-width 600) (ebox-viewport-height 40))
+    (with-temp-buffer
+      (unwind-protect
+          (progn
+            (ebox-render-to-buffer (current-buffer)
+                                  (ebox-owner-style-test--linear-input nil))
+            (cl-labels ((candidate ()
+                          (let ((candidate (ebox-candidate-begin (current-buffer))))
+                            (ebox-candidate-update-host-properties
+                             candidate 'line-5
+                             (ebox-owner-style-test--canonical
+                              (ebox-owner-style-test--linear-row 5 nil))
+                             (ebox-owner-style-test--canonical
+                              (ebox-owner-style-test--linear-row 5 t)))
+                            candidate)))
+              (let ((before (buffer-string))
+                    (report (ebox-buffer-update-report (current-buffer))))
+                (should-error (ebox-commit (current-buffer) (candidate)
+                                           (lambda (_) (error "Reject row paint"))))
+                (should (equal-including-properties before (buffer-string)))
+                (should (equal report (ebox-buffer-update-report (current-buffer)))))
+              (ebox-commit (current-buffer) (candidate))
+              (should-not (plist-get (ebox-buffer-update-report (current-buffer))
+                                     :native-fallback-reason))
+              (ebox-owner-style-test--check (ebox-owner-style-test--linear-input '(5)))))
+        (ebox-unmount-buffer (current-buffer))))))
+
 (ert-deftest ebox-owner-style-grid-row-keeps-one-line-slot ()
   "A Grid owner's paint, font, child content and native properties stay local."
   (let ((ebox-native-reflow-module-path nil))

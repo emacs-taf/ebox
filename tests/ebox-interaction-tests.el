@@ -980,7 +980,17 @@ it does not create an overlay or enter the primary-button drag loop."
                 (funcall command
                          (list 'mouse-movement
                                (list window (point-max) '(50 . 50) 0)))
-                (should (equal "●" (substring-no-properties (buffer-string))))))))
+                (should (equal "●" (substring-no-properties (buffer-string)))))
+              ;; Removing and restoring the declaration on the same mount
+              ;; must disable/re-enable motion tracking, not keep an old count.
+              (ebox-commit buffer (ebox-build '(text :id "control" "●")))
+              (should-not (local-variable-p 'track-mouse))
+              (ebox-commit buffer
+                           (ebox-build '(text :id "control" :hover-content "×" "●")))
+              (should (eq track-mouse t))
+              (funcall (lookup-key ebox-buffer-mode-map [mouse-movement])
+                       (list 'mouse-movement (list window (point-min) '(1 . 1) 0)))
+              (should (equal "×" (buffer-substring-no-properties (point-min) (point-max)))))))
       (when (buffer-live-p buffer)
         (ebox-unmount-buffer buffer)
         (kill-buffer buffer)))))

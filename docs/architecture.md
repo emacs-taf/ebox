@@ -129,6 +129,9 @@ and mount indexes. Precommit checks the installed generation by identity; it
 does not rebuild sets to revalidate the same private indexes. Public callbacks
 and buffer hooks can change text or properties, so the complete expected output
 is still checked before lifecycle settlement and again at final acceptance.
+An authenticated unchanged subtree retains its objects and live bindings as a
+subtree proof rather than copying each identity into a candidate set. New objects
+cannot inherit that proof merely by occupying the same path.
 
 ## Ownership
 
@@ -194,8 +197,10 @@ values may depend on a parent even when the child declares the property itself.
 Local stylesheet facts can carry explicit source identity targets. Candidate
 source indexes resolve these identities to their own selector subjects and pass
 membership snapshots to ECSS scopes. Retained source rebinding and canonical
-exports preserve target facts; scope caches are keyed by candidate source index.
-Author ownership is therefore independent of physical parentage and live buffer
+exports preserve target facts. Scope caches share a generation only when ordered
+scope definitions, membership and exact selector subject identities are unchanged.
+Inline paint updates retain equal immutable subjects; changes to selector facts,
+relationships or scope declarations invalidate that generation. Author ownership is therefore independent of physical parentage and live buffer
 coordinates. ECSS continues to own structural matching and inheritance.
 
 Selector subjects store immutable local metadata and stable parent/child keys.
@@ -240,6 +245,20 @@ Its complete frame must also exclude vertical `stretch`, `min-content`,
 `max-content` and `fit-content` sizes, including height bounds on unchanged
 descendants. These compiler limitations select Elisp during planning, while
 horizontal stretch and supported automatic or definite heights remain native.
+Unsupported Grid shapes are also declined before compilation. Admission of an
+unchanged node partition can be retained; the candidate validates its exact
+changed partition against the accepted node-index identity.
+
+For coordinate-stable retained line changes, native publication expands only the
+changed line programs and adjoining guard lines. It proves unchanged line and
+character coordinates, fragment boundaries and ownership before reusing the
+fragment ledger. Paint deltas replace both property-template and style IDs.
+Coordinate changes, changed ownership, active scroll producers and unproved root
+metadata use the complete encoder. Both paths feed the same publication batch,
+output validation and rollback boundary. Change proofs are transaction-local;
+confirmed frames do not retain their predecessor through a proof chain.
+Synchronous session forks share immutable confirmed data without starting queue
+workers. The first asynchronous submission starts the bounded worker pool.
 
 Local style preparation reads the candidate's mounted scopes and compares them
 with the published context before reusing styles. Tree-dependent matching defers
@@ -869,6 +888,8 @@ reconcile provisional focus and restore it on rollback. Accepted callbacks may
 start a new focus operation, while read-only queries remain available.
 
 Published source interaction facts supply tab order and disabled status. Source
+indexes also maintain an exact hover-content declaration count with each record
+delta; a buffer with none skips hover registration scans. Source
 records keep authored states separate; subject construction derives `disabled` from the interaction fact.
 Queries, cascade and incremental invalidation consume that same derived view;
 rebinding retains raw authored states and invalidates subjects when disabled changes.

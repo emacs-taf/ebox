@@ -109,7 +109,7 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "22:10:13"
+(defconst ebox-native-reflow-abi-version "23:10:14"
   "Version tuple shared by the native module, layout IR, and render tape.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
@@ -459,7 +459,7 @@ validation.")
 
 (defconst ebox-native-reflow--tape-magic
   (unibyte-string ?E ?B ?X ?T))
-(defconst ebox-native-reflow--tape-version 13)
+(defconst ebox-native-reflow--tape-version 14)
 (defconst ebox-native-reflow--tape-header-length 112)
 (defconst ebox-native-reflow--tape-flag-ok 1)
 (defconst ebox-native-reflow--tape-flag-complete 2)
@@ -4222,20 +4222,27 @@ plist supplied by the caller."
        (ebox-native-reflow--patch-payload-metadata
         (aref payload 1) metadata-record-count target-character-count
         complete-p (length property-templates) (length styles))
-       :fragment-style-delta
+       :fragment-paint-delta
        (when (= (length payload) 3)
          (let ((delta (aref payload 2)) (previous -1))
            (unless (proper-list-p delta)
-             (error "Native fragment style delta is not a list"))
+             (error "Native fragment paint delta is not a list"))
            (dolist (entry delta)
-             (unless (and (proper-list-p entry) entry
+             (unless (and (proper-list-p entry) (= (length entry) 3)
                           (integerp (car entry)) (> (car entry) previous)
+                          (proper-list-p (nth 1 entry))
+                          (proper-list-p (nth 2 entry))
                           (cl-every
-                           (lambda (style-id)
-                             (and (integerp style-id) (>= style-id 0)
-                                  (< style-id (length styles))))
-                           (cdr entry)))
-               (error "Native fragment style delta is invalid"))
+                           (lambda (id)
+                             (and (integerp id) (>= id 0)
+                                  (< id (length property-templates))))
+                           (nth 1 entry))
+                          (cl-every
+                           (lambda (id)
+                             (and (integerp id) (>= id 0)
+                                  (< id (length styles))))
+                           (nth 2 entry)))
+               (error "Native fragment paint delta is invalid"))
              (setq previous (car entry)))
            delta))))))
 
@@ -4679,7 +4686,7 @@ HEADER supplies the already validated target identity.  STYLES owns the face
     (when (and (/= (logand reserved 8) 0)
                (not (and (zerop fragment-byte-length)
                          (zerop fragment-record-count))))
-      (error "Native fragment style delta has a full fragment payload"))
+      (error "Native fragment paint delta has a full fragment payload"))
     (unless (= required-bytes (- (aref cursor 2) (aref cursor 1)))
       (error "Native reflow patch body length mismatch"))
     (let ((descriptors nil)
@@ -4743,18 +4750,18 @@ HEADER supplies the already validated target identity.  STYLES owns the face
         (unless (= (aref payload-cursor 1) payload-end)
           (error "Native reflow patch body has trailing bytes"))
         (aset cursor 1 payload-end)
-        (let* ((style-delta (plist-get payload :fragment-style-delta))
-               (_style-delta-contract
+        (let* ((paint-delta (plist-get payload :fragment-paint-delta))
+               (_paint-delta-contract
                 (unless (eq (/= (logand reserved 8) 0)
-                            (and style-delta t))
-                  (error "Native fragment style delta flag mismatch")))
+                            (and paint-delta t))
+                  (error "Native fragment paint delta flag mismatch")))
                (fragments
-                (unless style-delta
+                (unless paint-delta
                   (ebox-native-reflow--tape-read-fragment-template
                    cursor fragment-byte-length fragment-record-count
                    target-character-count (length property-templates)
                    (length styles) fragment-flat fragment-flat-count))))
-          (when style-delta
+          (when paint-delta
             (aset cursor 1 (+ (aref cursor 1) fragment-byte-length)))
         (unless (= (aref cursor 1) (aref cursor 2))
           (error "Native reflow patch tape has trailing bytes"))
@@ -4762,7 +4769,7 @@ HEADER supplies the already validated target identity.  STYLES owns the face
               :reuse-fragment-template (/= (logand reserved 1) 0)
               :reuse-ownership-template (/= (logand reserved 2) 0)
               :reuse-mount-projection (/= (logand reserved 4) 0)
-              :fragment-style-delta style-delta
+              :fragment-paint-delta paint-delta
               :patch-origin 'rust
               :base-character-count base-character-count
               :target-character-count target-character-count

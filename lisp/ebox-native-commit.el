@@ -67,6 +67,8 @@
         (old-regions (plist-get old-state :region-node-table))
         (new-regions (plist-get candidate-state :region-node-table))
         (old-objects (plist-get old-state :surface-node-object-table))
+        (local-ids (and (plist-get prepared :logical-candidate-p)
+                        (plist-get prepared :touched-node-ids)))
         (stable t)
         (missing (make-symbol "native-topology-missing")))
     (setq stable
@@ -84,23 +86,36 @@
                (= (ebox-runtime-index-size old-regions)
                   (ebox-runtime-index-size new-regions))))
     (when stable
-      (ebox-runtime-index-map
-       (lambda (node-id node)
-         (let ((old-node (ebox-runtime-index-get node-id old-nodes missing)))
-           (unless (and (not (eq old-node missing))
-                        (gethash node-id old-objects)
-                        (equal (ebox-runtime-index-get node-id old-parents missing)
-                               (ebox-runtime-index-get node-id new-parents missing))
-                        (eq (plist-get old-node :ebox-type)
-                            (plist-get node :ebox-type))
-                        (equal
-                         (ebox-tree-node-key
-                          (plist-get old-state :source-index) old-node)
-                         (ebox-tree-node-key
-                          (plist-get candidate-state :source-index) node)))
-             (setq stable nil))))
-       new-nodes))
-    (when stable
+      (cl-labels
+          ((region (node)
+             (pcase (plist-get node :ebox-type)
+               ('box (plist-get node :region-id))
+               ('flex (plist-get (plist-get node :box) :region-id))))
+           (check (node-id node)
+             (let* ((old-node (ebox-runtime-index-get node-id old-nodes missing))
+                    (old-region (and (not (eq old-node missing)) (region old-node)))
+                    (new-region (region node)))
+               (unless (and node (not (eq old-node missing))
+                            (gethash node-id old-objects)
+                            (equal (ebox-runtime-index-get node-id old-parents missing)
+                                   (ebox-runtime-index-get node-id new-parents missing))
+                            (eq (plist-get old-node :ebox-type)
+                                (plist-get node :ebox-type))
+                            (equal old-region new-region)
+                            (or (null new-region)
+                                (equal (ebox-runtime-index-get new-region old-regions missing)
+                                       (ebox-runtime-index-get new-region new-regions missing)))
+                            (equal
+                             (ebox-tree-node-key (plist-get old-state :source-index) old-node)
+                             (ebox-tree-node-key (plist-get candidate-state :source-index) node)))
+                 (setq stable nil)))))
+        ;; Logical preparation indexes the exact copied/added/removed partition.
+        ;; With no removals, equal cardinalities and unchanged identities on
+        ;; that partition, the shared complement retains its topology proof.
+        (if local-ids
+            (dolist (id local-ids) (check id (ebox-runtime-index-get id new-nodes)))
+          (ebox-runtime-index-map #'check new-nodes))))
+    (when (and stable (not local-ids))
       (ebox-runtime-index-map
        (lambda (region-id node-id)
          (unless (equal (ebox-runtime-index-get region-id old-regions missing) node-id)
@@ -360,6 +375,31 @@ new session with the same bounded configuration used by retained frames."
          (plist-put candidate-state :native-removed-node-ids nil)
          t)))
 
+(defun ebox-native-commit--retain-capability-proof (old-state state prepared)
+  "Validate PREPARED's changed node partition against OLD-STATE's admission.
+Call only after proving stable topology.  The exact node-index identity
+binds this certificate; any later index replacement invalidates it."
+  (let ((ids (and (plist-get prepared :logical-candidate-p)
+                  (plist-get prepared :touched-node-ids)))
+        (nodes (plist-get state :node-table))
+        (counts (plist-get state :region-box-count-table)))
+    (when (and ids (ebox-native-commit--capabilities-validated-p old-state)
+               (hash-table-p counts)
+               (cl-every
+                (lambda (id)
+                  (let* ((node (ebox-runtime-index-get id nodes))
+                         (box (pcase (plist-get node :ebox-type)
+                                ('box node) ('flex (plist-get node :box))))
+                         (region (plist-get box :region-id)))
+                    (and node
+                         (ebox-native-commit--node-type-supported-p node)
+                         (ebox-native-commit--node-heights-supported-p node)
+                         (or (null box)
+                             (and region (= (gethash region counts 0) 1)
+                                  (eq box (ebox-native-commit--region-box state region)))))))
+                ids))
+      (plist-put state :native-capability-nodes nodes))))
+
 (defun ebox-native-commit-plan-eligible-p
     (old-state candidate-state prepared)
   "Return non-nil when PREPARED can bypass superseded local layout proofs."
@@ -372,13 +412,18 @@ new session with the same bounded configuration used by retained frames."
                 old-state candidate-state prepared)))
          (layout-touched
           (if stable
-              (ebox-native-commit-layout-touched-node-ids
-               candidate-state prepared)
+              (delete-dups
+               (append (and (plist-get prepared :logical-candidate-p)
+                            (plist-get prepared :touched-node-ids))
+                       (ebox-native-commit-layout-touched-node-ids
+                        candidate-state prepared)))
             (ebox-native-commit-object-delta-node-ids
              old-state candidate-state prepared)))
          (state (copy-sequence candidate-state)))
     (plist-put state :native-touched-node-ids layout-touched)
     (plist-put state :native-topology-stable-p stable)
+    (when stable
+      (ebox-native-commit--retain-capability-proof old-state state prepared))
     (when (and (or stable layout-touched)
                ;; A stable native patch reuses prior Ebox publication objects and skips a
                ;; full Surface style projection.  Its replacement nodes must
@@ -390,10 +435,12 @@ new session with the same bounded configuration used by retained frames."
                (ebox-native-commit-projection-eligible-p
                 old-state state nil)
                (ebox-native-commit--frame-spec
-                candidate-state (plist-get candidate-state :root-node))
+                state (plist-get candidate-state :root-node))
                (ebox-native-commit--isolate-session
                 old-state candidate-state))
       (plist-put candidate-state :native-topology-stable-p stable)
+      (plist-put candidate-state :native-capability-nodes
+                 (plist-get state :native-capability-nodes))
       (plist-put candidate-state :native-touched-node-ids layout-touched)
       (plist-put candidate-state :native-local-dirty-entries
                  (copy-tree (plist-get prepared :dirty-set)))
@@ -433,19 +480,26 @@ When REGION is given, require its producer in the confirmed collection."
          (plist-get state :native-sync-session)
          (plist-get state :native-sync-confirmed-p))))
 
+(defun ebox-native-commit--capabilities-validated-p (state)
+  "Return non-nil when STATE's exact node index has passed native admission."
+  (and (plist-get state :native-capability-nodes)
+       (eq (plist-get state :native-capability-nodes)
+           (plist-get state :node-table))))
+
 (defun ebox-native-commit--region-index-safe-p (state)
   "Return non-nil when STATE maps every region to one current Box."
-  (let ((counts (plist-get state :region-box-count-table))
-        (safe t))
-    (and (hash-table-p counts)
-         (progn
-           (maphash
-            (lambda (region count)
-              (unless (and (= count 1)
-                           (ebox-native-commit--region-box state region))
-                (setq safe nil)))
-            counts)
-           safe))))
+  (or (ebox-native-commit--capabilities-validated-p state)
+      (let ((counts (plist-get state :region-box-count-table))
+            (safe t))
+        (and (hash-table-p counts)
+             (progn
+               (maphash
+                (lambda (region count)
+                  (unless (and (= count 1)
+                               (ebox-native-commit--region-box state region))
+                    (setq safe nil)))
+                counts)
+               safe)))))
 
 (defun ebox-native-commit--normalize-scroll-offset (state region offset)
   "Path-copy REGION's used OFFSET into STATE and its current indexes."
@@ -528,16 +582,23 @@ When REGION is given, require its producer in the confirmed collection."
                previous))
     (plist-put state :native-scroll-producers installed)))
 
+(defun ebox-native-commit--node-type-supported-p (node)
+  "Return non-nil when NODE's type and Grid shape admit native compilation."
+  (and (memq (plist-get node :ebox-type) '(box concat stack flex))
+       (not (ebox-layer-host-p node))
+       (not (ebox-layer-positioned-p node))
+       (let ((config (plist-get node :ebox-layout-config)))
+         (or (not (and config (eq (ebox-layout-config-kind config) 'grid)))
+             (ebox-native-reflow--grid-row-p node)))))
+
 (defun ebox-native-commit--runtime-type-rejection (state)
   "Return the first unsupported node fact in STATE, or nil."
   (let ((nodes (plist-get state :node-table)) rejection)
-    (when (ebox-runtime-index-like-p nodes)
+    (when (and (not (ebox-native-commit--capabilities-validated-p state))
+               (ebox-runtime-index-like-p nodes))
       (ebox-runtime-index-map
        (lambda (node-id node)
-         (unless (or rejection (and (memq (plist-get node :ebox-type)
-                            '(box concat stack flex))
-                      (not (ebox-layer-host-p node))
-                      (not (ebox-layer-positioned-p node))))
+         (unless (or rejection (ebox-native-commit--node-type-supported-p node))
            (setq rejection (list :reason 'unsupported-node :node-id node-id
                                  :type (plist-get node :ebox-type)
                                  :position (plist-get node :position)))))
@@ -591,7 +652,8 @@ This is execution geometry, not a proof that the width is font-independent."
     (when (and (integerp viewport-width) (> viewport-width 0)
                (integerp viewport-height) (> viewport-height 0)
                (integerp root-width) (> root-width 0)
-               (ebox-native-commit--frame-heights-supported-p node))
+               (or (ebox-native-commit--capabilities-validated-p state)
+                   (ebox-native-commit--frame-heights-supported-p node)))
       (append
        (list :key 1
              :viewport-width viewport-width
@@ -620,21 +682,25 @@ This is execution geometry, not a proof that the width is font-independent."
                :base-root-width
                (plist-get state :native-base-root-width)))))))
 
+(defun ebox-native-commit--node-heights-supported-p (node)
+  "Return non-nil when NODE's own vertical size keywords compile natively."
+  (cl-every
+   (lambda (key)
+     (not (memq (ebox-get node key)
+                '(stretch min-content max-content fit-content))))
+   '(:height :min-height :max-height)))
+
 (defun ebox-native-commit--frame-heights-supported-p (node)
   "Return non-nil when NODE's frame has compilable vertical size keywords.
 Check the complete frame, including unchanged descendants: native bootstrap
 compiles them too.  Horizontal stretch and automatic heights remain supported."
-  (and (cl-every
-        (lambda (key)
-          (not (memq (ebox-get node key)
-                     '(stretch min-content max-content fit-content))))
-        '(:height :min-height :max-height))
+  (and (ebox-native-commit--node-heights-supported-p node)
        (cl-every #'ebox-native-commit--frame-heights-supported-p
                  (ebox-tree--children-raw node))))
 
 (defun ebox-native-commit--apply-patches (source patches)
   "Return SOURCE with ordered native PATCHES applied."
-  (let ((cursor 0) pieces)
+  (let ((cursor 0) (stable t))
     (dolist (patch patches)
       (let ((start (plist-get patch :old-start))
             (end (plist-get patch :old-end))
@@ -643,23 +709,53 @@ compiles them too.  Horizontal stretch and automatic heights remain supported."
                      (<= cursor start end (length source))
                      (stringp replacement))
           (error "Native retained frame has an invalid patch"))
-        (push (substring source cursor start) pieces)
-        (push replacement pieces)
+        (unless (and (= (- end start) (length replacement))
+                     (eq (multibyte-string-p source)
+                         (multibyte-string-p replacement))
+                     (eq t (compare-strings source start end replacement 0 nil)))
+          (setq stable nil))
         (setq cursor end)))
-    (push (substring source cursor) pieces)
-    (apply #'concat (nreverse pieces))))
+    (cond
+     ((null patches) source)
+     (stable
+      ;; Copy the accepted output once, not one complete suffix per patch
+      ;; followed by another full concatenation.  Published strings and their
+      ;; property values remain immutable; only this private interval tree is
+      ;; changed.  Unchanged characters need only replacement properties;
+      ;; character edits retain the complete concatenation path.
+      (let ((target (copy-sequence source)))
+        (dolist (patch patches)
+          (let ((start (plist-get patch :old-start))
+                (replacement (plist-get patch :replacement))
+                (position 0))
+            (while (< position (length replacement))
+              (let ((end (next-property-change position replacement (length replacement))))
+                (set-text-properties (+ start position) (+ start end)
+                                     (text-properties-at position replacement) target)
+                (setq position end)))))
+        target))
+     (t
+      (setq cursor 0)
+      (let (pieces)
+        (dolist (patch patches)
+          (push (substring source cursor (plist-get patch :old-start)) pieces)
+          (push (plist-get patch :replacement) pieces)
+          (setq cursor (plist-get patch :old-end)))
+        (push (substring source cursor) pieces)
+        (apply #'concat (nreverse pieces)))))))
 
-(defun ebox-native-commit--apply-fragment-style-delta (template delta)
-  "Return TEMPLATE with Rust-computed fragment style DELTA applied."
+(defun ebox-native-commit--apply-fragment-paint-delta (template delta)
+  "Return TEMPLATE with Rust-computed fragment paint DELTA applied."
   (unless (vectorp template)
-    (error "Native fragment style delta has no retained template"))
+    (error "Native fragment paint delta has no retained template"))
   (let ((target (copy-sequence template)))
     (dolist (entry delta)
       (let ((index (car entry)))
         (unless (and (integerp index) (<= 0 index) (< index (length target)))
-          (error "Native fragment style delta index is out of bounds"))
+          (error "Native fragment paint delta index is out of bounds"))
         (let ((record (copy-sequence (aref target index))))
-          (aset record 7 (copy-sequence (cdr entry)))
+          (aset record 6 (copy-sequence (nth 1 entry)))
+          (aset record 7 (copy-sequence (nth 2 entry)))
           (aset target index record))))
     target))
 
@@ -699,21 +795,21 @@ while the publication transaction can still roll back."
                        (metadata (plist-get result :root-render-metadata))
                        (reuse-fragments
                         (plist-get result :reuse-fragment-template))
-                       (fragment-style-delta
-                        (plist-get result :fragment-style-delta))
+                       (fragment-paint-delta
+                        (plist-get result :fragment-paint-delta))
                        (rendered nil))
                   (unless (stringp source)
                     (error "Native retained patch has no committed base"))
-                  (when (or reuse-fragments fragment-style-delta)
+                  (when (or reuse-fragments fragment-paint-delta)
                     (let ((template
                            (plist-get state
                                       :native-committed-fragment-template)))
                       (unless (vectorp template)
                         (error "Native retained patch has no fragment base"))
-                      (when fragment-style-delta
+                      (when fragment-paint-delta
                         (setq template
-                              (ebox-native-commit--apply-fragment-style-delta
-                               template fragment-style-delta)))
+                              (ebox-native-commit--apply-fragment-paint-delta
+                               template fragment-paint-delta)))
                       (setq metadata
                             (plist-put metadata :fragment-span-template
                                        template))))
@@ -748,7 +844,7 @@ while the publication transaction can still roll back."
                         (plist-get result :reuse-ownership-template)
                         :reuse-mount-projection
                         (plist-get result :reuse-mount-projection)
-                        :fragment-style-delta fragment-style-delta))
+                        :fragment-paint-delta fragment-paint-delta))
               result)))
       (setq frame (plist-put frame :root-width (plist-get frame-spec :root-width)))
       (plist-put state :native-sync-pending
@@ -780,6 +876,7 @@ while the publication transaction can still roll back."
     :native-reuse-mount-projection-p
     :native-reuse-ownership-p
     :native-inherited-dirty-node-ids
+    :native-capability-nodes
     :native-local-dirty-entries
     :native-topology-stable-p
     :native-touched-node-ids
@@ -823,6 +920,7 @@ projection so the caller may publish its existing Elisp fallback truthfully."
                        :height (plist-get state :viewport-height))))))
       (if rejection
           (progn (plist-put state :native-render-declined rejection) nil)
+        (plist-put state :native-capability-nodes (plist-get state :node-table))
         ;; Scroll tables own the accepted offsets even when the previous window
         ;; publication reused an ancestor's source tree.  Feed that same candidate
         ;; context into native compilation, including independently scrolled peers.

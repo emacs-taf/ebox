@@ -372,16 +372,17 @@ the winning client state; otherwise only the candidate is disposable."
     (let ((observer (ebox-surface--observation-observer context))
           (reports
            (list
-            (ebox-surface--observation-publication-report context)
+            (copy-tree (ebox-surface--observation-publication-report context))
             (ebox-surface--decorate-observation-report
              context (ebox-surface--observation-ebox-report context)))))
       (dolist (report reports)
         (let ((inhibit-quit t)
               (quit-flag nil))
           (condition-case nil
+              ;; Both reports above already own their defensive copy.
               (funcall observer
                        (ebox-surface--observation-buffer context)
-                       (copy-tree report))
+                       report)
             ((error quit) nil)))))))
 
 (defun ebox-surface--observation-finish (context)
@@ -607,13 +608,12 @@ Removed objects and omitted style bindings still exist until publication
 settles their lifecycle.  Their liveness therefore cannot identify the next
 generation's style graph.  Use the same selected bindings that publication
 will retain, keeping the accepted table untouched if this candidate fails."
-  (let ((projected (make-hash-table :test 'eq :weakness 'key))
-        (bindings (ebox--pub--context-bindings context)))
+  (let ((projected (make-hash-table :test 'eq :weakness 'key)))
     (maphash
      (lambda (_id object)
        (when-let* ((state (gethash object states))
                    (binding (plist-get state :binding))
-                   ((gethash binding bindings)))
+                   ((ebox--pub--context-binding-retained-p context binding)))
          (puthash object state projected)))
      node-objects)
     projected))
@@ -1761,14 +1761,17 @@ PREVIOUS-STATE's node-object table."
                       formatting-context-reflow mixed-owner-reflow
                       viewport-reflow viewport-reflow-mixed-scroll
                       native-frame))
-              (if (or (eq projection-kind 'native-frame) range-splice-p)
+              (if (or (and (eq projection-kind 'native-frame)
+                           (not retained-native-style-p))
+                      range-splice-p)
                   (make-hash-table :test 'eq)
               (or (plist-get previous-state :surface-node-object-table)
                   (error "Ebox span projection has no retained node table")))
             (make-hash-table :test 'eq)))
          (style-state-table
-          (if (eq projection-kind 'metadata)
-              (plist-get previous-state :style-binding-states)
+          (if (or (eq projection-kind 'metadata) retained-native-style-p)
+              (or (plist-get previous-state :style-binding-states)
+                  (make-hash-table :test 'eq :weakness 'key))
             (ebox-surface--style-state-table previous-state)))
          (ebox-surface--inline-style-value-cache
           (and style-required-p
@@ -1894,10 +1897,11 @@ PREVIOUS-STATE's node-object table."
           :node-root node-root
           :retained-topology-state
           (and (not range-splice-p)
-               (memq projection-kind
-                     '(metadata span-patch owner-scoped scroll-patch
-                       formatting-context-reflow mixed-owner-reflow
-                       viewport-reflow viewport-reflow-mixed-scroll))
+               (or retained-native-style-p
+                   (memq projection-kind
+                         '(metadata span-patch owner-scoped scroll-patch
+                           formatting-context-reflow mixed-owner-reflow
+                           viewport-reflow viewport-reflow-mixed-scroll)))
                previous-state)
           :source-index source-index
           :objects-by-node objects-by-node
@@ -1917,17 +1921,21 @@ PREVIOUS-STATE's node-object table."
                 (plist-get state-overrides :display-signature)))))
 
 (defun ebox-surface--project-stable-node-table
-    (context nodes node-root old-objects objects-by-node)
-  "Reuse native NODES whose object topology is proven unchanged."
+    (context nodes node-root old-objects objects-by-node touched-ids)
+  "Reuse native NODES whose object topology is proven unchanged.
+TOUCHED-IDS, when present, covers all candidate copies needing object handles."
   (ebox--pub-object-reuse-subtree context node-root)
-  (ebox-runtime-index-map
-   (lambda (node-id node)
-     (let ((object (gethash node-id old-objects)))
-       (unless object
-         (error "Ebox native projection lost retained node %S" node-id))
-       (plist-put node :surface-object object)
-       (puthash node object objects-by-node)))
-   nodes)
+  (cl-labels
+      ((attach (node-id node)
+         (let ((object (gethash node-id old-objects)))
+           (unless (and node object)
+             (error "Ebox native projection lost retained node %S" node-id))
+           (plist-put node :surface-object object)
+           (unless (eq objects-by-node old-objects)
+             (puthash node object objects-by-node)))))
+    (if (and touched-ids (eq objects-by-node old-objects))
+        (dolist (id touched-ids) (attach id (ebox-runtime-index-get id nodes)))
+      (ebox-runtime-index-map #'attach nodes)))
   objects-by-node)
 
 (defun ebox-surface--project-node-delta
@@ -1950,7 +1958,7 @@ PREVIOUS-STATE's node-object table."
       (error "Ebox native projection has no candidate object delta"))
     (if (plist-get state-overrides :native-topology-stable-p)
         (ebox-surface--project-stable-node-table
-         context nodes node-root old-objects objects-by-node)
+         context nodes node-root old-objects objects-by-node touched-ids)
       (ebox--pub-object-retain context node-root)
       (dolist (node-id touched-ids) (puthash node-id t touched))
       (ebox-runtime-index-map
@@ -2023,7 +2031,10 @@ children again."
          ;; Full projection visits every node and writes node-keyed entries.
          (objects-by-node (make-hash-table :test 'eq))
          (style-state-table
-          (plist-get projection :style-binding-states))
+          (let ((states (plist-get projection :style-binding-states)))
+            (if (plist-get projection :retained-topology-state)
+                (copy-hash-table states)
+              states)))
          (stylesheet-signature
           (or (plist-get projection :stylesheet-signature)
               (and style-required-p
@@ -2040,6 +2051,7 @@ children again."
                      (ebox-tree-subject-index root source-index))))
     (plist-put projection :source-index source-index)
     (plist-put projection :objects-by-node objects-by-node)
+    (plist-put projection :style-binding-states style-state-table)
     (plist-put projection :retained-topology-state nil)
     (ebox--pub-object-retain context node-root)
     (ebox-surface--ensure-node-tree
@@ -2125,11 +2137,18 @@ children again."
                    (and scroll-fast-p
                         (plist-get state :surface-object-region-table))
                    (ebox-surface--object-region-table region-objects)))
-    ;; Logical IDs are source metadata, independent of retained node topology.
-    ;; They still receive their ordinary candidate projection.
+    ;; Unchanged selector subjects prove unchanged logical IDs as well.  The
+    ;; retained object/region topology supplies the other half of this index.
     (unless (and scroll-fast-p (plist-get state :logical-id-region-table))
       (plist-put state :logical-id-region-table
-                 (ebox-surface--logical-id-region-table state region-objects)))
+                 (or (and retained-topology
+                          (eq region-objects
+                              (plist-get retained-topology :region-surface-object-table))
+                          (eq (ebox-source--index-subjects (plist-get state :source-index))
+                              (ebox-source--index-subjects
+                               (plist-get retained-topology :source-index)))
+                          (plist-get retained-topology :logical-id-region-table))
+                     (ebox-surface--logical-id-region-table state region-objects))))
     (plist-put state :ownership-cache
                (ebox-surface--ownership-cache retained-topology state))
     (when (eq projection-kind 'metadata)
@@ -8566,6 +8585,13 @@ published runtime and must be consumed without clearing those shared nodes."
                (ebox-surface--paint-fragments
                 previous-state state dirty-set old-text)))
             (cond
+           ((and (eq projection-kind 'native-frame)
+                 (plist-get state :native-topology-stable-p)
+                 (hash-table-p (plist-get state :region-box-table)))
+            ;; The indexed candidate already repaired every changed region.
+            ;; Native rendering reads that private registry; discarding it
+            ;; would reconstruct the complete scene after a one-row update.
+            nil)
            ((memq projection-kind '(span-patch owner-scoped))
             ;; A local owner render visits only its own regions.  Keep the
             ;; complete candidate registry, including disjoint retained scroll

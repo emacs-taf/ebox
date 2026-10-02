@@ -761,7 +761,7 @@ pub(super) enum ChangeKind {
 /// Transaction-local authorization for this exact pair. Splices describe line programs,
 /// not final properties: relative coordinates may move within otherwise shared suffixes.
 #[derive(Clone, Debug)]
-pub(super) struct PlanChange {
+pub(crate) struct PlanChange {
     base: LinePlan,
     target: LinePlan,
     kind: ChangeKind,

@@ -16,6 +16,16 @@
   ],
   "cases": [
     {
+      "name": "ebox-owner-style-linear-updates-match-fresh-rendering",
+      "file": "tests/ebox-owner-style-tests.el",
+      "purpose": "Repeated first, middle, last and disjoint row restyles preserve text, paint and geometry, including coordinate-changing replacements followed by local updates, with and without native layout."
+    },
+    {
+      "name": "ebox-owner-style-linear-rejection-retains-the-patch-base",
+      "file": "tests/ebox-owner-style-tests.el",
+      "purpose": "Rejected local row paint leaves the published text, properties and report unchanged; retry uses the committed baseline and matches fresh rendering."
+    },
+    {
       "name": "ebox-image-graphics-source-change-retains-slices-locally",
       "file": "tests/ebox-image-tests.el",
       "purpose": "Repeated graphical source replacements commit one scoped cover patch, preserve exact cached display-slice identity, and never create an image during publication."
@@ -1573,7 +1583,7 @@
     {
       "name": "ebox-interaction-hover-content-uses-retained-updates",
       "file": "tests/ebox-interaction-tests.el",
-      "purpose": "A node-declared hover content value enters and leaves through retained Ebox content updates with local motion tracking and no overlay."
+      "purpose": "Hover content enters and leaves through retained updates; removing and restoring its declaration disables and restores local motion tracking."
     },
     {
       "name": "ebox-drag-coalesces-bounded-bursts-and-keeps-release-position",

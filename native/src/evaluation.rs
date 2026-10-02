@@ -457,6 +457,10 @@ impl RetainedFrame {
             .complete_scroll_effects
             .then_some(&self.scroll_plans)
     }
+    pub(super) fn lines(&self) -> &super::line_plan::LinePlan {
+        &self.root.rendered.lines
+    }
+
     pub(crate) fn materialize_tape(&self) -> LayoutTape {
         self.root
             .rendered
@@ -1004,7 +1008,7 @@ impl RetainedDocument {
         changes: Option<&SourceChanges>,
         context: LayoutContext,
         root_width_override: Option<i64>,
-    ) -> Result<Arc<RetainedFrame>, String> {
+    ) -> Result<(Arc<RetainedFrame>, Option<PlanChange>), String> {
         self.render_frame_mode(previous, changes, context, root_width_override, false)
     }
 
@@ -1014,7 +1018,7 @@ impl RetainedDocument {
         changes: Option<&SourceChanges>,
         context: LayoutContext,
         root_width_override: Option<i64>,
-    ) -> Result<Arc<RetainedFrame>, String> {
+    ) -> Result<(Arc<RetainedFrame>, Option<PlanChange>), String> {
         self.render_frame_mode(previous, changes, context, root_width_override, true)
     }
 
@@ -1025,7 +1029,7 @@ impl RetainedDocument {
         context: LayoutContext,
         root_width_override: Option<i64>,
         complete_scroll_effects: bool,
-    ) -> Result<Arc<RetainedFrame>, String> {
+    ) -> Result<(Arc<RetainedFrame>, Option<PlanChange>), String> {
         let reusable = match (previous, changes) {
             (Some(previous), Some(changes)) => {
                 if !changes.applies_to(&previous.document, self) {
@@ -1078,7 +1082,7 @@ impl RetainedDocument {
             transaction: Some(&transaction),
             path: Vec::new(),
         };
-        scope.render(
+        let rendered = scope.render_with_change(
             context,
             false,
             root_width_override.map(|declared_width| BoxOverride {
@@ -1094,10 +1098,15 @@ impl RetainedDocument {
         if complete_scroll_effects {
             root.collect_scroll_plans(&mut scroll_plans)?;
         }
-        Ok(Arc::new(RetainedFrame {
-            document: Arc::clone(self),
-            root,
-            scroll_plans,
-        }))
+        // Keep the pair proof transaction-local. A confirmed frame must not
+        // retain its predecessor through PlanChange's base line plan.
+        Ok((
+            Arc::new(RetainedFrame {
+                document: Arc::clone(self),
+                root,
+                scroll_plans,
+            }),
+            rendered.change,
+        ))
     }
 }

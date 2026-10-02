@@ -1453,12 +1453,14 @@ snapshot.  Neither SCOPE nor previously constructed inputs are modified."
 
 (defun ebox-style-source-scopes (source-index &optional root)
   "Mount SOURCE-INDEX local styles on its canonical selector subjects."
-  (when (and source-index (or (ebox-source--index-subjects source-index) root))
+  (when (and source-index (> (ebox-source--index-scope-count source-index) 0)
+             (or (ebox-source--index-subjects source-index) root))
     (when (and root (null (ebox-source--index-selector-view source-index)))
       (setq source-index
             (ebox-tree-source-index root t nil source-index)))
     (let* ((missing (make-symbol "missing"))
-           (cached (gethash source-index ebox-style--scope-cache missing)))
+           (generation (ebox-source--index-scope-generation source-index))
+           (cached (gethash generation ebox-style--scope-cache missing)))
       (if (not (eq cached missing)) cached
         (let (subjects scopes shared-p)
           (dolist (handle (ebox-source-index-handles source-index))
@@ -1497,7 +1499,7 @@ snapshot.  Neither SCOPE nor previously constructed inputs are modified."
           (setq scopes (nconc (nreverse scopes)
                               (and shared-p
                                    (ebox-style--shared-source-scopes source-index))))
-          (puthash source-index scopes ebox-style--scope-cache)
+          (puthash generation scopes ebox-style--scope-cache)
           scopes)))))
 
 (defun ebox-style-cascade-active-p ()
