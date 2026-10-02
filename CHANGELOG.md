@@ -54,6 +54,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A prepared geometry mount reserves each owner's interval pools from the
+  composed raster's measured maximum instead of the anchored plane's program
+  height. A short anchored panel whose background shows between many children
+  on every row no longer rejects a prepared update inside a taller root.
 - Fixed-slot text changes publish as a local span patch again when the surface
   keeps fractional pixel remainder and a retained scroll region: the raw
   quantization harness admits content-only owners that are disjoint from every

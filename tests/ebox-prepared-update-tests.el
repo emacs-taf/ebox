@@ -730,5 +730,41 @@ prepared visibility change paints it at its current placement."
               (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
               (ebox-prepared-update-test--assert-fresh))))))))
 
+(ert-deftest ebox-prepared-update-bounds-intervals-from-raster-beyond-anchor-height ()
+  "A short anchored panel with many exposed runs keeps its prepared update.
+One owner can run many disjoint intervals per row, so a retained mount must
+size its per-owner pools from the composed raster instead of the anchored
+plane's own program height.  The root plane is taller than the anchored panel,
+and the panel's own background shows between sixty narrow children on every
+one of its rows."
+  (let ((ebox-viewport-width 480) (ebox-viewport-height 40))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build
+        `(box :width (ch 120) :height (lh 30)
+           (box :position 'relative :width (ch 120) :height (lh 6)
+             (box :id "panel" :position 'absolute :left (ch 0) :top (lh 0)
+                  :width (ch 120) :height (lh 6) :z-index 1 :visibility 'visible
+                  :background-color "#555555"
+               (flex :flex-direction 'row :width (ch 120) :height (lh 6)
+                     :gap '((lh 0) (ch 1))
+                ,@(cl-loop for cell from 0 below 60
+                           collect `(box :width (ch 2) :height (lh 6)
+                                         :background-color "#111111"
+                                         (text ,(format "%02d" cell))))))))))
+      (let* ((operation
+              (ebox-update-prepare
+               (current-buffer) [["panel" [:visibility]]] #'ignore #'ignore))
+             (values [[hidden]])
+             (revision (ebox-surface-buffer-revision (current-buffer))))
+        (should operation)
+        (should (ebox-update-apply operation values [0]))
+        (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+        (ebox-prepared-update-test--assert-fresh)
+        (aset values 0 [visible])
+        (should (ebox-update-apply operation values [0]))
+        (ebox-prepared-update-test--assert-fresh)))))
+
 (provide 'ebox-prepared-update-tests)
 ;;; ebox-prepared-update-tests.el ends here

@@ -176,6 +176,11 @@
       "purpose": "Separate prepared operations sharing a pane keep the latest sibling text, inherited paint, canonical output and operation validity through alternating updates, rejected publication and retries."
     },
     {
+      "name": "ebox-prepared-update-bounds-intervals-from-raster-beyond-anchor-height",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "A short anchored panel whose background shows between many children on every row still prepares and applies visibility updates inside a taller root, matching fresh rendering."
+    },
+    {
       "name": "ebox-host-properties-change-root-layer-membership-with-peer-paint",
       "file": "tests/ebox-host-property-tests.el",
       "purpose": "Root portal insertion and removal combined with multiple retained panel paint changes preserves complete styled output and current Host addresses."

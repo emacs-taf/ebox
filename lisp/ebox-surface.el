@@ -6462,7 +6462,9 @@ Optional LAYER-RASTERS lists the RASTERS elements holding unoccluded layer
 pixels and LAYER-COUNT the number of movable layers.  An owner visible in those
 pixels or in the joined ROWS initially reserves twice its own known interval
 count plus one.  Further occlusion splits grow only exhausted owners.  The
-reservation never exceeds INTERVAL-CAPACITY plus the row count.  An owner
+reservation never exceeds INTERVAL-CAPACITY plus the row count, and never
+falls below twice the joined raster's own per-owner maximum plus room for
+another split pass, because one owner can run many intervals per row.  An owner
 without its own interval evidence retains the object's known footprint as a
 conservative fallback.  A frame needing more intervals grows exhausted pools
 through
@@ -6580,6 +6582,16 @@ through
         (ebox-surface--geometry-mount-prepare-role
          owners role-instructions role-names region-id index
          state node-objects region-objects)))
+    ;; A single owner can run many disjoint visible intervals per row, so the
+    ;; anchored plane's height cannot bound its interval pool.  The cap also
+    ;; covers the raster's own measured maximum with room for another split
+    ;; pass, which keeps the reservation proportional to actual content.
+    (let ((measured-bound
+           (max 8
+                (+ interval-capacity (length rows))
+                (* 2 (or (cl-loop for count being the hash-values of joined-intervals
+                                  maximize count)
+                         0)))))
     (maphash
      (lambda (_object entries)
        (let ((binding (vector nil nil))
@@ -6601,7 +6613,7 @@ through
                                     (gethash owner layer-intervals 0)))
                   (known (and layer-count
                               (if (> owner-known 0) owner-known object-known)))
-                  (bound (+ interval-capacity (length rows)))
+                  (bound measured-bound)
                   (capacity
                    (cond
                     ((memq owner full) (max 1 (length existing)))
@@ -6672,7 +6684,7 @@ through
               :rasters (vector (make-hash-table :test #'eq :size (max 1 (length rasters)))
                                (make-hash-table :test #'eq :size (max 1 (length rasters))))
               :raster-bank 0 :raster-capacity (length rasters) :role-epoch 0
-              :interval-bound (+ interval-capacity (length rows)))))
+              :interval-bound measured-bound)))
         (dolist (raster rasters)
           (puthash raster t (aref (ebox-surface--geometry-mount-rasters projection) 0)))
         (when rows
@@ -6680,7 +6692,7 @@ through
                        projection (car rasters) rows nil))
             (unless (ebox-surface--geometry-mount-grow projection)
               (error "Prepared geometry row ownership exceeds its cold capacity"))))
-        projection))))
+        projection)))))
 
 (defun ebox-surface--geometry-mount-known-roles-p (projection signature)
   "Return whether PROJECTION can execute every role in SIGNATURE.
