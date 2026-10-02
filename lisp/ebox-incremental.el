@@ -12719,7 +12719,14 @@ fresh regardless of whether any stable producers exist."
                     (plist-get old-state :region-box-table)))
         (plist-put candidate-state :scroll-state-table candidate-scroll-table)
         (setq owner-plan
-              (if (or display-changed (not style-context-stable-p))
+              (if (or display-changed (not style-context-stable-p)
+                      ;; A width change rebases every viewport-relative flow
+                      ;; descendant, so a width-dependent dirty set always
+                      ;; belongs to one root owner.  Selecting that owner here
+                      ;; skips per-candidate slot proofs that could only
+                      ;; rediscover the same root.
+                      (and (memq axes '(width both))
+                           (eq (plist-get change :constraint-source) 'viewport)))
                   ;; Old overflow and intrinsic-size facts cannot prove a
                   ;; local owner after the display or cascade changed.
                   ;; Recompute through the complete canonical root instead
