@@ -54,6 +54,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Fixed-slot text changes publish as a local span patch again when the surface
+  keeps fractional pixel remainder and a retained scroll region: the raw
+  quantization harness admits content-only owners that are disjoint from every
+  scroll box and carries the committed role and overflow topology into its
+  private render. A seconds label no longer rebuilds the whole candidate.
 - Native row updates with stable coordinates expand only changed line programs
   and adjoining guards. Property-template and style changes share retained
   fragment ownership, while unchanged scopes and publication identities avoid

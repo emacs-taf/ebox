@@ -10588,10 +10588,12 @@ metadata; this predicate only authorizes the local attempt."
               :ancestor-slot-signature ancestor-slot-signature
               :variable-content-p
               (and snapshot
-                   ;; Only a content-independent Box owns all filler affected
-                   ;; by its changing text beside retained scroll siblings.
+                   ;; Only a content-independent Box or a fixed Flex item
+                   ;; owns all filler affected by its changing text beside
+                   ;; retained scroll siblings.
                    (or (null (plist-get old-state :scroll-region-ids))
-                       allocated-content-box-p)
+                       allocated-content-box-p
+                       fixed-flex-evidence)
                    (memq :content changed-keys)
                    (stringp
                     (plist-get (plist-get dirty :new-signature) :content))

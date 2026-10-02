@@ -5214,6 +5214,44 @@ detached horizontal owners keep the ordinary fractional-origin fallback."
         (ebox-surface--scroll-content-patch-output buffer previous-state state)
       (ebox-surface--buffer-span-patch-output buffer previous-state state))))
 
+(defun ebox-surface--raw-owner-region-disjoint-p
+    (buffer previous-state state region owner-id)
+  "Return non-nil when OWNER-ID is disjoint from scroll REGION's box.
+Refuse when neither state knows REGION's box: an unknown scroll owner
+cannot be proven disjoint."
+  (let ((box (or (gethash region (plist-get previous-state :region-box-table))
+                 (gethash region (plist-get state :region-box-table)))))
+    (and box
+         (let ((scroll-id (plist-get box :node-id)))
+           (and (not (equal scroll-id owner-id))
+                (cl-every
+                 (lambda (render-state)
+                   (let ((ebox-incremental--buffer-render-state-override
+                          (cons buffer render-state)))
+                     (and (not (ebox--runtime-ancestor-id-p
+                                buffer scroll-id owner-id))
+                          (not (ebox--runtime-ancestor-id-p
+                                buffer owner-id scroll-id)))))
+                 (list previous-state state)))))))
+
+(defun ebox-surface--raw-owner-scroll-disjoint-p
+    (buffer previous-state state proofs)
+  "Return non-nil when every proof OWNER is disjoint from retained scroll content.
+The raw harness re-renders one owner in a private buffer.  An owner that is
+neither a scroll container nor inside or above one cannot change retained
+scroll caches; the incremental proof established this same disjointness
+before the surface attempted the patch."
+  (let ((regions (plist-get previous-state :scroll-region-ids)))
+    (or (null regions)
+        (cl-every
+         (lambda (proof)
+           (let ((owner-id (plist-get proof :owner-id)))
+             (cl-every (lambda (region)
+                         (ebox-surface--raw-owner-region-disjoint-p
+                          buffer previous-state state region owner-id))
+                       regions)))
+         proofs))))
+
 (defun ebox-surface--raw-owner-patch-output (buffer previous-state state)
   "Patch an allocated owner using retained pre-quantization geometry.
 BUFFER stores whole-pixel output. PREVIOUS-STATE retains the exact raw layout
@@ -5223,8 +5261,22 @@ STATE receives only the resulting character patches and final fragment ledger."
   (let ((raw (plist-get previous-state :raw-layout-output))
         (proofs (plist-get state :owner-scoped-proofs)))
     (when (and (stringp raw) proofs
-               (null (plist-get previous-state :scroll-region-ids))
-               (cl-every (lambda (proof) (plist-get proof :owner-reflow-p)) proofs)
+               (ebox-surface--raw-owner-scroll-disjoint-p
+                buffer previous-state state proofs)
+               (cl-every (lambda (proof)
+                           (or (plist-get proof :owner-reflow-p)
+                               ;; A fixed-allocation content edit keeps every
+                               ;; coordinate: the owner's rendered text
+                               ;; changes inside its committed allocation, so
+                               ;; the raw harness can re-render it and
+                               ;; re-quantize the composed rows with the
+                               ;; retained sibling remainder.  Content that
+                               ;; can outgrow its slot has no variable-content
+                               ;; proof and stays on the ordinary render.
+                               (and (plist-get proof :variable-content-p)
+                                    (cl-every (lambda (key) (eq key :content))
+                                              (plist-get proof :changed-keys)))))
+                         proofs)
                (with-current-buffer buffer (= (length raw) (buffer-size))))
       (with-temp-buffer
         (insert raw)
@@ -5249,12 +5301,33 @@ STATE receives only the resulting character patches and final fragment ledger."
                      (mapcar
                       (lambda (proof)
                         (let* ((copy (copy-sequence proof))
+                               (original (plist-get proof :snapshot))
                                (snapshot (ebox--ensure-layout-snapshot-details
-                                          (current-buffer) (plist-get proof :owner-id))))
+                                          (current-buffer) (plist-get proof :owner-id)))
+                               ;; The raw harness re-derives positional details in
+                               ;; a plain temp buffer, which carries neither
+                               ;; Ebox region metadata nor role properties.
+                               ;; Role and overflow topology is a property of
+                               ;; the rendered characters, not of their
+                               ;; quantization, so carry the committed
+                               ;; signatures into the re-derived snapshot as
+                               ;; the ordinary path already has them.
+                               (snapshot (plist-put snapshot :role-topology-signature
+                                                    (plist-get original :role-topology-signature)))
+                               (snapshot (plist-put snapshot :overflow-signature
+                                                    (plist-get original :overflow-signature))))
                           (plist-put copy :snapshot snapshot)
+                          ;; A variable-content proof already carries the
+                          ;; slot capacity it was validated against; the
+                          ;; re-derived raw footprint only measures the
+                          ;; committed text and would clip a later value
+                          ;; inside its allocation.  Reflow proofs keep
+                          ;; the raw allocation measurement.
                           (plist-put copy :allocated-width
-                                     (plist-get (plist-get snapshot :external-footprint-signature)
-                                                :max-line-pixel-width))
+                                     (if (plist-get proof :variable-content-p)
+                                         (plist-get proof :allocated-width)
+                                       (plist-get (plist-get snapshot :external-footprint-signature)
+                                                  :max-line-pixel-width)))
                           copy)) proofs))
           (when-let* ((output (ebox-surface--buffer-span-patch-output (current-buffer) base candidate)))
             (when (plist-get candidate :fragment-reuse-rejection)
