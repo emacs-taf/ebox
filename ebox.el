@@ -868,6 +868,11 @@
 ;; containing plane without compiled viewport mapping still declines.
 ;; SPECIFICATIONS is a vector of
 ;; [HOST-REF PROPERTY-VECTOR] members; one Host may have disjoint members.
+;; A structural member is [HOST-REF :children CANONICAL-INPUT]: it replaces
+;; that Host with INPUT while every node and region identity stays unchanged,
+;; so the retained mount context remains authoritative, and re-renders the
+;; owner's composition boundary. A replacement that adds or removes node or
+;; region identities is declined and must publish through ordinary commit.
 ;; An optional third VARIANT-VECTOR aligns with properties; class slots contain
 ;; finite canonical class token/list values and other slots contain nil. A
 ;; string is one token, matching the source-builder contract; consumers that

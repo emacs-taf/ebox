@@ -1884,6 +1884,26 @@
       "name": "ebox-display-values-cross-the-native-boundary",
       "file": "tests/ebox-display-tests.el",
       "purpose": "Fixed pixel display spaces and one-cell image slices keep identical text and display properties through the native layout."
+    },
+    {
+      "name": "ebox-prepared-children-replaces-one-owner-subtree",
+      "file": "tests/ebox-prepared-children-tests.el",
+      "purpose": "A prepared :children member replaces one stable-identity Host subtree, publishes only its composition boundary spans and keeps sibling pixels."
+    },
+    {
+      "name": "ebox-prepared-children-rollback-restores-source-tables",
+      "file": "tests/ebox-prepared-children-tests.el",
+      "purpose": "A rejected prepared structural application restores the swapped candidate tables and the published buffer text."
+    },
+    {
+      "name": "ebox-prepared-children-requires-canonical-input",
+      "file": "tests/ebox-prepared-children-tests.el",
+      "purpose": "A malformed prepared structural member is rejected before any runtime state changes."
+    },
+    {
+      "name": "ebox-prepared-children-declines-new-identities",
+      "file": "tests/ebox-prepared-children-tests.el",
+      "purpose": "A prepared structural replacement that introduces new node or region identities is declined before any state changes and stays on ordinary publication."
     }
   ]
 }

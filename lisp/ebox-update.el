@@ -14,13 +14,28 @@
 (require 'ebox-update-selector)
 
 (cl-defstruct (ebox-update--member (:constructor ebox-update--make-member))
-  group properties offsets variants)
+  group properties offsets variants input ref)
+
+(defconst ebox-update--structural-state-keys
+  '(:root-node :logical-candidate-p :layout-snapshots :layout-snapshots-complete-p
+    :layout-snapshot-detail-generation :retained-allocation-certificates
+    :display-signature :render-cache :layout-fragments :layout-fragments-reuse-p
+    :detached-identity-history :render-signature-cache :flex-content-min-widths
+    :viewport-height-dependent-subtree-cache :viewport-dependent-node-ids-ready
+    :viewport-dependent-node-ids :viewport-dependent-node-id-axes :reflow-prewarm-scratch
+    :scroll-region-ids :node-table :parent-table :region-id-set :region-node-table
+    :region-box-count-table :region-box-table :range-ref-table :source-index
+    :selector-id-table :selector-class-table :selector-type-table
+    :runtime-type-count-table :selector-index-stale-p :native-node-postorder
+    :native-node-postorder-ids)
+  "State keys a prepared structural member replaces with its candidate values.")
 
 (cl-defstruct (ebox-update--group (:constructor ebox-update--make-group))
   "One Host's prebound members.  DIRTY marks any changed member; REPAINT
 marks a changed raster value, the only change that re-renders BOUNDARY."
   node properties variants first-member slots values geometry-program x-factor
-  boundary style-p restyle resized repaint crop class-slot hover-cell hover-old hover-owners dirty staged dx dy z)
+  boundary style-p restyle resized repaint crop class-slot hover-cell hover-old hover-owners dirty staged dx dy z
+  structural)
 
 (cl-defstruct (ebox-update--boundary (:constructor ebox-update--make-boundary))
   "Nearest retained composition primitive owning a group's pixels.
@@ -35,7 +50,8 @@ a member changed it; PAINT marks any other changed raster value."
 (cl-defstruct (ebox-update--cohort (:constructor ebox-update--make-cohort))
   buffer state scene members groups boundaries marks epoch snapshots
   signatures viewport-nodes viewport-subtrees css-viewport-subtrees viewport-heights stage rollback after-commit report old-report old-revision old-stale
-  old-report-revision old-report-publication old-report-kinds staged paint-changed)
+  old-report-revision old-report-publication old-report-kinds staged paint-changed
+  structural structural-state)
 
 (defun ebox-update--node (buffer reference)
   "Resolve mounted BUFFER REFERENCE at the cold preparation boundary."
@@ -331,8 +347,13 @@ report requests a control-plane refresh and never authorizes the old operation."
 A member is [HOST-REF PROPERTY-VECTOR] or [HOST-REF PROPERTY-VECTOR VARIANTS].
 VARIANTS, when present, aligns with the properties; a class slot contains a
 nonempty vector of finite canonical class token/list values.  Other slots use
-nil.  Duplicate Hosts may declare disjoint properties.  STAGE and ROLLBACK
-are paired zero-argument callbacks.  AFTER-COMMIT runs once after acceptance.
+nil.  Duplicate Hosts may declare disjoint properties.  A structural member
+is [HOST-REF :children CANONICAL-INPUT].  It replaces that Host's subtree while
+retaining every node and region identity, and applying it re-renders the
+owner's composition boundary.  A replacement whose node or region identity set
+differs from the published one is declined before any state changes.  STAGE
+and ROLLBACK are paired zero-argument callbacks.  AFTER-COMMIT runs once after
+acceptance.
 Return an opaque operation or nil.  `ebox-update-prepare-report' describes
 cold admission."
   (let* ((buffer (ebox--host-ref-buffer buffer-or-name))
@@ -382,6 +403,8 @@ group and proof records change; source, scene and publication stay untouched."
           (setf (ebox-update--group-crop group) crop))
         (setq ebox-update--preparing-member (ebox-update--group-first-member group)
               ebox-update--preparing-property nil)
+        (when (ebox-update--group-structural group)
+          (setq raster t))
         (dotimes (key-index (length keys))
           (let ((property (aref keys key-index)))
             ;; A proved fixed-text crop resizes through the retained
@@ -422,7 +445,8 @@ group and proof records change; source, scene and publication stay untouched."
                        (gethash (plist-get (ebox-update--boundary-node boundary) :node-id)
                                 portal-protection))
               (ebox-update--decline 'fixed-canvas nil '(:phase route :reason root-portals)))
-            (setf (ebox-update--group-boundary group) boundary)))))
+            (setf (ebox-update--group-boundary group) boundary
+                  (ebox-update--group-repaint group) t)))))
     boundaries))
 
 (defun ebox-update--prepare (buffer-or-name specifications &optional stage rollback after-commit)
@@ -449,7 +473,7 @@ operation, or nil if a member cannot use the fixed retained canvas."
                  (or (ebox-update--binding-portal-protection ebox-update--binding-token)
                      (setf (ebox-update--binding-portal-protection ebox-update--binding-token)
                            (ebox-update--fixed-portal-protection state)))))
-           groups nodes scene admitted-boundaries)
+           groups nodes scene admitted-boundaries structural-members structural-snapshots)
       (unless state (ebox-update--decline 'unmounted t))
       (when (eq portal-protection 'unsupported)
         (ebox-update--decline 'fixed-canvas nil '(:phase route :reason root-portals)))
@@ -460,10 +484,30 @@ operation, or nil if a member cannot use the fixed retained canvas."
       (dotimes (index (length specifications))
         (setq ebox-update--preparing-member index ebox-update--preparing-property nil)
         (let* ((spec (aref specifications index))
-               (node (and (vectorp spec) (memq (length spec) '(2 3))
-                          (ebox-update--node buffer (aref spec 0))))
-               (keys (and (vectorp spec) (memq (length spec) '(2 3)) (aref spec 1)))
-               (variants (and (vectorp spec) (= (length spec) 3) (aref spec 2))))
+               (children-p (and (vectorp spec) (= (length spec) 3)
+                                (eq (aref spec 1) :children))))
+          (if children-p
+              (let* ((ref (aref spec 0))
+                     (input (aref spec 2))
+                     (node (ebox-update--node buffer ref)))
+                (unless (ebox-canonical-input-p input)
+                  (user-error "Prepared Ebox children members require a canonical input"))
+                (unless node (ebox-update--decline 'missing-host t))
+                (when (gethash node groups-table)
+                  (user-error "Prepared Ebox cohort members overlap for one Host"))
+                (let ((group (ebox-update--make-group :node node :first-member index
+                                                      :properties '(:children)
+                                                      :structural t)))
+                  (puthash node group groups-table)
+                  (push group groups) (push node nodes)
+                  (aset members index (ebox-update--make-member
+                                       :group group :properties [:children]
+                                       :input input :ref ref))
+                  (push (aref members index) structural-members)))
+            (let* ((node (and (vectorp spec) (memq (length spec) '(2 3))
+                              (ebox-update--node buffer (aref spec 0))))
+                   (keys (and (vectorp spec) (memq (length spec) '(2 3)) (aref spec 1)))
+                   (variants (and (vectorp spec) (= (length spec) 3) (aref spec 2))))
           (unless (and (vectorp keys) (> (length keys) 0))
             (user-error "Prepared Ebox members require a Host and property vector"))
           (unless (or (null variants) (and (vectorp variants) (= (length variants) (length keys))))
@@ -490,8 +534,39 @@ operation, or nil if a member cannot use the fixed retained canvas."
                       (append (ebox-update--group-properties group) (list property))
                       (ebox-update--group-variants group)
                       (append (ebox-update--group-variants group) (list (and variants (aref variants key-index)))))))
-            (aset members index (ebox-update--make-member :group group :properties (copy-sequence keys) :variants (and variants (copy-tree variants t)))))))
+            (aset members index (ebox-update--make-member :group group :properties (copy-sequence keys) :variants (and variants (copy-tree variants t)))))))))
       (setq ebox-update--preparing-member nil ebox-update--preparing-property nil)
+      (when structural-members
+        (setq structural-members (nreverse structural-members))
+        (let* ((candidate (ebox-incremental-candidate-begin buffer))
+               (prepared-input
+                (progn
+                  (dolist (member structural-members)
+                    (let* ((input (ebox-update--member-input member))
+                           (ebox-incremental--source-base-index
+                            (ebox-canonical-input--source-index input)))
+                      (ebox-incremental-candidate-replace-host-ref
+                       candidate (ebox-update--member-ref member)
+                       (ebox-canonical-input--single-root
+                        input "ebox-update-children"))))
+                  (ebox-incremental--prepare-logical-candidate
+                   buffer state candidate)))
+               (candidate-state
+                (ebox-incremental--candidate-state
+                 state (plist-get prepared-input :root)
+                 (plist-get prepared-input :index) prepared-input)))
+          ;; The prepared publication reuses the published object and mount
+          ;; context, so the replacement must retain every node and region
+          ;; identity.  A new region has no retained mount object and belongs
+          ;; to the ordinary projection path instead.
+          (unless (and (ebox-incremental--hash-key-set-equal-p
+                        (plist-get state :node-table)
+                        (plist-get candidate-state :node-table))
+                       (ebox-incremental--hash-key-set-equal-p
+                        (plist-get state :region-id-set)
+                        (plist-get candidate-state :region-id-set)))
+            (ebox-update--decline 'structural-topology))
+          (setq structural-snapshots candidate-state)))
       (let ((ebox-geometry--admission-detail (list nil)))
         (setq groups (vconcat (nreverse groups))
               scene (ebox-update--scene
@@ -518,14 +593,16 @@ operation, or nil if a member cannot use the fixed retained canvas."
         ;; All output proofs precede the equivalent private source rebinding.
         (dotimes (index (length groups))
           (let* ((group (aref groups index))
-                 (node (ebox-update--group-node group))
-                 (_diagnostic (ebox-update--locate-member members group))
-                 (slots (ebox-source--update-slots-prepare
-                         (plist-get state :source-index) node (ebox-update--group-properties group))))
-            (unless slots (ebox-update--decline 'source-binding))
-            (setf (ebox-update--group-slots group) slots)
-            (plist-put node :ebox-source-handle (ebox-source--update-slots-handle slots))
-            (plist-put state :source-index (ebox-source--update-slots-index slots))))
+                 (node (ebox-update--group-node group)))
+            (unless (ebox-update--group-structural group)
+              (let ((_diagnostic (ebox-update--locate-member members group))
+                    (slots (ebox-source--update-slots-prepare
+                            (plist-get state :source-index) node
+                            (ebox-update--group-properties group))))
+                (unless slots (ebox-update--decline 'source-binding))
+                (setf (ebox-update--group-slots group) slots)
+                (plist-put node :ebox-source-handle (ebox-source--update-slots-handle slots))
+                (plist-put state :source-index (ebox-source--update-slots-index slots))))))
         (dotimes (index (length groups))
           (let ((group (aref groups index)))
             (when (ebox-update--group-class-slot group)
@@ -578,6 +655,7 @@ operation, or nil if a member cannot use the fixed retained canvas."
                               (maphash (lambda (_node boundary) (push boundary all)) boundaries)
                               (vconcat all))
                 :marks (make-vector (length members) 0) :epoch 0
+                :structural-state structural-snapshots
                 ;; These facts describe shared scene nodes.  Independent
                 ;; invocation cohorts must observe each other's invalidations.
                 :signatures (aref memos 0)
@@ -601,7 +679,9 @@ operation, or nil if a member cannot use the fixed retained canvas."
              (valid t))
          (dotimes (position (length groups))
            (let ((group (aref groups position)))
-             (unless (ebox-source--update-slots-current-p (ebox-update--group-slots group) index)
+             (unless (or (ebox-update--group-structural group)
+                         (ebox-source--update-slots-current-p
+                          (ebox-update--group-slots group) index))
                (setq valid nil)))) valid)))
 
 (defun ebox-update--capture-value (group index value)
@@ -664,6 +744,7 @@ operation, or nil if a member cannot use the fixed retained canvas."
      ((eq property :visibility)
       (unless (memq value '(visible hidden)) (throw 'unsupported nil))
       (aset values index value))
+     ((eq property :children) nil)
      ((not (equal-including-properties value old)) (throw 'unsupported nil)))))
 
 ;; Restyling rewrites plist values in place, may append keys and may delete
@@ -1116,6 +1197,13 @@ composition boundary."
     (plist-put state :last-update-report report)
     (when (ebox-update--cohort-stage operation) (funcall (ebox-update--cohort-stage operation)))))
 
+(defun ebox-update--restore-structure (operation)
+  "Restore OPERATION's swapped candidate tables before an ordinary state query."
+  (let ((state (ebox-update--cohort-state operation)))
+    (dolist (entry (ebox-update--cohort-structural operation))
+      (plist-put state (car entry) (cdr entry)))
+    (setf (ebox-update--cohort-structural operation) nil)))
+
 (defun ebox-update--restore-source (operation)
   "Restore OPERATION's restyled nodes, staged source and native hover cells."
   (let ((groups (ebox-update--cohort-groups operation)))
@@ -1130,7 +1218,8 @@ composition boundary."
           (ebox-source--update-slots-rollback (ebox-update--group-slots group))
           (when (ebox-update--group-hover-cell group)
             (setcar (ebox-update--group-hover-cell group) (ebox-update--group-hover-old group)))
-          (setf (ebox-update--group-staged group) nil))))))
+          (setf (ebox-update--group-staged group) nil))))
+    (ebox-update--restore-structure operation)))
 
 (defun ebox-update--rollback (scene _report)
   "Restore SCENE's source, runtime, interaction and paired caller authority."
@@ -1181,6 +1270,7 @@ after acceptance."
   "Execute OPERATION's prebound mixed primitive cohort."
   (let* ((members (ebox-update--cohort-members operation))
          (groups (ebox-update--cohort-groups operation))
+         (state (ebox-update--cohort-state operation))
          (scene (ebox-update--cohort-scene operation))
          (routes (ebox-geometry--operation-routes scene))
          (count (or count (and (vectorp changed-indices) (length changed-indices))))
@@ -1189,6 +1279,28 @@ after acceptance."
                  (vectorp changed-indices) (integerp count) (<= 0 count (length changed-indices)))
       (user-error "Invalid Ebox prepared update values or member indices"))
     (when (ebox-update-valid-p operation)
+      ;; Install the candidate tables for the render and roll back together
+      ;; with the source slots; nothing observes them before this point.
+      (when-let* ((candidate-state (ebox-update--cohort-structural-state operation)))
+        (setf (ebox-update--cohort-structural operation) nil)
+        (dolist (key ebox-update--structural-state-keys)
+          (push (cons key (and (plist-member state key) (plist-get state key)))
+                (ebox-update--cohort-structural operation))
+          (plist-put state key (plist-get candidate-state key)))
+        (cl-loop for group across groups do
+          (when (ebox-update--group-structural group)
+            (let* ((old-id (plist-get (ebox-update--group-node group) :node-id))
+                   (node (ebox-runtime-index-get
+                          old-id (plist-get state :node-table))))
+              (unless node (throw 'unsupported nil))
+              (setf (ebox-update--group-node group) node)
+              (let ((boundary (ebox-update--group-boundary group)))
+                (when boundary
+                  (let ((boundary-node (ebox-runtime-index-get
+                                        (plist-get (ebox-update--boundary-node boundary) :node-id)
+                                        (plist-get state :node-table))))
+                    (unless boundary-node (throw 'unsupported nil))
+                    (setf (ebox-update--boundary-node boundary) boundary-node))))))))
       (setf (ebox-update--cohort-epoch operation) epoch
             (ebox-update--cohort-snapshots operation) nil
             (ebox-update--cohort-paint-changed operation) nil
@@ -1231,6 +1343,8 @@ after acceptance."
                   (unless (and (vectorp incoming) (= (length incoming) (length keys)))
                     (user-error "Prepared member values do not match their properties"))
                   (setf (ebox-update--group-dirty group) t)
+                  (when (ebox-update--group-structural group)
+                    (setf (ebox-update--group-repaint group) t))
                   ;; Only a raster value that differs from the displayed one
                   ;; re-renders the boundary; translation, crop and selector
                   ;; changes keep their retained primitives.
@@ -1270,7 +1384,8 @@ after acceptance."
               (ebox-layer--program-batch-begin (ebox-geometry--route-program (aref routes index))))
             (dotimes (index (length groups))
               (let ((group (aref groups index)))
-                (when (ebox-update--group-dirty group)
+                (when (and (ebox-update--group-dirty group)
+                           (not (ebox-update--group-structural group)))
                   (when (ebox-update--group-hover-cell group)
                     (setf (ebox-update--group-hover-old group) (car (ebox-update--group-hover-cell group))))
                   (setf (ebox-update--group-staged group) t)
