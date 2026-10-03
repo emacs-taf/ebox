@@ -175,5 +175,34 @@
         (should (equal (ebox-display--display-runs (buffer-string))
                        (ebox-display--display-runs reference)))))))
 
+(ert-deftest ebox-display-capped-columns-retain-viewport-unit-dependencies ()
+  "A capped ancestor must not hide vw/vh changes from nested content."
+  (let ((form '(column :width (vw 100) :cross-align center
+                (column :width stretch :max-width (px 100)
+                  (box :width (vw 25) "viewport width")
+                  (box :width (px 40) :height (vh 25) "viewport height")
+                  (box :width stretch :wrap-mode word
+                       "Fixed measure remains stable across wider viewports")))))
+    (with-temp-buffer
+      (let ((ebox-viewport-width 400) (ebox-viewport-height 20))
+        (ebox-render-to-buffer (current-buffer) (ebox-build form)))
+      (dolist (size '((500 20) (600 20) (600 40) (480 40) (300 32) (400 20)))
+        (ebox-rerender-buffer-with-context (current-buffer) (car size) (cadr size))
+        (when (ebox-native-reflow-layout-ready-p)
+          (should (eq (plist-get (ebox-buffer-update-report (current-buffer))
+                                 :strategy)
+                      'native-frame)))
+        (let ((actual (buffer-string))
+              (expected
+               (with-temp-buffer
+                 (let ((ebox-viewport-width (car size))
+                       (ebox-viewport-height (cadr size)))
+                   (ebox-render-to-buffer (current-buffer) (ebox-build form)))
+                 (buffer-string))))
+          (should (equal (substring-no-properties actual)
+                         (substring-no-properties expected)))
+          (should (equal (ebox-display--display-runs actual)
+                         (ebox-display--display-runs expected))))))))
+
 (provide 'ebox-display-tests)
 ;;; ebox-display-tests.el ends here

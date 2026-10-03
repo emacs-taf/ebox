@@ -307,7 +307,13 @@ subtree without repeating its layout. This memo belongs to the immutable frame
 transaction and is discarded afterward. Each caller retains its own use edge and
 compares changes against its own previous result; final scroll ownership remains
 distinct from measurement probes. Cross-frame reuse still uses source invalidation
-and the retained evaluation tree.
+and the retained evaluation tree. Each evaluation records reads of the CSS
+viewport axes through the viewport-unit resolvers, including reads inherited
+from reused child evaluations. An unchanged source may reuse its result when
+only an unread CSS viewport axis changed; containing-block constraints,
+intrinsic mode, size overrides and scroll-effect mode still match exactly.
+This lets a capped reading column reuse its content when its outer margins
+change, without treating nested `vw` or `vh` values as fixed sizes.
 
 Auto-height single-row Grid layouts have native fixed and fractional tracks.
 Cells are automatically placed Text or stretched, clipped Boxes without competing

@@ -5219,6 +5219,7 @@ fn box_sizing_content_height(
 // The native geometry domain is integral. Decline a frame before publication
 // when a viewport length cannot be represented exactly; Elisp owns its rounding.
 fn css_viewport_width(percentage: f64, context: LayoutContext) -> Option<i64> {
+    evaluation::read_css_viewport_width();
     let value = context.css_viewport_width as f64 * (percentage / 100.0);
     (value.is_finite()
         && value >= 0.0
@@ -5228,6 +5229,7 @@ fn css_viewport_width(percentage: f64, context: LayoutContext) -> Option<i64> {
 }
 
 fn css_viewport_height(percentage: f64, context: LayoutContext) -> Option<i64> {
+    evaluation::read_css_viewport_height();
     let value = context.css_viewport_height as f64 * (percentage / 100.0);
     (value.is_finite()
         && value >= 0.0

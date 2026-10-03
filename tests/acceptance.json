@@ -16,6 +16,21 @@
   ],
   "cases": [
     {
+      "name": "ebox-display-capped-columns-retain-viewport-unit-dependencies",
+      "file": "tests/ebox-display-tests.el",
+      "purpose": "Repeated viewport changes preserve nested vw/vh geometry under capped ancestors and match fresh native rendering."
+    },
+    {
+      "name": "ebox-cascade-values-region-text-style-batch-rolls-back",
+      "file": "tests/ebox-cascade-values-tests.el",
+      "purpose": "A rejected text and style batch preserves the visible text, faces and revision and permits a later valid batch."
+    },
+    {
+      "name": "ebox-cascade-values-region-text-style-matches-fresh-rendering",
+      "file": "tests/ebox-cascade-values-tests.el",
+      "purpose": "Text typography and decorations applied and reset through individual or batched region updates match fresh rendering without changing a sibling."
+    },
+    {
       "name": "ebox-owner-style-linear-updates-match-fresh-rendering",
       "file": "tests/ebox-owner-style-tests.el",
       "purpose": "Repeated first, middle, last and disjoint row restyles preserve text, paint and geometry, including coordinate-changing replacements followed by local updates, with and without native layout."

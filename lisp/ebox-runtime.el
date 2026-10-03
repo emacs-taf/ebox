@@ -4389,10 +4389,19 @@ write uses the ordinary narrow copy only when PATH-COPY-P is proven safe."
                      (ebox-source-index-interactions
                       source-index (ebox-tree-node-source-handle box)))))
       (push :surface-properties changed-keys))
-    (let ((declarations-changed
-           (not (ebox-style-declarations-equal-p
-                 declarations
-                 (ebox-style-node-declarations source-index box)))))
+    (let* ((declarations-changed
+            (not (ebox-style-declarations-equal-p
+                  declarations
+                  (ebox-style-node-declarations source-index box))))
+           (source-style-keys
+            (when declarations-changed
+              (cl-loop for (property _value) on style-declarations by #'cddr
+                       for definition = (ebox-style--property property)
+                       when (and definition
+                                 (not (plist-get definition :engine-projection))
+                                 (not (memq (plist-get definition :name)
+                                            ebox--region-update-longhand-props)))
+                       collect (plist-get definition :name)))))
       (when (or declarations-changed (plist-member expanded :surface-properties))
         (let* ((old-handle (ebox-tree-node-source-handle box))
                (binding
@@ -4404,6 +4413,20 @@ write uses the ordinary narrow copy only when PATH-COPY-P is proven safe."
                                   source-index old-handle)))))
           (setq candidate-source-index (car binding))
           (plist-put box :ebox-source-handle (cdr binding))))
+      (when (and source-style-keys
+                 (= (ebox-tree-author-style-count box)
+                    (cl-loop for child in (ebox-tree--children-raw box)
+                             sum (ebox-tree-author-style-count child))))
+        ;; Retained Text nodes no longer carry pending author style after
+        ;; mounting.  Mark this consumer and its path before projection;
+        ;; changing source alone otherwise leaves their old computed face.
+        (dolist (node (ebox--node-path-to-region root region-id))
+          (ebox-tree--set-author-style-count
+           node (1+ (ebox-tree-author-style-count node)))))
+    ;; Source declarations such as typography and text decoration have no
+    ;; mutable engine longhand.  They still invalidate the owner's computed
+    ;; style; otherwise a Text target can commit new source with old paint.
+    (setq changed-keys (append source-style-keys changed-keys))
     (cl-loop for (property value) on style-declarations by #'cddr
              when (or (ebox-style--custom-property-p property)
                       (ecss-declaration-value-tagged-p value))
@@ -4425,7 +4448,8 @@ write uses the ordinary narrow copy only when PATH-COPY-P is proven safe."
              for target-key = (ebox--region-update-normalize-property key)
              when (or (eq target-key :content)
                       (eq target-key :surface-properties)
-                      (memq target-key ebox--region-update-longhand-props))
+                      (memq target-key ebox--region-update-longhand-props)
+                      (ebox-style--property key))
              when (or (not (funcall
                              (cond
                               ((eq target-key :surface-properties)

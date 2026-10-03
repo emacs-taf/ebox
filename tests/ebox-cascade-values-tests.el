@@ -244,5 +244,103 @@
          (ebox-render (ebox-cascade-value-test--font-tree
                        :font-size 20 :color "#667788"))))))))
 
+(defun ebox-cascade-value-test--region-appearance ()
+  "Return visible text and effective inline faces, preserving face precedence."
+  (let ((appearance (ebox-cascade-value-test--appearance (buffer-string))))
+    (cons (car appearance)
+          (mapcar
+           (lambda (entry)
+             (let (attributes)
+               (cl-labels
+                   ((merge-face
+                     (face)
+                     (cond
+                      ((null face) nil)
+                      ((keywordp (car-safe face))
+                       (cl-loop for (key value) on face by #'cddr
+                                unless (assq key attributes)
+                                do (push (cons key value) attributes)))
+                      ((listp face) (mapc #'merge-face face))
+                      (t (error "Unexpected non-inline fixture face: %S" face)))))
+                 (merge-face (cadr entry)))
+               (list (car entry)
+                     (sort attributes (lambda (a b)
+                                        (string< (symbol-name (car a))
+                                                 (symbol-name (car b))))))))
+           (cdr appearance)))))
+
+(defun ebox-cascade-value-test--mounted-appearance (input)
+  "Return INPUT's fresh mounted appearance in the current display context."
+  (with-temp-buffer
+    (ebox-render-to-buffer (current-buffer) input)
+    (ebox-cascade-value-test--region-appearance)))
+
+(ert-deftest ebox-cascade-values-region-text-style-matches-fresh-rendering ()
+  "Text typography and decorations publish and reset like a fresh render."
+  (dolist (batched '(nil t))
+    (with-temp-buffer
+      (let ((tree (lambda (props)
+                    (ebox-build
+                     `(column
+                       (text :id "label" ,@props "Reading")
+                       (text :color "#113355" "Unchanged"))))))
+        (ebox-render-to-buffer (current-buffer) (funcall tree nil))
+        (dolist (props '((:text-decoration-line underline
+                          :text-decoration-color "#cc5533"
+                          :text-decoration-style wavy)
+                         (:text-decoration-line none
+                          :text-decoration-color "#cc5533"
+                          :text-decoration-style solid
+                          :font-weight bold)
+                         (:font-weight normal :font-style italic)
+                         (:font-weight normal :font-style normal
+                          :text-decoration-line underline
+                          :text-decoration-color "#cc5533"
+                          :text-decoration-style wavy)
+                         (:font-weight normal :font-style normal
+                          :text-decoration-line none
+                          :text-decoration-color "#cc5533"
+                          :text-decoration-style solid)))
+          (if batched
+              (ebox-call-with-update-batch
+               (lambda () (apply #'ebox-region-update "label" props)))
+            (apply #'ebox-region-update "label" props))
+          (ert-info ((format "batch=%S props=%S faces=%S/%S"
+                             batched props
+                             (cadr (cadr (ebox-cascade-value-test--region-appearance)))
+                             (cadr (cadr (ebox-cascade-value-test--mounted-appearance
+                                         (funcall tree props))))))
+            (should
+             (equal (ebox-cascade-value-test--region-appearance)
+                    (ebox-cascade-value-test--mounted-appearance
+                     (funcall tree props))))))))))
+
+(ert-deftest ebox-cascade-values-region-text-style-batch-rolls-back ()
+  "A rejected text/style batch preserves paint and accepts a later update."
+  (with-temp-buffer
+    (ebox-render-to-buffer
+     (current-buffer) (ebox-build '(column (text :id "label" "Before")
+                                          (text :id "peer" "Peer"))))
+    (let ((before (buffer-string))
+          (revision (ebox-surface-buffer-revision (current-buffer))))
+      (should-error
+       (ebox-call-with-update-batch
+        (lambda ()
+          (ebox-region-update "label" :content "After" :font-weight 'bold
+                              :text-decoration-line 'underline)
+          (ebox-region-update "peer" :font-size 'invalid))))
+      (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+      (should (equal-including-properties before (buffer-string))))
+    (ebox-call-with-update-batch
+     (lambda ()
+       (ebox-region-update "label" :content "After" :font-weight 'bold
+                           :text-decoration-line 'underline)))
+    (should
+     (equal (ebox-cascade-value-test--region-appearance)
+            (ebox-cascade-value-test--mounted-appearance
+             (ebox-build '(column (text :id "label" :font-weight bold
+                                        :text-decoration-line underline "After")
+                                  (text :id "peer" "Peer"))))))))
+
 (provide 'ebox-cascade-values-tests)
 ;;; ebox-cascade-values-tests.el ends here

@@ -47,6 +47,17 @@ pub(crate) struct EvalWork {
 
 thread_local! {
     static WORK: Cell<EvalWork> = Cell::new(EvalWork::default());
+    // Only the viewport-unit resolvers read these axes semantically. Track
+    // those reads through nested evaluations, including retained cache hits.
+    static CSS_VIEWPORT_READS: Cell<u8> = const { Cell::new(0) };
+}
+
+pub(super) fn read_css_viewport_width() {
+    CSS_VIEWPORT_READS.set(CSS_VIEWPORT_READS.get() | 1);
+}
+
+pub(super) fn read_css_viewport_height() {
+    CSS_VIEWPORT_READS.set(CSS_VIEWPORT_READS.get() | 2);
 }
 
 impl EvalWork {
@@ -154,11 +165,28 @@ struct EvalRequest {
     complete_scroll_effects: bool,
 }
 
+impl EvalRequest {
+    fn equivalent(self, other: Self, css_reads: u8) -> bool {
+        let mut left = self;
+        let mut right = other;
+        if css_reads & 1 == 0 {
+            left.context.css_viewport_width = 0;
+            right.context.css_viewport_width = 0;
+        }
+        if css_reads & 2 == 0 {
+            left.context.css_viewport_height = 0;
+            right.context.css_viewport_height = 0;
+        }
+        left == right
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct EvalRecord {
     source: SourceAddress,
     request: EvalRequest,
     rendered: Rendered,
+    css_viewport_reads: u8,
     children: ChildUses,
     column: Option<Arc<ColumnState>>,
     projections: BTreeMap<BoxProjectionSlot, Arc<ProjectionState>>,
@@ -533,7 +561,9 @@ impl RenderTxn {
         };
         let request_key = (source.clone(), request);
         if let Some(old) = previous.as_ref().filter(|old| {
-            old.source == *source && old.request == request && !self.dirty.contains_key(source)
+            old.source == *source
+                && old.request.equivalent(request, old.css_viewport_reads)
+                && !self.dirty.contains_key(source)
         }) {
             record(EvalWork {
                 hits: 1,
@@ -585,7 +615,11 @@ impl RenderTxn {
         None
     }
 
-    fn finish(&mut self, rendered: Result<Rendered, String>) -> Result<RenderedChange, String> {
+    fn finish(
+        &mut self,
+        rendered: Result<Rendered, String>,
+        css_viewport_reads: u8,
+    ) -> Result<RenderedChange, String> {
         let current = self.stack.pop().expect("native evaluation builder stack");
         let mut rendered = rendered?;
         let children = current.children.finish();
@@ -609,6 +643,7 @@ impl RenderTxn {
             source: current.source,
             request: current.request,
             rendered: rendered.clone(),
+            css_viewport_reads,
             children,
             column: current.column,
             projections: current.projections,
@@ -775,6 +810,9 @@ impl<'a> RenderScope<'a> {
                     .borrow_mut()
                     .begin(&source.view.address, &source.path, request)
             {
+                if let Some(record) = &rendered.record {
+                    CSS_VIEWPORT_READS.set(CSS_VIEWPORT_READS.get() | record.css_viewport_reads);
+                }
                 return Ok(rendered);
             }
         }
@@ -783,9 +821,12 @@ impl<'a> RenderScope<'a> {
             path: Vec::new(),
             ..source
         };
+        let parent_reads = CSS_VIEWPORT_READS.replace(0);
         let rendered = super::render_node_body(&body_scope, context, intrinsic, size_override);
+        let reads = CSS_VIEWPORT_READS.get();
+        CSS_VIEWPORT_READS.set(parent_reads | reads);
         if let Some(transaction) = body_scope.transaction {
-            return transaction.borrow_mut().finish(rendered);
+            return transaction.borrow_mut().finish(rendered, reads);
         }
         rendered.map(|rendered| RenderedChange {
             rendered,
