@@ -181,6 +181,25 @@ An already integral STRING is returned unchanged."
   (fillarray ebox--string-pixel-width-cache-ring nil)
   (setq ebox--string-pixel-width-cache-ring-index 0))
 
+(defun ebox--string-pixel-width-metrics-face (value)
+  "Return the width-relevant part of a `face' property VALUE.
+Foreground and background colors paint a glyph but do not change its
+metrics, so color-only faces must share one measurement cache entry.  Bare
+plists, face spec lists and named faces are all accepted."
+  (cond
+   ((null value) value)
+   ((and (consp value) (keywordp (car value)))
+    (let (result)
+      (while value
+        (let ((key (pop value))
+              (item (pop value)))
+          (unless (memq key '(:foreground :background))
+            (push key result)
+            (push item result))))
+      (nreverse result)))
+   ((consp value) (mapcar #'ebox--string-pixel-width-metrics-face value))
+   (t value)))
+
 (defun ebox--string-pixel-width-visual-key
     (line factor &optional start end)
   "Return a width cache key for LINE slice at FACTOR.
@@ -193,7 +212,10 @@ constant across the selected slice."
           (cl-loop for property in '(face display)
                    for value = (and (> end start)
                                     (get-text-property start property line))
-                   when value append (list property value)))))
+                   when value append (list property
+                                           (if (eq property 'face)
+                                               (ebox--string-pixel-width-metrics-face value)
+                                             value))))))
 
 (defun ebox--string-pixel-width-cache-key (line factor)
   "Return a safe display-scoped measurement key for LINE at FACTOR."
