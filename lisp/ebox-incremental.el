@@ -12247,6 +12247,12 @@ logical tree.  SKIP-SPAN-PROOF-P permits the retained scroll fast path;
 SCROLL-TRANSACTION-P and SCROLL-OWNER-ID identify the changing scroll owner.
 Return the intermediate candidate state, owner plan, projection proof, and
 whether NEXT-ROOT shares untouched published nodes."
+  ;; Slot proofs measure many existing spans, not just candidate text. They
+  ;; belong to the same synchronous render as layout: validate the owning
+  ;; buffer's display environment once, not once per span. Never retain this
+  ;; snapshot across publications (font/remapping changes must invalidate it).
+  (with-current-buffer buffer
+    (ebox--with-validated-display-cache
   (let* ((stale-styles-p (plist-get old-state :computed-styles-stale-p))
          (scroll-transaction-p (and (not stale-styles-p) scroll-transaction-p))
          (skip-span-proof-p (and (not stale-styles-p) skip-span-proof-p))
@@ -12411,7 +12417,7 @@ whether NEXT-ROOT shares untouched published nodes."
           :formatting-proof formatting-proof
           :layer-recompose-p (and layer-owner-plan t)
           :projection-kind projection-kind
-          :path-copied-p path-copied-p)))
+          :path-copied-p path-copied-p)))))
 
 (defun ebox-incremental-prepare-scoped-commit
     (buffer next-root report-overrides &optional isolated-candidate-p)
