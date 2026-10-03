@@ -4282,6 +4282,11 @@ legacy callers."
                      :pending nil
                      :flush-count 0
                      :surface-candidate-root nil
+                     :surface-composition-ledger
+                     (make-hash-table :test #'equal)
+                     :surface-composition-replacements
+                     (make-hash-table :test #'equal)
+                     :surface-local-input-only-p t
                      :surface-source-base-index nil
                      :surface-publisher nil)))
     (puthash buffer state ebox-incremental--batch-table)
@@ -4303,6 +4308,95 @@ legacy callers."
     (and (plist-get state :active)
          (plist-get state :surface-source-base-index))))
 
+(defun ebox-incremental-surface-batch-region-box (buffer region-id)
+  "Return BUFFER's current candidate Box for REGION-ID, or nil."
+  (let* ((state (ebox--buffer-render-state buffer))
+         (owner-id (ebox-runtime-index-get
+                    region-id (plist-get state :region-node-table)))
+         (ledger (plist-get (ebox-incremental--batch-state buffer)
+                            :surface-composition-ledger))
+         (owner (or (and (hash-table-p ledger) (gethash owner-id ledger))
+                    (ebox-runtime-index-get owner-id
+                                            (plist-get state :node-table))))
+         (box (pcase (and owner (plist-get owner :ebox-type))
+                ('box owner)
+                ('flex (plist-get owner :box)))))
+    (and box (equal (ebox-get box :region-id) region-id) box)))
+
+(defun ebox-incremental-surface-batch-copy-region (buffer region-id)
+  "Copy the current owner of REGION-ID for a batched mutation.
+Return the isolated owner as :root with copied :ledger and :replacements maps."
+  (let* ((state (ebox--buffer-render-state buffer))
+         (node-table (plist-get state :node-table))
+         (owner-id (ebox-runtime-index-get
+                    region-id (plist-get state :region-node-table)))
+         (batch-state (ebox-incremental--batch-state buffer))
+         (ledger (copy-hash-table
+                  (plist-get batch-state :surface-composition-ledger)))
+         (replacements
+          (copy-hash-table
+           (plist-get batch-state :surface-composition-replacements)))
+         (owner (or (gethash owner-id ledger)
+                    (ebox-runtime-index-get owner-id node-table))))
+    (when (and owner owner-id)
+      (let ((new-owner (ebox-tree-copy-node-structure owner)))
+        (cl-labels ((record-subtree (node)
+                      (when (and (listp node) (not (stringp node)))
+                        (let ((node-id (plist-get node :node-id)))
+                          (when (and node-id (not (gethash node-id replacements)))
+                            (puthash node-id node ledger)))
+                        (dolist (child (ebox-tree--children-raw node))
+                          (record-subtree child)))))
+          (record-subtree new-owner))
+        (puthash owner-id new-owner ledger)
+        (puthash owner-id new-owner replacements)
+        (list :root new-owner
+              :composition-fragment-p t
+              :ledger ledger
+              :replacements replacements)))))
+
+(defun ebox-incremental-surface-batch-compose-root (buffer)
+  "Compose BUFFER's batched owner replacements into one candidate root."
+  (let* ((state (ebox-incremental--batch-state buffer))
+         (root (or (plist-get state :surface-candidate-root)
+                   (plist-get (ebox--buffer-render-state buffer) :root-node)))
+         (replacements
+          (plist-get state :surface-composition-replacements))
+         (parent-table
+          (plist-get (ebox--buffer-render-state buffer) :parent-table)))
+    (if (or (not (hash-table-p replacements))
+            (= (hash-table-count replacements) 0))
+        (plist-get state :surface-candidate-root)
+      (let ((affected (make-hash-table :test #'equal)))
+        (maphash
+         (lambda (node-id _replacement)
+           (let ((ancestor node-id))
+             (while ancestor
+               (puthash ancestor t affected)
+               (setq ancestor
+                     (ebox-runtime-index-get ancestor parent-table)))))
+         replacements)
+        (cl-labels
+            ((compose (node)
+               (let* ((node-id (plist-get node :node-id))
+                      (current (or (gethash node-id replacements) node))
+                      child-replacements)
+                 (dolist (child (ebox-tree--children-raw current))
+                   (when (gethash (plist-get child :node-id) affected)
+                     (let ((candidate (compose child)))
+                       (unless (eq candidate child)
+                         (push (cons child candidate) child-replacements)))))
+                 (if child-replacements
+                     (ebox-tree-copy-with-direct-child-replacements
+                      current (nreverse child-replacements))
+                   current))))
+          (compose root))))))
+
+(defun ebox-incremental-surface-batch-private-root-required-p (buffer)
+  "Return non-nil when BUFFER's batch candidate needs complete isolation."
+  (let ((state (ebox-incremental--batch-state buffer)))
+    (and state (not (plist-get state :surface-local-input-only-p)))))
+
 (defun ebox-incremental-record-surface-region-change
     (buffer candidate-root region-id handle dirty-kind changed-keys
             old-style-values publisher)
@@ -4317,11 +4411,19 @@ during `ebox-incremental-flush'."
 
 (defun ebox-incremental-record-surface-region-input-change
     (buffer candidate-root source-base-index region-id handle dirty-kind
-            changed-keys old-style-values publisher)
+            changed-keys old-style-values publisher &optional local-input-p
+            composition-ledger composition-replacements)
   "Record one batched region change and its candidate SOURCE-BASE-INDEX."
   (when (ebox-incremental-batching-p buffer)
     (let ((state (ebox-incremental--batch-state buffer)))
       (plist-put state :surface-candidate-root candidate-root)
+      (when composition-ledger
+        (plist-put state :surface-composition-ledger composition-ledger))
+      (when composition-replacements
+        (plist-put state :surface-composition-replacements
+                   composition-replacements))
+      (unless local-input-p
+        (plist-put state :surface-local-input-only-p nil))
       (when source-base-index
         (plist-put state :surface-source-base-index source-base-index))
       (plist-put state :surface-publisher publisher)
@@ -4426,7 +4528,9 @@ during `ebox-incremental-flush'."
               (setq report
                     (funcall
                      surface-publisher buffer
-                     (plist-get state :surface-candidate-root) pending)))
+                     (or (plist-get state :surface-candidate-root)
+                         (ebox-incremental-surface-batch-compose-root buffer))
+                     pending)))
           ;; A quit or render error during execution must leave the
           ;; batch active with its recorded changes still pending so a
           ;; later retry cannot silently publish a no-op.  If execution

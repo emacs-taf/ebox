@@ -218,5 +218,47 @@
             (should-error (ebox-region-update 'control :width '(px -1)))
             (should (equal saved (ebox-buffer-update-report (current-buffer))))))))))
 
+(ert-deftest ebox-selector-located-batch-composes-local-content-updates ()
+  "Located content changes compose one scoped batch and failed batches discard."
+  (cl-labels
+      ((input (value)
+         (ebox-build
+          `(column :width (ch 20)
+                   (box :key first :class located :width (ch 20) ,value)
+                   (box :key second :class located :width (ch 20) ,value)
+                   (box :key retained :width (ch 20) "Untouched"))))
+       (shape (text)
+         (list (substring-no-properties text)
+               (vconcat
+                (cl-loop for index below (length text)
+                         collect (list (get-text-property index 'display text)
+                                       (get-text-property index 'face text)))))))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer) (input "Before"))
+      (let* ((matches (ebox-selector-query-buffer
+                       (current-buffer) ".located"))
+             (before (shape (buffer-string))))
+        (should-error
+         (ebox-call-with-update-batch
+          (lambda ()
+            (dolist (match matches)
+              (ebox-region-update (plist-get match :region-handle)
+                                  :content "After!"))
+            (ebox-region-update "absent" :content "Rejected"))
+          (current-buffer)))
+        (should (equal before (shape (buffer-string)))))
+      (let* ((summary
+              (ebox-selector-update-buffer
+               (current-buffer) ".located" :content "After!"))
+             (report (ebox-buffer-update-report (current-buffer))))
+        (should (= 2 (plist-get summary :matched)))
+        (should (= 2 (plist-get summary :updated)))
+        (should (equal (shape (buffer-string))
+                       (shape (ebox-render (input "After!")))))
+        (should (string-match-p "Untouched" (buffer-string)))
+        (should (eq 'span-patch (plist-get report :projection-kind)))
+        (should (= 2 (plist-get report :dirty-count)))
+        (should (= 2 (plist-get report :patch-count)))))))
+
 (provide 'ebox-selector-tests)
 ;;; ebox-selector-tests.el ends here

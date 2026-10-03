@@ -889,6 +889,8 @@ belong to the enclosing numeric span; no consumer reconstructs mount ownership.
 
 Keys are local to a sibling collection. Declarative source trees never own live Ebox publication objects, markers, or buffer coordinates. A live logical `:id` resolves through `ebox-region-resolve` to an opaque handle tied to one Ebox publication surface object; mounting the same source in two buffers therefore yields distinct handles. Region and host-ref positions are generation-bound; after a buffer mutation, callers must obtain fresh positions from the public accessor. Buffer markers, display spans, and text properties are publication facts, not source-tree identity.
 
+Explicit region-update batches keep a sparse composition ledger keyed by retained node identity. Each write copies and mutates only its owner subtree; one final composition pass copies each affected ancestor once and overlays nested replacements onto the latest staged descendants. Proven local content and size batches keep untouched published branches shared through preparation. Other inputs isolate the composed root once before rendering, while proof misses and publication failures retain the ordinary safe fallback and rollback.
+
 Native activation and optional interaction navigation resolve declaring keymap
 owners from the committed surface and paint ancestry. Explicit nil stops inherited
 activation. They keep no activation target registry; inaccessible, invisible

@@ -4331,17 +4331,21 @@ shape stable before and after the first incremental update."
 
 (defun ebox--surface-region-candidate-root
     (buffer state region-id &optional path-copy-p)
-  "Return BUFFER's candidate root for REGION-ID.
-Use a narrow copy-on-write path when PATH-COPY-P is proven safe; active batch
-candidates are copied again before a second mutation so shared published nodes
-cannot be changed through the unpublished batch root."
-  (let ((batch-root (ebox-incremental-surface-batch-root buffer)))
-    (or (and batch-root
-             (ebox-tree-copy-node-structure batch-root))
-        (and path-copy-p
-             (ebox-incremental-surface-region-candidate-root
-              buffer region-id t))
-        (ebox-tree-copy-node-structure (plist-get state :root-node)))))
+  "Return candidate owner or root and composition data for REGION-ID.
+Batched writes copy only the current owner subtree; the batch composition
+ledger builds the complete candidate once at publication.  A non-batched
+write uses the ordinary narrow copy only when PATH-COPY-P is proven safe."
+  (if (ebox-incremental-batching-p buffer)
+      (or (ebox-incremental-surface-batch-copy-region buffer region-id)
+          (error "Ebox batch cannot compose region candidate: %S" region-id))
+    (let ((candidate
+           (and path-copy-p
+                (ebox-incremental-surface-region-candidate-root
+                 buffer region-id t))))
+      (if candidate
+          (list :root candidate)
+        (list :root (ebox-tree-copy-node-structure
+                     (plist-get state :root-node)))))))
 
 (defun ebox--region-update-layout-delta (box declarations)
   "Apply LayoutConfig DECLARATIONS to BOX and return changed property names."
@@ -4653,7 +4657,11 @@ REGION-ID and CHANGED-KEYS describe one update; CHANGES describes a batch."
 
 (defun ebox--publish-surface-region-batch (buffer candidate-root pending)
   "Publish BUFFER's accumulated CANDIDATE-ROOT for entries in PENDING."
-  (let ((change (ebox-incremental--batch-change buffer pending)))
+  (let* ((change (ebox-incremental--batch-change buffer pending))
+         (candidate-root
+          (if (ebox-incremental-surface-batch-private-root-required-p buffer)
+              (ebox-tree-copy-node-structure candidate-root)
+            candidate-root)))
     (ebox--publish-scoped-region-candidate
      buffer candidate-root nil nil
      (append
@@ -4677,7 +4685,10 @@ HANDLE."
          (published-root (or (ebox-incremental-surface-batch-root buffer)
                              (plist-get state :root-node)))
          (candidate-box
-          (or (ebox--root-region-box published-root region-id)
+          (or (and (ebox-incremental-batching-p buffer)
+                   (ebox-incremental-surface-batch-region-box
+                    buffer region-id))
+              (ebox--root-region-box published-root region-id)
               (user-error "Ebox region handle no longer resolves to a box")))
          (style-declarations
           (ebox-style-compile-form
@@ -4742,9 +4753,15 @@ HANDLE."
                                   (and (eq key :content) (stringp value)
                                        (ebox--region-update-direct-text-node
                                         candidate-box))))))
-               (candidate-root
+               (candidate-info
                 (ebox--surface-region-candidate-root
                  buffer state region-id local-input-p))
+               (candidate-root (plist-get candidate-info :root))
+               (composition-fragment-p
+                (plist-get candidate-info :composition-fragment-p))
+               (composition-ledger (plist-get candidate-info :ledger))
+               (composition-replacements
+                (plist-get candidate-info :replacements))
                (applied
                 (ebox--surface-region-apply-props
                  candidate-root source-index
@@ -4757,9 +4774,10 @@ HANDLE."
                 (ebox--region-constraint-change
                  buffer region-id dirty-kind changed-keys)))
           (if (ebox-incremental-record-surface-region-input-change
-               buffer candidate-root candidate-source-index
-               region-id handle dirty-kind changed-keys old-style-values
-               #'ebox--publish-surface-region-batch)
+               buffer (unless composition-fragment-p candidate-root)
+               candidate-source-index region-id handle dirty-kind changed-keys
+               old-style-values #'ebox--publish-surface-region-batch
+               local-input-p composition-ledger composition-replacements)
               (progn
                 (ebox--cancel-buffer-runtime-prewarm buffer)
                 nil)

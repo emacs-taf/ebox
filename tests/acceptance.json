@@ -1346,6 +1346,11 @@
       "purpose": "Repeated subtree changes preserve structural styles, rollback and exported snapshots."
     },
     {
+      "name": "ebox-selector-located-batch-composes-local-content-updates",
+      "file": "tests/ebox-selector-tests.el",
+      "purpose": "Selector-located content changes compose one scoped publication, match a fresh render and discard staged updates when a later selector has no matches."
+    },
+    {
       "name": "ebox-scoped-candidates-combine-content-and-selector-paint",
       "file": "tests/ebox-selector-tests.el",
       "purpose": "Publish adjacent text and class-dependent paint with fresh-render equivalence; diagnostic reports remain defensive and preserve the last successful update after rejection."

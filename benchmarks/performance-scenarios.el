@@ -62,6 +62,70 @@
                   (when (ebox-surface-buffer-mounted-p buffer) (ebox-unmount-buffer buffer))
                   (kill-buffer buffer))))))
 
+(defun ebox-benchmark--located-update-input (size value)
+  "Build SIZE fixed-width selector targets containing VALUE."
+  (ebox-build
+   `(column :width (ch 48)
+            ,@(cl-loop for index below size
+                       collect `(box :key ,index :class located
+                                     :width (ch 48) ,value))
+            (box :width (ch 48) "Untouched"))))
+
+(defun ebox-benchmark--located-update-fixture (size _mode)
+  "Prepare a selector-driven SIZE-member update workload."
+  (let* ((buffer (generate-new-buffer " *TAF Ebox locate*"))
+         (inputs (list (ebox-benchmark--located-update-input size "Before")
+                       (ebox-benchmark--located-update-input size "After!")))
+         (expected (mapcar (lambda (input)
+                             (substring-no-properties (ebox-render input)))
+                           inputs))
+         current)
+    (with-current-buffer buffer
+      (let ((ebox-viewport-width 60) (ebox-viewport-height 12))
+        (ebox-render-to-buffer buffer (car inputs))))
+    (list
+     :buffer buffer :environment #'ebox-benchmark--environment
+     :invoke (lambda (sample)
+               (setq current (if (= (% sample 2) 0) 1 0))
+               (let ((summary
+                      (ebox-selector-update-buffer
+                       buffer ".located" :content
+                       (if (= current 1) "After!" "Before"))))
+                 (unless (= size (plist-get summary :updated))
+                   (error "Selector updated %S of %d targets"
+                          (plist-get summary :updated) size))))
+     :verify (lambda ()
+               (with-current-buffer buffer
+                 (let ((report (ebox-buffer-update-report buffer)))
+                   (cond
+                    ((not (equal (nth current expected)
+                                 (buffer-substring-no-properties
+                                  (point-min) (point-max))))
+                     "Located updates differ from a fresh render")
+                    ((/= size (plist-get report :dirty-count))
+                     "The accepted report omitted located dirty owners")
+                    ((not (memq (plist-get report :projection-kind)
+                                '(span-patch owner-scoped)))
+                     "The update did not retain a scoped projection")
+                    (t t)))))
+     :observe (lambda (sink)
+                (ebox-buffer-set-observer buffer sink)
+                (lambda () (ebox-buffer-set-observer buffer nil)))
+     :cleanup (lambda ()
+                (when (buffer-live-p buffer)
+                  (when (ebox-surface-buffer-mounted-p buffer)
+                    (ebox-unmount-buffer buffer))
+                  (kill-buffer buffer))))))
+
+(dolist (size '(16 64))
+  (let ((count size))
+    (taf-benchmark-register
+     (format "ebox.selector.locate-content.%s" count)
+     :version 1 :modes '(batch) :isolation 'series :required-providers '(ebox)
+     :impact 'local :budget-ms (if (<= count 16) 50 150)
+     :description (format "Update %d selector-located Boxes in one scoped publication" count)
+     :setup (lambda (mode) (ebox-benchmark--located-update-fixture count mode)))))
+
 (dolist (size '(32 128 512))
   (dolist (paint '(nil t))
     (let ((count size) (paint-p paint))

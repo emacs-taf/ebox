@@ -185,6 +185,9 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Selector-located region batches compose sparse owner replacements and copy
+  affected ancestors once, instead of rebuilding the whole candidate for each
+  match. Ordinary planning, isolation and rollback still govern publication.
 - Prepared geometry wrappers look up their compiled property transformations
   through a hash that reads every element of a signature. `sxhash-equal`
   hashes only a vector's leading elements, and a signature's leading values
