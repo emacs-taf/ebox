@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::evaluation::{record, EvalRecord, EvalWork, RenderScope, RenderedChange};
 use super::line_plan::{ChangeKind, LineOp, LinePlan, LineSplice, PlanChange, ProjectionState};
-use super::{LayoutContext, LayoutNode, LocalStep, Rendered};
+use super::{HorizontalAlign, LayoutContext, LayoutNode, LocalStep, Rendered};
 
 #[derive(Debug, Default)]
 struct ShapeRoute {
@@ -135,8 +135,11 @@ impl ColumnSlot {
         target: i64,
         previous: Option<&Self>,
     ) -> (Arc<Self>, Option<PlanChange>) {
-        let extra = (target - raw.first_width()).max(0);
-        let (normalized, projection, change) = if extra == 0 {
+        // Pad every line that is narrower than the column content width; a
+        // wrapped multi-line item's later lines can be narrower than its
+        // first, so one extra based on the first line would overflow them.
+        let uniform = raw.uniform_width(target);
+        let (normalized, projection, change) = if uniform {
             let change = previous.map(|old| {
                 proof
                     .filter(|proof| proof.applies_to(&old.normalized, &raw))
@@ -145,7 +148,13 @@ impl ColumnSlot {
             });
             (raw.clone(), None, change)
         } else {
-            let ops = Arc::from([LineOp::AppendSpace(extra), LineOp::ClearBreaks]);
+            let ops = Arc::from([
+                LineOp::PadTo {
+                    width: target,
+                    align: HorizontalAlign::Left,
+                },
+                LineOp::ClearBreaks,
+            ]);
             if let Some(old) = previous.and_then(|old| old.projection.as_ref()) {
                 let update = old.update(raw.clone(), proof, ops);
                 (

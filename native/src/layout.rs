@@ -8305,16 +8305,21 @@ fn render_node_body(
             };
             let mut parts = Vec::with_capacity(rendered.len());
             for mut item in rendered {
-                let extra = (target - item.first_width()).max(0);
-                if extra > 0 {
-                    item.lines = item
-                        .lines
-                        .map_lines(|_, mut line| {
-                            line.push_space(extra);
-                            line
-                        })
-                        .clear_breaks();
-                }
+                // Pad every line to the column content width.  A wrapped
+                // multi-line item can have lines narrower than the first, so
+                // one extra based on the first line would overflow the wider
+                // ones; `Line::padded` measures each line and only lines that
+                // need padding are rebuilt.
+                let mut padded = false;
+                let lines = item.lines.map_lines(|_, line| {
+                    if line.width < target {
+                        padded = true;
+                        line.padded(target, HorizontalAlign::Left)
+                    } else {
+                        line
+                    }
+                });
+                item.lines = if padded { lines.clear_breaks() } else { lines };
                 parts.push(item);
             }
             Ok(stack_vertical(parts))

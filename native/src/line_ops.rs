@@ -27,7 +27,6 @@ pub(in crate::layout) enum LineOp {
         width: i64,
         align: HorizontalAlign,
     },
-    AppendSpace(i64),
     OwnContent {
         region: i64,
         start: i64,
@@ -60,7 +59,6 @@ impl LineOp {
     pub fn apply(&self, mut line: Line, index: usize, length: usize) -> Line {
         match self {
             Self::PadTo { width, align } => line = line.padded(*width, *align),
-            Self::AppendSpace(width) => line.push_space(*width),
             Self::OwnContent { region, start } => line.own_content(*region, *start + index as i64),
             Self::CollapseWhitespace { width, region } => {
                 line = line.collapse_whitespace_content(*width, *region)
@@ -118,7 +116,6 @@ impl LineOp {
                 space(&mut line, left, None);
                 space(&mut line, remaining - left, None);
             }
-            Self::AppendSpace(width) => space(&mut line, *width, None),
             Self::EdgeSpaces {
                 left,
                 left_properties,
