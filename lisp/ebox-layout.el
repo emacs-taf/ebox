@@ -595,18 +595,35 @@ is aligned with CONTENT-LINES; otherwise rebuild the bounded content cache."
             box content-lines region-id 0)))
       (list rebuilt content-count (last rebuilt))))))
 
+(defvar ebox--lines-justify-exact-uniform-width nil
+  "PIXEL-WIDTH proven for every line of the last left-aligned justify input.
+Nil when a line differed or no line was measured.  Callers that format box
+content read it immediately after `ebox--lines-justify' to record
+uniform-width metadata without measuring the same lines again.")
+
 (defun ebox--lines-justify (string pixel-width &optional align)
-  "Justify lines of STRING to PIXEL-WIDTH."
+  "Justify lines of STRING to PIXEL-WIDTH.
+After a left-aligned call, `ebox--lines-justify-exact-uniform-width' holds
+PIXEL-WIDTH when every input line already measured exactly that wide."
   (let ((align (or align 'left)))
     (if (eq align 'left)
-        (ebox--maplines
-         (lambda (line)
-           (let ((line-width (ebox--string-pixel-width line)))
-             (if (>= line-width pixel-width)
-                 line
-               (concat line (ebox-pixel-space
-                             (- pixel-width line-width))))))
-         string)
+        (let ((uniform t)
+              (measured 0))
+          (prog1
+              (ebox--maplines
+               (lambda (line)
+                 (setq measured (1+ measured))
+                 (let ((line-width (ebox--string-pixel-width line)))
+                   (unless (= line-width pixel-width)
+                     (setq uniform nil))
+                   (if (>= line-width pixel-width)
+                       line
+                     (concat line (ebox-pixel-space
+                                   (- pixel-width line-width))))))
+               string)
+            (setq ebox--lines-justify-exact-uniform-width
+                  (and uniform (> measured 0) pixel-width))))
+      (setq ebox--lines-justify-exact-uniform-width nil)
       (ebox--maplines
        (lambda (line)
          (ebox--pixel-reach line pixel-width align))
@@ -1725,11 +1742,20 @@ one carrier line preserves their paint without inventing a content line."
                    (wrapped-content
                     (if (plist-get box :ebox-content-layout-complete-p)
                         content
-                      (ebox--wrap-text content pixel-width wrap-mode))))
+                      (ebox--wrap-text content pixel-width wrap-mode)))
+                   (formatted (ebox--lines-justify wrapped-content pixel-width align)))
+              ;; A left-aligned justify that measured every line exactly
+              ;; PIXEL-WIDTH wide proves CONTENT itself is uniform.  Record it
+              ;; so later formatting of the same content in this publication
+              ;; returns it unchanged instead of measuring all lines again.
+              (when (and (eq wrapped-content content)
+                         ebox--lines-justify-exact-uniform-width)
+                (ebox--record-rendered-uniform-width
+                 content ebox--lines-justify-exact-uniform-width))
               ;; KP distributes inner gaps; Ebox still owns the Box geometry.
               ;; Pad ragged lines back to the requested content width.
               (ebox--record-rendered-intrinsic-size
-               (ebox--lines-justify wrapped-content pixel-width align)
+               formatted
                (ebox--rendered-intrinsic-size content :width)
                (ebox--rendered-intrinsic-size content :height))))))
     (if (eq (ebox-get box :overflow) 'hidden)
