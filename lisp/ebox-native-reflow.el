@@ -1597,35 +1597,39 @@ renderer."
         (maphash (lambda (entry id) (puthash entry id index))
                  ebox-native-reflow--compile-property-template-ids)
         (setq ebox-native-reflow--compile-property-template-ids index)))
-    (let* ((owned-properties
-            (cl-loop for (property value) on properties by #'cddr
-                     append (list property
-                                  ;; Native maps already belong to the source
-                                  ;; or node snapshot.  Preserve their identity
-                                  ;; so repeated registration can reuse an id.
-                                  (if (keymapp value) value
-                                    (ebox-text-property-value-copy value)))))
-           (entry (list :kind (intern label)
-                        :properties owned-properties))
+    (let* ((kind (intern label))
            (missing (make-symbol "missing-property-template"))
+           ;; The template test compares values semantically, so the raw
+           ;; source properties can answer the lookup without an owned copy;
+           ;; only a new template installs copied values.
            (existing
-            (if ebox-native-reflow--compile-retained-registry-p
-                (ebox-native-reflow--persistent-index-get
-                 ebox-native-reflow--compile-property-template-index
-                 entry missing t)
-              (if (hash-table-p
-                 ebox-native-reflow--compile-property-template-ids)
-                (gethash
-                 entry ebox-native-reflow--compile-property-template-ids
-                 missing)
-              (or (cl-position
-                   entry ebox-native-reflow--compile-property-templates
-                   :test #'ebox-native-reflow--property-template-equal-p)
-                  missing)))))
+            (let ((probe (list :kind kind :properties properties)))
+              (if ebox-native-reflow--compile-retained-registry-p
+                  (ebox-native-reflow--persistent-index-get
+                   ebox-native-reflow--compile-property-template-index
+                   probe missing t)
+                (if (hash-table-p
+                     ebox-native-reflow--compile-property-template-ids)
+                    (gethash
+                     probe ebox-native-reflow--compile-property-template-ids
+                     missing)
+                  (or (cl-position
+                       probe ebox-native-reflow--compile-property-templates
+                       :test #'ebox-native-reflow--property-template-equal-p)
+                      missing))))))
       (if (not (eq existing missing))
           existing
-        (let ((id (+ ebox-native-reflow--compile-property-template-base-count
-                     (length ebox-native-reflow--compile-property-templates))))
+        (let* ((owned-properties
+                (cl-loop for (property value) on properties by #'cddr
+                         append (list property
+                                      ;; Native maps already belong to the source
+                                      ;; or node snapshot.  Preserve their identity
+                                      ;; so repeated registration can reuse an id.
+                                      (if (keymapp value) value
+                                        (ebox-text-property-value-copy value)))))
+               (entry (list :kind kind :properties owned-properties))
+               (id (+ ebox-native-reflow--compile-property-template-base-count
+                      (length ebox-native-reflow--compile-property-templates))))
           (setq ebox-native-reflow--compile-property-templates
                 (append ebox-native-reflow--compile-property-templates
                         (list entry)))
@@ -3338,15 +3342,18 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                     (copy-hash-table old-cache)
                   (make-hash-table :test 'equal)))
                (postorder-id-set
-                (let ((set (make-hash-table :test 'equal)))
-                  (dotimes (index (length postorder))
-                    (puthash
-                     (plist-get
-                      (ebox-native-reflow--postorder-node
-                       (aref postorder index) node-table)
-                      :node-id)
-                             t set))
-                  set))
+                ;; Only the retained-fast prune needs this set; a full compile
+                ;; must not pay a hash entry per node for it.
+                (when retained-fast-p
+                  (let ((set (make-hash-table :test 'equal)))
+                    (dotimes (index (length postorder))
+                      (puthash
+                       (plist-get
+                        (ebox-native-reflow--postorder-node
+                         (aref postorder index) node-table)
+                        :node-id)
+                       t set))
+                    set)))
                (ebox-native-reflow--compile-styles
                 (append (ebox-native-reflow-session-styles session) nil))
                (ebox-native-reflow--compile-property-templates
@@ -3419,12 +3426,13 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                           (dolist (child children)
                             (seed-fragment child))))
                        (child-revisions
-                        (mapcar
-                         (lambda (child)
-                           (plist-get
-                            (gethash (plist-get child :node-id) new-cache)
-                            :revision))
-                         children))
+                        (let (revisions)
+                          (dolist (child children)
+                            (push (plist-get
+                                   (gethash (plist-get child :node-id) new-cache)
+                                   :revision)
+                                  revisions))
+                          (nreverse revisions)))
                        (signature
                         (ebox-native-reflow--retained-layout-signature
                          current child-revisions flex-content-min-widths
