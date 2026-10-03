@@ -54,6 +54,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Region updates to Text typography and decoration now refresh the displayed
+  style as well as the source declarations, including batched changes and
+  resets to normal text. Previously an update could return successfully while
+  retaining the old face.
 - A mounted surface keeps every prepared canvas alive instead of only the
   most recently used one.  Preparing a panel no longer retires another
   panel's prepared operation, and a failed preparation leaves unrelated
