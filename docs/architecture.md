@@ -153,6 +153,17 @@ mutate the accepted cache. Structural projection and complete fallback rebuild
 the indexes. Equal copied role tags preserve mount identity just like identical
 tags; object identity and exact candidate coordinates remain validated.
 
+A native full-line change can still retain the fragment ledger when character
+coordinates and ownership are unchanged. Shared atom programs prove fixed-space
+width changes without expanding unchanged text: decorations, line breaks and
+existing fragment boundaries must match. Any unproved shape, character or paint
+change takes the ordinary encoder and its complete validation path.
+
+Empty author scopes carry membership but no cascade rules. They do not disable
+selector-free style reuse or require independent style bindings for otherwise
+inheriting nodes. Adding or removing real rules still changes the scope signature
+and runs the ordinary cascade, ownership and invalidation checks.
+
 Candidate render caches copy their eviction rings and recorded storage costs
 with the table. Immutable retained outputs do not need their complete object
 graphs recounted after each candidate copy. Ring vectors remain private, and
@@ -299,6 +310,13 @@ A native Box passes its resolved definite content height, including a parent Fle
 allocation and height clamps, to its inner Flex formatting context. The child
 evaluation retains that allocation as part of its request. An indefinite auto
 height stays content-driven; the ambient viewport height is not an allocation.
+
+Native layout input version 3 encodes each measured cluster as a six-field
+vector: text, pixel width, CJK flag, space flag, fixed-pixel-space flag and
+nullable source-template id. The compiler's immutable measurement cache is
+versioned with that input. Compact tuples avoid repeating field names for every
+grapheme; native deserialization and geometry/template validation remain strict.
+ABI `24:10:14` separates this input from older installed artifacts.
 
 Within one native frame, completed layout requests are shared by source address
 and exact constraints, including both viewport axes, intrinsic mode, size overrides

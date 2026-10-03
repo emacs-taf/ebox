@@ -2553,10 +2553,16 @@ Return the actual (TEXT-OPERATIONS . PROPERTY-OPERATIONS) counts."
             (let* ((start (+ base (plist-get patch :old-start)))
                    (end (+ base (plist-get patch :old-end)))
                    (replacement (plist-get patch :replacement))
-                   (old (buffer-substring-no-properties start end))
-                   (prefix (ebox--pub--common-prefix-length old replacement))
-                   (suffix (ebox--pub--common-suffix-length old replacement prefix)))
-              (unless (and (= prefix (length old))
+                   (same-character-p
+                    (and (= (- end start) 1) (= (length replacement) 1)
+                         (eq (char-after start) (aref replacement 0))))
+                   (old (unless same-character-p
+                          (buffer-substring-no-properties start end)))
+                   (prefix (if same-character-p 1
+                             (ebox--pub--common-prefix-length old replacement)))
+                   (suffix (if same-character-p 0
+                             (ebox--pub--common-suffix-length old replacement prefix))))
+              (unless (and (= prefix (- end start))
                            (= prefix (length replacement)))
                 (delete-region (+ start prefix) (- end suffix))
                 (goto-char (+ start prefix))
@@ -3860,32 +3866,46 @@ non-nil, keep snapshot markers for rollback."
 (cl-defstruct (ebox--pub--shadow-batch-output
                (:constructor ebox--pub--make-shadow-batch-output))
   "Detached patch evidence over the unchanged output of a retained surface."
-  base patches extent)
+  base patches extent text-unchanged-p)
 
 (defun ebox--pub--shadow-batch-output-create (base batch)
   "Snapshot BASE and BATCH's output evidence without rebuilding the target.
 BASE is the already captured buffer string.  Patch strings and coordinates
 are detached before publication, so changing a staged patch cannot change
 the expected output.  Native callback identities survive the snapshot."
-  (ebox--pub--make-shadow-batch-output
-   :base base :extent (ebox--pub-commit-batch-target-extent batch)
-   :patches
-   (mapcar
-    (lambda (patch)
-      (list :old-start (plist-get patch :old-start)
-            :old-end (plist-get patch :old-end)
-            :new-start (plist-get patch :new-start)
-            :new-end (plist-get patch :new-end)
-            :mouse-face-first
-            (let ((text (plist-get patch :replacement)))
-              (and (> (length text) 0) (get-text-property 0 'mouse-face text)))
-            :mouse-face-last
-            (let ((text (plist-get patch :replacement)))
-              (and (> (length text) 0)
-                   (get-text-property (1- (length text)) 'mouse-face text)))
-            :replacement
-            (ebox-text-property-value-copy (plist-get patch :replacement))))
-    (ebox--pub-commit-batch-patches batch))))
+  (let ((output
+         (ebox--pub--make-shadow-batch-output
+          :base base :extent (ebox--pub-commit-batch-target-extent batch)
+          :patches
+          (mapcar
+           (lambda (patch)
+             (list :old-start (plist-get patch :old-start)
+                   :old-end (plist-get patch :old-end)
+                   :new-start (plist-get patch :new-start)
+                   :new-end (plist-get patch :new-end)
+                   :mouse-face-first
+                   (let ((text (plist-get patch :replacement)))
+                     (and (> (length text) 0) (get-text-property 0 'mouse-face text)))
+                   :mouse-face-last
+                   (let ((text (plist-get patch :replacement)))
+                     (and (> (length text) 0)
+                          (get-text-property (1- (length text)) 'mouse-face text)))
+                   :replacement
+                   (ebox-text-property-value-copy (plist-get patch :replacement))))
+           (ebox--pub-commit-batch-patches batch)))))
+    ;; Derive this from the detached evidence, never a caller's mutable patch.
+    ;; Validation still checks the whole live text at every acceptance boundary.
+    (setf (ebox--pub--shadow-batch-output-text-unchanged-p output)
+          (and (= (length base) (ebox--pub--shadow-batch-output-extent output))
+               (cl-every
+                (lambda (patch)
+                  (and (= (plist-get patch :old-start) (plist-get patch :new-start))
+                       (= (plist-get patch :old-end) (plist-get patch :new-end))
+                       (eq t (compare-strings
+                              base (plist-get patch :old-start) (plist-get patch :old-end)
+                              (plist-get patch :replacement) 0 nil))))
+                (ebox--pub--shadow-batch-output-patches output))))
+    output))
 
 (defun ebox--pub--shadow-props-identical-p (left right)
   "Return non-nil when property lists LEFT and RIGHT have identical values.  An
@@ -3902,20 +3922,22 @@ Custom equality functions may retain or mutate their arguments without
 changing the buffer tick, so their proofs need a separate actual snapshot.")
 
 (defun ebox--pub--shadow-text-range-equal-p
-  (left left-start left-end right right-start right-end)
+  (left left-start left-end right right-start right-end &optional whole-text-check-p)
   "Compare LEFT from LEFT-START to LEFT-END with RIGHT's corresponding range.
 RIGHT-START and RIGHT-END delimit that range in the RIGHT string or buffer.
+WHOLE-TEXT-CHECK-P means the caller checks the complete live text separately.
 Unchanged runs use property identity as a proof; changed identities still
 use the same native-property policies as ordinary publication."
   (and (= (- left-end left-start) (- right-end right-start))
-       (eq t (if (bufferp right)
-                 (compare-strings
-                  left left-start left-end
-                  (with-current-buffer right
-                    (buffer-substring-no-properties right-start right-end))
-                  0 nil)
-               (compare-strings left left-start left-end
-                                right right-start right-end)))
+       (or whole-text-check-p
+           (eq t (if (bufferp right)
+                     (compare-strings
+                      left left-start left-end
+                      (with-current-buffer right
+                        (buffer-substring-no-properties right-start right-end))
+                      0 nil)
+                   (compare-strings left left-start left-end
+                                    right right-start right-end))))
        (ebox--pub--mouse-face-groups-equal-p
         left left-start left-end right right-start right-end)
        (let ((equal-p t))
@@ -3961,6 +3983,9 @@ evidence with precommit validation without copying output."
        (let ((base (ebox--pub--shadow-batch-output-base expected))
              (patches (ebox--pub--shadow-batch-output-patches expected))
              (old-position 0) (new-position 0) (equal-p t)
+             (whole-text-check-p
+              (and (not groups-only)
+                   (ebox--pub--shadow-batch-output-text-unchanged-p expected)))
              previous-face have-previous)
          (cl-labels
              ((segment-equal-p
@@ -3981,7 +4006,7 @@ evidence with precommit validation without copying output."
                     (ebox--pub--mouse-face-groups-equal-p
                      source from to actual target-start target-end)
                   (ebox--pub--shadow-text-range-equal-p
-                   source from to actual target-start target-end))))
+                   source from to actual target-start target-end whole-text-check-p))))
               (base-equal-p (from to target-start target-end)
                 (segment-equal-p
                  base from to target-start target-end
@@ -4003,7 +4028,17 @@ evidence with precommit validation without copying output."
                    new-position (plist-get patch :new-end))))
          (and equal-p
               (base-equal-p old-position (length base)
-                            new-position (- actual-end actual-start)))))))
+                            new-position (- actual-end actual-start))
+              ;; Check the complete current text after property comparisons,
+              ;; not once per patch or gap. No live text is assumed unchanged.
+              (or (not whole-text-check-p)
+                  (eq t (if (bufferp actual)
+                            (compare-strings
+                             base 0 nil
+                             (with-current-buffer actual
+                               (buffer-substring-no-properties actual-start actual-end))
+                             0 nil)
+                          (compare-strings base 0 nil actual actual-start actual-end)))))))))
 
 (defun ebox--pub--shadow-surface-output (surface &optional journals)
   "Return SURFACE's current text and direct properties as one snapshot.

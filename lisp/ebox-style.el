@@ -1507,7 +1507,9 @@ snapshot.  Neither SCOPE nor previously constructed inputs are modified."
 Inline declarations are compiled into Ebox engine properties while nodes are
 created, so a surface with no stylesheet rules does not need a per-node ECSS
 cascade pass during its initial static projection."
-  (or ebox-style--scopes
+  (or (cl-some (lambda (scope)
+                 (ecss-stylesheet-rules (ecss-scope-stylesheet scope)))
+               ebox-style--scopes)
       (not (null (ecss-stylesheet-rules ebox-style-stylesheet)))))
 
 (defun ebox-style-reset-rules ()

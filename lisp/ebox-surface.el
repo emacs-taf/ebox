@@ -3011,7 +3011,8 @@ namespace."
   "Compute one node style, reusing selector-free immutable results."
   (let ((ebox-style--scopes scopes)
         (ebox-selector-view--current view))
-  (if (or scopes (not (hash-table-p ebox-surface--inline-style-value-cache)))
+  (if (or (ebox-style-cascade-active-p)
+          (not (hash-table-p ebox-surface--inline-style-value-cache)))
       (ebox-style-compute-subject subject declarations parent-style)
     (let* ((key (list (ebox-selector-subject-type subject)
                       (ebox-selector-subject-id subject)

@@ -241,7 +241,7 @@ impl Summary {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Decoration {
     OwnContent {
         region: i64,
@@ -347,6 +347,21 @@ impl AtomPlan {
 
     pub(super) fn prepend(&self, atom: Atom) -> Self {
         Self::from_single(atom).append(self)
+    }
+
+    /// Prove that only fixed space widths changed, without expanding shared text.
+    /// A different tree shape, decoration or non-space atom declines the proof.
+    pub(super) fn space_width_changes(&self, next: &Self) -> Option<Vec<(u64, Atom)>> {
+        if self.char_count() != next.char_count() {
+            return None;
+        }
+        let mut changes = Vec::new();
+        match (self.parts.root(), next.parts.root()) {
+            (None, None) => {}
+            (Some(old), Some(new)) => space_changes_node(old, new, 0, &mut changes)?,
+            _ => return None,
+        }
+        Some(changes)
     }
 
     pub(super) fn to_vec(&self) -> Vec<Atom> {
@@ -557,6 +572,84 @@ fn materialize_node(node: &Arc<Node<Part>>, output: &mut Vec<Atom>) {
             materialize_node(right, output);
         }
     }
+}
+
+fn space_changes_node(
+    old: &Arc<Node<Part>>,
+    new: &Arc<Node<Part>>,
+    offset: u64,
+    changes: &mut Vec<(u64, Atom)>,
+) -> Option<()> {
+    if Arc::ptr_eq(old, new) {
+        return Some(());
+    }
+    match (old.view(), new.view()) {
+        (NodeView::Leaf { entries: left, .. }, NodeView::Leaf { entries: right, .. })
+            if left.len() == right.len() =>
+        {
+            let mut position = offset;
+            for (a, b) in left.iter().zip(right) {
+                if a.measure().chars != b.measure().chars {
+                    return None;
+                }
+                if !Arc::ptr_eq(a.value(), b.value()) {
+                    space_changes_part(a.value(), b.value(), position, changes)?;
+                }
+                position += a.measure().chars;
+            }
+        }
+        (
+            NodeView::Branch { left: al, right: ar, .. },
+            NodeView::Branch { left: bl, right: br, .. },
+        ) => {
+            let chars = |node: &Node<Part>| match node.view() {
+                NodeView::Leaf { measure, .. } | NodeView::Branch { measure, .. } => measure.chars,
+            };
+            if chars(al) != chars(bl) || chars(ar) != chars(br) {
+                return None;
+            }
+            space_changes_node(al, bl, offset, changes)?;
+            space_changes_node(ar, br, offset + chars(al), changes)?;
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+fn space_changes_part(
+    old: &Part,
+    new: &Part,
+    offset: u64,
+    changes: &mut Vec<(u64, Atom)>,
+) -> Option<()> {
+    match (old, new) {
+        (Part::Atoms(left), Part::Atoms(right)) if left.len() == right.len() => {
+            let mut position = offset;
+            for (a, b) in left.iter().zip(right.iter()) {
+                if a != b {
+                    match (a, b) {
+                        (Atom::Space { properties: ap, .. }, Atom::Space { properties: bp, .. })
+                            if ap == bp => changes.push((position, b.clone())),
+                        _ => return None,
+                    }
+                }
+                position += atom_measure(a).chars;
+            }
+        }
+        (
+            Part::Decorated { input: left, decorations: a },
+            Part::Decorated { input: right, decorations: b },
+        ) if a == b => {
+            for (position, mut atom) in left.space_width_changes(right)? {
+                for decoration in b {
+                    apply_decoration(atom.properties_mut(), decoration);
+                }
+                changes.push((offset + position, atom));
+            }
+        }
+        _ => return None,
+    }
+    Some(())
 }
 
 fn first_node(node: &Arc<Node<Part>>) -> Option<Atom> {

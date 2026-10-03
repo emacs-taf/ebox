@@ -710,8 +710,13 @@ compiles them too.  Horizontal stretch and automatic heights remain supported."
                      (stringp replacement))
           (error "Native retained frame has an invalid patch"))
         (unless (and (= (- end start) (length replacement))
-                     (eq (multibyte-string-p source)
-                         (multibyte-string-p replacement))
+                     (or (eq (multibyte-string-p source)
+                             (multibyte-string-p replacement))
+                         ;; ASCII padding patches cannot change a multibyte
+                         ;; document's encoding.  The native decoder commonly
+                         ;; returns these one-character strings as unibyte.
+                         (and (multibyte-string-p source)
+                              (string-match-p "\\`[[:ascii:]]*\\'" replacement)))
                      (eq t (compare-strings source start end replacement 0 nil)))
           (setq stable nil))
         (setq cursor end)))

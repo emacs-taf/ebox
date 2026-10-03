@@ -33,7 +33,7 @@ All notable changes to Ebox are documented here.
   visible source intervals, with bounded reusable storage and the same Unicode,
   text-property and rollback behavior in ordinary and prepared updates. Fixed
   display-space boundaries avoid repeated prefix measurement while joining damaged rows. Rebuild the optional
-  module for ABI `23:10:14` and restart Emacs; Elisp remains the fallback.
+  module for ABI `24:10:14` and restart Emacs; Elisp remains the fallback.
 - `ebox-geometry-prepare` and `ebox-update-prepare` compile `:width` and
   `:height` for a normal-layout absolute Box that contains only fixed Text:
   opaque string background, `overflow hidden`, `wrap-mode none`, left/top
@@ -189,6 +189,12 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Native layout input uses compact measured-glyph tuples, reducing preparation
+  allocations and JSON traffic. Rebuild the optional native module for ABI
+  `24:10:14` and restart Emacs. Existing `23:10:14` artifacts remain separate.
+- Viewport refits reuse unchanged text when only fixed-space widths change,
+  while retaining complete output, ownership and hostile-write validation.
+  Empty author scopes no longer force a full cascade for every node.
 - Selector-located region batches compose sparse owner replacements and copy
   affected ancestors once, instead of rebuilding the whole candidate for each
   match. Ordinary planning, isolation and rollback still govern publication.

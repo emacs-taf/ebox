@@ -16,6 +16,21 @@
   ],
   "cases": [
     {
+      "name": "ebox-prepared-publication-paint-rejects-outside-text-mutation",
+      "file": "tests/ebox-prepared-publication-tests.el",
+      "purpose": "A property-only prepared update rejects an unrecorded same-length text rewrite outside the changed owner, rolls back paired state and can retry successfully."
+    },
+    {
+      "name": "ebox-display-centered-refits-preserve-inline-properties",
+      "file": "tests/ebox-display-tests.el",
+      "purpose": "Viewport changes that move every centered line preserve fresh-render text geometry, face, help text and keymap activation."
+    },
+    {
+      "name": "ebox-shared-scopes-empty-rules-preserve-style-transitions",
+      "file": "tests/ebox-shared-scope-tests.el",
+      "purpose": "Empty scope membership preserves ordinary styles, and repeated transitions to and from nonempty scoped rules match fresh rendering."
+    },
+    {
       "name": "ebox-display-capped-columns-retain-viewport-unit-dependencies",
       "file": "tests/ebox-display-tests.el",
       "purpose": "Repeated viewport changes preserve nested vw/vh geometry under capped ancestors and match fresh native rendering."

@@ -91,7 +91,7 @@ pub(crate) fn resolver_lookups() -> u64 {
     RESOLVER_LOOKUP_COUNT.with(Cell::get)
 }
 
-const LAYOUT_VERSION: u32 = 2;
+const LAYOUT_VERSION: u32 = 3;
 pub const TAPE_VERSION: u16 = 14;
 pub const TAPE_HEADER_LEN: usize = 112;
 pub const MIN_TAPE_BYTES: usize = TAPE_HEADER_LEN + 5;
@@ -1902,16 +1902,21 @@ struct MeasuredLine {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "(String, i64, bool, bool, bool, Option<u32>)")]
 struct MeasuredCluster {
     text: String,
     width: i64,
     cjk: bool,
     space: bool,
-    #[serde(rename = "pixel-space", default)]
     pixel_space: bool,
-    #[serde(default, rename = "source-template-id")]
     source_template_id: Option<u32>,
+}
+
+impl From<(String, i64, bool, bool, bool, Option<u32>)> for MeasuredCluster {
+    fn from(value: (String, i64, bool, bool, bool, Option<u32>)) -> Self {
+        let (text, width, cjk, space, pixel_space, source_template_id) = value;
+        Self { text, width, cjk, space, pixel_space, source_template_id }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -2034,7 +2039,7 @@ struct RegionRoleEntry {
     region_id: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Atom {
     Text {
         text: String,

@@ -113,8 +113,11 @@
 (defvar ebox-native-reflow--compile-size-node nil
   "Owning node whose font measurements resolve fixed native size inputs.")
 
-(defconst ebox-native-reflow-abi-version "23:10:14"
+(defconst ebox-native-reflow-abi-version "24:10:14"
   "Version tuple shared by the native module, layout IR, and render tape.")
+
+(defconst ebox-native-reflow--layout-version 3
+  "Version of the immutable layout input and measured-cluster encoding.")
 
 (defconst ebox-native-reflow--minimum-rust-version "1.82.0"
   "Minimum Cargo and rustc release supported by the native source.")
@@ -1638,15 +1641,13 @@ renderer."
           id)))))
 
 (defun ebox-native-reflow--compile-cluster (cluster &optional source-template-id)
-  "Compile measured grapheme CLUSTER to strict JSON-ready IR."
-  (append
-   (list :text (plist-get cluster :text)
-         :width (plist-get cluster :width)
-         :cjk (if (plist-get cluster :cjk) t :false)
-         :space (if (plist-get cluster :space) t :false)
-         :pixel-space :false)
-   (when source-template-id
-     (list :source-template-id source-template-id))))
+  "Compile measured grapheme CLUSTER to compact layout-v3 IR.
+Fields are text, width, CJK flag, space flag, pixel-space flag and template id."
+  (vector (substring-no-properties (plist-get cluster :text))
+          (plist-get cluster :width)
+          (if (plist-get cluster :cjk) t :false)
+          (if (plist-get cluster :space) t :false)
+          :false (or source-template-id :null)))
 
 (defun ebox-native-reflow--display-space-width (properties)
   "Return the exact pixel-space width encoded by PROPERTIES, or nil."
@@ -1679,9 +1680,7 @@ renderer."
                            (string-blank-p
                             (substring-no-properties line position next)))
                 (error "Native reflow unsupported formatted text properties"))
-              (push (list :text " " :width width :cjk :false :space t
-                          :pixel-space t)
-                    clusters))
+              (push (vector " " width :false t t :null) clusters))
           (dolist (cluster
                    (append
                     (ebox--grapheme-clusters
@@ -1711,7 +1710,8 @@ renderer."
               ;; reuse on the display's own width and paint: hashing the image
               ;; bytes embedded in every cell would cost several times the
               ;; measurement this cache replaces.
-              (list ebox-native-reflow--compile-display-signature
+              (list ebox-native-reflow--layout-version
+                    ebox-native-reflow--compile-display-signature
                     (if display
                         (list display-width (plist-get properties 'face))
                       properties)
@@ -1740,12 +1740,7 @@ renderer."
                             :space (= (aref plain 0) ?\s))))
                   (vconcat
                    (mapcar
-                    (lambda (cluster)
-                      (setq cluster (copy-sequence cluster))
-                      (plist-put cluster :text
-                                 (substring-no-properties
-                                  (plist-get cluster :text)))
-                      (ebox-native-reflow--compile-cluster cluster))
+                    #'ebox-native-reflow--compile-cluster
                     (append
                      (ebox--grapheme-clusters
                       (substring line position next))
@@ -1763,15 +1758,19 @@ renderer."
         ;; on cache hits; unsupported mixed-property clusters use Elisp layout.
         (when (and (< next length) (> (length measured) 0)
                    (> (ebox--grapheme-cluster-end
-                       line (- next (length (plist-get
+                       line (- next (length (aref
                                              (aref measured (1- (length measured)))
-                                             :text))))
+                                             0))))
                       next))
           (error "Native reflow cannot split a grapheme across text property runs"))
         (dolist (cluster (append measured nil))
-          (push (append (copy-sequence cluster)
-                        (when template-id
-                          (list :source-template-id template-id)))
+          ;; Cached measurements are immutable; only a template binding needs
+          ;; a private six-field vector. No property names cross the wire per glyph.
+          (push (if template-id
+                    (let ((bound (copy-sequence cluster)))
+                      (aset bound 5 template-id)
+                      bound)
+                  cluster)
                 clusters))
         (setq position next)))
     (vconcat (nreverse clusters))))
@@ -2904,7 +2903,7 @@ Grid retains the ordinary two-dimensional renderer."
 PROPERTY-TEMPLATES are Emacs-owned plists addressed by opaque native ids.
 DOCUMENT-REVISION is the exact retained-input revision, defaulting to one."
   (list :document
-        (list :version 2
+        (list :version ebox-native-reflow--layout-version
               :space-width (ebox--space-pixel-width)
               :style-count (length styles)
               :property-template-count (length property-templates)
@@ -4559,6 +4558,7 @@ plist supplied by the caller."
     (error "Native reflow tape has an invalid fragment template"))
   (let ((cursor 0)
         (previous-line 0)
+        (seen (make-hash-table :test #'equal))
         (allowed-roles ebox-native-reflow--tape-metadata-role-symbols))
     (dotimes (index (length template))
       (let ((record (aref template index)))
@@ -4571,8 +4571,7 @@ plist supplied by the caller."
               (content-owner (aref record 4))
               (content-index (aref record 5))
               (template-ids (aref record 6))
-              (style-ids (aref record 7))
-              (seen (make-hash-table :test #'equal)))
+              (style-ids (aref record 7)))
           (unless (and (integerp start) (integerp end)
                        (= start cursor) (< start end)
                        (<= end character-count)
@@ -4583,9 +4582,11 @@ plist supplied by the caller."
           (dolist (role roles)
             (unless (and (consp role) (memq (car role) allowed-roles)
                          (integerp (cdr role)) (> (cdr role) 0)
-                         (not (gethash role seen)))
+                         (not (eql (gethash role seen) index)))
               (error "Native reflow tape fragment role is invalid"))
-            (puthash role t seen))
+            ;; The record index is an epoch: retain the exact per-record
+            ;; duplicate check without allocating a hash table per fragment.
+            (puthash role index seen))
           (unless (or (null content-owner)
                       (and (integerp content-owner) (> content-owner 0)))
             (error "Native reflow tape fragment owner is invalid"))
@@ -4593,18 +4594,14 @@ plist supplied by the caller."
                       (and (integerp content-index) (>= content-index 0)))
             (error "Native reflow tape fragment content index is invalid"))
           (unless (and (proper-list-p template-ids)
-                       (cl-every
-                        (lambda (template-id)
-                          (and (integerp template-id) (>= template-id 0)
-                               (< template-id property-template-count)))
-                        template-ids))
+                       (cl-loop for template-id in template-ids
+                                always (and (integerp template-id) (>= template-id 0)
+                                            (< template-id property-template-count))))
             (error "Native reflow tape fragment property template is invalid"))
           (unless (and (proper-list-p style-ids)
-                       (cl-every
-                        (lambda (style-id)
-                          (and (integerp style-id) (>= style-id 0)
-                               (< style-id style-count)))
-                        style-ids))
+                       (cl-loop for style-id in style-ids
+                                always (and (integerp style-id) (>= style-id 0)
+                                            (< style-id style-count))))
             (error "Native reflow tape fragment style is invalid"))
           (setq cursor end
                 previous-line line))))

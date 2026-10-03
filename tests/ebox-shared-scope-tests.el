@@ -59,6 +59,23 @@ TRANSFER assigns the slot to CHILD; REVERSE reverses the physical root order."
       (should-not (ebox-shared-scope-test-color text "Foreign")))
     (should (= 4 (length (ebox-selector-query-all input "column"))))))
 
+(ert-deftest ebox-shared-scopes-empty-rules-preserve-style-transitions ()
+  "Empty scopes behave like no rules and can gain or lose real declarations."
+  (let ((empty (ebox-style-scope-create nil))
+        (red (ebox-style-scope-create '(("text" :color "#ff0000"))))
+        (blue (ebox-style-scope-create '(("text" :color "#0000ff")))))
+    (with-temp-buffer
+      (ebox-render-to-buffer (current-buffer)
+                            (ebox-shared-scope-test-input empty empty))
+      (dolist (pair (list (list red empty) (list red blue)
+                         (list empty empty) (list empty blue)))
+        (let* ((parent (car pair)) (child (cadr pair))
+               (fresh (ebox-render (ebox-shared-scope-test-input parent child))))
+          (ebox-commit (current-buffer) (ebox-shared-scope-test-input parent child))
+          (dolist (word '("Alpha" "Beta" "Slot" "Fallback" "Foreign"))
+            (should (equal (ebox-shared-scope-test-color (buffer-string) word)
+                           (ebox-shared-scope-test-color fresh word)))))))))
+
 (ert-deftest ebox-shared-scopes-membership-updates-and-snapshots ()
   "Ownership changes repaint retained output while snapshots retain old membership."
   (let ((parent (ebox-style-scope-create '(("text" :color "#ff0000"))))

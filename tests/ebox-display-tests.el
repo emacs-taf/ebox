@@ -204,5 +204,36 @@
           (should (equal (ebox-display--display-runs actual)
                          (ebox-display--display-runs expected))))))))
 
+(ert-deftest ebox-display-centered-refits-preserve-inline-properties ()
+  "Changing every line's outer spacing retains text, paint and activation."
+  (let* ((map (make-sparse-keymap))
+         (_ (define-key map (kbd "RET") #'ignore))
+         (text (propertize "Alpha中文\nBeta中文\nGamma中文" 'help-echo "tip" 'keymap map))
+         (form `(column :width (vw 100) :cross-align center
+                  (box :width (px 80) :color "blue" ,text))))
+    (with-temp-buffer
+      (let ((ebox-viewport-width 200) (ebox-viewport-height 20))
+        (ebox-render-to-buffer (current-buffer) (ebox-build form)))
+      (dolist (width '(400 300 500 200))
+        (ebox-rerender-buffer-with-context (current-buffer) width 20)
+        (let ((actual (buffer-string))
+              (fresh (with-temp-buffer
+                       (let ((ebox-viewport-width width) (ebox-viewport-height 20))
+                         (ebox-render-to-buffer (current-buffer) (ebox-build form)))
+                       (buffer-string))))
+          (should (equal (substring-no-properties actual)
+                         (substring-no-properties fresh)))
+          (should (equal (ebox-display--display-runs actual)
+                         (ebox-display--display-runs fresh)))
+          (dolist (word '("Alpha" "Beta" "Gamma"))
+            (let ((position (string-match word actual))
+                  (reference (string-match word fresh)))
+              (should (equal (get-text-property position 'face actual)
+                             (get-text-property reference 'face fresh)))
+              (should (equal (get-text-property position 'help-echo actual) "tip"))
+              (should (eq (lookup-key (get-text-property position 'keymap actual)
+                                     (kbd "RET"))
+                          #'ignore)))))))))
+
 (provide 'ebox-display-tests)
 ;;; ebox-display-tests.el ends here

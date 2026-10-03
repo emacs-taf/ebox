@@ -31,6 +31,49 @@ fn offset_edit(edit: SpanEdit, offset: usize) -> SpanEdit {
     }
 }
 
+/// Prove coordinate- and property-stable space changes from shared line programs.
+/// Unlike the ordinary encoder, this never expands unchanged text or its owners.
+fn space_width_replacements(
+    base: &line_plan::LinePlan,
+    next: &line_plan::LinePlan,
+    range: Range<usize>,
+    boundaries: &[u64],
+) -> Option<Vec<(usize, TapeCharacter)>> {
+    let mut position = base.prefix_chars(range.start);
+    let old_lines = base.slice(range.clone());
+    let new_lines = next.slice(range);
+    let mut replacements = Vec::new();
+    for ((old, old_break), (new, new_break)) in
+        old_lines.iter_with_breaks().zip(new_lines.iter_with_breaks())
+    {
+        match (&old_break, &new_break) {
+            (None, None) => {}
+            (Some(a), Some(b)) if a.materialize() == b.materialize() => {}
+            _ => return None,
+        }
+        let old_line = old.materialize();
+        let new_line = new.materialize();
+        for (offset, atom) in old_line.atoms.space_width_changes(&new_line.atoms)? {
+            let start = position + offset;
+            // A pixel-space remains one complete existing fragment. No new
+            // boundary or ownership interval is inferred by this shortcut.
+            boundaries.binary_search(&start).ok()?;
+            boundaries.binary_search(&(start + 1)).ok()?;
+            let Atom::Space { width, properties } = atom else { return None };
+            replacements.push((
+                usize::try_from(start).ok()?,
+                TapeCharacter {
+                    value: ' ',
+                    pixel_width: Some(u64::try_from(width).ok()?),
+                    properties,
+                },
+            ));
+        }
+        position += old_line.atoms.char_count() + u64::from(old_break.is_some());
+    }
+    Some(replacements)
+}
+
 pub(crate) fn encode_retained_patch(
     old: &RetainedFrame,
     target: &RetainedFrame,
@@ -63,7 +106,11 @@ pub(crate) fn encode_retained_patch(
     let mut ranges: Vec<Range<usize>> = Vec::new();
     match change.kind() {
         ChangeKind::Same => {}
-        ChangeKind::ReplaceAll => return Ok(None),
+        // A viewport change may touch every line while leaving every fragment
+        // coordinate and owner intact (for example, centered outer spacing).
+        // Validate the full declared damage range with the same proofs below
+        // rather than rebuilding the complete fragment ledger a second time.
+        ChangeKind::ReplaceAll => ranges.push(0..base.len()),
         ChangeKind::Splices(splices) => {
             for splice in splices {
                 // A shared suffix can still move. Equal line numbers alone do
@@ -101,6 +148,18 @@ pub(crate) fn encode_retained_patch(
         let start = base.prefix_chars(range.start);
         if start != next.prefix_chars(range.start) {
             return Ok(None);
+        }
+        if let Some(spaces) = space_width_replacements(base, next, range.clone(), boundaries) {
+            for (position, character) in spaces {
+                edits.push(SpanEdit {
+                    old_start: position,
+                    old_end: position + 1,
+                    new_start: position,
+                    new_end: position + 1,
+                });
+                replacements.push(character);
+            }
+            continue;
         }
         let old_tape = Rendered::from_line_plan(base.slice(range.clone())).into_tape(style_count);
         let new_tape = Rendered::from_line_plan(next.slice(range)).into_tape(style_count);
