@@ -16,7 +16,7 @@ NATIVE_MANIFEST = native/Cargo.toml
 NATIVE_TARGET ?= $(shell $(EMACS_BATCH) -l lisp/ebox-native-reflow.el --eval '(princ (ebox-native-reflow--rust-target))')
 NATIVE_RELEASE_DIR = native/target/$(NATIVE_TARGET)/release
 
-.PHONY: all check ci load compile checkdoc layout-boundary-performance performance-evaluator update-effects-performance visual-check native-build diff-check clean package-lint package-lint-install
+.PHONY: all check ci load compile checkdoc layout-boundary-performance performance-evaluator native-parity update-effects-performance visual-check native-build diff-check clean package-lint package-lint-install
 
 .PHONY: release-deps release-build release-check release-tool-tests native-integration release-native-check
 
@@ -56,6 +56,9 @@ layout-boundary-performance:
 
 performance-evaluator:
 	$(EMACS_BATCH) -l benchmarks/ebox-performance-evaluator.el -f ebox-performance-evaluator-batch
+
+native-parity:
+	EB_NATIVE_PARITY_FORM="$(FORM)" $(EMACS_BATCH) -l scripts/native-parity.el -f ebox-native-parity-batch
 
 update-effects-performance:
 	$(EMACS_BATCH) -l benchmarks/benchmark-update-effects.el -f ebox-update-effects-batch
