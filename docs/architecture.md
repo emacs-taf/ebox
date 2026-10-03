@@ -379,6 +379,12 @@ fresh root
 
 The candidate is either fully published or discarded. A failed render, Ebox publication write, Ebox participant, or publication callback preserves the previous buffer text, properties, Ebox publication revision, Ebox runtime identity, scroll state, and last successful report. If the target buffer is killed during publication, teardown is authoritative and rollback never resurrects it.
 
+Output audits compare the live buffer against detached patch evidence at precommit
+and final acceptance, so participant or hook writes are found even when they change
+only text properties. A retained batch that validated every patch as it wrote and
+whose buffer tick is unchanged since that write has no later writer to find; any
+subsequent write bumps the tick and restores the complete segment comparison.
+
 Publication-generated conditions carry detached diagnostics: retained record IDs,
 numeric coordinates, short strings without properties, and bounded collections.
 They never expose live surface or callback graphs to Emacs error reporting.

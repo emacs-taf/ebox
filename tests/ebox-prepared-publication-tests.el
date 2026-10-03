@@ -543,6 +543,45 @@ between the source declaration and the mounted engine copy."
         (should (equal (substring-no-properties before)
                        (buffer-substring-no-properties (point-min) (point-max))))))))
 
+(ert-deftest ebox-prepared-publication-paint-rejects-outside-property-mutation ()
+  "A property-only unrecorded write still fails the acceptance audit."
+  (with-temp-buffer
+    (let ((ebox-viewport-width 160) (ebox-viewport-height 12)
+          (rewrite t) (accepted 0) (paired 'before))
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-prepared-publication-test--input nil t nil '(:color "#000000")))
+      (let* ((before (buffer-string))
+             (revision (ebox-surface-buffer-revision (current-buffer)))
+             (operation
+              (ebox-update-prepare
+               (current-buffer) [[moving [:color]]]
+               (lambda ()
+                 (setq paired 'after)
+                 (when rewrite
+                   (let ((inhibit-modification-hooks t) (buffer-undo-list t)
+                         (inhibit-read-only t))
+                     (save-excursion
+                       (goto-char (point-min))
+                       (search-forward "EXTRA")
+                       (put-text-property (match-beginning 0) (match-end 0)
+                                          'help-echo "hostile")))))
+               (lambda () (setq paired 'before))
+               (lambda () (cl-incf accepted)))))
+        (ert-info ((format "%S" (ebox-update-prepare-report (current-buffer))))
+          (should operation))
+        (should-error (ebox-update-apply operation [["#ff0000"]] [0]))
+        (should (eq paired 'before))
+        (should (zerop accepted))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal-including-properties before (buffer-string)))
+        (setq rewrite nil)
+        (should (ebox-update-apply operation [["#ff0000"]] [0]))
+        (should (eq paired 'after))
+        (should (= accepted 1))
+        (should (equal (substring-no-properties before)
+                       (buffer-substring-no-properties (point-min) (point-max))))))))
+
 (ert-deftest ebox-prepared-publication-rejects-stage-output-mutation ()
   "Unrecorded stage property writes roll back paired state and the accepted report."
   (ebox-prepared-publication-test--with-buffer

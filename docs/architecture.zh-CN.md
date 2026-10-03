@@ -289,6 +289,8 @@ source 所有权、边框、内边距、绘制和溢出行为；内容和 viewpo
 
 候选要么完整发布，要么丢弃。render、Ebox publication 写入、Ebox participant 或发布回调失败时，必须保留之前的 buffer 文本、属性、Ebox publication revision、Ebox runtime identity、滚动状态和最近一次成功报告。如果目标 buffer 在发布期间被 kill，teardown 是最终状态，rollback 绝不能把它复活。
 
+提交前与最终接受边界都会把 live buffer 与分离的 patch 证据做输出审计，因此 participant 或 hook 的写入即使只改文本属性也能被发现。保留式批次在写入时已验证每个 patch，且此后 buffer tick 未变化时，不存在需要发现的后续写入者；任何后续写入都会改变 tick，从而恢复完整的逐段比对。
+
 投影规划在多个局部证明之间共享 Ebox publication 挂载范围的数值快照。该只读视图只存在于
 一次规划过程，在 Ebox publication 发布新坐标之前丢弃；它不替代 Ebox publication 的权威挂载状态，也不
 改变 Ebox 公共查询返回防御性快照的契约。

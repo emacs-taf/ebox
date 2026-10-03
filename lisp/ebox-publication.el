@@ -2578,13 +2578,23 @@ Return the actual (TEXT-OPERATIONS . PROPERTY-OPERATIONS) counts."
               ;; well as transaction publication.  Host property hooks are
               ;; inhibited just as in the ordinary content-property writer.
               (let ((inhibit-modification-hooks t))
-                (dolist (operation
-                         (ebox--pub--content-property-operations-in-range
-                          buffer start replacement 0 (length replacement)))
-                  (set-text-properties (plist-get operation :start)
-                                       (plist-get operation :end)
-                                       (plist-get operation :props))
-                  (cl-incf property-operations))))))))
+                (if (and (= (- end start) 1) (= (length replacement) 1))
+                    ;; A single character is one direct-property run, so the
+                    ;; run diff reduces to its plist and mouse-face identity.
+                    (let ((props (text-properties-at 0 replacement)))
+                      (when (or (not (ebox--pub--plan-props-equal-p
+                                      (text-properties-at start) props))
+                                (not (eq (get-text-property start 'mouse-face)
+                                         (get-text-property 0 'mouse-face replacement))))
+                        (set-text-properties start (1+ start) props)
+                        (cl-incf property-operations)))
+                  (dolist (operation
+                           (ebox--pub--content-property-operations-in-range
+                            buffer start replacement 0 (length replacement)))
+                    (set-text-properties (plist-get operation :start)
+                                         (plist-get operation :end)
+                                         (plist-get operation :props))
+                    (cl-incf property-operations)))))))))
     (set-marker (ebox--pub--surface-start surface) base buffer)
     (set-marker (ebox--pub--surface-end surface)
                 (+ base (ebox--pub-commit-batch-target-extent batch)) buffer)
@@ -2603,9 +2613,18 @@ Return the actual (TEXT-OPERATIONS . PROPERTY-OPERATIONS) counts."
       (let ((start (+ base (plist-get patch :new-start)))
             (end (+ base (plist-get patch :new-end)))
             (replacement (plist-get patch :replacement)))
-        (unless (ebox--pub--text-property-semantic-equal-p
-                 (with-current-buffer buffer (buffer-substring start end))
-                 replacement)
+        (unless (if (and (= (- end start) 1) (= (length replacement) 1))
+                    ;; One character owns exactly one hover group, so the
+                    ;; semantic comparison reduces to the character and the
+                    ;; policy-equal property plist at the same position.
+                    (with-current-buffer buffer
+                      (and (eq (char-after start) (aref replacement 0))
+                           (ebox--pub--plan-props-equal-p
+                            (text-properties-at start)
+                            (text-properties-at 0 replacement))))
+                  (ebox--pub--text-property-semantic-equal-p
+                   (with-current-buffer buffer (buffer-substring start end))
+                   replacement))
           (ebox--pub--signal 'ebox--pub-publication-mismatch
                   (list :commit-patch patch)))))))
 
@@ -3868,6 +3887,20 @@ non-nil, keep snapshot markers for rollback."
   "Detached patch evidence over the unchanged output of a retained surface."
   base patches extent text-unchanged-p)
 
+(defun ebox--pub--shadow-patch-replacement-equals-base-p (base patch)
+  "Return non-nil when PATCH's detached replacement equals BASE's range.
+Single-character replacements compare their characters directly; every other
+shape keeps the exact string comparison."
+  (let ((start (plist-get patch :old-start))
+        (end (plist-get patch :old-end))
+        (replacement (plist-get patch :replacement)))
+    (and (= start (plist-get patch :new-start))
+         (= end (plist-get patch :new-end))
+         (= (- end start) (length replacement))
+         (if (and (= (- end start) 1) (= (length replacement) 1))
+             (eq (aref base start) (aref replacement 0))
+           (eq t (compare-strings base start end replacement 0 nil))))))
+
 (defun ebox--pub--shadow-batch-output-create (base batch)
   "Snapshot BASE and BATCH's output evidence without rebuilding the target.
 BASE is the already captured buffer string.  Patch strings and coordinates
@@ -3899,11 +3932,7 @@ the expected output.  Native callback identities survive the snapshot."
           (and (= (length base) (ebox--pub--shadow-batch-output-extent output))
                (cl-every
                 (lambda (patch)
-                  (and (= (plist-get patch :old-start) (plist-get patch :new-start))
-                       (= (plist-get patch :old-end) (plist-get patch :new-end))
-                       (eq t (compare-strings
-                              base (plist-get patch :old-start) (plist-get patch :old-end)
-                              (plist-get patch :replacement) 0 nil))))
+                  (ebox--pub--shadow-patch-replacement-equals-base-p base patch))
                 (ebox--pub--shadow-batch-output-patches output))))
     output))
 
@@ -4091,7 +4120,24 @@ Reuse an exact full-range snapshot from this transaction's JOURNALS."
         (setq ebox--pub--publication-started-p t)
         (let ((ebox--pub--surface-publishing t))
           (dolist (candidate prepared)
-            (ebox--pub--publish-one-surface candidate)))))))
+            (ebox--pub--publish-one-surface candidate)))
+        ;; Snapshot the tick each touched buffer reached after its own
+        ;; validated write.  A boundary audit can then prove an untouched
+        ;; buffer by comparison instead of re-reading every property run;
+        ;; any later write (hooks, undo, participants) bumps the tick and
+        ;; restores the complete segment comparison.  Prepared surfaces
+        ;; without a commit batch keep the unconditional audit.
+        (puthash 'published-ticks
+                 (mapcar
+                  (lambda (candidate)
+                    (let ((surface
+                           (ebox--pub--prepared-surface-surface candidate)))
+                      (cons surface
+                            (with-current-buffer
+                                (ebox--pub--surface-buffer surface)
+                              (buffer-modified-tick)))))
+                  prepared)
+                 state)))))
 
 (defun ebox--pub--surface-precommit-step (step state)
   "Report precommit STEP for transaction STATE."
@@ -4129,22 +4175,35 @@ Reuse an exact full-range snapshot from this transaction's JOURNALS."
                     (ebox--pub--surface-id surface))))))
 
 (defun ebox--pub--validate-retained-batch-hover-groups ()
-  "Validate final output, including writes by publication participants."
+  "Validate final output, including writes by publication participants.
+A prepared surface that published through its own validated commit batch and
+whose buffer tick is unchanged since that write has no unrecorded writer to
+find; every other surface keeps the complete segment comparison."
   (when-let* ((state (ebox--pub--transaction-extension ebox--pub--surface-extension-key)))
-    (dolist (prepared (gethash 'changed state))
-      (let* ((surface (ebox--pub--prepared-surface-surface prepared))
-             (range (ebox--pub--surface-range surface))
-             (buffer (ebox--pub--surface-buffer surface))
-             (expected (ebox--pub--prepared-surface-expected-output prepared)))
-        (unless (if (ebox--pub--shadow-batch-output-p expected)
-                    (ebox--pub--shadow-batch-output-equal-p
-                     expected buffer (car range) (cdr range))
-                  (with-current-buffer buffer
-                    (ebox--pub--text-property-semantic-equal-p
-                     expected (buffer-substring (car range) (cdr range)))))
-          (ebox--pub--signal 'ebox--pub-publication-mismatch
-                  (list :surface (ebox--pub--surface-id surface)
-                        :reason 'candidate-output)))))))
+    (let ((published-ticks (gethash 'published-ticks state)))
+      (dolist (prepared (gethash 'changed state))
+        (let* ((surface (ebox--pub--prepared-surface-surface prepared))
+               (range (ebox--pub--surface-range surface))
+               (buffer (ebox--pub--surface-buffer surface))
+               (untouched
+                (and published-ticks
+                     (null ebox--pub--surface-publication-step-function)
+                     (ebox--pub--prepared-surface-commit-batch prepared)
+                     (let ((published (cdr (assq surface published-ticks))))
+                       (and published
+                            (with-current-buffer buffer
+                              (= published (buffer-modified-tick))))))))
+          (unless untouched
+            (let ((expected (ebox--pub--prepared-surface-expected-output prepared)))
+              (unless (if (ebox--pub--shadow-batch-output-p expected)
+                          (ebox--pub--shadow-batch-output-equal-p
+                           expected buffer (car range) (cdr range))
+                        (with-current-buffer buffer
+                          (ebox--pub--text-property-semantic-equal-p
+                           expected (buffer-substring (car range) (cdr range)))))
+                (ebox--pub--signal 'ebox--pub-publication-mismatch
+                        (list :surface (ebox--pub--surface-id surface)
+                              :reason 'candidate-output))))))))))
 
 (defun ebox--pub--validate-surface-precommit (state)
   "Validate published generation identity and external output in STATE.

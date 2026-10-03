@@ -192,6 +192,12 @@ All notable changes to Ebox are documented here.
 - Native layout input uses compact measured-glyph tuples, reducing preparation
   allocations and JSON traffic. Rebuild the optional native module for ABI
   `24:10:14` and restart Emacs. Existing `23:10:14` artifacts remain separate.
+- Precommit and final-acceptance output audits keep comparing the complete live
+  output, but a retained batch that validated every patch as it wrote and whose
+  buffer tick is unchanged since that write no longer re-reads every property
+  run; any later participant or hook write bumps the tick and restores the full
+  comparison. Single-character patches validate their character and
+  policy-equal property plist directly instead of building a comparison string.
 - Viewport refits reuse unchanged text when only fixed-space widths change,
   while retaining complete output, ownership and hostile-write validation.
   Empty author scopes no longer force a full cascade for every node.
