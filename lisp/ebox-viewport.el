@@ -21,6 +21,22 @@
   "Frames awaiting viewport synchronization, deduplicated by EQ.
 The queue holds no buffers, runtime roots or sampled dimensions.")
 
+(defvar ebox--viewport-frame-sizes (make-hash-table :test #'eq)
+  "Last frame size seen by the viewport bridge, keyed by frame.
+A frame resize stays a user resize even while transient UI borrows window
+space; only a window-configuration change inside an unchanged frame is
+borrowed.")
+
+(defun ebox--viewport-frame-size (frame)
+  "Return FRAME's size in character rows and columns, or nil."
+  (when (frame-live-p frame)
+    (cons (frame-width frame) (frame-height frame))))
+
+(defun ebox--viewport-record-frame-size (frame)
+  "Record FRAME's current character size for the viewport bridge guard."
+  (when-let* ((size (ebox--viewport-frame-size frame)))
+    (puthash frame size ebox--viewport-frame-sizes)))
+
 (defvar ebox--window-size-change-timer nil
   "The single owned task scheduled to drain viewport notifications.")
 
@@ -39,7 +55,11 @@ settles instead of once per intermediate size.")
 (defun ebox--window-size-change-sync-frame (frame)
   "Synchronize current mounted Ebox viewports whose canonical window is in FRAME."
   (when (frame-live-p frame)
-    (let ((seen (make-hash-table :test #'eq)))
+    (let ((seen (make-hash-table :test #'eq))
+          (frame-size (ebox--viewport-frame-size frame))
+          (frame-changed
+           (not (equal (ebox--viewport-frame-size frame)
+                       (gethash frame ebox--viewport-frame-sizes)))))
       (dolist (window (window-list frame 'no-minibuf))
         (when (window-live-p window)
           (let ((buffer (window-buffer window)))
@@ -66,13 +86,17 @@ settles instead of once per intermediate size.")
                                ;; Borrowed space is not a resize.  A same-width
                                ;; height decrease while the minibuffer or echo
                                ;; area is showing keeps the committed canvas;
-                               ;; width changes and growth stay real geometry.
-                               (not (and (ebox--viewport-transient-space-borrow-p
+                               ;; frame changes, width changes and growth stay
+                               ;; real geometry.
+                               (not (and (not frame-changed)
+                                         (ebox--viewport-transient-space-borrow-p
                                           frame)
                                          (= width (or recorded-width -1))
                                          (< height (or recorded-height -1)))))
                       (ebox-rerender-buffer-with-context
-                       buffer width height))))))))))))
+                       buffer width height)))))))))
+      (when frame-size
+        (puthash frame frame-size ebox--viewport-frame-sizes)))))
 
 (defun ebox--viewport-transient-space-borrow-p (frame)
   "Whether FRAME's transient UI currently borrows its displayed space.
