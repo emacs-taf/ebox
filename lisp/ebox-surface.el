@@ -6371,13 +6371,6 @@ this registry; all other values remain defensively copied."
                 property value owned-values)
                (not (memq property '(face font-lock-face mouse-face))))))))
 
-(defun ebox-surface--region-role-tags (region-id role-ids)
-  "Return projection tags for REGION-ID from ROLE-IDS."
-  (list :ebox/region-id region-id
-        :ebox/roles
-        (cl-loop for (role . owner) in role-ids
-                 when (equal owner region-id) collect role)))
-
 (defun ebox-surface--fragment-owners
     (role-ids state node-objects region-objects)
   "Return ordered Ebox owner and tag pairs for ROLE-IDS.
@@ -6385,15 +6378,27 @@ Each owner appears at most once for one rendered fragment."
   (let ((attached (make-hash-table :test #'eq))
         (region-node-table (plist-get state :region-node-table))
         (parent-table (plist-get state :parent-table))
+        (roles-by-region (make-hash-table :test #'equal))
+        (region-order nil)
         owners)
-    (dolist (region-id (delete-dups (mapcar #'cdr role-ids)))
+    ;; One pass collects every region's roles in their declared order and
+    ;; every region once, in first-appearance order.  Rescanning ROLE-IDS per
+    ;; region made a fragment with many regions quadratic.
+    (dolist (entry role-ids)
+      (let ((region-id (cdr entry)))
+        (unless (gethash region-id roles-by-region)
+          (push region-id region-order))
+        (push (car entry) (gethash region-id roles-by-region))))
+    (dolist (region-id (nreverse region-order))
       (let ((object (gethash region-id region-objects))
             (node-id (ebox-runtime-index-get region-id region-node-table)))
         (unless (and object node-id)
           (error "Ebox output references unknown region %S" region-id))
         (unless (gethash object attached)
           (push (list object
-                      (ebox-surface--region-role-tags region-id role-ids))
+                      (list :ebox/region-id region-id
+                            :ebox/roles
+                            (nreverse (gethash region-id roles-by-region))))
                 owners)
           (puthash object t attached))
         (setq node-id (ebox-runtime-index-get node-id parent-table))
@@ -6401,10 +6406,13 @@ Each owner appears at most once for one rendered fragment."
           (let ((ancestor (gethash node-id node-objects)))
             (unless ancestor
               (error "Ebox output ancestor has no Ebox publication object: %S" node-id))
-            (unless (gethash ancestor attached)
+            (if (gethash ancestor attached)
+                ;; The walk that attached ANCESTOR also attached every
+                ;; ancestor above it, so this region can stop here.
+                (setq node-id nil)
               (push (list ancestor (list :ebox/descendant-output t)) owners)
-              (puthash ancestor t attached)))
-          (setq node-id (ebox-runtime-index-get node-id parent-table)))))
+              (puthash ancestor t attached)
+              (setq node-id (ebox-runtime-index-get node-id parent-table)))))))
     (nreverse owners)))
 
 (cl-defstruct (ebox-surface--geometry-mount

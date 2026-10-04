@@ -219,6 +219,11 @@ All notable changes to Ebox are documented here.
   Empty author scopes no longer force a full cascade for every node.
 - Publication plan rendering collects leaf text once and concatenates at the
   root instead of rebuilding and copying a string at every plan level.
+- Ownership projection for one rendered fragment collects each region's roles
+  in a single pass instead of rescanning the whole role list per region, and
+  its ancestor walk stops at the first owner a previous region already
+  attached. A fragment with many regions no longer costs quadratic time
+  before publication.
 - Retention-index construction inserts each entry once into a freshly built
   trie instead of copying one path vector per trie level per entry. A mount
   builds fragment, style, property-template and edge indexes with tens of
