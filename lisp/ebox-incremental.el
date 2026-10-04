@@ -994,9 +994,10 @@ This normally does no work.  It rebuilds metadata only after a defensive
 
 (defun ebox--render-cache-lookup (cache-key signature)
   "Return cached render output for CACHE-KEY matching SIGNATURE."
+  ;; `ebox--render-cache-lookup-entry' already compares the stored signature
+  ;; including properties; a second comparison would only repeat that walk.
   (let ((entry (ebox--render-cache-lookup-entry cache-key signature)))
-    (if (and entry
-             (equal-including-properties (car entry) signature))
+    (if entry
         (prog1 (cdr entry)
           (when ebox-cache-report-buffer
             (ebox-cache-record-hit ebox-cache-report-buffer 'render-body)))
