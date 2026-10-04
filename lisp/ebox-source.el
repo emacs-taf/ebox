@@ -523,6 +523,45 @@ older face specification still names the same paint contribution."
       (eq (ebox-paint-slot-face left) (ebox-paint-slot-face right))
     (equal left right)))
 
+(defun ebox-source--update-slots-base (index)
+  "Return an equivalent shallow base for independent cold slot preparations.
+Compact existing overlays once, not once for every member that crosses the
+persistent depth bound. Records remain shared until their own preparation
+copies them; no published table or source fact is mutated."
+  (let ((base (copy-ebox-source-index index)))
+    (dolist (accessor '(ebox-source--index-records ebox-source--index-handle-records))
+      (let* ((table (funcall accessor index))
+             (flat (if (zerop (ebox-source-table-depth table)) table
+                     (ebox-source--flat-table (ebox-source--table-materialize table)
+                                              (ebox-source-table-test table)))))
+        (if (eq accessor 'ebox-source--index-records)
+            (setf (ebox-source--index-records base) flat)
+          (setf (ebox-source--index-handle-records base) flat))))
+    (setf (ebox-source--index-order base)
+          (ebox-source--make-order :handles (ebox-source--order-handles (ebox-source--index-order index))
+                                   :depth 0))
+    base))
+
+(defun ebox-source--update-slots-merge (base slots)
+  "Merge independently prepared SLOTS over BASE into one equivalent index.
+Keep all private mutable records and their handles together. Each slot then
+resolves sibling facts through the same merged candidate, without a chain of
+per-member whole-index compactions."
+  (if (null slots) base
+    (let ((sources (make-hash-table :test #'eq)) handles candidate)
+      (dolist (slot slots)
+        (let ((handle (ebox-source--update-slots-handle slot)))
+          (when (gethash handle sources) (error "Repeated prepared source handle"))
+          (puthash handle (ebox-source--update-slots-index slot) sources)
+          (push handle handles)))
+      (setq candidate (ebox-source--index-replace-handles
+                       base handles handles sources (mapcar (lambda (h) (cons h h)) handles)))
+      (setf (ebox-source--index-selector-topology candidate) (ebox-source--index-selector-topology base)
+            (ebox-source--index-selector-view candidate) (ebox-source--index-selector-view base)
+            (ebox-source--index-derived-stale-p candidate) (ebox-source--index-derived-stale-p base))
+      (dolist (slot slots) (setf (ebox-source--update-slots-index slot) candidate))
+      candidate)))
+
 (defun ebox-source--update-slots-prepare (index node properties)
   "Prepare private source and value cells for NODE in INDEX.
 PROPERTIES fixes the incoming value-vector order.  Return slots carrying an

@@ -74,6 +74,37 @@
           (apply-current selection [["#AA2233"] ["Selected 4"]] [1])
           (apply-current clock [["12:00:04"]] [0]))))))
 
+(defun ebox-prepared-update-test--batch-source-isolation ()
+  "Prepare many independent sources while preserving exported snapshots."
+  (let ((ebox-viewport-width 240) (ebox-viewport-height 24))
+    (with-temp-buffer
+      (ebox-render-to-buffer
+       (current-buffer)
+       (ebox-build `(box :width (ch 30) :height (lh 24)
+                        (box :position absolute :left (ch 0) :top (lh 0) :z-index 1
+                             :width (ch 24) :height (lh 24)
+                             ,@(cl-loop for i below 24
+                                        collect `(box :id ,(format "row%d" i)
+                                                      :width (ch 24) :height (lh 1) :color "#224466"
+                                                      (text :id ,(format "text%d" i) ,(format "Old%02d" i))))))))
+      (dotimes (round 3)
+        (let* ((snapshot (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))
+               (before (ebox-render snapshot))
+               (specifications (vconcat (cl-loop for i below 24
+                                                 append (list (vector (format "row%d" i) [:color])
+                                                              (vector (format "text%d" i) [:content])))))
+               (values (vconcat (cl-loop for i below 24
+                                        append (list (vector (if (cl-evenp round) "#884422" "#224466"))
+                                                     (vector (format "R%d-%02d" round i))))))
+               (operation (ebox-update-prepare (current-buffer) specifications))
+               (revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (or operation (ert-fail (list :round round :report (ebox-update-prepare-report (current-buffer))))))
+          (should (equal before (ebox-render snapshot)))
+          (should (ebox-update-apply operation values (vconcat (number-sequence 0 47))))
+          (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+          (should (equal before (ebox-render snapshot)))
+          (ebox-prepared-update-test--assert-fresh))))))
+
 (ert-deftest ebox-prepared-update-publishes-mixed-members-once ()
   "Geometry, inherited paint, native hover and Text advance one accepted revision."
   (let ((ebox-viewport-width 240) (ebox-viewport-height 10))
@@ -108,7 +139,8 @@
           (search-forward "Value01")
           (funcall (lookup-key ebox-buffer-mode-map [mouse-movement])
                    (list 'mouse-movement (list (selected-window) (- (point) 7) '(1 . 1) 0)))
-          (should (string-match-p "Hover02" (buffer-string))))))))
+          (should (string-match-p "Hover02" (buffer-string)))))))
+  (ebox-prepared-update-test--batch-source-isolation))
 
 (ert-deftest ebox-prepared-update-rolls-back-all-members-and-retries ()
   "A rejected paired stage restores pixels, source, revision and every member."
@@ -408,24 +440,31 @@ prepared visibility change paints it at its current placement."
             (should (string-match-p "Panel" (buffer-string)))
             (ebox-prepared-update-test--assert-fresh)))))))
 
-(ert-deftest ebox-prepared-update-declines-initially-empty-slot-atomically ()
-  "An initially empty fixed slot rejects text growth without any visible change."
+(ert-deftest ebox-prepared-update-grows-initially-empty-slot-atomically ()
+  "Existing empty Text can appear, disappear and reject a later transaction."
   (let ((ebox-viewport-width 160) (ebox-viewport-height 8))
     (with-temp-buffer
       (ebox-prepared-update-test--status-slot "")
-      (let* ((staged nil)
+      (let* ((staged 0) reject
+             (held (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))
+             (original (ebox-render held))
              (operation (ebox-update-prepare
                          (current-buffer) [["status" [:content]]]
-                         (lambda () (setq staged t)) #'ignore))
-             (before (buffer-string))
-             (revision (ebox-surface-buffer-revision (current-buffer)))
-             (snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))
-        (when operation (should-not (ebox-update-apply operation [["x"]] [0])))
-        (should-not staged)
-        (should (= revision (ebox-surface-buffer-revision (current-buffer))))
-        (should (equal-including-properties before (buffer-string)))
-        (should (equal-including-properties
-                 snapshot (ebox-render (plist-get (ebox-surface-buffer-snapshot (current-buffer)) :input))))))))
+                         (lambda () (when reject (error "Reject text growth")) (cl-incf staged)) #'ignore)))
+        (should operation)
+        (dolist (text '("x" "Subtitle ready" "" "Ready again"))
+          (let ((revision (ebox-surface-buffer-revision (current-buffer))))
+            (should (eq t (ebox-update-apply operation (vector (vector text)) [0])))
+            (should (= (1+ revision) (ebox-surface-buffer-revision (current-buffer))))
+            (should (equal original (ebox-render held)))
+            (ebox-prepared-update-test--assert-fresh)))
+        (should (= staged 4))
+        (let ((before (buffer-string)) (revision (ebox-surface-buffer-revision (current-buffer))))
+          (setq reject t)
+          (should-error (ebox-update-apply operation [["Rejected"]] [0]))
+          (should (= revision (ebox-surface-buffer-revision (current-buffer))))
+          (should (equal-including-properties before (buffer-string)))
+          (ebox-prepared-update-test--assert-fresh))))))
 
 (ert-deftest ebox-prepared-update-explains-canvas-admission-without-publication ()
   "Cold admission reports bounded proof facts without publishing or staging."

@@ -591,18 +591,20 @@ operation, or nil if a member cannot use the fixed retained canvas."
                                     '(:phase geometry :reason positioned-host)))))
       (let ((boundaries admitted-boundaries))
         ;; All output proofs precede the equivalent private source rebinding.
-        (dotimes (index (length groups))
-          (let* ((group (aref groups index))
-                 (node (ebox-update--group-node group)))
-            (unless (ebox-update--group-structural group)
-              (let ((_diagnostic (ebox-update--locate-member members group))
-                    (slots (ebox-source--update-slots-prepare
-                            (plist-get state :source-index) node
-                            (ebox-update--group-properties group))))
-                (unless slots (ebox-update--decline 'source-binding))
-                (setf (ebox-update--group-slots group) slots)
-                (plist-put node :ebox-source-handle (ebox-source--update-slots-handle slots))
-                (plist-put state :source-index (ebox-source--update-slots-index slots))))))
+        (let ((base (ebox-source--update-slots-base (plist-get state :source-index))) slots-list)
+          (dotimes (index (length groups))
+            (let* ((group (aref groups index))
+                   (node (ebox-update--group-node group)))
+              (unless (ebox-update--group-structural group)
+                (let ((_diagnostic (ebox-update--locate-member members group))
+                      (slots (ebox-source--update-slots-prepare
+                              base node (ebox-update--group-properties group))))
+                  (unless slots (ebox-update--decline 'source-binding))
+                  (setf (ebox-update--group-slots group) slots)
+                  (plist-put node :ebox-source-handle (ebox-source--update-slots-handle slots))
+                  (push slots slots-list)))))
+          (when slots-list
+            (plist-put state :source-index (ebox-source--update-slots-merge base slots-list))))
         (dotimes (index (length groups))
           (let ((group (aref groups index)))
             (when (ebox-update--group-class-slot group)

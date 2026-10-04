@@ -1856,9 +1856,9 @@
       "purpose": "Initially clipped or exactly full fixed Text slots accept shorter and longer content through the prepared route, matching a fresh render each time."
     },
     {
-      "name": "ebox-prepared-update-declines-initially-empty-slot-atomically",
+      "name": "ebox-prepared-update-grows-initially-empty-slot-atomically",
       "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "An initially empty fixed Text slot declines text growth without callbacks, source mutation, visible edits or revision advancement."
+      "purpose": "An existing empty Text slot can grow, clear and reappear through prepared publication; prior exported input stays unchanged and a rejected update preserves pixels and revision."
     },
     {
       "name": "ebox-prepared-publication-native-state-retains-rollback-banks",

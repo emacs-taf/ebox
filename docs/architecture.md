@@ -747,8 +747,12 @@ all operations. Public geometry preparation does not admit or reuse this
 content-only scene for placement changes.
 
 The mixed prepared-update cohort cold-binds source cells and the retained
-primitive owning each member's pixels; preparation renders nothing. Sparse
-changed-member indices feed one retained frame. Admission proves every member
+primitive owning each member's pixels; preparation renders nothing. Source
+records are prepared independently over one shallow immutable base, then merged
+once, instead of repeatedly compacting the whole index per member. Existing
+unpainted Text identities and their content-owner ancestor roles are compiled
+from the accepted topology, so text can appear in a fixed slot without learning
+new ownership during publication. Sparse changed-member indices feed one retained frame. Admission proves every member
 against the chosen routes and crop before a cold scene binds
 source cells or allocates interaction, mount and publication-frame storage.
 The same member proofs run when reusing a scene; a rejection retains its

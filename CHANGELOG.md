@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Existing empty Text in a fixed prepared slot can grow, clear and reappear
+  without a full publication; rejected updates still preserve accepted pixels.
+  Preparing large mixed batches now merges private source records once instead
+  of repeatedly compacting the entire source index.
+
 - Prepared image content occupies a fixed character grid, with cached graphics
   slices on graphical frames and truecolor half-block text via optional chafa
   or ffmpeg elsewhere, followed by an ASCII placeholder. Preparation owns all
