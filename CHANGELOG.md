@@ -54,6 +54,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A settled window size change no longer refits a mounted viewport when an
+  active minibuffer, a completion popup, or a message in the echo area borrowed
+  the display window's height.  A frame resize still refits, and releasing the
+  borrowed space re-syncs the canvas.
+
 - Region updates to Text typography and decoration now refresh the displayed
   style as well as the source declarations, including batched changes and
   resets to normal text. Previously an update could return successfully while
