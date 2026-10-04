@@ -223,12 +223,7 @@ must not modify a published runtime tree through this accessor."
       (when-let* ((box (plist-get node :box)))
         (funcall function box)))
     (if sequence
-        (ebox-child-range--fold
-         sequence
-         (lambda (ignored child)
-           (funcall function child)
-           ignored)
-         nil)
+        (ebox-child-range--for-each sequence function)
       (pcase type
         ('box
          (if (plist-member node :children)

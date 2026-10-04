@@ -1676,18 +1676,39 @@ not affect declaration compilation and are intentionally excluded."
     ('wrap-mode
      (not (ebox-style--wrap-mode-p value)))))
 
+(defconst ebox-style--declaration-predicate-limit 512
+  "Maximum schemas retained by the declaration-value predicate cache.")
+
+(defvar ebox-style--declaration-predicate-cache (make-hash-table :test #'eq)
+  "Reusable declaration-value predicates keyed by (SCHEMA . TAG).
+Schema objects are registry-owned and tags are symbols, so one predicate per
+pair reproduces the per-declaration closure without allocating it again.")
+
+(defun ebox-style--declaration-value-predicate (schema tag)
+  "Return a reusable value predicate for SCHEMA and author TAG."
+  (let ((by-tag (gethash schema ebox-style--declaration-predicate-cache)))
+    (unless by-tag
+      (when (> (hash-table-count ebox-style--declaration-predicate-cache)
+               ebox-style--declaration-predicate-limit)
+        (clrhash ebox-style--declaration-predicate-cache))
+      (setq by-tag (make-hash-table :test #'eq))
+      (puthash schema by-tag ebox-style--declaration-predicate-cache))
+    (or (gethash tag by-tag)
+        (puthash tag
+                 (lambda (concrete)
+                   (and (not (ebox-style--static-invalid-declaration-p
+                              (plist-get schema :validator) concrete))
+                        (ebox-style--size-value-valid-p schema concrete tag)))
+                 by-tag))))
+
 (defun ebox-style--validate-declaration-values (declarations &optional tag)
   "Return DECLARATIONS after static value and author TAG axis validation."
   (cl-loop for (property value) on declarations by #'cddr
            for schema = (ebox-style--property property)
-           for validator = (and schema (plist-get schema :validator))
            for axis = (ebox-style--size-axis schema tag)
            unless (ecss-declaration-value-valid-p
                    value
-                   (lambda (concrete)
-                     (and (not (ebox-style--static-invalid-declaration-p
-                                validator concrete))
-                          (ebox-style--size-value-valid-p schema concrete tag))))
+                   (ebox-style--declaration-value-predicate schema tag))
            do (if axis
                   (signal 'ebox-size-error
                           (list

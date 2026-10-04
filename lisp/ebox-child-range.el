@@ -504,6 +504,17 @@ is the replacement's source-owned author key."
         :unaffected-payload-copies
         (ebox-child-range--metrics-unaffected-payload-copies metrics)))
 
+(defun ebox-child-range--for-each (sequence function)
+  "Call FUNCTION for each payload item of SEQUENCE in stable order."
+  (let ((index 0))
+    (while (< index (ebox-child-range--sequence-count sequence))
+      (let ((payload (ebox-child-range--segment-payload
+                      (ebox-child-range--segment-at sequence index))))
+        (dotimes (offset (length payload))
+          (funcall function (aref payload offset))))
+      (setq index (1+ index))))
+  nil)
+
 (defun ebox-child-range--fold (sequence function initial)
   "Fold SEQUENCE payloads in stable order with FUNCTION and INITIAL."
   (let ((value initial)
