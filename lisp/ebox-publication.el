@@ -1398,22 +1398,21 @@ by ordinary Ebox callers."
 
 (defun ebox--pub--render-plan (plan context &optional owned-p)
   "Return PLAN's propertized string and side records in CONTEXT.  OWNED-P
-transfers candidate-local property values through the render pass."
-  (let (records)
+transfers candidate-local property values through the render pass.
+Leaves are collected in one pass and concatenated once at the root; the
+original recomputed and copied a string at every level of the plan tree."
+  (let (records pieces)
     (cl-labels
         ((walk (node path inherited offset)
            (let* ((props (ebox--pub--plist-overlay
                           inherited (ebox--pub-surface-plan-props node) owned-p))
                   (begin offset)
-                  (children (ebox--pub-surface-plan-children node))
-                  pieces)
+                  (children (ebox--pub-surface-plan-children node)))
              (if children
                  (cl-loop for child in children for position from 0
                           for child-path =
                           (append path (list (ebox--pub--plan-segment child position)))
-                          for result = (walk child child-path props offset)
-                          do (push (car result) pieces)
-                          do (setq offset (cdr result)))
+                          do (setq offset (walk child child-path props offset)))
                (let ((text (copy-sequence
                             (or (ebox--pub-surface-plan-text node) ""))))
                  (when (> (length text) 0)
@@ -1427,10 +1426,10 @@ transfers candidate-local property values through the render pass."
                            :props props :tags (ebox--pub-surface-plan-tags node)
                            :leaf (null children))
                      records))
-             (cons (apply #'concat (nreverse pieces)) offset))))
-      (let* ((path (list (ebox--pub--plan-segment plan 0)))
-             (result (walk plan path nil 0)))
-        (cons (car result) (nreverse records))))))
+             offset)))
+      (let ((path (list (ebox--pub--plan-segment plan 0))))
+        (walk plan path nil 0)
+        (cons (apply #'concat (nreverse pieces)) (nreverse records))))))
 
 (defun ebox--pub--ensure-plan-objects (context plan &optional parent)
   "Ensure identities for PLAN recursively below PARENT in CONTEXT."
