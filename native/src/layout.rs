@@ -6556,6 +6556,7 @@ fn box_override_for_flex(
     main: i64,
     cross: Option<i64>,
     stretch: bool,
+    definite_main: bool,
 ) -> Option<BoxOverride> {
     if !matches!(source, LayoutNode::Box { .. }) {
         return None;
@@ -6572,7 +6573,14 @@ fn box_override_for_flex(
         FlexAxis::Column => BoxOverride {
             content_width: (stretch && cross.is_some())
                 .then_some((cross.unwrap_or(0) - horizontal_side).max(0)),
-            content_height: Some((main - vertical_side).max(0)),
+            // A column item in an auto-height container owns its natural main
+            // size.  Its height depends on wrapping at the final cross size,
+            // which the intrinsic flex measure cannot know; forcing the
+            // measured hypothetical there made wrapped content overflow its
+            // own padding box, and a padded scroll owner without a plan then
+            // loses the complete native frame.  A definite main limit still
+            // allocates the exact flexed size.
+            content_height: definite_main.then_some((main - vertical_side).max(0)),
             declared_width: None,
         },
     })
@@ -6588,6 +6596,7 @@ fn render_flex_sized_entry(
     phase: Phase,
     context: LayoutContext,
     intrinsic: bool,
+    definite_main: bool,
 ) -> Result<FlexSizedEntry, String> {
     let align = flex_resolved_align(item, container_align);
     let stretch = matches!(align, FlexAlign::Stretch | FlexAlign::Normal);
@@ -6609,7 +6618,8 @@ fn render_flex_sized_entry(
         css_viewport_height: context.css_viewport_height,
         inline_auto_width_intrinsic: context.inline_auto_width_intrinsic,
     };
-    let override_size = box_override_for_flex(item.source, axis, main, cross, stretch);
+    let override_size =
+        box_override_for_flex(item.source, axis, main, cross, stretch, definite_main);
     let mut rendered = item
         .scope
         .phase(phase)
@@ -6618,10 +6628,13 @@ fn render_flex_sized_entry(
         FlexAxis::Row => {
             rendered = pad_rendered_width(rendered, main, FlexAlign::FlexStart);
         }
-        FlexAxis::Column => {
+        // Indefinite containers stack each item at its own natural height;
+        // padding to the stale intrinsic hypothetical would insert blank rows.
+        FlexAxis::Column if definite_main => {
             let width = rendered.max_width();
             rendered = pad_rendered_height(rendered, main, 0, width);
         }
+        FlexAxis::Column => {}
     }
     if let Some(cross) = cross {
         match axis {
@@ -6873,6 +6886,7 @@ fn flex_line_cross(
     container_align: FlexAlign,
     context: LayoutContext,
     intrinsic: bool,
+    definite_main: bool,
 ) -> Result<i64, String> {
     let mut maximum = 1;
     for item in line {
@@ -6886,6 +6900,7 @@ fn flex_line_cross(
                 Phase::FlexCrossProbe,
                 context,
                 intrinsic,
+                definite_main,
             )?
             .cross,
         );
@@ -6960,6 +6975,7 @@ fn render_flex_row_line(
             Phase::FlexFinal,
             context,
             intrinsic,
+            true,
         )?;
         parts.push((entry.rendered, item.target));
         if index + 1 < line.len() && between > 0 {
@@ -6983,6 +6999,7 @@ fn render_flex_column_line(
     context: LayoutContext,
     intrinsic: bool,
 ) -> Result<Rendered, String> {
+    let definite_main = main_size.is_some();
     let line_main = flex_line_main_size(line, main_gap);
     let target_main = main_size.unwrap_or(line_main);
     let (leading, between, _) =
@@ -7004,6 +7021,7 @@ fn render_flex_column_line(
                 Phase::FlexFinal,
                 context,
                 intrinsic,
+                definite_main,
             )?
             .rendered,
         );
@@ -7014,7 +7032,11 @@ fn render_flex_column_line(
         }
     }
     let rendered = stack_vertical(parts);
-    Ok(pad_rendered_height(rendered, target_main, 0, line_cross))
+    Ok(if definite_main {
+        pad_rendered_height(rendered, target_main, 0, line_cross)
+    } else {
+        rendered
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7046,7 +7068,9 @@ fn render_flex_row(
     } else {
         lines
             .iter()
-            .map(|line| flex_line_cross(line, FlexAxis::Row, align, context, intrinsic))
+            .map(|line| {
+                flex_line_cross(line, FlexAxis::Row, align, context, intrinsic, true)
+            })
             .collect::<Result<Vec<_>, _>>()?
     };
     let cross_layout =
@@ -7113,7 +7137,16 @@ fn render_flex_column(
     } else {
         lines
             .iter()
-            .map(|line| flex_line_cross(line, FlexAxis::Column, align, context, intrinsic))
+            .map(|line| {
+                flex_line_cross(
+                    line,
+                    FlexAxis::Column,
+                    align,
+                    context,
+                    intrinsic,
+                    main_size.is_some(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?
     };
     let cross_layout =
@@ -8221,6 +8254,27 @@ fn render_node_body(
                 change = None;
             }
             if *overflow == Overflow::Scroll && text_height > content_height {
+                eprintln!(
+                    "EBUG own_scroll_owner region={} plan={} text_height={} content_height={} pad=({},{},{},{}) margin=({},{},{},{}) border=({},{},{},{}) tmpl={} vertical={:?}",
+                    region_id,
+                    scroll_plan.is_some(),
+                    text_height,
+                    content_height,
+                    padding_top,
+                    padding_bottom,
+                    padding_left,
+                    padding_right,
+                    margin_top,
+                    margin_bottom,
+                    margin_left,
+                    margin_right,
+                    border_left,
+                    border_right,
+                    border_left_style.is_some(),
+                    border_right_style.is_some(),
+                    surface_template_id.is_some(),
+                    vertical
+                );
                 rendered.own_scroll_owner = true;
                 rendered.lines = project_box_lines(
                     scope,

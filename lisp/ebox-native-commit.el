@@ -567,12 +567,17 @@ When REGION is given, require its producer in the confirmed collection."
                    (plist-put scroll-state :content-height (aref producer 2))
                    (plist-put scroll-state :box box)
                    (puthash region scroll-state ebox--scroll-global-state))
-               (ebox--scroll-set-state
-                region (list :scroll-offset (aref producer 3)
-                             :content-height (aref producer 2)
-                             :content-lines (aref producer 4)
-                             :rendered-content-lines (aref producer 5)
-                             :content-lines-complete-p t :box box)))
+               ;; Publishing a complete native producer is not a scroll
+               ;; intent.  Build the two line-span indexes in the scheduled
+               ;; idle slices instead of on every commit, exactly like the
+               ;; other retained scroll producers.
+               (let ((ebox--defer-scroll-content-index t))
+                 (ebox--scroll-set-state
+                  region (list :scroll-offset (aref producer 3)
+                               :content-height (aref producer 2)
+                               :content-lines (aref producer 4)
+                               :rendered-content-lines (aref producer 5)
+                               :content-lines-complete-p t :box box))))
            (ebox--scroll-clear-state region))))
      producers)
     (when (hash-table-p previous)

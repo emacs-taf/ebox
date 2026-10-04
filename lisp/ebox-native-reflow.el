@@ -4387,6 +4387,15 @@ plist supplied by the caller."
                    'ebox-ml 'ebox-mr 'ebox-mt 'ebox-mb)
                (unless (and complete-p (integerp value) (> value 0))
                  (error "Native reflow tape has an invalid region property")))
+              ((or 'front-sticky 'rear-nonsticky)
+               ;; Property template expansion installs keymaps through
+               ;; `ebox-interaction--fill-property', which also records the
+               ;; sticky boundaries that make those keymaps apply at run
+               ;; edges.  They are derived here, never tape-owned input.
+               (unless (or (eq value t) (null value)
+                           (and (proper-list-p value)
+                                (cl-every #'symbolp value)))
+                 (error "Native reflow tape has an invalid sticky value")))
               (_
                (error "Native reflow tape has an unknown property: %S"
                       property)))))
@@ -4648,8 +4657,11 @@ plist supplied by the caller."
      (error "Native reflow tape has invalid prepared root metadata"))))
 
 (defun ebox-native-reflow--decode-scroll-producers
-    (metadata styles property-templates &optional allow-reuse-p)
-  "Decode METADATA's complete scroll content, indexed by owning region."
+    (metadata styles property-templates &optional allow-reuse-p trusted-native-encoder-p)
+  "Decode METADATA's complete scroll content, indexed by owning region.
+When TRUSTED-NATIVE-ENCODER-P is non-nil, the ABI-matched Rust encoder already
+constructed every producer literal from typed, bounded layout data, so the
+literal property rescan is skipped exactly like tape validation."
   (when-let* ((encoded-plans (plist-get metadata :scroll-producers)))
     (unless (vectorp encoded-plans)
       (error "Native scroll producers must be a vector"))
@@ -4682,8 +4694,9 @@ plist supplied by the caller."
                                 (aref encoded 1)))
                   (error "Native scroll producer has invalid complete content"))
                 (ebox-native-reflow--expand-property-templates rendered property-templates)
-                (ebox-native-reflow--validate-literal-properties
-                 rendered styles t property-templates)
+                (unless trusted-native-encoder-p
+                  (ebox-native-reflow--validate-literal-properties
+                   rendered styles t property-templates))
                 (aset producer index (ebox-string-lines rendered)))))
           (puthash (aref producer 0) producer producers)))
       (plist-put metadata :scroll-producers producers)))
@@ -5130,7 +5143,8 @@ typed line-width and property invariants instead of repeating them in Emacs."
                    (* patch-count 128)
                    (* metadata-count 64))))
           (ebox-native-reflow--decode-scroll-producers
-           (plist-get decoded :root-render-metadata) styles property-templates t)
+           (plist-get decoded :root-render-metadata) styles property-templates t
+           trusted-native-encoder-p)
           (plist-put decoded :tape-bytes (string-bytes payload))
           (plist-put decoded :artifact-byte-estimate
                      (max (string-bytes payload) retained-estimate))
@@ -5141,7 +5155,7 @@ typed line-width and property invariants instead of repeating them in Emacs."
             (metadata (aref decoded 3))
             (fragments (aref decoded 4)))
         (ebox-native-reflow--decode-scroll-producers
-         metadata styles property-templates)
+         metadata styles property-templates nil trusted-native-encoder-p)
         (unless trusted-native-encoder-p
           (ebox-native-reflow--validate-literal-properties
            rendered styles (plist-get header :complete)
