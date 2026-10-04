@@ -1178,21 +1178,30 @@ callers need the public coordinate and metadata snapshots."
                  (ebox--pub--surface-object-surface object)))
        t))
 
+(defun ebox--pub--object-mount-plist (mount)
+  "Return MOUNT as a public plist with detached tags.
+Marker objects remain private so callers cannot mutate Ebox's publication
+coordinates."
+  (list :start (ebox--pub--mount-position (ebox--pub--surface-mount-start mount))
+        :end (ebox--pub--mount-position (ebox--pub--surface-mount-end mount))
+        :tags (ebox-text--copy-property-value
+               (ebox--pub--surface-mount-tags mount))))
+
+(defun ebox--pub--object-raw-mounts (object)
+  "Return OBJECT's live private mounts without detaching their tags.
+Callers may only read them; use `ebox--pub-object-mounts' for a public,
+caller-owned copy."
+  (unless (ebox--pub-object-live-p object)
+    (ebox--pub--signal 'ebox--pub-stale-object (list object)))
+  (let ((surface (ebox--pub--surface-object-surface object)))
+    (gethash object (ebox--pub--surface-mount-index surface))))
+
 (defun ebox--pub-object-mounts (object)
   "Return OBJECT's live numeric mount ranges and opaque tags.  Each result is a
 plist with `:start', `:end', and `:tags'.  Marker objects remain private so
 callers cannot mutate Ebox's publication coordinates."
-  (unless (ebox--pub-object-live-p object)
-    (ebox--pub--signal 'ebox--pub-stale-object (list object)))
-  (let* ((surface (ebox--pub--surface-object-surface object))
-         (mounts (gethash object (ebox--pub--surface-mount-index surface))))
-    (mapcar
-     (lambda (mount)
-       (list :start (ebox--pub--mount-position (ebox--pub--surface-mount-start mount))
-             :end (ebox--pub--mount-position (ebox--pub--surface-mount-end mount))
-             :tags (ebox-text--copy-property-value
-                    (ebox--pub--surface-mount-tags mount))))
-     mounts)))
+  (mapcar #'ebox--pub--object-mount-plist
+          (ebox--pub--object-raw-mounts object)))
 
 (defun ebox--pub--make-context (surface &optional ephemeral)
   "Create a prepare context for SURFACE.  When EPHEMERAL is non-nil, no

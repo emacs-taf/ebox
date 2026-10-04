@@ -1041,24 +1041,32 @@ authority over another mount."
           :revision revision
           :mount-id (plist-get (ebox--pub-surface-inspect surface) :id))))
 
+(defun ebox-surface--region-mount-p (mount region-id roles)
+  "Whether private MOUNT belongs to REGION-ID's filtered output.
+With ROLES keep only direct mounts owning a listed Ebox role; without them
+include descendant output attached to the region's object."
+  (let ((tags (ebox--pub--surface-mount-tags mount)))
+    (if roles
+        (and (equal (plist-get tags :ebox/region-id) region-id)
+             (cl-intersection roles (plist-get tags :ebox/roles)))
+      (or (equal (plist-get tags :ebox/region-id) region-id)
+          (plist-get tags :ebox/descendant-output)))))
+
 (defun ebox-surface-region-mounts (buffer region-id &optional roles)
   "Return REGION-ID's Ebox-owned output mounts in BUFFER.  When ROLES is
 non-nil, keep only direct mounts owning a listed Ebox role.  Without ROLES,
 include descendant output attached to the region's object.  The returned
-ranges are numeric snapshots; Ebox publication retains marker ownership."
+ranges are numeric snapshots; Ebox publication retains marker ownership.
+Only surviving mounts detach their tags."
   (when-let* ((surface (ebox-surface--live-buffer-surface buffer))
               (state (ebox--pub-surface-client-state surface))
               (table (plist-get state :region-surface-object-table))
               (object (gethash region-id table)))
-    (cl-remove-if-not
-     (lambda (mount)
-       (let ((tags (plist-get mount :tags)))
-         (if roles
-             (and (equal (plist-get tags :ebox/region-id) region-id)
-                  (cl-intersection roles (plist-get tags :ebox/roles)))
-           (or (equal (plist-get tags :ebox/region-id) region-id)
-               (plist-get tags :ebox/descendant-output)))))
-     (ebox--pub-object-mounts object))))
+    (let (mounts)
+      (dolist (mount (ebox--pub--object-raw-mounts object))
+        (when (ebox-surface--region-mount-p mount region-id roles)
+          (push (ebox--pub--object-mount-plist mount) mounts)))
+      (nreverse mounts))))
 
 (defun ebox-surface-region-bounds (buffer region-id &optional roles)
   "Return numeric bounds for REGION-ID's Ebox publication mounts in BUFFER.
@@ -1067,23 +1075,15 @@ ROLES has the same filtering meaning as in `ebox-surface-region-mounts'."
               (state (ebox--pub-surface-client-state surface))
               (table (plist-get state :region-surface-object-table))
               (object (gethash region-id table)))
-    (unless (ebox--pub-object-live-p object)
-      (signal 'ebox--pub-stale-object (list object)))
     ;; Read the private mounts in place: only numbers leave this function,
     ;; so the defensive tag copies of `ebox-surface-region-mounts' are unneeded.
     (let (start end)
-      (dolist (mount (gethash object (ebox--pub--surface-mount-index
-                                      (ebox--pub--surface-object-surface object))))
-        (let ((tags (ebox--pub--surface-mount-tags mount)))
-          (when (if roles
-                    (and (equal (plist-get tags :ebox/region-id) region-id)
-                         (cl-intersection roles (plist-get tags :ebox/roles)))
-                  (or (equal (plist-get tags :ebox/region-id) region-id)
-                      (plist-get tags :ebox/descendant-output)))
-            (let ((from (ebox--pub--mount-position (ebox--pub--surface-mount-start mount)))
-                  (to (ebox--pub--mount-position (ebox--pub--surface-mount-end mount))))
-              (setq start (if start (min start from) from)
-                    end (if end (max end to) to))))))
+      (dolist (mount (ebox--pub--object-raw-mounts object))
+        (when (ebox-surface--region-mount-p mount region-id roles)
+          (let ((from (ebox--pub--mount-position (ebox--pub--surface-mount-start mount)))
+                (to (ebox--pub--mount-position (ebox--pub--surface-mount-end mount))))
+            (setq start (if start (min start from) from)
+                  end (if end (max end to) to)))))
       (and start (cons start end)))))
 
 (defun ebox-surface--runtime-keys (state key)
