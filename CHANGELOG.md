@@ -6,6 +6,12 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- `ebox-host-ref-size` returns a referenced Host's committed painted
+  border-box size as `(PIXELS . ROWS)`, excluding margins and neighbouring
+  columns, without rendering or changing the revision. It lets a caller size
+  resources such as a video canvas from the renderer's own layout instead of
+  estimating the region from window chrome.
+
 - Existing empty Text in a fixed prepared slot can grow, clear and reappear
   without a full publication; rejected updates still preserve accepted pixels.
   Preparing large mixed batches now merges private source records once instead

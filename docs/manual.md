@@ -419,6 +419,13 @@ stale; callers still obtain a new binding for the accepted generation.
     (ebox-region-update-geometry "panel" :left '(px 12) :top '(lh 2) :z-index 3)))
 ```
 
+A read-only query reports a Host's committed painted size without rendering:
+`ebox-host-ref-size` returns its border box as `(PIXELS . ROWS)`, excluding
+margins and neighbouring columns, and `nil` for an absent or wholly hidden
+Host. Use it to size work that must fit a measured region, such as a video
+canvas, instead of estimating the region from window chrome; query it after a
+layout change, not once per video frame.
+
 The current compiled route supports absolute translation and stacking inside
 fixed containing planes, including enclosing fixed wrappers. Horizontal units
 are retained `px` or `ch`; vertical units are retained `lh`. Unchanged size

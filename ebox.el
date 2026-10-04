@@ -503,6 +503,14 @@
 ;; reference, or live Ebox publication mounts no longer exist.  HOST-REF is opaque and
 ;; compared with `equal'.
 ;;
+;; Function: ebox-host-ref-size (buffer-or-name host-ref)
+;;;###autoload (autoload 'ebox-host-ref-size "ebox" nil nil)
+;; Return the committed painted border-box size as (PIXELS . ROWS), or nil
+;; for an absent or wholly hidden Host. Excludes margins and neighbouring
+;; columns; clipping reduces the reported extent. Reads published spans without
+;; rendering or changing the revision. Use during layout/resource preparation,
+;; not on every video frame. HOST-REF has the lifetime of `ebox-host-ref-bounds'.
+;;
 ;; Function: ebox-host-ref-position (buffer-or-name host-ref)
 ;;;###autoload (autoload 'ebox-host-ref-position "ebox" nil nil)
 ;; Return HOST-REF's first live position in BUFFER-OR-NAME, or nil.

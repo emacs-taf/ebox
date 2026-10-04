@@ -5148,6 +5148,33 @@ opaque and compared with `equal'."
           (when (< start end) (cons start end)))))))
 
 ;;;###autoload
+(defun ebox-host-ref-size (buffer-or-name host-ref)
+  "Return HOST-REF's painted border-box size as (PIXELS . ROWS).
+Read the last committed publication in BUFFER-OR-NAME, without rendering or
+publishing.  Margins and neighbouring columns are excluded.  A clipped Host
+reports only its painted extent; an absent or wholly hidden Host returns nil.
+The query measures the Host's published spans and is intended for layout or
+resource preparation, not per-frame polling."
+  (when-let* ((buffer (ebox--host-ref-buffer buffer-or-name))
+              (node (ebox--host-ref-node buffer host-ref)))
+    (with-current-buffer buffer
+      (save-restriction
+        (widen)
+        (let ((lines (make-hash-table :test 'eql)) (width 0))
+          (dolist (region (ebox--node-all-region-ids node))
+            (dolist (mount (ebox-incremental--region-mounts
+                           buffer region ebox--horizontal-border-anchor-roles))
+              (ebox--add-role-span-line-ranges
+               lines (cons (plist-get mount :start) (plist-get mount :end)))))
+          (maphash
+           (lambda (_line span)
+             (setq width (max width (ebox--string-pixel-width
+                                     (buffer-substring (car span) (cdr span))))))
+           lines)
+          (when (> (hash-table-count lines) 0)
+            (cons width (hash-table-count lines))))))))
+
+;;;###autoload
 (defun ebox-host-ref-position (buffer-or-name host-ref)
   "Return HOST-REF's first live position in BUFFER-OR-NAME, or nil.
 See `ebox-host-ref-bounds' for lookup and lifetime semantics."

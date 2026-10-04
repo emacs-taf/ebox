@@ -354,5 +354,44 @@
       (should (ebox-geometry-apply operation [(px 12) (lh 1)]))
       (ebox-geometry-test--assert-current-render))))
 
+(ert-deftest ebox-host-size-follows-flex-allocation-and-unmount ()
+  "Published size follows flex layout, excluding the neighbouring column."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 12))
+    (with-temp-buffer
+      (let* ((builder (ebox-source-builder-create))
+             (side-style (ebox-style-compile-form 'box
+                          '(:width (px 40) :flex-shrink 0 :background-color "#223344")))
+             (stage-style (ebox-style-compile-form 'box
+                           '(:flex-grow 1 :flex-basis (px 0) :min-width (px 0)
+                             :background-color "#111111")))
+             (root-style (ebox-style-compile-form 'flex
+                          '(:width (vw 100) :height (lh 6) :align-items stretch)))
+             (side (apply #'ebox-box-create
+                          (append (ebox-canonical-box-configuration 'box side-style)
+                                  (list :source-handle (ebox-source-builder-bind builder :identity "side" :declarations side-style)
+                                        :children nil
+                                        :owned-facts (ebox-canonical-facts-from-declarations 'box side-style)))))
+             (stage (apply #'ebox-box-create
+                           (append (ebox-canonical-box-configuration 'box stage-style)
+                                   (list :source-handle (ebox-source-builder-bind builder :identity "stage" :declarations stage-style)
+                                         :children nil
+                                         :owned-facts (ebox-canonical-facts-from-declarations 'box stage-style)))))
+             (root (apply #'ebox-box-create
+                          (append (ebox-canonical-box-configuration 'flex root-style)
+                                  (list :source-handle (ebox-source-builder-bind builder :identity "root" :declarations root-style)
+                                        :children (list side stage)
+                                        :owned-facts (ebox-canonical-facts-from-declarations 'flex root-style))))))
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-canonical-input-create (list root) (ebox-source-builder-finish builder))))
+      (let ((revision (ebox-surface-buffer-revision (current-buffer))))
+        (should (equal '(40 . 6) (ebox-host-ref-size (current-buffer) "side")))
+        (should (equal '(120 . 6) (ebox-host-ref-size (current-buffer) "stage")))
+        (should (= revision (ebox-surface-buffer-revision (current-buffer)))))
+      (ebox-rerender-buffer-with-context (current-buffer) 220 12)
+      (should (equal '(180 . 6) (ebox-host-ref-size (current-buffer) "stage")))
+      (should-not (ebox-host-ref-size (current-buffer) 'missing))
+      (ebox-unmount-buffer (current-buffer))
+      (should-not (ebox-host-ref-size (current-buffer) "stage")))))
+
 (provide 'ebox-geometry-tests)
 ;;; ebox-geometry-tests.el ends here
