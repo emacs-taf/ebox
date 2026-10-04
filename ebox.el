@@ -511,6 +511,37 @@
 ;; rendering or changing the revision. Use during layout/resource preparation,
 ;; not on every video frame. HOST-REF has the lifetime of `ebox-host-ref-bounds'.
 ;;
+;; Function: ebox-input-begin (buffer-or-name host-ref)
+;;;###autoload (autoload 'ebox-input-begin "ebox" nil nil)
+;; Start native editing of a mounted Host's published text and return a
+;; session. Edits inside that span are accepted, and publication of the buffer
+;; is refused while the session is active, so native IME, point, selection and
+;; undo work on real buffer text. One session per buffer. Unmounted surfaces,
+;; missing Hosts, dead buffers and an existing session are errors.
+;;
+;; Function: ebox-input-text (session)
+;;;###autoload (autoload 'ebox-input-text "ebox" nil nil)
+;; Return a session's current property-free text without ending it.
+;;
+;; Function: ebox-input-end (session)
+;;;###autoload (autoload 'ebox-input-end "ebox" nil nil)
+;; End a session, restore its previously published text without host hooks,
+;; and return the user's text. Publish the new value afterwards through the
+;; ordinary update path. An ended or foreign session returns nil; a non-session
+;; argument is an error.
+;;
+;; Function: ebox-input-active-p (buffer-or-name)
+;;;###autoload (autoload 'ebox-input-active-p "ebox" nil nil)
+;; Return the active input session of a mounted buffer, or nil.
+;;
+;; Error: ebox-input-error
+;; Invalid input-session operation, such as a non-session argument or a Host
+;; without a published span.
+;;
+;; Error: ebox-input-session-active
+;; A publication was refused because an input session owns part of the buffer.
+;; End the session and publish again.
+;;
 ;; Function: ebox-host-ref-position (buffer-or-name host-ref)
 ;;;###autoload (autoload 'ebox-host-ref-position "ebox" nil nil)
 ;; Return HOST-REF's first live position in BUFFER-OR-NAME, or nil.
@@ -1428,6 +1459,7 @@
 (require 'ebox-runtime)
 (require 'ebox-native-reflow)
 (require 'ebox-geometry)
+(require 'ebox-input)
 (require 'ebox-update)
 (require 'ebox-image)
 

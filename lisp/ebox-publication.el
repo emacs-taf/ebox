@@ -52,6 +52,19 @@
 (define-error 'ebox--pub-orphan-object "Orphan Ebox object" 'ebox--pub-surface-error)
 (define-error 'ebox--pub-capability-error "Ebox mount capability violation"
   'ebox--pub-surface-error)
+(define-error 'ebox-input-error "Ebox input session error")
+(define-error 'ebox-input-session-active
+  "Ebox input session refused a publication" 'ebox-input-error)
+
+(defvar-local ebox--input-session nil
+  "Active native editing session in this Ebox buffer, if any.")
+
+(cl-defstruct (ebox--input-session (:constructor ebox--input-session-create))
+  "One native editing session over a retained Host's published text.
+BUFFER owns the session; START and END are markers delimiting the editable
+span, and ORIGINAL is the property-free published text restored on end."
+  buffer host-ref start end original read-only)
+
 (define-error 'ebox--pub-stale-mount "Stale Ebox mount" 'ebox--pub-surface-error)
 (define-error 'ebox--pub-dead-surface "Dead Ebox surface" 'ebox--pub-surface-error)
 (define-error 'ebox--pub-invalid-range-anchor "Invalid Ebox range anchor"
@@ -2301,6 +2314,9 @@ mount and INITIAL is non-nil for first publication."
   (when (and (not initial) (ebox--pub--surface-stale surface))
     (ebox--pub--signal 'ebox--pub-stale-mount
             (list (ebox--pub--surface-id surface))))
+  (when (and (not initial) ebox--input-session)
+    (ebox--pub--signal 'ebox-input-session-active
+            (list (buffer-name (ebox--pub--surface-buffer surface)))))
   (let*
       ((scope-request (ebox--pub--surface-scope-request surface))
        (context (ebox--pub--make-context surface))
@@ -2849,7 +2865,9 @@ when the caller reads the scalar summary from the surface instead."
     (setq ebox--pub--surface-character-tick tick
           ebox--pub--surface-before-change-state nil)
     (when (and changed state (not ebox--pub--surface-publishing)
-               (not ebox--pub--surface-guarding-prepare))
+               (not ebox--pub--surface-guarding-prepare)
+               (not (ebox--input-session-covers-p
+                     (plist-get state :beg) (plist-get state :end))))
       (dolist (entry (plist-get state :content))
         (pcase-let ((`(,surface ,start ,end) entry))
           (when (and (ebox--pub-surface-live-p surface)

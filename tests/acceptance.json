@@ -21,6 +21,16 @@
       "purpose": "The committed Host size follows flex allocation and viewport changes without including neighbouring columns or changing the revision; absent and unmounted Hosts return nil."
     },
     {
+      "name": "ebox-input-session-accepts-edits-and-restores-on-end",
+      "file": "tests/ebox-input-tests.el",
+      "purpose": "A native session accepts edits inside a Host's published span, refuses publication meanwhile, then restores the published text and lets the application publish the new value."
+    },
+    {
+      "name": "ebox-input-session-validates-lifecycle",
+      "file": "tests/ebox-input-tests.el",
+      "purpose": "One session per buffer; unknown Hosts, foreign handles and an ended session are reported without disturbing the surface."
+    },
+    {
       "name": "ebox-prepared-publication-paint-rejects-outside-text-mutation",
       "file": "tests/ebox-prepared-publication-tests.el",
       "purpose": "A property-only prepared update rejects an unrecorded same-length text rewrite outside the changed owner, rolls back paired state and can retry successfully."
