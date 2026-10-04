@@ -100,14 +100,21 @@ through the ordinary update path.  An ended or foreign session is an error."
 
 (defun ebox--input-session-covers-p (beg end)
   "Return non-nil when the active session's span contains BEG through END.
-BEG and END delimit a host modification; an insertion has equal bounds."
+BEG and END delimit a host modification; an insertion has equal bounds.
+The span is taken from the before-change capture when present, because a
+deletion that removes the whole span collapses its end marker."
   (let ((session ebox--input-session))
     (when session
-      (let ((start (ebox--input-session-start session))
-            (finish (ebox--input-session-end session)))
-        (and (markerp start) (markerp finish)
-             (<= (marker-position start) beg)
-             (<= end (marker-position finish)))))))
+      (let* ((captured ebox--input-session-before)
+             (start (if captured
+                        (car captured)
+                      (marker-position (ebox--input-session-start session))))
+             (finish (if captured
+                         (cdr captured)
+                       (marker-position (ebox--input-session-end session)))))
+        (and (numberp start) (numberp finish)
+             (<= start beg)
+             (<= end finish))))))
 
 (provide 'ebox-input)
 ;;; ebox-input.el ends here

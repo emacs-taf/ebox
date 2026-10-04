@@ -2845,9 +2845,18 @@ when the caller reads the scalar summary from the surface instead."
       (and (> beg start) (< beg end))
     (and (< beg end) (> edit-end start))))
 
+(defvar-local ebox--input-session-before nil
+  "Active input session span captured before the pending host edit.")
+
 (defun ebox--pub--surface-before-change (beg end)
   "Capture owned content ranges before a host edit from BEG to END."
-  (setq ebox--pub--surface-before-change-state nil)
+  (setq ebox--pub--surface-before-change-state nil
+        ebox--input-session-before
+        (and ebox--input-session
+             (let ((start (ebox--input-session-start ebox--input-session))
+                   (finish (ebox--input-session-end ebox--input-session)))
+               (and (markerp start) (markerp finish)
+                    (cons (marker-position start) (marker-position finish))))))
   (unless (or ebox--pub--surface-publishing ebox--pub--surface-guarding-prepare)
     (let (content)
       (dolist (surface ebox--pub--buffer-surfaces)
