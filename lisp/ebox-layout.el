@@ -2165,6 +2165,11 @@ live Ebox publication surface."
             (if ebox--css-size-context-active-p ebox--css-containing-height
               ebox--css-viewport-height))
            (ebox--css-size-context-active-p t)
+           (ebox-layer--wrapper-context
+            (and (hash-table-p ebox-layer--composition-cache)
+                 (not (eq (plist-get node :ebox-kind) 'text))
+                 (vector ebox-viewport-width ebox--css-viewport-width
+                         ebox--css-viewport-height ebox--css-containing-height)))
            (ebox--css-font-fact
             (or (plist-get node :ebox-font-fact) ebox--css-font-fact))
            (ebox--css-viewport-dependent-subtree-cache

@@ -32,7 +32,7 @@
   program target wrapper first-row lines content-offset
   saved-lines dirty prefixes suffixes properties signature transforms variants
   output-spine offsets damage damage-count template-key refresh-p
-  paint surface-properties)
+  paint surface-properties wrapper-context)
 
 (defvar-local ebox-geometry--session nil
   "Most recently used prepared canvas for the mounted surface.")
@@ -204,8 +204,14 @@ preparing a wrapper no longer enumerates every combination up front."
     (if retained
         (setq rows (copy-sequence (ebox-geometry--route-lines route)))
       (plist-put wrapper :content content)
-      (setq output (ebox--render-layout wrapper)
-            rows (vconcat (ebox-string-lines output))))
+      (let* ((context (ebox-geometry--route-wrapper-context route))
+             (ebox-viewport-width (if context (aref context 0) ebox-viewport-width))
+             (ebox--css-viewport-width (if context (aref context 1) ebox--css-viewport-width))
+             (ebox--css-viewport-height (if context (aref context 2) ebox--css-viewport-height))
+             (ebox--css-containing-height (if context (aref context 3) ebox--css-containing-height))
+             (ebox--css-size-context-active-p (or context ebox--css-size-context-active-p)))
+        (setq output (ebox--render-layout wrapper)
+              rows (vconcat (ebox-string-lines output)))))
     (when (and (ebox-geometry--route-lines route)
                (/= (length rows) (length (ebox-geometry--route-lines route))))
       (ebox-geometry--record-admission
@@ -803,6 +809,7 @@ independently of the raster's placement."
                   (setf (ebox-geometry--route-program route) program
                         (ebox-geometry--route-target route) target
                         (ebox-geometry--route-wrapper route) (ebox-geometry--wrapper host)
+                        (ebox-geometry--route-wrapper-context route) (plist-get entry :wrapper-context)
                         (ebox-geometry--route-content-offset route)
                         (+ (floor (ebox-get host :margin-top-height))
                            (floor (ebox-get host :padding-top-height)))

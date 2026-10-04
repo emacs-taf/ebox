@@ -77,6 +77,11 @@ table because ledger keys are freshly allocated HOST/PHASE cons cells.")
 The Surface runtime should include every display and allocation fact that can
 change pixel measurement.  Reuse is disabled when this token is nil.")
 
+(defvar ebox-layer--wrapper-context nil
+  "Containing size context captured before the current host lays out children.
+A candidate entry owns this immutable vector; prepared wrappers restore it
+instead of resolving nested stretch/percentage units against the viewport.")
+
 (defvar ebox-layer--composition-phase 'final
   "Composition phase used as the default host ledger key.
 Anchor prepasses and final paints must use distinct phase values.")
@@ -1021,6 +1026,7 @@ BASE-LINES, when present, are completed flow rows below every paint record."
               (aset rows row (ebox-composite-line base (aref rows row) width)))))))
     (when cacheable-p
       (puthash key (list :context ebox-layer--composition-context
+                         :wrapper-context ebox-layer--wrapper-context
                          :width width :height height
                          :signatures signatures :rows rows
                          :records ordered :base-lines retained-base-lines)

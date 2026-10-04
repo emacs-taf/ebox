@@ -378,6 +378,27 @@ prepared visibility change paints it at its current placement."
         (should-not (string-match-p "Value00" (buffer-string)))
         (ebox-prepared-update-test--assert-fresh)))))
 
+(ert-deftest ebox-prepared-update-retains-nested-containing-size-context ()
+  "Nested stretch and percentage wrappers use their parent, not the viewport."
+  (let ((ebox-viewport-width 320) (ebox-viewport-height 24))
+    (dolist (height '(stretch (% 100)))
+      (with-temp-buffer
+        (ebox-render-to-buffer
+         (current-buffer)
+         (ebox-build `(box :width (ch 40) :height (lh 24)
+                          (box :position absolute :z-index 0 :left (ch 1) :top (lh 1)
+                               :width (ch 30) :height (lh 12) :padding ((lh 1) (ch 1))
+                               (box :position absolute :z-index 0 :left (ch 0) :top (lh 0)
+                                    :width stretch :height ,height :padding ((lh 1) (ch 1))
+                                    (box :position absolute :z-index 0 :left (ch 0) :top (lh 0)
+                                         :width stretch :height (lh 1)
+                                         (text :id "nested-label" "Before")))))))
+        (let ((operation (ebox-update-prepare (current-buffer) [["nested-label" [:content]]])))
+          (should (or operation (ert-fail (format "%S" (ebox-update-prepare-report (current-buffer))))))
+          (dolist (text '("After" "A longer label" "" "Restored"))
+            (should (eq t (ebox-update-apply operation (vector (vector text)) [0])))
+            (ebox-prepared-update-test--assert-fresh)))))))
+
 (ert-deftest ebox-prepared-update-fits-variable-text-in-fixed-flex-allocation ()
   "A fixed status allocation accepts variable text and preserves adjacent controls."
   (let ((ebox-viewport-width 320) (ebox-viewport-height 10))

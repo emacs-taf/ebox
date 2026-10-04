@@ -829,8 +829,15 @@ as its background or visibility, leaves every descendant cascade intact."
 PROBE renders with private caches so a trial size leaves no memoized facts."
   (let* ((state (ebox-update--cohort-state operation))
          (scene (ebox-update--cohort-scene operation))
-         (ebox-viewport-width (plist-get state :viewport-width))
+         (context (ebox-geometry--route-wrapper-context
+                   (aref (ebox-geometry--operation-routes scene) (ebox-update--boundary-route boundary))))
+         (ebox-viewport-width (if context (aref context 0) (plist-get state :viewport-width)))
          (ebox-viewport-height (plist-get state :viewport-height))
+         (ebox--css-viewport-width (if context (aref context 1) (plist-get state :viewport-width)))
+         (ebox--css-viewport-height (if context (aref context 2)
+                                      (and ebox-viewport-height (* ebox-viewport-height (frame-char-height)))))
+         (ebox--css-containing-height (if context (aref context 3) ebox--css-viewport-height))
+         (ebox--css-size-context-active-p t)
          (ebox--render-display-signature (plist-get state :display-signature))
          (ebox--render-source-index (plist-get state :source-index))
          (ebox--region-box-table (ebox-geometry--operation-region-table scene))

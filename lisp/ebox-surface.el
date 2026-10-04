@@ -6583,31 +6583,18 @@ through
         (ebox-surface--geometry-mount-prepare-role
          owners role-instructions role-names region-id index
          state node-objects region-objects)))
-    ;; Empty or clipped Text has no initial pixels, but its existing source
-    ;; identity can produce content on the next update. Compile these exact
-    ;; roles from the accepted topology now, rather than discovering ownership
-    ;; in a later hot publication. No new node or author capability is created.
-    (let ((nodes (plist-get state :node-table))
-          (parents (plist-get state :parent-table))
-          (region-nodes (plist-get state :region-node-table))
-          (content-slot (cl-position 'content role-names))
+    ;; An existing region may have no own content pixels yet. Text can appear,
+    ;; and a container paints its own neutral fill when its last text clears.
+    ;; Compile both exact content roles from accepted identities, without
+    ;; inventing nodes or discovering ownership during hot publication.
+    (let ((content-slot (cl-position 'content role-names))
           (owner-slot (cl-position 'content-owner role-names)))
       (maphash
        (lambda (region _object)
-         (let* ((id (ebox-runtime-index-get region region-nodes))
-                (node (and id (ebox-runtime-index-get id nodes)))
-                (program (gethash region role-instructions)))
-           (when (and (eq (plist-get node :ebox-kind) 'text)
-                      (or (null program) (null (aref program content-slot))))
-             (ebox-surface--geometry-mount-prepare-role
-              owners role-instructions role-names region content-slot state node-objects region-objects)
-             (while node
-               (when-let* ((owner-region (plist-get node :region-id))
-                           ((gethash owner-region region-objects)))
-                 (ebox-surface--geometry-mount-prepare-role
-                  owners role-instructions role-names owner-region owner-slot state node-objects region-objects))
-               (setq node (ebox-runtime-index-get
-                           (ebox-runtime-index-get (plist-get node :node-id) parents) nodes))))))
+         (ebox-surface--geometry-mount-prepare-role
+          owners role-instructions role-names region content-slot state node-objects region-objects)
+         (ebox-surface--geometry-mount-prepare-role
+          owners role-instructions role-names region owner-slot state node-objects region-objects))
        region-objects))
     ;; A single owner can run many disjoint visible intervals per row, so the
     ;; anchored plane's height cannot bound its interval pool.  The cap also

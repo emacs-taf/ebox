@@ -1846,6 +1846,11 @@
       "purpose": "A panel mounted hidden remains a prepared member: moves while hidden paint nothing and a visibility change paints it at its current placement, matching a fresh render."
     },
     {
+      "name": "ebox-prepared-update-retains-nested-containing-size-context",
+      "file": "tests/ebox-prepared-update-tests.el",
+      "purpose": "Prepared Text updates inside nested stretch/percentage canvases retain their actual containing size and match fresh rendering through growth, clearing and refill."
+    },
+    {
       "name": "ebox-prepared-update-fits-variable-text-in-fixed-flex-allocation",
       "file": "tests/ebox-prepared-update-tests.el",
       "purpose": "A fixed Flex status allocation accepts variable-length titles, clips long content before adjacent controls, and restores prior content and revision on rejection."
