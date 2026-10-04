@@ -145,6 +145,18 @@ cannot inherit that proof merely by occupying the same path.
 
 No layer may infer application state from visible buffer text. No public caller may mutate a published tree in place. Every public live-publication route, including `ebox-render-to-buffer`, its `ebox-display-buffer` display wrapper, and commit/update entry points, uses a retained Ebox publication surface; the public facade exposes no erase-and-evaluate-body buffer writer.
 
+Editing a published surface in place has exactly one supported external route:
+an input session. A session takes over the published span of one Host, accepts
+the user's edits between its markers, and suspends publication of that buffer
+until it ends. Ebox owns the span, the temporary read-only override and its
+restoration; the caller owns the application value, the draft and the
+submission policy. Ending restores the previously published text without
+running host modification hooks and returns the user's text, so the next
+ordinary publication carries the value the application accepted. A direct
+buffer edit outside a session is not an alternative: the change guard marks
+the surface stale, and the refusing publication preserves the committed
+generation instead of merging two writers.
+
 Native and Elisp fragment ledgers share one ownership projection. A proven
 unchanged node topology retains the published node/object and region/object
 indexes and resolves only previously unseen role combinations. Candidate caches

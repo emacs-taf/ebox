@@ -780,6 +780,51 @@ Ebox 对 keymap 创建快照；发布新绑定时应替换 `:keymap`，而不是
 flush 失败则保留上次已提交 surface。回调中的其他业务副作用不会被撤销。嵌套、
 no-op 和显式生命周期行为见[批量更新契约](manual.zh-CN.md)。
 
+### 输入会话
+
+已挂载 surface 的 buffer 是只读的，由 Ebox publication 拥有。通过普通 Elisp
+或 buffer hook 直接修改不是受支持的写入：变更守卫会把 surface 标为 stale，
+下一次发布以 stale mount 错误拒绝，而不是在两个写者之间做合并。用户需要
+原地编辑已发布文本时，使用输入会话。
+
+`ebox-input-begin` 在某个已提交 Host 的已发布区间上开始会话：
+
+| 接口 | 输入与结果 |
+| --- | --- |
+| `ebox-input-begin (buffer-or-name host-ref)` | 在 HOST-REF 的已发布文本上开始会话并返回。 |
+| `ebox-input-text (session)` | 返回当前无属性的用户文本，不结束会话。 |
+| `ebox-input-end (session)` | 还原先前发布的文本、释放区间并返回无属性的用户文本。 |
+| `ebox-input-active-p (buffer-or-name)` | 返回 buffer 的活动会话，没有则为 nil。 |
+
+会话期间，Host 已发布区间内的编辑被接受，变更守卫把它们当作会话文本而不是
+surface 污染。会话接管 surface 的 read-only 状态让文本可写，并在结束时恢复
+之前的状态。该 buffer 的发布会被拒绝并抛出 `ebox-input-session-active`，
+因此后台更新不会打扰用户的按键、point、选区和撤销历史。`ebox-input-end`
+不经过宿主修改钩子地写回先前发布的文本，所以这次还原不会使 surface 失效，
+并返回用户文本。之后由调用者通过普通更新路径发布接受的值。
+
+一个 buffer 最多一个会话。结束会还原文本、read-only 状态和 buffer-local
+会话所有权；已结束的会话不再起作用。buffer 已死、surface 未挂载、Host
+没有已发布区间以及重复会话都是错误。会话不拥有应用状态：值、草稿和提交
+策略由调用者持有，会话期间可随时读取 `ebox-input-text`。
+
+```elisp
+(require 'ebox)
+(let* ((buffer (ebox-render-to-buffer
+                "*Ebox Input*"
+                (ebox-build '(text :key field :tab-index 0 "draft"))))
+       (host-ref (with-current-buffer buffer (ebox-focus-first)))
+       (session (ebox-input-begin buffer host-ref)))
+  ;; 在已发布区间内编辑，例如：
+  (with-current-buffer buffer
+    (goto-char (car (ebox-host-ref-bounds buffer host-ref)))
+    (insert "note: "))
+  (ebox-input-text session)          ; => "note: draft"
+  (ebox-input-end session)           ; 还原 "draft" 并返回 "note: draft"
+  (ebox-commit buffer
+               (ebox-build '(text :key field :tab-index 0 "note: draft"))))
+```
+
 ## 7. Resize 与滚动
 
 内容超过有限高度时，`:overflow scroll` 会创建内部 scroll window。键盘滚动以

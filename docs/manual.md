@@ -985,6 +985,58 @@ exit restores the pending state from before this call, and a failed owned
 flush preserves the last committed surface. This does not undo arbitrary
 business side effects in the callback.
 
+### Input sessions
+
+A mounted surface buffer is read-only and owned by the Ebox publication. An
+edit made directly through ordinary Elisp or a buffer hook is not a supported
+write: the change guard marks the surface stale, and the next publication
+refuses with a stale-mount error instead of reconciling two writers. Use an
+input session when the user must edit published text in place.
+
+`ebox-input-begin` starts a session over one committed Host's published span:
+
+| Function | Input and result |
+| --- | --- |
+| `ebox-input-begin (buffer-or-name host-ref)` | Start a session over HOST-REF's published text and return it. |
+| `ebox-input-text (session)` | Return the property-free user text without ending the session. |
+| `ebox-input-end (session)` | Restore the previously published text, release the span, and return the property-free user text. |
+| `ebox-input-active-p (buffer-or-name)` | Return the buffer's active session, or nil. |
+
+While the session is active, edits inside the Host's published span are
+accepted, and the change guard treats them as the session's text instead of
+surface pollution. The session takes over the surface's read-only state so the
+text is writable and restores the previous state when it ends. Publication of
+that buffer is refused with the `ebox-input-session-active` error, so a
+background update cannot disturb the user's keystrokes, point, selection or
+undo history. `ebox-input-end` writes the previously published text back
+without running host modification hooks, so this restoration does not
+invalidate the surface, and returns the user's text. Publish the accepted
+value afterwards through the ordinary update path.
+
+One buffer holds at most one session. Ending restores the text, the read-only
+state and the buffer-local session ownership; an ended session is inert. A
+dead buffer, an unmounted surface, a Host without a published span and a
+second session are errors. The session owns no application state: callers keep
+the value, the draft and the submission policy and can read `ebox-input-text`
+at any time while it is active.
+
+```elisp
+(require 'ebox)
+(let* ((buffer (ebox-render-to-buffer
+                "*Ebox Input*"
+                (ebox-build '(text :key field :tab-index 0 "draft"))))
+       (host-ref (with-current-buffer buffer (ebox-focus-first)))
+       (session (ebox-input-begin buffer host-ref)))
+  ;; Edit inside the published span, e.g.:
+  (with-current-buffer buffer
+    (goto-char (car (ebox-host-ref-bounds buffer host-ref)))
+    (insert "note: "))
+  (ebox-input-text session)          ; => "note: draft"
+  (ebox-input-end session)           ; restores "draft", returns "note: draft"
+  (ebox-commit buffer
+               (ebox-build '(text :key field :tab-index 0 "note: draft"))))
+```
+
 ## 7. Resize and scroll
 
 When content exceeds a finite height, `:overflow scroll` creates an internal
