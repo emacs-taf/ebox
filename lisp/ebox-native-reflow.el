@@ -425,6 +425,28 @@ TEMPLATE-P selects the native property-template comparison and hash."
                (aref copy branch) key value (1+ depth) template-p code))
         copy))))
 
+(defun ebox-native-reflow--persistent-index-add
+    (root key value &optional template-p)
+  "Destructively add KEY's VALUE to freshly built persistent ROOT.
+ROOT is mutated in place and returned, so it must not be shared with a
+committed index yet: unlike `ebox-native-reflow--persistent-index-put'
+this writes the trie path once instead of copying one vector per level,
+which is exact for a bulk build and keeps the same lookup shape.  An empty
+ROOT creates the trie on its first use; repeated equal keys accumulate in
+one leaf bucket and the newest one wins on lookup."
+  (let* ((root (or root (make-vector 16 nil)))
+         (code (ebox-native-reflow--persistent-index-code key template-p))
+         (node root)
+         (last (1- ebox-native-reflow--persistent-index-depth)))
+    (dotimes (level last)
+      (let ((branch (logand (ash code (* -4 level)) 15)))
+        (unless (vectorp (aref node branch))
+          (aset node branch (make-vector 16 nil)))
+        (setq node (aref node branch))))
+    (let ((branch (logand (ash code (* -4 last)) 15)))
+      (aset node branch (cons (cons key value) (aref node branch))))
+    root))
+
 (defun ebox-native-reflow--persistent-index-from-sequence (sequence &optional template-p)
   "Return an immutable persistent index for ordered SEQUENCE values.
 TEMPLATE-P selects the native property-template comparison and hash."
@@ -432,8 +454,8 @@ TEMPLATE-P selects the native property-template comparison and hash."
     (cl-loop for value across (vconcat sequence)
              for id from 0
              do (setq root
-                      (ebox-native-reflow--persistent-index-put
-                       root value id nil template-p)))
+                      (ebox-native-reflow--persistent-index-add
+                       root value id template-p)))
     root))
 
 (defvar ebox-native-reflow--compile-property-template-ids nil
@@ -3272,7 +3294,7 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
              for rule = (ebox-native-reflow--retained-edge-rule parent)
              when rule do
              (setq index
-                   (ebox-native-reflow--persistent-index-put
+                   (ebox-native-reflow--persistent-index-add
                     index (cons 'rule parent-id) rule))
              when (memq (plist-get rule :kind)
                         '(flex-item typed-axis-item)) do
@@ -3290,7 +3312,7 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                         for item across items
                         for position from 0 do
                         (setq index
-                              (ebox-native-reflow--persistent-index-put
+                              (ebox-native-reflow--persistent-index-add
                                index
                                (cons 'child (plist-get child :node-id))
                                (append
@@ -3487,7 +3509,7 @@ Resolve node-ID entries through NODE-TABLE; legacy node plists need no index."
                     (maphash
                      (lambda (node-id entry)
                        (setq index
-                             (ebox-native-reflow--persistent-index-put
+                             (ebox-native-reflow--persistent-index-add
                               index node-id entry)))
                      new-cache)
                     index)

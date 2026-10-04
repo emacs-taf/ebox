@@ -219,6 +219,10 @@ All notable changes to Ebox are documented here.
   Empty author scopes no longer force a full cascade for every node.
 - Publication plan rendering collects leaf text once and concatenates at the
   root instead of rebuilding and copying a string at every plan level.
+- Retention-index construction inserts each entry once into a freshly built
+  trie instead of copying one path vector per trie level per entry. A mount
+  builds fragment, style, property-template and edge indexes with tens of
+  thousands of entries, so those copies dominated native layout preparation.
 - The retained property-template index hashes a key once per insertion instead
   of once per trie level, and a template comparison shares one property-value
   walk table, created only when a recursive value needs it. A graphic frame
