@@ -69,6 +69,11 @@ an interactive resize would."
                     ;; active.  Present the state the hook sees during
                     ;; completion, then notify it the way a resize would.
                     (window-resize popup 2)
+                    ;; The borrowed window also reports a different content
+                    ;; width; that must not defeat the borrowed-height guard.
+                    (set-window-margins window 3 3)
+                    (should-not (equal (ebox-viewport-window-width window)
+                                       width))
                     (cl-letf (((symbol-function 'active-minibuffer-window)
                                (lambda () (minibuffer-window (selected-frame)))))
                       (ebox-viewport-tests--settle (selected-frame))
@@ -78,6 +83,7 @@ an interactive resize would."
                                       width height)))
                       ;; A frame resize is user geometry even while that UI is
                       ;; present, so the canvas follows the new window.
+                      (set-window-margins window 0 0)
                       (set-frame-size (selected-frame) 80 21)
                       (ebox-viewport-tests--settle (selected-frame))
                       (should (equal (ebox-viewport-tests--text buffer)

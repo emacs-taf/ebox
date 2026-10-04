@@ -83,15 +83,16 @@ settles instead of once per intermediate size.")
                                         (or recorded-width -1))
                                      (= height
                                         (or recorded-height -1))))
-                               ;; Borrowed space is not a resize.  A same-width
-                               ;; height decrease while the minibuffer or echo
-                               ;; area is showing keeps the committed canvas;
-                               ;; frame changes, width changes and growth stay
-                               ;; real geometry.
+                               ;; Borrowed space is not a resize.  A height
+                               ;; decrease while the minibuffer, a completion
+                               ;; popup or the echo area is showing keeps the
+                               ;; committed canvas even when the borrowed window
+                               ;; also reports a different content width; only
+                               ;; a frame change or height growth stays real
+                               ;; geometry.
                                (not (and (not frame-changed)
                                          (ebox--viewport-transient-space-borrow-p
                                           frame)
-                                         (= width (or recorded-width -1))
                                          (< height (or recorded-height -1)))))
                       (ebox-rerender-buffer-with-context
                        buffer width height)))))))))
