@@ -24,7 +24,7 @@
 
 (declare-function ebox-string-height "ebox" (string))
 (declare-function ebox-surface--retained-property-value-equal-p
-                  "ebox-surface" (left right))
+                  "ebox-surface" (left right &optional seen))
 (declare-function ebox-native--module-version "ebox_native_reflow" ())
 (declare-function ebox-native--module-layout-ready-p "ebox_native_reflow" ())
 (declare-function ebox-native--module-create-session "ebox_native_reflow"
@@ -353,13 +353,16 @@ Bounded DEPTH keeps cyclic data safe; callback environments are never walked."
   "Compare template envelopes LEFT and RIGHT and their opaque property values."
   (and (eq (plist-get left :kind) (plist-get right :kind))
        (let ((old (plist-get left :properties))
-             (new (plist-get right :properties)))
+             (new (plist-get right :properties))
+             ;; One walk table for every property of this comparison; the
+             ;; shortest-cut sharing facts are valid across all of them.
+             (seen (make-hash-table :test #'eq)))
          (and (= (length old) (length new))
               (cl-loop for (property value) on old by #'cddr
                        for entry = (plist-member new property)
                        always (and entry
                                    (ebox-surface--retained-property-value-equal-p
-                                    value (cadr entry))))))))
+                                    value (cadr entry) seen)))))))
 
 (defun ebox-native-reflow--property-template-hash (template)
   "Hash TEMPLATE's envelope separately from its native property values."
@@ -400,25 +403,26 @@ TEMPLATE-P selects the native property-template comparison and hash."
       missing)))
 
 (defun ebox-native-reflow--persistent-index-put
-    (root key value &optional depth template-p)
+    (root key value &optional depth template-p code)
   "Return persistent ROOT updated to map KEY to VALUE.
-Only the fixed-depth path for KEY is copied.  DEPTH is for recursion.
+Only the fixed-depth path for KEY is copied.  DEPTH is for recursion;
+CODE is the precomputed index code so one put hashes KEY once.
 TEMPLATE-P selects the native property-template comparison and hash."
-  (let ((depth (or depth 0)))
+  (let* ((depth (or depth 0))
+         (code (or code (ebox-native-reflow--persistent-index-code key template-p))))
     (if (= depth ebox-native-reflow--persistent-index-depth)
         (cons (cons key value)
               (cl-remove key root :key #'car :test
                          (if template-p
                              #'ebox-native-reflow--property-template-equal-p
                            #'equal)))
-      (let* ((code (ebox-native-reflow--persistent-index-code key template-p))
-             (branch (logand (ash code (* -4 depth)) 15))
+      (let* ((branch (logand (ash code (* -4 depth)) 15))
              (copy (if (vectorp root)
                        (copy-sequence root)
                      (make-vector 16 nil))))
         (aset copy branch
               (ebox-native-reflow--persistent-index-put
-               (aref copy branch) key value (1+ depth) template-p))
+               (aref copy branch) key value (1+ depth) template-p code))
         copy))))
 
 (defun ebox-native-reflow--persistent-index-from-sequence (sequence &optional template-p)

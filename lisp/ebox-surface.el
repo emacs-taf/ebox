@@ -4135,15 +4135,24 @@ properties.  Its local renderer cannot prove equivalence for such an owner."
                   (ebox-surface--region-face-contributions box '(bt bb) t)))))
     (not (null needed))))
 
-(defun ebox-surface--retained-property-value-equal-p (left right)
+(defun ebox-surface--retained-property-value-equal-p (left right &optional seen)
   "Return non-nil when retaining LEFT instead of RIGHT preserves its value.
 Callbacks and records must keep identity.  Native keymap snapshots use
 Ebox's property policy, which compares bindings while retaining callback
 identity.  Render-created paint origins compare their baselines and paint
-source roles."
-  (let ((seen (make-hash-table :test #'eq)))
+source roles.  SEEN may carry one walk table shared by a larger comparison;
+it is created only when a recursive value needs it."
+  (let ((seen seen))
     (cl-labels
-        ((same
+        ((seen-before-p
+          (old new)
+          (and seen (memq new (gethash old seen))))
+         (note
+          (old new)
+          (let ((table (or seen
+                           (setq seen (make-hash-table :test #'eq)))))
+            (puthash old (cons new (gethash old table)) table)))
+         (same
           (old new)
           (cond
            ((eq old new) t)
@@ -4158,13 +4167,13 @@ source roles."
                      old new))
            ((or (functionp old) (functionp new)
                 (keymapp old) (keymapp new)) nil)
-           ((memq new (gethash old seen)) t)
+           ((seen-before-p old new) t)
            ((and (consp old) (consp new))
-            (puthash old (cons new (gethash old seen)) seen)
+            (note old new)
             (and (same (car old) (car new)) (same (cdr old) (cdr new))))
            ((and (stringp old) (stringp new)
                  (equal-including-properties old new))
-            (puthash old (cons new (gethash old seen)) seen)
+            (note old new)
             (let ((position 0) (length (length old)) (equal-p t))
               (while (and equal-p (< position length))
                 (setq equal-p

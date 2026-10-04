@@ -219,6 +219,11 @@ All notable changes to Ebox are documented here.
   Empty author scopes no longer force a full cascade for every node.
 - Publication plan rendering collects leaf text once and concatenates at the
   root instead of rebuilding and copying a string at every plan level.
+- The retained property-template index hashes a key once per insertion instead
+  of once per trie level, and a template comparison shares one property-value
+  walk table, created only when a recursive value needs it. A graphic frame
+  registers one display template per image cell, which made this churn
+  dominant during mounts.
 - Selector-located region batches compose sparse owner replacements and copy
   affected ancestors once, instead of rebuilding the whole candidate for each
   match. Ordinary planning, isolation and rollback still govern publication.
