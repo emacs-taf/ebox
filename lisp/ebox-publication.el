@@ -2864,12 +2864,19 @@ when the caller reads the scalar summary from the surface instead."
           (pcase-let ((`(,start . ,finish) (ebox--pub--surface-range surface)))
             (push (list surface start finish) content))))
       (setq ebox--pub--surface-before-change-state
-            (list :beg beg :end end :content content)))))
+            (list :beg beg :end end :content content
+                  :chars-tick (buffer-chars-modified-tick))))))
 
 (defun ebox--pub--surface-after-change (_beg _end _old-length)
   "Mark owned content stale after a host character edit."
   (let* ((tick (buffer-chars-modified-tick))
-         (changed (/= tick ebox--pub--surface-character-tick))
+         ;; A property-only change also runs this hook, and an earlier
+         ;; hook-suppressed write may have moved the character tick since the
+         ;; last observation.  Compare against the tick captured before this
+         ;; edit so only a real character change counts.
+         (changed (and ebox--pub--surface-before-change-state
+                       (/= tick (plist-get ebox--pub--surface-before-change-state
+                                           :chars-tick))))
          (state ebox--pub--surface-before-change-state))
     (setq ebox--pub--surface-character-tick tick
           ebox--pub--surface-before-change-state nil)
