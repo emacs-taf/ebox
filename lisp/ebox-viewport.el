@@ -53,18 +53,36 @@ settles instead of once per intermediate size.")
                            (ebox-surface-buffer-mounted-p buffer))
                   (let* ((state (ebox--buffer-render-state buffer))
                          (width (ebox-viewport-window-width display-window))
-                         (height (window-body-height display-window)))
+                         (height (window-body-height display-window))
+                         (recorded-width (plist-get state :viewport-width))
+                         (recorded-height (plist-get state :viewport-height)))
                     (when (and width
                                state
                                (not (and
                                      (= width
-                                        (or (plist-get state :viewport-width)
-                                            -1))
+                                        (or recorded-width -1))
                                      (= height
-                                        (or (plist-get state :viewport-height)
-                                            -1)))))
+                                        (or recorded-height -1))))
+                               ;; Borrowed space is not a resize.  A same-width
+                               ;; height decrease while the minibuffer or echo
+                               ;; area is showing keeps the committed canvas;
+                               ;; width changes and growth stay real geometry.
+                               (not (and (ebox--viewport-transient-space-borrow-p
+                                          frame)
+                                         (= width (or recorded-width -1))
+                                         (< height (or recorded-height -1)))))
                       (ebox-rerender-buffer-with-context
                        buffer width height))))))))))))
+
+(defun ebox--viewport-transient-space-borrow-p (frame)
+  "Whether FRAME's transient UI currently borrows its displayed space.
+An active minibuffer or completion popup, and a message in the echo area,
+take lines from displayed windows without the user resizing the frame.  A
+mounted viewport keeps its committed size until that UI releases them."
+  (or (let ((minibuffer (active-minibuffer-window)))
+        (and minibuffer
+             (eq (window-frame minibuffer) frame)))
+      (and (current-message) t)))
 
 (defun ebox--window-size-change-schedule ()
   "Schedule one task for live pending frames outside the current batch."
@@ -113,8 +131,19 @@ settles instead of once per intermediate size.")
       (push frame ebox--window-size-change-pending-frames))
     (ebox--window-size-change-schedule)))
 
+(defun ebox--window-size-change-minibuffer-exit ()
+  "Recheck viewports once the minibuffer releases borrowed space.
+A completion popup may close inside `minibuffer-exit-hook' while the exit is
+still in progress, so the following settle re-reads the stable geometry."
+  (dolist (frame (frame-list))
+    (when (frame-live-p frame)
+      (ebox--window-size-change frame))))
+
 (when (boundp 'window-size-change-functions)
   (add-hook 'window-size-change-functions #'ebox--window-size-change))
+
+(when (boundp 'minibuffer-exit-hook)
+  (add-hook 'minibuffer-exit-hook #'ebox--window-size-change-minibuffer-exit))
 
 (provide 'ebox-viewport)
 

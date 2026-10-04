@@ -1626,6 +1626,11 @@
       "purpose": "One typed Box geometry update changes position, size and stacking facts through retained publication and matches a fresh render; the geometry query is defensive."
     },
     {
+      "name": "ebox-viewport-keeps-its-height-while-transient-ui-borrows-space",
+      "file": "tests/ebox-viewport-tests.el",
+      "purpose": "A same-width height decrease borrowed by minibuffer or echo-area UI keeps the mounted canvas, and releasing the space settles onto the restored window geometry."
+    },
+    {
       "name": "ebox-region-update-geometry-rejects-non-geometry-and-text",
       "file": "tests/ebox-geometry-tests.el",
       "purpose": "The low-level geometry boundary rejects content, paint, malformed and Text updates before publication."
