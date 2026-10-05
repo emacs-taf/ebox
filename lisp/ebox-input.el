@@ -18,6 +18,7 @@
 (require 'ebox-runtime)
 
 (declare-function ebox-surface-buffer-mounted-p "ebox-surface" (buffer-or-name))
+(declare-function ebox--window-size-change "ebox-viewport" (frame))
 
 (defun ebox-input-active-p (buffer-or-name)
   "Return BUFFER-OR-NAME's active input session, or nil."
@@ -71,31 +72,52 @@ errors.  One buffer holds at most one session."
                                     (ebox--input-session-end session))))
 
 ;;;###autoload
+(defun ebox-input-session-host-ref (session)
+  "Return SESSION's edited Host reference."
+  (unless (ebox--input-session-p session)
+    (signal 'ebox-input-error (list "Expected an input session")))
+  (ebox--input-session-host-ref session))
+
+;;;###autoload
 (defun ebox-input-end (session)
   "End SESSION, restore its published text, and return the user's text.
 Restoration runs without host modification hooks, so it is a sanctioned write
 that does not invalidate the surface.  Publish the new value afterwards
-through the ordinary update path.  An ended or foreign session is an error."
+through the ordinary update path.  An ended or foreign session is an error.
+Ending is idempotent and tolerant: a session whose buffer died, or which
+another code path already removed from its buffer, only releases its markers
+and returns nil, so a failure after the user's edit cannot leave the buffer
+refusing every publication."  
   (unless (ebox--input-session-p session)
     (signal 'ebox-input-error (list "Expected an input session")))
   (let ((buffer (ebox--input-session-buffer session))
         (text nil))
-    (when (eq (and (buffer-live-p buffer)
-                   (buffer-local-value 'ebox--input-session buffer))
-              session)
-      (with-current-buffer buffer
-        (let ((start (marker-position (ebox--input-session-start session)))
-              (end (marker-position (ebox--input-session-end session))))
-          (setq text (buffer-substring-no-properties start end))
-          (let ((inhibit-modification-hooks t)
-                (inhibit-read-only t))
-            (delete-region start end)
-            (goto-char start)
-            (insert (ebox--input-session-original session))))
-        (setq buffer-read-only (ebox--input-session-read-only session))
-        (set-marker (ebox--input-session-start session) nil)
-        (set-marker (ebox--input-session-end session) nil)
-        (setq ebox--input-session nil)))
+    (unwind-protect
+        (when (eq (and (buffer-live-p buffer)
+                       (buffer-local-value 'ebox--input-session buffer))
+                  session)
+          (with-current-buffer buffer
+            (let ((start (marker-position (ebox--input-session-start session)))
+                  (finish (marker-position (ebox--input-session-end session))))
+              (when (and start finish)
+                (setq text (buffer-substring-no-properties start finish))
+                (let ((inhibit-modification-hooks t)
+                      (inhibit-read-only t))
+                  (delete-region start finish)
+                  (goto-char start)
+                  (insert (ebox--input-session-original session))))
+              (setq buffer-read-only (ebox--input-session-read-only session))
+              (setq ebox--input-session nil))))
+      (set-marker (ebox--input-session-start session) nil)
+      (set-marker (ebox--input-session-end session) nil)
+      ;; A viewport that changed while the session owned the text was never
+      ;; published; ask the viewport bridge to re-check this buffer's window
+      ;; once the session releases the text.
+      (when (and (buffer-live-p buffer)
+                 (fboundp 'ebox--window-size-change))
+        (let ((window (get-buffer-window buffer t)))
+          (when (window-live-p window)
+            (ebox--window-size-change (window-frame window))))))
     text))
 
 (defun ebox--input-session-covers-p (beg end)

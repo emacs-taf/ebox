@@ -523,6 +523,12 @@
 ;;;###autoload (autoload 'ebox-input-text "ebox" nil nil)
 ;; Return a session's current property-free text without ending it.
 ;;
+;; Function: ebox-input-session-host-ref (session)
+;;;###autoload (autoload 'ebox-input-session-host-ref "ebox" nil nil)
+;; Return the Host reference a session is editing.  Consumers use it to tell
+;; whether a new interaction still belongs to the session's own Host; a
+;; non-session argument is an error.
+;;
 ;; Function: ebox-input-end (session)
 ;;;###autoload (autoload 'ebox-input-end "ebox" nil nil)
 ;; End a session, restore its previously published text without host hooks,

@@ -78,6 +78,7 @@
 
 (declare-function ebox-interaction--hover-content-event
                   "ebox-interaction" (event))
+(declare-function ebox-input-active-p "ebox-input" (buffer-or-name))
 
 (defconst ebox--default-layout-context-port
   (ebox-render-context-create-layout-port
@@ -5438,7 +5439,10 @@ Return the successful publication report stored by `ebox-buffer-update-report'."
 VIEWPORT-WIDTH is pixels; optional VIEWPORT-HEIGHT is frame lines.
 Viewport units and composed size expressions resolve against this context.
 This preserves node and region identity and routes viewport-dependent changes
-through dirty-set and patch-set execution before falling back to root rerender."
+through dirty-set and patch-set execution before falling back to root rerender.
+A native input session owns BUFFER's text, so the viewport reflow waits until
+it ends instead of publishing over the user's edit; ending the session asks
+the viewport bridge to re-check the display window."
   (let ((execute
          (lambda ()
            (let* ((state (ebox--buffer-render-state buffer))
@@ -5446,13 +5450,14 @@ through dirty-set and patch-set execution before falling back to root rerender."
                    (and state (plist-get state :viewport-width))))
              (unless (ebox-surface-buffer-mounted-p buffer)
                (user-error "Ebox buffer has no mounted Ebox publication surface: %S" buffer))
-             (ebox--cancel-buffer-runtime-prewarm buffer)
-             (prog1
-                 (ebox-surface-update-buffer-viewport
-                  buffer viewport-width viewport-height)
-               (ebox--schedule-buffer-runtime-prewarm buffer nil t)
-               (ebox--schedule-buffer-reflow-cache-prewarm
-                buffer old-viewport-width viewport-width))))))
+             (unless (ebox-input-active-p buffer)
+               (ebox--cancel-buffer-runtime-prewarm buffer)
+               (prog1
+                   (ebox-surface-update-buffer-viewport
+                    buffer viewport-width viewport-height)
+                 (ebox--schedule-buffer-runtime-prewarm buffer nil t)
+                 (ebox--schedule-buffer-reflow-cache-prewarm
+                  buffer old-viewport-width viewport-width)))))))
     (ebox-surface-call-with-observation
      buffer 'viewport
      (lambda ()

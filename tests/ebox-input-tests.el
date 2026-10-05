@@ -81,5 +81,24 @@
       (when (and session (ebox-input-active-p buffer)) (ebox-input-end session))
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
+(ert-deftest ebox-input-session-end-recovers-from-a-lost-span ()
+  "A session whose span was erased or whose buffer died still ends cleanly."
+  (let ((buffer (ebox-input-test--mount "value")) session)
+    (setq session (ebox-input-begin buffer 'field))
+    ;; Another code path erased the buffer while the session owned the text;
+    ;; ending must clear the refusal instead of signaling.
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t)) (erase-buffer)))
+    (should (equal (ebox-input-end session) ""))
+    (should-not (ebox-input-active-p buffer))
+    (with-current-buffer buffer
+      (should (string-match-p "value" (buffer-string))))
+    (kill-buffer buffer))
+  (let ((buffer (ebox-input-test--mount "value")) session)
+    (setq session (ebox-input-begin buffer 'field))
+    (kill-buffer buffer)
+    (should-not (ebox-input-end session))
+    (should-not (ebox-input-end session))))
+
 (provide 'ebox-input-tests)
 ;;; ebox-input-tests.el ends here
