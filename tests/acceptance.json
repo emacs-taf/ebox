@@ -496,6 +496,11 @@
       "purpose": "Alternating partial and full progress values retain local projection and match fresh rendering when fractional geometry temporarily becomes integral."
     },
     {
+      "name": "ebox-flex-stretch-item-fills-the-remaining-main-space",
+      "file": "tests/ebox-flex-tests.el",
+      "purpose": "A `:width stretch' flex item grows into the line's remaining main-axis space instead of collapsing to its max-content width."
+    },
+    {
       "name": "ebox-focus-metadata-survives-retained-content-updates",
       "file": "tests/ebox-focus-style-tests.el",
       "purpose": "Focus changes after repeated retained content updates preserve selector facts and unchanged output without promoting metadata to a root render."

@@ -2602,15 +2602,34 @@ nil when a child needs representation the native IR cannot express."
           space-evenly)
    label))
 
+(defun ebox--flex-stretch-item-p (item)
+  "Return non-nil when ITEM asks its width to fill without own participation.
+A Box declaring `:width stretch' without `:flex' or `:flex-grow' means \"use
+the leftover main space\", so a row distributes it like a growing item
+instead of collapsing it to its max-content width."
+  (and (eq (plist-get item :ebox-type) 'box)
+       (not (eq (plist-get item :ebox-kind) 'text))
+       (eq (ebox-get item :width) 'stretch)
+       (let ((raw (ebox--flex-participation-props item)))
+         (and (not (plist-member raw :flex))
+              (not (plist-member raw :flex-grow))))))
+
 (defun ebox-native-reflow--compile-flex-item
     (item axis &optional compiled-node compiled-node-p
           content-min-width content-min-width-p)
-  "Compile flex ITEM metadata and source for AXIS."
+  "Compile flex ITEM metadata and source for AXIS.
+An item that asks to stretch its width on a row axis grows into the line's
+remaining space, so callers need no grow/basis triple just to fill it."
   (let* ((source item)
          (props (ebox--flex-item-props item))
          (order (plist-get props :order))
          (grow (plist-get props :flex-grow))
          (shrink (plist-get props :flex-shrink))
+         (grow (if (and (eq axis 'row)
+                        (= grow 0)
+                        (ebox--flex-stretch-item-p item))
+                   1
+                 grow))
          (compiled (if compiled-node-p
                        compiled-node
                      (ebox-native-reflow--compile-node source)))
@@ -2733,6 +2752,7 @@ nil when a child needs representation the native IR cannot express."
       (when (plist-member (plist-get node :raw-props) :height)
         (plist-put props :height 'viewport-height)))
     props))
+
 
 (defun ebox-native-reflow--compile-flex
     (node &optional fragments flex-content-min-widths)

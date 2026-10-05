@@ -36,6 +36,36 @@
                       len))))
     max-width))
 
+(ert-deftest ebox-flex-stretch-item-fills-the-remaining-main-space ()
+  "A `:width stretch' flex item grows into the line's remaining space.
+Collapsing it to max-content leaves the row reserve unused, so neither the
+item nor `justify-content' can place content at the far edge."
+  (let ((ebox-viewport-width 160) (ebox-viewport-height 6))
+    (with-temp-buffer
+      (let* ((builder (ebox-source-builder-create))
+             (side-style (ebox-style-compile-form 'box '(:width (px 40) :flex-shrink 0)))
+             (fill-style (ebox-style-compile-form 'box '(:width stretch)))
+             (root-style (ebox-style-compile-form 'flex '(:width (vw 100) :height (lh 1))))
+             (side (apply #'ebox-box-create
+                          (append (ebox-canonical-box-configuration 'box side-style)
+                                  (list :source-handle (ebox-source-builder-bind builder :identity "side" :declarations side-style)
+                                        :children nil
+                                        :owned-facts (ebox-canonical-facts-from-declarations 'box side-style)))))
+             (fill (apply #'ebox-box-create
+                          (append (ebox-canonical-box-configuration 'box fill-style)
+                                  (list :source-handle (ebox-source-builder-bind builder :identity "fill" :declarations fill-style)
+                                        :children nil
+                                        :owned-facts (ebox-canonical-facts-from-declarations 'box fill-style)))))
+             (root (apply #'ebox-box-create
+                          (append (ebox-canonical-box-configuration 'flex root-style)
+                                  (list :source-handle (ebox-source-builder-bind builder :identity "root" :declarations root-style)
+                                        :children (list side fill)
+                                        :owned-facts (ebox-canonical-facts-from-declarations 'flex root-style))))))
+        (ebox-render-to-buffer
+         (current-buffer) (ebox-canonical-input-create (list root) (ebox-source-builder-finish builder))))
+      (should (equal '(40 . 1) (ebox-host-ref-size (current-buffer) "side")))
+      (should (equal '(120 . 1) (ebox-host-ref-size (current-buffer) "fill"))))))
+
 (ert-deftest ebox-flex-module-preserves-item-participation ()
   "Extracted flex code should preserve item participation semantics."
   (let* ((node (ebox-build
