@@ -829,30 +829,40 @@ and resize paths must consume this same choice."
             (ebox-surface--scroll-offsets scroll-table)))))
 
 (defun ebox-surface--window-content-width (window)
-  "Return a safe pixel content width for live WINDOW.
-Some Emacs GUI builds return a column-like half-width even when
-`window-body-width' is called with PIXELWISE non-nil.  When the result is
-clearly inconsistent with the outer pixel width, prefer the outer width and
-reserve two character columns for Emacs continuation/truncation display.
-Headless/test windows retain the body width fallback."
-  (let ((body
-         (condition-case nil
-             (window-body-width window t)
-           (wrong-number-of-arguments nil)))
-        (outer
-         (condition-case nil
-             (window-pixel-width window)
-           (error nil))))
-    (let* ((char-width
+  "Return the pixel canvas width of live WINDOW.
+Emacs owns window decoration: `window-body-width' with PIXELWISE already
+excludes fringes, scroll bars and margins, so it is the width a canvas may
+fill.  A few GUI builds report a column-like half width even for that call;
+when the body width disagrees with the outer width minus decoration, fall
+back to that computation instead of shrinking every canvas."
+  (when (window-live-p window)
+    (let* ((outer
             (condition-case nil
-                (frame-char-width (window-frame window))
-              (error 1)))
-           (reserve (max 2 (* 2 (max 1 char-width)))))
-      (max 0
-           (- (if (and body outer (> outer (* 1.8 body)))
-                  outer
-                (or body outer 0))
-              reserve)))))
+                (window-pixel-width window)
+              (error nil)))
+           (body
+            (condition-case nil
+                (window-body-width window t)
+              (wrong-number-of-arguments nil)))
+           (decoration
+            (condition-case nil
+                (let ((char-width (frame-char-width (window-frame window)))
+                      (margins (window-margins window)))
+                  (+ (or (nth 0 (window-fringes window)) 0)
+                     (or (nth 1 (window-fringes window)) 0)
+                     (or (window-scroll-bar-width window) 0)
+                     (* (+ (or (car margins) 0) (or (cdr margins) 0))
+                        char-width)))
+              (error 0)))
+           (expected (and outer (max 0 (- outer decoration))))
+           (tolerance
+            (max 1 (* 2 (condition-case nil
+                            (frame-char-width (window-frame window))
+                          (error 1))))))
+      (cond
+       ((and body expected (<= (abs (- body expected)) tolerance)) body)
+       ((and expected (> expected 0)) expected)
+       (t (max 0 (or body 0)))))))
 
 (defun ebox-surface--ensure-signals (buffer values)
   "Return BUFFER's context signals for VALUES and whether they were created."

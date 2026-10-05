@@ -1646,6 +1646,11 @@
       "purpose": "A same-width height decrease borrowed by minibuffer or echo-area UI keeps the mounted canvas, and releasing the space settles onto the restored window geometry."
     },
     {
+      "name": "ebox-viewport-width-fills-the-window-content-box",
+      "file": "tests/ebox-viewport-tests.el",
+      "purpose": "The published viewport width equals the window's pixel content box, so no hidden reserve shrinks every canvas by two character columns."
+    },
+    {
       "name": "ebox-region-update-geometry-rejects-non-geometry-and-text",
       "file": "tests/ebox-geometry-tests.el",
       "purpose": "The low-level geometry boundary rejects content, paint, malformed and Text updates before publication."

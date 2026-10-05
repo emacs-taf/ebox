@@ -38,6 +38,16 @@ an interactive resize would."
     (run-hook-with-args 'window-size-change-functions frame))
   (sleep-for 0.4))
 
+(ert-deftest ebox-viewport-width-fills-the-window-content-box ()
+  "The mounted canvas width is the window's content width.
+A hidden reserve used to shrink every canvas by two character columns, which
+read as a right-edge gap in every application; the published viewport must
+equal the pixel body width whenever Emacs reports one."
+  (let* ((window (selected-window))
+         (body (window-body-width window t)))
+    (when (and body (> body 0))
+      (should (= (ebox-viewport-window-width window) body)))))
+
 (ert-deftest ebox-viewport-keeps-its-height-while-transient-ui-borrows-space ()
   "Borrowed echo-area space is not a resize, while a frame resize still fits."
   (save-window-excursion
