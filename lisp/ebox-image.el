@@ -2,8 +2,8 @@
 
 ;;; Commentary:
 ;; Image preparation owns I/O, capability selection and immutable cell rasters.
-;; Canonical Box/Text and ordinary publication own layout, identity and updates.
-;; No decoder, process, or image constructor runs during rendering/publication.
+;; Image nodes and text content lay out the prepared lines; no decoder,
+;; process or image constructor runs during layout or buffer writes.
 
 ;;; Code:
 
@@ -11,12 +11,11 @@
 (require 'subr-x)
 (require 'image)
 (require 'ansi-color)
-(require 'ebox-canonical)
-(require 'ebox-text)
+(require 'ebox-measure)
 
 (cl-defstruct (ebox-image--prepared (:constructor ebox-image--make-prepared))
   "Immutable, detached raster prepared for one character allocation."
-  columns rows adapter converter text)
+  columns rows adapter converter text lines width)
 
 (defvar ebox-image-converters
   '((chafa . ebox-image--chafa) (ffmpeg . ebox-image--ffmpeg))
@@ -62,7 +61,7 @@ Call after installing converters or changing their configuration."
          (symbolp (plist-get (cdr source) :type))
          (or (stringp (plist-get (cdr source) :data))
              (stringp (plist-get (cdr source) :file))))
-    (let ((owned (ebox-text-property-value-copy source)))
+    (let ((owned (copy-tree source)))
       (if-let* ((file (plist-get (cdr owned) :file))
                 (normalized (ebox-image--source file)))
           (progn
@@ -122,13 +121,11 @@ Use the default font's actual ascent, never a minimum pixel height."
         ;; here also warms Emacs' cache before a caller publishes the block.
         (when (and descriptor (equal (image-size descriptor t frame)
                                      (cons width height)))
-          (ebox-text--freeze descriptor)
           (ebox-image--grid
            columns rows ?\s
            (lambda (x y)
              (list 'display
-                   (ebox-text--freeze
-                    (list (list 'slice (* x cw) (* y lh) cw lh) descriptor))))))))))
+                   (list (list 'slice (* x cw) (* y lh) cw lh) descriptor)))))))))
 
 (defun ebox-image--run (source program arguments)
   "Run PROGRAM with ARGUMENTS on SOURCE, returning bytes only on success."
@@ -294,43 +291,25 @@ Repeat after source or frame/font changes; identical preparations are cached."
 
 (defun ebox-image-content (prepared)
   "Return an owned character string for PREPARED, without any I/O.
-Publish a same-size source change with `ebox-region-update' :content or an
-ordinary candidate replacement and `ebox-commit'.  Graphics display values
-are immutable shared descriptors/slices: do not mutate those nested values."
+Lines are separated by newlines.  Graphics display values are shared
+descriptors and slices: do not mutate those nested values."
   (ebox-image--check prepared)
-  (ebox-text-snapshot (ebox-image--prepared-text prepared)))
+  (copy-sequence (ebox-image--prepared-text prepared)))
 
-(defun ebox-image-create (prepared builder &rest source-properties)
-  "Create a fixed-size image content node from PREPARED in open BUILDER.
-The canonical Box contains one owned Text child.  SOURCE-PROPERTIES accepts
-the metadata keywords of `ebox-source-builder-bind', except :declarations.
-The image owns width (ch COLUMNS), height (lh ROWS), clipping and no wrapping.
-Give :identity and/or :id to address retained updates like other content.
-No image construction or conversion occurs here."
-  (ebox-image--check prepared)
-  (ebox-canonical--validate-plist source-properties "ebox-image-create")
-  (when (plist-member source-properties :declarations)
-    (error "Ebox image content owns its fixed-size declarations"))
-  (let* ((declarations
-          (ebox-style-compile-form
-           'box (list :width (list 'ch (ebox-image--prepared-columns prepared))
-                      :height (list 'lh (ebox-image--prepared-rows prepared))
-                      :overflow 'hidden :wrap-mode 'none)))
-         (handle (apply #'ebox-source-builder-bind builder
-                        :declarations declarations source-properties))
-         (child (ebox-text-create
-                 :value (ebox-image-content prepared)
-                 :source-handle
-                 (ebox-source-builder-bind
-                  builder :identity (list 'ebox-image (ebox-source-handle-id handle)))
-                 :owned-facts (ebox-canonical-facts-from-declarations 'text nil))))
-    (apply #'ebox-box-create
-           (append (ebox-canonical-box-configuration 'box declarations)
-                   (list :source-handle handle :source-builder builder
-                         :owned-facts (ebox-canonical-facts-from-declarations
-                                       'box declarations
-                                       (plist-get source-properties :interactions))
-                         :children (list child))))))
+(defun ebox-image--lines (prepared)
+  "Return PREPARED's raster as a list of line strings."
+  (or (ebox-image--prepared-lines prepared)
+      (setf (ebox-image--prepared-lines prepared)
+            (split-string (ebox-image--prepared-text prepared) "\n"))))
+
+(defun ebox-image--width (prepared)
+  "Return PREPARED's raster width in pixels."
+  (let ((width (ebox-image--prepared-width prepared)))
+    (if (and width (eq (car width) ebox--width-epoch)) (cdr width)
+      (cdr (setf (ebox-image--prepared-width prepared)
+                 (cons ebox--width-epoch
+                       (apply #'max 0 (mapcar #'ebox-string-pixel-width
+                                              (ebox-image--lines prepared)))))))))
 
 (provide 'ebox-image)
 ;;; ebox-image.el ends here

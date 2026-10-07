@@ -1,519 +1,341 @@
-;;; ebox-measure.el --- Pixel measurement helpers for Ebox -*- lexical-binding: t; -*-
+;;; ebox-measure.el --- Pixel measurement for Ebox -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; Owns display-signature-sensitive measurement caches and text/space width
-;; helpers.  It does not own layout decisions or dirty classification.
+;; Measures display widths of text under one face.  Plain characters are
+;; measured once per font face and cached; grapheme clusters, display
+;; properties and caller faces fall back to `string-pixel-width'.  The
+;; measuring buffer's face remapping (including text scale) selects the cache.
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'ebox-cache)
-(require 'ebox-font)
-(require 'ebox-size)
 
-(declare-function ebox--register-render-owned-text-value
-                  "ebox-render-context" (property value))
-(declare-function ebox-string-lines "ebox" (string))
-(declare-function ebox-lines-join "ebox" (lines))
-(declare-function ebox--string-repeat-lines "ebox" (string count))
+(defvar ebox--measure-buffer nil
+  "Buffer whose face remapping applies to measurements, or nil.")
 
-;; Measurement Cache Model:
-;; These caches only accelerate display-signature-sensitive pixel measurement.
-;; They must not carry layout identity, dirty state, or buffer ownership.
+(defvar ebox--width-tables (make-hash-table :test 'eq :weakness 'key)
+  "Map of remapping identity to per-face width tables.")
 
-(defvar ebox--char-width-cache (make-hash-table :test 'eq)
-  "Cache for character pixel widths.")
+(defvar ebox--default-width-table (make-hash-table :test 'eq)
+  "Per-face width tables without buffer face remapping.")
 
-(defvar ebox--space-pixel-cache nil
-  "Cache for space pixel width.")
+(defvar ebox--cluster-width-cache (make-hash-table :test 'equal)
+  "Width cache for multi-character clusters keyed by (FACE . STRING).")
 
-(defvar ebox--face-height-width-cache nil
-  "Cache indicating whether explicit face height affects measured width.")
+(defvar ebox--width-epoch 0
+  "Counter incremented whenever measurement caches are cleared.")
 
-(defvar ebox--display-signature-cache nil
-  "Cached display signature used to invalidate pixel measurements.")
+(defun ebox--remap-key ()
+  "Return the remapping identity of the measuring buffer, or nil."
+  (and ebox--measure-buffer (buffer-live-p ebox--measure-buffer)
+       (buffer-local-value 'face-remapping-alist ebox--measure-buffer)))
 
-(defvar ebox--display-cache-validated nil
-  "Non-nil while the display signature has already been validated.
-Bound to t for the dynamic extent of a single render so that the thousands
-of pixel measurements it triggers do not each rebuild the display signature.")
+(defun ebox--face-table (face)
+  "Return the width table of FACE for the current measuring context."
+  (let* ((key (ebox--remap-key))
+         (tables (if key
+                     (or (gethash key ebox--width-tables)
+                         (puthash key (make-hash-table :test 'eq)
+                                  ebox--width-tables))
+                   ebox--default-width-table)))
+    (or (gethash face tables)
+        (puthash face (cons (make-vector 128 nil) (make-hash-table :test 'eq))
+                 tables))))
 
-(defvar ebox--render-display-signature nil
-  "Display signature snapshot for the current render transaction.")
+(defun ebox--measure-raw (string)
+  "Measure STRING with `string-pixel-width' in the measuring buffer."
+  (if (and ebox--measure-buffer (buffer-live-p ebox--measure-buffer))
+      (string-pixel-width string ebox--measure-buffer)
+    (string-pixel-width string)))
 
-(defvar ebox--render-string-pixel-width-cache nil
-  "Dynamic render-local cache for reusable string pixel widths.")
+(defun ebox--char-width (char face)
+  "Return the pixel width of CHAR displayed with FACE."
+  (let* ((table (ebox--face-table face)))
+    (if (< char 128)
+        (let ((vector (car table)))
+          (or (aref vector char)
+              (aset vector char
+                    (ebox--measure-raw
+                     (if face (propertize (string char) 'face face)
+                       (string char))))))
+      (let ((hash (cdr table)))
+        (or (gethash char hash)
+            (puthash char
+                     (ebox--measure-raw
+                      (if face (propertize (string char) 'face face)
+                        (string char)))
+                     hash))))))
 
-(defconst ebox--string-pixel-width-cache-max-entries 4096
-  "Maximum safe string measurements retained for one display signature.")
+(defsubst ebox--cjk-char-p (char)
+  "Return non-nil when CHAR breaks like a CJK ideograph."
+  (and (>= char #x2E80)
+       (or (<= char #x303F)
+           (and (>= char #x3040) (<= char #x30FF))
+           (and (>= char #x3400) (<= char #x4DBF))
+           (and (>= char #x4E00) (<= char #x9FFF))
+           (and (>= char #xAC00) (<= char #xD7AF))
+           (and (>= char #xF900) (<= char #xFAFF))
+           (and (>= char #xFF00) (<= char #xFFEF))
+           (and (>= char #x20000) (<= char #x2FFFF)))))
 
-(defvar ebox--string-pixel-width-cache (make-hash-table :test 'equal)
-  "Display-signature-scoped cache for reusable string pixel widths.")
+(defsubst ebox--extension-char-p (char)
+  "Return non-nil when CHAR extends the previous grapheme cluster."
+  (and (>= char #x300)
+       (or (<= char #x36F)
+           (and (>= char #x1AB0) (<= char #x1AFF))
+           (and (>= char #x1DC0) (<= char #x1DFF))
+           (and (>= char #x20D0) (<= char #x20FF))
+           (and (>= char #xFE00) (<= char #xFE0F))
+           (and (>= char #xFE20) (<= char #xFE2F))
+           (and (>= char #x1F3FB) (<= char #x1F3FF))
+           (and (>= char #xE0100) (<= char #xE01EF))
+           (eq char #x200D))))
 
-(defvar ebox--string-pixel-width-cache-ring
-  (make-vector ebox--string-pixel-width-cache-max-entries nil)
-  "Insertion-order keys for bounded string measurement eviction.")
+(defsubst ebox--regional-indicator-p (char)
+  "Return non-nil when CHAR is a regional indicator."
+  (and (>= char #x1F1E6) (<= char #x1F1FF)))
 
-(defvar ebox--string-pixel-width-cache-ring-index 0
-  "Next insertion slot in `ebox--string-pixel-width-cache-ring'.")
+(defun ebox--cluster-end (string start end)
+  "Return the end of the grapheme cluster at START in STRING before END."
+  (let ((next (1+ start)))
+    (if (and (< (aref string start) 128)
+             (or (>= next end) (< (aref string next) 128)))
+        next
+      (when (and (< next end)
+                 (ebox--regional-indicator-p (aref string start))
+                 (ebox--regional-indicator-p (aref string next)))
+        (setq next (1+ next)))
+      (while (and (< next end)
+                  (or (ebox--extension-char-p (aref string next))
+                      (eq (aref string (1- next)) #x200D)))
+        (setq next (1+ next)))
+      next)))
 
-(defvar ebox--render-string-max-pixel-width-cache nil
-  "Dynamic render-local cache for rendered multiline string max widths.")
+(defun ebox--plain-string-p (string)
+  "Return non-nil when STRING carries no text properties."
+  (and (null (text-properties-at 0 string))
+       (null (next-property-change 0 string))))
 
-(defvar ebox--render-recached-source-node-cache nil
-  "Dynamic render-local set of source subtrees recached into region tables.")
-
-(defun ebox--text-scale-factor ()
-  "Return the active text scale multiplier."
-  (let ((amount (and (boundp 'text-scale-mode-amount)
-                     (numberp text-scale-mode-amount)
-                     text-scale-mode-amount))
-        (step (if (and (boundp 'text-scale-mode-step)
-                       (numberp text-scale-mode-step))
-                  text-scale-mode-step
-                1.2)))
-    (if amount (expt step amount) 1.0)))
-
-(defun ebox--display-space-width (display)
-  "Return fixed pixel width for DISPLAY space specs, or nil."
-  (ebox--fixed-pixel-space-width display))
-
-(defun ebox--fixed-pixel-space-width (display)
-  "Return DISPLAY's nonnegative fixed pixel width, or nil for other specs.
-Bare space widths use character units; align-to spaces depend on placement."
-  (when (and (consp display) (eq (car display) 'space)
+(defun ebox--fixed-space-width (display)
+  "Return the fixed pixel width of DISPLAY space spec, or nil."
+  (when (and (eq (car-safe display) 'space)
              (not (plist-member (cdr display) :align-to)))
     (let ((width (plist-get (cdr display) :width)))
-      (when (and (consp width) (null (cdr width))
-                 (ebox-size--finite-number-p (car width)) (>= (car width) 0))
-        (car width)))))
+      (and (consp width) (numberp (car width)) (null (cdr width))
+           (car width)))))
 
-(defun ebox--fractional-pixel-spaces-p (string)
-  "Return non-nil when STRING has a nonintegral fixed-pixel space glyph."
-  (let ((position 0) (end (length string)))
-    (catch 'fractional
-      (while (< position end)
-        (let* ((next (next-single-property-change position 'display string end))
-               (width (ebox--fixed-pixel-space-width
-                       (get-text-property position 'display string))))
-          (when (and width (/= width (floor width))
-                     (cl-position-if (lambda (char) (/= char ?\n)) string
-                                     :start position :end next))
-            (throw 'fractional t))
-          (setq position next)))
-      nil)))
+(defun ebox--segment-width (string start end face)
+  "Measure STRING from START to END under FACE, honoring its properties."
+  (let ((segment (substring string start end)))
+    (when face
+      (add-face-text-property 0 (length segment) face t segment))
+    (ebox--measure-raw segment)))
 
-(defun ebox--quantize-pixel-spaces (string)
-  "Return complete STRING lines with cumulative whole-pixel space extents.
-Keep raw layout strings and their cached geometry private.  Only the final
-output copy changes: equal line boundaries share the same rounding regardless
-of text alignment, blank fill, borders, padding, or sibling segmentation.
-Ordinary glyph advances are whole pixels, so only fixed space extents affect
-the fractional remainder.  Preserve zero-width glyphs and all other properties.
-An already integral STRING is returned unchanged."
-  (if (not (ebox--fractional-pixel-spaces-p string))
-      string
-    (let ((result (copy-sequence string))
-          (start 0)
-          (end (length string)))
-      (while (< start end)
-        (let* ((line-end (or (string-match "\n" string start) end))
-               (position start)
-               positions widths)
-          (while (< position line-end)
-            (let* ((next (next-single-property-change
-                          position 'display string line-end))
-                   (width (ebox--fixed-pixel-space-width
-                           (get-text-property position 'display string))))
-              (when width
-                (push (cons position next) positions)
-                (push width widths))
-              (setq position next)))
-          (cl-mapc
-           (lambda (range used)
-             (let ((display (get-text-property (car range) 'display string)))
-               (unless (= used (ebox--fixed-pixel-space-width display))
-                 (let ((updated (cons 'space (copy-sequence (cdr display)))))
-                   (setcdr updated (plist-put (cdr updated) :width (list used)))
-                   (put-text-property
-                    (car range) (cdr range) 'display
-                    (ebox--register-render-owned-text-value 'display updated)
-                    result)))))
-           (nreverse positions) (ebox-size-quantize (nreverse widths)))
-          (setq start (1+ line-end))))
-      result)))
+(defun ebox--cluster-width (string start next face)
+  "Return the width of cluster START..NEXT in plain STRING under FACE."
+  (if (= next (1+ start))
+      (ebox--char-width (aref string start) face)
+    (let* ((text (substring-no-properties string start next))
+           (key (cons face text)))
+      (or (gethash key ebox--cluster-width-cache)
+          (puthash key (ebox--measure-raw
+                        (if face (propertize text 'face face) text))
+                   ebox--cluster-width-cache)))))
 
-(defun ebox--string-with-text-scale (string factor)
-  "Return STRING with FACTOR applied as an explicit face height."
-  (if (= factor 1.0)
-      string
-    (let ((copy (copy-sequence string)))
-      (add-face-text-property 0 (length copy) `(:height ,factor) t copy)
-      copy)))
+(defun ebox--units (string face)
+  "Return STRING's display units as a list of (START END WIDTH).
+Plain grapheme clusters, runs sharing one replacing display property, and
+fixed display spaces are one unit each.  FACE is the node's font face."
+  (let ((pos 0) (len (length string)) units)
+    (if (ebox--plain-string-p string)
+        (while (< pos len)
+          (let ((next (ebox--cluster-end string pos len)))
+            (push (list pos next (ebox--cluster-width string pos next face))
+                  units)
+            (setq pos next)))
+      (while (< pos len)
+        (let* ((display (get-text-property pos 'display string))
+               (space (and display (ebox--fixed-space-width display)))
+               (next (if display
+                         (or (next-single-property-change pos 'display string len)
+                             len)
+                       (ebox--cluster-end string pos len)))
+               (width
+                (cond (space space)
+                      (display (ebox--segment-width string pos next face))
+                      ((get-text-property pos 'face string)
+                       (ebox--segment-width string pos next face))
+                      (t (ebox--cluster-width string pos next face)))))
+          (push (list pos next width) units)
+          (setq pos next))))
+    (nreverse units)))
 
-(defun ebox--face-height-affects-width-p (factor)
-  "Return non-nil when `string-pixel-width' honors explicit face FACTOR."
-  (or (= factor 1.0)
-      (let ((cached (assoc factor ebox--face-height-width-cache)))
-        (if cached
-            (cdr cached)
-          (let* ((probe "MMMMmmmm")
-                 (plain (string-pixel-width probe))
-                 (scaled (string-pixel-width
-                          (ebox--string-with-text-scale probe factor)))
-                 (works (/= scaled plain)))
-            (push (cons factor works) ebox--face-height-width-cache)
-            works)))))
+(defun ebox--text-width (string face)
+  "Return the display width of one-line STRING under FACE."
+  (if (and (ebox--plain-string-p string))
+      (let ((pos 0) (len (length string)) (total 0))
+        (while (< pos len)
+          (let ((char (aref string pos)))
+            (if (and (< char 128)
+                     (let ((next (1+ pos)))
+                       (or (>= next len) (< (aref string next) 128))))
+                (setq total (+ total (ebox--char-width char face))
+                      pos (1+ pos))
+              (let ((next (ebox--cluster-end string pos len)))
+                (setq total (+ total (ebox--cluster-width string pos next face))
+                      pos next)))))
+        total)
+    (let ((total 0))
+      (dolist (unit (ebox--units string face) total)
+        (setq total (+ total (nth 2 unit)))))))
 
-(defun ebox--scaled-string-pixel-width (string factor)
-  "Return pixel width of STRING under text-scale FACTOR."
-  (let ((plain (string-pixel-width string)))
-    (cond
-     ((= factor 1.0) plain)
-     ((ebox--face-height-affects-width-p factor)
-      (string-pixel-width (ebox--string-with-text-scale string factor)))
-     (t
-      (ceiling (* plain factor))))))
+(defun ebox--line-width (line)
+  "Return the display width of composed LINE, honoring its own faces."
+  (let ((pos 0) (len (length line)) (total 0))
+    (while (< pos len)
+      (let* ((display (get-text-property pos 'display line))
+             (space (and display (ebox--fixed-space-width display)))
+             (next (if display
+                       (or (next-single-property-change pos 'display line len) len)
+                     (min (or (next-single-property-change pos 'face line len) len)
+                          (or (next-single-property-change pos 'display line len)
+                              len)))))
+        (setq total
+              (+ total
+                 (cond (space space)
+                       (display (ebox--measure-raw (substring line pos next)))
+                       (t (ebox--text-width
+                           (substring-no-properties line pos next)
+                           (get-text-property pos 'face line))))))
+        (setq pos next)))
+    total))
 
-(defun ebox--clear-string-pixel-width-cache ()
-  "Clear display-scoped reusable string measurements and eviction state."
-  (clrhash ebox--string-pixel-width-cache)
-  (fillarray ebox--string-pixel-width-cache-ring nil)
-  (setq ebox--string-pixel-width-cache-ring-index 0))
+(defvar ebox--space-cache (make-hash-table :test 'equal)
+  "Interned pixel spaces keyed by (WIDTH . FACE).")
 
-(defun ebox--string-pixel-width-metrics-face (value)
-  "Return the width-relevant part of a `face' property VALUE.
-Foreground and background colors paint a glyph but do not change its
-metrics, so color-only faces must share one measurement cache entry.  Bare
-plists, face spec lists and named faces are all accepted."
-  (cond
-   ((null value) value)
-   ((and (consp value) (keywordp (car value)))
-    (let (result)
-      (while value
-        (let ((key (pop value))
-              (item (pop value)))
-          (unless (memq key '(:foreground :background))
-            (push key result)
-            (push item result))))
-      (nreverse result)))
-   ((consp value) (mapcar #'ebox--string-pixel-width-metrics-face value))
-   (t value)))
+(defvar ebox--pad-displays (make-hash-table :test 'eq :weakness 'key)
+  "Display specifications of interned pixel spaces.")
 
-(defun ebox--string-pixel-width-visual-key
-    (line factor &optional start end)
-  "Return a width cache key for LINE slice at FACTOR.
-START and END default to the complete string; visual properties must be
-constant across the selected slice."
-  (let ((start (or start 0))
-        (end (or end (length line))))
-    (list factor
-          (substring-no-properties line start end)
-          (cl-loop for property in '(face display)
-                   for value = (and (> end start)
-                                    (get-text-property start property line))
-                   when value append (list property
-                                           (if (eq property 'face)
-                                               (ebox--string-pixel-width-metrics-face value)
-                                             value))))))
+(defun ebox--space (width &optional face)
+  "Return a one-character space WIDTH pixels wide painted with FACE.
+Return the empty string when WIDTH is not positive."
+  (if (<= width 0)
+      ""
+    (let ((key (cons width face)))
+      (or (gethash key ebox--space-cache)
+          (puthash key
+                   (let* ((display (list 'space :width (list width)))
+                          (string (propertize " " 'display display)))
+                     (puthash display t ebox--pad-displays)
+                     (when face (put-text-property 0 1 'face face string))
+                     string)
+                   ebox--space-cache)))))
 
-(defun ebox--string-pixel-width-cache-key (line factor)
-  "Return a safe display-scoped measurement key for LINE at FACTOR."
-  (let* ((end (length line))
-         ;; Ebox layout text uses `face' and `display' as its width-bearing
-         ;; properties.  Ownership/region metadata is deliberately ignored;
-         ;; the other generic text properties are not emitted by Ebox's
-         ;; layout pipeline and would make this hot key scan needlessly broad.
-         (constant-p
-          (and (= (or (next-single-property-change 0 'face line end) end)
-                  end)
-               (= (or (next-single-property-change 0 'display line end) end)
-                  end))))
-    (and constant-p
-         (ebox--string-pixel-width-visual-key line factor))))
+(defun ebox--pad-display (string pos)
+  "Return the interned pad display of STRING's character at POS, or nil."
+  (let ((display (get-text-property pos 'display string)))
+    (and display (gethash display ebox--pad-displays) display)))
 
-(defun ebox--cached-string-pixel-width
-    (line factor key &optional start end)
-  "Return LINE slice width at FACTOR through both caches at KEY."
-  (let ((cached
-         (or (and ebox--render-string-pixel-width-cache
-                  (gethash key ebox--render-string-pixel-width-cache))
-             (gethash key ebox--string-pixel-width-cache))))
-    (if cached
-        (progn
-          (when ebox--render-string-pixel-width-cache
-            (puthash key cached ebox--render-string-pixel-width-cache))
-          cached)
-      (let* ((sample (if (or start end)
-                         (substring line (or start 0) (or end (length line)))
-                       line))
-             (space-width
-              (and (> (length sample) 0)
-                   (ebox--display-space-width
-                    (get-text-property 0 'display sample))))
-             ;; This cache key proves uniform visual properties.  Preserve
-             ;; display-space fractions just as the segmented path does;
-             ;; Emacs's glyph measurement quantizes them before padding.
-             (width (if space-width
-                        space-width
-                      (ebox--scaled-string-pixel-width sample factor)))
-             (index ebox--string-pixel-width-cache-ring-index)
-             (evicted (aref ebox--string-pixel-width-cache-ring index)))
-        (when ebox--render-string-pixel-width-cache
-          (puthash key width ebox--render-string-pixel-width-cache))
-        (when evicted
-          (remhash evicted ebox--string-pixel-width-cache))
-        (puthash key width ebox--string-pixel-width-cache)
-        (aset ebox--string-pixel-width-cache-ring index key)
-        (setq ebox--string-pixel-width-cache-ring-index
-              (mod (1+ index)
-                   ebox--string-pixel-width-cache-max-entries))
-        width))))
+(defun ebox--props-same-p (a b)
+  "Return non-nil when text property lists A and B paint alike.
+Painting conses fresh faces, which compare by value.  Display values compare
+by identity, since Emacs joins adjacent characters with `eq' displays and the
+buffer must keep exactly the composed line's objects; other values, such as
+node records, compare by identity because `equal' would descend into the
+tree they link to."
+  (while (and a b (eq (car a) (car b))
+              (let ((x (cadr a)) (y (cadr b)))
+                (or (eq x y)
+                    (and (eq (car a) 'face) (equal x y)))))
+    (setq a (cddr a) b (cddr b)))
+  (and (null a) (null b)))
 
-(defun ebox--string-pixel-width (string)
-  "Return the display pixel width of STRING's first line.
-Text characters follow the current buffer text scale.  Fixed display spaces
-keep their absolute pixel width."
-  (ebox--ensure-display-cache-current)
-  (let* ((source (or string ""))
-         (newline (and (stringp source) (string-match "\n" source)))
-         (line (if newline (substring source 0 newline) source))
-         (factor (ebox--text-scale-factor))
-         (pos 0)
-         (end (length line))
-         (total 0)
-         (cache-key (ebox--string-pixel-width-cache-key line factor)))
-    (if cache-key
-        (ebox--cached-string-pixel-width line factor cache-key)
-      (while (< pos end)
-        (let* ((display (get-text-property pos 'display line))
-               (space-width (ebox--display-space-width display))
-               (next
-                (if (or (stringp display)
-                        (memq (car-safe display) '(space image)))
-                    ;; Emacs replaces an entire EQ display run once.  Face
-                    ;; boundaries inside it do not create additional glyphs.
-                    (next-single-property-change pos 'display line end)
-                  (cl-loop for property in '(face display)
-                           minimize (or (next-single-property-change
-                                         pos property line end)
-                                        end)))))
-          (setq total
-                (+ total
-                   (if space-width
-                       space-width
-                     ;; The segment ends at every visual property change.
-                     ;; Build only its property-free cache key on hits; a
-                     ;; propertized substring is materialized solely on miss.
-                     (let ((segment-key
-                            (ebox--string-pixel-width-visual-key
-                             line factor pos next)))
-                       (ebox--cached-string-pixel-width
-                        line factor segment-key pos next)))))
-          (setq pos next)))
-      total)))
+(defvar ebox--pad-twins (make-hash-table :test 'eq :weakness 'key)
+  "The alternate display of each interned pad display, in both directions.")
 
-(defun ebox--string-max-pixel-width (string)
-  "Return the maximum display pixel width across STRING's lines."
-  (if (string-empty-p string)
-      0
-    (let* ((cache ebox--render-string-max-pixel-width-cache)
-           (missing (make-symbol "ebox-string-max-pixel-width-missing"))
-           (cached (if cache
-                       (gethash string cache missing)
-                     missing)))
-      (if (not (eq cached missing))
-          cached
-        (let ((width (apply #'max
-                            (mapcar #'ebox--string-pixel-width
-                                    (ebox-string-lines string)))))
-          (when cache
-            (puthash string width cache))
-          width)))))
+(defvar ebox--twin-strings (make-hash-table :test 'eq :weakness 'key)
+  "One-character strings whose first pad shows its alternate display.")
 
-(defun ebox--measurement-face-remapping ()
-  "Return face remaps that can affect geometric text measurement.  Ebox
-publication paint slots are stable paint-layer addresses.  Their
-foreground/background updates change redisplay without changing glyph
-geometry, so installing or switching those layers must not invalidate Ebox
-measurement caches."
-  (when (boundp 'face-remapping-alist)
-    (cl-remove-if
-     (lambda (entry)
-       (let ((face (car-safe entry)))
-         (and (symbolp face)
-              (string-match-p "\\`ebox-paint-slot-" (symbol-name face)))))
-     face-remapping-alist)))
+(defun ebox--pad-twin (display)
+  "Return the interned alternate of pad DISPLAY, an equal but distinct object."
+  (or (gethash display ebox--pad-twins)
+      (let ((twin (copy-sequence display)))
+        (puthash twin t ebox--pad-displays)
+        (puthash twin display ebox--pad-twins)
+        (puthash display twin ebox--pad-twins))))
 
-;;;###autoload
+(defun ebox--twin-first (part display)
+  "Return PART with its first character showing DISPLAY's alternate.
+PART starts with pad DISPLAY.  When its second character already shows the
+alternate, the first receives a fresh copy instead."
+  (let ((twin (ebox--pad-twin display)))
+    (if (= (length part) 1)
+        (or (gethash part ebox--twin-strings)
+            (puthash part (let ((copy (copy-sequence part)))
+                            (put-text-property 0 1 'display twin copy)
+                            copy)
+                     ebox--twin-strings))
+      (let ((copy (copy-sequence part)))
+        (put-text-property 0 1 'display
+                           (if (eq (get-text-property 1 'display part) twin)
+                               (copy-sequence display)
+                             twin)
+                           copy)
+        copy))))
+
+(defun ebox--join-parts (parts)
+  "Return the nonempty strings of PARTS as they compose one line.
+PARTS is a tree: each element is a string or a nested list of parts, so a
+node shares its children's cached parts without copying them.  Emacs draws
+consecutive characters whose `display' values are `eq' as one element, so
+two interned pads meeting at a junction would collapse into one.  Each
+string is free of such pairs and only the junctions are examined: a string
+starting with the pad that ends the previous one shows that pad's interned
+alternate, which keeps the line's display objects stable across rewrites."
+  (let ((kept nil) (last nil) (stack nil) (rest parts))
+    (while (or rest stack)
+      (if (null rest)
+          (setq rest (pop stack))
+        (let ((part (car rest)))
+          (setq rest (cdr rest))
+          (if (consp part)
+              (progn (when rest (push rest stack))
+                     (setq rest part))
+            (let ((n (length part)))
+              (when (> n 0)
+                (when last
+                  (let ((first (get-text-property 0 'display part)))
+                    (when (eq first last)
+                      (setq part (ebox--twin-first part first)))))
+                (setq last (ebox--pad-display part (1- n)))
+                (push part kept)))))))
+    (nreverse kept)))
+
+(defun ebox--join (parts)
+  "Concatenate the strings PARTS into one composed line.
+See `ebox--join-parts'."
+  (let ((kept (ebox--join-parts parts)))
+    (cond ((null kept) "")
+          ((null (cdr kept)) (car kept))
+          (t (apply #'concat kept)))))
+
+(defun ebox-pixel-space (pixel-width)
+  "Return a display space PIXEL-WIDTH pixels wide."
+  (ebox--space (or pixel-width 0)))
+
 (defun ebox-string-pixel-width (string)
-  "Return the display pixel width of STRING's first line.
-This is the public, text-scale-aware measurement used by Ebox layout code."
-  (ebox--string-pixel-width string))
+  "Return the display pixel width of STRING's first line."
+  (let* ((source (or string ""))
+         (newline (string-search "\n" source)))
+    (ebox--line-width (if newline (substring source 0 newline) source))))
 
-(defun ebox--display-signature-for-frame (frame)
-  "Return the pixel-measurement capability signature for FRAME."
-  (list frame
-        (frame-parameter frame 'font)
-        (frame-parameter frame 'font-backend)
-        (frame-parameter frame 'line-spacing)
-        (face-attribute 'default :family frame t)
-        (face-attribute 'default :height frame t)
-        (face-attribute 'default :weight frame t)
-        (face-attribute 'default :slant frame t)
-        (face-attribute 'default :width frame t)
-        ;; `face-remap-add-relative' can replace an existing entry's tail.
-        ;; A retained display proof must keep its accepted remapping values.
-        (copy-tree (ebox--measurement-face-remapping))
-        (and (boundp 'text-scale-mode-amount) text-scale-mode-amount)
-        (and (boundp 'text-scale-mode-step) text-scale-mode-step)))
-
-(defun ebox--display-signature-for-window (window)
-  "Return the pixel-measurement capability signature for live WINDOW."
-  (ebox--display-signature-for-frame
-   (if (window-live-p window) (window-frame window) (selected-frame))))
-
-(defun ebox--display-signature ()
-  "Return the selected frame's pixel-measurement capability signature."
-  (ebox--display-signature-for-frame (selected-frame)))
-
-(defsubst ebox--current-display-signature ()
-  "Return the render snapshot or sample the current display signature."
-  (or ebox--render-display-signature
-      (ebox--display-signature)))
-
-;;;###autoload
-(defun ebox-display-signature ()
-  "Return the current display signature used for pixel measurements."
-  (ebox--display-signature))
-
-(defun ebox--validate-display-cache ()
-  "Clear pixel caches when the current display signature changed."
-  (let ((signature (ebox--current-display-signature)))
-    (unless (equal signature ebox--display-signature-cache)
-      (clrhash ebox--char-width-cache)
-      (ebox--clear-string-pixel-width-cache)
-      (setq ebox--space-pixel-cache nil)
-      (setq ebox--face-height-width-cache nil)
-      (setq ebox--display-signature-cache signature))))
-
-(defun ebox--ensure-display-cache-current ()
-  "Validate the display cache unless it was already validated for this render.
-Rebuilding the display signature is comparatively expensive, so a single
-render validates it once via `ebox--with-validated-display-cache' and every
-inner measurement skips the check."
-  (unless ebox--display-cache-validated
-    (ebox--validate-display-cache)))
-
-(defmacro ebox--with-validated-display-cache (&rest body)
-  "Validate the display cache once, then run BODY without re-validating.
-Nested uses reuse the outer validation."
-  (declare (indent 0) (debug t))
-  `(if ebox--display-cache-validated
-       (progn ,@body)
-     (let ((ebox--display-cache-validated t)
-           (ebox--render-display-signature
-            (or ebox--render-display-signature
-                (ebox--display-signature))))
-       (let ((ebox--render-string-pixel-width-cache
-              (make-hash-table :test 'equal))
-             (ebox--render-string-max-pixel-width-cache
-              (make-hash-table :test 'eq))
-             (ebox--render-recached-source-node-cache
-              (make-hash-table :test 'eq)))
-         (ebox--validate-display-cache)
-         ,@body))))
-
-(defsubst ebox--char-pixel-width (char)
-  "Get the pixel width of CHAR, using cache."
-  (ebox--ensure-display-cache-current)
-  (or (gethash char ebox--char-width-cache)
-      (puthash char (ebox--string-pixel-width (char-to-string char))
-               ebox--char-width-cache)))
-
-(defsubst ebox--substring-pixel-width (string start end)
-  "Return STRING width from START to END, preserving text properties."
-  (ebox--string-pixel-width (substring string start end)))
-
-(defun ebox--space-pixel-width ()
-  "Get the pixel width of a space character, using cache."
-  (ebox--ensure-display-cache-current)
-  (or ebox--space-pixel-cache
-      (setq ebox--space-pixel-cache (ebox--string-pixel-width " "))))
-
-;;;###autoload
 (defun ebox-clear-cache ()
   "Clear pixel width caches after font or named face metrics change."
-  (clrhash ebox--char-width-cache)
-  (ebox--clear-string-pixel-width-cache)
-  (ebox-font-clear-cache)
-  (setq ebox--space-pixel-cache nil)
-  (setq ebox--face-height-width-cache nil)
-  (setq ebox--display-signature-cache (ebox--display-signature)))
-
-(defun ebox--init-ascii-cache ()
-  "Pre-calculate cache for ASCII characters."
-  (dotimes (i 128)
-    (ebox--char-pixel-width i))
-  (ebox--space-pixel-width))
-
-(defsubst ebox-pixel-space (pixel-width)
-  "Generate a space string with PIXEL-WIDTH.
-Canonicalize whole pixels so equal computed lengths have identical display
-properties.  Preserve a genuine fractional remainder until display."
-  (if (or (null pixel-width) (<= pixel-width 0))
-      ""
-    (let* ((whole-pixels (truncate pixel-width))
-           (pixel-width (if (= pixel-width whole-pixels)
-                            whole-pixels pixel-width))
-           (display
-           (ebox--register-render-owned-text-value
-            'display `(space :width (,pixel-width)))))
-      (propertize " " 'display display))))
-
-(defun ebox--pixel-blank (pixel-width height)
-  "Generate a blank area of PIXEL-WIDTH and HEIGHT lines.
-A zero pixel width still preserves the requested positive line height."
-  (when (and pixel-width height (>= pixel-width 0) (> height 0))
-    (ebox--string-repeat-lines
-     (if (zerop pixel-width)
-         (ebox-lines-join '(""))
-       (ebox-pixel-space pixel-width))
-     height)))
-
-(defun ebox--pixel-pad (string prefix-pixel &optional suffix-pixel)
-  "Pad STRING with pixel spaces on left (PREFIX-PIXEL) and right (SUFFIX-PIXEL)."
-  (concat (ebox-pixel-space (or prefix-pixel 0))
-          string
-          (ebox-pixel-space (or suffix-pixel 0))))
-
-(defun ebox--pixel-reach (string total-pixel &optional align)
-  "Extend STRING to TOTAL-PIXEL width.
-ALIGN can be `left', `center', or `right'."
-  (let* ((string-pixel (ebox--string-pixel-width string))
-         (rest-pixel (max 0 (- total-pixel string-pixel)))
-         (align (or align 'left))
-         (left-pixel (pcase align
-                       ('left 0)
-                       ('right rest-pixel)
-                       ('center (/ rest-pixel 2))
-                       (_ 0))))
-    (ebox--pixel-pad string left-pixel (- rest-pixel left-pixel))))
-
-(defsubst ebox-pixel-left (string total-pixel)
-  "Align STRING to the left within TOTAL-PIXEL."
-  (ebox--pixel-reach string total-pixel 'left))
-
-(defsubst ebox-pixel-center (string total-pixel)
-  "Align STRING to the center within TOTAL-PIXEL."
-  (ebox--pixel-reach string total-pixel 'center))
-
-(defsubst ebox-pixel-right (string total-pixel)
-  "Align STRING to the right within TOTAL-PIXEL."
-  (ebox--pixel-reach string total-pixel 'right))
-
-;; Initialize measurement cache after all measurement helpers are defined.
-(ebox--init-ascii-cache)
+  (clrhash ebox--width-tables)
+  (clrhash ebox--default-width-table)
+  (clrhash ebox--cluster-width-cache)
+  (clrhash ebox--space-cache)
+  (cl-incf ebox--width-epoch))
 
 (provide 'ebox-measure)
 

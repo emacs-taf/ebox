@@ -117,7 +117,7 @@ def package_files(root, name):
         top_file = len(parts) == 1
         include = (top_file and (path.name == f"{name}.el" or path.name.startswith(("README", "LICENSE", "COPYING", "NOTICE", "CHANGELOG"))))
         include = include or (len(parts) == 2 and parts[0] == "lisp" and path.suffix == ".el")
-        include = include or (name == "ebox" and parts[0] in ("native", "docs"))
+        include = include or (name == "ebox" and parts[0] == "docs")
         include = include or (name == "ekp" and parts[0] in ("dictionaries", "native"))
         if include and not path.name.endswith("-pkg.el"):
             archive_path = relative.as_posix()
@@ -174,11 +174,9 @@ def build(output, root, dependencies, entries):
     return manifest
 
 
-def verify(directory, emacs, native_module=None, build_native=False):
+def verify(directory, emacs):
     """Install source archives in a disposable package-user-dir and exercise Ebox."""
     manifest = json.loads((directory / "manifest.json").read_text())
-    if native_module and not native_module.is_file():
-        raise ValueError(f"Native module does not exist: {native_module}")
     for package in manifest["packages"]:
         file = directory / package["file"]
         if file.parent != directory or not file.is_file():
@@ -187,8 +185,7 @@ def verify(directory, emacs, native_module=None, build_native=False):
             raise ValueError(f"Archive checksum mismatch: {file.name}")
     with tempfile.TemporaryDirectory(prefix="ebox-install-") as work:
         env = dict(os.environ, EBOX_RELEASE_ARCHIVE=str(directory),
-                   EBOX_RELEASE_PROFILE=work, EBOX_RELEASE_NATIVE=str(native_module or ""),
-                   EBOX_RELEASE_BUILD_NATIVE="1" if build_native else "")
+                   EBOX_RELEASE_PROFILE=work)
         # No repository or sibling load paths, HOME changes, network archive refresh,
         # or user package installation.  package.el compiles only this temp profile.
         result = run([emacs, "-Q", "--batch", "-l", str(ROOT / "scripts/ebox-release-smoke.el")],
@@ -204,9 +201,6 @@ def main():
     parser.add_argument("--dependencies", type=Path, help="Explicit pinned dependency checkout directory")
     parser.add_argument("--with-ekp", action="store_true", help="Include optional Knuth-Plass provider")
     parser.add_argument("--emacs", default="emacs", help="Emacs executable for verify")
-    parser.add_argument("--native-module", type=Path, help="Require loading and executing this native module")
-    parser.add_argument("--build-native", action="store_true",
-                        help="Build, install and execute bundled native source in the temporary profile")
     args = parser.parse_args()
     directory = args.directory.resolve()
     entries = lock_entries(json.loads((ROOT / "release-dependencies.json").read_text()), args.with_ekp)
@@ -223,10 +217,7 @@ def main():
                 manifest = build(directory, ROOT, dependencies, entries)
         print(json.dumps({"archive": str(directory), "packages": manifest["packages"]}, indent=2))
     else:
-        if args.native_module and args.build_native:
-            parser.error("Choose --native-module or --build-native, not both")
-        verify(directory, args.emacs, args.native_module.resolve() if args.native_module else None,
-               args.build_native)
+        verify(directory, args.emacs)
 
 
 if __name__ == "__main__":

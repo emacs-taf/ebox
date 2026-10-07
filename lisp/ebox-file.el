@@ -10,7 +10,8 @@
 (require 'cl-lib)
 (require 'elisp-mode)
 (require 'subr-x)
-(require 'ebox-dsl)
+(require 'ebox-node)
+(declare-function ebox-render-to-buffer "ebox-buffer" (buffer-or-name input &rest options))
 (defvar read-eval)
 
 (defconst ebox-file--header "Ebox DSL  |  C-c C-c  Render preview")
@@ -50,23 +51,27 @@
 (defun ebox-file--resolve-styles (dsl &optional companion-rules)
   "Snapshot file styles in DSL, adding COMPANION-RULES at its root.
 File rules precede inline rules on the same Box.  No DSL data is evaluated."
-  (if (not (and (consp dsl) (memq (car dsl) ebox-dsl--box-tags)))
+  (if (not (and (consp dsl) (memq (car dsl) ebox--box-tags)))
       (if companion-rules
           (user-error "An ECSS companion requires a Box root")
         dsl)
-    (let* ((split (ebox-dsl--split (cdr dsl)))
+    (let* ((split (ebox--dsl-split (cdr dsl)))
            (properties (car split))
-           (local (ebox-dsl--optional-field properties :ecss "Ebox file"))
-           (file (ebox-dsl--optional-field properties :ecss-file "Ebox file"))
+           (file (plist-get properties :ecss-file))
            (rules (append companion-rules
                           (when file
-                            (unless (stringp (cdr file))
+                            (unless (stringp file)
                               (user-error ":ecss-file requires a file name"))
-                            (ecss-file-read (expand-file-name (cdr file))))
-                          (cdr local))))
+                            (ecss-file-read (expand-file-name file)))
+                          (plist-get properties :ecss)))
+           kept)
+      (while properties
+        (let ((key (pop properties)) (value (pop properties)))
+          (unless (memq key '(:ecss :ecss-file))
+            (setq kept (append kept (list key (list 'quote value)))))))
       (cons (car dsl)
-            (append (ebox-dsl--without-keys properties '(:ecss :ecss-file))
-                    (when (or local file companion-rules) (list :ecss rules))
+            (append kept
+                    (when rules (list :ecss (list 'quote rules)))
                     (mapcar #'ebox-file--resolve-styles (cdr split)))))))
 
 (defun ebox-file-evaluate-form (form &optional source-file)
@@ -120,6 +125,38 @@ file styles are snapshots consumed by the ordinary local scope pipeline."
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.ebox\\'" . ebox-dsl-mode))
+
+;;;; Byte compilation
+
+(defconst ebox--directory
+  (file-name-directory
+   (directory-file-name
+    (file-name-directory (or load-file-name buffer-file-name))))
+  "Root directory of the Ebox checkout.")
+
+(defun ebox-byte-compile ()
+  "Recompile every Ebox Lisp source into a neighboring `.elc' file.
+Compiler output is written to `*Ebox Byte Compile*'.  Restart Emacs after a
+successful build so the current process loads the new bytecode."
+  (interactive)
+  (require 'bytecomp)
+  (let* ((sources (cons (expand-file-name "ebox.el" ebox--directory)
+                        (directory-files (expand-file-name "lisp" ebox--directory)
+                                         t "\\`ebox-.*\\.el\\'")))
+         (byte-compile-log-buffer "*Ebox Byte Compile*")
+         (load-prefer-newer t)
+         failures)
+    (dolist (source sources)
+      (condition-case err
+          (unless (byte-compile-file source)
+            (push (file-name-nondirectory source) failures))
+        (error
+         (push (file-name-nondirectory source) failures)
+         (message "[%s] %s" (file-name-nondirectory source) (error-message-string err)))))
+    (if failures
+        (error "Ebox byte compilation failed: %s"
+               (mapconcat #'identity (nreverse failures) ", "))
+      (message "Ebox byte compilation finished: %d files" (length sources)))))
 
 (provide 'ebox-file)
 ;;; ebox-file.el ends here

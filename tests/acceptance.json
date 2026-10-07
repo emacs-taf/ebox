@@ -3,1992 +3,256 @@
   "load_path": [
     ".",
     "tests",
-    "../ebox-playground",
-    "../ecss",
-    "../ekp",
-    "../etaf",
-    "../etaf-db",
-    "../etaf-playground",
-    "../etaf-ui"
+    "../ecss"
   ],
   "support": [
-    "tests/ebox-child-range-tests.el"
+    "tests/ebox-test-support.el"
   ],
   "cases": [
     {
-      "name": "ebox-host-size-follows-flex-allocation-and-unmount",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "The committed Host size follows flex allocation and viewport changes without including neighbouring columns or changing the revision; absent and unmounted Hosts return nil."
+      "name": "ebox-image-placeholder-preparation-reports-size-and-content",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Placeholder image preparation reports size and returns deterministic character content."
     },
     {
-      "name": "ebox-input-session-accepts-edits-and-restores-on-end",
-      "file": "tests/ebox-input-tests.el",
-      "purpose": "A native session accepts edits inside a Host's published span, refuses publication meanwhile, then restores the published text and lets the application publish the new value."
+      "name": "ebox-image-text-converter-result-is-renderable-image-node",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Text converters produce prepared image content renderable through an image node."
+    },
+    {
+      "name": "ebox-node-set-image-repaints-mounted-image-node",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Changing an image node repaints the mounted buffer to the new prepared content."
+    },
+    {
+      "name": "ebox-image-prepare-rejects-invalid-protocol-inputs",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Image preparation rejects invalid sizes, adapters and sources."
+    },
+    {
+      "name": "ebox-file-read-form-accepts-exactly-one-expression",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Ebox file form reading accepts one expression and rejects empty or extra input."
+    },
+    {
+      "name": "ebox-file-evaluate-form-returns-renderable-dsl",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Evaluated file forms return renderable inert DSL data."
+    },
+    {
+      "name": "ebox-file-evaluate-buffer-reads-current-buffer-source",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Buffer evaluation reads and evaluates the current buffer source through the file API."
+    },
+    {
+      "name": "ebox-keymap-create-installs-activation-bindings",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Public keymap creation installs activation bindings and ebox-activate invokes them."
+    },
+    {
+      "name": "ebox-help-create-runs-business-function-in-hovered-buffer",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Help adapters run the business function in the hovered mounted buffer."
+    },
+    {
+      "name": "ebox-interaction-properties-cover-rendered-text",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Help, pointer, keymap and hover style capabilities become native text properties."
+    },
+    {
+      "name": "ebox-focus-first-next-previous-and-cycle-update-focused-node",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Focus navigation updates the public focused node in document order with cycling."
+    },
+    {
+      "name": "ebox-focus-within-stays-inside-container",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Focus-within navigation remains inside the requested container."
+    },
+    {
+      "name": "ebox-focus-derived-state-matches-selector-and-styles",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Focused nodes expose :focus selectors and focus-dependent styles."
+    },
+    {
+      "name": "ebox-activate-noerror-returns-nil-without-command",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Activation with noerror returns nil when no command is present."
+    },
+    {
+      "name": "ebox-next-and-previous-interaction-move-between-keymap-owners",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Interaction navigation moves point between rendered keymap owners."
+    },
+    {
+      "name": "ebox-render-text-and-box-forms",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Strings, text forms and fixed-width boxes render their observable text through the public renderer."
+    },
+    {
+      "name": "ebox-render-row-and-column-flow",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Row and column layout order children with public gaps and line flow."
+    },
+    {
+      "name": "ebox-render-wraps-aligns-and-measures-cjk",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Text wrapping, alignment and CJK measurement produce the documented visible lines."
+    },
+    {
+      "name": "ebox-render-paints-face-and-display-spaces",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Paint styles and pixel padding produce public face and display text properties."
+    },
+    {
+      "name": "ebox-render-border-uses-display-spaces-and-border-faces",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Borders render as display spaces carrying visible border face attributes."
+    },
+    {
+      "name": "ebox-render-flex-wraps-and-gaps-items",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Flex wrapping and gaps place items at observable public geometries."
+    },
+    {
+      "name": "ebox-render-grid-places-items-in-tracks",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Grid tracks and placements expose expected public node geometries."
+    },
+    {
+      "name": "ebox-render-visibility-hidden-preserves-layout-space",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Hidden boxes suppress ink while preserving layout space in the rendered buffer."
+    },
+    {
+      "name": "ebox-node-constructors-build-detached-trees",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Public node constructors, children, text predicates and copies build detached renderable trees."
+    },
+    {
+      "name": "ebox-build-rejects-invalid-author-forms",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Invalid author forms and sizes signal public Ebox errors before rendering."
+    },
+    {
+      "name": "ebox-node-set-scroll-clamps-and-repaints-visible-lines",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Programmatic scroll clamps the offset and repaints the visible lines."
+    },
+    {
+      "name": "ebox-scroll-commands-use-node-at-point",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Interactive line scroll commands operate on the scrollable node at point."
+    },
+    {
+      "name": "ebox-page-scroll-commands-accept-explicit-line-counts",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Page scroll commands accept explicit line counts and update visible content."
+    },
+    {
+      "name": "ebox-input-session-edits-visible-text-and-restores-published-content",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Input sessions expose user edits, return them, and restore published text."
     },
     {
       "name": "ebox-input-session-validates-lifecycle",
-      "file": "tests/ebox-input-tests.el",
-      "purpose": "One session per buffer; unknown Hosts, foreign handles and an ended session are reported without disturbing the surface."
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Input sessions reject concurrent and ended-session lifecycle errors."
     },
     {
-      "name": "ebox-input-session-end-recovers-from-a-lost-span",
-      "file": "tests/ebox-input-tests.el",
-      "purpose": "A session whose span was erased or whose buffer died still releases the publication refusal instead of blocking the buffer forever."
+      "name": "ebox-call-with-input-returns-reader-value-and-closes-session",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "call-with-input returns the reader value and closes the active session."
     },
     {
-      "name": "ebox-prepared-publication-paint-rejects-outside-text-mutation",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "A property-only prepared update rejects an unrecorded same-length text rewrite outside the changed owner, rolls back paired state and can retry successfully."
+      "name": "ebox-selector-query-finds-type-id-class-attribute-and-state",
+      "file": "tests/ebox-selector-style-tests.el",
+      "purpose": "Selector queries find nodes by type, id, class, attribute and author state."
     },
     {
-      "name": "ebox-prepared-publication-paint-rejects-outside-property-mutation",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "A property-only unrecorded write on unchanged outside text still fails the publication boundary audit and restores paired state."
+      "name": "ebox-node-set-states-updates-selector-matches-and-styles",
+      "file": "tests/ebox-selector-style-tests.el",
+      "purpose": "Changing public selector states updates matching and cascaded styles."
     },
     {
-      "name": "ebox-display-centered-refits-preserve-inline-properties",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "Viewport changes that move every centered line preserve fresh-render text geometry, face, help text and keymap activation."
+      "name": "ebox-inline-ecss-cascades-to-descendants",
+      "file": "tests/ebox-selector-style-tests.el",
+      "purpose": "Inline ECSS rules cascade to matching descendants and produce observable faces."
     },
     {
-      "name": "ebox-shared-scopes-empty-rules-preserve-style-transitions",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Empty scope membership preserves ordinary styles, and repeated transitions to and from nonempty scoped rules match fresh rendering."
+      "name": "ebox-style-scope-membership-controls-rule-visibility",
+      "file": "tests/ebox-selector-style-tests.el",
+      "purpose": "Shared style scope membership controls which scoped rules affect a node."
     },
     {
-      "name": "ebox-display-capped-columns-retain-viewport-unit-dependencies",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "Repeated viewport changes preserve nested vw/vh geometry under capped ancestors and match fresh native rendering."
+      "name": "ebox-style-scope-with-rules-preserves-membership-identity",
+      "file": "tests/ebox-selector-style-tests.el",
+      "purpose": "Replacing scope rules preserves membership identity while changing visible style."
     },
     {
-      "name": "ebox-cascade-values-region-text-style-batch-rolls-back",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "A rejected text and style batch preserves the visible text, faces and revision and permits a later valid batch."
+      "name": "ebox-style-scope-create-rejects-invalid-rules-and-origins",
+      "file": "tests/ebox-selector-style-tests.el",
+      "purpose": "Invalid style scope selectors, declarations and origins are rejected."
     },
     {
-      "name": "ebox-cascade-values-region-text-style-matches-fresh-rendering",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Text typography and decorations applied and reset through individual or batched region updates match fresh rendering without changing a sibling."
+      "name": "ebox-inheritance-and-local-overrides-affect-faces",
+      "file": "tests/ebox-selector-style-tests.el",
+      "purpose": "Inherited text color and local overrides appear in rendered face properties."
     },
     {
-      "name": "ebox-owner-style-linear-updates-match-fresh-rendering",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Repeated first, middle, last and disjoint row restyles preserve text, paint and geometry, including coordinate-changing replacements followed by local updates, with and without native layout."
+      "name": "ebox-disabled-property-derives-disabled-selector-state",
+      "file": "tests/ebox-selector-style-tests.el",
+      "purpose": "Disabled interaction state is observable through public selectors."
     },
     {
-      "name": "ebox-owner-style-linear-rejection-retains-the-patch-base",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Rejected local row paint leaves the published text, properties and report unchanged; retry uses the committed baseline and matches fresh rendering."
+      "name": "ebox-mount-exposes-root-buffer-and-viewport",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Mounting exposes root, buffer and viewport state and viewport changes relayout the tree."
     },
     {
-      "name": "ebox-image-graphics-source-change-retains-slices-locally",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "Repeated graphical source replacements commit one scoped cover patch, preserve exact cached display-slice identity, and never create an image during publication."
+      "name": "ebox-node-set-text-updates-buffer-like-fresh-render",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Text mutation updates the mounted buffer to match a fresh render of the retained tree."
     },
     {
-      "name": "ebox-image-text-converter-prepares-once-and-owns-grid",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "The fixture converter prepares 288 truecolor cells once; owned strings preserve cached content and rendering or publication cannot invoke conversion."
+      "name": "ebox-node-put-and-set-props-restyle-visible-content",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Property mutation updates visible faces and remains equivalent to a fresh render."
     },
     {
-      "name": "ebox-image-converter-order-and-raw-rgb",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "Malformed chafa output tries ffmpeg next, mapping each raw RGB pixel pair to a half-block foreground and background and caching the grid."
+      "name": "ebox-node-insert-remove-move-and-replace-children-update-order",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Structural node mutations update child order and mounted text through public APIs."
     },
     {
-      "name": "ebox-image-graphics-caches-descriptor-and-cell-slices",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "Generated SVG content retains all 288 display slices through rendering and reuses the same descriptor and slice objects without repeated image creation."
+      "name": "ebox-with-batch-flushes-mutated-mount-once",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Batched mutations defer publication and flush the mounted buffer once at batch exit."
     },
     {
-      "name": "ebox-image-graphics-uses-font-ascent-without-pixel-minimum",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "Graphics cell extents and ascent follow three font-metric fixtures, including an eight-pixel line; percentages reproduce the exact baseline without a hard-coded height minimum."
+      "name": "ebox-call-with-batch-returns-body-value",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "The functional batch API returns its body value while publishing queued mutations."
     },
     {
-      "name": "ebox-image-source-change-publishes-only-cover-and-rolls-back",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "A 24 by 12 cover source change commits one local patch, preserves lyric text and ownership, restores rejected publications, and matches fresh rendering and exported source."
+      "name": "ebox-flush-reports-and-observers-describe-public-update",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Flush observers and update reports describe the public line update that was written."
     },
     {
-      "name": "ebox-image-placeholder-and-missing-image-types",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "Unavailable image types select text; failing converters and an explicit placeholder request produce an exact monochrome character area without extra conversion."
+      "name": "ebox-after-flush-hook-runs-with-updated-buffer",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "After-flush hooks run with the mounted buffer already updated."
     },
     {
-      "name": "ebox-image-cache-keys-source-size-and-converter",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "Source replacement, changed cell dimensions and converter selection invalidate stale image preparations while repeated identities stay cached."
+      "name": "ebox-unmount-runs-hook-and-releases-mount",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Unmount hooks run and the buffer no longer has a live mount while keeping text."
     },
     {
-      "name": "ebox-image-descriptor-source-and-converter-validation",
-      "file": "tests/ebox-image-tests.el",
-      "purpose": "Data-backed descriptors are detached, converter failures fall through, untrusted properties are stripped, and noninteger or empty areas are rejected."
-    },
-    {
-      "name": "ebox-owner-border-restyle-keeps-column-slot",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "A border-box owner's left border, background, inherited bold font and native help properties change locally inside one retained Column slot and match fresh rendering."
-    },
-    {
-      "name": "ebox-section-restyles-and-header-publish-disjoint-scopes",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Two sidebar restyles and sibling title/subtitle text publish three disjoint scoped owners, preserve a peer, match fresh rendering and roll back rejected publication before a local retry."
-    },
-    {
-      "name": "ebox-owner-border-restyle-declines-changing-exterior",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Intrinsic and content-box horizontal border changes without a stable exterior allocation decline scoped projection and preserve fresh-render parity beside a Row peer."
-    },
-    {
-      "name": "ebox-same-size-child-replacement-publishes-scoped",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Replacing a Box's child identities with same-size children publishes one scoped patch, matches fresh paint and properties, preserves peers, and rolls back rejected publications."
-    },
-    {
-      "name": "ebox-child-replacement-validates-exterior-size",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Equal child counts with a larger rendered footprint fall back to ordinary publication and match fresh rendering."
-    },
-    {
-      "name": "ebox-owner-style-scroll-content-recomposes-paint",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Content-only length changes in a cached owner slot recompose paint from source, retain local projection with sibling row changes and match fresh rendering."
-    },
-    {
-      "name": "ebox-owner-style-declines-content-beyond-cached-prefix",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "A changed content owner beyond a retained lazy prefix lacks cache-coordinate evidence, declines local publication and matches fresh rendering."
-    },
-    {
-      "name": "ebox-owner-style-composes-rows-with-retained-scroll-content",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Row paint and typography compose atomically with an album content owner inside a retained scroll cache, stay local and match fresh rendering after scrolling."
-    },
-    {
-      "name": "ebox-owner-style-hidden-scroll-content-rolls-back-with-rows",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Hidden cached content and visible row replacements roll back together, retry locally and reveal the correct content after scrolling."
-    },
-    {
-      "name": "ebox-owner-style-declines-replaced-scroll-identity",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Changing scroll box identity rejects the retained cache proof and matches fresh rendering through the complete fallback."
-    },
-    {
-      "name": "ebox-owner-style-declines-unproven-scroll-windows",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "A partially mounted scroll content owner declines local projection when its replacement window cannot be proven, preserving fresh-render parity."
-    },
-    {
-      "name": "ebox-owner-style-grid-row-keeps-one-line-slot",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "A one-line Grid owner publishes its own paint/font changes, mixed paint-only descendants, variable text and native properties through one validated local slot."
-    },
-    {
-      "name": "ebox-owner-style-publishes-paint-and-inherited-fonts-locally",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "An owner's own paint, inherited font facts and descendant surface properties publish through its retained slot and match fresh rendering without weakening canonical equality."
-    },
-    {
-      "name": "ebox-owner-style-rejection-preserves-published-generation",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Rejected local owner paint/font publication restores pixels and the accepted report before a successful local retry."
-    },
-    {
-      "name": "ebox-owner-style-declines-changed-layout-inputs",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "An owner padding change cannot use the retained paint/typography projection and still matches fresh rendering."
-    },
-    {
-      "name": "ebox-owner-style-declines-reordered-children",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Reordered keyed cells invalidate the unchanged owner role topology and publish the correct fresh layout."
-    },
-    {
-      "name": "ebox-owner-style-declines-changed-owner-slots",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "Owner width or height changes decline the retained-slot style path and establish the correct new allocation."
-    },
-    {
-      "name": "ebox-native-plan-declines-intrinsic-and-stretch-heights",
-      "file": "tests/ebox-owner-style-tests.el",
-      "purpose": "An unchanged descendant with stretch or intrinsic height or height bounds declines native planning without an execution fallback; definite heights restore native frame publication."
-    },
-    {
-      "name": "ebox-canonical-equality-masks-only-stable-host-outputs",
-      "file": "tests/ebox-canonical-range-comparison-tests.el",
-      "purpose": "Single-root output masking requires stable source identity, node kind, sibling order and membership, and excludes only explicitly selected Host outputs."
-    },
-    {
-      "name": "ebox-canonical-equality-masks-only-matching-range-contents",
-      "file": "tests/ebox-canonical-range-comparison-tests.el",
-      "purpose": "Canonical comparison masks only named child contents, preserving range order, membership, unmasked text properties and immutable source facts without changing exact equality."
-    },
-    {
-      "name": "ebox-prepared-update-keeps-disjoint-panels-preparable",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Prepared canvases for two disjoint absolute panels stay valid after either is prepared and apply alternately, matching fresh rendering."
-    },
-    {
-      "name": "ebox-prepared-update-cohorts-share-current-pane-content",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Separate prepared operations sharing a pane keep the latest sibling text, inherited paint, canonical output and operation validity through alternating updates, rejected publication and retries."
-    },
-    {
-      "name": "ebox-prepared-update-bounds-intervals-from-raster-beyond-anchor-height",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A short anchored panel whose background shows between many children on every row still prepares and applies visibility updates inside a taller root, matching fresh rendering."
-    },
-    {
-      "name": "ebox-host-properties-change-root-layer-membership-with-peer-paint",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Root portal insertion and removal combined with multiple retained panel paint changes preserves complete styled output and current Host addresses."
-    },
-    {
-      "name": "ebox-prepared-publication-preserves-sparse-roles-through-many-occluders",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Geometry and update cohorts preserve sparse border and dense content ownership, Host bounds and native activation through repeated multi-panel occlusion, rejected publications, interval rejoining and retries."
-    },
-    {
-      "name": "ebox-prepared-update-rejection-preserves-following-admission",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Cold and reused-scene rejection identifies unsupported geometry, class and raster members without changing canonical source, pixels, bounds, revision or later valid prepared operations."
-    },
-    {
-      "name": "ebox-host-properties-replace-styled-panel-after-native-press",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Native pressed/focus metadata followed by rejected and retried panel structure updates preserves relational styles, unchanged sibling scrolling and subsequent viewport reevaluation, matching fresh rendering."
-    },
-    {
-      "name": "ebox-host-properties-replace-positioned-subtrees-through-occlusion",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Absolute panel child replacement with local or root layers preserves ordinary and relative flow, overlapping layers, height changes, scrolling, activation, removed addresses and rejected-publication rollback."
-    },
-    {
-      "name": "ebox-prepared-content-keeps-fixed-portal-occlusion-and-input",
-      "file": "tests/ebox-prepared-portal-tests.el",
-      "purpose": "Prepared independent content preserves fixed root-portal occlusion and native input, updates fully covered text, and shows the latest source after ordinary movement or hiding invalidates old operations."
-    },
-    {
-      "name": "ebox-prepared-content-rolls-back-beneath-fixed-portal",
-      "file": "tests/ebox-prepared-portal-tests.el",
-      "purpose": "A rejected paired content publication preserves portal pixels, input, source, bounds and revision, then retries through the same valid operation."
-    },
-    {
-      "name": "ebox-prepared-content-rejects-portal-members-and-anchors",
-      "file": "tests/ebox-prepared-portal-tests.el",
-      "purpose": "Portal-related targets, non-content members, anchors and shared raster owners are rejected before publication; member-specific rejection leaves independent content eligible and geometry cannot reuse its restricted scene."
-    },
-    {
-      "name": "ebox-host-positions-exclude-flow-separators-for-native-input",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Public Host bounds and positions exclude structural newlines and margins so keyboard and native mouse release bindings target a wrapped Row across content movement and rejected publication."
-    },
-    {
-      "name": "ebox-prepared-coordinates-survive-paint-scroll-resize-and-retry",
-      "file": "tests/ebox-prepared-coordinate-tests.el",
-      "purpose": "Paint recalculation followed by repeated move, resize and rollback keeps public geometry, exported canonical source and visible output identical."
-    },
-    {
-      "name": "ebox-layer-rejects-tall-descendant-fonts-before-publication",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "On a graphical display, explicit and inherited descendant fonts exceeding the positioned plane row height reject render and commit without changing accepted pixels, revision or live targets; smaller fonts, same-height bold and independent flow remain allowed."
-    },
-    {
-      "name": "ebox-layer-positioned-host-allows-small-and-bold-descendants",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "Positioned rows allow smaller descendant fonts and bold text whose resolved line height fits the containing plane."
-    },
-    {
-      "name": "ebox-prepared-selector-rebinds-after-scroll-publication",
-      "file": "tests/ebox-prepared-selector-tests.el",
-      "purpose": "Repeated native scrolling allows prepared class and height rebinding, preserves unique selector results and exported snapshots, and restores classes, scroll state and pixels on rejection."
-    },
-    {
-      "name": "ebox-cascade-values-inherit-font-updates-through-explicit-colors",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Retained descendants with explicit colors inherit font size, weight and style changes exactly like fresh rendering."
-    },
-    {
-      "name": "ebox-cascade-values-font-inheritance-survives-publication-rejection",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "A rejected font publication restores visible styles and revision and allows subsequent inherited typography updates."
-    },
-    {
-      "name": "ebox-cascade-values-retain-styles-through-structural-updates",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Structural sibling changes retain explicit paint while later parent colour and typography changes still update inherited output."
-    },
-    {
-      "name": "ebox-cascade-values-reject-inherited-change-without-poisoning-reuse",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Rejected parent paint and sibling changes restore the style dependency graph for later successful updates."
-    },
-    {
-      "name": "ebox-prepared-resize-respects-materialized-height-constraints",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Prepared width and height changes respect min/max-height and content-box decoration, preserve fresh rendering and roll back rejected sizes before retry."
-    },
-    {
-      "name": "ebox-prepared-publication-reprepares-after-growing-text-output",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Growing and shrinking ordinary Text output can reprepare geometry without losing mount authority, and rejected moves restore output and state before retry and native activation."
-    },
-    {
-      "name": "ebox-publication-error-rollback-diagnostics-remain-printable",
-      "file": "tests/ebox-publication-error-tests.el",
-      "purpose": "Secondary rollback failures with cyclic caller payloads remain safely printable for ordinary and prepared publication rejection while surface recovery completes."
-    },
-    {
-      "name": "ebox-publication-error-rollback-diagnostics-preserve-order",
-      "file": "tests/ebox-publication-error-tests.el",
-      "purpose": "Multiple failed transaction rollbacks preserve the primary condition type, readable failure order and restored participant state without exposing cyclic callback payloads."
-    },
-    {
-      "name": "ebox-publication-error-ordinary-output-rejection-is-printable",
-      "file": "tests/ebox-publication-error-tests.el",
-      "purpose": "Ordinary publication rejection prints safely with default Emacs error settings and preserves the previous output, revision and live target."
-    },
-    {
-      "name": "ebox-publication-error-prepared-output-rejection-is-printable",
-      "file": "tests/ebox-publication-error-tests.el",
-      "purpose": "Prepared publication rejection emits bounded diagnostics without cyclic surface graphs and restores paired state and output before retry."
-    },
-    {
-      "name": "ebox-publication-error-preserves-caller-condition",
-      "file": "tests/ebox-publication-error-tests.el",
-      "purpose": "Application conditions propagate with their original data while publication rolls back atomically."
-    },
-    {
-      "name": "ebox-retained-paint-composes-proved-placement-and-stacking",
-      "file": "tests/ebox-retained-paint-tests.el",
-      "purpose": "Atomic paint, move and stacking changes preserve occlusion and recover both pixels and source after rejection."
-    },
-    {
-      "name": "ebox-retained-paint-preserves-inheritance-and-occluded-raster",
-      "file": "tests/ebox-retained-paint-tests.el",
-      "purpose": "Retained inherited, explicit and caller face contributions remain fresh through paint and occlusion changes."
-    },
-    {
-      "name": "ebox-retained-paint-rolls-back-and-validates-participant-edits",
-      "file": "tests/ebox-retained-paint-tests.el",
-      "purpose": "Failed paint restores pixels, source and revision; participant buffer changes remain validated before acceptance."
-    },
-    {
-      "name": "ebox-retained-paint-follows-content-and-font-replacement",
-      "file": "tests/ebox-retained-paint-tests.el",
-      "purpose": "Text and font replacements establish current raster baselines for subsequent retained colour updates."
-    },
-    {
-      "name": "ebox-prepared-update-scroll-rollback-does-not-revive-killed-buffer",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Killing a buffer during prepared scroll publication tears down its scroll state permanently, even while publication rolls back."
-    },
-    {
-      "name": "ebox-prepared-update-creates-scroll-after-underfilled-resizes",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "An underfilled prepared pane starts a usable scroll viewport when later resizing clips its content, including after previous width updates."
-    },
-    {
-      "name": "ebox-prepared-update-preserves-long-scroll-continuation-and-siblings",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Long scroll content continues after prepared movement, inherited paint and resizing while sibling scroll offsets remain independent."
-    },
-    {
-      "name": "ebox-prepared-update-rolls-back-scroll-resize-and-retries",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A failed prepared pane resize restores scroll metadata, pixels, focus and revision, then retry and native activation/scroll remain usable."
-    },
-    {
-      "name": "ebox-prepared-update-declines-scroll-containing-plane",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A scrolling ancestor without a compiled viewport mapping declines preparation without changing the accepted surface."
-    },
-    {
-      "name": "ebox-prepared-update-retains-scrolling-through-move-paint-and-resize",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Prepared pane movement, paint and resizing preserve scroll offsets, viewport metadata, scrolling after updates and scroll-state retirement/recreation."
-    },
-    {
-      "name": "ebox-host-properties-classify-positioned-effects-and-rollback",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Retained positioning, stacking, layer and anchor updates report geometry effects, match fresh rendering, preserve visible activation and rejected-update rollback, and deduplicate repeated values."
-    },
-    {
-      "name": "ebox-host-properties-classify-computed-container-effects",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Selector-driven positioning, Flex alignment and Grid track changes preserve computed geometry effects and visible output through retained Host updates."
-    },
-    {
-      "name": "ebox-prepared-update-explains-canvas-admission-without-publication",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Prepared admission explains unsupported canvas proofs with bounded detached scalar facts and does not publish or stage caller state."
-    },
-    {
-      "name": "ebox-prepared-geometry-preserves-overlapping-unicode-and-retry",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Overlapping retained panes preserve Unicode, display runs, input and rejected-update recovery."
-    },
-    {
-      "name": "ebox-prepared-geometry-keeps-exact-large-offscreen-coordinates",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Large exact offscreen coordinates preserve source values and recover visible placement."
-    },
-    {
-      "name": "ebox-prepared-resize-preserves-shaped-text-and-replacement-spaces",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Non-cell-aligned crops preserve combining text, mixed Unicode, fixed replacement spaces and changed content."
-    },
-    {
-      "name": "ebox-prepared-resize-crops-and-restores-fixed-text",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Prepared width and height changes preserve source snapshots, clipped text and overlapping peer output."
-    },
-    {
-      "name": "ebox-prepared-resize-rolls-back-and-retries",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Rejected resize restores accepted geometry, display and paired caller state before retry."
-    },
-    {
-      "name": "ebox-prepared-resize-declines-unproved-layout-and-capacity",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Wrapping and out-of-capacity dimensions decline before any publication instead of silently clipping."
-    },
-    {
-      "name": "ebox-prepared-resize-framed-panel-matches-fresh-render-at-every-size",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Repeated width and height changes of a framed flex panel equal fresh renders at odd and even widths, grown and shrunk heights and the plane limits."
-    },
-    {
-      "name": "ebox-prepared-resize-framed-panel-follows-paint-between-resizes",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Paint changes applied between framed panel resizes are visible in every later size."
-    },
-    {
-      "name": "ebox-prepared-resize-framed-panel-survives-text-changes-between-axes",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Text edits that change row structure between corner, height and width resizes of a framed panel keep every later size equal to a fresh render."
-    },
-    {
-      "name": "ebox-prepared-resize-framed-panel-rolls-back-after-replayed-sizes",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "A rejected framed panel resize after accepted ones restores its exact pixels and revision before retry."
-    },
-    {
-      "name": "ebox-prepared-resize-cohort-mixes-size-and-paint",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "A coordinated size and paint batch preserves fresh-render equivalence across shrink and expansion."
-    },
-    {
-      "name": "ebox-prepared-resize-survives-appended-peer-primitives",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "A peer footprint that appends retained primitives leaves crop resizes and their rollback storage consistent."
-    },
-    {
-      "name": "ebox-prepared-resize-keeps-focus-and-native-activation",
-      "file": "tests/ebox-prepared-resize-tests.el",
-      "purpose": "Focused native targets retain their identity and activation after repeated cropped resizing."
-    },
-    {
-      "name": "ebox-focus-local-updates-survive-transient-style-removal",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Removing a styled sibling or root layer, including rejected removal, preserves metadata focus and local paint/content updates with fresh-render output equivalence."
-    },
-    {
-      "name": "ebox-flex-local-update-retains-raw-allocation-after-integral-output",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Alternating partial and full progress values retain local projection and match fresh rendering when fractional geometry temporarily becomes integral."
-    },
-    {
-      "name": "ebox-flex-stretch-item-fills-the-remaining-main-space",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "A `:width stretch' flex item grows into the line's remaining main-axis space instead of collapsing to its max-content width."
-    },
-    {
-      "name": "ebox-focus-metadata-survives-retained-content-updates",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Focus changes after repeated retained content updates preserve selector facts and unchanged output without promoting metadata to a root render."
-    },
-    {
-      "name": "ebox-local-ownership-follows-reparented-targets",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Repeated reparenting followed by local rich-text and parent paint updates preserves fresh-render output and current interaction bounds."
-    },
-    {
-      "name": "ebox-primary-press-retains-existing-focus",
-      "file": "tests/ebox-active-tests.el",
-      "purpose": "Pressed state and keyboard focus coexist on the same or different controls without losing retained Host identity."
-    },
-    {
-      "name": "ebox-primary-press-publishes-active-style-and-activates-once",
-      "file": "tests/ebox-active-tests.el",
-      "purpose": "Native primary-button tracking publishes active selector and paint state, then clears it before exactly one activation."
-    },
-    {
-      "name": "ebox-primary-press-cancels-outside-and-releases-unrelated-input",
-      "file": "tests/ebox-active-tests.el",
-      "purpose": "Release over another target or unrelated input clears held state without activation and preserves the unrelated event."
-    },
-    {
-      "name": "ebox-commit-updates-selector-type-counts",
-      "file": "tests/ebox-commit-tests.el",
-      "purpose": "A structural candidate should publish exact author selector-type counts."
-    },
-    {
-      "name": "ebox-canonical-column-viewport-height-measures-text-as-text",
-      "file": "tests/ebox-core-render-tests.el",
-      "purpose": "A typed Text leaf must not enter legacy Box geometry measurement."
-    },
-    {
-      "name": "ebox-buffer-mode-keeps-event-aware-wheel-bindings",
-      "file": "tests/ebox-core-render-tests.el",
-      "purpose": "Mouse wheel bindings should use event-aware handlers, not line fallbacks."
-    },
-    {
-      "name": "ebox-buffer-mode-overrides-pixel-scroll-bindings",
-      "file": "tests/ebox-core-render-tests.el",
-      "purpose": "Ebox buffers should keep their own scroll bindings under pixel scrolling."
-    },
-    {
-      "name": "ebox-typed-local-updates-keep-publication-scoped",
-      "file": "tests/ebox-core-render-tests.el",
-      "purpose": "Paint and geometry updates keep an unrelated keyed peer outside full-root work."
-    },
-    {
-      "name": "ebox-definite-flex-slot-updates-keep-local-projection",
-      "file": "tests/ebox-core-render-tests.el",
-      "purpose": "Content and size writes in flex items with a definite main size keep an owner-scoped projection and match fresh rendering."
-    },
-    {
-      "name": "ebox-css-flex-grid-reject-cross-axis-config-units",
-      "file": "tests/ebox-css-flex-grid-tests.el",
-      "purpose": "Typed configs reject cross-axis lengths, including nested track functions."
-    },
-    {
-      "name": "ebox-css-flex-basis-validates-parent-axis-before-render",
-      "file": "tests/ebox-css-flex-grid-tests.el",
-      "purpose": "Building a Flex parent validates item bases against its resolved direction."
-    },
-    {
-      "name": "ebox-css-flex-grid-reject-implicit-size-syntax",
-      "file": "tests/ebox-css-flex-grid-tests.el",
-      "purpose": "Unitless values and parameterized fit-content never enter configs."
-    },
-    {
-      "name": "ebox-css-flex-column-fractional-bases-round-at-final-boundaries",
-      "file": "tests/ebox-css-flex-grid-tests.el",
-      "purpose": "Two percentage bases divide an odd height without fractional line errors."
-    },
-    {
-      "name": "ebox-display-border-metrics-restore-on-unmount",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "Mounted borders keep the line grid without leaking redisplay settings."
-    },
-    {
-      "name": "ebox-display-invalid-input-preserves-windows",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "Invalid input must fail before changing the caller's window layout."
-    },
-    {
-      "name": "ebox-display-honors-native-display-action",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "The caller chooses the display window without changing selection."
-    },
-    {
-      "name": "ebox-display-honors-display-buffer-alist",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "Native display rules also apply when no explicit action is supplied."
-    },
-    {
-      "name": "ebox-local-ecss-renders-nested-scopes",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "Actual publication consumes local rules and keeps outside nodes isolated."
-    },
-    {
-      "name": "ebox-dsl-rejects-malformed-selector-state-metadata",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "Selector state metadata remains a token list at the author boundary."
-    },
-    {
-      "name": "ebox-style-strict-cache-does-not-hide-unknown-properties",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "Strict declaration validation should remain exact after an empty cache hit."
-    },
-    {
-      "name": "ebox-style-aliases-share-one-canonical-property-id",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "A concise alias should disappear before canonical declarations."
-    },
-    {
-      "name": "ebox-normal-text-align-is-not-a-layout-wide-property",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "Only the Normal Box form owns text alignment author input."
-    },
-    {
-      "name": "ebox-style-rejects-canonical-and-alias-duplicates",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "One declaration source should not spell one property twice."
-    },
-    {
-      "name": "ebox-style-border-present-is-a-typed-shorthand-not-an-alias",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "The concise border boolean should expand to canonical width and style."
-    },
-    {
-      "name": "ebox-border-width-requires-an-explicit-length",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "Border declarations retain explicit lengths and reject singleton syntax."
-    },
-    {
-      "name": "ebox-style-border-present-rejects-owned-longhand-conflicts",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "One source should not mix the boolean border shorthand with its outputs."
-    },
-    {
-      "name": "ebox-canonical-box-materializes-inherited-foreground-once",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "A canonical Text should be the sole foreground paint owner under Box."
-    },
-    {
-      "name": "ebox-canonical-box-rejects-paint-only-properties",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "Canonical Box geometry should not duplicate paint-only state."
-    },
-    {
-      "name": "ebox-build-rejects-explicit-nil-outside-boolean-grammar",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "Internal nil initial values must not widen the public author grammar."
-    },
-    {
-      "name": "ebox-source-metadata-uses-the-frozen-public-grammar",
-      "file": "tests/ebox-dsl-tests.el",
-      "purpose": "Key, class, and id should remain source facts with closed value domains."
-    },
-    {
-      "name": "ebox-file-relative-nested-styles-are-inert-snapshots",
-      "file": "tests/ebox-file-tests.el",
-      "purpose": "ebox file relative nested styles are inert snapshots"
-    },
-    {
-      "name": "ebox-flex-module-preserves-item-participation",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Extracted flex code should preserve item participation semantics."
-    },
-    {
-      "name": "ebox-flex-row-wrap-measures-column-items-at-natural-width",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Column flex items should not stretch to the full row before line breaking."
-    },
-    {
-      "name": "ebox-flex-rerenders-composite-item-for-assigned-viewport",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Composite flex items should re-render internals for final item width."
-    },
-    {
-      "name": "ebox-flex-natural-reuse-preserves-stretched-scroll-state",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Stretch sizing should publish the final box geometry to scroll state."
-    },
-    {
-      "name": "ebox-measure-display-replacements-own-one-run",
-      "file": "tests/ebox-font-tests.el",
-      "purpose": "A display replacement is one unit even across face and metadata changes."
-    },
-    {
-      "name": "ebox-measure-distinguishes-adjacent-display-identities",
-      "file": "tests/ebox-font-tests.el",
-      "purpose": "Equal but distinct display values are two replacements, including cache hits."
-    },
-    {
-      "name": "ebox-grid-zero-height-track-contributes-only-its-gap",
-      "file": "tests/ebox-grid-tests.el",
-      "purpose": "A zero-height track adds no text line, while declared gaps remain real."
-    },
-    {
-      "name": "ebox-help-create-adapts-literal-business-functions",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Help callbacks use buffer, overlay and displayed-string contexts lazily."
-    },
-    {
-      "name": "ebox-interaction-full-keymap-is-an-owned-snapshot",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Full character-table maps cannot mutate rendered or future input snapshots."
-    },
-    {
-      "name": "ebox-interaction-named-keymap-graphs-are-owned-snapshots",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Named root, prefix and parent maps cannot mutate an accepted node."
-    },
-    {
-      "name": "ebox-interaction-batch-reads-the-current-source-generation",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Two updates to one node in a batch retain every accumulated native fact."
-    },
-    {
-      "name": "ebox-keymap-create-wraps-literal-local-callbacks",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Reusable maps expose activation and extra keys as ordinary native commands."
-    },
-    {
-      "name": "ebox-keymap-create-rejects-malformed-and-overlapping-bindings",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Invalid callbacks and duplicate or shadowed key sequences fail at creation."
-    },
-    {
-      "name": "ebox-keymap-create-supports-drag-lock-modifier",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "A supported modifier creates a native keymap for locked pointer drags."
-    },
-    {
-      "name": "ebox-interaction-hover-content-group-updates-siblings-in-one-transition",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Entering one grouped hover target updates and restores all members together."
-    },
-    {
-      "name": "ebox-drag-lock-modifier-keeps-gesture-after-release",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "A Shift drag remains active after release until the next click ends it."
-    },
-    {
-      "name": "ebox-keymap-create-mouse-uses-event-buffer-without-moving-focus",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Mouse callbacks target the clicked buffer even when another buffer is current."
-    },
-    {
-      "name": "ebox-keymap-create-repeated-clicks-preserve-point-and-selection",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Press/release/drag sequences activate once per click without text selection."
-    },
-    {
-      "name": "ebox-keymap-create-click-defaults-follow-replacement-and-removal",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Native click defaults follow published maps while explicit bindings win."
-    },
-    {
-      "name": "ebox-region-update-semantic-id-keeps-handle-lifecycle",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "IDs resolve locally and opaque handles retain their owning surface checks."
-    },
-    {
-      "name": "ebox-interaction-closed-node-contract",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "The four capabilities are validated independently from the style schema."
-    },
-    {
-      "name": "ebox-interaction-scope-and-explicit-nil",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Inner nil blocks outer values without extending own effects to margins."
-    },
-    {
-      "name": "ebox-interaction-child-update-keeps-parent-hover-group",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "A child-only publication cannot separate its parent's native hover identity."
-    },
-    {
-      "name": "ebox-interaction-equal-explicit-child-hover-is-another-group",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "An explicit child hover owns a different group even with equal paint."
-    },
-    {
-      "name": "ebox-interaction-literal-callback-and-cyclic-keymap",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Callbacks remain literal and a recursive keymap can be safely snapshotted."
-    },
-    {
-      "name": "ebox-interaction-public-update-replace-clear-and-rollback",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Mounted interaction changes publish atomically and replace or clear maps."
-    },
-    {
-      "name": "ebox-interaction-hidden-and-zero-height-have-no-actions",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Hidden and empty surfaces cannot expose commands or ancestor hover effects."
-    },
-    {
-      "name": "ebox-interaction-keymap-boundaries-use-current-node",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "First characters, nil overrides, margins and the end use the correct map."
-    },
-    {
-      "name": "ebox-interaction-parent-update-preserves-child-and-rolls-back",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Ancestor changes keep local nil and a failed commit restores current maps."
-    },
-    {
-      "name": "ebox-interaction-scroll-replaces-the-visible-actions",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Scrolling clipped content publishes only the currently visible binding."
-    },
-    {
-      "name": "ebox-interaction-navigation-nested-owners-and-boundaries",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Inherited fragments form one stop while explicit nested maps stay distinct."
-    },
-    {
-      "name": "ebox-interaction-navigation-uses-live-mount-and-declared-maps",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Buffer keymaps, copied rendering and empty or blocked maps are not stops."
-    },
-    {
-      "name": "ebox-interaction-navigation-narrowing-and-invisible-text",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Only accessible visible characters contribute a stop, without widening."
-    },
-    {
-      "name": "ebox-interaction-navigation-padding-and-native-overrides",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Nested padding resolves to its own box; foreign maps do not create stops."
-    },
-    {
-      "name": "ebox-interaction-navigation-follows-updates-and-scroll",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Updated, removed and newly visible actions are read from the publication."
-    },
-    {
-      "name": "ebox-layer-publication-rejected-hidden-commit-rolls-back",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "Rejected hidden updates leave retained input, revision and text unchanged."
-    },
-    {
-      "name": "ebox-layer-publication-visible-interactions-follow-occlusion",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "Only the visible layer owns interaction properties after hidden updates."
-    },
-    {
-      "name": "ebox-layer-publication-ancestor-paint-survives-recomposition",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "A detached host retains enclosing paint and interaction contributions."
-    },
-    {
-      "name": "ebox-layer-publication-batch-retains-disjoint-owner-updates",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "A hidden update and an ordinary sibling update publish one current input."
-    },
-    {
-      "name": "ebox-layer-publication-root-portal-occludes-unrelated-owner",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "Updates outside a root portal's local host cannot paint over the portal."
-    },
-    {
-      "name": "ebox-layer-publication-root-portal-survives-cached-branch",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "An unchanged cached branch still collects its root portal on later renders."
-    },
-    {
-      "name": "ebox-layer-publication-revealed-anchor-uses-candidate-source",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "A revealed portal resolves its semantic anchor against current input."
-    },
-    {
-      "name": "ebox-layer-publication-intrinsic-host-width-can-grow",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "Content-dependent hosts must grow naturally and move their following sibling."
-    },
-    {
-      "name": "ebox-layer-publication-inline-auto-host-width-can-grow",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "Automatic inline widths remain content-dependent even under normal flow."
-    },
-    {
-      "name": "ebox-layer-publication-hidden-ancestor-portals-stay-hidden-in-active-root",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "Root composition must not collect portals under a hidden flow ancestor."
-    },
-    {
-      "name": "ebox-layer-publication-root-owner-pane-resize-publishes-locally",
-      "file": "tests/ebox-layer-publication-tests.el",
-      "purpose": "Resizing stacked positioned panes owned by the root publishes through a local span patch instead of a full-surface render while matching a fresh render."
-    },
-    {
-      "name": "ebox-layer-style-accepts-existing-box-layouts-only",
-      "file": "tests/ebox-layer-style-tests.el",
-      "purpose": "Every box layout accepts layer facts, while Text rejects every property."
-    },
-    {
-      "name": "ebox-layer-style-enums-and-anchor-grammar",
-      "file": "tests/ebox-layer-style-tests.el",
-      "purpose": "Public enums, signed integer depth, and optional semantic anchors compile."
-    },
-    {
-      "name": "ebox-layer-style-rejects-invalid-static-declarations",
-      "file": "tests/ebox-layer-style-tests.el",
-      "purpose": "Invalid layer values signal at both DSL and stylesheet boundaries."
-    },
-    {
-      "name": "ebox-layer-style-offset-expressions-preserve-axis-and-sign",
-      "file": "tests/ebox-layer-style-tests.el",
-      "purpose": "Expression operands keep axis validation even when they cancel out."
-    },
-    {
-      "name": "ebox-layer-minimal-opaque-overlap",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer minimal opaque overlap"
-    },
-    {
-      "name": "ebox-layer-relative-reserves-flow-slot",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer relative reserves flow slot"
-    },
-    {
-      "name": "ebox-layer-negative-z-stays-below-normal-content",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer negative z stays below normal content"
-    },
-    {
-      "name": "ebox-layer-nested-isolation-orders-groups",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer nested isolation orders groups"
-    },
-    {
-      "name": "ebox-layer-root-projection-escapes-local-clipping",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer root projection escapes local clipping"
-    },
-    {
-      "name": "ebox-layer-missing-anchor-does-not-paint",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer missing anchor does not paint"
-    },
-    {
-      "name": "ebox-layer-hidden-upper-reveals-base",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer hidden upper reveals base"
-    },
-    {
-      "name": "ebox-layer-max-content-row-paints-positioned-descendants",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer max content row paints positioned descendants"
-    },
-    {
-      "name": "ebox-layer-anchor-dependency-resolves-before-paint-order",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer anchor dependency resolves before paint order"
-    },
-    {
-      "name": "ebox-layer-anchor-cycles-are-rejected",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer anchor cycles are rejected"
-    },
-    {
-      "name": "ebox-layer-absolute-margins-do-not-cover-underlay",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer absolute margins do not cover underlay"
-    },
-    {
-      "name": "ebox-layer-absolute-keeps-all-flow-layout-sizes",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer absolute keeps all flow layout sizes"
-    },
-    {
-      "name": "ebox-layer-root-projection-inside-an-absolute-panel",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "ebox layer root projection inside an absolute panel"
-    },
-    {
-      "name": "ebox-native-command-autoloads-may-target-the-facade",
-      "file": "tests/ebox-package-tests.el",
-      "purpose": "Startup registries may safely autoload native commands from `ebox'."
-    },
-    {
-      "name": "ebox-selector-parses-type-id-class-and-attributes",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Selectors should compile predicates into ECSS structured selector AST."
-    },
-    {
-      "name": "ebox-selector-parses-child-and-descendant-combinators",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Selectors should compile relations into nested ECSS combinators."
-    },
-    {
-      "name": "ebox-selector-parses-adjacent-and-general-sibling-combinators",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Selectors should expose ECSS adjacent and general sibling relations."
-    },
-    {
-      "name": "ebox-size-style-canonical-values",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Each size property accepts explicit lengths in its own rendering axis."
-    },
-    {
-      "name": "ebox-size-style-rejects-legacy-values",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Legacy implicit lengths fail at every author dimension boundary."
-    },
-    {
-      "name": "ebox-size-style-keyword-applicability",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Maximum sizes accept none and reject auto on either axis."
-    },
-    {
-      "name": "ebox-size-style-shorthands-preserve-atomic-expressions",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Shorthands distinguish one size expression from several edge values."
-    },
-    {
-      "name": "ebox-size-style-trbl-shorthand-arity",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Four-side shorthands keep arity rules and each target edge's unit domain."
-    },
-    {
-      "name": "ebox-size-style-pair-shorthand-arity",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Axis and gap shorthands preserve atomic expressions and target axes."
-    },
-    {
-      "name": "ebox-size-style-property-ranges",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Each property enforces its supported size and percentage ranges."
-    },
-    {
-      "name": "ebox-size-style-recursive-axis-errors-reject-shorthands-and-tracks",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Expressions cannot hide forbidden units in shorthand or Grid wrappers."
-    },
-    {
-      "name": "ebox-size-style-stroke-units-are-independent-of-edge-orientation",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "All border edges retain their non-percentage paint-thickness domain."
-    },
-    {
-      "name": "ebox-size-style-malformed-shorthand-functions-keep-unit-diagnostics",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Malformed atomic expressions report the receiving property's unit domain."
-    },
-    {
-      "name": "ebox-canonical-range-construction-has-explicit-source-ownership",
-      "file": "tests/ebox-source-tests.el",
-      "purpose": "Typed Range construction needs only a public builder, with exact ownership."
-    },
-    {
-      "name": "ebox-canonical-builder-validates-empty-ranges-and-static-siblings",
-      "file": "tests/ebox-source-tests.el",
-      "purpose": "Empty ranges retain ownership, and static siblings cannot borrow foreign facts."
-    },
-    {
-      "name": "ebox-surface-snapshot-preserves-empty-and-keyed-ranges",
-      "file": "tests/ebox-surface-tests.el",
-      "purpose": "Detached export keeps exact source handles and transparent Range shape."
-    },
-    {
-      "name": "ebox-region-content-update-ignores-caller-narrowing",
-      "file": "tests/ebox-surface-tests.el",
-      "purpose": "The local owner proof uses mounted coordinates outside the editor view."
-    },
-    {
-      "name": "ebox-zero-height-retained-surface-empty-content-transitions",
-      "file": "tests/ebox-zero-height-tests.el",
-      "purpose": "ebox zero height retained surface empty content transitions"
-    },
-    {
-      "name": "ebox-zero-height-retained-surface-transition-rollback",
-      "file": "tests/ebox-zero-height-tests.el",
-      "purpose": "ebox zero height retained surface transition rollback"
-    },
-    {
-      "name": "ebox-compiled-rules-use-canonical-source-pipeline",
-      "file": "tests/ebox-file-tests.el",
-      "purpose": "Compiled rule data in canonical source facts matches DSL paint and rejects invalid declarations."
-    },
-    {
-      "name": "ebox-cascade-values-compute-inline-tags-before-paint",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Inline ECSS importance, inheritance and variable fallback produce final face values."
-    },
-    {
-      "name": "ebox-cascade-values-share-inline-and-rule-importance",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Stylesheet and inline importance obey the same ECSS ordering."
-    },
-    {
-      "name": "ebox-cascade-values-resolve-before-geometry",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Tagged geometry and shorthand declarations compute before physical layout."
-    },
-    {
-      "name": "ebox-cascade-values-update-inherited-custom-properties",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Custom property and tagged input updates reach retained consumers and invalid updates preserve output."
-    },
-    {
-      "name": "ebox-cascade-values-update-inherited-geometry",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Inherited custom lengths and important width updates match freshly computed display geometry."
-    },
-    {
-      "name": "ebox-scope-targets-separate-ownership-from-structure",
-      "file": "tests/ebox-scope-ownership-tests.el",
-      "purpose": "Canonical scopes snapshot author target identities while preserving actual sibling selectors."
-    },
-    {
-      "name": "ebox-scope-targets-retain-committed-ownership-on-failure",
-      "file": "tests/ebox-scope-ownership-tests.el",
-      "purpose": "Retained updates and reorder preserve ownership, and absent target errors preserve published output."
-    },
-    {
-      "name": "ebox-scope-targets-empty-and-invalid-input",
-      "file": "tests/ebox-scope-ownership-tests.el",
-      "purpose": "Empty target sets disable their rules; malformed target input is rejected."
-    },
-    {
-      "name": "ebox-scope-targets-snapshot-remounts-independently",
-      "file": "tests/ebox-scope-ownership-tests.el",
-      "purpose": "Exported author ownership survives replacement and disposal of the original mount."
-    },
-    {
-      "name": "ebox-selector-canonical-metadata-commit-refreshes-tree-queries",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Tree queries observe accepted canonical attribute/state changes after metadata-only commits."
-    },
-    {
-      "name": "ebox-canonical-configuration-preserves-deferred-layout-values",
-      "file": "tests/ebox-cascade-values-tests.el",
-      "purpose": "Canonical Box configuration shares DSL layout behavior, defers ECSS values and rejects invalid canonical inputs."
-    },
-    {
-      "name": "ebox-shared-scopes-preserve-multiple-roots-and-slot-ownership",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "One scope styles multiple trees and projected content without piercing fallback."
-    },
-    {
-      "name": "ebox-shared-scopes-membership-updates-and-snapshots",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Ownership changes repaint retained output while snapshots retain old membership."
-    },
-    {
-      "name": "ebox-shared-scopes-roots-and-membership-are-independent",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Root matching requires membership, while unanchored slices contribute no rules."
-    },
-    {
-      "name": "ebox-shared-scopes-use-ecss-origin-and-source-order",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Theme defaults and author scopes retain ECSS precedence and explicit ordering."
-    },
-    {
-      "name": "ebox-shared-scopes-reject-invalid-input",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Invalid rules, origins and source membership never produce usable scopes."
-    },
-    {
-      "name": "ebox-shared-scopes-compose-unanchored-fragments",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Canonical fragment import preserves membership until composition supplies an enclosing scope root."
-    },
-    {
-      "name": "ebox-shared-scopes-revise-rules-with-retained-members",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Root rule revisions restyle retained imported members, reject invalid updates, and preserve old canonical snapshots."
-    },
-    {
-      "name": "ebox-shared-scopes-select-rules-per-root-revision",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Separate roots select immutable rule revisions and explicit ECSS origins for shared member identities."
-    },
-    {
-      "name": "ebox-activate-uses-live-node-ownership",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Activation uses committed native node keymaps, respects nested nil barriers and leaves point/window selection unchanged."
-    },
-    {
-      "name": "ebox-activate-resolves-layout-filler-keymaps",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Activation resolves flex gaps, padding and clipped trailing cells to the node that declared their keymap."
-    },
-    {
-      "name": "ebox-press-without-live-owner-is-unclaimed",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "A primary-button press whose published keymap names no live owner stays with Emacs instead of failing the command."
-    },
-    {
-      "name": "ebox-activate-follows-publication-and-unmount",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Activation follows accepted callback replacement, preserves rejected publication and stops after unmount."
-    },
-    {
-      "name": "ebox-activate-rejects-unowned-and-inaccessible-positions",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Overlay/global maps and inaccessible or structural positions cannot supply an activation target."
-    },
-    {
-      "name": "ebox-focus-orders-declared-stops-and-controls-cycling",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Navigation shares declared order, skips disabled nodes and fails atomically."
-    },
-    {
-      "name": "ebox-focus-follows-publication-and-preserves-manual-point",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Layout and keyed reorder retain focus, while manual point movement is respected."
-    },
-    {
-      "name": "ebox-focus-rejection-removal-and-unmount-release-ownership",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Rejected publication retains focus and point; removal or disable clears it."
-    },
-    {
-      "name": "ebox-focus-respects-accessibility-and-buffer-isolation",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Narrowing and invisible overlays affect navigation without changing other buffers."
-    },
-    {
-      "name": "ebox-disabled-node-blocks-native-activation-and-navigation",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Disabled capability blocks own and inherited maps until a committed reenable."
-    },
-    {
-      "name": "ebox-focus-retains-keyed-dsl-nodes-and-clears-hidden-focus",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Fresh source handles preserve keyed focus until published visibility hides it."
-    },
-    {
-      "name": "ebox-focus-returns-owned-references-and-restores-rejected-reorder",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Returned reference data cannot corrupt ownership, and reorder rejection restores point."
-    },
-    {
-      "name": "ebox-focus-prefers-source-identity-over-reused-layout-nodes",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Unkeyed reorder retains focus and editable handles; replacement clears focus."
-    },
-    {
-      "name": "ebox-native-activation-shares-focus-with-position-and-mouse-selection",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Keyboard and logical activation respect focus; explicit positions and mouse use the hit target."
-    },
-    {
-      "name": "ebox-native-activation-keeps-focus-barriers-and-custom-bindings",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "A callbackless focused parent blocks activation while custom bindings remain native."
-    },
-    {
-      "name": "ebox-buffer-mode-provides-cyclic-focus-and-releases-bindings",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Mounted mode supplies cyclic TAB navigation and default RET, then releases them on unmount."
-    },
-    {
-      "name": "ebox-native-keyboard-follows-manual-point-and-committed-map-replacement",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Manual point selects another native target, and retained updates replace focused commands."
-    },
-    {
-      "name": "ebox-disabled-state-drives-pure-and-retained-cascade",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Disabled facts invalidate own, descendant and sibling rules without a keymap."
-    },
-    {
-      "name": "ebox-disabled-state-rejected-commit-restores-style-and-focus",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Rejected state publication restores selectors, paint and focus together."
-    },
-    {
-      "name": "ebox-disabled-state-rejects-authored-duplicates",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Only interaction input may declare disabled in DSL and typed input."
-    },
-    {
-      "name": "ebox-focus-rejects-unaccepted-transaction-changes",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Outer transactions cannot leak focus selection, clearing or navigation; accepted callbacks may set focus."
-    },
-    {
-      "name": "ebox-focus-metadata-retains-scroll-content-and-later-style-updates",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Visually unchanged focus preserves scroll content and still affects future selector and content updates."
-    },
-    {
-      "name": "ebox-focus-state-shares-selectors-paint-and-layout",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Setting and clearing focus recompute shared rules and preserve manual point."
-    },
-    {
-      "name": "ebox-focus-state-isolates-shared-input-mounts-and-pure-render",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "One canonical input supplies independent mounted states and stateless pure output."
-    },
-    {
-      "name": "ebox-focus-state-follows-reorder-and-rejected-publication",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Retained focus styles follow keyed reorder, roll back and clear on disable."
-    },
-    {
-      "name": "ebox-focus-state-follows-region-updates",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Local content, disabling and hiding updates keep focus facts and paint aligned."
-    },
-    {
-      "name": "ebox-focus-state-rejects-inaccessible-styled-target",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "A focus rule that removes the target rejects selection and restores the view."
-    },
-    {
-      "name": "ebox-focus-state-clears-when-cascade-hides-retained-target",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "A committed hiding rule clears retained focus and removes its selector state."
-    },
-    {
-      "name": "ebox-focus-state-clears-when-layout-clips-retained-target",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "A layout update that clips the focused row removes both focus and its selector state."
-    },
-    {
-      "name": "ebox-focus-state-rejects-authored-focus-tokens",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Author input cannot supply the selector state owned by mounted logical focus."
-    },
-    {
-      "name": "ebox-focus-state-observer-commit-uses-accepted-generation",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "An observer commit preserves accepted focus without replaying an older focus request."
-    },
-    {
-      "name": "ebox-focus-state-clears-when-scrolling-hides-target",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Scrolling a focused row out of view clears its style state before acceptance."
-    },
-    {
-      "name": "ebox-focus-state-clears-invisible-target-during-sibling-update",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "An unrelated local update clears inaccessible focus and restores its base paint."
-    },
-    {
-      "name": "ebox-scoped-viewport-reflow-preserves-cascade-and-layout",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Unchanged local scopes retain viewport reflow and match fresh layout and paint across widths."
-    },
-    {
-      "name": "ebox-flex-minima-preserve-overflow-semantics-in-both-backends",
-      "file": "tests/ebox-css-flex-grid-tests.el",
-      "purpose": "Row and column explicit and automatic Flex minima preserve visible, hidden and scroll overflow behavior, with identical observable output when the optional native module is enabled or unavailable."
-    },
-    {
-      "name": "ebox-font-relative-root-width-survives-viewport-and-updates",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Font-relative root widths retain their measured size across viewport changes and region width updates in either backend."
-    },
-    {
-      "name": "ebox-flex-composed-lines-are-not-rewrapped-by-outer-box",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Outer word and character wrapping preserve composed Flex item positions and independently wrapped child text across updates."
-    },
-    {
-      "name": "ebox-nested-scroll-preserves-independent-publication-and-cleanup",
-      "file": "tests/ebox-scroll-tests.el",
-      "purpose": "Independent nested scroll owners preserve offsets after rejected removal, clamp on shorter content and clear state on unmount, including optional native fallback."
-    },
-    {
-      "name": "ebox-stretched-row-preserves-cell-paint-through-updates",
-      "file": "tests/ebox-css-flex-grid-tests.el",
-      "purpose": "Grid and nested Flex rows preserve clipped cell widths and background coverage after content, assigned or automatic height, and viewport updates."
-    },
-    {
-      "name": "ebox-grid-fixed-row-preserves-tracks-and-paint-through-updates",
-      "file": "tests/ebox-grid-tests.el",
-      "purpose": "Fixed Grid rows preserve clipping, cell paint and box sizing after padding, track and cell-width changes, including native publication when available and fallback when sizing changes."
-    },
-    {
-      "name": "ebox-viewport-width-keeps-frame-reference-through-updates",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Root and nested vw widths preserve the frame reference through parent, viewport, fractional-geometry fallback and content updates."
-    },
-    {
-      "name": "ebox-viewport-width-constrains-flex-minima-maxima-and-basis",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Flex item vw minima, maxima and bases track the frame viewport rather than their containing allocation."
-    },
-    {
-      "name": "ebox-scoped-content-updates-retain-native-interaction",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Local content retains scoped paint and native callbacks; replacement and failed keymap updates preserve accepted behavior."
-    },
-    {
-      "name": "ebox-selector-candidates-preserve-relations-and-rollback",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Repeated subtree changes preserve structural styles, rollback and exported snapshots."
-    },
-    {
-      "name": "ebox-selector-located-batch-composes-local-content-updates",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Selector-located content changes compose one scoped publication, match a fresh render and discard staged updates when a later selector has no matches."
-    },
-    {
-      "name": "ebox-scoped-candidates-combine-content-and-selector-paint",
-      "file": "tests/ebox-selector-tests.el",
-      "purpose": "Publish adjacent text and class-dependent paint with fresh-render equivalence; diagnostic reports remain defensive and preserve the last successful update after rejection."
-    },
-    {
-      "name": "ebox-retained-content-resamples-display-between-publications",
-      "file": "tests/ebox-paint-content-tests.el",
-      "purpose": "Scoped content updates resample text scale and remapping between publications and match a fresh render."
-    },
-    {
-      "name": "ebox-inherited-paint-keeps-subsequent-content-and-snapshots",
-      "file": "tests/ebox-paint-content-tests.el",
-      "purpose": "Repeated inherited parent paint and child content updates retain matching output, styles and independently renderable canonical snapshots."
-    },
-    {
-      "name": "ebox-native-input-restores-focus-through-reorder-and-errors",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Native input preserves results and restores the retained target after errors."
-    },
-    {
-      "name": "ebox-native-input-invalidates-disposed-or-disabled-targets",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "A completed reader cannot authorize input after its target loses ownership."
-    },
-    {
-      "name": "ebox-native-input-rejects-invalid-entry-and-unaccepted-transactions",
-      "file": "tests/ebox-focus-tests.el",
-      "purpose": "Readers cannot run for missing targets or within an unaccepted Ebox transaction."
-    },
-    {
-      "name": "ebox-overlapping-replacements-retain-parent-text-and-child-state",
-      "file": "tests/ebox-candidate-overlap-tests.el",
-      "purpose": "Same-length text changes survive a subsequent retained child replacement."
-    },
-    {
-      "name": "ebox-nested-range-updates-preserve-later-host-replacements",
-      "file": "tests/ebox-candidate-overlap-tests.el",
-      "purpose": "Nested Range updates preserve visible content and subsequent Host replacement."
-    },
-    {
-      "name": "ebox-large-candidate-removal-preserves-source-order-and-rollback",
-      "file": "tests/ebox-candidate-overlap-tests.el",
-      "purpose": "Large keyed list removals and insertions match fresh rendering and reject atomically."
-    },
-    {
-      "name": "ebox-overlapping-ranges-preserve-followup-child-updates",
-      "file": "tests/ebox-candidate-overlap-tests.el",
-      "purpose": "Nested Range writes refine ancestor content in either recording order and preserve later Host updates."
-    },
-    {
-      "name": "ebox-keyed-range-child-moves-before-a-nested-host-update",
-      "file": "tests/ebox-candidate-overlap-tests.el",
-      "purpose": "A keyed field retains focus and remains updatable after sibling insertion or removal, with atomic rejection."
-    },
-    {
-      "name": "ebox-explicit-host-identity-survives-sibling-changes-without-keys",
-      "file": "tests/ebox-candidate-overlap-tests.el",
-      "purpose": "An unkeyed Host with stable source identity retains focus and nested updates across conditional sibling changes."
-    },
-    {
-      "name": "ebox-grid-fractional-row-fills-tracks-through-resize-and-updates",
-      "file": "tests/ebox-grid-tests.el",
-      "purpose": "Fractional cells retain their allocation, paint and content when resized."
-    },
-    {
-      "name": "ebox-grid-text-row-preserves-intrinsic-minima",
-      "file": "tests/ebox-grid-tests.el",
-      "purpose": "Text tracks keep unbreakable minima in definite and intrinsic layouts."
-    },
-    {
-      "name": "ebox-shared-scopes-reorder-keeps-current-colors",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Reordering retained nodes preserves current slot and fallback colors."
-    },
-    {
-      "name": "ebox-viewport-height-keeps-frame-reference-through-updates",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Nested viewport heights and arithmetic follow frame resize and retained updates."
-    },
-    {
-      "name": "ebox-viewport-height-constrains-flex-minima-maxima-and-basis",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Column Flex constraints retain their original viewport reference."
-    },
-    {
-      "name": "ebox-scroll-containers-compose-through-layout-and-updates",
-      "file": "tests/ebox-scroll-tests.el",
-      "purpose": "Nested and sibling scrolling containers compose in Column and Flex and retain independent visible content through updates and resize."
-    },
-    {
-      "name": "ebox-shared-scopes-insertion-keeps-current-inheritance-and-membership",
-      "file": "tests/ebox-shared-scope-tests.el",
-      "purpose": "Sibling insertion preserves scoped paint while later rule, membership and ancestry changes update the visible result."
-    },
-    {
-      "name": "ebox-drag-follows-keyed-owner-and-publishes-release",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Movement and release retain the keyed target across visible reordering."
-    },
-    {
-      "name": "ebox-drag-cancels-disabled-target-and-preserves-unrelated-input",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Disabling the target ends tracking; unrelated input returns to Emacs."
-    },
-    {
-      "name": "ebox-drag-cancels-when-leaving-the-original-window",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Leaving the original text window cancels the gesture."
-    },
-    {
-      "name": "ebox-drag-releases-removed-owners-and-lost-windows",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Removed targets, unmount and switched windows release active tracking."
-    },
-    {
-      "name": "ebox-nested-flex-keeps-current-content-and-viewport",
-      "file": "tests/ebox-css-flex-grid-tests.el",
-      "purpose": "Nested Flex keeps current wrapping, sibling placement and output width through content updates and viewport changes."
-    },
-    {
-      "name": "ebox-primary-press-uses-replaced-mouse-binding",
-      "file": "tests/ebox-active-tests.el",
-      "purpose": "A held retained target activates its newly accepted explicit mouse callback instead of a stale callback or keyboard binding."
-    },
-    {
-      "name": "ebox-primary-press-keeps-pure-text-activation",
-      "file": "tests/ebox-active-tests.el",
-      "purpose": "Generated maps remain usable on pure rendered text without mounting a retained surface."
-    },
-    {
-      "name": "ebox-primary-press-clears-active-when-target-is-clipped",
-      "file": "tests/ebox-active-tests.el",
-      "purpose": "Clipping a held target clears its selector state in the same visible publication and cancels activation."
-    },
-    {
-      "name": "ebox-host-properties-compose-layout-interaction-and-content",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Layout and native interaction changes preserve child content updates, editable handles and snapshot parity."
-    },
-    {
-      "name": "ebox-host-properties-compose-with-range-reorder",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Parent property changes compose with Range reordering in either order while retaining focus and editable child handles."
-    },
-    {
-      "name": "ebox-host-properties-inherit-into-replaced-styled-subtrees",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "An inherited property update on a parent composes with same-candidate Range items that own styled Box children, reaching every new leaf."
-    },
-    {
-      "name": "ebox-host-properties-preserve-text-and-structural-ownership",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Property updates preserve text, refine retained structural replacements and do not resurrect removed owners."
-    },
-    {
-      "name": "ebox-host-properties-update-selector-facts-and-rules",
-      "file": "tests/ebox-host-property-tests.el",
-      "purpose": "Class changes and rule replacement/removal restyle retained descendants through the shared cascade."
-    },
-    {
-      "name": "ebox-range-reorders-preserve-nested-updates-and-focus",
-      "file": "tests/ebox-range-identity-tests.el",
-      "purpose": "Keyed and unkeyed source identities preserve focus, published content and subsequent nested Range updates through reorder, insertion and removal."
-    },
-    {
-      "name": "ebox-focus-within-navigates-retained-subtrees",
-      "file": "tests/ebox-focus-within-tests.el",
-      "purpose": "Scoped focus navigates eligible controls, wraps within a panel and follows keyed reorder without changing global focus authority."
-    },
-    {
-      "name": "ebox-focus-within-rejects-unavailable-and-unaccepted-targets",
-      "file": "tests/ebox-focus-within-tests.el",
-      "purpose": "Invalid, hidden, unmounted and provisional focus roots reject movement while preserving accepted focus and point."
-    },
-    {
-      "name": "ebox-focus-retains-local-facts-and-structural-inheritance",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Repeated focus transitions and intervening content updates preserve current selector facts, inherited local paint and structural sibling/descendant rules."
-    },
-    {
-      "name": "ebox-responsive-cache-keeps-current-containing-size",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Percentage-sized paint follows containing width and height across repeated resizes and unrelated content publications without stale cache reuse."
-    },
-    {
-      "name": "ebox-responsive-cache-preserves-cyclic-native-keymaps",
-      "file": "tests/ebox-size-style-tests.el",
-      "purpose": "Responsive subtrees mount with a recursive native keymap, retain activation across unrelated updates and use a newly published replacement binding."
-    },
-    {
-      "name": "ebox-flex-progress-updates-preserve-fractional-sibling-geometry",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Repeated simultaneous progress width and label updates retain sibling pixel geometry and enclosing paint, matching a fresh render after parent size and color changes."
-    },
-    {
-      "name": "ebox-focus-state-only-observation-keeps-independent-inputs",
-      "file": "tests/ebox-focus-style-tests.el",
-      "purpose": "Repeated state-only focus updates retain independent mounts and pure input while public exclusive phase timings account for the whole observed commit."
-    },
-    {
-      "name": "ebox-layer-source-intervals-preserve-unicode-and-properties",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "Layer show/hide updates preserve untouched CJK and combining glyphs, native properties and caller inputs."
-    },
-    {
-      "name": "ebox-layer-flow-z-order-can-cross-overlay",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "Changing normal-flow z order across a positioned overlay preserves the correct visible winner through repeated commits."
-    },
-    {
-      "name": "ebox-flex-rich-local-updates-preserve-paint-and-targets",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Local rich-text and progress changes preserve fresh-render paint, live target bounds, cyclic native keymaps and callbacks through later enclosing paint updates."
-    },
-    {
-      "name": "ebox-row-disjoint-rich-updates-preserve-line-dependencies",
-      "file": "tests/ebox-flex-tests.el",
-      "purpose": "Two rich-text updates on shared physical lines retain sibling paint and both target bounds across changed newline placement and later parent paint."
-    },
-    {
-      "name": "ebox-publication-rejects-participant-text-corruption",
-      "file": "tests/ebox-surface-tests.el",
-      "purpose": "Framework text-property writes outside the prepared result reject publication and restore text, revision and retained addresses."
-    },
-    {
-      "name": "ebox-publication-rollback-restores-unaffected-output",
-      "file": "tests/ebox-surface-tests.el",
-      "purpose": "A framework stage that mutates text and properties outside the prepared change rejects atomically and restores the complete surface, revision and retained handles."
-    },
-    {
-      "name": "ebox-display-native-decline-reports-missing-viewport",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "An unbounded hidden mount renders correctly and reports why native geometry is unavailable; a later viewport update does not retain the stale diagnostic."
-    },
-    {
-      "name": "ebox-region-geometry-updates-position-size-and-layer-atomically",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "One typed Box geometry update changes position, size and stacking facts through retained publication and matches a fresh render; the geometry query is defensive."
-    },
-    {
-      "name": "ebox-viewport-keeps-its-height-while-transient-ui-borrows-space",
-      "file": "tests/ebox-viewport-tests.el",
-      "purpose": "A same-width height decrease borrowed by minibuffer or echo-area UI keeps the mounted canvas, and releasing the space settles onto the restored window geometry."
-    },
-    {
-      "name": "ebox-viewport-width-fills-the-window-content-box",
-      "file": "tests/ebox-viewport-tests.el",
-      "purpose": "The published viewport width equals the window's pixel content box, so no hidden reserve shrinks every canvas by two character columns."
-    },
-    {
-      "name": "ebox-region-update-geometry-rejects-non-geometry-and-text",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "The low-level geometry boundary rejects content, paint, malformed and Text updates before publication."
-    },
-    {
-      "name": "ebox-interaction-hover-content-follows-retained-geometry",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Hover content responds at a target's committed position after a retained geometry update, without any intervening input."
-    },
-    {
-      "name": "ebox-interaction-hover-content-uses-retained-updates",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Hover content enters and leaves through retained updates; removing and restoring its declaration disables and restores local motion tracking."
-    },
-    {
-      "name": "ebox-drag-coalesces-bounded-bursts-and-keeps-release-position",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Pending motion bursts publish bounded latest positions and preserve the exact release endpoint through the public native keymap."
-    },
-    {
-      "name": "ebox-drag-preserves-input-barriers-and-remaining-event-order",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Keys and another primary press stop motion merging while preserving the complete remaining native input order."
-    },
-    {
-      "name": "ebox-drag-treats-another-window-as-a-motion-barrier",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Motion crossing another window cancels at the last accepted position without consuming later original-window input."
-    },
-    {
-      "name": "ebox-drag-rechecks-target-after-wait-and-motion-poll",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "A target disabled, removed or unmounted while native reads run is cancelled before motion dispatch and unrelated input is retained."
-    },
-    {
-      "name": "ebox-drag-locked-end-rejects-finishing-motion-and-release-position",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "A locked gesture ends once at its second press and cannot publish later motion or replace that endpoint with its final release."
-    },
-    {
-      "name": "ebox-drag-locked-escape-preserves-later-input",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Escape cancels a locked motion burst and leaves later native input in its original order."
-    },
-    {
-      "name": "ebox-prepared-geometry-retains-source-and-snapshots",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Prepared translations and stacking preserve prior exported source snapshots and feed the latest geometry into the next ordinary publication."
-    },
-    {
-      "name": "ebox-prepared-geometry-rejects-and-recovers-paired-state",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "A failed prepared publication restores source facts, pixels, revision and caller state, then accepts a valid retry."
-    },
-    {
-      "name": "ebox-prepared-geometry-composes-nested-fixed-canvas",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Prepared moves inside a bordered nested canvas retain enclosing rows, paint and native properties with fresh-render parity."
-    },
-    {
-      "name": "ebox-prepared-publication-reveals-occluded-host-and-wrapper-bounds",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Prepared translation and stacking reveal occluded Hosts with fresh-mount interaction properties and margin-free bounds, including fixed wrapper borders and padding."
-    },
-    {
-      "name": "ebox-prepared-publication-retries-disjoint-multi-row-moves",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Repeated multi-row translation across separated row ranges preserves source, pixels, properties, bounds and paired state after rejection and matches fresh mounts after each retry."
-    },
-    {
-      "name": "ebox-prepared-publication-reprepares-after-ordinary-paint",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Repreparing after an ordinary paint publication leaves the previous operation stale and preserves accepted pixels, bounds, report, revision and mount identity through a rejected move before a successful retry."
-    },
-    {
-      "name": "ebox-prepared-publication-skips-rows-with-unchanged-pixels",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Restacking a positioned panel that occludes nothing publishes zero text, property and touched-character operations while the accepted output, revision and Host bounds stay authoritative; overlapping restacks still repaint."
-    },
-    {
-      "name": "ebox-prepared-publication-binds-paint-slot-after-spec-update",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "A prepared :color cell bound to a paint slot stays preparable after the slot's face specification changes, matching the slot by its stable face rather than its copied specification."
-    },
-    {
-      "name": "ebox-paint-slot-copies-share-face-state",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Copies of a paint slot compare equal and report the slot's current specification and installation state through updates and rollback."
-    },
-    {
-      "name": "ebox-prepared-publication-reprepares-after-inserting-host",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Inserting a Host invalidates the previous prepared operation without mutation; fresh preparation includes the added Host in occlusion, visible bounds and fresh-render parity."
-    },
-    {
-      "name": "ebox-prepared-publication-retains-source-through-focus-reentry",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Focus and unchanged-axis context generations remain source-resolvable across prepared moves, later focus changes and unrelated ordinary content and native-property updates."
-    },
-    {
-      "name": "ebox-prepared-publication-rebuilds-inherited-paint-on-ordinary-update",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Prepared inherited paint survives rejected ordinary publication, unrelated later content and native-property updates, unchanged viewport refresh and detached snapshot reuse."
-    },
-    {
-      "name": "ebox-prepared-publication-rejects-unrecorded-buffer-hook-rewrite",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "External buffer-hook text rewrites reject a prepared frame and restore source geometry, visible properties, Host bounds, revision and point before a later valid move."
-    },
-    {
-      "name": "ebox-prepared-publication-rejects-stage-output-mutation",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Unrecorded stage property writes restore paired state, source, pixels and the last accepted report, including rejection after an earlier prepared success."
-    },
-    {
-      "name": "ebox-prepared-publication-snapshots-caller-values-before-hooks",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "A buffer hook mutating the caller-owned reusable geometry vector cannot change the source values already used to render the prepared frame."
-    },
-    {
-      "name": "ebox-prepared-geometry-respects-important-cascade",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Equal current inline and important stylesheet positions do not authorize a prepared move to bypass cascade precedence; ordinary fallback preserves effective geometry."
-    },
-    {
-      "name": "ebox-prepared-geometry-crosses-flow-stacking-and-visible-clip",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Prepared movement and stacking across normal flow and each clipping edge preserve source rendering, pixels and native interaction properties."
-    },
-    {
-      "name": "ebox-prepared-publication-follows-focus-unless-point-moved-manually",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Prepared translation makes logical focus follow its visible target, preserves independently moved point, and resumes following when point returns to the target."
-    },
-    {
-      "name": "ebox-prepared-publication-clears-occluded-focus-after-acceptance",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Rejected occlusion preserves focus, point and source selectors; accepted complete occlusion clears logical focus and the focused selector state."
-    },
-    {
-      "name": "ebox-prepared-publication-delivers-paired-defensive-observations",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Accepted prepared updates deliver correlated publication and Ebox reports with defensive values and phase timing; rejected frames do not notify observers."
-    },
-    {
-      "name": "ebox-prepared-geometry-switches-target-with-current-pixels",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Preparing another geometry target after an accepted move preserves current pixels and source geometry rather than reusing an earlier canvas ledger."
-    },
-    {
-      "name": "ebox-prepared-geometry-declines-root-without-containing-plane",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "A standalone absolute root has no containing-plane program and declines without error; its ordinary typed geometry update remains usable."
-    },
-    {
-      "name": "ebox-prepared-geometry-rejects-changed-text-scale",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Changing buffer-local text scale rejects prepared geometry and stale repreparation without callbacks or publication changes; ordinary display refresh enables a correct new operation."
-    },
-    {
-      "name": "ebox-prepared-geometry-rejects-changed-face-remapping",
-      "file": "tests/ebox-geometry-tests.el",
-      "purpose": "Updating an existing default-face remapping rejects its prepared geometry without changing source, output, bounds or revision; ordinary refresh permits valid preparation."
-    },
-    {
-      "name": "ebox-drag-prepared-geometry-retains-and-releases-active-owner",
-      "file": "tests/ebox-drag-tests.el",
-      "purpose": "Prepared geometry keeps the pressed target through row movement, then accepted occlusion clears active selector facts and terminates the native gesture."
-    },
-    {
-      "name": "ebox-interaction-prepared-geometry-updates-hover-bounds",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Prepared movement and rollback preserve hover content behavior at moved and newly revealed control positions."
-    },
-    {
-      "name": "ebox-interaction-prepared-occlusion-declines-changing-focus-style",
-      "file": "tests/ebox-interaction-tests.el",
-      "purpose": "Focused translation remains prepared while an occluding update requiring different focus paint declines without changing source, pixels, point or revision."
-    },
-    {
-      "name": "ebox-prepared-update-publishes-mixed-members-once",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Mixed geometry, inherited paint, hover content and Text publish once; later sparse geometry retains the accepted native hover capability."
-    },
-    {
-      "name": "ebox-prepared-update-rolls-back-all-members-and-retries",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A failing stage reverses multiple caller cells and all source/display changes; retry succeeds and unsupported text footprint changes preserve the accepted generation."
-    },
-    {
-      "name": "ebox-prepared-update-recovers-after-abandoned-preparation",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A preparation abandoned by a non-local exit reports interruption, leaves output and revision unchanged, invalidates earlier operations and the next preparation publishes correctly."
-    },
-    {
-      "name": "ebox-prepared-update-toggles-visibility-over-deep-subtree",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Hiding, showing and recoloring a positioned Host with a deep subtree through the prepared route matches a fresh render: visibility stays a paint boundary of the Host while inherited color and font-weight changes still reach descendants that inherit them."
-    },
-    {
-      "name": "ebox-prepared-update-translates-without-repainting-repeated-paint",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A mixed cohort whose paint and Text values repeat their displayed values only translates retained primitives and reports geometry work, while a changed color or Text still repaints or re-renders its boundary, matching a fresh render each time."
-    },
-    {
-      "name": "ebox-prepared-update-hides-and-shows-positioned-panel",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A prepared visibility member hides a positioned panel's footprint and restores it with its geometry through the retained route, matching a fresh render."
-    },
-    {
-      "name": "ebox-prepared-update-shows-initially-hidden-positioned-panel",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A panel mounted hidden remains a prepared member: moves while hidden paint nothing and a visibility change paints it at its current placement, matching a fresh render."
-    },
-    {
-      "name": "ebox-prepared-update-retains-nested-containing-size-context",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Prepared Text updates inside nested stretch/percentage canvases retain their actual containing size and match fresh rendering through growth, clearing and refill."
-    },
-    {
-      "name": "ebox-prepared-update-fits-variable-text-in-fixed-flex-allocation",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "A fixed Flex status allocation accepts variable-length titles, clips long content before adjacent controls, and restores prior content and revision on rejection."
-    },
-    {
-      "name": "ebox-prepared-update-fits-variable-text-in-clipped-or-full-slot",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "Initially clipped or exactly full fixed Text slots accept shorter and longer content through the prepared route, matching a fresh render each time."
-    },
-    {
-      "name": "ebox-prepared-update-grows-initially-empty-slot-atomically",
-      "file": "tests/ebox-prepared-update-tests.el",
-      "purpose": "An existing empty Text slot can grow, clear and reappear through prepared publication; prior exported input stays unchanged and a rejected update preserves pixels and revision."
-    },
-    {
-      "name": "ebox-prepared-publication-native-state-retains-rollback-banks",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "Interleaved geometry and native active/focus/clear publications preserve independent mount/report banks and restore bounds, pixels, point, selectors and revision after rejected geometry before retry."
-    },
-    {
-      "name": "ebox-prepared-publication-focus-selector-keeps-ordinary-paint",
-      "file": "tests/ebox-prepared-publication-tests.el",
-      "purpose": "A focus-dependent stylesheet retains the ordinary style publication path and correct focused rendering."
-    },
-    {
-      "name": "ebox-prepared-focus-publishes-all-visible-channels-once",
-      "file": "tests/ebox-prepared-focus-tests.el",
-      "purpose": "Window raise, taskbar active classes, unchanged-thickness border colors, measured font weights and variable status publish once through a stable prepared cohort with immediate selector queries and fresh-render equivalence."
-    },
-    {
-      "name": "ebox-prepared-focus-rebinds-after-resize-and-style-updates",
-      "file": "tests/ebox-prepared-focus-tests.el",
-      "purpose": "Resized geometry and changed inherited paint invalidate old focus operations; new preparation preserves pixels and revision, and sparse geometry followed by coordinated focus remains equivalent to fresh rendering."
-    },
-    {
-      "name": "ebox-prepared-focus-rejection-restores-selector-font-and-caller",
-      "file": "tests/ebox-prepared-focus-tests.el",
-      "purpose": "A rejected focus cohort restores selector classes, border and font paint, source, display, revision and multiple caller cells; retry publishes the complete focus state."
-    },
-    {
-      "name": "ebox-prepared-selector-publishes-class-border-and-rollback",
-      "file": "tests/ebox-prepared-selector-tests.el",
-      "purpose": "Finite class variants and fixed border colors publish together with immediate selector queries, exact rollback, detached snapshot isolation, empty classes and rejection of unknown classes or changed border geometry."
-    },
-    {
-      "name": "ebox-prepared-selector-rejects-combined-relational-effects",
-      "file": "tests/ebox-prepared-selector-tests.el",
-      "purpose": "Class preparation rejects changes that can jointly activate an ancestor :has rule across two Hosts, preserving source selectors, pixels and revision."
-    },
-    {
-      "name": "ebox-prepared-selector-rollback-restores-restyled-flex-items",
-      "file": "tests/ebox-prepared-selector-tests.el",
-      "purpose": "A rejected class change whose restyle deletes or re-adds flex item properties restores each node's exact plist, so pixels, revision, later accepted variants and a structural commit stay correct."
-    },
-    {
-      "name": "ebox-prepared-selector-preserves-source-token-grammar",
-      "file": "tests/ebox-prepared-selector-tests.el",
-      "purpose": "Prepared class variants preserve the canonical source grammar for single strings, symbols, nil and flat token lists, including one token containing whitespace and snapshot isolation."
-    },
-    {
-      "name": "ebox-prepared-selector-reprepares-after-ordinary-commit",
-      "file": "tests/ebox-prepared-selector-tests.el",
-      "purpose": "An ordinary commit after prepared class writes invalidates the old cohort, renders like a fresh mount, and lets a new class cohort bind, publish and answer selector queries."
-    },
-    {
-      "name": "ebox-layer-overlay-in-measured-flex-subtree-paints",
-      "file": "tests/ebox-layer-tests.el",
-      "purpose": "An absolutely positioned overlay inside a viewport-relative flex subtree still paints, so a reused base-size measurement can no longer drop it."
-    },
-    {
-      "name": "ebox-inline-box-composes-every-material-child",
-      "file": "tests/ebox-core-render-tests.el",
-      "purpose": "A normal Box composes every inline child into one wrapped flow with and without the optional native layout module."
-    },
-    {
-      "name": "ebox-display-inline-runs-wrap-like-one-text",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "The same text wraps identically whether one Text or several inline runs hold it, including CJK character wrapping."
-    },
-    {
-      "name": "ebox-display-column-text-fills-the-column-width",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "A Column wraps a soft-wrapping Text item to the column content width in native and Elisp layout alike."
-    },
-    {
-      "name": "ebox-display-values-cross-the-native-boundary",
-      "file": "tests/ebox-display-tests.el",
-      "purpose": "Fixed pixel display spaces and one-cell image slices keep identical text and display properties through the native layout."
-    },
-    {
-      "name": "ebox-prepared-children-replaces-one-owner-subtree",
-      "file": "tests/ebox-prepared-children-tests.el",
-      "purpose": "A prepared :children member replaces one stable-identity Host subtree, publishes only its composition boundary spans and keeps sibling pixels."
-    },
-    {
-      "name": "ebox-prepared-children-rollback-restores-source-tables",
-      "file": "tests/ebox-prepared-children-tests.el",
-      "purpose": "A rejected prepared structural application restores the swapped candidate tables and the published buffer text."
-    },
-    {
-      "name": "ebox-prepared-children-requires-canonical-input",
-      "file": "tests/ebox-prepared-children-tests.el",
-      "purpose": "A malformed prepared structural member is rejected before any runtime state changes."
-    },
-    {
-      "name": "ebox-prepared-children-declines-new-identities",
-      "file": "tests/ebox-prepared-children-tests.el",
-      "purpose": "A prepared structural replacement that introduces new node or region identities is declined before any state changes and stays on ordinary publication."
+      "name": "ebox-node-mutation-errors-leave-buffer-at-last-successful-render",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Rejected public mutations leave the buffer equal to the last successful render."
     }
   ]
 }

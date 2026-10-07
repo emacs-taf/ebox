@@ -3,16 +3,12 @@
 ;;; Commentary:
 ;; Emacs owns window events; Ebox owns the mounted viewport.  This module is
 ;; the single bridge between them.  Size hooks record frame intents; one task
-;; samples current visible dimensions and publishes after the redisplay hook.
+;; samples current visible dimensions and refits mounts after the drag settles.
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'ebox-surface)
-
-(declare-function ebox--buffer-render-state "ebox-incremental" (buffer))
-(declare-function ebox-rerender-buffer-with-context
-                  "ebox" (buffer viewport-width &optional viewport-height))
+(require 'ebox-buffer)
 
 (defvar ebox--window-size-change-in-progress nil
   "Non-nil while Ebox is draining one batch of viewport notifications.")
@@ -47,13 +43,8 @@ rendering every event queues reflow after reflow and freezes the session.
 Reschedule this trailing delay on each event; the drag then reflows once it
 settles instead of once per intermediate size.")
 
-(defun ebox-viewport-window-width (window)
-  "Return Ebox's display-safe viewport width for live WINDOW."
-  (and (window-live-p window)
-       (ebox-surface--window-content-width window)))
-
 (defun ebox--window-size-change-sync-frame (frame)
-  "Synchronize current mounted Ebox viewports whose canonical window is in FRAME."
+  "Refit mounted Ebox buffers whose display window is in FRAME."
   (when (frame-live-p frame)
     (let ((seen (make-hash-table :test #'eq))
           (frame-size (ebox--viewport-frame-size frame))
@@ -61,41 +52,22 @@ settles instead of once per intermediate size.")
            (not (equal (ebox--viewport-frame-size frame)
                        (gethash frame ebox--viewport-frame-sizes)))))
       (dolist (window (window-list frame 'no-minibuf))
-        (when (window-live-p window)
-          (let ((buffer (window-buffer window)))
-            (unless (gethash buffer seen)
-              (puthash buffer t seen)
-              (let ((display-window
-                     (and (buffer-live-p buffer)
-                          (ebox-surface--buffer-display-window buffer))))
-                (when (and (window-live-p display-window)
-                           (eq (window-frame display-window) frame)
-                           (ebox-surface-buffer-mounted-p buffer))
-                  (let* ((state (ebox--buffer-render-state buffer))
-                         (width (ebox-viewport-window-width display-window))
-                         (height (window-body-height display-window))
-                         (recorded-width (plist-get state :viewport-width))
-                         (recorded-height (plist-get state :viewport-height)))
-                    (when (and width
-                               state
-                               (not (and
-                                     (= width
-                                        (or recorded-width -1))
-                                     (= height
-                                        (or recorded-height -1))))
-                               ;; Borrowed space is not a resize.  A height
-                               ;; decrease while the minibuffer, a completion
-                               ;; popup or the echo area is showing keeps the
-                               ;; committed canvas even when the borrowed window
-                               ;; also reports a different content width; only
-                               ;; a frame change or height growth stays real
-                               ;; geometry.
-                               (not (and (not frame-changed)
-                                         (ebox--viewport-transient-space-borrow-p
-                                          frame)
-                                         (< height (or recorded-height -1)))))
-                      (ebox-rerender-buffer-with-context
-                       buffer width height)))))))))
+        (let ((buffer (window-buffer window)))
+          (unless (gethash buffer seen)
+            (puthash buffer t seen)
+            (let ((mount (ebox-buffer-mount buffer))
+                  (display-window (ebox--display-window buffer)))
+              (when (and mount (window-live-p display-window)
+                         (eq (window-frame display-window) frame))
+                (let ((height (window-body-height display-window)))
+                  ;; Borrowed space is not a resize.  A height decrease while
+                  ;; the minibuffer, a completion popup or the echo area is
+                  ;; showing keeps the mounted viewport; a frame change or
+                  ;; height growth is real geometry.
+                  (unless (and (not frame-changed)
+                               (ebox--viewport-transient-space-borrow-p frame)
+                               (< height (or (ebox-mount-vh mount) -1)))
+                    (ebox-refit buffer))))))))
       (when frame-size
         (puthash frame frame-size ebox--viewport-frame-sizes)))))
 
@@ -133,7 +105,7 @@ mounted viewport keeps its committed size until that UI releases them."
             (setq ebox--window-size-change-pending-frames nil
                   ebox--window-size-change-timer nil)
             ;; Timer dispatch inhibits quit by default.  Enable C-g only after
-            ;; cleanup is installed; Ebox publication retains its own final-accept protection.
+            ;; cleanup is installed.
             (let ((inhibit-quit nil))
               (while frames
                 (let ((frame (pop frames)))
@@ -141,7 +113,7 @@ mounted viewport keeps its committed size until that UI releases them."
                       (ebox--window-size-change-sync-frame frame)
                     (error (unless first-error (setq first-error failure))))))))
         ;; A quit may leave unstarted frames.  Keep those intents, but do not
-        ;; retry the frame whose publication already started and failed.
+        ;; retry the frame whose refit already started and failed.
         (dolist (frame frames)
           (unless (memq frame ebox--window-size-change-pending-frames)
             (push frame ebox--window-size-change-pending-frames)))

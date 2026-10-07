@@ -32,10 +32,10 @@ class ReleaseTests(unittest.TestCase):
             (root / "ebox.el").write_text(';;; ebox.el --- Test -*- lexical-binding: t -*-\n;; Version: 3.0.0\n;; Package-Requires: ((emacs "29.1"))\n')
             (root / "LICENSE").write_text("license")
             (root / "lisp/ebox-runtime.el").write_text("(provide 'ebox-runtime)")
-            (root / "native/src").mkdir(parents=True)
-            (root / "native/src/lib.rs").write_text("native source")
-            (root / "native/target/release").mkdir(parents=True)
-            (root / "native/target/release/private.log").write_text("exclude")
+            (root / "docs").mkdir()
+            (root / "docs/manual.md").write_text("manual")
+            (root / "docs/target").mkdir()
+            (root / "docs/target/private.elc").write_text("exclude")
             (root / "ebox.elc").write_text("stale bytecode")
             first, second = Path(work) / "first", Path(work) / "second"
             first.mkdir()
@@ -47,7 +47,7 @@ class ReleaseTests(unittest.TestCase):
             with tarfile.open(first / one["file"]) as archive:
                 names = archive.getnames()
                 self.assertIn("ebox-3.0.0/LICENSE", names)
-                self.assertIn("ebox-3.0.0/native/src/lib.rs", names)
+                self.assertIn("ebox-3.0.0/docs/manual.md", names)
                 self.assertIn("ebox-3.0.0/ebox-pkg.el", names)
                 self.assertIn("ebox-3.0.0/ebox.el", names)
                 self.assertIn("ebox-3.0.0/lisp/ebox-runtime.el", names)

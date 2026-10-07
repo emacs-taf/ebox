@@ -1,0 +1,1101 @@
+;;; ebox-buffer.el --- Mounting retained trees in buffers -*- lexical-binding: t; -*-
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+
+;; A mount binds one retained root to a buffer.  Mutations mark dirty bits and
+;; queue the mount; the outermost batch flushes it once.  A flush restyles dirty
+;; paths, relayouts the dirty subtree inside its structural boundaries, turns
+;; the recorded damage into ordered line replacements and writes only those
+;; lines.  Sparse markers anchor line starts so a write locates its first line
+;; in O(lines per anchor) without per-line markers.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'subr-x)
+(require 'ebox-node)
+(require 'ebox-layout)
+(require 'ebox-flex)
+
+;;;; Mounts
+
+(ebox--defstruct (ebox-mount (:constructor ebox-mount--make) (:copier nil))
+  "A retained root painted into a buffer."
+  root buffer (anchors []) (lines 0) vw vh fixed-vw fixed-vh
+  queued observer (flushes 0) report last-report anchored
+  focus active hover hover-saved hover-p session display-saved
+  (written (make-hash-table)) tick)
+
+(defvar ebox--current-mount nil
+  "The mount being flushed, which supplies interaction-derived states.")
+
+(defvar-local ebox--buffer-mount nil
+  "The mount painted into the current buffer, or nil.")
+
+(defvar ebox--queue nil
+  "Mounts with pending changes.")
+
+(defvar ebox--batch-depth 0
+  "Nesting depth of active update batches.")
+
+(defvar ebox--flushing nil
+  "Non-nil while a flush is writing a buffer.")
+
+(defconst ebox--display-locals
+  '((bidi-paragraph-direction . left-to-right)
+    (long-line-threshold . nil))
+  "Display settings of a mounted buffer and the values Ebox gives them.
+Ebox lays rows out left to right, so a paragraph detected as right-to-left
+would mirror whole rows.  Row length is bounded by the layout width, so
+the long-line scan Emacs repeats over the whole buffer after text changes
+cannot find anything.")
+
+(defun ebox--own-display ()
+  "Apply `ebox--display-locals' to the current buffer; return the old state."
+  (mapcar (lambda (entry)
+            (let ((variable (car entry)))
+              (prog1 (list variable (local-variable-p variable) (symbol-value variable))
+                (set (make-local-variable variable) (cdr entry)))))
+          ebox--display-locals))
+
+(defun ebox--restore-display (saved)
+  "Restore display settings SAVED by `ebox--own-display' in the current buffer."
+  (pcase-dolist (`(,variable ,local ,value) saved)
+    (if local
+        (set (make-local-variable variable) value)
+      (kill-local-variable variable))))
+
+(defconst ebox--anchor-span 128
+  "Target number of lines between two line anchors.")
+
+(defun ebox-buffer-mount (&optional buffer-or-name)
+  "Return the mount of BUFFER-OR-NAME (default current buffer), or nil."
+  (let ((buffer (if buffer-or-name (get-buffer buffer-or-name) (current-buffer))))
+    (and (buffer-live-p buffer)
+         (buffer-local-value 'ebox--buffer-mount buffer))))
+
+(defun ebox-buffer-root (&optional buffer-or-name)
+  "Return the root node mounted in BUFFER-OR-NAME, or nil."
+  (let ((mount (ebox-buffer-mount buffer-or-name)))
+    (and mount (ebox-mount-root mount))))
+
+(defun ebox--mount-of (node)
+  "Return the live mount showing NODE's tree, or nil."
+  (let ((mount (ebox-node-mount (ebox-node-root node))))
+    (and (ebox-mount-p mount) (buffer-live-p (ebox-mount-buffer mount)) mount)))
+
+(defun ebox-node-buffer (node)
+  "Return the buffer showing NODE, or nil."
+  (let ((mount (ebox--mount-of node)))
+    (and mount (ebox-mount-buffer mount))))
+
+;;;; Invalidation
+
+(defun ebox--enqueue (node)
+  "Queue the mount owning NODE for the next flush."
+  (let ((mount (ebox-node-mount (ebox-node-root node))))
+    (when (and (ebox-mount-p mount) (not (ebox-mount-queued mount)))
+      (setf (ebox-mount-queued mount) t)
+      (push mount ebox--queue))))
+
+(defun ebox--settle ()
+  "Flush queued mounts unless a batch or flush is active."
+  (when (and ebox--queue (zerop ebox--batch-depth) (not ebox--flushing))
+    (ebox-flush)))
+
+(defmacro ebox--mutation (&rest body)
+  "Run BODY, then flush queued mounts outside batches; return BODY's value."
+  (declare (indent 0) (debug t))
+  `(prog1 (progn ,@body) (ebox--settle)))
+
+(defun ebox--mark (node bits)
+  "Set dirty BITS on NODE, record the dirty path and queue its mount."
+  (setf (ebox-node-dirty node) (logior (ebox-node-dirty node) bits))
+  (setf (ebox-node-intr node) nil)
+  (let ((child node) (parent (ebox-node-parent node)) (stop nil))
+    (while (and parent (not stop))
+      (unless (/= 0 (logand (ebox-node-dirty child) ebox--d-queued))
+        (setf (ebox-node-dirty child) (logior (ebox-node-dirty child) ebox--d-queued))
+        (push child (ebox-node-dkids parent)))
+      (setf (ebox-node-intr parent) nil)
+      (if (/= 0 (logand (ebox-node-dirty parent) ebox--d-desc))
+          (setq stop t)
+        (setf (ebox-node-dirty parent) (logior (ebox-node-dirty parent) ebox--d-desc))
+        (setq child parent parent (ebox-node-parent parent)))))
+  (ebox--enqueue node))
+
+(defun ebox--mark-structure (parent op)
+  "Record structural OP on PARENT and queue its mount."
+  (push op (ebox-node-ops parent))
+  (setf (ebox-node-intr parent) nil)
+  (ebox--mark parent ebox--d-desc))
+
+(defmacro ebox-with-batch (&rest body)
+  "Run BODY as one update batch; flush queued mounts when it ends."
+  (declare (indent 0) (debug t))
+  `(ebox-call-with-batch (lambda () ,@body)))
+
+(defun ebox-call-with-batch (function)
+  "Call FUNCTION as one update batch and return its value.
+Mutations inside the batch are flushed once after the outermost batch
+returns or exits nonlocally."
+  (let ((ebox--batch-depth (1+ ebox--batch-depth)) result)
+    (unwind-protect
+        (setq result (funcall function))
+      (when (= ebox--batch-depth 1)
+        (let ((ebox--batch-depth 0))
+          (ebox-flush))))
+    result))
+
+;;;; Public mutations
+
+(defun ebox--check-node (node)
+  "Signal unless NODE is an Ebox node."
+  (unless (ebox-node-p node)
+    (signal 'wrong-type-argument (list 'ebox-node-p node))))
+
+(defun ebox-node-insert (parent child &optional index)
+  "Insert detached CHILD into PARENT at INDEX (default last) and return CHILD.
+CHILD may be a string, which becomes a text node."
+  (ebox--mutation
+    (ebox--check-node parent)
+    (when (stringp child) (setq child (ebox-text-create child)))
+    (ebox--check-node child)
+    (ebox--attach parent child (or index (ebox-node-child-count parent)))
+    (setf (ebox-node-dirty child) 15)
+    (ebox--mark-structure parent (list 'insert child))
+    (ebox--mark child ebox--d-style)
+    child))
+
+(defun ebox--forget-subtree (node)
+  "Clear layout facts of detached NODE so it can be inserted again.
+Overlays in NODE's subtree hosted outside it vacate their host's lines."
+  (ebox-node-walk node (lambda (n)
+                         (let ((host (ebox-node-host n)))
+                           (when (and host (not (ebox-node-ancestor-p node host)))
+                             (when (ebox-node-placed n) (ebox--overlay-vacated n))
+                             (setf (ebox-node-overlays host)
+                                   (delq n (ebox-node-overlays host)))))
+                         (setf (ebox-node-layout n) nil (ebox-node-avail n) nil
+                               (ebox-node-dkids n) nil (ebox-node-ops n) nil
+                               (ebox-node-placed n) nil (ebox-node-host n) nil
+                               (ebox-node-overlays n) nil
+                               (ebox-node-dirty n) 15))))
+
+(defun ebox-node-remove (node)
+  "Detach NODE from its parent and return it."
+  (ebox--mutation
+    (ebox--check-node node)
+    (let ((parent (ebox-node-parent node)))
+      (when parent
+        (let ((laid (and (ebox-node-layout node) (ebox-node-layout parent)
+                         (ebox-node-cs node)))
+              (abs (and (ebox-node-cs node) (ebox--abs-p node))))
+          (setf (ebox-node-dkids parent) (delq node (ebox-node-dkids parent)))
+          (ebox--detach node)
+          (ebox--forget-subtree node)
+          (if (and laid (not abs))
+              (ebox--mark-structure parent (list 'remove node (ebox--item-y node)
+                                                 (ebox-node-h node)))
+            (setf (ebox-node-intr parent) nil)
+            (ebox--mark parent (if abs ebox--d-desc ebox--d-layout)))))
+      node)))
+
+(defun ebox--overlay-vacated (node)
+  "Repaint the lines overlay NODE covered when its host next lays out."
+  (let ((host (ebox-node-host node)))
+    (when (and (ebox-node-layout host) (> (ebox-node-h node) 0))
+      (push (cons (ebox-node-y node) (ebox-node-h node))
+            (gethash host ebox--vacated))
+      (ebox--mark host ebox--d-desc))))
+
+(defun ebox--unhost (node)
+  "Detach overlay NODE from its host, repainting the lines it covered."
+  (let ((host (ebox-node-host node)))
+    (when host
+      (when (ebox-node-placed node) (ebox--overlay-vacated node))
+      (setf (ebox-node-overlays host) (delq node (ebox-node-overlays host))
+            (ebox-node-host node) nil
+            (ebox-node-placed node) nil))))
+
+(defun ebox--rehost (node)
+  "Register overlay NODE with its current host; return non-nil on a change."
+  (unless (eq (ebox-node-host node) (ebox--host-of node))
+    (ebox--unhost node)
+    (ebox--register-overlay node)
+    t))
+
+(defun ebox--rehost-below (node)
+  "Move overlays below NODE whose positioning host changed."
+  (ebox--do-kids (kid node)
+    (ebox-node-walk kid (lambda (n)
+                          (when (and (ebox-node-cs n) (ebox-cs-abs (ebox-node-cs n))
+                                     (ebox--rehost n))
+                            (ebox--mark n ebox--d-layout))))))
+
+(defun ebox-node-move (node index)
+  "Move NODE to INDEX among its siblings."
+  (ebox--mutation
+    (ebox--check-node node)
+    (let ((parent (ebox-node-parent node)))
+      (unless parent (signal 'ebox-error (list "Cannot move a root node")))
+      (unless (= index (ebox-node-index node))
+        (let ((laid (and (ebox-node-layout node) (ebox-node-layout parent)
+                         (ebox-node-cs node) (not (ebox--abs-p node)))))
+          (when laid
+            (ebox--mark-structure parent (list 'remove node (ebox--item-y node)
+                                               (ebox-node-h node))))
+          (ebox--detach node)
+          (ebox--attach parent node index)
+          (if laid
+              (ebox--mark-structure parent (list 'insert node))
+            (setf (ebox-node-intr parent) nil)
+            (ebox--mark parent ebox--d-layout))))
+      node)))
+
+(defun ebox-node-replace-children (parent children)
+  "Replace PARENT's children with CHILDREN, reusing nodes already present."
+  (ebox--mutation
+    (ebox--check-node parent)
+    (when (eq (ebox-node-tag parent) 'text)
+      (signal 'ebox-error (list "Ebox text nodes cannot contain children")))
+    (let* ((children (mapcar (lambda (c) (if (stringp c) (ebox-text-create c) c)) children))
+           (keep (make-hash-table :test 'eq)))
+      (dolist (child children)
+        (ebox--check-node child)
+        (when (or (gethash child keep)
+                  (and (ebox-node-parent child) (not (eq (ebox-node-parent child) parent))))
+          (signal 'ebox-error (list "Ebox node already has a parent")))
+        (puthash child t keep))
+      (dolist (old (ebox-node-children parent))
+        (unless (gethash old keep)
+          (setf (ebox-node-parent old) nil)
+          (ebox--forget-subtree old)))
+      (setf (ebox-node-dkids parent)
+            (cl-remove-if-not (lambda (kid) (gethash kid keep)) (ebox-node-dkids parent)))
+      (let (fresh)
+        (dolist (child children)
+          (unless (ebox-node-parent child) (push child fresh))
+          (setf (ebox-node-parent child) parent))
+        (ebox--set-kids parent children)
+        (dolist (child fresh)
+          (setf (ebox-node-dirty child) 15)
+          (ebox--mark child ebox--d-style)))
+      (setf (ebox-node-intr parent) nil)
+      (ebox--mark parent (logior ebox--d-layout ebox--d-style))
+      parent)))
+
+(defun ebox-node-set-text (node string)
+  "Set text NODE's content to STRING."
+  (ebox--mutation
+    (ebox--check-node node)
+    (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
+    (unless (eq (ebox-node-tag node) 'text)
+      (signal 'ebox-error (list "Not a text node" node)))
+    (unless (equal-including-properties string (ebox-node-text node))
+      (setf (ebox-node-text node) string)
+      (ebox--mark node ebox--d-layout))
+    node))
+
+(defun ebox-node-set-props (node props)
+  "Replace NODE's author properties with PROPS."
+  (ebox--mutation
+    (ebox--check-node node)
+    (unless (equal props (ebox-node-props node))
+      (let ((old-scroll (ebox-node-scroll node)))
+        (ebox--node-set-props node props)
+        (setf (ebox-node-scroll node) old-scroll))
+      (ebox--mark node (logior ebox--d-style ebox--d-layout)))
+    node))
+
+(defun ebox-node-put (node key value)
+  "Set NODE's author property KEY to VALUE."
+  (ebox--check-node node)
+  (let ((props (copy-sequence (ebox-node-props node))))
+    (if (plist-member props key)
+        (setq props (plist-put props key value))
+      (setq props (append props (list key value))))
+    (ebox-node-set-props node props)))
+
+(defun ebox-node-set-states (node states)
+  "Set NODE's author selector STATES, a list of symbols or strings."
+  (ebox--mutation
+    (ebox--check-node node)
+    (let ((tokens (mapcar #'ebox--token states)))
+      (unless (equal tokens (ebox-node-states node))
+        (setf (ebox-node-states node) tokens)
+        (ebox--mark node ebox--d-style)))
+    node))
+
+(defun ebox-node-restyle (node)
+  "Recompute NODE's style after derived selector state changed."
+  (ebox--mutation
+    (ebox--check-node node)
+    (ebox--mark node ebox--d-style)
+    node))
+
+(defun ebox-node-set-image (node image)
+  "Set image NODE's prepared IMAGE."
+  (ebox--mutation
+    (ebox--check-node node)
+    (setf (ebox-node-image node) image)
+    (ebox--mark node ebox--d-layout)
+    node))
+
+;;;; Flush: style pass
+
+(defvar ebox--viewport-nodes (make-hash-table :test 'eq :weakness 'key)
+  "Nodes whose geometry reads viewport units, mapped to the units they use.
+A viewport change relayouts only these nodes, plus the root when its size
+follows the viewport.")
+
+(defun ebox--style-pass (node parent-cs force)
+  "Restyle NODE's dirty path under PARENT-CS; FORCE recomputes NODE.
+A node whose computed style changed restyles all of its children; otherwise
+only the recorded dirty children are visited.  A change that keeps NODE's
+geometry inputs only marks it for repainting."
+  (let ((changed nil))
+    (when (or force (/= 0 (logand (ebox-node-dirty node) ebox--d-style))
+              (null (ebox-node-cs node)))
+      (let ((old (ebox-node-cs node))
+            (new (ebox--node-style node parent-cs)))
+        (setf (ebox-node-dirty node) (logand (ebox-node-dirty node) (lognot ebox--d-style)))
+        (unless (eq old new)
+          (setq changed t)
+          (setf (ebox-node-cs node) new)
+          (if (ebox-cs-vunits new)
+              (puthash node (ebox-cs-vunits new) ebox--viewport-nodes)
+            (when (and old (ebox-cs-vunits old)) (remhash node ebox--viewport-nodes)))
+          (cond
+           ((and old (eq (ebox-cs-lkey old) (ebox-cs-lkey new)))
+            (setf (ebox-node-dirty node) (logior (ebox-node-dirty node) ebox--d-paint)))
+           (t
+            (setf (ebox-node-intr node) nil
+                  (ebox-node-dirty node) (logior (ebox-node-dirty node) ebox--d-layout))
+            (let* ((parent (ebox-node-parent node))
+                   (pgeo (and old parent (ebox-node-layout parent))))
+              ;; Flex and grid containers read their items' styles.
+              (when (and pgeo (or (eq (ebox-geo-kind pgeo) 'pos)
+                                  (not (eq (ebox-cs-outer old) (ebox-cs-outer new)))
+                                  (not (eq (ebox-cs-abs old) (ebox-cs-abs new)))))
+                (setf (ebox-node-intr parent) nil
+                      (ebox-node-dirty parent)
+                      (logior (ebox-node-dirty parent) ebox--d-layout))))))
+          (when old
+            (when (and (ebox-cs-abs old) (not (ebox-cs-abs new)))
+              (ebox--unhost node))
+            (unless (eq (ebox--host-cs-p old) (ebox--host-cs-p new))
+              (ebox--rehost-below node)))
+          (when (and (ebox-cs-abs new) (ebox-node-parent node))
+            (ebox--rehost node)
+            (when (and ebox--current-mount (ebox--anchored-p node))
+              (cl-pushnew node (ebox-mount-anchored ebox--current-mount)))))))
+    (let ((cs (ebox-node-cs node)))
+      (cond
+       (changed
+        (ebox--do-kids (child node) (ebox--style-pass child cs t)))
+       ((/= 0 (logand (ebox-node-dirty node) ebox--d-desc))
+        (dolist (kid (ebox-node-dkids node))
+          (when (eq (ebox-node-parent kid) node)
+            (ebox--style-pass kid cs nil))))))))
+
+;;;; Line anchors
+
+(defun ebox--goto-line (mount line)
+  "Move point to the start of LINE in MOUNT's buffer."
+  (let* ((anchors (ebox-mount-anchors mount))
+         (lo 0) (hi (1- (length anchors))) best)
+    (while (<= lo hi)
+      (let ((mid (/ (+ lo hi) 2)))
+        (if (<= (car (aref anchors mid)) line)
+            (setq best mid lo (1+ mid))
+          (setq hi (1- mid)))))
+    (if best
+        (let ((anchor (aref anchors best)))
+          (goto-char (cdr anchor))
+          (forward-line (- line (car anchor)))
+          (when (> (- line (car anchor)) (* 2 ebox--anchor-span))
+            (ebox--add-anchor mount line (point))))
+      (goto-char (point-min))
+      (forward-line line)
+      (when (> line (* 2 ebox--anchor-span))
+        (ebox--add-anchor mount line (point))))))
+
+(defun ebox--add-anchor (mount line pos)
+  "Record an anchor for LINE at POS in MOUNT."
+  (let* ((anchors (ebox-mount-anchors mount))
+         (i (or (cl-position-if (lambda (a) (> (car a) line)) anchors) (length anchors)))
+         (marker (copy-marker pos)))
+    (setf (ebox-mount-anchors mount)
+          (vconcat (substring anchors 0 i) (vector (cons line marker)) (substring anchors i)))))
+
+(defun ebox--rebuild-anchors (mount)
+  "Recreate MOUNT's anchors after its buffer was rewritten."
+  (mapc (lambda (a) (set-marker (cdr a) nil)) (ebox-mount-anchors mount))
+  (let (anchors (line 0))
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (< line (ebox-mount-lines mount)) (not (eobp)))
+        (when (zerop (% line ebox--anchor-span))
+          (push (cons line (copy-marker (point))) anchors))
+        (forward-line 1)
+        (setq line (1+ line))))
+    (setf (ebox-mount-anchors mount) (vconcat (nreverse anchors)))))
+
+(defun ebox--shift-anchors (mount start old new total)
+  "Adjust MOUNT's anchors after replacing OLD lines at START with NEW.
+TOTAL is the line count before the edit.  Anchors before the edit keep
+their lines, so only the sorted tail from START is visited."
+  (unless (= old new)
+    (let* ((delta (- new old))
+           (end (+ start old))
+           (dead-from (if (and (= new 0) (< end total)) (1+ start) (+ start new)))
+           (anchors (ebox-mount-anchors mount))
+           (n (length anchors))
+           (lo 0) (hi n) (dead nil))
+      (while (< lo hi)
+        (let ((mid (/ (+ lo hi) 2)))
+          (if (< (car (aref anchors mid)) start) (setq lo (1+ mid)) (setq hi mid))))
+      (while (< lo n)
+        (let* ((anchor (aref anchors lo)) (line (car anchor)))
+          (cond
+           ((and (>= line dead-from) (< line end))
+            (set-marker (cdr anchor) nil)
+            (aset anchors lo nil)
+            (setq dead t))
+           ((and (= old 0) (= line start)) nil)
+           ((>= line end) (setcar anchor (+ line delta)))))
+        (setq lo (1+ lo)))
+      (when dead
+        (setf (ebox-mount-anchors mount) (vconcat (delq nil (append anchors nil))))))))
+
+(defun ebox--line-of (mount pos)
+  "Return MOUNT line containing buffer POS."
+  (let* ((anchors (ebox-mount-anchors mount))
+         (n (length anchors))
+         (lo 0) (hi (1- n)) best)
+    (while (<= lo hi)
+      (let ((mid (/ (+ lo hi) 2)))
+        (if (<= (marker-position (cdr (aref anchors mid))) pos)
+            (setq best mid lo (1+ mid))
+          (setq hi (1- mid)))))
+    (let ((line (if best (car (aref anchors best)) 0))
+          (limit (if (and best (< (1+ best) n))
+                     (car (aref anchors (1+ best)))
+                   (ebox-mount-lines mount))))
+      ;; `count-lines' narrows the buffer, and a narrowing change makes the
+      ;; next redisplay redraw every window showing it, so bisect the line
+      ;; whose start is the last one at or before POS.
+      (save-excursion
+        (let ((from (if best (marker-position (cdr (aref anchors best))) (point-min)))
+              (lo 0) (hi (max 0 (- limit line))))
+          (while (< lo hi)
+            (let ((mid (/ (+ lo hi 1) 2)))
+              (goto-char from)
+              (if (and (zerop (forward-line mid)) (<= (point) pos))
+                  (setq lo mid)
+                (setq hi (1- mid)))))
+          (+ line lo))))))
+
+(defun ebox--track-positions (mount edits)
+  "Return point and window positions of MOUNT's buffer that EDITS rewrite.
+EDITS are ordered (START OLD NEW) line replacements, or nil when the whole
+buffer is rewritten.  Each result holds the position's line and column.
+Positions in untouched lines move with their text, so only positions in
+replaced lines, or at a line start where lines are inserted, are tracked."
+  (let ((first (and edits
+                    (save-excursion (ebox--goto-line mount (caar edits)) (point))))
+        tracked)
+    (dolist (window (get-buffer-window-list (current-buffer) nil t))
+      (push (list 'start window (window-start window)) tracked)
+      (unless (eq window (selected-window))
+        (push (list 'point window (window-point window)) tracked)))
+    (push (list 'buffer nil (point)) tracked)
+    (delq nil
+          (mapcar
+           (lambda (entry)
+             (let ((pos (nth 2 entry)))
+               ;; The first edit starts at the same line before and after.
+               (unless (and first (< pos first))
+                 (let* ((line (ebox--line-of mount pos))
+                        (column (- pos (save-excursion (goto-char pos)
+                                                       (line-beginning-position)))))
+                   (when (or (null edits) (ebox--line-rewritten-p line (zerop column) edits))
+                     (list (car entry) (nth 1 entry) line column))))))
+           tracked))))
+
+(defun ebox--line-rewritten-p (line bol edits)
+  "Return non-nil when ordered EDITS replace old LINE.
+BOL non-nil means the position is at the line start, which an insertion
+before LINE would otherwise leave on the inserted text."
+  (let ((delta 0) (result 'unknown))
+    (while (and edits (eq result 'unknown))
+      (let* ((edit (car edits)) (old (nth 1 edit))
+             (old-start (- (car edit) delta)))
+        (cond ((< line old-start) (setq result nil))
+              ((< line (+ old-start old)) (setq result t))
+              ((and bol (= old 0) (= line old-start)) (setq result t))
+              (t (setq delta (+ delta (- (nth 2 edit) old)))))
+        (setq edits (cdr edits))))
+    (eq result t)))
+
+(defun ebox--map-line (line edits)
+  "Map old LINE through ordered EDITS; return (NEW-LINE . INSIDE)."
+  (let ((delta 0) (result nil))
+    (dolist (edit edits)
+      (unless result
+        (let* ((start (car edit)) (old (nth 1 edit)) (new (nth 2 edit))
+               (old-start (- start delta)))
+          (cond
+           ((< line old-start) (setq result (cons (+ line delta) nil)))
+           ((< line (+ old-start old))
+            (setq result (cons (+ start (min (- line old-start) (max 0 (1- new)))) t)))
+           (t (setq delta (+ delta (- new old))))))))
+    (or result (cons (+ line delta) nil))))
+
+(defun ebox--restore-positions (mount tracked edits)
+  "Restore TRACKED positions of MOUNT after EDITS."
+  (let ((last (max 0 (1- (ebox-mount-lines mount)))))
+    (dolist (entry tracked)
+      (pcase-let* ((`(,kind ,window ,line ,column) entry)
+                   (new-line (min last (car (ebox--map-line line edits))))
+                   (pos (save-excursion
+                          (ebox--goto-line mount new-line)
+                          (min (+ (point) column) (line-end-position)))))
+        (pcase kind
+          ('buffer (goto-char pos))
+          ('point (when (and (window-live-p window) (/= pos (window-point window)))
+                    (set-window-point window pos)))
+          ('start (when (and (window-live-p window) (/= pos (window-start window)))
+                    (set-window-start window pos t))))))))
+
+(defun ebox--rewrite-line (line)
+  "Make the buffer line at point read LINE, a string, and end there.
+Only the characters between the common prefix and suffix are replaced and
+only differing property runs are set, so an update that keeps the text
+leaves the characters, and the redisplay work they would cause, alone."
+  (let* ((bol (point))
+         (eol (line-end-position))
+         (len (length line))
+         (old (buffer-substring-no-properties bol eol))
+         (olen (length old))
+         (same (compare-strings line 0 nil old 0 nil)))
+    (unless (eq same t)
+      (let* ((prefix (1- (abs same)))
+             (limit (- (min len olen) prefix))
+             (suffix 0))
+        (while (and (< suffix limit)
+                    (eq (aref line (- len suffix 1)) (aref old (- olen suffix 1))))
+          (setq suffix (1+ suffix)))
+        (goto-char (+ bol prefix))
+        (delete-region (point) (- eol suffix))
+        (insert (substring line prefix (- len suffix)))))
+    (let ((i 0))
+      (while (< i len)
+        (let ((next (or (next-property-change i line) len))
+              (props (text-properties-at i line))
+              (pos (+ bol i)))
+          (unless (and (ebox--props-same-p props (text-properties-at pos))
+                       (>= (next-property-change pos nil (+ bol next)) (+ bol next)))
+            (set-text-properties pos (+ bol next) props))
+          (setq i next))))
+    (goto-char (+ bol len))))
+
+(defconst ebox--written-max 512
+  "Most root lines whose written strings a mount remembers.")
+
+(defun ebox--rewrite-parts (old parts)
+  "Make the buffer line at point, written from strings OLD, show PARTS.
+Both are lists of strings in line order.  Strings shared by the two lists at
+either end are already in the buffer; only the characters between them are
+replaced.  Leave point at the end of the line."
+  (let ((bol (point)) (prefix 0))
+    (while (and old parts (eq (car old) (car parts)))
+      (setq prefix (+ prefix (length (car old))) old (cdr old) parts (cdr parts)))
+    (let* ((lo (length old)) (lp (length parts)) (n (min lo lp))
+           (a (nthcdr (- lo n) old)) (b (nthcdr (- lp n) parts))
+           (same 0) (suffix 0))
+      ;; SAME counts the trailing strings the two lists share.
+      (while a
+        (if (eq (car a) (car b))
+            (setq same (1+ same) suffix (+ suffix (length (car a))))
+          (setq same 0 suffix 0))
+        (setq a (cdr a) b (cdr b)))
+      (when (or (> lo same) (> lp same))
+        (goto-char (+ bol prefix))
+        (delete-region (point) (- (line-end-position) suffix))
+        (dotimes (_ (- lp same))
+          (insert (car parts))
+          (setq parts (cdr parts)))))
+    (end-of-line)))
+
+(defun ebox--write-line (mount line parts)
+  "Make buffer LINE of MOUNT, at point, show the strings PARTS."
+  (let* ((written (ebox-mount-written mount))
+         (old (gethash line written)))
+    (if old
+        (ebox--rewrite-parts old parts)
+      (ebox--rewrite-line (apply #'concat parts)))
+    (when (or old (< (hash-table-count written) ebox--written-max))
+      (puthash line parts written))))
+
+(defun ebox--forget-written (mount from)
+  "Forget the strings MOUNT wrote to root lines FROM and later."
+  (let ((written (ebox-mount-written mount)) stale)
+    (maphash (lambda (line _) (when (>= line from) (push line stale))) written)
+    (dolist (line stale) (remhash line written))))
+
+(defun ebox--replace-lines (mount start old lines)
+  "Replace OLD buffer lines from START with LINES.
+Each line is a list of strings.  Lines are joined by newlines without a
+trailing newline."
+  (let* ((new (length lines))
+         (total (ebox-mount-lines mount))
+         (common (min old new)))
+    (when (> common 0)
+      (ebox--goto-line mount start)
+      ;; Rewrite shared lines in place so line-start markers stay put.
+      (dotimes (i common)
+        (when (> i 0) (forward-line 1))
+        (ebox--write-line mount (+ start i) (pop lines))))
+    (unless (= new old) (ebox--forget-written mount (+ start common)))
+    (cond
+     ((> new old)
+      (let ((text (mapconcat (lambda (parts) (apply #'concat parts)) lines "\n")))
+        (cond
+         ((> common 0) (insert "\n" text))
+         ((< start total) (ebox--goto-line mount start) (insert text "\n"))
+         ((> total 0) (goto-char (point-max)) (insert "\n" text))
+         (t (goto-char (point-min)) (insert text)))))
+     ((< new old)
+      (cond
+       ((> common 0)
+        (let ((from (point)))
+          (forward-line (- old new))
+          (delete-region from (line-end-position))))
+       ((< (+ start old) total)
+        (ebox--goto-line mount start)
+        (let ((from (point)))
+          (forward-line old)
+          (delete-region from (point))))
+       ((> start 0)
+        (ebox--goto-line mount (1- start))
+        (delete-region (line-end-position) (point-max)))
+       (t (delete-region (point-min) (point-max))))))
+    (ebox--shift-anchors mount start old new total)
+    (setf (ebox-mount-lines mount) (+ total (- new old)))))
+
+(defmacro ebox--writing (&rest body)
+  "Run BODY with buffer writes that bypass read-only, undo and hooks."
+  (declare (indent 0) (debug t))
+  (let ((modified (make-symbol "modified")))
+    `(let ((inhibit-read-only t)
+           (inhibit-modification-hooks t)
+           (buffer-undo-list t)
+           (,modified (buffer-modified-p)))
+       (unwind-protect (progn ,@body)
+         (restore-buffer-modified-p ,modified)))))
+
+(defun ebox--paint-all (mount)
+  "Rewrite MOUNT's whole buffer from its root."
+  (let* ((root (ebox-mount-root mount))
+         (height (ebox-node-h root))
+         (tracked (and (> (ebox-mount-lines mount) 0) (ebox--track-positions mount nil))))
+    (ebox--writing
+      (erase-buffer)
+      (clrhash (ebox-mount-written mount))
+      (let ((i 0))
+        (while (< i height)
+          (when (> i 0) (insert "\n"))
+          (insert (ebox--root-line root i))
+          (setq i (1+ i)))))
+    (setf (ebox-mount-lines mount) height)
+    (ebox--rebuild-anchors mount)
+    (if tracked
+        (ebox--restore-positions mount tracked nil)
+      (goto-char (point-min)))))
+
+(defun ebox--apply-edits (mount edits)
+  "Write ordered line EDITS of MOUNT's root to its buffer."
+  (let* ((root (ebox-mount-root mount))
+         (tracked (ebox--track-positions mount edits)))
+    ;; Remembered strings describe the buffer only while nothing else wrote it.
+    (unless (eql (ebox-mount-tick mount) (buffer-modified-tick))
+      (clrhash (ebox-mount-written mount)))
+    (ebox--writing
+      (save-excursion
+        (dolist (edit edits)
+          (let ((start (car edit)) (new (nth 2 edit)) lines)
+            (dotimes (i new)
+              (push (ebox--root-parts root (+ start (- new i 1))) lines))
+            (ebox--replace-lines mount start (nth 1 edit) lines)))))
+    (setf (ebox-mount-tick mount) (buffer-modified-tick))
+    (ebox--restore-positions mount tracked edits)))
+
+;;;; Flush
+
+(defvar ebox-after-flush-functions nil
+  "Abnormal hook run with each mount's buffer after a flush wrote it.")
+
+(defun ebox-flush ()
+  "Bring every queued mount's buffer up to date."
+  (unless ebox--flushing
+    (let ((ebox--flushing t))
+      (while ebox--queue
+        (let ((mount (pop ebox--queue)))
+          ;; An input session owns part of the text: the mount stays marked
+          ;; queued and `ebox-input-end' requeues it.
+          (unless (ebox-mount-session mount)
+            (setf (ebox-mount-queued mount) nil)
+            (when (buffer-live-p (ebox-mount-buffer mount))
+              (with-current-buffer (ebox-mount-buffer mount)
+                (ebox--flush-mount mount)))))))))
+
+(defun ebox--flush-mount (mount)
+  "Restyle, relayout and repaint MOUNT's dirty subtree."
+  (let* ((root (ebox-mount-root mount))
+         (ebox--current-mount mount)
+         (ebox--vw (ebox-mount-vw mount))
+         (ebox--vh (ebox-mount-vh mount))
+         (ebox--damage (ebox-mount-report mount))
+         (ebox--record t)
+         (fresh (null (ebox-node-layout root)))
+         (observer (ebox-mount-observer mount))
+         (start (and observer (float-time))))
+    (setf (ebox-mount-report mount) nil)
+    (when (or ebox--damage (/= 0 (logand (ebox-node-dirty root) 15)))
+      (ebox--style-pass root nil nil)
+      (ebox--layout root ebox--vw (if (eq (ebox-node-tag root) 'text) 'shrink 'stretch) ebox--vh)
+      (when (ebox-mount-anchored mount)
+        (setf (ebox-mount-anchored mount)
+              (ebox--place-anchored root (ebox-mount-anchored mount))))
+      (setq ebox--damage (ebox--damage-prune ebox--damage))
+      (dolist (damage ebox--damage)
+        (ebox--uncache (ebox--damage-owner (car damage))))
+      (let ((edits (if fresh 'full (ebox--root-edits root ebox--damage)))
+            (old-lines (ebox-mount-lines mount)))
+        (cond
+         ((eq edits 'full) (ebox--paint-all mount))
+         (edits (ebox--apply-edits mount edits)))
+        (cl-incf (ebox-mount-flushes mount))
+        (let* ((ranges (if (eq edits 'full)
+                           (list (list 0 old-lines (ebox-mount-lines mount)))
+                         edits))
+               (report (list :strategy (if (eq edits 'full) 'full 'lines)
+                             :edits (length ranges)
+                             :lines (let ((n 0)) (dolist (e ranges n) (setq n (+ n (nth 2 e)))))
+                             :ranges (copy-tree ranges)
+                             :flush (ebox-mount-flushes mount))))
+          (when observer
+            (setq report (append report (list :duration-ms
+                                              (* 1000.0 (- (float-time) start)))))
+            (funcall observer (ebox-mount-buffer mount) (copy-sequence report)))
+          (setf (ebox-mount-last-report mount) report)))
+      (run-hook-with-args 'ebox-after-flush-functions (ebox-mount-buffer mount)))))
+
+(defun ebox-buffer-set-observer (buffer-or-name observer)
+  "Call OBSERVER with the buffer and a report plist after each flush.
+The report contains :strategy (lines or full), :edits, :lines, :ranges,
+:flush and :duration-ms.  :ranges lists the written (START OLD NEW) line
+replacements in application order: START counts lines after the preceding
+replacements, OLD lines there were replaced by NEW lines.  Nil OBSERVER
+removes observation."
+  (let ((mount (ebox-buffer-mount buffer-or-name)))
+    (unless mount (user-error "No mounted Ebox tree in %s" buffer-or-name))
+    (setf (ebox-mount-observer mount) observer)))
+
+(defun ebox-buffer-update-report (&optional buffer-or-name)
+  "Return a copy of the report of BUFFER-OR-NAME's latest flush, or nil."
+  (let ((mount (ebox-buffer-mount buffer-or-name)))
+    (unless mount (user-error "No mounted Ebox tree in %s" buffer-or-name))
+    (copy-sequence (ebox-mount-last-report mount))))
+
+;;;; Rendering and mounting
+
+(defun ebox--input-root (input)
+  "Return a root node for INPUT, a node or author form."
+  (if (ebox-node-p input) input (ebox-build input)))
+
+(defun ebox-render (input)
+  "Render INPUT, a node or author form, and return its lines as a string.
+The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
+  (let* ((root (ebox--input-root input))
+         (ebox--vw (ebox--default-viewport-width))
+         (ebox--vh (ebox--default-viewport-height))
+         (ebox--record nil)
+         (ebox--damage nil))
+    (when (ebox-node-parent root)
+      (signal 'ebox-error (list "Cannot render a non-root node")))
+    (ebox--style-pass root nil nil)
+    (ebox--layout root ebox--vw (if (eq (ebox-node-tag root) 'text) 'shrink 'stretch) ebox--vh)
+    (ebox--place-anchored root (ebox--collect-anchored root))
+    (mapconcat (lambda (i) (ebox--root-line root i))
+               (number-sequence 0 (1- (ebox-node-h root))) "\n")))
+
+(defun ebox-viewport-window-width (window)
+  "Return the pixel width WINDOW offers to a mounted tree."
+  (when (window-live-p window)
+    (let* ((outer (window-pixel-width window))
+           (body (window-body-width window t))
+           (fringes (window-fringes window))
+           (margins (window-margins window))
+           (decoration (+ (or (nth 0 fringes) 0) (or (nth 1 fringes) 0)
+                          (or (window-scroll-bar-width window) 0)
+                          (* (+ (or (car margins) 0) (or (cdr margins) 0))
+                             (frame-char-width (window-frame window)))))
+           (expected (max 0 (- outer decoration)))
+           (tolerance (max 1 (* 2 (frame-char-width (window-frame window))))))
+      (if (<= (abs (- body expected)) tolerance) body expected))))
+
+(defun ebox--display-window (buffer)
+  "Return the window whose size defines BUFFER's viewport."
+  (or (and (eq (window-buffer (selected-window)) buffer) (selected-window))
+      (get-buffer-window buffer (selected-frame))
+      (get-buffer-window buffer t)))
+
+(defun ebox--measure-viewport (mount)
+  "Return (WIDTH . HEIGHT) for MOUNT's current display."
+  (let ((window (ebox--display-window (ebox-mount-buffer mount))))
+    (cons (or (ebox-mount-fixed-vw mount)
+              ebox-viewport-width
+              (and window (not noninteractive) (ebox-viewport-window-width window))
+              (ebox--default-viewport-width))
+          (or (ebox-mount-fixed-vh mount)
+              ebox-viewport-height
+              (and window (not noninteractive) (window-body-height window))
+              (ebox--default-viewport-height)))))
+
+(defun ebox-mount (buffer-or-name input &rest options)
+  "Mount INPUT, a root node or author form, in BUFFER-OR-NAME and return the root.
+The buffer's text is replaced and then owned by Ebox.  OPTIONS may contain
+:width and :height to fix the viewport instead of following the window."
+  (let* ((buffer (get-buffer-create buffer-or-name))
+         (root (ebox--input-root input)))
+    (when (ebox-node-parent root)
+      (signal 'ebox-error (list "Cannot mount a non-root node")))
+    (with-current-buffer buffer
+      (when ebox--buffer-mount (ebox-unmount-buffer buffer))
+      (let ((mount (ebox-mount--make :root root :buffer buffer
+                                     :fixed-vw (plist-get options :width)
+                                     :fixed-vh (plist-get options :height)
+                                     :display-saved (ebox--own-display))))
+        (pcase-let ((`(,w . ,h) (ebox--measure-viewport mount)))
+          (setf (ebox-mount-vw mount) w (ebox-mount-vh mount) h))
+        (setf (ebox-node-mount root) mount
+              (ebox-mount-anchored mount) (ebox--collect-anchored root))
+        (setq ebox--buffer-mount mount)
+        (add-hook 'kill-buffer-hook #'ebox--buffer-killed nil t)
+        (setf (ebox-node-dirty root) (logior (ebox-node-dirty root) 15))
+        (let ((ebox--batch-depth 0))
+          (setf (ebox-mount-queued mount) t)
+          (push mount ebox--queue)
+          (ebox-flush))))
+    root))
+
+(defun ebox-render-to-buffer (buffer-or-name input &rest options)
+  "Mount INPUT in BUFFER-OR-NAME with OPTIONS and return the buffer.
+See `ebox-mount'."
+  (apply #'ebox-mount buffer-or-name input options)
+  (get-buffer buffer-or-name))
+
+(defun ebox--buffer-killed ()
+  "Release the mount of the buffer being killed."
+  (when ebox--buffer-mount
+    (ebox--release-mount ebox--buffer-mount)))
+
+(declare-function ebox--input-release "ebox-interaction" (session))
+
+(defun ebox--release-mount (mount)
+  "Detach MOUNT from its root and anchors."
+  (when (ebox-mount-session mount)
+    (ebox--input-release (ebox-mount-session mount)))
+  (mapc (lambda (a) (set-marker (cdr a) nil)) (ebox-mount-anchors mount))
+  (setf (ebox-mount-anchors mount) [])
+  (setq ebox--queue (delq mount ebox--queue))
+  (let ((root (ebox-mount-root mount)))
+    (when (eq (ebox-node-mount root) mount)
+      (setf (ebox-node-mount root) nil))))
+
+(defvar ebox-unmount-functions nil
+  "Abnormal hook run with a buffer whose mount is being released.")
+
+(defun ebox-unmount-buffer (&optional buffer-or-name)
+  "Release the mount of BUFFER-OR-NAME, keeping its text.  Return non-nil if any."
+  (let ((buffer (if buffer-or-name (get-buffer buffer-or-name) (current-buffer))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when ebox--buffer-mount
+          (run-hook-with-args 'ebox-unmount-functions buffer)
+          (ebox--restore-display (ebox-mount-display-saved ebox--buffer-mount))
+          (ebox--release-mount ebox--buffer-mount)
+          (setq ebox--buffer-mount nil)
+          (remove-hook 'kill-buffer-hook #'ebox--buffer-killed t)
+          t)))))
+
+(defun ebox-mount-set-viewport (buffer-or-name width height)
+  "Lay out BUFFER-OR-NAME's mount for a WIDTH by HEIGHT viewport.
+Nil WIDTH or HEIGHT follows the display window."
+  (let ((mount (ebox-buffer-mount buffer-or-name)))
+    (when mount
+      (setf (ebox-mount-fixed-vw mount) width
+            (ebox-mount-fixed-vh mount) height)
+      (ebox-refit buffer-or-name))))
+
+(defun ebox-refit (&optional buffer-or-name)
+  "Relayout BUFFER-OR-NAME's mount when its viewport size changed.
+Return non-nil when the layout changed."
+  (let ((mount (ebox-buffer-mount buffer-or-name)))
+    (when mount
+      (with-current-buffer (ebox-mount-buffer mount)
+        (pcase-let ((`(,w . ,h) (ebox--measure-viewport mount)))
+          (unless (and (eql w (ebox-mount-vw mount)) (eql h (ebox-mount-vh mount)))
+            (let ((root (ebox-mount-root mount))
+                  (width (not (eql w (ebox-mount-vw mount))))
+                  (height (not (eql h (ebox-mount-vh mount)))))
+              (setf (ebox-mount-vw mount) w (ebox-mount-vh mount) h)
+              ;; The root's available width is the viewport; its height only
+              ;; matters when the root's own block size follows it.
+              (when (or width (null (ebox-node-cs root)) (ebox-cs-vcbh (ebox-node-cs root)))
+                (ebox--mark root ebox--d-layout))
+              (maphash (lambda (node units)
+                         (when (and (eq (ebox-node-root node) root)
+                                    (or (and width (memq 'vw units))
+                                        (and height (memq 'vh units))))
+                           (ebox--mark node ebox--d-layout)))
+                       ebox--viewport-nodes)
+              (ebox--settle))
+            t))))))
+
+(defun ebox-mount-viewport (&optional buffer-or-name)
+  "Return (WIDTH . HEIGHT) of BUFFER-OR-NAME's mounted viewport, or nil."
+  (let ((mount (ebox-buffer-mount buffer-or-name)))
+    (and mount (cons (ebox-mount-vw mount) (ebox-mount-vh mount)))))
+
+(defun ebox-mount-flush-count (&optional buffer-or-name)
+  "Return the number of flushes that wrote BUFFER-OR-NAME's mount."
+  (let ((mount (ebox-buffer-mount buffer-or-name)))
+    (if mount (ebox-mount-flushes mount) 0)))
+
+;;;; Geometry queries
+
+(defun ebox-node-root-line (node)
+  "Return the root line of NODE's border-box top, or nil when not laid out."
+  (when (and (ebox-node-layout node) (ebox-node-cs node))
+    (+ (ebox--item-top-in-root node) (ebox-geo-mt (ebox-node-layout node)))))
+
+(defun ebox-node-geometry (node)
+  "Return NODE's border box as a plist (:x :y :width :height).
+X and WIDTH are pixels, Y and HEIGHT root lines; nil when NODE is not laid out."
+  (let ((geo (ebox-node-layout node)))
+    (when (and geo (ebox-node-cs node))
+      (let ((xy (ebox--root-xy node)))
+        (list :x (+ (car xy) (ebox-geo-ml geo))
+              :y (+ (ebox--item-top-in-root node) (ebox-geo-mt geo))
+              :width (ebox-geo-bw geo)
+              :height (ebox-geo-bh geo))))))
+
+(defun ebox--pos-at-x (bol x)
+  "Return the buffer position at pixel X of the line starting at BOL."
+  (let* ((eol (save-excursion (goto-char bol) (line-end-position)))
+         (string (buffer-substring bol eol))
+         (pos 0) (px 0) (len (length string)))
+    (while (and (< pos len) (< px x))
+      (pcase-let ((`(,next . ,w) (ebox--char-px string pos)))
+        (if (> (+ px w) x) (setq px x) (setq px (+ px w) pos next))))
+    (+ bol pos)))
+
+(defun ebox--text-bounds (node mount)
+  "Return (START . END) of text NODE's first painted run in MOUNT, or nil."
+  (let ((geometry (and (ebox-node-parent node) (ebox-node-geometry (ebox-node-parent node)))))
+    (when (and geometry (> (plist-get geometry :height) 0)
+               (< (plist-get geometry :y) (ebox-mount-lines mount)))
+      (with-current-buffer (ebox-mount-buffer mount)
+        (save-excursion
+          (ebox--goto-line mount (plist-get geometry :y))
+          (let* ((start (point))
+                 (end (progn (forward-line (plist-get geometry :height)) (point)))
+                 (run (text-property-any start end 'ebox-node node)))
+            (when run
+              (cons run (or (text-property-not-all run end 'ebox-node node) end)))))))))
+
+(defun ebox-node-bounds (node)
+  "Return (START . END) buffer positions of NODE's first painted line.
+For a box this spans its first border-box line; for a text node, its first
+painted run.  Return nil when NODE is not painted in a live mount."
+  (let ((mount (ebox--mount-of node))
+        (geometry (ebox-node-geometry node)))
+    (if (and mount (ebox-node-text-p node))
+        (ebox--text-bounds node mount)
+      (when (and mount geometry (> (plist-get geometry :height) 0)
+                 (< (plist-get geometry :y) (ebox-mount-lines mount)))
+        (with-current-buffer (ebox-mount-buffer mount)
+          (save-excursion
+            (ebox--goto-line mount (plist-get geometry :y))
+            (let ((bol (point)))
+              (cons (ebox--pos-at-x bol (plist-get geometry :x))
+                    (ebox--pos-at-x bol (+ (plist-get geometry :x)
+                                           (plist-get geometry :width)))))))))))
+
+(defun ebox-node-position (node)
+  "Return the buffer position of NODE's first painted character, or nil."
+  (car (ebox-node-bounds node)))
+
+(defun ebox-node-at (&optional position buffer-or-name)
+  "Return the innermost node painted at POSITION in BUFFER-OR-NAME.
+POSITION defaults to point; the buffer defaults to the current buffer.
+Interactive inline nodes are found through their painted properties; other
+positions resolve to the innermost box covering the cell."
+  (let ((buffer (if buffer-or-name (get-buffer buffer-or-name) (current-buffer))))
+    (with-current-buffer buffer
+      (let* ((pos (or position (point)))
+             (node (and (< pos (point-max)) (get-text-property pos 'ebox-node))))
+        (or node
+            (let ((mount ebox--buffer-mount))
+              (when (and mount (ebox-node-layout (ebox-mount-root mount)))
+                (let* ((bol (save-excursion (goto-char pos) (line-beginning-position)))
+                       (line (ebox--line-of mount pos))
+                       (x (if (= bol pos) 0
+                            (ebox--measure-raw (buffer-substring bol pos)))))
+                  (ebox--hit (ebox-mount-root mount) line x)))))))))
+
+(defun ebox--hit (node line x)
+  "Return the innermost node of NODE's margin box covering LINE and pixel X."
+  (let* ((geo (ebox-node-layout node))
+         (mt (ebox-geo-mt geo)) (ml (ebox-geo-ml geo))
+         (hit nil))
+    (dolist (overlay (sort (copy-sequence (ebox-node-overlays node))
+                           (lambda (a b) (> (ebox-cs-z (ebox-node-cs a))
+                                            (ebox-cs-z (ebox-node-cs b))))))
+      (when (and (not hit) (ebox-node-placed overlay) (ebox-node-layout overlay)
+                 (eq (ebox-node-host overlay) node)
+                 (not (ebox--hidden-p overlay)))
+        (let ((oy (- line mt (ebox-node-y overlay)))
+              (ox (- x ml (ebox-node-x overlay))))
+          (when (and (>= oy 0) (< oy (ebox-node-h overlay))
+                     (>= ox 0) (< ox (ebox-node-w overlay)))
+            (setq hit (ebox--hit overlay oy ox))))))
+    (or hit
+        (let* ((bi (- line mt))
+               (ci (- bi (ebox-geo-pt geo)))
+               (cx (- x ml (ebox-geo-bl geo) (ebox-geo-pl geo)))
+               (items (ebox-geo-items geo)))
+          (when (and (>= ci 0) (< ci (ebox-geo-vh geo)) (>= cx 0) (< cx (ebox-geo-cw geo))
+                     (memq (ebox-geo-kind geo) '(stack pos)))
+            (setq ci (+ ci (ebox-geo-scroll geo)))
+            (let ((candidates
+                   (if (eq (ebox-geo-kind geo) 'stack)
+                       (let ((item (ebox--find-item geo ci))) (and item (list item)))
+                     (append (substring items 0 (ebox-geo-n geo)) nil))))
+              (dolist (item candidates)
+                (when (and (not hit) (ebox-node-p item))
+                  (let ((iy (- ci (ebox--item-y item))) (ix (- cx (ebox-node-x item))))
+                    (when (and (>= iy 0) (< iy (ebox-node-h item))
+                               (>= ix 0) (< ix (ebox-node-w item)))
+                      (setq hit (ebox--hit item iy ix)))))))))
+        node)))
+
+(provide 'ebox-buffer)
+
+;;; ebox-buffer.el ends here
