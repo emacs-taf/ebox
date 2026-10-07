@@ -415,7 +415,7 @@ handle；更换记录绑定使旧操作过期，而早先导出的 canonical inp
 
 `:wrap-mode word` 按普通单词换行，并允许 CJK 字符换行；`char` 按 Ebox 支持的常见
 文本簇边界换行；`none` 保留显式换行符，不添加软换行。`kp` 将段落交给独立的
-[EKP 包](https://gitea.gklazycat.heiyu.space/geekinney/ekp)，使用 Knuth–Plass 算法排版。
+[EKP 包](https://gitea.gklazycat.heiyu.space/emacs-taf/ekp)，使用 Knuth–Plass 算法排版。
 换行模式属于 Box，并由其中的文本继承。
 
 使用 `:wrap-mode kp` 前，安装 EKP 1.0.0 或更高版本，或将其源码目录加入 `load-path`。
@@ -648,7 +648,7 @@ Shift-TAB/backtab 导航及 RET/return 激活。独立 Ebox 与框架调用方�
 启用它，卸载时禁用，不要求额外的应用输入模式。手动禁用该 mode 移除 buffer 绑定，
 节点自身的原生 keymap 仍有效。
 
-Playground 的[交互实验室](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)
+Playground 的[交互实验室](https://gitea.gklazycat.heiyu.space/emacs-taf/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)
 把业务函数与状态放在 `interaction-reference.el`，把布局放在
 `interaction-reference.ebox`，展示回调、嵌套覆盖，以及通过公共 region 更新替换或
 清除五种能力（包括 `:hover-content`）。
@@ -960,7 +960,7 @@ modified 标志；已被销毁的 buffer 不会被复活。提交接受后的观
 
 ## 局部规则输入
 
-`:ecss` 接受有序规则列表，`:ecss-file` 按 ECSS 的[静态数据契约](https://gitea.gklazycat.heiyu.space/geekinney/ecss/src/branch/main/docs/manual.zh-CN.md#静态规则数据)
+`:ecss` 接受有序规则列表，`:ecss-file` 按 ECSS 的[静态数据契约](https://gitea.gklazycat.heiyu.space/emacs-taf/ecss/src/branch/main/docs/manual.zh-CN.md#静态规则数据)
 从文件读取同一列表。文件不加 quote 包装；普通 Elisp 表达式仍正常引用
 字面量列表。文件规则先于行内 `:ecss` 规则。Ebox 通过 ECSS 与自己的属性
 schema 校验选择器和声明。规范输入构造者调用 `ebox-style-compile-rules`，

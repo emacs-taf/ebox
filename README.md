@@ -11,7 +11,7 @@ application also needs Components, reactive state, behaviors, or lifecycle.
 
 ## Install
 
-The source repository is [geekinney/ebox](https://gitea.gklazycat.heiyu.space/geekinney/ebox).
+The source repository is [geekinney/ebox](https://gitea.gklazycat.heiyu.space/emacs-taf/ebox).
 The current `3.0.0` changelog is unreleased; a source checkout is not a published
 package archive or stable release tag.
 
@@ -19,7 +19,7 @@ package archive or stable release tag.
 | --- | --- |
 | Emacs 29.1 or newer | All Ebox use. |
 | ECSS 0.1.0 or newer | Style computation and selector semantics; required even without a stylesheet. |
-| [EKP 1.0.0 or newer](https://gitea.gklazycat.heiyu.space/geekinney/ekp) | Optional; required only when using `:wrap-mode kp`. |
+| [EKP 1.0.0 or newer](https://gitea.gklazycat.heiyu.space/emacs-taf/ekp) | Optional; required only when using `:wrap-mode kp`. |
 
 ECSS is the required style dependency. EKP is deliberately optional:
 ordinary `word`, `char`, and `none` wrapping does not need it. For sibling source
@@ -169,7 +169,7 @@ Native keymaps support independent Ebox interactions. Optional
 between rendered keymap owners without adding default key bindings.
 Application state and command behavior remain the author's responsibility.
 See the [interaction guide](docs/manual.md#native-node-interaction)
-and the Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md#native-interaction-lab).
+and the Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/emacs-taf/ebox-playground/src/branch/main/README.md#native-interaction-lab).
 
 Nodes can declare `:tab-index` and `:disabled`. Ebox owns buffer-local logical
 focus, optional cyclic navigation, update retention and rollback through the
@@ -277,7 +277,7 @@ as separate checks.
 
 See the [user guide](docs/manual.md), the [public API
 reference](docs/manual.md), and the sibling
-[ebox-playground](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md) examples.
+[ebox-playground](https://gitea.gklazycat.heiyu.space/emacs-taf/ebox-playground/src/branch/main/README.md) examples.
 
 ## License
 

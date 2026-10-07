@@ -539,7 +539,7 @@ declines before staging so the ordinary route can publish the style change too.
 `:wrap-mode word` wraps ordinary words and permits character breaks for CJK;
 `char` breaks at the common text-cluster boundaries supported by Ebox; `none`
 keeps explicit newlines without adding soft line breaks. `kp` delegates
-paragraph layout to the independent [EKP package](https://gitea.gklazycat.heiyu.space/geekinney/ekp)
+paragraph layout to the independent [EKP package](https://gitea.gklazycat.heiyu.space/emacs-taf/ekp)
 using the Knuth–Plass algorithm. The mode belongs to a Box and is inherited by
 its text content.
 
@@ -830,7 +830,7 @@ event's target buffer themselves. Ebox uses native command dispatch and does
 not create application state. A hand pointer
 alone does not bind a click command.
 
-The Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md#native-interaction-lab)
+The Playground's [interaction lab](https://gitea.gklazycat.heiyu.space/emacs-taf/ebox-playground/src/branch/main/README.md#native-interaction-lab)
 keeps its business functions and state in `interaction-reference.el`, with its
 layout in `interaction-reference.ebox`. It demonstrates callbacks, nested
 overrides, and replacing or removing all four capabilities through public
@@ -1187,7 +1187,7 @@ Its focus and descendant Range addresses remain usable after publication.
 ## Local rule input
 
 `:ecss` accepts an ordered rule list and `:ecss-file` reads that same list from a
-file using ECSS's [static data contract](https://gitea.gklazycat.heiyu.space/geekinney/ecss/src/branch/main/docs/manual.md#static-rule-data).
+file using ECSS's [static data contract](https://gitea.gklazycat.heiyu.space/emacs-taf/ecss/src/branch/main/docs/manual.md#static-rule-data).
 File contents have no quote wrapper; ordinary Elisp expressions quote literal
 lists normally. File rules precede inline `:ecss` rules. Ebox validates selectors
 and declarations through ECSS and its own property schema. Canonical input

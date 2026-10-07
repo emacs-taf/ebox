@@ -2,13 +2,13 @@
   "schema": 1,
   "dependencies": {
     "ecss": {
-      "url": "https://gitea.gklazycat.heiyu.space/geekinney/ecss.git",
+      "url": "https://gitea.gklazycat.heiyu.space/emacs-taf/ecss.git",
       "revision": "5f4a1cb7624c568c468425103c0852aadcaea738"
     }
   },
   "optional": {
     "ekp": {
-      "url": "https://gitea.gklazycat.heiyu.space/geekinney/ekp.git",
+      "url": "https://gitea.gklazycat.heiyu.space/emacs-taf/ekp.git",
       "revision": "eadd400f888068d268b637435788119cff75221f"
     }
   }

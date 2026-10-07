@@ -11,14 +11,14 @@ Component、响应式状态、behavior 或生命周期时，使用同级 ETAF �
 
 ## 安装
 
-源码仓库为 [geekinney/ebox](https://gitea.gklazycat.heiyu.space/geekinney/ebox)。
+源码仓库为 [geekinney/ebox](https://gitea.gklazycat.heiyu.space/emacs-taf/ebox)。
 当前 `3.0.0` 更新日志仍标记为未发布；源码 checkout 不代表已经发布的包归档或稳定版本 tag。
 
 | 依赖 | 使用条件 |
 | --- | --- |
 | Emacs 29.1 或更高版本 | 所有 Ebox 使用场景。 |
 | ECSS 0.1.0 或更高版本 | 样式计算和选择器语义；即使不使用样式表也需要。 |
-| [EKP 1.0.0 或更高版本](https://gitea.gklazycat.heiyu.space/geekinney/ekp) | 可选，仅使用 `:wrap-mode kp` 时需要。 |
+| [EKP 1.0.0 或更高版本](https://gitea.gklazycat.heiyu.space/emacs-taf/ekp) | 可选，仅使用 `:wrap-mode kp` 时需要。 |
 
 ECSS 是包声明的必需依赖。EKP 保持可选，普通 `word`、`char`、`none` 换行不需要它。
 使用同级源码 checkout 时，把必需的目录加入 `load-path` 后加载 Ebox：
@@ -144,7 +144,7 @@ buffer 才会启用本地鼠标移动跟踪；Ebox 不创建 overlay，也不把
 在渲染后的 keymap owner 之间移动 point，不添加默认按键绑定。应用状态与命令行为
 由作者管理。参见
 [交互指南](docs/manual.zh-CN.md#native-node-interaction)和 Playground 的
-[交互实验室](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)。
+[交互实验室](https://gitea.gklazycat.heiyu.space/emacs-taf/ebox-playground/src/branch/main/README.zh-CN.md#native-interaction-lab)。
 
 节点可以声明 `:tab-index` 与 `:disabled`；`ebox-focus` 系列接口由 Ebox 管理 buffer
 逻辑焦点、可选循环导航、更新保持与回滚。挂载的 `ebox-buffer-mode` 通过
@@ -236,7 +236,7 @@ p50/p95/max、投影种类计数，以及源码和评估器身份。`ordinary` �
 
 继续阅读[用户指南](docs/manual.zh-CN.md)、[公共 API
 参考](docs/manual.zh-CN.md)，以及同级
-[ebox-playground](https://gitea.gklazycat.heiyu.space/geekinney/ebox-playground/src/branch/main/README.md) 示例。
+[ebox-playground](https://gitea.gklazycat.heiyu.space/emacs-taf/ebox-playground/src/branch/main/README.md) 示例。
 
 ## 许可证
 

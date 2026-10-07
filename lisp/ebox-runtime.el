@@ -3,7 +3,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Author: ebox contributors
 ;; Keywords: ui, graphics, convenience
-;; URL: https://gitea.gklazycat.heiyu.space/geekinney/ebox
+;; URL: https://gitea.gklazycat.heiyu.space/emacs-taf/ebox
 
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
