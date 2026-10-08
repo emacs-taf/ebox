@@ -112,10 +112,11 @@ A present nil, painted by an inner node, keeps blocking VALUE."
           (put-text-property pos next property value string))
         (setq pos next)))))
 
-(defun ebox--decorate-interactive (node line)
-  "Return a copy of LINE carrying NODE's interaction properties."
+(defun ebox--decorate-interactive (node line &optional fresh)
+  "Return LINE carrying NODE's interaction properties.
+LINE is copied first unless FRESH says the caller owns it."
   (let ((props (ebox--inter-text-properties node))
-        (copy (copy-sequence line)))
+        (copy (if fresh line (copy-sequence line))))
     (when (and ebox--current-mount (plist-get (ebox-node-inter node) :hover-content))
       (setf (ebox-mount-hover-p ebox--current-mount) t))
     (while props
@@ -215,6 +216,32 @@ A text node has no box of its own; it is live when its parent is."
         (with-current-buffer (window-buffer window)
           (funcall callback))))))
 
+(defconst ebox--claimed-mouse-events
+  (append '(mouse-1 double-mouse-1 triple-mouse-1
+            down-mouse-1 double-down-mouse-1 triple-down-mouse-1
+            drag-mouse-1 double-drag-mouse-1 triple-drag-mouse-1)
+          (cl-loop for modifier in '(shift control meta super hyper)
+                   append (mapcar (lambda (base) (event-convert-list (list modifier base)))
+                                  '(down-mouse-1 mouse-1 drag-mouse-1))))
+  "Primary-button events an activatable or draggable owner claims.")
+
+(defun ebox--press-command (press)
+  "Track primary-button PRESS on an activatable owner."
+  (interactive (list last-input-event))
+  (ebox--track-press press))
+
+(defconst ebox--press-claim-keymap
+  (let ((map (make-sparse-keymap)))
+    (dolist (event ebox--claimed-mouse-events)
+      (define-key map (vector event)
+                  (if (memq 'down (event-modifiers event)) #'ebox--press-command #'ignore)))
+    map)
+  "Shared parent claiming the primary-button sequence for press-only keymaps.
+Presses neither start region selection nor reach global commands.")
+
+(defconst ebox--activation-keys '([13] [return] [32] [mouse-1])
+  "Keys an :activate callback receives when the keymap has no :drag.")
+
 (defun ebox-keymap-create (&rest options)
   "Create a native keymap from OPTIONS.
 :activate is a zero-argument callback for RET, return, SPC and the primary
@@ -244,10 +271,14 @@ release.  See the Ebox Commentary for the gesture protocol."
       (unless (proper-list-p bindings)
         (error "Ebox keymap :bindings must be an alist"))
       (when activate
-        (setq bindings (append (mapcar (lambda (key) (cons key activate))
-                                       (if drag '("RET" [return] "SPC")
-                                         '("RET" [return] "SPC" [mouse-1])))
-                               bindings)))
+        (let ((command (ebox--command activate t)))
+          (dolist (key (if drag (butlast ebox--activation-keys) ebox--activation-keys))
+            (define-key map key command)
+            (push key keys))
+          (unless drag
+            (define-key map [double-mouse-1] command)
+            (define-key map [triple-mouse-1] command)
+            (set-keymap-parent map ebox--press-claim-keymap))))
       (dolist (entry bindings)
         (unless (and (consp entry) (functionp (cdr entry)))
           (error "Ebox keymap bindings require a key and a callback"))
@@ -266,40 +297,20 @@ release.  See the Ebox Commentary for the gesture protocol."
                          keys)
             (error "Ebox keymap binding overlaps an existing key: %s"
                    (key-description key)))
-          (define-key map key
-                      (ebox--command callback
-                                     (and activate
-                                          (member key '([13] [return] [32] [mouse-1])))))
+          (define-key map key (ebox--command callback))
           (push key keys)))
-      (when (or activate drag)
+      (when drag
         ;; Claim the whole primary-button sequence so presses do not start
         ;; region selection and modifier presses do not reach global commands.
-        (dolist (event (append
-                        '(mouse-1 double-mouse-1 triple-mouse-1
-                          down-mouse-1 double-down-mouse-1 triple-down-mouse-1
-                          drag-mouse-1 double-drag-mouse-1 triple-drag-mouse-1)
-                        (cl-loop for modifier in '(shift control meta super hyper)
-                                 append (mapcar
-                                         (lambda (base)
-                                           (event-convert-list (list modifier base)))
-                                         '(down-mouse-1 mouse-1 drag-mouse-1)))))
-          (unless (lookup-key map (vector event))
-            (define-key map (vector event)
-                        (cond
-                         ((and drag (memq 'down (event-modifiers event)))
-                          (lambda (press)
-                            (interactive (list last-input-event))
-                            (ebox--track-drag
-                             press drag nil
-                             (and lock (memq lock (event-modifiers press))))))
-                         ((and activate (not drag)
-                               (memq event '(double-mouse-1 triple-mouse-1)))
-                          (lookup-key map [mouse-1]))
-                         ((and activate (memq 'down (event-modifiers event)))
-                          (lambda (press)
-                            (interactive (list last-input-event))
-                            (ebox--track-press press)))
-                         (t #'ignore)))))))
+        (let ((track (lambda (press)
+                       (interactive (list last-input-event))
+                       (ebox--track-drag
+                        press drag nil
+                        (and lock (memq lock (event-modifiers press)))))))
+          (dolist (event ebox--claimed-mouse-events)
+            (unless (lookup-key map (vector event))
+              (define-key map (vector event)
+                          (if (memq 'down (event-modifiers event)) track #'ignore)))))))
     map))
 
 (defun ebox-help-create (function)

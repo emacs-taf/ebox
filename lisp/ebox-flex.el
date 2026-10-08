@@ -305,8 +305,8 @@ line breaks follow its stretched size."
         (if horizontal
             (setf (ebox-node-y kid) (- height (ebox-node-y kid) (ebox-node-h kid)))
           (setf (ebox-node-x kid) (- cw (ebox-node-x kid) (ebox-node-w kid))))))
-    (ebox--set-items geo (vconcat (sort (copy-sequence kids)
-                                        (lambda (a b) (< (ebox-node-y a) (ebox-node-y b))))))
+    ;; `ebox--flow-kids' returns a fresh list, so sorting may reuse it.
+    (ebox--set-items geo (vconcat (sort kids (lambda (a b) (< (ebox-node-y a) (ebox-node-y b))))))
     (setf (ebox-geo-stack geo) nil
           (ebox-geo-kind geo) 'pos)
     height))

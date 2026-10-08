@@ -69,7 +69,8 @@ Stacked items are a chunked sequence; other layouts keep a vector."
   "Non-nil when layout should record damage for relaid nodes.")
 
 (defvar ebox--decorate-function nil
-  "Function of NODE and LINE returning LINE with interaction properties.")
+  "Function of NODE, LINE and FRESH returning LINE with interaction properties.
+FRESH non-nil means LINE is a new string the function may modify.")
 
 (defsubst ebox--hidden-p (node)
   "Return non-nil when NODE does not paint."
@@ -1753,12 +1754,12 @@ is then joined into one string."
       (push (ebox--space 1 (ebox--border-face (ebox-cs-blc cs))) parts))
     (if (not whole)
         parts
-      (let ((line (ebox--join (if (ebox-node-overlays node)
-                                  (ebox--apply-overlays node geo bi
-                                                        (ebox--join-parts parts))
-                                parts))))
+      (let ((line (funcall (if (or top bottom) #'ebox--join-fresh #'ebox--join)
+                           (if (ebox-node-overlays node)
+                               (ebox--apply-overlays node geo bi
+                                                     (ebox--join-parts parts))
+                             parts))))
         (when (or top bottom)
-          (setq line (copy-sequence line))
           (when top
             (add-face-text-property 0 (length line)
                                     (list :overline (let ((c (ebox-cs-btc cs)))
@@ -1822,7 +1823,7 @@ An interactive node joins its line to carry its interaction properties."
                     (ebox--border-parts node geo (- i mt)
                                         (list (ebox--space mr face))))))))
     (if (and (ebox-node-inter node) ebox--decorate-function)
-        (list (funcall ebox--decorate-function node (ebox--join parts)))
+        (list (funcall ebox--decorate-function node (ebox--join-fresh parts) t))
       parts)))
 
 (defun ebox--px-cut (string x pos px)
@@ -2042,31 +2043,32 @@ means the damage is not shown."
 START is in post-layout lines; applying edits in order transforms the old
 lines into the new ones.  Return the symbol `full' when ranges overlap in a
 way that cannot be expressed as ordered line replacements."
-  (let ((ranges (delq nil (mapcar #'ebox--damage-range
-                                  (cl-remove-if-not (lambda (d) (ebox--damage-live-p d root))
-                                                    damages))))
-        (height (ebox-node-h root))
-        merged)
-    ;; Overlays may extend past the root; only its lines exist.
-    (setq ranges (delq nil (mapcar (lambda (r)
-                                     (cond ((/= (nth 1 r) (nth 2 r)) r)
-                                           ((>= (car r) height) nil)
-                                           ((> (+ (car r) (nth 2 r)) height)
-                                            (let ((n (- height (car r))))
-                                              (list (car r) n n (nth 3 r))))
-                                           (t r)))
-                                   ranges)))
-    (setq ranges (sort ranges (lambda (a b)
-                                (or (< (car a) (car b))
-                                    (and (= (car a) (car b)) (> (nth 2 a) (nth 2 b)))))))
+  (let ((height (ebox-node-h root))
+        ranges merged)
+    (dolist (damage damages)
+      (let ((r (and (ebox--damage-live-p damage root) (ebox--damage-range damage))))
+        ;; Overlays may extend past the root; only its lines exist.
+        (cond ((null r))
+              ((/= (nth 1 r) (nth 2 r)) (push r ranges))
+              ((>= (car r) height))
+              ((> (+ (car r) (nth 2 r)) height)
+               (let ((n (- height (car r))))
+                 (push (list (car r) n n (nth 3 r)) ranges)))
+              (t (push r ranges)))))
+    (setq ranges (nreverse ranges))
+    (when (cdr ranges)
+      (setq ranges (sort ranges (lambda (a b)
+                                  (or (< (car a) (car b))
+                                      (and (= (car a) (car b)) (> (nth 2 a) (nth 2 b))))))))
     (catch 'full
+      ;; Every range is a fresh list, so merging edits it in place.
       (dolist (range ranges)
         (let* ((prev (car merged))
                (prev-end (and prev (+ (car prev) (nth 2 prev))))
                (end (+ (car range) (nth 2 range))))
           (cond
            ((or (null prev) (>= (car range) prev-end))
-            (push (copy-sequence range) merged))
+            (push range merged))
            ((and (<= end prev-end)
                  (or (= (nth 1 range) (nth 2 range)) (nth 3 prev)))
             ;; Nested in lines the previous edit already rewrites.
@@ -2078,8 +2080,9 @@ way that cannot be expressed as ordered line replacements."
                     (nth 2 prev) span
                     (nth 3 prev) nil)))
            (t (throw 'full 'full)))))
-      (mapcar (lambda (edit) (list (car edit) (nth 1 edit) (nth 2 edit)))
-              (nreverse merged)))))
+      (dolist (edit merged)
+        (setcdr (nthcdr 2 edit) nil))
+      (nreverse merged))))
 
 (provide 'ebox-layout)
 

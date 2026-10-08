@@ -319,6 +319,12 @@ See `ebox--join-parts'."
           ((null (cdr kept)) (car kept))
           (t (apply #'concat kept)))))
 
+(defun ebox--join-fresh (parts)
+  "Return a new string composing PARTS, which the caller may modify.
+See `ebox--join'."
+  (let ((kept (ebox--join-parts parts)))
+    (if (cdr kept) (apply #'concat kept) (copy-sequence (or (car kept) "")))))
+
 (defun ebox-pixel-space (pixel-width)
   "Return a display space PIXEL-WIDTH pixels wide."
   (ebox--space (or pixel-width 0)))

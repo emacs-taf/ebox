@@ -521,24 +521,28 @@ Positions in untouched lines move with their text, so only positions in
 replaced lines, or at a line start where lines are inserted, are tracked."
   (let ((first (and edits
                     (save-excursion (ebox--goto-line mount (caar edits)) (point))))
-        tracked)
+        tracked entry)
     (dolist (window (get-buffer-window-list (current-buffer) nil t))
-      (push (list 'start window (window-start window)) tracked)
+      (when (setq entry (ebox--tracked-position mount 'start window (window-start window)
+                                                first edits))
+        (push entry tracked))
       (unless (eq window (selected-window))
-        (push (list 'point window (window-point window)) tracked)))
-    (push (list 'buffer nil (point)) tracked)
-    (delq nil
-          (mapcar
-           (lambda (entry)
-             (let ((pos (nth 2 entry)))
-               ;; The first edit starts at the same line before and after.
-               (unless (and first (< pos first))
-                 (let* ((line (ebox--line-of mount pos))
-                        (column (- pos (save-excursion (goto-char pos)
-                                                       (line-beginning-position)))))
-                   (when (or (null edits) (ebox--line-rewritten-p line (zerop column) edits))
-                     (list (car entry) (nth 1 entry) line column))))))
-           tracked))))
+        (when (setq entry (ebox--tracked-position mount 'point window (window-point window)
+                                                  first edits))
+          (push entry tracked))))
+    (when (setq entry (ebox--tracked-position mount 'buffer nil (point) first edits))
+      (push entry tracked))
+    tracked))
+
+(defun ebox--tracked-position (mount kind window pos first edits)
+  "Return (KIND WINDOW LINE COLUMN) for POS when EDITS of MOUNT rewrite it.
+FIRST is the buffer position where the first edit starts."
+  ;; The first edit starts at the same line before and after.
+  (unless (and first (< pos first))
+    (let* ((line (ebox--line-of mount pos))
+           (column (- pos (save-excursion (goto-char pos) (line-beginning-position)))))
+      (when (or (null edits) (ebox--line-rewritten-p line (zerop column) edits))
+        (list kind window line column)))))
 
 (defun ebox--line-rewritten-p (line bol edits)
   "Return non-nil when ordered EDITS replace old LINE.
@@ -661,6 +665,13 @@ replaced.  Leave point at the end of the line."
     (maphash (lambda (line _) (when (>= line from) (push line stale))) written)
     (dolist (line stale) (remhash line written))))
 
+(defun ebox--insert-lines (lines)
+  "Insert LINES, lists of strings, at point separated by newlines."
+  (let ((first t))
+    (dolist (parts lines)
+      (if first (setq first nil) (insert "\n"))
+      (apply #'insert parts))))
+
 (defun ebox--replace-lines (mount start old lines)
   "Replace OLD buffer lines from START with LINES.
 Each line is a list of strings.  Lines are joined by newlines without a
@@ -677,12 +688,12 @@ trailing newline."
     (unless (= new old) (ebox--forget-written mount (+ start common)))
     (cond
      ((> new old)
-      (let ((text (mapconcat (lambda (parts) (apply #'concat parts)) lines "\n")))
-        (cond
-         ((> common 0) (insert "\n" text))
-         ((< start total) (ebox--goto-line mount start) (insert text "\n"))
-         ((> total 0) (goto-char (point-max)) (insert "\n" text))
-         (t (goto-char (point-min)) (insert text)))))
+      (cond
+       ((> common 0) (insert "\n") (ebox--insert-lines lines))
+       ((< start total)
+        (ebox--goto-line mount start) (ebox--insert-lines lines) (insert "\n"))
+       ((> total 0) (goto-char (point-max)) (insert "\n") (ebox--insert-lines lines))
+       (t (goto-char (point-min)) (ebox--insert-lines lines))))
      ((< new old)
       (cond
        ((> common 0)
@@ -794,19 +805,19 @@ trailing newline."
          ((eq edits 'full) (ebox--paint-all mount))
          (edits (ebox--apply-edits mount edits)))
         (cl-incf (ebox-mount-flushes mount))
-        (let* ((ranges (if (eq edits 'full)
-                           (list (list 0 old-lines (ebox-mount-lines mount)))
-                         edits))
-               (report (list :strategy (if (eq edits 'full) 'full 'lines)
-                             :edits (length ranges)
-                             :lines (let ((n 0)) (dolist (e ranges n) (setq n (+ n (nth 2 e)))))
-                             :ranges (copy-tree ranges)
-                             :flush (ebox-mount-flushes mount))))
-          (when observer
-            (setq report (append report (list :duration-ms
-                                              (* 1000.0 (- (float-time) start)))))
-            (funcall observer (ebox-mount-buffer mount) (copy-sequence report)))
-          (setf (ebox-mount-last-report mount) report)))
+        ;; Keep the raw ranges; `ebox--flush-report' builds the plist only
+        ;; when an observer or `ebox-buffer-update-report' asks for it.
+        (let ((last (if (eq edits 'full)
+                        (cl-list* (ebox-mount-flushes mount) 'full
+                               (list (list 0 old-lines (ebox-mount-lines mount))))
+                      (cl-list* (ebox-mount-flushes mount) 'lines edits))))
+          (if (not observer)
+              (setf (ebox-mount-last-report mount) last)
+            (let ((report (append (ebox--flush-report last)
+                                  (list :duration-ms
+                                        (* 1000.0 (- (float-time) start))))))
+              (setf (ebox-mount-last-report mount) report)
+              (funcall observer (ebox-mount-buffer mount) (copy-tree report))))))
       (run-hook-with-args 'ebox-after-flush-functions (ebox-mount-buffer mount)))))
 
 (defun ebox-buffer-set-observer (buffer-or-name observer)
@@ -820,11 +831,23 @@ removes observation."
     (unless mount (user-error "No mounted Ebox tree in %s" buffer-or-name))
     (setf (ebox-mount-observer mount) observer)))
 
+(defun ebox--flush-report (last)
+  "Return the report plist for LAST, a (FLUSH STRATEGY . RANGES) record."
+  (let ((ranges (cddr last)))
+    (list :strategy (cadr last)
+          :edits (length ranges)
+          :lines (let ((n 0)) (dolist (e ranges n) (setq n (+ n (nth 2 e)))))
+          :ranges (copy-tree ranges)
+          :flush (car last))))
+
 (defun ebox-buffer-update-report (&optional buffer-or-name)
   "Return a copy of the report of BUFFER-OR-NAME's latest flush, or nil."
   (let ((mount (ebox-buffer-mount buffer-or-name)))
     (unless mount (user-error "No mounted Ebox tree in %s" buffer-or-name))
-    (copy-sequence (ebox-mount-last-report mount))))
+    (let ((last (ebox-mount-last-report mount)))
+      (if (keywordp (car-safe last))
+          (copy-tree last)
+        (and last (ebox--flush-report last))))))
 
 ;;;; Rendering and mounting
 
