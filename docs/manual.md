@@ -164,9 +164,6 @@ Choose the smallest container that states the layout intent:
   `:item-gap` and `:cross-align`.
 - `flex` supports flex direction, wrapping, distribution, item growth/shrink and
   alignment.
-  A flex or grid item whose `:overflow` is undeclared or `visible` never
-  shrinks below its content; declare `:min-height`/`:min-width`, or a
-  `hidden`, `scroll` or `auto` overflow, to let it shrink further.
 - `grid` supports explicit/automatic tracks, fractions, `minmax`, `repeat`, gaps
   and one-based placement.
 

@@ -140,11 +140,6 @@
       "purpose": "Flex wrapping and gaps place items at observable public geometries."
     },
     {
-      "name": "ebox-render-flex-items-keep-content-minimum-unless-clipped",
-      "file": "tests/ebox-rendering-tests.el",
-      "purpose": "Flex items with undeclared or visible overflow do not shrink below their content, while scrolling items may."
-    },
-    {
       "name": "ebox-render-absolute-children-start-at-content-origin",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Absolute children are offset from their host's content origin, inside its padding."

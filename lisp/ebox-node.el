@@ -580,7 +580,7 @@ also serves ids that are not valid `#' selector identifiers."
   vals ikey tag hidden bg face padface fontface ch deco
   width min-width max-width height min-height max-height
   pt pr pb pl mt mr mb ml bl br btop bbot btc bbc blc brc
-  box-sizing position outer overflow auto-min wrap align gap cross
+  box-sizing position outer overflow wrap align gap cross
   z abs vcbh vunits lkey)
 
 (defun ebox--viewport-units (value &optional units)
@@ -688,25 +688,18 @@ BG, DECO and HIDDEN are the derived paint state children inherit too."
             (ebox-node-attributes node) (ebox--node-all-states node)))))
 
 (defun ebox--compute-values (node parent-cs scopes)
-  "Run the ECSS cascade for NODE with PARENT-CS and SCOPES.
-An undeclared overflow is recorded as `ebox--overflow-initial', because a
-flex or grid item keeps its content-based minimum unless its author chose
-a clipping or scrolling overflow."
-  (let* ((style (ecss-compute-style
-                 ebox-style-schemas node
-                 :declarations (ebox-node-decls node)
-                 :parent-style (and parent-cs (ebox-cs-vals parent-cs))
-                 :adapter ebox--ecss-adapter
-                 :scopes (mapcar (lambda (entry)
-                                   (ecss-scope-create
-                                    (nth 1 entry)
-                                    (ebox-style-scope-stylesheet (car entry))
-                                    :subjects t))
-                                 scopes)))
-         (vals (ecss-computed-style-values style)))
-    (if (ecss-computed-style-specified-p style 'ebox/overflow)
-        vals
-      (plist-put vals 'ebox--overflow-initial t))))
+  "Run the ECSS cascade for NODE with PARENT-CS and SCOPES."
+  (ecss-computed-style-values
+   (ecss-compute-style
+    ebox-style-schemas node
+    :declarations (ebox-node-decls node)
+    :parent-style (and parent-cs (ebox-cs-vals parent-cs))
+    :adapter ebox--ecss-adapter
+    :scopes (mapcar (lambda (entry)
+                      (ecss-scope-create (nth 1 entry)
+                                         (ebox-style-scope-stylesheet (car entry))
+                                         :subjects t))
+                    scopes))))
 
 (defun ebox--node-style (node parent-cs)
   "Return the shared computed style of NODE under PARENT-CS."
@@ -824,11 +817,11 @@ unless `ebox-viewport-height' supplies one."
     (ebox--intern-face (if (cdr groups) groups (car groups)))))
 
 (defconst ebox--layout-ids
-  (append '(ebox--css-weight ebox--overflow-initial)
-          (delq nil (mapcar (lambda (def)
-                              (and (not (eq (plist-get def :signature) 'paint))
-                                   (plist-get def :id)))
-                            ebox-style--property-definitions)))
+  (cons 'ebox--css-weight
+        (delq nil (mapcar (lambda (def)
+                            (and (not (eq (plist-get def :signature) 'paint))
+                                 (plist-get def :id)))
+                          ebox-style--property-definitions)))
   "Computed value ids that can change geometry.")
 
 (defvar ebox--lkey-table (make-hash-table :test 'equal :weakness 'value)
@@ -890,8 +883,6 @@ unless `ebox-viewport-height' supplies one."
               :position (plist-get vals 'ebox/position)
               :outer (plist-get vals 'ebox/outer)
               :overflow (plist-get vals 'ebox/overflow)
-              :auto-min (or (eq (plist-get vals 'ebox/overflow) 'visible)
-                            (plist-get vals 'ebox--overflow-initial))
               :wrap (plist-get vals 'ebox/wrap-mode)
               :align (plist-get vals 'ebox/text-align)
               :gap (plist-get vals 'ebox/item-gap)

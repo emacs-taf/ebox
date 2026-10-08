@@ -13,9 +13,6 @@ All notable changes to Ebox are documented here.
   buffer lines/parts.
 - `ebox-file-load-companion` loads a compiled `.ebox` companion when its
   bytecode is newer than the `.el` source; edited sources still load directly.
-- Flex and grid items with an undeclared `:overflow` keep their content-based
-  minimum size, so a growing sibling no longer overlaps following items.
-  Declare an explicit minimum or a clipping overflow to shrink below content.
 
 ### Removed
 
