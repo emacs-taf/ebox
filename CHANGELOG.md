@@ -4,6 +4,11 @@ All notable changes to Ebox are documented here.
 
 ## Unreleased
 
+### Added
+
+- `make native` byte-compiles Ebox and stores native code in the user's
+  `eln-cache`, which Emacs loads in place of the bytecode.
+
 ### Changed
 
 - **BREAKING:** Ebox now exposes a mutable retained-node engine.  Build roots

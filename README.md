@@ -39,7 +39,7 @@ reactive state or application lifecycle services.
 | ECSS 0.1.0 or newer | Style schema, selectors, cascade and scopes. |
 | Optional `chafa` or `ffmpeg` executables | Text-mode image conversion before falling back to placeholders. |
 
-Ebox has no native build step.  Image preparation may also use Emacs graphical
+Ebox has no native module.  Image preparation may also use Emacs graphical
 image support when it is available.
 
 ## Installation from a source checkout
@@ -51,6 +51,12 @@ Add ECSS and Ebox source roots to `load-path`, then require the package entry:
 (add-to-list 'load-path "/path/to/ebox")
 (require 'ebox)
 ```
+
+For interactive speed, run `make native` in the checkout after each update.
+It byte-compiles Ebox and stores native code in your `eln-cache`, which Emacs
+loads in place of the bytecode without further configuration, even when JIT
+native compilation is disabled.  A source file edited later runs as bytecode
+until the next `make native`.
 
 Checkout users require only `ebox`; implementation files under `lisp/` are
 private.  The authoritative API inventory is the Commentary in

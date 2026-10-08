@@ -28,7 +28,7 @@ Ebox 跟踪 dirty 节点，只重写发生变化的 buffer 行和行内片段。
 | ECSS 0.1.0 或更新版本 | 样式 schema、selector、cascade 与 scope。 |
 | 可选 `chafa` 或 `ffmpeg` 可执行文件 | 文本模式图片转换；不可用时回退到占位网格。 |
 
-Ebox 没有 native 构建步骤。可用时，图片准备也可以使用 Emacs 图形图片支持。
+Ebox 没有原生模块。可用时，图片准备也可以使用 Emacs 图形图片支持。
 
 ## 从源码 checkout 安装
 
@@ -39,6 +39,10 @@ Ebox 没有 native 构建步骤。可用时，图片准备也可以使用 Emacs 
 (add-to-list 'load-path "/path/to/ebox")
 (require 'ebox)
 ```
+
+为了交互速度，每次更新 checkout 后在其中运行 `make native`。它会字节编译 Ebox，
+并把原生代码存入你的 `eln-cache`；即使关闭了 JIT 原生编译，Emacs 也会自动用它
+代替字节码，无需额外配置。之后修改过的源文件在下次 `make native` 前以字节码运行。
 
 checkout 用户只 require `ebox`；`lisp/` 下的实现文件是私有的。权威 API 清单在
 [`ebox.el`](ebox.el) 的 Commentary 中，工作流见[手册](docs/manual.zh-CN.md)。

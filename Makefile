@@ -11,7 +11,7 @@ RELEASE_OPTIONS ?=
 EMACS_BATCH = $(EMACS) -Q --batch -L . -L lisp -L benchmarks -L $(ECSS_DIR) $(LOAD_EXTRA) --eval '(setq load-prefer-newer t)'
 EMACS_TEST = $(EMACS_BATCH) -L tests
 
-.PHONY: all check ci load compile checkdoc diff-check clean package-lint package-lint-install
+.PHONY: all check ci load compile native checkdoc diff-check clean package-lint package-lint-install
 
 .PHONY: release-deps release-build release-check release-tool-tests
 
@@ -39,6 +39,9 @@ load:
 compile:
 	rm -f *.elc lisp/*.elc tests/*.elc scripts/*.elc benchmarks/*.elc
 	$(EMACS_BATCH) --eval '(setq byte-compile-error-on-warn t byte-compile-warnings (quote (not obsolete)))' -l ebox.el --eval '(ebox-byte-compile)'
+
+native: compile
+	$(EMACS_BATCH) -l ebox.el --eval '(dolist (file (cons "ebox.el" (directory-files "lisp" t "\\`ebox-.*\\.el$$"))) (native-compile (expand-file-name file)))'
 
 package-lint:
 	$(EMACS_BATCH) -l scripts/ebox-package-lint.el -f ebox-package-lint-batch
