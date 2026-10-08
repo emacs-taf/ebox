@@ -16,7 +16,7 @@
 (defvar ebox--width-tables (make-hash-table :test 'eq :weakness 'key)
   "Map of remapping identity to per-face width tables.")
 
-(defvar ebox--default-width-table (make-hash-table :test 'eq)
+(defvar ebox--default-width-table (make-hash-table :test 'equal)
   "Per-face width tables without buffer face remapping.")
 
 (defvar ebox--cluster-width-cache (make-hash-table :test 'equal)
@@ -30,17 +30,60 @@
   (and ebox--measure-buffer (buffer-live-p ebox--measure-buffer)
        (buffer-local-value 'face-remapping-alist ebox--measure-buffer)))
 
+(defconst ebox--paint-only-attributes
+  '(:foreground :background :distant-foreground :underline :overline
+    :strike-through :extend :stipple)
+  "Face attributes that never change glyph advances.")
+
+(defun ebox--width-face (face)
+  "Return the face whose metrics FACE shares for width measurement.
+A plist naming only paint attributes measures like the default face, and a
+list of faces drops such members."
+  (cond ((atom face) face)
+        ((keywordp (car face))
+         (let ((rest face))
+           (while (and rest (memq (car rest) ebox--paint-only-attributes))
+             (setq rest (cddr rest)))
+           (and rest face)))
+        (t (let ((kept (delq nil (mapcar #'ebox--width-face face))))
+             (if (cdr kept) kept (car kept))))))
+
+(defun ebox--merge-face (own face)
+  "Return the face list painting text face OWN over node FACE."
+  (cond ((null face) own)
+        ((and (consp own) (not (keywordp (car own)))) (append own (list face)))
+        (t (list own face))))
+
+(defvar ebox--face-memo (make-vector 3 nil)
+  "The last [REMAP-KEY FACE TABLE] lookup of `ebox--face-table'.")
+
 (defun ebox--face-table (face)
-  "Return the width table of FACE for the current measuring context."
-  (let* ((key (ebox--remap-key))
-         (tables (if key
-                     (or (gethash key ebox--width-tables)
-                         (puthash key (make-hash-table :test 'eq)
-                                  ebox--width-tables))
-                   ebox--default-width-table)))
-    (or (gethash face tables)
-        (puthash face (cons (make-vector 128 nil) (make-hash-table :test 'eq))
-                 tables))))
+  "Return the width table of FACE for the current measuring context.
+Faces with equal width attributes share one table: painting conses fresh
+face plists, which must not re-measure every character."
+  (let ((key (ebox--remap-key))
+        (memo ebox--face-memo))
+    (if (and (aref memo 2) (eq face (aref memo 1)) (eq key (aref memo 0)))
+        (aref memo 2)
+      (let* ((tables (if key
+                         (or (gethash key ebox--width-tables)
+                             (puthash key (make-hash-table :test 'equal)
+                                      ebox--width-tables))
+                       ebox--default-width-table))
+             (table
+              (or (gethash face tables)
+                  (puthash face
+                           (let ((width-face (ebox--width-face face)))
+                             (or (gethash width-face tables)
+                                 (puthash width-face
+                                          (cons (make-vector 128 nil)
+                                                (make-hash-table :test 'eq))
+                                          tables)))
+                           tables))))
+        (aset memo 0 key)
+        (aset memo 1 face)
+        (aset memo 2 table)
+        table))))
 
 (defun ebox--measure-raw (string)
   "Measure STRING with `string-pixel-width' in the measuring buffer."
@@ -141,6 +184,26 @@ under it repaints without moving text."
       (and (consp width) (numberp (car width)) (null (cdr width))
            (car width)))))
 
+(defvar ebox--image-widths (make-hash-table :test 'eq :weakness 'key)
+  "Map of image display specification to (REMAP-KEY . WIDTH).")
+
+(defun ebox--display-width (string start end &optional face)
+  "Measure display run START..END of STRING under FACE.
+Fixed spaces need no measurement, and an image keeps its width while its
+specification object and the measuring buffer's remapping stay the same."
+  (let ((display (get-text-property start 'display string)))
+    (or (ebox--fixed-space-width display)
+        (if (eq (car-safe display) 'image)
+            (let ((key (ebox--remap-key))
+                  (cached (gethash display ebox--image-widths)))
+              (if (and cached (eq (car cached) key))
+                  (cdr cached)
+                (cdr (puthash display
+                              (cons key (ebox--measure-raw
+                                         (substring string start end)))
+                              ebox--image-widths))))
+          (ebox--segment-width string start end face)))))
+
 (defun ebox--segment-width (string start end face)
   "Measure STRING from START to END under FACE, honoring its properties."
   (let ((segment (substring string start end)))
@@ -179,9 +242,12 @@ fixed display spaces are one unit each.  FACE is the node's font face."
                        (ebox--cluster-end string pos len)))
                (width
                 (cond (space space)
-                      (display (ebox--segment-width string pos next face))
+                      (display (ebox--display-width string pos next face))
                       ((get-text-property pos 'face string)
-                       (ebox--segment-width string pos next face))
+                       (ebox--cluster-width
+                        string pos next
+                        (ebox--merge-face (get-text-property pos 'face string)
+                                          face)))
                       (t (ebox--cluster-width string pos next face)))))
           (push (list pos next width) units)
           (setq pos next))))
@@ -220,7 +286,7 @@ fixed display spaces are one unit each.  FACE is the node's font face."
         (setq total
               (+ total
                  (cond (space space)
-                       (display (ebox--measure-raw (substring line pos next)))
+                       (display (ebox--display-width line pos next))
                        (t (ebox--text-width
                            (substring-no-properties line pos next)
                            (get-text-property pos 'face line))))))
@@ -358,6 +424,8 @@ See `ebox--join'."
   (clrhash ebox--default-width-table)
   (clrhash ebox--cluster-width-cache)
   (clrhash ebox--space-cache)
+  (clrhash ebox--image-widths)
+  (fillarray ebox--face-memo nil)
   (cl-incf ebox--width-epoch))
 
 (provide 'ebox-measure)
