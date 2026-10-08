@@ -73,6 +73,10 @@
   (and (not (eq (ebox-node-tag child) 'text))
        (memq (ebox-cs-height (ebox-node-cs child)) '(nil auto))))
 
+(defun ebox--stretch-height-p (child)
+  "Return non-nil when CHILD's height stretches to its containing block."
+  (eq (ebox-cs-height (ebox-node-cs child)) 'stretch))
+
 (defun ebox--bb-width (cs value cbw extras)
   "Return border-box pixels for width VALUE of CS against CBW, or nil."
   (let ((px (ebox--px value cs cbw)))
@@ -674,9 +678,13 @@ Return (ITEMS ROW-COUNT COLUMN-COUNT) with zero-based cells."
                                        (ebox-gridi-cspan item) cgap))
              (justify (let ((self (ebox--cv (ebox-node-cs kid) 'ebox/justify-self)))
                         (if (memq self '(nil auto)) justify-items self))))
+        ;; A stretched height fills the grid area, which track sizing has
+        ;; not resolved yet, so its contribution is its content height.
         (setf (ebox-gridi-width item) width
               (ebox-gridi-mode item) (if (memq justify '(stretch normal)) 'stretch 'shrink)
-              (ebox-gridi-nat item) (ebox--natural-h kid width (ebox-gridi-mode item) cbh))
+              (ebox-gridi-nat item)
+              (ebox--natural-h kid width (ebox-gridi-mode item)
+                               (unless (ebox--stretch-height-p kid) cbh)))
         (setf (ebox-node-x kid)
               (+ (aref xs (ebox-gridi-col item))
                  (ebox--align-offset justify (- width (ebox-node-w kid)))))))
@@ -692,9 +700,11 @@ Return (ITEMS ROW-COUNT COLUMN-COUNT) with zero-based cells."
                (height (ebox--grid-extent heights ys (ebox-gridi-row item)
                                           (ebox-gridi-rspan item) rgap))
                (align (ebox--item-align kid align-items)))
-          (ebox--place-h kid (ebox-gridi-width item) (ebox-gridi-mode item) cbh
+          (ebox--place-h kid (ebox-gridi-width item) (ebox-gridi-mode item)
+                         (unless (ebox--stretch-height-p kid) cbh)
                          (ebox-gridi-nat item)
-                         (and (memq align '(stretch normal)) (ebox--auto-height-p kid)
+                         (and (or (ebox--stretch-height-p kid)
+                                  (and (memq align '(stretch normal)) (ebox--auto-height-p kid)))
                               height))
           (setf (ebox-node-y kid)
                 (+ (aref ys (ebox-gridi-row item))

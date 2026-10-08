@@ -848,12 +848,17 @@ CBH is the containing height or nil; FH forces the result."
     (max bh extras)))
 
 (defun ebox--definite-height (node geo cbh fh)
-  "Return NODE's definite content height in lines, or nil."
+  "Return NODE's definite content height in lines, or nil.
+A stretched height is definite when its containing height CBH is."
   (let* ((cs (ebox-node-cs node))
          (fixed (or fh (ebox--lines (ebox-cs-height cs) cs cbh))))
-    (when fixed
+    (cond
+     (fixed
       (max 0 (- fixed (if (and (not fh) (eq (ebox-cs-box-sizing cs) 'content-box)) 0
-                        (+ (ebox-geo-pt geo) (ebox-geo-pb geo))))))))
+                        (+ (ebox-geo-pt geo) (ebox-geo-pb geo))))))
+     ((and cbh (eq (ebox-cs-height cs) 'stretch))
+      (max 0 (- (ebox--resolve-height node geo 0 cbh nil)
+                (ebox-geo-pt geo) (ebox-geo-pb geo)))))))
 
 (defun ebox--pos-extent (geo content)
   "Return CONTENT lines extended to the bottom of GEO's positioned items.

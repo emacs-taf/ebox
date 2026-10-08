@@ -140,6 +140,11 @@
       "purpose": "Grid tracks and placements expose expected public node geometries."
     },
     {
+      "name": "ebox-render-stretched-heights-fill-definite-areas",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "A stretched height fills its grid area and stays definite for stretched descendants."
+    },
+    {
       "name": "ebox-render-visibility-hidden-preserves-layout-space",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Hidden boxes suppress ink while preserving layout space in the rendered buffer."

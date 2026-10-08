@@ -88,6 +88,22 @@ def"))
       (should (equal (ebox-node-geometry g1) '(:x 0 :y 0 :width 2 :height 1)))
       (should (equal (ebox-node-geometry g2) '(:x 2 :y 1 :width 4 :height 1))))))
 
+(ert-deftest ebox-render-stretched-heights-fill-definite-areas ()
+  (ebox-test-with-mounted (buffer root
+                           '(grid :width (ch 4) :height (lh 6)
+                                  :grid-template-columns ((ch 4))
+                                  :grid-template-rows ((lh 1) (fr 1))
+                                  (box :grid-row 1 "H")
+                                  (column :id "area" :grid-row 2 :height stretch
+                                          (column :id "fill" :height stretch
+                                                  (box :id "grow" :height stretch "x")))))
+    (should (equal (ebox-node-geometry (car (ebox-selector-query root "#area")))
+                   '(:x 0 :y 1 :width 4 :height 5)))
+    (should (equal (ebox-node-geometry (car (ebox-selector-query root "#fill")))
+                   '(:x 0 :y 1 :width 4 :height 5)))
+    (should (equal (ebox-node-geometry (car (ebox-selector-query root "#grow")))
+                   '(:x 0 :y 1 :width 4 :height 5)))))
+
 (ert-deftest ebox-render-visibility-hidden-preserves-layout-space ()
   (should (equal (ebox-test-render-text
                   '(column :width (ch 3)
