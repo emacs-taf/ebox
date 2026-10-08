@@ -1376,6 +1376,23 @@ pair reproduces the per-declaration closure without allocating it again.")
              and do (puthash target property seen)))
   declarations)
 
+(defvar ebox-style--explicit-inherit nil
+  "Non-nil once compiled declarations contained an explicit `inherit'.
+Such a value can copy a non-inherited parent value, so computed styles then
+depend on the whole parent style rather than only its inherited values.")
+
+(defconst ebox-style--inherit-values
+  (list (ecss-wide-value 'inherit) (ecss-important (ecss-wide-value 'inherit)))
+  "Declaration values that copy a parent value explicitly.")
+
+(defun ebox-style--note-explicit-inherit (declarations)
+  "Record whether compiled DECLARATIONS contain an explicit `inherit'."
+  (unless ebox-style--explicit-inherit
+    (cl-loop for (_property value) on declarations by #'cddr
+             when (and (ecss-declaration-value-tagged-p value)
+                       (member value ebox-style--inherit-values))
+             do (setq ebox-style--explicit-inherit t))))
+
 (defun ebox-style-compile-declarations (plist &optional strict)
   "Compile Ebox PLIST aliases to ECSS schema declarations.
 When STRICT is non-nil, reject properties outside the Ebox style domain."
@@ -1404,6 +1421,7 @@ When STRICT is non-nil, reject properties outside the Ebox style domain."
           (when (>= (hash-table-count ebox-style--declaration-cache)
                     ebox-style--declaration-cache-max-entries)
             (clrhash ebox-style--declaration-cache))
+          (ebox-style--note-explicit-inherit compiled)
           (puthash cache-key compiled ebox-style--declaration-cache)
           (copy-sequence compiled))))))
 

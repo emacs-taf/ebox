@@ -255,6 +255,16 @@
       "purpose": "Property mutation updates visible faces and remains equivalent to a fresh render."
     },
     {
+      "name": "ebox-scope-root-rule-change-restyles-members",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Replacing a scope root's rule snapshot restyles nested members to the new rules."
+    },
+    {
+      "name": "ebox-parent-restyle-updates-inheriting-descendants",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Restyling a parent updates descendants that inherit its values, including explicit inherit declarations."
+    },
+    {
       "name": "ebox-node-insert-remove-move-and-replace-children-update-order",
       "file": "tests/ebox-update-tests.el",
       "purpose": "Structural node mutations update child order and mounted text through public APIs."

@@ -113,6 +113,13 @@ cannot find anything.")
 (defun ebox--mark (node bits)
   "Set dirty BITS on NODE, record the dirty path and queue its mount."
   (setf (ebox-node-dirty node) (logior (ebox-node-dirty node) bits))
+  (ebox--mark-path node)
+  (ebox--enqueue node))
+
+(defun ebox--mark-path (node)
+  "Record the dirty path from NODE's parent up to the root.
+Every ancestor forgets its intrinsic size and lists the child below it among
+its dirty children."
   (setf (ebox-node-intr node) nil)
   (let ((child node) (parent (ebox-node-parent node)) (stop nil))
     (while (and parent (not stop))
@@ -123,8 +130,7 @@ cannot find anything.")
       (if (/= 0 (logand (ebox-node-dirty parent) ebox--d-desc))
           (setq stop t)
         (setf (ebox-node-dirty parent) (logior (ebox-node-dirty parent) ebox--d-desc))
-        (setq child parent parent (ebox-node-parent parent)))))
-  (ebox--enqueue node))
+        (setq child parent parent (ebox-node-parent parent))))))
 
 (defun ebox--mark-structure (parent op)
   "Record structural OP on PARENT and queue its mount."
@@ -353,10 +359,10 @@ follows the viewport.")
 
 (defun ebox--style-pass (node parent-cs force)
   "Restyle NODE's dirty path under PARENT-CS; FORCE recomputes NODE.
-A node whose computed style changed restyles all of its children; otherwise
+A node whose inherited values changed restyles all of its children; otherwise
 only the recorded dirty children are visited.  A change that keeps NODE's
 geometry inputs only marks it for repainting."
-  (let ((changed nil))
+  (let ((changed nil) (old-cs (ebox-node-cs node)) (old-env (ebox-node-env node)))
     (when (or force (/= 0 (logand (ebox-node-dirty node) ebox--d-style))
               (null (ebox-node-cs node)))
       (let ((old (ebox-node-cs node))
@@ -365,6 +371,9 @@ geometry inputs only marks it for repainting."
         (unless (eq old new)
           (setq changed t)
           (setf (ebox-node-cs node) new)
+          ;; A restyled node can sit below unchanged ancestors, so layout and
+          ;; painting must find it through the dirty path.
+          (when old (ebox--mark-path node))
           (if (ebox-cs-vunits new)
               (puthash node (ebox-cs-vunits new) ebox--viewport-nodes)
             (when (and old (ebox-cs-vunits old)) (remhash node ebox--viewport-nodes)))
@@ -394,7 +403,12 @@ geometry inputs only marks it for repainting."
               (cl-pushnew node (ebox-mount-anchored ebox--current-mount)))))))
     (let ((cs (ebox-node-cs node)))
       (cond
-       (changed
+       ;; Children read their parent's scope environment and, unless an
+       ;; explicit `inherit' exists, only its inherited values; when neither
+       ;; changed their styles stay valid.
+       ((or (and changed (not (and old-cs (not ebox-style--explicit-inherit)
+                                   (eq (ebox-cs-ikey old-cs) (ebox-cs-ikey cs)))))
+            (not (eq old-env (ebox-node-env node))))
         (ebox--do-kids (child node) (ebox--style-pass child cs t)))
        ((/= 0 (logand (ebox-node-dirty node) ebox--d-desc))
         (dolist (kid (ebox-node-dkids node))

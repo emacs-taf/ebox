@@ -577,7 +577,7 @@ also serves ids that are not valid `#' selector identifiers."
 
 (ebox--defstruct (ebox-cs (:constructor ebox-cs--make) (:copier nil))
   "Hash-consed computed style of one node."
-  vals parent tag hidden bg face padface fontface ch deco
+  vals ikey tag hidden bg face padface fontface ch deco
   width min-width max-width height min-height max-height
   pt pr pb pl mt mr mb ml bl br btop bbot btc bbc blc brc
   box-sizing position outer overflow wrap align gap cross
@@ -601,7 +601,27 @@ also serves ids that are not valid `#' selector identifiers."
   (plist-get (ebox-cs-vals cs) id))
 
 (defvar ebox--cs-cache (make-hash-table :test 'eq :weakness 'key)
-  "Per-parent-style tables of computed styles.")
+  "Computed-style tables keyed by what children inherit from their parent.
+Keys are inheritance keys, or parent styles themselves once an explicit
+`inherit' value makes a child read non-inherited parent values.")
+
+(defconst ebox--inherited-ids
+  (cl-loop for property in ebox-style--property-definitions
+           when (plist-get property :inherits)
+           collect (plist-get property :id))
+  "Computed value ids that ECSS copies from a parent style.")
+
+(defvar ebox--ikey-table (make-hash-table :test 'equal :weakness 'value)
+  "Shared inheritance keys, so equal inherited inputs compare with `eq'.")
+
+(defun ebox--inheritance-key (vals bg deco hidden)
+  "Return the shared key of everything a child inherits from VALS.
+BG, DECO and HIDDEN are the derived paint state children inherit too."
+  (let ((key (cons (list bg deco hidden (plist-get vals 'ebox--css-weight))
+                   (mapcar (lambda (id) (plist-get vals id))
+                           ebox--inherited-ids))))
+    (or (gethash key ebox--ikey-table)
+        (puthash key key ebox--ikey-table))))
 
 (defvar ebox--root-cs-table (make-hash-table :test 'equal)
   "Computed styles of nodes without a parent style.")
@@ -630,6 +650,14 @@ also serves ids that are not valid `#' selector identifiers."
     (when (ebox-node-defaults node)
       (push (list (ebox-node-defaults node) node 'self) env))
     env))
+
+(defun ebox--env-equal (a b)
+  "Return non-nil when scope environments A and B hold the same entries."
+  (while (and a b (let ((x (car a)) (y (car b)))
+                    (and (eq (car x) (car y)) (eq (nth 1 x) (nth 1 y))
+                         (eq (nth 2 x) (nth 2 y)))))
+    (setq a (cdr a) b (cdr b)))
+  (and (null a) (null b)))
 
 (defun ebox--applicable-scopes (node env)
   "Return the (SCOPE ROOT) entries of ENV applying to NODE."
@@ -675,13 +703,17 @@ also serves ids that are not valid `#' selector identifiers."
 
 (defun ebox--node-style (node parent-cs)
   "Return the shared computed style of NODE under PARENT-CS."
-  (let* ((env (ebox--node-env node))
+  (let* ((env (let ((env (ebox--node-env node)) (old (ebox-node-env node)))
+                (if (ebox--env-equal env old) old env)))
          (_ (setf (ebox-node-env node) env))
          (scopes (and env (ebox--applicable-scopes node env)))
          (key (ebox--style-key node scopes))
-         (table (if parent-cs
-                    (or (gethash parent-cs ebox--cs-cache)
-                        (puthash parent-cs (make-hash-table :test 'equal)
+         (pkey (and parent-cs
+                    (if ebox-style--explicit-inherit parent-cs
+                      (ebox-cs-ikey parent-cs))))
+         (table (if pkey
+                    (or (gethash pkey ebox--cs-cache)
+                        (puthash pkey (make-hash-table :test 'equal)
                                  ebox--cs-cache))
                   ebox--root-cs-table)))
     (or (and key (gethash key table))
@@ -834,7 +866,8 @@ unless `ebox-viewport-height' supplies one."
          (fontface (ebox--intern-face (car font)))
          (lkey (ebox--layout-key vals))
          (cs (ebox-cs--make
-              :vals vals :parent parent :tag tag :hidden hidden :bg bg :deco deco
+              :vals vals :tag tag :hidden hidden :bg bg :deco deco
+              :ikey (ebox--inheritance-key vals bg deco hidden)
               :fontface fontface
               :face (ebox--face-from-groups
                      (list (car font) deco (and color (list :foreground color))
