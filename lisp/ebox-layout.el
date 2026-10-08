@@ -971,7 +971,9 @@ Items overflowing their container make it a clipping or growing box."
             (setq strings (cons (ebox--space left padface)
                                 (nconc strings (list (ebox--space (- free left) padface))))))
           (setq lines (if (and old (= (length old) 1)) old (make-vector 1 nil)))
-          (aset lines 0 (ebox--join strings)))
+          (aset lines 0 (if (> one width)
+                            (car (ebox--split-at (ebox--join strings) width))
+                          (ebox--join strings))))
       (let* ((broken (ebox--break-lines pieces width wrap clip))
              (i 0))
         (setq lines (make-vector (length broken) nil))
@@ -979,7 +981,8 @@ Items overflowing their container make it a clipping or growing box."
           (let* ((free (- width (cdr line)))
                  (left (ebox--align-left align free)))
             (aset lines i
-                  (if (and (zerop left) (<= free 0)) (car line)
+                  (if (and (zerop left) (<= free 0))
+                      (if (< free 0) (car (ebox--split-at (car line) width)) (car line))
                     (ebox--join (list (ebox--space left padface) (car line)
                                       (ebox--space (- free left) padface)))))
             (setq i (1+ i))))))
@@ -1751,11 +1754,18 @@ The strings span the content width CW in pixels."
                (push (cons (- x cursor) item) shown)
                (setq cursor (+ x (ebox--item-w item))))))
          (setq tail (cons (ebox--space (- cw cursor) padface) tail))
+         ;; Text cannot overlap, so an item overflowing the content box is
+         ;; cut at its edge instead of pushing later siblings to the right.
          (dolist (entry shown tail)
-           (setq tail (cons (ebox--space (car entry) padface)
-                            (ebox--item-parts (cdr entry)
-                                              (- ci (ebox--item-y (cdr entry)))
-                                              tail)))))))))
+           (let* ((item (cdr entry))
+                  (x (ebox--item-x item))
+                  (parts (ebox--item-parts item (- ci (ebox--item-y item)) nil)))
+             (when (> (+ x (ebox--item-w item)) cw)
+               (setq parts (and (< x cw)
+                                (list (car (ebox--split-at (ebox--join parts)
+                                                           (- cw x)))))))
+             (setq tail (cons (ebox--space (car entry) padface)
+                              (nconc parts tail))))))))))
 
 (defun ebox--border-parts (node geo bi tail)
   "Return the strings of border-box line BI of NODE followed by TAIL.

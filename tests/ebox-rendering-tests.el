@@ -103,6 +103,28 @@ def"))
     (should (equal (mapcar #'string-trim-right (seq-take lines 5))
                    '("c" "d" "e" "f" "g")))))
 
+(ert-deftest ebox-render-overflowing-items-keep-sibling-columns ()
+  (should (equal (ebox-test-render-text
+                  '(flex :width (ch 10)
+                         (box :width (ch 3) :wrap-mode none "abcdef")
+                         (box "Z")))
+                 "abcZ "))
+  (let ((lines (split-string
+                (ebox-render
+                 '(flex :width (ch 10)
+                        (column :width (ch 4)
+                                (flex :column-gap (ch 1)
+                                      (box "▸")
+                                      (box :flex-grow 1 :min-width (px 0) "Today")
+                                      (box "6")))
+                        (box "Z")))
+                "\n")))
+    (should (> (length lines) 1))
+    (dolist (line lines)
+      (should (= 10 (with-temp-buffer
+                      (insert line)
+                      (car (buffer-text-pixel-size))))))))
+
 (ert-deftest ebox-render-absolute-children-start-at-content-origin ()
   (ebox-test-with-mounted (buffer root
                            '(box :width (ch 10) :height (lh 3) :padding ((lh 1) (ch 2))

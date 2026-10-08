@@ -27,3 +27,9 @@ All notable changes to Ebox are documented here.
   `ebox-node-set-text`, `ebox-node-set-image`, `ebox-node-set-props`,
   `ebox-node-put`, `ebox-node-set-states` or `ebox-node-restyle`; old explicit
   update grouping maps to `ebox-with-batch`.
+
+### Fixed
+
+- Content wider than its box is cut at the box edge, so later siblings on a
+  line keep their columns instead of shifting right.
+

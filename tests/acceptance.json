@@ -150,6 +150,11 @@
       "purpose": "Whole-line flex shrinkage removes complete rows from the first items instead of scattering gaps."
     },
     {
+      "name": "ebox-render-overflowing-items-keep-sibling-columns",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Content wider than its box is cut at the box edge, so later siblings keep their columns on every line."
+    },
+    {
       "name": "ebox-render-absolute-children-start-at-content-origin",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Absolute children are offset from their host's content origin, inside its padding."
