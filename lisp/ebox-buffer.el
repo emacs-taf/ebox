@@ -547,7 +547,10 @@ Positions in untouched lines move with their text, so only positions in
 replaced lines, or at a line start where lines are inserted, are tracked."
   (let* ((first (and edits
                      (save-excursion (ebox--goto-line mount (caar edits)) (point))))
-         (last (and edits (ebox--edits-end mount edits)))
+         (last (and edits
+                    (if (and (null (cdr edits)) (zerop (nth 1 (car edits))))
+                        first
+                      (ebox--edits-end mount edits))))
          tracked entry)
     (dolist (window (get-buffer-window-list (current-buffer) nil t))
       (when (setq entry (ebox--tracked-position mount 'start window (window-start window)
