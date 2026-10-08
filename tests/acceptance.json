@@ -280,6 +280,11 @@
       "purpose": "Structural node mutations update child order and mounted text through public APIs."
     },
     {
+      "name": "ebox-shrunk-flex-item-update-keeps-following-siblings",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Updating content of a flex item shrunk below its natural height leaves the buffer equal to a fresh render, including following siblings."
+    },
+    {
       "name": "ebox-with-batch-flushes-mutated-mount-once",
       "file": "tests/ebox-update-tests.el",
       "purpose": "Batched mutations defer publication and flush the mounted buffer once at batch exit."

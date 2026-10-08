@@ -732,20 +732,25 @@ that damage once, when the pass ends."
 (defun ebox--damage-prune (damages)
   "Return DAMAGES without entries superseded by a later whole-node entry.
 DAMAGES is newest first; a whole-node entry, whose item is a node, covers
-earlier damage owned by that node or its descendants."
+earlier damage owned by that node or its descendants.  A node laid out more
+than once in a pass keeps its first old height, the one the buffer shows."
   (let ((whole nil) (kept nil))
     (dolist (damage damages)
       (let ((owner (ebox--damage-owner (car damage))) (covered nil))
         (when whole
           (let ((node owner))
             (while (and node (not covered))
-              (if (gethash node whole) (setq covered t)
-                (setq node (ebox-node-parent node))))))
+              (let ((entry (gethash node whole)))
+                (if (not entry)
+                    (setq node (ebox-node-parent node))
+                  (setq covered t)
+                  (when (eq (car damage) node)
+                    (setf (nth 2 entry) (nth 2 damage))))))))
         (unless covered
           (push damage kept)
           (when (ebox-node-p (car damage))
             (unless whole (setq whole (make-hash-table :test 'eq)))
-            (puthash (car damage) t whole)))))
+            (puthash (car damage) damage whole)))))
     (nreverse kept)))
 
 (defsubst ebox--item-h (item)

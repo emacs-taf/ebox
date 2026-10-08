@@ -89,6 +89,17 @@ C "))
 D "))
       (should (ebox-test-buffer-matches-render-p root buffer)))))
 
+(ert-deftest ebox-shrunk-flex-item-update-keeps-following-siblings ()
+  (ebox-test-with-mounted
+      (buffer root '(flex :flex-direction column :height (lh 6)
+                          (column :flex-grow 1 :min-height (lh 0)
+                                  (column :height (% 100) "x")
+                                  (column :id "list" "1" "2" "3" "4" "5" "6" "7"))
+                          (box "T") (box "F")))
+    (ebox-node-insert (car (ebox-selector-query root "#list")) "8")
+    (should (equal (split-string (ebox-test-buffer-text buffer) "\n") '("x " " " " " " " "T " "F ")))
+    (should (ebox-test-buffer-matches-render-p root buffer))))
+
 (ert-deftest ebox-with-batch-flushes-mutated-mount-once ()
   (ebox-test-with-mounted (buffer root '(column (text :id "a" "A") (text :id "b" "B")))
     (let ((a (car (ebox-selector-query root "#a")))
