@@ -166,7 +166,8 @@ performs main-size growth/shrink with min/max freezing, wrapping and alignment.
 Grid expands tracks, resolves fixed/intrinsic/fractional sizes and places items
 by one-based grid positions.
 
-Absolute boxes are registered with a positioning host.  Local overlays compose
+Absolute boxes are registered with a positioning host: the nearest non-inline
+parent, or the root for `:layer root`.  Local overlays compose
 inside that host; root-targeted overlays still keep their logical parent for
 style and selectors.  Anchored overlays compute placement from a unique target
 and are placed after normal layout so target movement can be reflected without
@@ -186,10 +187,11 @@ width and face.  Emacs coalesces adjacent characters whose `display` objects are
 at part boundaries.  This preserves exact pixel spacing while allowing line
 parts to be shared across flushes.
 
-Interaction decoration happens during composition.  Ebox fills unset `ebox-node`,
+Interaction decoration happens during composition.  Ebox fills absent `ebox-node`,
 `keymap`, `help-echo`, `pointer` and `mouse-face` properties so the innermost
 explicit node wins and ancestor keymaps cover descendants that do not override
-them.
+them.  An inner node's explicit nil is painted as a present property, so it
+blocks the ancestor's value instead of inheriting it.
 
 ## Buffer writes
 

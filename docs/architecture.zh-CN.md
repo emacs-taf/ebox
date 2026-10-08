@@ -134,7 +134,7 @@ cluster 与 fixed display space。box 在横向解析为像素、纵向解析为
 flex 使用 min/max freezing、wrapping 与 alignment 做 main-size grow/shrink。grid 展开 track、解析 fixed/intrinsic/
 fractional size，并按一基 grid position 放置 item。
 
-absolute box 注册到 positioning host。本地 overlay 在 host 内组合；root-targeted overlay 仍保留逻辑 parent 供 style
+absolute box 注册到 positioning host（最近的非 inline 父节点；`:layer root` 时为根）。本地 overlay 在 host 内组合；root-targeted overlay 仍保留逻辑 parent 供 style
 与 selector 使用。anchored overlay 从唯一 target 计算 placement，并在 normal layout 后放置，使 target 移动无需触发
 无关 relayout。
 

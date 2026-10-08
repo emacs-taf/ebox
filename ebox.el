@@ -85,6 +85,9 @@
 ;; Function: ebox-mount-viewport (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-mount-viewport "ebox" nil nil)
 ;; Return (WIDTH . HEIGHT) of BUFFER-OR-NAME's mounted viewport, or nil.
+;; WIDTH is in pixels and HEIGHT in lines; HEIGHT is nil when indefinite, as in
+;; batch sessions without `ebox-viewport-height', so viewport-height units
+;; size to content there.
 ;;
 ;; Function: ebox-mount-set-viewport (buffer-or-name width height)
 ;;;###autoload (autoload 'ebox-mount-set-viewport "ebox" nil nil)
@@ -101,10 +104,13 @@
 ;; Function: ebox-refit (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-refit "ebox" nil nil)
 ;; Relayout BUFFER-OR-NAME's mount when its viewport size changed.
+;; Return non-nil when the layout changed.  During an input session the refit
+;; waits and returns nil; `ebox-input-end' applies it.
 ;;
 ;; Function: ebox-buffer-mode (&optional arg)
 ;;;###autoload (autoload 'ebox-buffer-mode "ebox" nil t)
-;; Minor mode for mounted Ebox buffers.
+;; Minor mode for mounted Ebox buffers.  `ebox-mount' enables it and
+;; `ebox-unmount-buffer' disables it; customize `ebox-buffer-mode-map'.
 ;;
 ;; Variable: ebox-viewport-width
 ;; Viewport width in pixels for rendering outside a mount, or nil.
@@ -237,9 +243,13 @@
 ;;;###autoload (autoload 'ebox-node-position "ebox" nil nil)
 ;; Return the buffer position of NODE's first painted character, or nil.
 ;;
-;; Function: ebox-node-bounds (node)
+;; Function: ebox-node-bounds (node &optional all-lines)
 ;;;###autoload (autoload 'ebox-node-bounds "ebox" nil nil)
 ;; Return (START . END) buffer positions of NODE's first painted line.
+;; With ALL-LINES, END ends NODE's last painted line, spanning every row.
+;; A box's span starts at the first cell of that line not covered by an
+;; overlay outside NODE; the result is nil when overlays cover the whole line.
+;; Covered boxes are likewise not focusable.
 ;;
 ;; Function: ebox-node-geometry (node)
 ;;;###autoload (autoload 'ebox-node-geometry "ebox" nil nil)
@@ -348,6 +358,7 @@
 ;; Function: ebox-input-end (session)
 ;;;###autoload (autoload 'ebox-input-end "ebox" nil nil)
 ;; End SESSION, restore its painted text and return the user's text.
+;; Deferred changes and a viewport refit that waited are then written.
 ;;
 ;; Function: ebox-input-text (session)
 ;;;###autoload (autoload 'ebox-input-text "ebox" nil nil)
@@ -364,6 +375,9 @@
 ;; Function: ebox-call-with-input (node reader &optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-call-with-input "ebox" nil nil)
 ;; Call zero-argument READER for visible, enabled NODE in BUFFER-OR-NAME.
+;; Return its result when NODE is still available; otherwise signal
+;; `ebox-input-cancelled'.  Afterwards NODE holds logical focus, or the
+;; earlier focus returns when NODE is gone.
 ;;
 ;;;; Styles and images
 ;;

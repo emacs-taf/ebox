@@ -867,6 +867,8 @@ The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
               (and window (not noninteractive) (window-body-height window))
               (ebox--default-viewport-height)))))
 
+(declare-function ebox-buffer-mode "ebox-interaction" (&optional arg))
+
 (defun ebox-mount (buffer-or-name input &rest options)
   "Mount INPUT, a root node or author form, in BUFFER-OR-NAME and return the root.
 The buffer's text is replaced and then owned by Ebox.  OPTIONS may contain
@@ -887,6 +889,7 @@ The buffer's text is replaced and then owned by Ebox.  OPTIONS may contain
               (ebox-mount-anchored mount) (ebox--collect-anchored root))
         (setq ebox--buffer-mount mount)
         (add-hook 'kill-buffer-hook #'ebox--buffer-killed nil t)
+        (ebox-buffer-mode 1)
         (setf (ebox-node-dirty root) (logior (ebox-node-dirty root) 15))
         (let ((ebox--batch-depth 0))
           (setf (ebox-mount-queued mount) t)
@@ -932,6 +935,7 @@ See `ebox-mount'."
           (ebox--release-mount ebox--buffer-mount)
           (setq ebox--buffer-mount nil)
           (remove-hook 'kill-buffer-hook #'ebox--buffer-killed t)
+          (ebox-buffer-mode -1)
           t)))))
 
 (defun ebox-mount-set-viewport (buffer-or-name width height)
@@ -945,9 +949,10 @@ Nil WIDTH or HEIGHT follows the display window."
 
 (defun ebox-refit (&optional buffer-or-name)
   "Relayout BUFFER-OR-NAME's mount when its viewport size changed.
-Return non-nil when the layout changed."
+Return non-nil when the layout changed.  While an input session owns the
+buffer text the refit waits; ending the session applies it."
   (let ((mount (ebox-buffer-mount buffer-or-name)))
-    (when mount
+    (when (and mount (not (ebox-mount-session mount)))
       (with-current-buffer (ebox-mount-buffer mount)
         (pcase-let ((`(,w . ,h) (ebox--measure-viewport mount)))
           (unless (and (eql w (ebox-mount-vw mount)) (eql h (ebox-mount-vh mount)))
@@ -1006,8 +1011,9 @@ X and WIDTH are pixels, Y and HEIGHT root lines; nil when NODE is not laid out."
         (if (> (+ px w) x) (setq px x) (setq px (+ px w) pos next))))
     (+ bol pos)))
 
-(defun ebox--text-bounds (node mount)
-  "Return (START . END) of text NODE's first painted run in MOUNT, or nil."
+(defun ebox--text-bounds (node mount &optional all-lines)
+  "Return (START . END) of text NODE's first painted run in MOUNT, or nil.
+With ALL-LINES, END is the end of NODE's last painted run."
   (let ((geometry (and (ebox-node-parent node) (ebox-node-geometry (ebox-node-parent node)))))
     (when (and geometry (> (plist-get geometry :height) 0)
                (< (plist-get geometry :y) (ebox-mount-lines mount)))
@@ -1018,7 +1024,12 @@ X and WIDTH are pixels, Y and HEIGHT root lines; nil when NODE is not laid out."
                  (end (progn (forward-line (plist-get geometry :height)) (point)))
                  (run (text-property-any start end 'ebox-node node)))
             (when run
-              (let ((stop (or (text-property-not-all run end 'ebox-node node) end)))
+              (let ((stop (if all-lines
+                              (let ((last end))
+                                (while (not (eq (get-text-property (1- last) 'ebox-node) node))
+                                  (setq last (1- last)))
+                                last)
+                            (or (text-property-not-all run end 'ebox-node node) end))))
                 ;; An interactive text node also owns the alignment fill
                 ;; after its glyphs; that fill is not part of its text.
                 (while (and (> stop run)
@@ -1026,23 +1037,62 @@ X and WIDTH are pixels, Y and HEIGHT root lines; nil when NODE is not laid out."
                   (setq stop (1- stop)))
                 (and (> stop run) (cons run stop))))))))))
 
-(defun ebox-node-bounds (node)
+(defun ebox--node-visible-p (node)
+  "Return non-nil when NODE and its ancestors paint.
+An overlay whose anchor is unavailable is laid out but never placed."
+  (let ((ok t))
+    (while (and ok node)
+      (when (or (null (ebox-node-cs node)) (ebox--hidden-p node)
+                (and (ebox--abs-p node) (not (ebox-node-placed node))))
+        (setq ok nil))
+      (setq node (ebox-node-parent node)))
+    ok))
+
+(defun ebox-node-bounds (node &optional all-lines)
   "Return (START . END) buffer positions of NODE's first painted line.
-For a box this spans its first border-box line; for a text node, its first
-painted run.  Return nil when NODE is not painted in a live mount."
+For a box this spans its first border-box line from its first visible cell;
+for a text node, its first painted run.  With ALL-LINES, END instead ends
+NODE's last painted line, so the span covers every painted row.  Return nil
+when NODE is not painted in a live mount, including when overlays cover its
+whole first line."
   (let ((mount (ebox--mount-of node))
         (geometry (ebox-node-geometry node)))
     (if (and mount (ebox-node-text-p node))
-        (ebox--text-bounds node mount)
+        (ebox--text-bounds node mount all-lines)
       (when (and mount geometry (> (plist-get geometry :height) 0)
-                 (< (plist-get geometry :y) (ebox-mount-lines mount)))
-        (with-current-buffer (ebox-mount-buffer mount)
-          (save-excursion
-            (ebox--goto-line mount (plist-get geometry :y))
-            (let ((bol (point)))
-              (cons (ebox--pos-at-x bol (plist-get geometry :x))
-                    (ebox--pos-at-x bol (+ (plist-get geometry :x)
-                                           (plist-get geometry :width)))))))))))
+                 (< (plist-get geometry :y) (ebox-mount-lines mount))
+                 (ebox--node-visible-p node))
+        (let ((x (ebox--uncovered-x node mount geometry))
+              (y (plist-get geometry :y))
+              (right (+ (plist-get geometry :x) (plist-get geometry :width))))
+          (when x
+            (with-current-buffer (ebox-mount-buffer mount)
+              (save-excursion
+                (ebox--goto-line mount y)
+                (let ((start (ebox--pos-at-x (point) x)))
+                  (when all-lines
+                    (forward-line (1- (min (plist-get geometry :height)
+                                           (- (ebox-mount-lines mount) y)))))
+                  (cons start (ebox--pos-at-x (line-beginning-position) right)))))))))))
+
+(defun ebox--uncovered-x (node mount geometry)
+  "Return the first pixel X on NODE's first line not covered by an overlay.
+GEOMETRY is NODE's border box.  A cell is covered when the hit test resolves
+it inside an overlay that NODE does not belong to; return nil when every cell
+of the first line is covered."
+  (let* ((line (plist-get geometry :y))
+         (x (plist-get geometry :x))
+         (end (+ x (plist-get geometry :width)))
+         (step (max 1 (ebox--ch (ebox-node-cs node))))
+         (root (ebox-mount-root mount))
+         found)
+    (while (and (not found) (< x end))
+      (let ((hit (ebox--hit root line x)) covered)
+        (while (and hit (not (ebox-node-ancestor-p hit node)))
+          (when (and (ebox-node-cs hit) (ebox--abs-p hit)) (setq covered t))
+          (setq hit (ebox-node-parent hit)))
+        (if covered (setq x (+ x step)) (setq found x))))
+    found))
 
 (defun ebox-node-position (node)
   "Return the buffer position of NODE's first painted character, or nil."
@@ -1071,9 +1121,12 @@ positions resolve to the innermost box covering the cell."
   (let* ((geo (ebox-node-layout node))
          (mt (ebox-geo-mt geo)) (ml (ebox-geo-ml geo))
          (hit nil))
-    (dolist (overlay (sort (copy-sequence (ebox-node-overlays node))
-                           (lambda (a b) (> (ebox-cs-z (ebox-node-cs a))
-                                            (ebox-cs-z (ebox-node-cs b))))))
+    ;; Hit the reverse of paint order: higher z first, and among equal z the
+    ;; later overlay, which paints on top.
+    (dolist (overlay (nreverse
+                      (sort (copy-sequence (ebox-node-overlays node))
+                            (lambda (a b) (< (ebox-cs-z (ebox-node-cs a))
+                                             (ebox-cs-z (ebox-node-cs b)))))))
       (when (and (not hit) (ebox-node-placed overlay) (ebox-node-layout overlay)
                  (eq (ebox-node-host overlay) node)
                  (not (ebox--hidden-p overlay)))

@@ -1389,13 +1389,14 @@ is not one of GEO's items."
 ;;;; Overlays (absolutely positioned descendants)
 
 (defun ebox--host-cs-p (cs)
-  "Return non-nil when a node styled CS hosts absolutely positioned nodes.
-Inline boxes may lack box geometry of their own, so they never host."
-  (and (not (memq (ebox-cs-position cs) '(static nil)))
-       (not (eq (ebox-cs-outer cs) 'inline))))
+  "Return non-nil when a node styled CS hosts absolutely positioned children.
+Every box hosts its absolute children; inline boxes lack box geometry of
+their own, so their absolute children belong to the nearest enclosing box."
+  (not (eq (ebox-cs-outer cs) 'inline)))
 
 (defun ebox--host-of (node)
-  "Return the positioning host of absolutely positioned NODE."
+  "Return the positioning host of absolutely positioned NODE.
+That is the nearest non-inline parent, or the root for `:layer root'."
   (if (eq (ebox--cv (ebox-node-cs node) 'ebox/layer) 'root)
       (ebox-node-root node)
     (let ((parent (ebox-node-parent node)))

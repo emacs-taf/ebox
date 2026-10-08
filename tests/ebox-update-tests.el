@@ -6,7 +6,7 @@
   (ebox-test-with-mounted (buffer root '(box :width (vw 50) :height (lh 1)))
     (should (eq (ebox-buffer-root buffer) root))
     (should (eq (ebox-node-buffer root) buffer))
-    (should (equal (ebox-mount-viewport buffer) '(80 . 24)))
+    (should (equal (ebox-mount-viewport buffer) '(80 . nil)))
     (should (equal (ebox-node-geometry root) '(:x 0 :y 0 :width 40 :height 1)))
     (ebox-mount-set-viewport buffer 20 5)
     (should (equal (ebox-mount-viewport buffer) '(20 . 5)))

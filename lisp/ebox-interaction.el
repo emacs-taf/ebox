@@ -5,9 +5,10 @@
 ;;; Commentary:
 
 ;; Interaction capabilities live on retained nodes.  Composition copies the
-;; lines of an interactive node and fills unset `ebox-node', `keymap',
+;; lines of an interactive node and fills absent `ebox-node', `keymap',
 ;; `help-echo', `pointer' and `mouse-face' properties, so the innermost node
-;; wins and an ancestor's keymap reaches descendants without their own.
+;; wins, an explicit nil blocks inheritance, and an ancestor's keymap reaches
+;; descendants without their own.
 ;; Focus and the held pointer target are mount state; they surface as the
 ;; derived selector states focus and active, and :disabled t derives disabled.
 
@@ -88,22 +89,26 @@
                                       (or (plist-get inter :keymap) ebox--empty-keymap))))))
         (when (and (plist-get inter :disabled) (not (plist-member inter :keymap)))
           (setq props (append props (list 'keymap ebox--empty-keymap))))
-        (when (plist-get inter :help-echo)
+        ;; An explicit nil is painted too, so it blocks an ancestor's value.
+        (when (plist-member inter :help-echo)
           (setq props (append props (list 'help-echo (plist-get inter :help-echo)))))
-        (when (plist-get inter :pointer)
+        (when (plist-member inter :pointer)
           (setq props (append props (list 'pointer (plist-get inter :pointer)))))
-        (when (plist-get inter :hover-style)
+        (when (plist-member inter :hover-style)
           (setq props (append props (list 'mouse-face
-                                          (ebox--hover-face (plist-get inter :hover-style))))))
+                                          (and (plist-get inter :hover-style)
+                                               (ebox--hover-face
+                                                (plist-get inter :hover-style)))))))
         (puthash node (cons inter props) ebox--inter-cache)
         props))))
 
 (defun ebox--fill-property (string property value)
-  "Put PROPERTY VALUE on the parts of STRING where it is unset."
+  "Put PROPERTY VALUE on the parts of STRING where it is absent.
+A present nil, painted by an inner node, keeps blocking VALUE."
   (let ((pos 0) (len (length string)))
     (while (< pos len)
-      (let ((next (next-single-property-change pos property string len)))
-        (unless (get-text-property pos property string)
+      (let ((next (or (next-property-change pos string len) len)))
+        (unless (plist-member (text-properties-at pos string) property)
           (put-text-property pos next property value string))
         (setq pos next)))))
 
@@ -131,14 +136,6 @@ A text node has no box of its own; it is live when its parent is."
                            node))
        (eq (ebox-node-root node) (ebox-mount-root mount))
        (buffer-live-p (ebox-mount-buffer mount))))
-
-(defun ebox--node-visible-p (node)
-  "Return non-nil when NODE and its ancestors paint."
-  (let ((ok t))
-    (while (and ok node)
-      (when (or (null (ebox-node-cs node)) (ebox--hidden-p node)) (setq ok nil))
-      (setq node (ebox-node-parent node)))
-    ok))
 
 (defun ebox--node-enabled-p (node)
   "Return non-nil unless NODE or an ancestor is disabled."
@@ -524,7 +521,10 @@ gesture alive after the first release until the next press."
   (and (ebox--node-live-p node mount)
        (ebox--node-visible-p node)
        (ebox--node-enabled-p node)
-       (> (or (plist-get (ebox-node-geometry node) :height) 0) 0)))
+       (let ((geometry (ebox-node-geometry node)))
+         (and geometry (> (plist-get geometry :height) 0)
+              (or (ebox-node-text-p node)
+                  (ebox--uncovered-x node mount geometry))))))
 
 (defun ebox-focus (node &optional buffer-or-name)
   "Focus NODE in BUFFER-OR-NAME and move point to its first character.
@@ -622,7 +622,8 @@ focus when it lies inside NODE."
 (defun ebox-call-with-input (node reader &optional buffer-or-name)
   "Call zero-argument READER for visible, enabled NODE in BUFFER-OR-NAME.
 Return its result when NODE is still available afterwards; otherwise signal
-`ebox-input-cancelled'.  Logical focus is restored afterwards."
+`ebox-input-cancelled'.  Afterwards NODE holds logical focus, or the earlier
+focus returns when NODE is gone."
   (let* ((mount (ebox--mount-for buffer-or-name))
          (focus (ebox-mount-focus mount)))
     (unless (ebox--focusable-p node mount)
@@ -630,9 +631,11 @@ Return its result when NODE is still available afterwards; otherwise signal
     (let (result)
       (unwind-protect
           (setq result (funcall reader))
-        (when (and (eq (ebox-buffer-mount (ebox-mount-buffer mount)) mount)
-                   (ebox--focusable-p focus mount))
-          (ebox--set-mount-state mount 'focus focus)))
+        (when (eq (ebox-buffer-mount (ebox-mount-buffer mount)) mount)
+          (cond ((ebox--focusable-p node mount)
+                 (ebox--set-mount-state mount 'focus node))
+                ((ebox--focusable-p focus mount)
+                 (ebox--set-mount-state mount 'focus focus)))))
       (unless (and (eq (ebox-buffer-mount (ebox-mount-buffer mount)) mount)
                    (ebox--focusable-p node mount))
         (signal 'ebox-input-cancelled (list node)))
@@ -734,6 +737,9 @@ after its buffer was unmounted, only returns nil."
               ;; Line anchors inside the edited span collapsed with it.
               (ebox--rebuild-anchors mount))))
       (ebox--input-release session)
+      ;; A viewport change waited for the session.
+      (when (and live (eq (ebox-buffer-mount buffer) mount))
+        (ebox-refit buffer))
       (when (and live (ebox-mount-queued mount)
                  (eq (ebox-buffer-mount buffer) mount))
         (unless (memq mount ebox--queue) (push mount ebox--queue))

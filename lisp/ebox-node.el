@@ -697,9 +697,11 @@ box, row, column, flex and grid."
         (window-body-width nil t))))
 
 (defun ebox--default-viewport-height ()
-  "Return the fallback viewport height in lines."
+  "Return the fallback viewport height in lines, or nil when indefinite.
+Batch sessions have no display, so viewport-height units stay indefinite
+unless `ebox-viewport-height' supplies one."
   (or ebox-viewport-height
-      (if noninteractive 24 (window-body-height))))
+      (unless noninteractive (window-body-height))))
 
 (defvar ebox--vw nil "Viewport width in pixels during layout.")
 (defvar ebox--vh nil "Viewport height in lines during layout.")

@@ -80,6 +80,75 @@
       (should (equal (get-text-property (point-min) 'face)
                      '(:foreground "#ff0000"))))))
 
+(ert-deftest ebox-overlays-cover-hits-positions-and-focus-in-paint-order ()
+  (ebox-test-with-mounted (buffer root
+                           '(column :width (ch 20) :height (lh 4)
+                                    (box :id "under" :tab-index 0 "Under")
+                                    (box :id "cover" :position absolute
+                                         :left (ch 0) :top (lh 0)
+                                         :width (ch 20) :height (lh 4) "")
+                                    (box :id "panel" :position absolute
+                                         :left (ch 0) :top (lh 0)
+                                         :width (ch 10) :height (lh 1)
+                                         :tab-index 0 "Panel")))
+    (let ((under (car (ebox-selector-query root "#under")))
+          (panel (car (ebox-selector-query root "#panel"))))
+      ;; The later overlay paints on top of an equal-z sibling and wins hits.
+      (should (ebox-node-ancestor-p panel (ebox-node-at (point-min) buffer)))
+      (should (eq (ebox-node-at (+ (point-min) 12) buffer)
+                  (car (ebox-selector-query root "#cover"))))
+      (should (ebox-node-position panel))
+      (should-not (ebox-node-position under))
+      (should-error (ebox-focus under buffer) :type 'user-error)
+      (should (eq (ebox-focus-first buffer) panel)))))
+
+(ert-deftest ebox-node-bounds-spans-first-or-every-painted-row ()
+  (ebox-test-with-mounted (buffer root '(column (box :id "tall" :width (ch 4) :height (lh 2)
+                                                     "ab")
+                                                (box :width (ch 3) (text :id "wrap" "abc def"))))
+    (let ((tall (car (ebox-selector-query root "#tall")))
+          (wrap (car (ebox-selector-query root "#wrap"))))
+      (pcase-let ((`(,start . ,end) (ebox-node-bounds tall)))
+        (should (equal (string-trim-right (buffer-substring-no-properties start end)) "ab")))
+      (pcase-let ((`(,start . ,end) (ebox-node-bounds tall t)))
+        (should (equal (mapcar #'string-trim-right
+                               (split-string (buffer-substring-no-properties start end) "\n"))
+                       '("ab" ""))))
+      (pcase-let ((`(,start . ,end) (ebox-node-bounds wrap)))
+        (should (equal (buffer-substring-no-properties start end) "abc")))
+      (pcase-let ((`(,start . ,end) (ebox-node-bounds wrap t)))
+        (should (equal (mapcar #'string-trim-right
+                               (split-string (buffer-substring-no-properties start end) "\n"))
+                       '("abc" "def")))))))
+
+(ert-deftest ebox-descendants-inherit-or-block-native-feedback ()
+  (ebox-test-with-mounted (buffer root '(box :help-echo "Outer" :pointer hand
+                                             :hover-style (:background-color "#123456")
+                                             (box :id "plain" "Plain")
+                                             (box :id "own" :help-echo nil :pointer nil
+                                                  :hover-style nil "Own")))
+    (let ((plain (ebox-node-position (car (ebox-selector-query root "#plain"))))
+          (own (ebox-node-position (car (ebox-selector-query root "#own")))))
+      (should (equal (get-text-property plain 'help-echo) "Outer"))
+      (should (eq (get-text-property plain 'pointer) 'hand))
+      (should (get-text-property plain 'mouse-face))
+      (should-not (get-text-property own 'help-echo))
+      (should-not (get-text-property own 'pointer))
+      (should-not (get-text-property own 'mouse-face)))))
+
+(ert-deftest ebox-unanchored-overlay-has-no-position-or-focus ()
+  (ebox-test-with-mounted (buffer root '(column :width (ch 20) :height (lh 4)
+                                         (box :id "base" :tab-index 0 "Base")
+                                         (box :id "pop" :position absolute :anchor "absent"
+                                              :width (ch 10) :height (lh 1)
+                                              (box :id "inner" :tab-index 0 "Inner"))))
+    (let ((inner (car (ebox-selector-query root "#inner"))))
+      (should-not (string-match-p "Inner" (buffer-string)))
+      (should-not (ebox-node-position (car (ebox-selector-query root "#pop"))))
+      (should-not (ebox-node-position inner))
+      (should-error (ebox-focus inner buffer) :type 'user-error)
+      (should (eq (ebox-focus-first buffer) (car (ebox-selector-query root "#base")))))))
+
 (ert-deftest ebox-activate-noerror-returns-nil-without-command ()
   (ebox-test-with-mounted (buffer root '(box "Plain"))
     (goto-char (point-min))

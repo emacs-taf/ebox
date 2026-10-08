@@ -147,9 +147,10 @@ Selector 通过 ECSS subject facts 查看 retained node：type、`:id`、`:class
 - `flex` 支持方向、换行、分布、item grow/shrink 和对齐。
 - `grid` 支持显式/自动 track、fraction、`minmax`、`repeat`、gap 与一基 placement。
 
-绝对定位属于 box layout。absolute 子节点用 `:left` 和 `:top` 相对本地 host 放置；
+绝对定位属于 box layout。absolute 子节点脱离父节点的流，用 `:left` 和 `:top` 从父节点内容原点放置（inline 父节点交给最近的外层 box）；父节点把合成的浮层裁剪到自己的画布内，需要预留空间时给它显式高度。
 `:z-index` 排序重叠绘制。`:layer` 属性可选择 root paint target，同时保持 selector 与继承
 使用的逻辑 parent。anchored absolute box 用 `:anchor` 与 `:placement` 相对 host 中唯一语义目标定位。
+目标缺失时该 box 不绘制、没有位置，也不能获得焦点。
 
 `overflow hidden` 在完整显示单元边界上做横向与纵向裁剪。`overflow scroll` 通过下方 scrolling API 提供纵向滚动。
 
@@ -180,7 +181,7 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
     (ebox-activate (ebox-node-position button) t)))
 ```
 
-`ebox-buffer-mode` 安装 scrolling 键、TAB/backtab focus 循环和 RET/return activation。
+`ebox-mount` 会启用 `ebox-buffer-mode`，卸载时关闭；它安装 scrolling 键、TAB/backtab focus 循环和 RET/return activation。
 不启用 mode 时，应用可直接调用 `ebox-focus`、`ebox-focus-next`、`ebox-focus-previous`、
 `ebox-focus-within`、`ebox-activate`、`ebox-next-interaction` 和 `ebox-previous-interaction`。
 
@@ -189,6 +190,8 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
 - `:help-echo` 接受字符串或由 `ebox-help-create` 生成的函数。
 - `:pointer` 设置 Emacs pointer shape。
 - `:hover-style` 映射为 `mouse-face`，用于颜色和文本装饰变化。
+- 后代继承祖先的 `:help-echo`、`:pointer`、`:hover-style` 和 `:keymap`；后代显式设为
+  nil 会阻断继承值。
 - `:hover-content` 在鼠标悬停某个 group 时临时替换文本节点或 box 的第一个子文本；
   `:hover-group` 将相关成员作为一个 batch 更新。
 - `ebox-keymap-create` 可绑定 `:drag` 回调和受支持的 `:drag-lock-modifier`。

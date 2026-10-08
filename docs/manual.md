@@ -163,11 +163,16 @@ Choose the smallest container that states the layout intent:
 - `grid` supports explicit/automatic tracks, fractions, `minmax`, `repeat`, gaps
   and one-based placement.
 
-Absolute positioning is part of box layout.  An absolute child is placed against
-its local host by `:left` and `:top`; `:z-index` orders overlapping paint.  The
+Absolute positioning is part of box layout.  An absolute child is removed from
+its parent's flow and placed from the parent's content origin by `:left` and
+`:top` (an inline parent defers to its nearest enclosing box); the parent clips
+the composed overlay to its canvas, so give it an explicit height when absolute
+children need reserved space. `:z-index` orders overlapping paint.  The
 `:layer` property can select the root paint target while preserving logical
 parentage for selectors and inheritance.  Anchored absolute boxes use `:anchor`
 and `:placement` to position relative to a unique semantic target in their host.
+While that target is missing the box paints nothing, has no position and cannot
+take focus.
 
 `overflow hidden` clips horizontally and vertically at whole display units.
 `overflow scroll` provides vertical scrolling through the scrolling APIs below.
@@ -200,8 +205,9 @@ Create native keymaps with `ebox-keymap-create`.
     (ebox-activate (ebox-node-position button) t)))
 ```
 
-`ebox-buffer-mode` installs scrolling keys, TAB/backtab focus cycling and
-RET/return activation.  Without the mode, applications can call
+`ebox-mount` enables `ebox-buffer-mode`, which installs scrolling keys,
+TAB/backtab focus cycling and RET/return activation; unmounting disables it.
+After turning the mode off, applications can call
 `ebox-focus`, `ebox-focus-next`, `ebox-focus-previous`, `ebox-focus-within`,
 `ebox-activate`, `ebox-next-interaction` and `ebox-previous-interaction`
 directly.
@@ -211,6 +217,8 @@ directly.
 - `:help-echo` accepts a string or a function made with `ebox-help-create`.
 - `:pointer` sets an Emacs pointer shape.
 - `:hover-style` maps to `mouse-face` for color and text-decoration changes.
+- Descendants inherit an ancestor's `:help-echo`, `:pointer`, `:hover-style` and
+  `:keymap`; an explicit nil on the descendant blocks the inherited value.
 - `:hover-content` temporarily replaces a text node or the first child text of a
   box while the mouse is over a group; `:hover-group` updates related members as
   one batch.

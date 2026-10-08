@@ -70,6 +70,26 @@
       "purpose": "Focus-within navigation remains inside the requested container."
     },
     {
+      "name": "ebox-overlays-cover-hits-positions-and-focus-in-paint-order",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Overlapping overlays hit in paint order, and boxes covered by them have no position and refuse focus."
+    },
+    {
+      "name": "ebox-descendants-inherit-or-block-native-feedback",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Descendants inherit an ancestor's help, pointer and hover feedback unless they set it to nil."
+    },
+    {
+      "name": "ebox-unanchored-overlay-has-no-position-or-focus",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "An overlay whose anchor is missing paints nothing, has no position and refuses focus."
+    },
+    {
+      "name": "ebox-node-bounds-spans-first-or-every-painted-row",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Node bounds span a box's first painted row by default and all of its painted rows on request."
+    },
+    {
       "name": "ebox-focus-derived-state-matches-selector-and-styles",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Focused nodes expose :focus selectors and focus-dependent styles."
@@ -155,6 +175,11 @@
       "purpose": "Input sessions expose user edits, return them, and restore published text."
     },
     {
+      "name": "ebox-input-session-defers-viewport-refit",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "A viewport change during an input session waits, then lays out when the session ends."
+    },
+    {
       "name": "ebox-input-session-excludes-focusable-text-fill",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "Focusable text bounds and input sessions cover only the text glyphs, not alignment fill."
@@ -167,7 +192,7 @@
     {
       "name": "ebox-call-with-input-returns-reader-value-and-closes-session",
       "file": "tests/ebox-scroll-input-tests.el",
-      "purpose": "call-with-input returns the reader value and closes the active session."
+      "purpose": "call-with-input returns the reader value, focuses its target and closes the active session."
     },
     {
       "name": "ebox-selector-query-finds-type-id-class-attribute-and-state",
