@@ -85,9 +85,10 @@
 ;; Function: ebox-mount-viewport (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-mount-viewport "ebox" nil nil)
 ;; Return (WIDTH . HEIGHT) of BUFFER-OR-NAME's mounted viewport, or nil.
-;; WIDTH is in pixels and HEIGHT in lines; HEIGHT is nil when indefinite, as in
-;; batch sessions without `ebox-viewport-height', so viewport-height units
-;; size to content there.
+;; WIDTH is in pixels and HEIGHT in lines.  Without a fixed viewport the size
+;; follows the window displaying the buffer, in batch sessions too.  HEIGHT is
+;; nil when indefinite (an undisplayed batch buffer without
+;; `ebox-viewport-height'), so viewport-height units size to content there.
 ;;
 ;; Function: ebox-mount-set-viewport (buffer-or-name width height)
 ;;;###autoload (autoload 'ebox-mount-set-viewport "ebox" nil nil)

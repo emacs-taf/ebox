@@ -13,6 +13,21 @@
     (should (equal (ebox-node-geometry root) '(:x 0 :y 0 :width 10 :height 1)))
     (should (ebox-test-buffer-matches-render-p root buffer))))
 
+(ert-deftest ebox-mount-viewport-follows-displaying-window ()
+  (let ((buffer (get-buffer-create " *ebox-viewport-window*"))
+        (config (current-window-configuration)))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buffer)
+          (ebox-mount buffer '(box :height (vh 100) "x"))
+          (should (equal (ebox-mount-viewport buffer)
+                         (cons (ebox-viewport-window-width (selected-window))
+                               (window-body-height (selected-window)))))
+          (should (equal (plist-get (ebox-node-geometry (ebox-buffer-root buffer)) :height)
+                         (window-body-height (selected-window)))))
+      (set-window-configuration config)
+      (kill-buffer buffer))))
+
 (ert-deftest ebox-node-set-text-updates-buffer-like-fresh-render ()
   (ebox-test-with-mounted (buffer root '(column (text :id "value" "One") (box "Tail")))
     (let ((value (car (ebox-selector-query root "#value"))))

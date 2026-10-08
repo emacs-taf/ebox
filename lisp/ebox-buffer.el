@@ -897,11 +897,11 @@ The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
   (let ((window (ebox--display-window (ebox-mount-buffer mount))))
     (cons (or (ebox-mount-fixed-vw mount)
               ebox-viewport-width
-              (and window (not noninteractive) (ebox-viewport-window-width window))
+              (and window (ebox-viewport-window-width window))
               (ebox--default-viewport-width))
           (or (ebox-mount-fixed-vh mount)
               ebox-viewport-height
-              (and window (not noninteractive) (window-body-height window))
+              (and window (window-body-height window))
               (ebox--default-viewport-height)))))
 
 (declare-function ebox-buffer-mode "ebox-interaction" (&optional arg))

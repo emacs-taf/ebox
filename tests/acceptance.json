@@ -255,6 +255,11 @@
       "purpose": "Mounting exposes root, buffer and viewport state and viewport changes relayout the tree."
     },
     {
+      "name": "ebox-mount-viewport-follows-displaying-window",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "A mount without a fixed viewport takes its width and height from the window displaying its buffer, including in batch."
+    },
+    {
       "name": "ebox-node-set-text-updates-buffer-like-fresh-render",
       "file": "tests/ebox-update-tests.el",
       "purpose": "Text mutation updates the mounted buffer to match a fresh render of the retained tree."
