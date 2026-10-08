@@ -1924,33 +1924,101 @@ SEGMENT is a list of composed strings; return the new list."
          (tail (ebox--split-parts (cdr head) width)))
     (nconc (car head) (append segment (cdr tail)))))
 
+(defun ebox--raised-kids (host overlays)
+  "Return HOST's relatively positioned flow children above some of OVERLAYS.
+Such a child paints over every overlay with a lower `:z-index'."
+  (let ((low (ebox-cs-z (ebox-node-cs (car overlays)))) raised)
+    (ebox--do-kids (kid host)
+      (let ((cs (ebox-node-cs kid)))
+        (when (and (eq (ebox-cs-position cs) 'relative) (not (ebox-cs-abs cs))
+                   (> (ebox-cs-z cs) low))
+          (push kid raised))))
+    raised))
+
+(defun ebox--face-background (face)
+  "Return the background color that FACE, a face plist or a list of them, sets."
+  (cond ((keywordp (car-safe face)) (plist-get face :background))
+        ((consp face) (let (bg) (while (and face (not bg))
+                                  (setq bg (ebox--face-background (pop face))))
+                           bg))))
+
+(defun ebox--over-backgrounds (segment under)
+  "Return SEGMENT with UNDER's backgrounds behind its transparent pixels.
+SEGMENT and UNDER are composed strings covering the same pixels; SEGMENT's
+own backgrounds take precedence, and its shared strings are not modified."
+  (let ((out nil))
+    (dolist (string under)
+      (let* ((split (ebox--split-parts segment (ebox--part-width string)))
+             (bg (and (> (length string) 0)
+                      (ebox--face-background (get-text-property 0 'face string)))))
+        (setq segment (cdr split))
+        (dolist (piece (car split))
+          (if (not bg)
+              (push piece out)
+            (let ((piece (copy-sequence piece)))
+              (add-face-text-property 0 (length piece) (list :background bg) t piece)
+              (push piece out))))))
+    (nreverse (nconc (nreverse segment) out))))
+
+(defun ebox--splice-node (parts node x y bi bw &optional transparent)
+  "Splice NODE's margin-box line at border-box line BI into PARTS.
+NODE's margin box starts at X and Y in its host's border box of BW pixels.
+TRANSPARENT non-nil keeps the backgrounds of PARTS behind NODE's pixels
+that have none."
+  (let ((row (- bi y)))
+    (if (or (< row 0) (>= row (ebox-node-h node)) (ebox--hidden-p node))
+        parts
+      (let* ((skip (max 0 (- x)))
+             (x (max 0 x))
+             (w (min (- (ebox-node-w node) skip) (max 0 (- bw x)))))
+        (if (<= w 0)
+            parts
+          (let ((segment (ebox--join-parts (ebox--node-parts node row))))
+            (when (> skip 0)
+              (setq segment (cdr (ebox--split-parts segment skip))))
+            (when (< w (- (ebox-node-w node) skip))
+              (setq segment (car (ebox--split-parts segment w))))
+            (when transparent
+              (setq segment
+                    (ebox--over-backgrounds
+                     segment (car (ebox--split-parts (cdr (ebox--split-parts parts x)) w)))))
+            (ebox--splice-parts parts x segment w)))))))
+
 (defun ebox--apply-overlays (host geo bi parts)
   "Splice HOST's overlays intersecting border-box line BI into PARTS.
 PARTS and the result are flat lists of composed strings, so the line is
-concatenated once after every overlay is placed.  Border decorations are
-applied afterwards, so they continue across overlays."
+concatenated once after every overlay is placed.  Overlays paint in
+`:z-index' order; a relatively positioned flow child of HOST paints again
+above the overlays whose `:z-index' is lower than its own.  Border
+decorations are applied afterwards, so they continue across overlays."
   (let ((overlays (ebox--live-overlays host))
         (bw (ebox-geo-bw geo)))
     (when overlays
       (setq overlays
             (sort (copy-sequence overlays)
                   (lambda (a b) (< (ebox-cs-z (ebox-node-cs a)) (ebox-cs-z (ebox-node-cs b))))))
-      (dolist (node overlays)
-        (when (and (ebox-node-placed node)
-                   (not (ebox--hidden-p node)))
-          (let ((row (- bi (ebox-node-y node))))
-            (when (and (>= row 0) (< row (ebox-node-h node)))
-              (let* ((x (ebox-node-x node))
-                     (skip (max 0 (- x)))
-                     (x (max 0 x))
-                     (w (min (- (ebox-node-w node) skip) (max 0 (- bw x)))))
-                (when (> w 0)
-                  (let ((segment (ebox--join-parts (ebox--node-parts node row))))
-                    (when (> skip 0)
-                      (setq segment (cdr (ebox--split-parts segment skip))))
-                    (when (< w (- (ebox-node-w node) skip))
-                      (setq segment (car (ebox--split-parts segment w))))
-                    (setq parts (ebox--splice-parts parts x segment w))))))))))
+      (let* ((raised (ebox--raised-kids host overlays))
+             (top (+ (ebox-geo-pt geo) (- (ebox-geo-scroll geo))))
+             (left (+ (ebox-geo-bl geo) (ebox-geo-pl geo)))
+             (shown (and raised (>= bi (ebox-geo-pt geo))
+                         (< bi (+ (ebox-geo-pt geo) (ebox-geo-vh geo))))))
+        (when shown
+          (setq raised (sort raised (lambda (a b) (< (ebox-cs-z (ebox-node-cs a))
+                                                     (ebox-cs-z (ebox-node-cs b)))))))
+        (dolist (node overlays)
+          (when shown
+            (let ((z (ebox-cs-z (ebox-node-cs node))))
+              (while (and raised (< (ebox-cs-z (ebox-node-cs (car raised))) z))
+                (let ((kid (pop raised)))
+                  (setq parts (ebox--splice-node parts kid (+ left (ebox--item-x kid))
+                                                 (+ top (ebox--item-y kid)) bi bw t))))))
+          (when (ebox-node-placed node)
+            (setq parts (ebox--splice-node parts node (ebox-node-x node) (ebox-node-y node)
+                                           bi bw))))
+        (when shown
+          (dolist (kid raised)
+            (setq parts (ebox--splice-node parts kid (+ left (ebox--item-x kid))
+                                           (+ top (ebox--item-y kid)) bi bw t))))))
     parts))
 
 (defun ebox--root-line (root i)

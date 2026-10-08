@@ -153,7 +153,8 @@ Selector 通过 ECSS subject facts 查看 retained node：type、`:id`、`:class
 - `grid` 支持显式/自动 track、fraction、`minmax`、`repeat`、gap 与一基 placement。
 
 绝对定位属于 box layout。absolute 子节点脱离父节点的流，用 `:left` 和 `:top` 从父节点内容原点放置（inline 父节点交给最近的外层 box）；父节点把合成的浮层裁剪到自己的画布内，需要预留空间时给它显式高度。
-`:z-index` 排序重叠绘制。`:layer` 属性可选择 root paint target，同时保持 selector 与继承
+`:z-index` 排序重叠绘制：`:position relative` 的流内子节点保留其流内位置，
+`:z-index` 高于同一父节点中的 absolute 子节点时绘制在它们之上，空白处透出下层背景。`:layer` 属性可选择 root paint target，同时保持 selector 与继承
 使用的逻辑 parent。anchored absolute box 用 `:anchor` 与 `:placement` 相对 host 中唯一语义目标定位。
 目标缺失时该 box 不绘制、没有位置，也不能获得焦点。
 

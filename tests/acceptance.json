@@ -145,6 +145,11 @@
       "purpose": "Flex items with undeclared or visible overflow do not shrink below their content, while scrolling items may."
     },
     {
+      "name": "ebox-render-relative-flow-paints-above-lower-overlays",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Relatively positioned flow content with a higher z-index paints above lower absolute overlays and keeps their background."
+    },
+    {
       "name": "ebox-render-grid-places-items-in-tracks",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Grid tracks and placements expose expected public node geometries."

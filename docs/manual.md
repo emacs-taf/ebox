@@ -174,7 +174,9 @@ Absolute positioning is part of box layout.  An absolute child is removed from
 its parent's flow and placed from the parent's content origin by `:left` and
 `:top` (an inline parent defers to its nearest enclosing box); the parent clips
 the composed overlay to its canvas, so give it an explicit height when absolute
-children need reserved space. `:z-index` orders overlapping paint.  The
+children need reserved space. `:z-index` orders overlapping paint: a `:position relative` flow child keeps
+its flow slot and paints above absolute siblings with a lower `:z-index`, showing
+their background through its blank cells.  The
 `:layer` property can select the root paint target while preserving logical
 parentage for selectors and inheritance.  Anchored absolute boxes use `:anchor`
 and `:placement` to position relative to a unique semantic target in their host.

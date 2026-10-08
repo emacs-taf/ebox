@@ -111,6 +111,18 @@ def"))
       (should (equal (plist-get (ebox-node-geometry foot) :y)
                      (+ (plist-get (ebox-node-geometry tabs) :y) 1))))))
 
+(ert-deftest ebox-render-relative-flow-paints-above-lower-overlays ()
+  (let* ((out (ebox-render
+               '(box :position relative :width (ch 8) :height (lh 2)
+                     (box :position absolute :z-index 0 :left (ch 0) :top (lh 0)
+                          :width (ch 8) :height (lh 1) :background-color "#ff0000")
+                     (column :position relative :z-index 1 :width stretch "row1" "row2"))))
+         (lines (split-string (substring-no-properties out) "\n")))
+    (should (string-prefix-p "row1" (nth 0 lines)))
+    (should (string-prefix-p "row2" (nth 1 lines)))
+    ;; The raised text keeps the lower bar's background behind it.
+    (should (equal (plist-get (get-text-property 0 'face out) :background) "#ff0000"))))
+
 (ert-deftest ebox-render-grid-places-items-in-tracks ()
   (ebox-test-with-mounted (buffer root
                            '(grid :width (ch 6)
