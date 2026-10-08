@@ -953,8 +953,17 @@ The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
                           (* (+ (or (car margins) 0) (or (cdr margins) 0))
                              (frame-char-width (window-frame window)))))
            (expected (max 0 (- outer decoration)))
-           (tolerance (max 1 (* 2 (frame-char-width (window-frame window))))))
-      (if (<= (abs (- body expected)) tolerance) body expected))))
+           (tolerance (max 1 (* 2 (frame-char-width (window-frame window)))))
+           (width (if (<= (abs (- body expected)) tolerance) body expected)))
+      ;; Without a right fringe, Emacs reserves the last text column for the
+      ;; truncation glyph.  A graphical line whose pixels reach that column is
+      ;; truncated too, so content must end strictly before it or the line
+      ;; displays as `$'.
+      (if (zerop (or (nth 1 fringes) 0))
+          (let ((frame (window-frame window)))
+            (max 0 (- width (frame-char-width frame)
+                      (if (display-graphic-p frame) 1 0))))
+        width))))
 
 (defun ebox--display-window (buffer)
   "Return the window whose size defines BUFFER's viewport."

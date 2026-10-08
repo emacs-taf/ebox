@@ -2,8 +2,9 @@
 
 ;;; Commentary:
 ;; Emacs owns window events; Ebox owns the mounted viewport.  This module is
-;; the single bridge between them.  Size hooks record frame intents; one task
-;; samples current visible dimensions and refits mounts after the drag settles.
+;; the single bridge between them.  Size and buffer-change hooks record frame
+;; intents; one task samples current visible dimensions and refits mounts after
+;; the drag settles.
 
 ;;; Code:
 
@@ -138,6 +139,11 @@ still in progress, so the following settle re-reads the stable geometry."
 
 (when (boundp 'window-size-change-functions)
   (add-hook 'window-size-change-functions #'ebox--window-size-change))
+
+;; Showing a mounted buffer in a window of another size changes its viewport
+;; without resizing any window, so buffer changes are viewport intents too.
+(when (boundp 'window-buffer-change-functions)
+  (add-hook 'window-buffer-change-functions #'ebox--window-size-change))
 
 (when (boundp 'minibuffer-exit-hook)
   (add-hook 'minibuffer-exit-hook #'ebox--window-size-change-minibuffer-exit))

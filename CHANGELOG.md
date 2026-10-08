@@ -35,6 +35,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A mounted viewport in a window without a right fringe ends before the
+  truncation column, so full-width rows no longer display Emacs's `$` glyph.
+- A mounted buffer shown in a window of another size, without any window
+  resizing, refits to that window.
 - Content wider than its box is cut at the box edge, so later siblings on a
   line keep their columns instead of shifting right.
 - Content that fills a mounted buffer which was empty keeps point and the
