@@ -115,7 +115,9 @@ stroke 单位。裸数字不是 public length。
 
 Text 与 box 支持字体、颜色和文本装饰属性。Box 还支持尺寸、padding、margin、border、
 overflow、visibility、positioning、row/column gap、flex 容器与 item 属性、grid track 与
-placement。schema 是严格的；无效属性或值会在修改现有 mount 前报错。
+placement。schema 是严格的；无效属性或值会在修改现有 mount 前报错。左右 border 按解析后的像素
+宽度绘制；上下 border 绘制为该行的 overline 或 underline，宽于 1px 的上下 border 会触发
+`ebox-error`。
 
 内联 ECSS rule 可通过 `:ecss` 附加。复用 scope 由 `ebox-style-scope-create` 创建，
 通过 `:ecss-scope-roots` 附加到 root，member 通过 `:ecss-scopes` 加入。

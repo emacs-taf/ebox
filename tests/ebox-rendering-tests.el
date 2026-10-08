@@ -60,6 +60,19 @@ def"))
       (should (equal (cl-some (lambda (entry) (plist-get entry :underline)) face)
                      '(:position t :color "#ff0000"))))))
 
+(ert-deftest ebox-render-side-borders-paint-their-width ()
+  (let ((rendered (ebox-render
+                   '(box :width (px 10) :height (lh 1)
+                         :border-left ((px 3) solid "#00ff00")
+                         "Hi"))))
+    (should (equal (substring-no-properties rendered) " Hi "))
+    (should (equal (get-text-property 0 'display rendered) '(space :width (3))))
+    (let ((face (get-text-property 0 'face rendered)))
+      (should (equal (plist-get (if (keywordp (car face)) face (car face)) :background)
+                     "#00ff00"))))
+  (should-error (ebox-render '(box :border-top ((px 2) solid "#00ff00") "Hi"))
+                :type 'ebox-error))
+
 (ert-deftest ebox-render-flex-wraps-and-gaps-items ()
   (ebox-test-with-mounted (buffer root
                            '(flex :width (ch 8) :flex-flow (row wrap)

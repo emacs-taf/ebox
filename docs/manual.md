@@ -126,7 +126,9 @@ Text and boxes support font, color and text-decoration properties.  Boxes also
 support dimensions, padding, margin, borders, overflow, visibility, positioning,
 row/column gaps, flex item/container properties and grid tracks/placement.  The
 schema is strict; invalid properties or values signal before an existing mount is
-changed.
+changed.  Left and right borders paint at their resolved pixel width.  Top and
+bottom borders draw as the line's overline or underline, so a top or bottom
+border wider than 1px signals `ebox-error`.
 
 Inline ECSS rules can be attached with `:ecss`.  Reusable scopes are created with
 `ebox-style-scope-create`, attached to a root with `:ecss-scope-roots`, and

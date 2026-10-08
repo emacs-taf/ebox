@@ -130,6 +130,11 @@
       "purpose": "Borders render as display spaces carrying visible border face attributes."
     },
     {
+      "name": "ebox-render-side-borders-paint-their-width",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Left and right borders paint their declared pixel width; top and bottom borders are limited to 1px."
+    },
+    {
       "name": "ebox-render-flex-wraps-and-gaps-items",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Flex wrapping and gaps place items at observable public geometries."

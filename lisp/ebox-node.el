@@ -900,13 +900,16 @@ unless `ebox-viewport-height' supplies one."
                   ;; The later declaration wins; computed values keep both, so
                   ;; prefer a non-initial logical value.
                   (if (and l (not (member l '((px 0) (lh 0))))) l p)))
-              (border (side)
+              (border-px (side)
                 (let ((style (plist-get vals (intern (format "ebox/border-%s-style" side))))
                       (width (plist-get vals (intern (format "ebox/border-%s-width" side)))))
-                  (and (not (memq style '(nil none hidden)))
-                       width
-                       (or (plist-get vals (intern (format "ebox/border-%s-color" side)))
-                           color 'default)))))
+                  (if (or (memq style '(nil none hidden)) (null width))
+                      0
+                    (max 0 (or (ebox--px width cs nil) 1)))))
+              (border (side px)
+                (and (> px 0)
+                     (or (plist-get vals (intern (format "ebox/border-%s-color" side)))
+                         color 'default))))
       (setf (ebox-cs-pt cs) (edge 'ebox/padding-top 'ebox/padding-block-start)
             (ebox-cs-pr cs) (edge 'ebox/padding-right 'ebox/padding-inline-end)
             (ebox-cs-pb cs) (edge 'ebox/padding-bottom 'ebox/padding-block-end)
@@ -915,21 +918,23 @@ unless `ebox-viewport-height' supplies one."
             (ebox-cs-mr cs) (edge 'ebox/margin-right 'ebox/margin-inline-end)
             (ebox-cs-mb cs) (edge 'ebox/margin-bottom 'ebox/margin-block-end)
             (ebox-cs-ml cs) (edge 'ebox/margin-left 'ebox/margin-inline-start)
-            (ebox-cs-btc cs) (border "top")
-            (ebox-cs-bbc cs) (border "bottom")
-            (ebox-cs-blc cs) (border "left")
-            (ebox-cs-brc cs) (border "right"))
-      (setf (ebox-cs-bl cs) (if (ebox-cs-blc cs) 1 0)
-            (ebox-cs-br cs) (if (ebox-cs-brc cs) 1 0)
+            (ebox-cs-bl cs) (border-px "left")
+            (ebox-cs-br cs) (border-px "right"))
+      ;; Side borders paint as pixel-wide spaces; top and bottom borders are
+      ;; the line's overline or underline, so they are at most 1px.
+      (dolist (side '("top" "bottom"))
+        (when (> (border-px side) 1)
+          (signal 'ebox-error
+                  (list "Ebox top and bottom borders support only 1px width" side
+                        (plist-get vals (intern (format "ebox/border-%s-width" side)))))))
+      (setf (ebox-cs-btc cs) (border "top" (border-px "top"))
+            (ebox-cs-bbc cs) (border "bottom" (border-px "bottom"))
+            (ebox-cs-blc cs) (border "left" (ebox-cs-bl cs))
+            (ebox-cs-brc cs) (border "right" (ebox-cs-br cs))
             (ebox-cs-btop cs) (and (ebox-cs-btc cs) t)
             (ebox-cs-bbot cs) (and (ebox-cs-bbc cs) t)))
     (dolist (side '("top" "right" "bottom" "left"))
-      (let ((width (plist-get vals (intern (format "ebox/border-%s-width" side))))
-            (style (plist-get vals (intern (format "ebox/border-%s-style" side)))))
-        (when (and (not (memq style '(nil none hidden))) width
-                   (not (member width '((px 0) (px 1)))))
-          (signal 'ebox-error
-                  (list "Ebox borders support only 1px width" side width)))
+      (let ((style (plist-get vals (intern (format "ebox/border-%s-style" side)))))
         (when (memq style '(dashed dotted double))
           (signal 'ebox-error (list "Unsupported Ebox border style" style)))))
     cs))
