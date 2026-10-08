@@ -489,8 +489,9 @@ TEXTS is a function from the sample index to the next string."
      (ebox-benchmark--fixture
       rows
       :prepare (lambda (_target root)
-                 (setq all (ebox-node-children root)
-                       even (cl-loop for node in all for i from 0 when (cl-evenp i) collect node)))
+                 (unless all
+                   (setq all (ebox-node-children root)
+                         even (cl-loop for node in all for i from 0 when (cl-evenp i) collect node))))
       :invoke (lambda (_target sample root)
                 (ebox-node-replace-children root (if (cl-evenp sample) even all))
                 (setq count (ebox-node-child-count root)))
@@ -673,8 +674,9 @@ TEXTS is a function from the sample index to the next string."
      (ebox-benchmark--fixture
       rows :subject '(box :width (ch 30) (text "editable 汉字")) :path '(0) :fresh nil
       :prepare (lambda (target _root)
-                 (setq session (ebox-input-begin (ebox-node-buffer target) target)
-                       position (cdr (ebox-node-bounds target))))
+                 (unless session
+                   (setq session (ebox-input-begin (ebox-node-buffer target) target)))
+                 (setq position (cdr (ebox-node-bounds target))))
       :invoke (lambda (_target sample _root)
                 (if (cl-evenp sample)
                     (save-excursion (goto-char position) (insert "x"))
@@ -1065,8 +1067,9 @@ CLASS, DESCRIPTION, SETUP and TWIN are as in `ebox-benchmark--register'."
      (ebox-benchmark--app
       cards
       :prepare (lambda (find)
-                 (setq all (ebox-node-children (funcall find "list"))
-                       even (cl-loop for node in all for i from 0 when (cl-evenp i) collect node)))
+                 (unless all
+                   (setq all (ebox-node-children (funcall find "list"))
+                         even (cl-loop for node in all for i from 0 when (cl-evenp i) collect node))))
       :invoke (lambda (find sample _root)
                 (ebox-node-replace-children (funcall find "list") (if (cl-evenp sample) even all)))))))
 
