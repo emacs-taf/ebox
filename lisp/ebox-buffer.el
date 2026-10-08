@@ -15,6 +15,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'face-remap)
 (require 'ebox-node)
 (require 'ebox-layout)
 (require 'ebox-flex)
@@ -26,7 +27,7 @@
   root buffer (anchors []) (lines 0) vw vh fixed-vw fixed-vh
   queued observer (flushes 0) report last-report anchored
   focus active hover hover-saved hover-p session display-saved
-  (written (make-hash-table)) tick)
+  (written (make-hash-table)) tick canvas canvas-cookie)
 
 (defvar ebox--current-mount nil
   "The mount being flushed, which supplies interaction-derived states.")
@@ -66,6 +67,27 @@ cannot find anything.")
     (if local
         (set (make-local-variable variable) value)
       (kill-local-variable variable))))
+
+(defun ebox--sync-canvas (mount)
+  "Paint MOUNT's buffer background with its root's background color.
+Window areas beyond the laid-out text, such as the partial line below the
+last row, show the buffer's default face; remapping its background to the
+root's color keeps them the same as the application surface."
+  (let ((bg (ebox-cs-bg (ebox-node-cs (ebox-mount-root mount)))))
+    (unless (stringp bg) (setq bg nil))
+    (unless (equal bg (ebox-mount-canvas mount))
+      (when-let* ((cookie (ebox-mount-canvas-cookie mount)))
+        (face-remap-remove-relative cookie))
+      (setf (ebox-mount-canvas mount) bg
+            (ebox-mount-canvas-cookie mount)
+            (and bg (face-remap-add-relative 'default :background bg))))))
+
+(defun ebox--release-canvas (mount)
+  "Remove the background remapping of MOUNT's buffer."
+  (when-let* ((cookie (ebox-mount-canvas-cookie mount)))
+    (face-remap-remove-relative cookie))
+  (setf (ebox-mount-canvas mount) nil
+        (ebox-mount-canvas-cookie mount) nil))
 
 (defconst ebox--anchor-span 128
   "Target number of lines between two line anchors.")
@@ -863,6 +885,7 @@ trailing newline."
                                         (* 1000.0 (- (float-time) start))))))
               (setf (ebox-mount-last-report mount) report)
               (funcall observer (ebox-mount-buffer mount) (copy-tree report))))))
+      (ebox--sync-canvas mount)
       (run-hook-with-args 'ebox-after-flush-functions (ebox-mount-buffer mount)))))
 
 (defun ebox-buffer-set-observer (buffer-or-name observer)
@@ -955,7 +978,8 @@ The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
 
 (defun ebox-mount (buffer-or-name input &rest options)
   "Mount INPUT, a root node or author form, in BUFFER-OR-NAME and return the root.
-The buffer's text is replaced and then owned by Ebox.  OPTIONS may contain
+The buffer's text is replaced and then owned by Ebox, and its default
+background follows the root's background color.  OPTIONS may contain
 :width and :height to fix the viewport instead of following the window."
   (let* ((buffer (get-buffer-create buffer-or-name))
          (root (ebox--input-root input)))
@@ -1016,6 +1040,7 @@ See `ebox-mount'."
         (when ebox--buffer-mount
           (run-hook-with-args 'ebox-unmount-functions buffer)
           (ebox--restore-display (ebox-mount-display-saved ebox--buffer-mount))
+          (ebox--release-canvas ebox--buffer-mount)
           (ebox--release-mount ebox--buffer-mount)
           (setq ebox--buffer-mount nil)
           (remove-hook 'kill-buffer-hook #'ebox--buffer-killed t)

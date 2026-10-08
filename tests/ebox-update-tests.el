@@ -46,6 +46,22 @@
       (set-window-configuration config)
       (kill-buffer buffer))))
 
+(ert-deftest ebox-buffer-background-follows-root-background ()
+  (let ((buffer (get-buffer-create " *ebox-canvas*")))
+    (unwind-protect
+        (let ((root (ebox-mount buffer '(column :background-color "#101820" "x"))))
+          (with-current-buffer buffer
+            (should (equal (cdr (assq 'default face-remapping-alist))
+                           '((:background "#101820") default))))
+          (ebox-node-put root :background-color "#203040")
+          (with-current-buffer buffer
+            (should (equal (cdr (assq 'default face-remapping-alist))
+                           '((:background "#203040") default))))
+          (ebox-unmount-buffer buffer)
+          (with-current-buffer buffer
+            (should-not (cdr (assq 'default face-remapping-alist)))))
+      (kill-buffer buffer))))
+
 (ert-deftest ebox-node-set-text-updates-buffer-like-fresh-render ()
   (ebox-test-with-mounted (buffer root '(column (text :id "value" "One") (box "Tail")))
     (let ((value (car (ebox-selector-query root "#value"))))

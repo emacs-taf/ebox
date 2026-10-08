@@ -285,6 +285,11 @@
       "purpose": "Content written into an empty mounted buffer leaves point and the displaying window's start at the top instead of after the new lines."
     },
     {
+      "name": "ebox-buffer-background-follows-root-background",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "A mounted buffer's default background follows the root's background color, so window areas beyond the text match the root, and unmounting restores it."
+    },
+    {
       "name": "ebox-node-set-text-updates-buffer-like-fresh-render",
       "file": "tests/ebox-update-tests.el",
       "purpose": "Text mutation updates the mounted buffer to match a fresh render of the retained tree."

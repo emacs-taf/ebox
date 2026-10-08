@@ -40,4 +40,7 @@ All notable changes to Ebox are documented here.
 - Content that fills a mounted buffer which was empty keeps point and the
   window start at the top, so an application no longer opens scrolled to the
   end of its buffer.
+- A mounted buffer's default background follows the root's background color,
+  so the partial line below the last row and other space beyond the laid-out
+  text match the application surface; unmounting removes the remapping.
 

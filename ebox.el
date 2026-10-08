@@ -61,6 +61,8 @@
 ;; Function: ebox-mount (buffer-or-name input &rest options)
 ;;;###autoload (autoload 'ebox-mount "ebox" nil nil)
 ;; Mount INPUT, a root node or author form, in BUFFER-OR-NAME and return the root.
+;; While mounted, the buffer's default background follows the root's
+;; background color, so window space beyond the laid-out rows matches it.
 ;;
 ;; Function: ebox-render (input)
 ;;;###autoload (autoload 'ebox-render "ebox" nil nil)
