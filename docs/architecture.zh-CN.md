@@ -151,6 +151,11 @@ damage 会使 changed node 以及已经组合过它 line 的 ancestor 失效。
 交互 decoration 在 composition 中发生。Ebox 填充未设置的 `ebox-node`、`keymap`、`help-echo`、`pointer` 和
 `mouse-face` property，使最内层显式节点胜出，ancestor keymap 覆盖未 override 的 descendant。
 
+overlay 拼接进它覆盖的行时不做字符串连接。`ebox--split-parts` 在 overlay 的像素列处切分底层 parts；
+跨越切点的 string 变为按宽度截取的 substring 加边缘空白，组合出的 string 把像素宽度记录在
+`ebox--part-widths` 中，后续拼接无需重新测量。没有边框的 overlay 行保持为 part list，
+因此移动 overlay 的成本是覆盖行数乘以各行的 part 数。
+
 ## Buffer 写入
 
 第一次 mount flush 会 erase 并写入完整 root。后续 flush 从 damage records 计算 root-line edits。每个 edit 是
@@ -163,6 +168,10 @@ damage 会使 changed node 以及已经组合过它 line 的 ancestor 失效。
 只替换中间部分。如果没有可用 remembered parts，Ebox 回退到 `ebox--rewrite-line`：按 prefix/suffix 比较字符，只设置
 变化的 property runs。外部 buffer edit 会通过 buffer tick 使 remembered parts 失效；下一次 flush 从 retained tree
 安全重算。
+
+mount 尚无任何行时跳过位置跟踪，因此首次写入空 buffer 的内容保持 point 与 window start 在顶部。
+每次 flush 结束时 `ebox--sync-canvas` 把 buffer 的 `default` 背景 remap 为根节点的计算背景，
+使最后一行以下与行尾之后的窗口区域与根一致；卸载时移除该 remap。
 
 ## Viewport、scrolling 与 input
 

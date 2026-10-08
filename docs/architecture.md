@@ -193,6 +193,13 @@ explicit node wins and ancestor keymaps cover descendants that do not override
 them.  An inner node's explicit nil is painted as a present property, so it
 blocks the ancestor's value instead of inheriting it.
 
+Overlays splice into the lines they cover without concatenating them.
+`ebox--split-parts` cuts the underlying parts at the overlay's pixel columns;
+a string that straddles a cut becomes sized substrings plus edge spaces, and
+composed strings record their pixel widths in `ebox--part-widths` so later
+splices need no remeasurement.  An overlay line without a border stays a part
+list, so moving an overlay costs its covered lines times their part count.
+
 ## Buffer writes
 
 The first mount flush erases and writes the full root.  Later flushes compute
@@ -209,6 +216,13 @@ and replaces only the middle.  If no remembered parts are available, Ebox falls
 back to `ebox--rewrite-line`, which compares characters by prefix/suffix and
 sets only changed property runs.  A foreign buffer edit invalidates remembered
 parts by buffer tick and the next flush recomputes safely from the retained tree.
+
+Position tracking is skipped when the mount has no lines yet, so the first
+content written into an empty buffer leaves point and window starts at the
+top.  At the end of each flush `ebox--sync-canvas` remaps the buffer's
+`default` background to the root's computed background, so window space
+below the last row and beyond the line ends matches the root; unmounting
+removes the remap.
 
 ## Viewport, scrolling and input
 
