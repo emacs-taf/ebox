@@ -88,6 +88,21 @@ def"))
       (should (equal (ebox-node-geometry b) '(:x 4 :y 0 :width 3 :height 1)))
       (should (equal (ebox-node-geometry c) '(:x 0 :y 2 :width 3 :height 1))))))
 
+(ert-deftest ebox-render-flex-shrinks-whole-rows-from-the-start ()
+  (let ((lines (split-string
+                (ebox-test-render-text
+                 '(flex :flex-direction column :width (ch 4) :height (lh 5)
+                        (box :height (lh 1) :overflow hidden "a")
+                        (box :height (lh 1) :overflow hidden "b")
+                        (box :height (lh 1) :overflow hidden "c")
+                        (box :height (lh 1) :overflow hidden "d")
+                        (box :height (lh 1) :overflow hidden "e")
+                        (box :height (lh 1) :overflow hidden "f")
+                        (box :height (lh 1) :overflow hidden "g")))
+                "\n")))
+    (should (equal (mapcar #'string-trim-right (seq-take lines 5))
+                   '("c" "d" "e" "f" "g")))))
+
 (ert-deftest ebox-render-absolute-children-start-at-content-origin ()
   (ebox-test-with-mounted (buffer root
                            '(box :width (ch 10) :height (lh 3) :padding ((lh 1) (ch 2))
