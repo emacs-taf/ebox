@@ -199,7 +199,7 @@ when its basis or automatic minimum depends on them."
                      (ebox--bb-width cs basis cw extras)))
          (explicit (and (not text) (ebox--bb-width cs (ebox-cs-min-width cs) cw extras)))
          (outer (if (or text (not sized)
-                        (and (not explicit) (eq (ebox-cs-overflow cs) 'visible)))
+                        (and (not explicit) (ebox-cs-auto-min cs)))
                     (ebox--outer-intrinsic child cw t)
                   (setf (ebox-node-seen child) nil)))
          (base (cond
@@ -211,7 +211,7 @@ when its basis or automatic minimum depends on them."
          (lo (cond
               (text (cdr outer))
               (explicit (+ explicit margins))
-              ((eq (ebox-cs-overflow cs) 'visible)
+              ((ebox-cs-auto-min cs)
                (let ((fixed (ebox--bb-width cs (ebox-cs-width cs) cw extras)))
                  (min (car outer)
                       (if fixed (+ fixed margins) most-positive-fixnum)
@@ -247,7 +247,7 @@ definite content height; ALIGN is the container's cross alignment."
          (lo (cond
               (text natural)
               (explicit (+ explicit margins))
-              ((eq (ebox-cs-overflow cs) 'visible) natural)
+              ((ebox-cs-auto-min cs) natural)
               (t (+ extras margins))))
          (item (ebox-flexi--make :node child :base (max 0 base) :lo lo
                                  :hi (and hi (+ hi margins))
@@ -544,7 +544,7 @@ Return (ITEMS ROW-COUNT COLUMN-COUNT) with zero-based cells."
                   ((ebox--px (ebox-cs-min-width cs) cs cbw)
                    (+ (ebox--node-h-margins kid cbw)
                       (ebox--bb-width cs (ebox-cs-min-width cs) cbw (ebox--node-h-extras kid cbw))))
-                  ((eq (ebox-cs-overflow cs) 'visible) (car outer))
+                  ((ebox-cs-auto-min cs) (car outer))
                   (t (+ (ebox--node-h-margins kid cbw) (ebox--node-h-extras kid cbw))))))))
       (ebox-gridi-nat item))))
 

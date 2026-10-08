@@ -140,6 +140,11 @@
       "purpose": "Flex wrapping and gaps place items at observable public geometries."
     },
     {
+      "name": "ebox-render-flex-items-keep-content-minimum-unless-clipped",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Flex items with undeclared or visible overflow do not shrink below their content, while scrolling items may."
+    },
+    {
       "name": "ebox-render-grid-places-items-in-tracks",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Grid tracks and placements expose expected public node geometries."

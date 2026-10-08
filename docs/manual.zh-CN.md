@@ -148,6 +148,8 @@ Selector 通过 ECSS subject facts 查看 retained node：type、`:id`、`:class
 - `box` 堆叠 block 子节点，并把 inline text 排为段落。
 - `row` 与 `column` 沿单轴放置直接子节点，支持 `:item-gap` 与 `:cross-align`。
 - `flex` 支持方向、换行、分布、item grow/shrink 和对齐。
+  未声明 `:overflow` 或声明为 `visible` 的 flex/grid item 不会收缩到内容以下；
+  需要继续收缩时，声明 `:min-height`/`:min-width`，或 `hidden`、`scroll`、`auto` overflow。
 - `grid` 支持显式/自动 track、fraction、`minmax`、`repeat`、gap 与一基 placement。
 
 绝对定位属于 box layout。absolute 子节点脱离父节点的流，用 `:left` 和 `:top` 从父节点内容原点放置（inline 父节点交给最近的外层 box）；父节点把合成的浮层裁剪到自己的画布内，需要预留空间时给它显式高度。
