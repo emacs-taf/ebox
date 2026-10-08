@@ -323,7 +323,8 @@ available later with `ebox-buffer-update-report`.
   (ebox-buffer-update-report "*Ebox Report*"))
 ```
 
-Reports contain `:strategy` (`full` or `lines`), `:edits`, `:lines`, `:ranges`,
+Reports contain `:provider` (always `ebox`, so shared measurement sinks can
+attribute them), `:strategy` (`full` or `lines`), `:edits`, `:lines`, `:ranges`,
 `:flush` and, for observer calls, `:duration-ms`.
 
 ## 12. Failures and recovery

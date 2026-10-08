@@ -185,6 +185,9 @@
 ;; Function: ebox-buffer-set-observer (buffer-or-name observer)
 ;;;###autoload (autoload 'ebox-buffer-set-observer "ebox" nil nil)
 ;; Call OBSERVER with the buffer and a report plist after each flush.
+;; The report contains :provider (always ebox), :strategy (lines or full),
+;; :edits, :lines, :ranges (START OLD NEW) line replacements, :flush and
+;; :duration-ms.
 ;;
 ;; Function: ebox-buffer-update-report (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-buffer-update-report "ebox" nil nil)

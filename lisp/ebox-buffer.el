@@ -822,11 +822,12 @@ trailing newline."
 
 (defun ebox-buffer-set-observer (buffer-or-name observer)
   "Call OBSERVER with the buffer and a report plist after each flush.
-The report contains :strategy (lines or full), :edits, :lines, :ranges,
-:flush and :duration-ms.  :ranges lists the written (START OLD NEW) line
-replacements in application order: START counts lines after the preceding
-replacements, OLD lines there were replaced by NEW lines.  Nil OBSERVER
-removes observation."
+The report contains :provider (always ebox), :strategy (lines or full),
+:edits, :lines, :ranges, :flush and :duration-ms.
+:ranges lists the written (START OLD NEW) line replacements in
+application order: START counts lines after the preceding replacements,
+OLD lines there were replaced by NEW lines.  Nil OBSERVER removes
+observation."
   (let ((mount (ebox-buffer-mount buffer-or-name)))
     (unless mount (user-error "No mounted Ebox tree in %s" buffer-or-name))
     (setf (ebox-mount-observer mount) observer)))
@@ -834,7 +835,8 @@ removes observation."
 (defun ebox--flush-report (last)
   "Return the report plist for LAST, a (FLUSH STRATEGY . RANGES) record."
   (let ((ranges (cddr last)))
-    (list :strategy (cadr last)
+    (list :provider 'ebox
+          :strategy (cadr last)
           :edits (length ranges)
           :lines (let ((n 0)) (dolist (e ranges n) (setq n (+ n (nth 2 e)))))
           :ranges (copy-tree ranges)

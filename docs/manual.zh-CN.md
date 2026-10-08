@@ -282,8 +282,9 @@ converter 或字体能力变化后调用 `ebox-image-cache-clear`。要原地替
   (ebox-buffer-update-report "*Ebox Report*"))
 ```
 
-Report 包含 `:strategy`（`full` 或 `lines`）、`:edits`、`:lines`、`:ranges`、`:flush`，
-observer 调用中还包含 `:duration-ms`。
+Report 包含 `:provider`（固定为 `ebox`，供共享的测量 sink 区分来源）、`:strategy`
+（`full` 或 `lines`）、`:edits`、`:lines`、`:ranges`、`:flush`，observer 调用中还包含
+`:duration-ms`。
 
 ## 12. 失败与恢复
 
