@@ -1081,20 +1081,33 @@ An overlay whose anchor is unavailable is laid out but never placed."
       (setq node (ebox-node-parent node)))
     ok))
 
+(defun ebox--node-slotted-p (node)
+  "Return non-nil when NODE owns cells in its mount's buffer.
+A hidden box in flow keeps its blank slot; a hidden or unplaced overlay, or
+anything inside one, owns no cells."
+  (let ((ok t))
+    (while (and ok node)
+      (when (or (null (ebox-node-cs node))
+                (and (ebox--abs-p node)
+                     (or (ebox--hidden-p node) (not (ebox-node-placed node)))))
+        (setq ok nil))
+      (setq node (ebox-node-parent node)))
+    ok))
+
 (defun ebox-node-bounds (node &optional all-lines)
   "Return (START . END) buffer positions of NODE's first painted line.
 For a box this spans its first border-box line from its first visible cell;
 for a text node, its first painted run.  With ALL-LINES, END instead ends
-NODE's last painted line, so the span covers every painted row.  Return nil
-when NODE is not painted in a live mount, including when overlays cover its
-whole first line."
+NODE's last painted line, so the span covers every painted row.  A hidden
+box in flow reports its blank slot.  Return nil when NODE owns no cells in a
+live mount, including when overlays cover its whole first line."
   (let ((mount (ebox--mount-of node))
         (geometry (ebox-node-geometry node)))
     (if (and mount (ebox-node-text-p node))
         (ebox--text-bounds node mount all-lines)
       (when (and mount geometry (> (plist-get geometry :height) 0)
                  (< (plist-get geometry :y) (ebox-mount-lines mount))
-                 (ebox--node-visible-p node))
+                 (ebox--node-slotted-p node))
         (let ((x (ebox--uncovered-x node mount geometry))
               (y (plist-get geometry :y))
               (right (+ (plist-get geometry :x) (plist-get geometry :width))))

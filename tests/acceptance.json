@@ -90,6 +90,11 @@
       "purpose": "Node bounds span a box's first painted row by default and all of its painted rows on request."
     },
     {
+      "name": "ebox-node-bounds-keep-hidden-flow-slots",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A visibility-hidden box in flow reports its blank slot as bounds, while a hidden overlay has none."
+    },
+    {
       "name": "ebox-focus-derived-state-matches-selector-and-styles",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Focused nodes expose :focus selectors and focus-dependent styles."

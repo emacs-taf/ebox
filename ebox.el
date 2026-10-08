@@ -250,6 +250,8 @@
 ;; With ALL-LINES, END ends NODE's last painted line, spanning every row.
 ;; A box's span starts at the first cell of that line not covered by an
 ;; overlay outside NODE; the result is nil when overlays cover the whole line.
+;; A `:visibility hidden' box in flow reports its blank slot; a hidden or
+;; unplaced absolute box, and its content, has no bounds.
 ;; Covered boxes are likewise not focusable.
 ;;
 ;; Function: ebox-node-geometry (node)

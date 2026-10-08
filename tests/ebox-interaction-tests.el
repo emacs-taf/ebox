@@ -121,6 +121,20 @@
                                (split-string (buffer-substring-no-properties start end) "\n"))
                        '("abc" "def")))))))
 
+(ert-deftest ebox-node-bounds-keep-hidden-flow-slots ()
+  (ebox-test-with-mounted (buffer root '(box :position relative :width (ch 8) :height (lh 2)
+                                             (row (box :id "slot" :visibility hidden
+                                                       :width (ch 3) "abc")
+                                                  (box "de"))
+                                             (box :id "over" :position absolute :visibility hidden
+                                                  :left (ch 0) :top (lh 1) :width (ch 2) "xy")))
+    (let ((slot (car (ebox-selector-query root "#slot")))
+          (over (car (ebox-selector-query root "#over"))))
+      (pcase-let ((`(,start . ,end) (ebox-node-bounds slot)))
+        (should (= start (point-min)))
+        (should-not (string-match-p "[a-z]" (buffer-substring-no-properties start end))))
+      (should-not (ebox-node-bounds over)))))
+
 (ert-deftest ebox-descendants-inherit-or-block-native-feedback ()
   (ebox-test-with-mounted (buffer root '(box :help-echo "Outer" :pointer hand
                                              :hover-style (:background-color "#123456")
