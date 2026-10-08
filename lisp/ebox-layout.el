@@ -1521,7 +1521,8 @@ That is the nearest non-inline parent, or the root for `:layer root'."
          (y (or (ebox--lines (ebox--cv cs 'ebox/top) cs height) 0))
          (anchor (ebox--cv cs 'ebox/anchor)))
     (if (not anchor)
-        (cons x y)
+        ;; Offsets start at the host's content origin.
+        (cons (+ x (ebox-geo-pl hgeo)) (+ y (ebox-geo-pt hgeo)))
       (let ((target (ebox--anchor-target host node anchor)))
         ;; An anchor inside the overlay itself would follow its own placement.
         (when (and target (ebox-node-layout target) (not (ebox--hidden-p target))

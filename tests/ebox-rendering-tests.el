@@ -111,6 +111,16 @@ def"))
       (should (equal (plist-get (ebox-node-geometry foot) :y)
                      (+ (plist-get (ebox-node-geometry tabs) :y) 1))))))
 
+(ert-deftest ebox-render-absolute-children-start-at-content-origin ()
+  (ebox-test-with-mounted (buffer root
+                           '(box :width (ch 10) :height (lh 3) :padding ((lh 1) (ch 2))
+                                 (box :id "over" :position absolute :left (ch 0) :top (lh 0)
+                                      :width (ch 2) :height (lh 1) "AB")
+                                 "flowing"))
+    (let ((over (car (ebox-selector-query root "#over"))))
+      (should (equal (ebox-node-geometry over) '(:x 2 :y 1 :width 2 :height 1)))
+      (should (string-match-p "AB" (nth 1 (split-string (ebox-test-buffer-text) "\n")))))))
+
 (ert-deftest ebox-render-relative-flow-paints-above-lower-overlays ()
   (let* ((out (ebox-render
                '(box :position relative :width (ch 8) :height (lh 2)

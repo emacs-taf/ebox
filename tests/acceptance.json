@@ -145,6 +145,11 @@
       "purpose": "Flex items with undeclared or visible overflow do not shrink below their content, while scrolling items may."
     },
     {
+      "name": "ebox-render-absolute-children-start-at-content-origin",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Absolute children are offset from their host's content origin, inside its padding."
+    },
+    {
       "name": "ebox-render-relative-flow-paints-above-lower-overlays",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Relatively positioned flow content with a higher z-index paints above lower absolute overlays and keeps their background."
