@@ -824,6 +824,36 @@ unless `ebox-viewport-height' supplies one."
                           ebox-style--property-definitions)))
   "Computed value ids that can change geometry.")
 
+(defconst ebox--weight-key-positions
+  (let ((i 0) positions)
+    (dolist (id ebox--layout-ids (nreverse positions))
+      (when (memq id '(ebox--css-weight ebox/font-weight)) (push i positions))
+      (setq i (1+ i))))
+  "Positions of the font weight values in a layout key.")
+
+(defvar ebox--weight-change-cache (make-hash-table :test 'eq :weakness 'key)
+  "Map of computed style to ((STYLE EPOCH . SAME) ...) weight comparisons.")
+
+(defun ebox--weight-only-change-p (old new)
+  "Return non-nil when computed styles OLD and NEW keep their geometry.
+Their layout keys may differ only in font weight, and the two fonts must
+measure text alike."
+  (let* ((known (gethash old ebox--weight-change-cache))
+         (entry (assq new known)))
+    (if (and entry (eq (cadr entry) ebox--width-epoch))
+        (cddr entry)
+      (let ((a (ebox-cs-lkey old)) (b (ebox-cs-lkey new)) (i 0) (same t))
+        (while (and same a)
+          (unless (or (equal (car a) (car b)) (memq i ebox--weight-key-positions))
+            (setq same nil))
+          (setq a (cdr a) b (cdr b) i (1+ i)))
+        (setq same (and same (ebox--same-widths-p (ebox-cs-fontface old)
+                                                  (ebox-cs-fontface new))))
+        (puthash old (cons (cons new (cons ebox--width-epoch same))
+                           (if entry (delq entry known) known))
+                 ebox--weight-change-cache)
+        same))))
+
 (defvar ebox--lkey-table (make-hash-table :test 'equal :weakness 'value)
   "Shared layout keys, so equal geometry inputs compare with `eq'.")
 

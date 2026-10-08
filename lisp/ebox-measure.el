@@ -66,6 +66,23 @@
                         (string char)))
                      hash))))))
 
+(defconst ebox--width-probe (concat (number-sequence 32 126) "汉")
+  "Characters whose widths identify a face's horizontal metrics.")
+
+(defun ebox--face-widths (face)
+  "Return the widths of `ebox--width-probe' under FACE, measured once."
+  (let ((table (cdr (ebox--face-table face))))
+    (or (gethash 'probe table)
+        (puthash 'probe (mapcar (lambda (char) (ebox--char-width char face))
+                                ebox--width-probe)
+                 table))))
+
+(defun ebox--same-widths-p (a b)
+  "Return non-nil when faces A and B give the probe characters equal widths.
+A monospaced font keeps its advance across weights, so a weight change
+under it repaints without moving text."
+  (or (eq a b) (equal (ebox--face-widths a) (ebox--face-widths b))))
+
 (defsubst ebox--cjk-char-p (char)
   "Return non-nil when CHAR breaks like a CJK ideograph."
   (and (>= char #x2E80)

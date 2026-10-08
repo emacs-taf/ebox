@@ -310,11 +310,36 @@ Overlays in NODE's subtree hosted outside it vacate their host's lines."
   (ebox--mutation
     (ebox--check-node node)
     (unless (equal props (ebox-node-props node))
-      (let ((old-scroll (ebox-node-scroll node)))
+      (let ((old-scroll (ebox-node-scroll node))
+            (style-only (ebox--style-change-p (ebox-node-props node) props)))
         (ebox--node-set-props node props)
-        (setf (ebox-node-scroll node) old-scroll))
-      (ebox--mark node (logior ebox--d-style ebox--d-layout)))
+        (setf (ebox-node-scroll node) old-scroll)
+        ;; The style pass relays out a node whose geometry inputs changed and
+        ;; only repaints one whose new style keeps them.
+        (ebox--mark node (if style-only ebox--d-style
+                           (logior ebox--d-style ebox--d-layout)))))
     node))
+
+(defsubst ebox--style-property-p (key)
+  "Return non-nil when author property KEY is a style declaration."
+  (not (or (memq key ebox--meta-properties)
+           (memq key ebox-interaction-properties))))
+
+(defun ebox--style-change-p (old new)
+  "Return non-nil when plists OLD and NEW differ only in style properties."
+  (let ((ok t) (rest new))
+    (while (and ok rest)
+      (unless (or (ebox--style-property-p (car rest))
+                  (let ((cell (plist-member old (car rest))))
+                    (and cell (equal (cadr rest) (cadr cell)))))
+        (setq ok nil))
+      (setq rest (cddr rest)))
+    (setq rest old)
+    (while (and ok rest)
+      (unless (or (ebox--style-property-p (car rest)) (plist-member new (car rest)))
+        (setq ok nil))
+      (setq rest (cddr rest)))
+    ok))
 
 (defun ebox-node-put (node key value)
   "Set NODE's author property KEY to VALUE."
@@ -378,7 +403,8 @@ geometry inputs only marks it for repainting."
               (puthash node (ebox-cs-vunits new) ebox--viewport-nodes)
             (when (and old (ebox-cs-vunits old)) (remhash node ebox--viewport-nodes)))
           (cond
-           ((and old (eq (ebox-cs-lkey old) (ebox-cs-lkey new)))
+           ((and old (or (eq (ebox-cs-lkey old) (ebox-cs-lkey new))
+                         (ebox--weight-only-change-p old new)))
             (setf (ebox-node-dirty node) (logior (ebox-node-dirty node) ebox--d-paint)))
            (t
             (setf (ebox-node-intr node) nil
@@ -519,28 +545,42 @@ EDITS are ordered (START OLD NEW) line replacements, or nil when the whole
 buffer is rewritten.  Each result holds the position's line and column.
 Positions in untouched lines move with their text, so only positions in
 replaced lines, or at a line start where lines are inserted, are tracked."
-  (let ((first (and edits
-                    (save-excursion (ebox--goto-line mount (caar edits)) (point))))
-        tracked entry)
+  (let* ((first (and edits
+                     (save-excursion (ebox--goto-line mount (caar edits)) (point))))
+         (last (and edits (ebox--edits-end mount edits)))
+         tracked entry)
     (dolist (window (get-buffer-window-list (current-buffer) nil t))
       (when (setq entry (ebox--tracked-position mount 'start window (window-start window)
-                                                first edits))
+                                                first last edits))
         (push entry tracked))
       (unless (eq window (selected-window))
         (when (setq entry (ebox--tracked-position mount 'point window (window-point window)
-                                                  first edits))
+                                                  first last edits))
           (push entry tracked))))
-    (when (setq entry (ebox--tracked-position mount 'buffer nil (point) first edits))
+    (when (setq entry (ebox--tracked-position mount 'buffer nil (point) first last edits))
       (push entry tracked))
     tracked))
 
-(defun ebox--tracked-position (mount kind window pos first edits)
+(defun ebox--edits-end (mount edits)
+  "Return the old buffer position where MOUNT's ordered EDITS end.
+It is the start of the first old line after the last replaced line."
+  (let ((delta 0) (rest edits))
+    (while (cdr rest)
+      (setq delta (+ delta (- (nth 2 (car rest)) (nth 1 (car rest))))
+            rest (cdr rest)))
+    (save-excursion
+      (ebox--goto-line mount (+ (- (caar rest) delta) (nth 1 (car rest))))
+      (point))))
+
+(defun ebox--tracked-position (mount kind window pos first last edits)
   "Return (KIND WINDOW LINE COLUMN) for POS when EDITS of MOUNT rewrite it.
-FIRST is the buffer position where the first edit starts."
-  ;; The first edit starts at the same line before and after.
-  (unless (and first (< pos first))
-    (let* ((line (ebox--line-of mount pos))
-           (column (- pos (save-excursion (goto-char pos) (line-beginning-position)))))
+FIRST and LAST are the buffer positions where the edits start and end."
+  ;; The first edit starts at the same line before and after, and positions
+  ;; after the last replaced line move with their text.
+  (unless (or (and first (< pos first)) (and last (> pos last)))
+    (let* ((line (if (eql pos first) (caar edits) (ebox--line-of mount pos)))
+           (column (if (eql pos first) 0
+                     (- pos (save-excursion (goto-char pos) (line-beginning-position))))))
       (when (or (null edits) (ebox--line-rewritten-p line (zerop column) edits))
         (list kind window line column)))))
 

@@ -575,6 +575,26 @@ The result is cached until NODE's computed style or intrinsic widths change."
   "Return NODE's last layout constraint vector, or nil."
   (ebox-node-avail node))
 
+(defun ebox--paint-only-desc (node dirty)
+  "Return non-nil when repainting NODE also covers its dirty children.
+DIRTY is NODE's dirty mask.  A paint-dirty NODE rebuilds the lines of its
+whole subtree, so dirty children that need nothing more than repainting are
+forgotten here instead of being laid out again."
+  (and (/= 0 (logand dirty ebox--d-paint))
+       (null (ebox-node-ops node))
+       (let ((kids (ebox-node-dkids node)) (mask (logior ebox--d-style ebox--d-layout
+                                                         ebox--d-desc)))
+         (while (and kids (zerop (logand (ebox-node-dirty (car kids)) mask)))
+           (setq kids (cdr kids)))
+         (when (null kids)
+           (dolist (kid (ebox-node-dkids node))
+             (setf (ebox-node-dirty kid)
+                   (logand (ebox-node-dirty kid) (lognot ebox--d-queued))))
+           (setf (ebox-node-dkids node) nil
+                 (ebox-node-dirty node) (logand (ebox-node-dirty node)
+                                                (lognot ebox--d-desc)))
+           t))))
+
 (defun ebox--layout (node avail mode cbh &optional fh)
   "Lay out NODE's margin box within AVAIL pixels.
 MODE is stretch, shrink or exact; CBH is the containing height in lines or
@@ -590,7 +610,8 @@ geometry or its children's sizes may have changed."
              (eql (aref key 2) cbh) (eql (aref key 3) fh))
         (let ((old-h (ebox-node-h node))
               (moved
-               (when (/= 0 (logand dirty ebox--d-desc))
+               (when (and (/= 0 (logand dirty ebox--d-desc))
+                          (not (ebox--paint-only-desc node dirty)))
                  (let ((used (ebox-geo-iused (ebox-node-layout node))))
                    (if (and used (not (equal used (ebox--intrinsic node))))
                        ;; NODE's own width follows its content, which changed.
