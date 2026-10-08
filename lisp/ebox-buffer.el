@@ -1018,7 +1018,13 @@ X and WIDTH are pixels, Y and HEIGHT root lines; nil when NODE is not laid out."
                  (end (progn (forward-line (plist-get geometry :height)) (point)))
                  (run (text-property-any start end 'ebox-node node)))
             (when run
-              (cons run (or (text-property-not-all run end 'ebox-node node) end)))))))))
+              (let ((stop (or (text-property-not-all run end 'ebox-node node) end)))
+                ;; An interactive text node also owns the alignment fill
+                ;; after its glyphs; that fill is not part of its text.
+                (while (and (> stop run)
+                            (eq (car-safe (get-text-property (1- stop) 'display)) 'space))
+                  (setq stop (1- stop)))
+                (and (> stop run) (cons run stop))))))))))
 
 (defun ebox-node-bounds (node)
   "Return (START . END) buffer positions of NODE's first painted line.

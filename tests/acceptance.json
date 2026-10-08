@@ -155,6 +155,11 @@
       "purpose": "Input sessions expose user edits, return them, and restore published text."
     },
     {
+      "name": "ebox-input-session-excludes-focusable-text-fill",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Focusable text bounds and input sessions cover only the text glyphs, not alignment fill."
+    },
+    {
       "name": "ebox-input-session-validates-lifecycle",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "Input sessions reject concurrent and ended-session lifecycle errors."
