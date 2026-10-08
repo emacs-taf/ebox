@@ -454,7 +454,8 @@
 ;;
 ;; Function: ebox-file-load-companion (&optional file)
 ;;;###autoload (autoload 'ebox-file-load-companion "ebox" nil nil)
-;; Load FILE's same-basename `.el' companion when it exists.
+;; Load FILE's same-basename `.el' companion when it exists.  A compiled
+;; companion is used only when it is newer than the source.
 ;;
 ;; Function: ebox-file-preview (&optional buffer)
 ;;;###autoload (autoload 'ebox-file-preview "ebox" nil t)

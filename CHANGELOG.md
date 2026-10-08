@@ -11,6 +11,8 @@ All notable changes to Ebox are documented here.
   `ebox-mount`; then update the existing tree with node mutation functions.
   Flushes restyle, relayout and repaint dirty paths, and rewrite only changed
   buffer lines/parts.
+- `ebox-file-load-companion` loads a compiled `.ebox` companion when its
+  bytecode is newer than the `.el` source; edited sources still load directly.
 
 ### Removed
 

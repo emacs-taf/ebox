@@ -61,5 +61,29 @@
     (insert "'(box :width (ch 2) \"OK\")")
     (should (equal (ebox-file-evaluate-buffer (current-buffer))
                    '(box :width '(ch 2) "OK")))))
+;
+(ert-deftest ebox-file-load-companion-prefers-only-newer-bytecode ()
+  "A companion loads its source unless its bytecode is newer."
+  (let* ((directory (make-temp-file "ebox-companion" t))
+         (base (expand-file-name "demo" directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file (concat base ".el")
+            (insert ";;; -*- lexical-binding: t; -*-\n"
+                    "(put 'ebox-file-load-companion 'test-origin (file-name-extension load-file-name))\n"))
+          (put 'ebox-file-load-companion 'test-origin nil)
+          (ebox-file-load-companion (concat base ".ebox"))
+          (should (equal (get 'ebox-file-load-companion 'test-origin) "el"))
+          (byte-compile-file (concat base ".el"))
+          (set-file-times (concat base ".el") (time-subtract nil 60))
+          (put 'ebox-file-load-companion 'test-origin nil)
+          (ebox-file-load-companion (concat base ".ebox"))
+          (should (equal (get 'ebox-file-load-companion 'test-origin) "elc"))
+          (set-file-times (concat base ".el") (time-add nil 60))
+          (put 'ebox-file-load-companion 'test-origin nil)
+          (ebox-file-load-companion (concat base ".ebox"))
+          (should (equal (get 'ebox-file-load-companion 'test-origin) "el")))
+      (put 'ebox-file-load-companion 'test-origin nil)
+      (delete-directory directory t))))
 
 ;;; ebox-image-file-tests.el ends here

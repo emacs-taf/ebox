@@ -298,6 +298,11 @@
       "name": "ebox-node-mutation-errors-leave-buffer-at-last-successful-render",
       "file": "tests/ebox-update-tests.el",
       "purpose": "Rejected public mutations leave the buffer equal to the last successful render."
+    },
+    {
+      "name": "ebox-file-load-companion-prefers-only-newer-bytecode",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "A .ebox companion loads its source unless its bytecode is newer."
     }
   ]
 }

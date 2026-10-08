@@ -32,12 +32,13 @@
       form)))
 
 (defun ebox-file-load-companion (&optional file)
-  "Load FILE's same-basename `.el' companion when it exists."
+  "Load FILE's same-basename `.el' companion when it exists.
+A compiled companion is used only when it is newer than the source."
   (when (and file (string= (file-name-extension file) "ebox"))
-    (let ((companion (concat (file-name-sans-extension
-                              (expand-file-name file)) ".el")))
-      (when (file-readable-p companion)
-        (load companion nil t t)))))
+    (let ((base (file-name-sans-extension (expand-file-name file))))
+      (when (file-readable-p (concat base ".el"))
+        (let ((load-prefer-newer t))
+          (load base nil t))))))
 
 (defun ebox-file-read-file (file)
   "Read one Ebox expression from FILE without evaluating it."
