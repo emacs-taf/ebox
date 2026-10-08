@@ -1793,12 +1793,14 @@ is then joined into one string."
       (push (ebox--space (ebox-geo-bl geo) (ebox--border-face (ebox-cs-blc cs))) parts))
     (if (not whole)
         parts
-      (let ((line (funcall (if (or top bottom) #'ebox--join-fresh #'ebox--join)
-                           (if (ebox-node-overlays node)
-                               (ebox--apply-overlays node geo bi
-                                                     (ebox--join-parts parts))
-                             parts))))
-        (when (or top bottom)
+      (let ((line (if (ebox-node-overlays node)
+                      (ebox--apply-overlays node geo bi (ebox--join-parts parts))
+                    parts)))
+        (if (not (or top bottom))
+            ;; Overlays only splice strings: the line stays a list.
+            (cons line tail)
+          (setq line (ebox--join-fresh line))
+          (puthash line (ebox-geo-bw geo) ebox--part-widths)
           (when top
             (add-face-text-property 0 (length line)
                                     (list :overline (let ((c (ebox-cs-btc cs)))
@@ -1810,8 +1812,11 @@ is then joined into one string."
                                           (list :position t
                                                 :color (let ((c (ebox-cs-bbc cs)))
                                                          (if (eq c 'default) 'foreground-color c))))
-                                    t line)))
-        (cons line tail)))))
+                                    t line))
+          (cons line tail))))))
+
+(defvar ebox--part-widths (make-hash-table :test 'eq :weakness 'key)
+  "Pixel widths of composed part strings, which are shared and immutable.")
 
 (defconst ebox--line-cache-max 256
   "Largest margin-box height whose composed lines a node caches.")
@@ -1862,7 +1867,9 @@ An interactive node joins its line to carry its interaction properties."
                     (ebox--border-parts node geo (- i mt)
                                         (list (ebox--space mr face))))))))
     (if (and (ebox-node-inter node) ebox--decorate-function)
-        (list (funcall ebox--decorate-function node (ebox--join-fresh parts) t))
+        (let ((line (funcall ebox--decorate-function node (ebox--join-fresh parts) t)))
+          (puthash line (ebox-node-w node) ebox--part-widths)
+          (list line))
       parts)))
 
 (defun ebox--px-cut (string x pos px)
@@ -1881,7 +1888,7 @@ through the face width table, without consing per unit."
                      (next (if space (1+ pos)
                              (or (next-single-property-change pos 'display string)
                                  len)))
-                     (w (or space (ebox--measure-raw (substring string pos next)))))
+                     (w (or space (ebox--display-width string pos next))))
                 (if (> (+ px w) x)
                     (setq result (list pos px next w))
                   (setq px (+ px w) pos next)))
@@ -1924,27 +1931,48 @@ A unit straddling X is replaced by spaces of the two partial widths."
   (let ((cut (ebox--px-cut string x 0 0)))
     (cons (ebox--cut-left string x cut) (ebox--cut-right string x cut))))
 
-(defvar ebox--part-widths (make-hash-table :test 'eq :weakness 'key)
-  "Pixel widths of composed part strings, which are shared and immutable.")
-
 (defun ebox--part-width (string)
   "Return the pixel width of composed part STRING."
   (or (gethash string ebox--part-widths)
       (puthash string (nth 1 (ebox--px-cut string most-positive-fixnum 0 0))
                ebox--part-widths)))
 
+(defun ebox--sized-substring (string from to width)
+  "Return STRING from FROM to TO, recording its WIDTH pixels."
+  (let ((part (substring string from to)))
+    (puthash part width ebox--part-widths)
+    part))
+
 (defun ebox--split-parts (parts x)
   "Split the composed strings PARTS at pixel X; return (LEFT . RIGHT).
-Only a string straddling X is cut, see `ebox--split-at'; the others are
+Only a string straddling X is cut, into its whole units on each side and
+spaces for the two partial widths of a unit straddling X; the others are
 shared.  LEFT is padded with a space when PARTS end before X."
   (let ((px 0) (left nil) (rest parts) (done nil))
     (while (and rest (not done))
       (let* ((string (car rest)) (w (ebox--part-width string)))
         (cond ((>= px x) (setq done t))
               ((<= (+ px w) x) (push string left) (setq px (+ px w) rest (cdr rest)))
-              (t (let ((cut (ebox--split-at string (- x px))))
-                   (push (car cut) left)
-                   (setq rest (cons (cdr cut) (cdr rest)) done t))))))
+              (t
+               (pcase-let* ((at (- x px))
+                            (`(,pos ,upx ,next ,uw) (ebox--px-cut string at 0 0))
+                            (len (length string))
+                            (right (cdr rest)))
+                 (when (> pos 0)
+                   (push (ebox--sized-substring string 0 pos upx) left))
+                 (when (< upx at)
+                   (push (ebox--space (- at upx)
+                                      (and (< pos len) (get-text-property pos 'face string)))
+                         left))
+                 (cond ((>= pos len))
+                       (next
+                        (when (< next len)
+                          (push (ebox--sized-substring string next len (- w upx uw)) right))
+                        (push (ebox--space (- (+ upx uw) at)
+                                           (get-text-property pos 'face string))
+                              right))
+                       (t (push (ebox--sized-substring string pos len (- w upx)) right)))
+                 (setq rest right done t))))))
     (when (and (not done) (< px x))
       (push (ebox--space (- x px) nil) left))
     (cons (nreverse left) rest)))
