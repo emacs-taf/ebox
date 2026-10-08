@@ -145,8 +145,10 @@ joined by members through `:ecss-scopes`.
 ```
 
 Selectors see retained nodes through ECSS subject facts: type, `:id`, `:class`,
-`:attributes`, `:states`, parent and children.  Interaction also derives
-`focus`, `active` and `disabled` selector states.
+`:attributes`, `:states`, parent and children.  As in CSS, `[id="..."]` and
+`[key="..."]` match a node's `:id` and `:key`, including ids that are not
+valid `#` identifiers.  Interaction also derives `focus`, `active` and
+`disabled` selector states.
 
 Use `ebox-selector-query`, `ebox-selector-query-buffer` and
 `ebox-selector-match-node-p` for public selector work.

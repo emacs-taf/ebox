@@ -16,6 +16,8 @@
     (should (= (length (ebox-selector-query root ".action")) 2))
     (should (= (length (ebox-selector-query root ".hot:selected")) 1))
     (should (= (length (ebox-selector-query-buffer buffer "[role=button]")) 1))
+    (should (equal (ebox-selector-query root "[id=\"primary\"] ")
+                   (ebox-selector-query root "#primary")))
     (should (ebox-selector-match-node-p (car (ebox-selector-query root "#primary"))
                                         "#primary.hot:selected"))))
 

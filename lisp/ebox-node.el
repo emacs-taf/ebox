@@ -548,12 +548,22 @@ box, row, column, flex and grid."
                       (funcall ebox--derived-states-function node))))
     (if derived (append (ebox-node-states node) derived) (ebox-node-states node))))
 
+(defun ebox--node-selector-attributes (node)
+  "Return NODE's selector attributes, including its id and key.
+As in CSS, `[id=...]' and `[key=...]' match the node's :id and :key, which
+also serves ids that are not valid `#' selector identifiers."
+  (let ((attributes (ebox-node-attributes node))
+        (key (ebox--token (ebox-node-key node))))
+    (when key (push (cons "key" key) attributes))
+    (when (ebox-node-id node) (push (cons "id" (ebox-node-id node)) attributes))
+    attributes))
+
 (defconst ebox--ecss-adapter
   (ecss-subject-adapter-create
    :type (lambda (node) (symbol-name (ebox-node-tag node)))
    :id #'ebox-node-id
    :classes #'ebox-node-classes
-   :attributes #'ebox-node-attributes
+   :attributes #'ebox--node-selector-attributes
    :states #'ebox--node-all-states
    :parent #'ebox-node-parent
    :children #'ebox-node-children)

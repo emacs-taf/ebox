@@ -133,7 +133,8 @@ placement。schema 是严格的；无效属性或值会在修改现有 mount 前
 ```
 
 Selector 通过 ECSS subject facts 查看 retained node：type、`:id`、`:class`、`:attributes`、
-`:states`、parent 和 children。交互还会派生 `focus`、`active`、`disabled` selector state。
+`:states`、parent 和 children。与 CSS 一致，`[id="..."]` 和 `[key="..."]` 匹配节点的
+`:id` 与 `:key`，包括不是合法 `#` 标识符的 id。交互还会派生 `focus`、`active`、`disabled` selector state。
 
 使用 `ebox-selector-query`、`ebox-selector-query-buffer` 和
 `ebox-selector-match-node-p` 完成 public selector 工作。
