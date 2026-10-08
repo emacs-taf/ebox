@@ -37,4 +37,7 @@ All notable changes to Ebox are documented here.
 
 - Content wider than its box is cut at the box edge, so later siblings on a
   line keep their columns instead of shifting right.
+- Content that fills a mounted buffer which was empty keeps point and the
+  window start at the top, so an application no longer opens scrolled to the
+  end of its buffer.
 

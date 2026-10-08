@@ -28,6 +28,24 @@
       (set-window-configuration config)
       (kill-buffer buffer))))
 
+(ert-deftest ebox-first-content-keeps-point-and-window-start-at-top ()
+  (let ((buffer (get-buffer-create " *ebox-first-content*"))
+        (config (current-window-configuration)))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buffer)
+          (let* ((root (ebox-mount buffer '(column :id "list")))
+                 (window (selected-window)))
+            (should (= (buffer-size buffer) 0))
+            (ebox-node-insert root (ebox-build '(column (box "One") (box "Two") (box "Three"))))
+            (with-current-buffer buffer
+              (should (equal (ebox-test-buffer-text buffer) "One \nTwo \nThree "))
+              (should (= (point) (point-min))))
+            (should (= (window-point window) 1))
+            (should (= (window-start window) 1))))
+      (set-window-configuration config)
+      (kill-buffer buffer))))
+
 (ert-deftest ebox-node-set-text-updates-buffer-like-fresh-render ()
   (ebox-test-with-mounted (buffer root '(column (text :id "value" "One") (box "Tail")))
     (let ((value (car (ebox-selector-query root "#value"))))

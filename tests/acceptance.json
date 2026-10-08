@@ -280,6 +280,11 @@
       "purpose": "A mount without a fixed viewport takes its width and height from the window displaying its buffer, including in batch."
     },
     {
+      "name": "ebox-first-content-keeps-point-and-window-start-at-top",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Content written into an empty mounted buffer leaves point and the displaying window's start at the top instead of after the new lines."
+    },
+    {
       "name": "ebox-node-set-text-updates-buffer-like-fresh-render",
       "file": "tests/ebox-update-tests.el",
       "purpose": "Text mutation updates the mounted buffer to match a fresh render of the retained tree."

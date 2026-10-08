@@ -544,25 +544,27 @@ their lines, so only the sorted tail from START is visited."
 EDITS are ordered (START OLD NEW) line replacements, or nil when the whole
 buffer is rewritten.  Each result holds the position's line and column.
 Positions in untouched lines move with their text, so only positions in
-replaced lines, or at a line start where lines are inserted, are tracked."
-  (let* ((first (and edits
-                     (save-excursion (ebox--goto-line mount (caar edits)) (point))))
-         (last (and edits
-                    (if (and (null (cdr edits)) (zerop (nth 1 (car edits))))
-                        first
-                      (ebox--edits-end mount edits))))
-         tracked entry)
-    (dolist (window (get-buffer-window-list (current-buffer) nil t))
-      (when (setq entry (ebox--tracked-position mount 'start window (window-start window)
-                                                first last edits))
-        (push entry tracked))
-      (unless (eq window (selected-window))
-        (when (setq entry (ebox--tracked-position mount 'point window (window-point window)
+replaced lines, or at a line start where lines are inserted, are tracked.
+An empty buffer has no line to follow, so its positions stay at the top."
+  (when (> (ebox-mount-lines mount) 0)
+    (let* ((first (and edits
+                       (save-excursion (ebox--goto-line mount (caar edits)) (point))))
+           (last (and edits
+                      (if (and (null (cdr edits)) (zerop (nth 1 (car edits))))
+                          first
+                        (ebox--edits-end mount edits))))
+           tracked entry)
+      (dolist (window (get-buffer-window-list (current-buffer) nil t))
+        (when (setq entry (ebox--tracked-position mount 'start window (window-start window)
                                                   first last edits))
-          (push entry tracked))))
-    (when (setq entry (ebox--tracked-position mount 'buffer nil (point) first last edits))
-      (push entry tracked))
-    tracked))
+          (push entry tracked))
+        (unless (eq window (selected-window))
+          (when (setq entry (ebox--tracked-position mount 'point window (window-point window)
+                                                    first last edits))
+            (push entry tracked))))
+      (when (setq entry (ebox--tracked-position mount 'buffer nil (point) first last edits))
+        (push entry tracked))
+      tracked)))
 
 (defun ebox--edits-end (mount edits)
   "Return the old buffer position where MOUNT's ordered EDITS end.
