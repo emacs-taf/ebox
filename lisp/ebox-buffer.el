@@ -1018,12 +1018,8 @@ X and WIDTH are pixels, Y and HEIGHT root lines; nil when NODE is not laid out."
 (defun ebox--pos-at-x (bol x)
   "Return the buffer position at pixel X of the line starting at BOL."
   (let* ((eol (save-excursion (goto-char bol) (line-end-position)))
-         (string (buffer-substring bol eol))
-         (pos 0) (px 0) (len (length string)))
-    (while (and (< pos len) (< px x))
-      (pcase-let ((`(,next . ,w) (ebox--char-px string pos)))
-        (if (> (+ px w) x) (setq px x) (setq px (+ px w) pos next))))
-    (+ bol pos)))
+         (string (buffer-substring bol eol)))
+    (+ bol (car (ebox--px-cut string x 0 0)))))
 
 (defun ebox--text-bounds (node mount &optional all-lines)
   "Return (START . END) of text NODE's first painted run in MOUNT, or nil.

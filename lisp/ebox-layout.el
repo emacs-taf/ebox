@@ -1753,9 +1753,10 @@ is then joined into one string."
       (push (ebox--space 1 (ebox--border-face (ebox-cs-blc cs))) parts))
     (if (not whole)
         parts
-      (let ((line (ebox--join parts)))
-        (when (ebox-node-overlays node)
-          (setq line (ebox--apply-overlays node geo bi line)))
+      (let ((line (ebox--join (if (ebox-node-overlays node)
+                                  (ebox--apply-overlays node geo bi
+                                                        (ebox--join-parts parts))
+                                parts))))
         (when (or top bottom)
           (setq line (copy-sequence line))
           (when top
@@ -1824,49 +1825,102 @@ An interactive node joins its line to carry its interaction properties."
         (list (funcall ebox--decorate-function node (ebox--join parts)))
       parts)))
 
-(defun ebox--char-px (string pos)
-  "Return (NEXT . WIDTH) of the display unit at POS in composed STRING."
-  (let* ((display (get-text-property pos 'display string))
-         (space (and display (ebox--fixed-space-width display))))
-    (cond
-     (space (cons (1+ pos) space))
-     (display
-      (let ((next (or (next-single-property-change pos 'display string) (length string))))
-        (cons next (ebox--measure-raw (substring string pos next)))))
-     (t (let ((next (ebox--cluster-end string pos (length string))))
-          (cons next
-                (if (= next (1+ pos))
-                    (ebox--char-width (aref string pos) (get-text-property pos 'face string))
-                  (ebox--measure-raw (substring string pos next)))))))))
+(defun ebox--px-cut (string x pos px)
+  "Find the display unit of STRING holding pixel X, walking from POS at PX.
+Return (POS PX) when a unit starts at or after X, (POS PX NEXT W) when the
+unit from POS to NEXT, W pixels wide, straddles X, or (LEN PX) when STRING
+ends first.  Runs without a display property are measured per character
+through the face width table, without consing per unit."
+  (let ((len (length string)) result)
+    (while (and (not result) (< pos len))
+      (if (>= px x)
+          (setq result (list pos px))
+        (let ((display (get-text-property pos 'display string)))
+          (if display
+              (let* ((space (ebox--fixed-space-width display))
+                     (next (if space (1+ pos)
+                             (or (next-single-property-change pos 'display string)
+                                 len)))
+                     (w (or space (ebox--measure-raw (substring string pos next)))))
+                (if (> (+ px w) x)
+                    (setq result (list pos px next w))
+                  (setq px (+ px w) pos next)))
+            (let ((face (get-text-property pos 'face string))
+                  (run-end (next-property-change pos string len)))
+              (while (and (not result) (< pos run-end))
+                (if (>= px x)
+                    (setq result (list pos px))
+                  (let* ((next (ebox--cluster-end string pos len))
+                         (w (if (= next (1+ pos))
+                                (ebox--char-width (aref string pos) face)
+                              (ebox--measure-raw (substring string pos next)))))
+                    (if (> (+ px w) x)
+                        (setq result (list pos px next w))
+                      (setq px (+ px w) pos next))))))))))
+    (or result (list len px))))
+
+(defun ebox--cut-left (string x cut)
+  "Return the part of STRING left of pixel X given its CUT at X."
+  (pcase-let ((`(,pos ,px) cut))
+    (if (< px x)
+        (ebox--join (list (substring string 0 pos)
+                          (ebox--space (- x px)
+                                       (and (< pos (length string))
+                                            (get-text-property pos 'face string)))))
+      (substring string 0 pos))))
+
+(defun ebox--cut-right (string x cut)
+  "Return the part of STRING right of pixel X given its CUT at X."
+  (pcase-let ((`(,pos ,px ,next ,w) cut))
+    (cond ((>= pos (length string)) "")
+          (next (ebox--join (list (ebox--space (- (+ px w) x)
+                                               (get-text-property pos 'face string))
+                                  (substring string next))))
+          (t (substring string pos)))))
 
 (defun ebox--split-at (string x)
   "Split composed STRING at pixel X; return (LEFT . RIGHT).
 A unit straddling X is replaced by spaces of the two partial widths."
-  (let ((pos 0) (px 0) (len (length string)) result)
-    (while (and (< pos len) (not result))
-      (pcase-let ((`(,next . ,w) (ebox--char-px string pos)))
-        (cond
-         ((= px x) (setq result (cons (substring string 0 pos) (substring string pos))))
-         ((> (+ px w) x)
-          (let ((face (get-text-property pos 'face string)))
-            (setq result (cons (ebox--join (list (substring string 0 pos)
-                                                 (ebox--space (- x px) face)))
-                               (ebox--join (list (ebox--space (- (+ px w) x) face)
-                                                 (substring string next)))))))
-         (t (setq px (+ px w) pos next)))))
-    (or result
-        (if (>= x px) (cons (ebox--join (list string (ebox--space (- x px) nil))) "")
-          (cons string "")))))
+  (let ((cut (ebox--px-cut string x 0 0)))
+    (cons (ebox--cut-left string x cut) (ebox--cut-right string x cut))))
 
-(defun ebox--splice (base x segment width)
-  "Replace pixels X..X+WIDTH of BASE with SEGMENT."
-  (let* ((head (ebox--split-at base x))
-         (tail (ebox--split-at (cdr head) width)))
-    (ebox--join (list (car head) segment (cdr tail)))))
+(defvar ebox--part-widths (make-hash-table :test 'eq :weakness 'key)
+  "Pixel widths of composed part strings, which are shared and immutable.")
 
-(defun ebox--apply-overlays (host geo bi line)
-  "Splice HOST's overlays intersecting border-box line BI into LINE.
-Border decorations are applied afterwards, so they continue across overlays."
+(defun ebox--part-width (string)
+  "Return the pixel width of composed part STRING."
+  (or (gethash string ebox--part-widths)
+      (puthash string (nth 1 (ebox--px-cut string most-positive-fixnum 0 0))
+               ebox--part-widths)))
+
+(defun ebox--split-parts (parts x)
+  "Split the composed strings PARTS at pixel X; return (LEFT . RIGHT).
+Only a string straddling X is cut, see `ebox--split-at'; the others are
+shared.  LEFT is padded with a space when PARTS end before X."
+  (let ((px 0) (left nil) (rest parts) (done nil))
+    (while (and rest (not done))
+      (let* ((string (car rest)) (w (ebox--part-width string)))
+        (cond ((>= px x) (setq done t))
+              ((<= (+ px w) x) (push string left) (setq px (+ px w) rest (cdr rest)))
+              (t (let ((cut (ebox--split-at string (- x px))))
+                   (push (car cut) left)
+                   (setq rest (cons (cdr cut) (cdr rest)) done t))))))
+    (when (and (not done) (< px x))
+      (push (ebox--space (- x px) nil) left))
+    (cons (nreverse left) rest)))
+
+(defun ebox--splice-parts (parts x segment width)
+  "Replace pixels X..X+WIDTH of the composed strings PARTS with SEGMENT.
+SEGMENT is a list of composed strings; return the new list."
+  (let* ((head (ebox--split-parts parts x))
+         (tail (ebox--split-parts (cdr head) width)))
+    (nconc (car head) (append segment (cdr tail)))))
+
+(defun ebox--apply-overlays (host geo bi parts)
+  "Splice HOST's overlays intersecting border-box line BI into PARTS.
+PARTS and the result are flat lists of composed strings, so the line is
+concatenated once after every overlay is placed.  Border decorations are
+applied afterwards, so they continue across overlays."
   (let ((overlays (ebox--live-overlays host))
         (bw (ebox-geo-bw geo)))
     (when overlays
@@ -1883,13 +1937,13 @@ Border decorations are applied afterwards, so they continue across overlays."
                      (x (max 0 x))
                      (w (min (- (ebox-node-w node) skip) (max 0 (- bw x)))))
                 (when (> w 0)
-                  (let ((segment (ebox--node-line node row)))
+                  (let ((segment (ebox--join-parts (ebox--node-parts node row))))
                     (when (> skip 0)
-                      (setq segment (cdr (ebox--split-at segment skip))))
+                      (setq segment (cdr (ebox--split-parts segment skip))))
                     (when (< w (- (ebox-node-w node) skip))
-                      (setq segment (car (ebox--split-at segment w))))
-                    (setq line (ebox--splice line x segment w))))))))))
-    line))
+                      (setq segment (car (ebox--split-parts segment w))))
+                    (setq parts (ebox--splice-parts parts x segment w))))))))))
+    parts))
 
 (defun ebox--root-line (root i)
   "Return line I of ROOT as written to a buffer."
