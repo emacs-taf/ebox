@@ -200,6 +200,11 @@
       "purpose": "Paint styles and pixel padding produce public face and display text properties."
     },
     {
+      "name": "ebox-render-keeps-neighbours-sharing-one-display",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Adjacent characters sharing one display value keep every glyph on the line."
+    },
+    {
       "name": "ebox-render-border-uses-display-spaces-and-border-faces",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Borders render as display spaces carrying visible border face attributes."

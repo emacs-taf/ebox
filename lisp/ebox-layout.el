@@ -197,22 +197,30 @@ FRESH non-nil means LINE is a new string the function may modify.")
 (defun ebox--fit-glyphs (string text fontface)
   "Display STRING's clusters taller than the line in their fitted form.
 TEXT is STRING's undecorated source and FONTFACE the face it was measured
-with; clusters carrying their own display property are left alone."
-  (let ((len (length text)) (pos 0))
+with; clusters carrying their own display property are left alone.  Every
+occurrence of one cluster shares one fitted display, which Emacs would
+paint as a single glyph, so a run of the same cluster alternates between
+the display and its twin."
+  (let ((len (length text)) (pos 0) last)
     (while (and (< pos len)
                 (setq pos (ebox--next-fit-candidate text pos)))
       (let* ((start (if (and (> pos 0) (ebox--extension-char-p (aref text pos)))
                         (1- pos)
                       pos))
-             (end (ebox--cluster-end text start len)))
-        (unless (get-text-property start 'display text)
-          (let* ((own (get-text-property start 'face text))
+             (end (ebox--cluster-end text start len))
+             (own (get-text-property start 'display text)))
+        (if own
+            (setq last own)
+          (let* ((face (get-text-property start 'face text))
                  (cluster (substring-no-properties text start end))
-                 (fit (ebox--fit cluster (if own (ebox--merge-face own fontface)
+                 (fit (ebox--fit cluster (if face (ebox--merge-face face fontface)
                                            fontface))))
             (when fit
-              (put-text-property
-               start end 'display (cdr fit) string))))
+              (let ((display (cdr fit)))
+                (when (eq display last)
+                  (setq display (ebox--display-twin display)))
+                (put-text-property start end 'display display string)
+                (setq last display)))))
         (setq pos (max end (1+ pos)))))
     string))
 

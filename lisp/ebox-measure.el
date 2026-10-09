@@ -534,9 +534,6 @@ fixed display spaces are one unit each.  FACE is the node's font face."
 (defvar ebox--space-cache (make-hash-table :test 'equal)
   "Interned pixel spaces keyed by (WIDTH . FACE).")
 
-(defvar ebox--pad-displays (make-hash-table :test 'eq :weakness 'key)
-  "Display specifications of interned pixel spaces.")
-
 (defun ebox--space (width &optional face)
   "Return a one-character space WIDTH pixels wide painted with FACE.
 Return the empty string when WIDTH is not positive."
@@ -547,15 +544,9 @@ Return the empty string when WIDTH is not positive."
           (puthash key
                    (let* ((display (list 'space :width (list width)))
                           (string (propertize " " 'display display)))
-                     (puthash display t ebox--pad-displays)
                      (when face (put-text-property 0 1 'face face string))
                      string)
                    ebox--space-cache)))))
-
-(defun ebox--pad-display (string pos)
-  "Return the interned pad display of STRING's character at POS, or nil."
-  (let ((display (get-text-property pos 'display string)))
-    (and display (gethash display ebox--pad-displays) display)))
 
 (defun ebox--props-same-p (a b)
   "Return non-nil when text property lists A and B paint alike.
@@ -571,25 +562,30 @@ tree they link to."
     (setq a (cddr a) b (cddr b)))
   (and (null a) (null b)))
 
-(defvar ebox--pad-twins (make-hash-table :test 'eq :weakness 'key)
-  "The alternate display of each interned pad display, in both directions.")
+(defvar ebox--display-twins (make-hash-table :test 'eq :weakness 'key)
+  "An equal but distinct copy of each shared display value, in both directions.
+Display values are interned so that a composed line keeps the same objects
+across rewrites, but Emacs paints consecutive characters showing the same
+`eq' display value as one element.  A run of identical shared displays must
+therefore alternate between the value and its twin to keep every glyph and
+its width.")
+
+(defun ebox--display-twin (display)
+  "Return an equal copy of DISPLAY that never compares `eq' to it."
+  (or (gethash display ebox--display-twins)
+      (let ((twin (copy-sequence display)))
+        (puthash twin display ebox--display-twins)
+        (puthash display twin ebox--display-twins)
+        twin)))
 
 (defvar ebox--twin-strings (make-hash-table :test 'eq :weakness 'key)
-  "One-character strings whose first pad shows its alternate display.")
-
-(defun ebox--pad-twin (display)
-  "Return the interned alternate of pad DISPLAY, an equal but distinct object."
-  (or (gethash display ebox--pad-twins)
-      (let ((twin (copy-sequence display)))
-        (puthash twin t ebox--pad-displays)
-        (puthash twin display ebox--pad-twins)
-        (puthash display twin ebox--pad-twins))))
+  "One-character strings whose first character shows an alternate display.")
 
 (defun ebox--twin-first (part display)
   "Return PART with its first character showing DISPLAY's alternate.
-PART starts with pad DISPLAY.  When its second character already shows the
-alternate, the first receives a fresh copy instead."
-  (let ((twin (ebox--pad-twin display)))
+PART starts with the shared DISPLAY.  When its second character already
+shows the alternate, the first receives a fresh copy instead."
+  (let ((twin (ebox--display-twin display)))
     (if (= (length part) 1)
         (or (gethash part ebox--twin-strings)
             (puthash part (let ((copy (copy-sequence part)))
@@ -609,9 +605,9 @@ alternate, the first receives a fresh copy instead."
 PARTS is a tree: each element is a string or a nested list of parts, so a
 node shares its children's cached parts without copying them.  Emacs draws
 consecutive characters whose `display' values are `eq' as one element, so
-two interned pads meeting at a junction would collapse into one.  Each
+two shared displays meeting at a junction would collapse into one.  Each
 string is free of such pairs and only the junctions are examined: a string
-starting with the pad that ends the previous one shows that pad's interned
+starting with the display that ends the previous one shows that display's
 alternate, which keeps the line's display objects stable across rewrites."
   (let ((kept nil) (last nil) (stack nil) (rest parts))
     (while (or rest stack)
@@ -624,11 +620,10 @@ alternate, which keeps the line's display objects stable across rewrites."
                      (setq rest part))
             (let ((n (length part)))
               (when (> n 0)
-                (when last
-                  (let ((first (get-text-property 0 'display part)))
-                    (when (eq first last)
-                      (setq part (ebox--twin-first part first)))))
-                (setq last (ebox--pad-display part (1- n)))
+                (let ((first (get-text-property 0 'display part)))
+                  (when (and first (eq first last))
+                    (setq part (ebox--twin-first part first))))
+                (setq last (get-text-property (1- n) 'display part))
                 (push part kept)))))))
     (nreverse kept)))
 

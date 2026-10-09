@@ -208,6 +208,23 @@ def"))
  
 C ")))
 
+(ert-deftest ebox-render-keeps-neighbours-sharing-one-display ()
+  "Adjacent characters never repeat one shared display value.
+Emacs paints consecutive characters showing the same `eq' display as one
+element, hiding their glyphs; a line whose neighbours share a display must
+alternate it with an equal twin."
+  (let ((display (list 'space :width '(4))))
+    (let ((rendered
+           (ebox-render (list 'row
+                              (list 'text (propertize "a" 'display display))
+                              (list 'text (propertize "b" 'display display))
+                              (list 'text (propertize "c" 'display display))))))
+      (should (equal (substring-no-properties rendered) "abc "))
+      (dotimes (i 2)
+        (should-not (eq (get-text-property i 'display rendered)
+                        (get-text-property (1+ i) 'display rendered))))
+      (should (equal (get-text-property 1 'display rendered) display)))))
+
 (ert-deftest ebox-node-constructors-build-detached-trees ()
   (let* ((text (ebox-text-create "OK" '(:color "#00aa00")))
          (root (ebox-node-create 'box '(:width (ch 3)) (list text)))
