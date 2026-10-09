@@ -123,9 +123,6 @@ state.
 7. Rewrite the whole buffer on the first flush, or rewrite only edit ranges.
 8. Store and deliver the update report.
 
-A mount with an active input session stays queued but is not written; ending the
-session requeues it and the same pipeline catches up.
-
 ## Style pass
 
 `ebox--style-pass` visits a node when its style bit is set, when it has no
@@ -160,7 +157,14 @@ whole margin box is damaged and ancestors see only its new outer size.
 
 Text measurement is cached per text node, font face and wrap mode.  Paragraph
 layout breaks text into pixel-width units, preserving supported clusters and
-fixed display spaces.  Boxes resolve horizontal sizes in pixels and vertical
+fixed display spaces.  On graphical frames a cluster whose fallback font is
+taller than its face's line (colour emoji, symbols, mathematical letters or
+any script whose font ascent or descent exceeds the default font's, checked
+once per character) is measured and painted at the largest `height` scale that keeps the row at one line, judged
+beside an ordinary character because a row takes the largest ascent plus the
+largest descent.  Rows therefore keep the line height the vertical grid and
+image slices rely on.  SVG-rendered emoji are avoided: librsvg's Pango backend
+aborts Emacs on some emoji.  Boxes resolve horizontal sizes in pixels and vertical
 sizes in lines.  Row and column position direct children on one axis.  Flex
 performs main-size growth/shrink with min/max freezing, wrapping and alignment.
 Grid expands tracks, resolves fixed/intrinsic/fractional sizes and places items
@@ -168,8 +172,9 @@ by one-based grid positions.
 
 Absolute boxes are registered with a positioning host: the nearest non-inline
 parent, or the root for `:layer root`.  Local overlays compose
-inside that host; root-targeted overlays still keep their logical parent for
-style and selectors.  Anchored overlays compute placement from a unique target
+inside that host from its content origin; unanchored root-targeted overlays
+start at the root's border-box origin so page-level scrims cover its padding,
+and still keep their logical parent for style and selectors.  Anchored overlays compute placement from a unique target
 and are placed after normal layout so target movement can be reflected without
 unrelated relayout.
 
@@ -195,7 +200,8 @@ blocks the ancestor's value instead of inheriting it.
 
 Overlays splice into the lines they cover without concatenating them.
 `ebox--split-parts` cuts the underlying parts at the overlay's pixel columns;
-a string that straddles a cut becomes sized substrings plus edge spaces, and
+a string that straddles a cut becomes sized substrings plus edge spaces that
+keep the cut unit's properties other than `display` (so interaction survives), and
 composed strings record their pixel widths in `ebox--part-widths` so later
 splices need no remeasurement.  An overlay line without a border stays a part
 list, so moving an overlay costs its covered lines times their part count.
@@ -235,9 +241,19 @@ Scroll offsets live on nodes.  A scroll mutation changes visible content lines,
 not layout constraints, so a clean scrollable node can enqueue direct line
 damage for its own visible height.
 
-An input session temporarily transfers one painted span to the user.  Ebox saves
-markers, original text and read-only state, defers writes for that mount, and on
-end restores the retained text before flushing queued node changes.
+An input session edits one text node's value in a hidden editing buffer.  The
+mounted buffer is never edited directly: a buffer-local pre-command hook routes
+each key to its binding in the editing buffer, so native commands, undo, the
+kill ring and input methods act on the value.  After each command the value
+becomes the node's text through an ordinary layout mutation; while the node is
+edited its pieces carry every character's value offset (`ebox-offset`), which
+maps point, clicks, row motion and the region between both buffers.  Input
+method preedit text is shown at the caret as an underlined part of the node;
+because platform preedit events bypass the command loop, the session routes
+them through `special-event-map` while any session is live.  A primary press
+inside the node's box is tracked by the session itself, which consumes the
+release, so clicks, drags and multi-clicks never reach the canvas press
+command.  Flushes and refits never wait for a session.
 
 ## Invariants
 
@@ -256,6 +272,10 @@ end restores the retained text before flushing queued node changes.
   modified flag, point and window starts.
 - Image decoding and external converter execution happen only in image
   preparation, never in layout or buffer writing.
+- A graphical image row is one glyph displaying a full-width slice, because
+  redisplay draws, and on some platforms rescales, the image once per glyph.
+  Cutting such a row at a box or overlay edge narrows its slice instead of
+  replacing it with a space.
 - Private modules may change; consumers require only `ebox` and use only the
   symbols documented in `ebox.el`.
 

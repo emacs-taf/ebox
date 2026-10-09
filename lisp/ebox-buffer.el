@@ -315,6 +315,9 @@ Overlays in NODE's subtree hosted outside it vacate their host's lines."
       (ebox--mark parent (logior ebox--d-layout ebox--d-style))
       parent)))
 
+(defvar ebox--input-text-function nil
+  "Function handling (NODE STRING) for a text node under an input session.")
+
 (defun ebox-node-set-text (node string)
   "Set text NODE's content to STRING."
   (ebox--mutation
@@ -322,7 +325,9 @@ Overlays in NODE's subtree hosted outside it vacate their host's lines."
     (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
     (unless (eq (ebox-node-tag node) 'text)
       (signal 'ebox-error (list "Not a text node" node)))
-    (unless (equal-including-properties string (ebox-node-text node))
+    (unless (or (and ebox--editing (assq node ebox--editing)
+                     (funcall ebox--input-text-function node string))
+                (equal-including-properties string (ebox-node-text node)))
       (setf (ebox-node-text node) string)
       (ebox--mark node ebox--d-layout))
     node))
@@ -790,6 +795,31 @@ trailing newline."
        (unwind-protect (progn ,@body)
          (restore-buffer-modified-p ,modified)))))
 
+(defun ebox--extend-line-ends (mount from count)
+  "Carry COUNT lines of MOUNT from FROM to the window's right edge.
+Emacs keeps the last text column free for the truncation glyph when a
+window has no right fringe, and lines shorter than the window leave the
+rest of the screen row to the default face.  Giving each newline the
+background and border lines of its line's last cell with `:extend' paints
+that remainder like the box that reaches the line's right edge."
+  (let ((last (min (+ from count) (1- (ebox-mount-lines mount)))))
+    (when (and (>= from 0) (< from last))
+      (ebox--goto-line mount from)
+      (let ((line from))
+        (while (< line last)
+          (let* ((bol (point))
+                 (eol (line-end-position))
+                 (tail (and (> eol bol) (get-text-property (1- eol) 'face)))
+                 (face nil))
+            (dolist (key '(:overline :underline :background))
+              (when-let* ((value (ebox--face-attribute tail key)))
+                (setq face (cl-list* key value face))))
+            (when face (setq face (cl-list* :extend t face)))
+            (unless (equal face (get-text-property eol 'face))
+              (put-text-property eol (1+ eol) 'face face))
+            (goto-char (1+ eol))
+            (setq line (1+ line))))))))
+
 (defun ebox--paint-all (mount)
   "Rewrite MOUNT's whole buffer from its root."
   (let* ((root (ebox-mount-root mount))
@@ -805,6 +835,7 @@ trailing newline."
           (setq i (1+ i)))))
     (setf (ebox-mount-lines mount) height)
     (ebox--rebuild-anchors mount)
+    (ebox--writing (save-excursion (ebox--extend-line-ends mount 0 height)))
     (if tracked
         (ebox--restore-positions mount tracked nil)
       (goto-char (point-min)))))
@@ -822,7 +853,10 @@ trailing newline."
           (let ((start (car edit)) (new (nth 2 edit)) lines)
             (dotimes (i new)
               (push (ebox--root-parts root (+ start (- new i 1))) lines))
-            (ebox--replace-lines mount start (nth 1 edit) lines)))))
+            (ebox--replace-lines mount start (nth 1 edit) lines)
+            ;; The newline before START may be new, and each rewritten
+            ;; line may now end over another background.
+            (ebox--extend-line-ends mount (max 0 (1- start)) (1+ new))))))
     (setf (ebox-mount-tick mount) (buffer-modified-tick))
     (ebox--restore-positions mount tracked edits)))
 
@@ -837,13 +871,10 @@ trailing newline."
     (let ((ebox--flushing t))
       (while ebox--queue
         (let ((mount (pop ebox--queue)))
-          ;; An input session owns part of the text: the mount stays marked
-          ;; queued and `ebox-input-end' requeues it.
-          (unless (ebox-mount-session mount)
-            (setf (ebox-mount-queued mount) nil)
-            (when (buffer-live-p (ebox-mount-buffer mount))
-              (with-current-buffer (ebox-mount-buffer mount)
-                (ebox--flush-mount mount)))))))))
+          (setf (ebox-mount-queued mount) nil)
+          (when (buffer-live-p (ebox-mount-buffer mount))
+            (with-current-buffer (ebox-mount-buffer mount)
+              (ebox--flush-mount mount))))))))
 
 (defun ebox--flush-mount (mount)
   "Restyle, relayout and repaint MOUNT's dirty subtree."
@@ -971,17 +1002,23 @@ The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
       (get-buffer-window buffer (selected-frame))
       (get-buffer-window buffer t)))
 
-(defun ebox--measure-viewport (mount)
-  "Return (WIDTH . HEIGHT) for MOUNT's current display."
-  (let ((window (ebox--display-window (ebox-mount-buffer mount))))
-    (cons (or (ebox-mount-fixed-vw mount)
+(defun ebox-viewport-measure (buffer-or-name &optional width height)
+  "Return the (WIDTH . HEIGHT) viewport BUFFER-OR-NAME's display offers.
+Non-nil WIDTH or HEIGHT fixes that dimension, as for a fixed mount."
+  (let ((window (ebox--display-window (get-buffer buffer-or-name))))
+    (cons (or width
               ebox-viewport-width
               (and window (ebox-viewport-window-width window))
               (ebox--default-viewport-width))
-          (or (ebox-mount-fixed-vh mount)
+          (or height
               ebox-viewport-height
               (and window (window-body-height window))
               (ebox--default-viewport-height)))))
+
+(defun ebox--measure-viewport (mount)
+  "Return (WIDTH . HEIGHT) for MOUNT's current display."
+  (ebox-viewport-measure (ebox-mount-buffer mount)
+                         (ebox-mount-fixed-vw mount) (ebox-mount-fixed-vh mount)))
 
 (declare-function ebox-buffer-mode "ebox-interaction" (&optional arg))
 
@@ -1056,6 +1093,10 @@ See `ebox-mount'."
           (ebox-buffer-mode -1)
           t)))))
 
+(defvar ebox-viewport-change-functions nil
+  "Abnormal hook run with a mounted buffer after its viewport size changed.
+It runs once the relayout for the new size has settled.")
+
 (defun ebox-mount-set-viewport (buffer-or-name width height)
   "Lay out BUFFER-OR-NAME's mount for a WIDTH by HEIGHT viewport.
 Nil WIDTH or HEIGHT follows the display window."
@@ -1065,31 +1106,47 @@ Nil WIDTH or HEIGHT follows the display window."
             (ebox-mount-fixed-vh mount) height)
       (ebox-refit buffer-or-name))))
 
+(defun ebox--fit-window-start (window)
+  "Start WINDOW at its buffer start when the whole buffer fits its body.
+A window that was shorter for a while (the echo area or a popup borrowed
+its lines) may have scrolled a window-sized tree; it returns to the top
+once the tree fits again."
+  (when (> (window-start window) (point-min))
+    (let ((body (window-body-height window t)))
+      (when (<= (cdr (window-text-pixel-size window (point-min) (point-max)
+                                             nil (1+ body)))
+                body)
+        (set-window-start window (point-min) t)))))
+
 (defun ebox-refit (&optional buffer-or-name)
   "Relayout BUFFER-OR-NAME's mount when its viewport size changed.
-Return non-nil when the layout changed.  While an input session owns the
-buffer text the refit waits; ending the session applies it."
+A window showing the whole buffer starts at its top again.  Return non-nil
+when the layout changed."
   (let ((mount (ebox-buffer-mount buffer-or-name)))
-    (when (and mount (not (ebox-mount-session mount)))
+    (when mount
       (with-current-buffer (ebox-mount-buffer mount)
-        (pcase-let ((`(,w . ,h) (ebox--measure-viewport mount)))
-          (unless (and (eql w (ebox-mount-vw mount)) (eql h (ebox-mount-vh mount)))
-            (let ((root (ebox-mount-root mount))
-                  (width (not (eql w (ebox-mount-vw mount))))
-                  (height (not (eql h (ebox-mount-vh mount)))))
-              (setf (ebox-mount-vw mount) w (ebox-mount-vh mount) h)
-              ;; The root's available width is the viewport; its height only
-              ;; matters when the root's own block size follows it.
-              (when (or width (null (ebox-node-cs root)) (ebox-cs-vcbh (ebox-node-cs root)))
-                (ebox--mark root ebox--d-layout))
-              (maphash (lambda (node units)
-                         (when (and (eq (ebox-node-root node) root)
-                                    (or (and width (memq 'vw units))
-                                        (and height (memq 'vh units))))
-                           (ebox--mark node ebox--d-layout)))
-                       ebox--viewport-nodes)
-              (ebox--settle))
-            t))))))
+        (prog1
+            (pcase-let ((`(,w . ,h) (ebox--measure-viewport mount)))
+              (unless (and (eql w (ebox-mount-vw mount)) (eql h (ebox-mount-vh mount)))
+		(let ((root (ebox-mount-root mount))
+                      (width (not (eql w (ebox-mount-vw mount))))
+                      (height (not (eql h (ebox-mount-vh mount)))))
+		  (setf (ebox-mount-vw mount) w (ebox-mount-vh mount) h)
+		  ;; The root's available width is the viewport; its height only
+		  ;; matters when the root's own block size follows it.
+		  (when (or width (null (ebox-node-cs root)) (ebox-cs-vcbh (ebox-node-cs root)))
+                    (ebox--mark root ebox--d-layout))
+		  (maphash (lambda (node units)
+                             (when (and (eq (ebox-node-root node) root)
+					(or (and width (memq 'vw units))
+                                            (and height (memq 'vh units))))
+                               (ebox--mark node ebox--d-layout)))
+			   ebox--viewport-nodes)
+		  (ebox--settle))
+		(run-hook-with-args 'ebox-viewport-change-functions (ebox-mount-buffer mount))
+		t))
+          (dolist (window (get-buffer-window-list nil nil t))
+            (ebox--fit-window-start window)))))))
 
 (defun ebox-mount-viewport (&optional buffer-or-name)
   "Return (WIDTH . HEIGHT) of BUFFER-OR-NAME's mounted viewport, or nil."
@@ -1215,6 +1272,8 @@ of the first line is covered."
          found)
     (while (and (not found) (< x end))
       (let ((hit (ebox--hit root line x)) covered)
+        ;; NODE's own overlays and descendants paint NODE, not a cover.
+        (when (and hit (ebox-node-ancestor-p node hit)) (setq hit nil))
         (while (and hit (not (ebox-node-ancestor-p hit node)))
           (when (and (ebox-node-cs hit) (ebox--abs-p hit)) (setq covered t))
           (setq hit (ebox-node-parent hit)))
@@ -1234,14 +1293,21 @@ positions resolve to the innermost box covering the cell."
     (with-current-buffer buffer
       (let* ((pos (or position (point)))
              (node (and (< pos (point-max)) (get-text-property pos 'ebox-node))))
-        (or node
-            (let ((mount ebox--buffer-mount))
-              (when (and mount (ebox-node-layout (ebox-mount-root mount)))
-                (let* ((bol (save-excursion (goto-char pos) (line-beginning-position)))
-                       (line (ebox--line-of mount pos))
-                       (x (if (= bol pos) 0
-                            (ebox--measure-raw (buffer-substring bol pos)))))
-                  (ebox--hit (ebox-mount-root mount) line x)))))))))
+        (if (and node (ebox-node-text-p node))
+            node
+          ;; A box's property also covers the blank cells of its descendants,
+          ;; so a box inside it that covers the cell is the innermost node.
+          (let* ((mount ebox--buffer-mount)
+                 (hit (when (and mount (ebox-node-layout (ebox-mount-root mount)))
+                        (let* ((bol (save-excursion (goto-char pos)
+                                                    (line-beginning-position)))
+                               (line (ebox--line-of mount pos))
+                               (x (if (= bol pos) 0
+                                    (ebox--measure-raw (buffer-substring bol pos)))))
+                          (ebox--hit (ebox-mount-root mount) line x)))))
+            (if (and node hit (not (ebox-node-ancestor-p node hit)))
+                node
+              (or hit node))))))))
 
 (defun ebox--hit (node line x)
   "Return the innermost node of NODE's margin box covering LINE and pixel X."
@@ -1279,7 +1345,8 @@ positions resolve to the innermost box covering the cell."
                   (let ((iy (- ci (ebox--item-y item))) (ix (- cx (ebox-node-x item))))
                     (when (and (>= iy 0) (< iy (ebox-node-h item))
                                (>= ix 0) (< ix (ebox-node-w item)))
-                      (setq hit (ebox--hit item iy ix)))))))))
+                      (setq hit (ebox--hit item iy ix))))))))
+          hit)
         node)))
 
 (provide 'ebox-buffer)

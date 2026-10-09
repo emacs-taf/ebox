@@ -119,6 +119,13 @@ placement。schema 是严格的；无效属性或值会在修改现有 mount 前
 宽度绘制；上下 border 绘制为该行的 overline 或 underline，宽于 1px 的上下 border 会触发
 `ebox-error`。
 
+图形 frame 上，box 背景可以通过 `:border-radius`（例如 `(px 12)`）绘制圆角。块方向
+padding 可以是小数：`:padding-block (lh 0.5)` 占一整行，但背景只绘制其中一半，使胶囊和气泡
+上下留白均匀。每行保持一个行高，文字不会被替换；终端里背景按方角、整行绘制。
+
+软换行不会让 `。`、`，`、`）`、`!` 等闭合标点出现在行首，也不会让 `（`、`“` 等开启标点停在
+行尾；前一个字符或单词会一起移到下一行。
+
 内联 ECSS rule 可通过 `:ecss` 附加。复用 scope 由 `ebox-style-scope-create` 创建，
 通过 `:ecss-scope-roots` 附加到 root，member 通过 `:ecss-scopes` 加入。
 
@@ -152,8 +159,8 @@ Selector 通过 ECSS subject facts 查看 retained node：type、`:id`、`:class
 
 绝对定位属于 box layout。absolute 子节点脱离父节点的流，用 `:left` 和 `:top` 从父节点内容原点放置（inline 父节点交给最近的外层 box）；父节点把合成的浮层裁剪到自己的画布内，需要预留空间时给它显式高度。
 `:z-index` 排序重叠绘制：`:position relative` 的流内子节点保留其流内位置，
-`:z-index` 高于同一父节点中的 absolute 子节点时绘制在它们之上，空白处透出下层背景。`:layer` 属性可选择 root paint target，同时保持 selector 与继承
-使用的逻辑 parent。anchored absolute box 用 `:anchor` 与 `:placement` 相对 host 中唯一语义目标定位。
+`:z-index` 高于同一父节点中的 absolute 子节点时绘制在它们之上，空白处透出下层背景。`:layer root` 把 box 绘制在根的顶层，同时保持 selector 与继承
+使用的逻辑 parent；未锚定时其偏移与百分比从根的 border box 起算，因此 `:width (% 100) :height (% 100)` 的遮罩覆盖整个页面。anchored absolute box 用 `:anchor` 与 `:placement` 相对 host 中唯一语义目标定位。
 目标缺失时该 box 不绘制、没有位置，也不能获得焦点。
 
 `overflow hidden` 在完整显示单元边界上做横向与纵向裁剪。`overflow scroll` 通过下方 scrolling API 提供纵向滚动。
@@ -198,19 +205,35 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
   nil 会阻断继承值。
 - `:hover-content` 在鼠标悬停某个 group 时临时替换文本节点或 box 的第一个子文本；
   `:hover-group` 将相关成员作为一个 batch 更新。
+- `:swipe` 接收单参数函数：节点或其后代上每次水平两指手势调用一次，参数为手指方向 `left`
+  或 `right`。最内层启用的处理者优先，惯性事件被吸收。`ebox-swipe-distance` 与
+  `ebox-swipe-quiet` 调节识别。
+- `:scroll` 接收单参数函数：`ebox-node-set-scroll`、滚轮、滚动键或 scroll-into-view
+  改变滚动器偏移后调用，参数为新的行偏移。固定在末尾的 `:scroll-anchor end`
+  滚动器随内容增长保持在末尾时不调用。
 - `ebox-keymap-create` 可绑定 `:drag` 回调和受支持的 `:drag-lock-modifier`。
   drag 回调收到包含 phase、node、window、buffer、start、position、delta 和取消原因的 plist。
 
 ### Input session
 
-Input session 是允许用户直接编辑已挂载文本的唯一受支持方式。session 先 flush pending change，
-让已绘制 span 可写，暂缓该 mount 的后续写入，并在结束时恢复已发布文本。
+Input session 是允许用户直接编辑已挂载文本的唯一受支持方式。session 用普通 Emacs 命令编辑一个已布局 text node 的值，
+同时节点保持自身布局：输入的文本在节点盒子内换行，padding 与边框保持不变，point 跟随 caret。undo、kill 与 yank、region、
+按词移动和输入法的行为与普通 buffer 相同；上下键按绘制行移动；在节点盒子内点击会移动 caret，拖动会选择，双击选择单词，三击选择整个值。输入法 preedit 文本在盒子内换行。
+
+`ebox-input-begin` 接受 `:on-change`（每次新值时调用）、`:on-leave`（点击落在盒子外时调用）、`:keymap`（优先查找的绑定，
+在挂载 buffer 中执行）以及 `:local-variables`（为编辑命令设置 `completion-at-point-functions` 等变量）。`:keymap` 中属于
+`ebox-input-edit-commands` 的绑定（如 `newline`）会编辑值本身，多行输入框据此绑定 S-RET。把节点文本设为 session 当前值不产生
+任何效果，因此上层可以把 `:on-change` 回写到自己的模型；设为其他字符串则替换该值。
 
 ```elisp
-(let* ((root (ebox-mount "*Ebox Input*" '(box :id "field" "draft")
+(let* ((root (ebox-mount "*Ebox Input*"
+                         '(box :padding-inline (ch 1) (text :id "field" "draft"))
                          :width 160 :height 3))
        (field (car (ebox-selector-query root "#field")))
-       (session (ebox-input-begin "*Ebox Input*" field)))
+       (map (define-keymap "C-j" #'newline))
+       (session (ebox-input-begin "*Ebox Input*" field
+                                  :keymap map
+                                  :on-change (lambda (value) (message "%s" value)))))
   (prog1 (ebox-input-text session)
     (ebox-input-end session)))
 ```
@@ -231,6 +254,13 @@ Input session 是允许用户直接编辑已挂载文本的唯一受支持方式
   (ebox-node-set-scroll pane 1)
   (ebox-node-scroll-offset pane)) ; => 1
 ```
+
+`:scroll-anchor end` 适合日志和会话。节点初始显示最后一行，并在内容增减时保持钉在末尾；
+滚动到更早的位置会解除固定，此后新内容不再移动可见行；滚回最后一行会重新固定。默认值
+`start` 保留已存的 offset，并按内容范围夹取。
+
+`ebox-node-scroll-into-view` 从内到外滚动每个外层 scroller，以最小距离让节点可见，
+例如选中的列表行。
 
 交互命令先滚动 point 下最内层可滚动节点；当 Ebox 节点不能消费剩余滚动时，回退到普通
 window scrolling：`ebox-scroll-down`、`ebox-scroll-up`、`ebox-scroll-page-down`、
@@ -254,6 +284,13 @@ window scrolling：`ebox-scroll-down`、`ebox-scroll-up`、`ebox-scroll-page-dow
 使用 `ebox-image-info` 查看所选 adapter 与尺寸，`ebox-image-content` 取得 owned string，
 converter 或字体能力变化后调用 `ebox-image-cache-clear`。要原地替换 image node，先准备新值，
 再调用 `ebox-node-set-image`。
+
+`:inset (TOP . BOTTOM)` 在图形图片上下分别留出 TOP、BOTTOM 像素（各小于一个行高）的空白，
+不改变图片占用的行数，使图片与上下文字之间留有间隙。图形图片的透明像素显示其所在 box 的背景。
+
+macOS 图形 frame 上，会撑高行高的彩色 emoji 以一个行高的图片显示。首次使用时用 `swiftc`
+（Xcode 命令行工具）编译一个小型渲染程序，并把图片缓存在 `user-emacs-directory` 下的
+`ebox-emoji/`；没有 `swiftc` 时 emoji 会缩小以适应行高。
 
 ## 10. Viewport 与 refit
 
@@ -295,7 +332,7 @@ Ebox 在 public 边界验证输入，并在 `ebox.el` 记录的 Ebox 专用 erro
 - text 节点不能包含 children。
 - `ebox-focus`、activation、scrolling 和 input-session 入口在目标不可用时抛出
   `user-error` 或 `ebox-input-error`。
-- 活跃 input session 会暂缓该 mount 的 flush；结束 session 会恢复已发布文本，然后写入排队的树变化。
+- buffer 卸载时 input session 随之结束，此后 `ebox-input-text` 返回 nil。
 - `ebox-unmount-buffer` 释放 marker、hook 与 mount 状态，但保留当前 buffer 文本。
 - 字体或具名 face metric 变化后调用 `ebox-clear-cache`；converter 或图片能力变化后调用
   `ebox-image-cache-clear`。

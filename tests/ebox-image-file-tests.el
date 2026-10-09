@@ -41,6 +41,26 @@
       (should (equal (ebox-test-buffer-text buffer) "..."))
       (should (ebox-test-buffer-matches-render-p root buffer)))))
 
+(ert-deftest ebox-image-in-a-wider-box-paints-the-box-background-beside-it ()
+  (let* ((image (ebox-image-prepare '(image :type xpm :data "bad") 2 1
+                                    :adapter 'placeholder))
+         (rendered (ebox-render
+                    (ebox-node-create 'column '(:width (px 10) :background-color "#ff0000")
+                                      (list (ebox-node-create 'image (list :image image))
+                                            "wide")))))
+    (should (equal (substring-no-properties rendered) ".. \nwide "))
+    (should (equal (get-text-property 2 'display rendered) '(space :width (8))))
+    (should (equal (get-text-property 2 'face rendered) '(:background "#ff0000")))))
+
+(ert-deftest ebox-image-slice-cut-at-a-box-edge-keeps-its-visible-part ()
+  (let* ((image '(image :type xpm :data "x"))
+         (row (propertize " " 'display (list '(slice 0 16 40 16) image)))
+         (rendered (ebox-render
+                    (ebox-node-create 'column '(:width (px 25) :wrap-mode none)
+                                      (list row)))))
+    (should (equal (get-text-property 0 'display rendered)
+                   (list '(slice 0 16 25 16) image)))))
+
 (ert-deftest ebox-image-prepare-rejects-invalid-protocol-inputs ()
   (should-error (ebox-image-prepare '(image :type xpm :data "bad") 0 1))
   (should-error (ebox-image-prepare '(image :type xpm :data "bad") 1 1 :adapter 'unknown))

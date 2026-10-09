@@ -21,6 +21,7 @@
 
 (require 'cl-lib)
 (require 'ebox-node)
+(require 'ebox-image)
 
 (declare-function ebox--layout-flex "ebox-flex" (node geo cbh))
 (declare-function ebox--layout-grid "ebox-flex" (node geo cbh))
@@ -193,6 +194,40 @@ FRESH non-nil means LINE is a new string the function may modify.")
   "Return the face painted on NODE's text."
   (ebox-cs-face (ebox-node-cs node)))
 
+(defun ebox--fit-glyphs (string text fontface)
+  "Display STRING's clusters taller than the line in their fitted form.
+TEXT is STRING's undecorated source and FONTFACE the face it was measured
+with; clusters carrying their own display property are left alone."
+  (let ((len (length text)) (pos 0))
+    (while (and (< pos len)
+                (setq pos (ebox--next-fit-candidate text pos)))
+      (let* ((start (if (and (> pos 0) (ebox--extension-char-p (aref text pos)))
+                        (1- pos)
+                      pos))
+             (end (ebox--cluster-end text start len)))
+        (unless (get-text-property start 'display text)
+          (let* ((own (get-text-property start 'face text))
+                 (cluster (substring-no-properties text start end))
+                 (fit (ebox--fit cluster (if own (ebox--merge-face own fontface)
+                                           fontface))))
+            (when fit
+              (put-text-property
+               start end 'display (cdr fit) string))))
+        (setq pos (max end (1+ pos)))))
+    string))
+
+(defvar ebox--editing nil
+  "Alist of text nodes under input sessions to their preedit span or nil.
+Their pieces carry each character's value offset as `ebox-offset'.")
+
+(defun ebox--stamp-offsets (string span)
+  "Put each character's index on STRING as `ebox-offset'; underline SPAN."
+  (dotimes (i (length string))
+    (put-text-property i (1+ i) 'ebox-offset i string))
+  (when span
+    (add-face-text-property (car span) (cdr span) '(:underline t) nil string))
+  string)
+
 (defun ebox--decorate-text (text face node)
   "Return TEXT carrying FACE (after its own faces) and NODE ownership."
   (let ((string (copy-sequence text)) (len (length text)))
@@ -200,7 +235,9 @@ FRESH non-nil means LINE is a new string the function may modify.")
       (if (and face (ebox--plain-string-p text))
           (put-text-property 0 len 'face face string)
         (when face (add-face-text-property 0 len face t string)))
-      (put-text-property 0 len 'ebox-node node string))
+      (put-text-property 0 len 'ebox-node node string)
+      (when (and (not noninteractive) (ebox--fit-candidate-string-p text))
+        (ebox--fit-glyphs string text (ebox-cs-fontface (ebox-node-cs node)))))
     string))
 
 (defun ebox--hidden-text (node)
@@ -231,7 +268,10 @@ The characters stay, so hidden text breaks exactly like visible text."
      ((eq (ebox-node-tag node) 'text)
       (push (cons (if (ebox--hidden-p node)
                       (ebox--hidden-text node)
-                    (ebox--decorate-text (ebox-node-text node) (ebox--run-face node) node))
+                    (let ((string (ebox--decorate-text (ebox-node-text node)
+                                                       (ebox--run-face node) node))
+                          (editing (and ebox--editing (assq node ebox--editing))))
+                      (if editing (ebox--stamp-offsets string (cdr editing)) string)))
                   node)
             pieces))
      (t
@@ -315,12 +355,23 @@ SOURCE is the text node a string displays, or a pad's pixel width."
               ((ebox--cjk-char-p ch) 'cjk)
               (t 'word)))))
 
+(defconst ebox--no-line-start
+  "!%),.:;?]}¢°’”‰′″℃、。〉》」』】〕〗〙〛〜〞ゝゞ・ヽヾ！％），．：；？］｝｡｣､･…‥ー—"
+  "Characters that must not begin a wrapped line.")
+
+(defconst ebox--no-line-end
+  "$([{£¥‘“〈《「『【〔〖〘〚〝（［｛｢"
+  "Characters that must not end a wrapped line.")
+
 (defun ebox--break-lines (pieces width wrap clip)
   "Break PIECES into lines no wider than WIDTH under WRAP mode.
 Return a list of (STRING . PIXELS).  Words wrap as a whole, CJK and `char'
 mode wrap per cluster, a word wider than WIDTH splits per cluster and a
-space that does not fit ends its line and is dropped.  Under `none' or
-`nowrap' only newlines break; CLIP then drops units beyond WIDTH."
+space that does not fit ends its line and is dropped.  A soft break never
+puts closing punctuation at a line start or opening punctuation at a line
+end: the preceding cluster or word moves down instead, unless that would
+empty the line.  Under `none' or `nowrap' only newlines break; CLIP then
+drops units beyond WIDTH."
   (let* ((np (length pieces))
          (pstr (make-vector np nil))
          (pbase (make-vector (1+ np) 0))
@@ -336,7 +387,7 @@ space that does not fit ends its line and is dropped.  Under `none' or
           (nowrap (memq wrap '(none nowrap)))
           (char-mode (eq wrap 'char))
           (lines nil) (ls 0) (cur 0) (i 0) (newline-last t) (stop nil))
-      (cl-flet ((emit (from to w)
+      (cl-labels ((emit (from to w)
                   (let ((p 0) parts)
                     (while (< from to)
                       (while (>= from (aref pbase (1+ p))) (setq p (1+ p)))
@@ -348,7 +399,33 @@ space that does not fit ends its line and is dropped.  Under `none' or
                         (push (if (and (= cs 0) (= ce (length s))) s (substring s cs ce))
                               parts)
                         (setq from end)))
-                    (push (cons (ebox--join (nreverse parts)) w) lines))))
+                    (push (cons (ebox--join (nreverse parts)) w) lines)))
+                (char-at (j)
+                  (let ((p 0))
+                    (while (>= j (aref pbase (1+ p))) (setq p (1+ p)))
+                    (aref (aref pstr p)
+                          (if (= j (aref pbase p)) 0 (aref uv (* 3 (1- j)))))))
+                (kind-at (j) (aref uv (+ (* 3 j) 2)))
+                (soft-break (b)
+                  ;; Return the break index at or before B obeying the
+                  ;; line-start and line-end punctuation rules.
+                  (let ((tries 3) (orig b))
+                    (while (and (> tries 0) (> b ls) (< b n)
+                                (or (seq-contains-p ebox--no-line-start (char-at b))
+                                    (seq-contains-p ebox--no-line-end (char-at (1- b)))))
+                      (setq b (1- b) tries (1- tries))
+                      (while (and (> b ls) (eq (kind-at b) 'word)
+                                  (eq (kind-at (1- b)) 'word))
+                        (setq b (1- b))))
+                    (if (and (> b ls)
+                             (not (memq (kind-at (1- b)) '(newline))))
+                        b
+                      orig)))
+                (span (from to)
+                  (let ((sum 0))
+                    (while (< from to)
+                      (setq sum (+ sum (aref uv (1+ (* 3 from)))) from (1+ from)))
+                    sum)))
         (while (< i n)
           (let ((kind (aref uv (+ (* 3 i) 2))) (w (aref uv (1+ (* 3 i)))))
             (setq newline-last nil)
@@ -368,8 +445,10 @@ space that does not fit ends its line and is dropped.  Under `none' or
                 (setq i (1+ i) ls i cur 0))
                (t
                 (when (> (+ cur w) width)
-                  (when (< ls i) (emit ls i cur))
-                  (setq ls i cur 0))
+                  (let* ((b (if char-mode i (soft-break i)))
+                         (moved (span b i)))
+                    (when (< ls b) (emit ls b (- cur moved)))
+                    (setq ls b cur moved)))
                 (setq cur (+ cur w) i (1+ i)))))
              (t
               (let ((j i) (run 0))
@@ -386,8 +465,10 @@ space that does not fit ends its line and is dropped.  Under `none' or
                  ((<= (+ cur run) width)
                   (setq cur (+ cur run) i j))
                  (t
-                  (when (< ls i) (emit ls i cur))
-                  (setq ls i cur run i j))))))))
+                  (let* ((b (soft-break i))
+                         (moved (span b i)))
+                    (when (< ls b) (emit ls b (- cur moved)))
+                    (setq ls b cur (+ moved run) i j)))))))))
         (cond
          (stop (emit ls stop cur))
          ((or (< ls n) newline-last (null lines)) (emit ls n cur))))
@@ -417,8 +498,8 @@ The record is fresh unless REUSE, a geometry record, is given to reset."
             (ebox-geo-pr geo) (max 0 (or (ebox--px (ebox-cs-pr cs) cs cbw) 0))
             (ebox-geo-mt geo) (max 0 (or (ebox--lines (ebox-cs-mt cs) cs nil) 0))
             (ebox-geo-mb geo) (max 0 (or (ebox--lines (ebox-cs-mb cs) cs nil) 0))
-            (ebox-geo-pt geo) (max 0 (or (ebox--lines (ebox-cs-pt cs) cs nil) 0))
-            (ebox-geo-pb geo) (max 0 (or (ebox--lines (ebox-cs-pb cs) cs nil) 0))
+            (ebox-geo-pt geo) (or (ebox--pad-lines (ebox-cs-pt cs)) 0)
+            (ebox-geo-pb geo) (or (ebox--pad-lines (ebox-cs-pb cs)) 0)
             (ebox-geo-bl geo) (ebox-cs-bl cs)
             (ebox-geo-br geo) (ebox-cs-br cs))
       geo)))
@@ -934,14 +1015,25 @@ Items overflowing their container make it a clipping or growing box."
           (ebox-geo-bh geo) bh
           (ebox-geo-vh geo) (max 0 (- bh (ebox-geo-pt geo) (ebox-geo-pb geo)))
           (ebox-geo-scroll geo)
-          (max 0 (min (ebox-node-scroll node)
-                      (- content (max 0 (- bh (ebox-geo-pt geo) (ebox-geo-pb geo))))))
+          (ebox--resolved-scroll
+           node content (max 0 (- bh (ebox-geo-pt geo) (ebox-geo-pb geo))))
           (ebox-node-w node) (+ bw (ebox--h-margins geo))
           (ebox-node-h node) (+ bh (ebox-geo-mt geo) (ebox-geo-mb geo)))
     (ebox--layout-overlays node)
     node))
 
 ;;;; Paragraph and flow layout
+
+(defun ebox--resolved-scroll (node content viewport)
+  "Return NODE's scroll offset for CONTENT lines shown in VIEWPORT lines.
+An end-anchored node pinned to its last line keeps following that line as
+the content changes."
+  (let ((limit (max 0 (- content viewport))))
+    (if (and (ebox-node-pinned node)
+             (eq (plist-get (ebox-cs-vals (ebox-node-cs node)) 'ebox/scroll-anchor)
+                 'end))
+        (setf (ebox-node-scroll node) limit)
+      (max 0 (min (ebox-node-scroll node) limit)))))
 
 (defsubst ebox--align-left (align free)
   "Return the left offset of a line with FREE pixels under ALIGN."
@@ -1131,7 +1223,7 @@ A box whose height does not follow its content repaints its own lines."
              (bh (ebox--resolve-height node geo ch (aref key 2) (aref key 3)))
              (vh (max 0 (- bh (ebox-geo-pt geo) (ebox-geo-pb geo))))
              (old-h (ebox-node-h node)))
-        (when (= (ebox-geo-scroll geo) (max 0 (min (ebox-node-scroll node) (- ch vh))))
+        (when (= (ebox-geo-scroll geo) (ebox--resolved-scroll node ch vh))
           (setf (ebox-geo-ch geo) ch
                 (ebox-geo-bh geo) bh
                 (ebox-geo-vh geo) vh
@@ -1544,9 +1636,15 @@ That is the nearest non-inline parent, or the root for `:layer root'."
                    0)))
          (y (or (ebox--lines (ebox--cv cs 'ebox/top) cs height) 0))
          (anchor (ebox--cv cs 'ebox/anchor)))
-    (if (not anchor)
-        ;; Offsets start at the host's content origin.
-        (cons (+ x (ebox-geo-pl hgeo)) (+ y (ebox-geo-pt hgeo)))
+    (cond
+     ((and (not anchor) (eq (ebox--cv cs 'ebox/layer) 'root))
+      ;; A root-layer box covers the page: offsets start at the root's
+      ;; border-box origin, which its percentages also measure.
+      (cons (or (ebox--px (ebox--cv cs 'ebox/left) cs width) 0) y))
+     ((not anchor)
+      ;; Offsets start at the host's content origin.
+      (cons (+ x (ebox-geo-pl hgeo)) (+ y (ebox-geo-pt hgeo))))
+     (t
       (let ((target (ebox--anchor-target host node anchor)))
         ;; An anchor inside the overlay itself would follow its own placement.
         (when (and target (ebox-node-layout target) (not (ebox--hidden-p target))
@@ -1570,7 +1668,7 @@ That is the nearest non-inline parent, or the root for `:layer root'."
                        (>= other 0) (<= (+ other lh) height))
               (setq top other))
             (cons (max 0 (min left (max 0 (- width lw))))
-                  (max 0 (min top (max 0 (- height lh)))))))))))
+                  (max 0 (min top (max 0 (- height lh))))))))))))
 
 (defun ebox--layout-overlay (host node)
   "Lay out and place overlay NODE in HOST; return non-nil when it changed."
@@ -1716,6 +1814,45 @@ may sit inside another overlay, so placement repeats until it settles."
                   (t (setq found item)))))
         found))))
 
+;; Emacs composites an image's transparent pixels over the frame
+;; background unless the descriptor names one, so a round avatar on a tinted
+;; row would show frame-colored corners.  Each slice is painted over the
+;; nearest background of its box or ancestors instead.
+
+(defvar ebox--image-backgrounds (make-hash-table :test 'eq :weakness 'key)
+  "Image descriptors and slice strings to alists of (BACKGROUND . VARIANT).
+Slices of one image share one descriptor variant, so it decodes once.")
+
+(defun ebox--background-variant (object bg make)
+  "Return OBJECT's variant for BG, building it with MAKE once."
+  (let ((variants (gethash object ebox--image-backgrounds)))
+    (or (cdr (assoc bg variants))
+        (let ((variant (funcall make)))
+          (puthash object (cons (cons bg variant) variants) ebox--image-backgrounds)
+          variant))))
+
+(defun ebox--image-on-background (line node)
+  "Return image slice LINE composited over NODE's background."
+  (let* ((bg (and (not noninteractive) (ebox-cs-bg (ebox-node-cs node))))
+         (display (and (stringp bg) (> (length line) 0)
+                       (get-text-property 0 'display line)))
+         (image (and (consp display) (eq (car-safe (car (last display))) 'image)
+                     (car (last display)))))
+    (if (not image)
+        line
+      (ebox--background-variant
+       line bg
+       (lambda ()
+         (let ((copy (copy-sequence line))
+               (variant (ebox--background-variant
+                         image bg
+                         (lambda ()
+                           (cons 'image (plist-put (copy-sequence (cdr image))
+                                                   :background bg))))))
+           (put-text-property 0 1 'display (append (butlast display) (list variant))
+                              copy)
+           copy))))))
+
 (defun ebox--content-parts (node geo ci tail)
   "Return the strings of content line CI of NODE followed by TAIL.
 The strings span the content width CW in pixels."
@@ -1723,8 +1860,14 @@ The strings span the content width CW in pixels."
          (padface (ebox-cs-padface (ebox-node-cs node)))
          (items (ebox-geo-items geo)))
     (pcase (ebox-geo-kind geo)
-      ('image (cons (if (< ci (ebox-geo-n geo)) (aref items ci) (ebox--space cw padface))
-                    tail))
+      ;; A stretched image box paints its background beyond the image.
+      ('image (if (< ci (ebox-geo-n geo))
+                  (let ((fill (- cw (ebox--image-width node))))
+                    (cons (ebox--image-on-background (aref items ci) node)
+                          (if (and padface (> fill 0))
+                              (cons (ebox--space fill padface) tail)
+                            tail)))
+                (cons (ebox--space cw padface) tail)))
       ('stack
        (let ((item (ebox--find-item geo ci)))
          (if (null item)
@@ -1767,6 +1910,75 @@ The strings span the content width CW in pixels."
              (setq tail (cons (ebox--space (car entry) padface)
                               (nconc parts tail))))))))))
 
+;;;; Background shape
+;; On graphical frames a box with a background paints it as a rectangle that
+;; may be rounded by `:border-radius' and inset by fractional block padding:
+;; padding of (lh 0.4) takes a whole line but paints the background only
+;; over 0.4 of it, the rest showing the color around the box.  Lines the
+;; shape leaves partly uncovered become one image of the background drawn
+;; over the surrounding color; on lines holding content, only the ends of
+;; the side padding become images of the rounded corners.  Rows keep their
+;; width and line height, and text is never replaced.  Without SVG, or in
+;; terminals, the background fills the whole border box.
+
+(defvar ebox--shape-cache (make-hash-table :test 'equal)
+  "Background shape image strings keyed by their drawing parameters.")
+
+(defun ebox--shape-image (width x0 x1 top bottom radius inside outside)
+  "Return a one-glyph string WIDTH pixels wide and one line tall.
+It paints OUTSIDE and over it an INSIDE rectangle from X0 to X1 and TOP to
+BOTTOM pixels, with corners of RADIUS pixels."
+  (let* ((metrics (ebox-image--metrics nil))
+         (key (list width x0 x1 top bottom radius inside outside metrics)))
+    (or (gethash key ebox--shape-cache)
+        (puthash
+         key
+         (let* ((height (nth 1 metrics))
+                (r (max 0 (min radius (/ (- bottom top) 2) (/ (- x1 x0) 2))))
+                (svg (format "<svg xmlns='http://www.w3.org/2000/svg' width='%d' height='%d'><rect width='%d' height='%d' fill='%s'/><rect x='%d' y='%d' width='%d' height='%d' rx='%d' fill='%s'/></svg>"
+                             width height width height outside
+                             x0 top (- x1 x0) (- bottom top) r inside))
+                (image (create-image svg 'svg t :ascent (nth 2 metrics)
+                                     :scale 1 :margin 0)))
+           (propertize " " 'display (list (list 'slice 0 0 width height) image)))
+         ebox--shape-cache))))
+
+(defun ebox--shape (node geo bi)
+  "Return NODE's background shape on border-box line BI, or nil.
+The value is (TOP BOTTOM RADIUS INSIDE OUTSIDE) in pixels relative to the
+line's top when the shape does not simply fill the line."
+  (let ((cs (ebox-node-cs node)))
+    (when (and (ebox-cs-padface cs) (not noninteractive) (display-graphic-p))
+      (let* ((radius (min (or (ebox--px (ebox--cv cs 'ebox/border-radius) cs nil) 0)
+                          (frame-char-height)))
+             (it (ebox--pad-inset (ebox-cs-pt cs) (ebox-geo-pt geo)))
+             (ib (ebox--pad-inset (ebox-cs-pb cs) (ebox-geo-pb geo)))
+             (lh (frame-char-height))
+             (top (- it (* bi lh)))
+             (bottom (- (* (ebox-geo-bh geo) lh) ib (* bi lh))))
+        (when (and (or (> radius 1) (> it 0) (> ib 0))
+                   (or (> top (- radius)) (< bottom (+ lh radius)))
+                   (ebox-image--metrics nil)
+                   (image-type-available-p 'svg))
+          (let ((parent (ebox-node-parent node)))
+            (list top bottom (if (> radius 1) radius 0) (ebox-cs-bg cs)
+                  (or (and parent (ebox-cs-bg (ebox-node-cs parent)))
+                      (face-background 'default nil t)))))))))
+
+(defun ebox--shape-end (shape left width padface)
+  "Return the strings of WIDTH pixels of side padding under SHAPE.
+LEFT selects the left side, whose outer end comes first."
+  (pcase-let* ((`(,top ,bottom ,radius ,inside ,outside) shape)
+               (r (min radius width)))
+    (if (or (< r 2) (and (<= top (- radius)) (>= bottom (+ (frame-char-height) radius))))
+        (list (ebox--space width padface))
+      (let ((corner (if left
+                        (ebox--shape-image r 0 (* 4 radius) top bottom radius inside outside)
+                      (ebox--shape-image r (- r (* 4 radius)) r top bottom radius
+                                         inside outside)))
+            (rest (ebox--space (- width r) padface)))
+        (if left (list corner rest) (list rest corner))))))
+
 (defun ebox--border-parts (node geo bi tail)
   "Return the strings of border-box line BI of NODE followed by TAIL.
 Overlays and top or bottom borders decorate the whole border-box line, which
@@ -1780,15 +1992,38 @@ is then joined into one string."
          (parts (if whole nil tail)))
     (when (ebox-cs-brc cs)
       (push (ebox--space (ebox-geo-br geo) (ebox--border-face (ebox-cs-brc cs))) parts))
-    (setq parts
-          (if (or (< bi pt) (>= bi (+ pt (ebox-geo-vh geo))))
-              (cons (ebox--space (- (ebox-geo-bw geo) (ebox-geo-bl geo) (ebox-geo-br geo))
-                                 padface)
-                    parts)
-            (cons (ebox--space (ebox-geo-pl geo) padface)
-                  (ebox--content-parts
-                   node geo (+ (- bi pt) (ebox-geo-scroll geo))
-                   (cons (ebox--space (ebox-geo-pr geo) padface) parts)))))
+    (let* ((shape (ebox--shape node geo bi))
+           (lshape (and (not (ebox-cs-blc cs)) shape))
+           (rshape (and (not (ebox-cs-brc cs)) shape))
+           (inner (- (ebox-geo-bw geo) (ebox-geo-bl geo) (ebox-geo-br geo)))
+           (lh (frame-char-height)))
+      (setq parts
+            (cond
+             ((and shape (or (>= (car shape) lh) (<= (cadr shape) 0)))
+              (cons (ebox--space inner (ebox--parent-padface node)) parts))
+             ((and shape (or (> (car shape) 0) (< (cadr shape) lh)))
+              (pcase-let ((`(,top ,bottom ,radius ,inside ,outside) shape))
+                (cons (ebox--shape-image inner 0 inner (max top -1000) (min bottom 1000)
+                                         radius inside outside)
+                      parts)))
+             ((or (< bi pt) (>= bi (+ pt (ebox-geo-vh geo))))
+              (if (or lshape rshape)
+                  (let ((half (/ inner 2)))
+                    (append (if lshape (ebox--shape-end lshape t half padface)
+                              (list (ebox--space half padface)))
+                            (if rshape (ebox--shape-end rshape nil (- inner half) padface)
+                              (list (ebox--space (- inner half) padface)))
+                            parts))
+                (cons (ebox--space inner padface) parts)))
+             (t
+              (append (if lshape (ebox--shape-end lshape t (ebox-geo-pl geo) padface)
+                        (list (ebox--space (ebox-geo-pl geo) padface)))
+                      (ebox--content-parts
+                       node geo (+ (- bi pt) (ebox-geo-scroll geo))
+                       (append (if rshape
+                                   (ebox--shape-end rshape nil (ebox-geo-pr geo) padface)
+                                 (list (ebox--space (ebox-geo-pr geo) padface)))
+                               parts)))))))
     (when (ebox-cs-blc cs)
       (push (ebox--space (ebox-geo-bl geo) (ebox--border-face (ebox-cs-blc cs))) parts))
     (if (not whole)
@@ -1906,22 +2141,49 @@ through the face width table, without consing per unit."
                       (setq px (+ px w) pos next))))))))))
     (or result (list len px))))
 
+(defun ebox--unit-space (width string pos &optional offset)
+  "Return WIDTH pixels of STRING's unit at POS, starting OFFSET pixels in.
+An image slice unit keeps the visible part of its slice.  Any other unit
+becomes a space that keeps its text properties other than `display', so a
+cut interactive or faced unit keeps its keymap, pointer and face."
+  (let* ((props (and (< pos (length string)) (text-properties-at pos string)))
+         (display (plist-get props 'display))
+         (slice (car-safe display)))
+    (if (and (eq (car-safe slice) 'slice) (> width 0)
+             (cl-every #'natnump (cdr slice))
+             (eq (car-safe (cadr display)) 'image))
+        (let ((part (substring string pos (1+ pos))))
+          (put-text-property
+           0 1 'display
+           (cons (list 'slice (+ (nth 1 slice) (or offset 0)) (nth 2 slice)
+                       width (nth 4 slice))
+                 (cdr display))
+           part)
+          part)
+      (if (null (cl-loop for (key) on props by #'cddr
+                         thereis (not (memq key '(display face)))))
+          (ebox--space width (plist-get props 'face))
+        (let ((space (copy-sequence (ebox--space width))))
+          (unless (equal space "")
+            (cl-loop for (key value) on props by #'cddr
+                     unless (eq key 'display)
+                     do (put-text-property 0 1 key value space)))
+          space)))))
+
 (defun ebox--cut-left (string x cut)
   "Return the part of STRING left of pixel X given its CUT at X."
   (pcase-let ((`(,pos ,px) cut))
     (if (< px x)
         (ebox--join (list (substring string 0 pos)
-                          (ebox--space (- x px)
-                                       (and (< pos (length string))
-                                            (get-text-property pos 'face string)))))
+                          (ebox--unit-space (- x px) string pos)))
       (substring string 0 pos))))
 
 (defun ebox--cut-right (string x cut)
   "Return the part of STRING right of pixel X given its CUT at X."
   (pcase-let ((`(,pos ,px ,next ,w) cut))
     (cond ((>= pos (length string)) "")
-          (next (ebox--join (list (ebox--space (- (+ px w) x)
-                                               (get-text-property pos 'face string))
+          (next (ebox--join (list (ebox--unit-space (- (+ px w) x) string pos
+                                                    (- x px))
                                   (substring string next))))
           (t (substring string pos)))))
 
@@ -1961,15 +2223,12 @@ shared.  LEFT is padded with a space when PARTS end before X."
                  (when (> pos 0)
                    (push (ebox--sized-substring string 0 pos upx) left))
                  (when (< upx at)
-                   (push (ebox--space (- at upx)
-                                      (and (< pos len) (get-text-property pos 'face string)))
-                         left))
+                   (push (ebox--unit-space (- at upx) string pos) left))
                  (cond ((>= pos len))
                        (next
                         (when (< next len)
                           (push (ebox--sized-substring string next len (- w upx uw)) right))
-                        (push (ebox--space (- (+ upx uw) at)
-                                           (get-text-property pos 'face string))
+                        (push (ebox--unit-space (- (+ upx uw) at) string pos (- at upx))
                               right))
                        (t (push (ebox--sized-substring string pos len (- w upx)) right)))
                  (setq rest right done t))))))
@@ -1994,6 +2253,14 @@ Such a child paints over every overlay with a lower `:z-index'."
                    (> (ebox-cs-z cs) low))
           (push kid raised))))
     raised))
+
+(defun ebox--face-attribute (face key)
+  "Return the value of KEY that FACE, a face plist or a list of them, sets.
+The first plist that sets KEY wins, as in Emacs face merging."
+  (cond ((keywordp (car-safe face)) (plist-get face key))
+        ((consp face) (let (value) (while (and face (not value))
+                                     (setq value (ebox--face-attribute (pop face) key)))
+                           value))))
 
 (defun ebox--face-background (face)
   "Return the background color that FACE, a face plist or a list of them, sets."

@@ -107,25 +107,52 @@ Use the default font's actual ascent, never a minimum pixel height."
        line))
    (number-sequence 0 (1- rows)) "\n"))
 
-(defun ebox-image--graphics (source columns rows metrics frame)
-  "Prepare SOURCE as COLUMNS by ROWS display slices using METRICS on FRAME."
+(defun ebox-image--slice (descriptor width y height ascent lh inset)
+  "Return a WIDTH-pixel display slice of DESCRIPTOR from Y, HEIGHT tall.
+A slice shorter than line height LH sits at the line's bottom, or with
+INSET bottom at its top, so the line keeps its height.  ASCENT is the
+descriptor's ascent percentage."
+  (let ((slice (list 'slice 0 y width height)))
+    (if (= height lh)
+        (list slice descriptor)
+      ;; Redisplay gives a slice HEIGHT * ASCENT / 100 pixels of ascent; raise
+      ;; moves it to the font's ascent at the top or descent at the bottom.
+      (let* ((font-ascent (floor (* lh ascent) 100))
+             (own (floor (* height ascent) 100))
+             (want (if (eq inset 'bottom) font-ascent (- height (- lh font-ascent)))))
+        (list (list 'raise (/ (float (- want own)) lh)) slice descriptor)))))
+
+(defun ebox-image--graphics (source columns rows metrics frame &optional inset)
+  "Prepare SOURCE as COLUMNS by ROWS display slices using METRICS on FRAME.
+INSET is (TOP . BOTTOM) pixels left empty above and below the image."
   (let* ((data (ebox-image--bytes source))
          (type (image-type data (and (consp source)
                                      (plist-get (cdr source) :type)) t)))
     (when (image-type-available-p type)
       (pcase-let* ((`(,cw ,lh ,ascent) metrics)
-                   (width (* columns cw)) (height (* rows lh))
-                   (descriptor (create-image data type t :width width :height height
-                                             :scale 1 :ascent ascent :margin 0)))
+                   (top (min (or (car inset) 0) (1- lh)))
+                   (bottom (min (or (cdr inset) 0) (1- lh)))
+                   (width (* columns cw))
+                   (height (- (* rows lh) top bottom))
+                   (descriptor (and (> height 0)
+                                    (create-image data type t :width width :height height
+                                                  :scale 1 :ascent ascent :margin 0))))
         ;; A type that cannot decode/scale this source is not usable.  Decoding
         ;; here also warms Emacs' cache before a caller publishes the block.
+        ;; Each row is one glyph showing a full-width slice: redisplay
+        ;; draws an image once per glyph, so per-cell slices multiply the
+        ;; cost of every scroll and repaint by the column count.
         (when (and descriptor (equal (image-size descriptor t frame)
                                      (cons width height)))
-          (ebox-image--grid
-           columns rows ?\s
-           (lambda (x y)
-             (list 'display
-                   (list (list 'slice (* x cw) (* y lh) cw lh) descriptor)))))))))
+          (mapconcat
+           (lambda (y)
+             (let* ((start (max 0 (- (* y lh) top)))
+                    (end (min height (- (* (1+ y) lh) top))))
+               (propertize " " 'display
+                           (ebox-image--slice descriptor width start (- end start) ascent lh
+                                              (and (= y (1- rows)) (> bottom 0)
+                                                   'bottom)))))
+           (number-sequence 0 (1- rows)) "\n"))))))
 
 (defun ebox-image--run (source program arguments)
   "Run PROGRAM with ARGUMENTS on SOURCE, returning bytes only on success."
@@ -213,7 +240,7 @@ Use the default font's actual ascent, never a minimum pixel height."
                           '(:foreground :background))))))))
 
 (cl-defun ebox-image-prepare (source columns rows &key (adapter 'auto)
-                                   (frame (selected-frame))
+                                   (frame (selected-frame)) inset
                                    (converters ebox-image-converters))
   "Prepare SOURCE for an integer COLUMNS by ROWS character area.
 Return an opaque reusable value; inspect it with `ebox-image-info'.  SOURCE
@@ -222,12 +249,18 @@ ADAPTER is auto, text, or placeholder.  Auto tries graphics on FRAME with a
 usable image type and font metrics, then CONVERTERS, then a monochrome ASCII
 placeholder.  Text skips graphics.  Placeholder skips both.  CONVERTERS obeys
 `ebox-image-converters'.  Missing/corrupt images also become placeholders.
+INSET is nil or (TOP . BOTTOM), pixels below one line height that a graphics
+image leaves empty above and below it inside its rows; the image scales
+into the rest, and the gap shows the box background.
 This is the only I/O/decoding step: call outside the render/commit hot path.
 Repeat after source or frame/font changes; identical preparations are cached."
   (unless (and (integerp columns) (> columns 0) (integerp rows) (> rows 0))
     (error "Ebox image columns and rows must be positive integers"))
   (unless (memq adapter '(auto text placeholder))
     (error "Unknown Ebox image adapter: %S" adapter))
+  (unless (or (null inset)
+              (and (consp inset) (natnump (car inset)) (natnump (cdr inset))))
+    (error "Ebox image inset must be nil or (TOP . BOTTOM) pixels"))
   (unless (and (proper-list-p converters)
                (cl-every (lambda (entry)
                            (and (consp entry) (symbolp (car entry))
@@ -235,13 +268,13 @@ Repeat after source or frame/font changes; identical preparations are cached."
     (error "Invalid Ebox image converter protocol"))
   (pcase-let* ((`(,owned ,identity) (ebox-image--source source))
                (metrics (and (eq adapter 'auto) (ebox-image--metrics frame)))
-               (key (list identity columns rows adapter metrics
+               (key (list identity columns rows adapter metrics inset
                           (and metrics image-types) (copy-tree converters)))
                (cached (gethash key ebox-image--cache)))
     (or cached
         (let ((text (and metrics
                          (ignore-errors
-                           (ebox-image--graphics owned columns rows metrics frame))))
+                           (ebox-image--graphics owned columns rows metrics frame inset))))
               (selected 'graphics) converter)
           (unless text
             (setq selected 'text)

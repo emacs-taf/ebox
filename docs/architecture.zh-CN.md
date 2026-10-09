@@ -103,8 +103,6 @@ insert/remove damage。
 7. 第一次 flush 重写整个 buffer；之后只重写 edit ranges。
 8. 保存并发送 update report。
 
-带 active input session 的 mount 保持 queued，但不会写入；结束 session 会重新入队，并由同一 pipeline 追赶。
-
 ## Style pass
 
 `ebox--style-pass` 在节点 style bit 已设置、没有 computed style，或 ancestor computed style 改变时访问节点。
@@ -130,11 +128,14 @@ layout 会跳过。
 成为 damage，ancestor 只看到它的新 outer size。
 
 文本测量按 text node、font face 与 wrap mode 缓存。paragraph layout 将文本拆成 pixel-width units，保留受支持
-cluster 与 fixed display space。box 在横向解析为像素、纵向解析为行。row 与 column 沿一个轴定位直接子节点。
+cluster 与 fixed display space。图形 frame 上，若某 cluster 的回退字体高于其 face 的行高（彩色 emoji、符号、数学字母，或字体 ascent/descent 超过默认字体的任何文字，每个字符只判定一次），
+则以能让该行保持一行高度的最大 `height` 缩放测量并绘制；判断时与普通字符同处一行，因为行高取最大 ascent 加最大
+descent。这样每行都保持纵向网格与图像切片所依赖的行高。不使用 SVG 渲染 emoji：librsvg 的 Pango 后端遇到某些
+emoji 会使 Emacs 中止。box 在横向解析为像素、纵向解析为行。row 与 column 沿一个轴定位直接子节点。
 flex 使用 min/max freezing、wrapping 与 alignment 做 main-size grow/shrink。grid 展开 track、解析 fixed/intrinsic/
 fractional size，并按一基 grid position 放置 item。
 
-absolute box 注册到 positioning host（最近的非 inline 父节点；`:layer root` 时为根）。本地 overlay 在 host 内组合；root-targeted overlay 仍保留逻辑 parent 供 style
+absolute box 注册到 positioning host（最近的非 inline 父节点；`:layer root` 时为根）。本地 overlay 在 host 内从其内容原点组合；未锚定的 root-targeted overlay 从根的 border box 原点起算，使页面级遮罩覆盖根 padding，并仍保留逻辑 parent 供 style
 与 selector 使用。anchored overlay 从唯一 target 计算 placement，并在 normal layout 后放置，使 target 移动无需触发
 无关 relayout。
 
@@ -152,7 +153,7 @@ damage 会使 changed node 以及已经组合过它 line 的 ancestor 失效。
 `mouse-face` property，使最内层显式节点胜出，ancestor keymap 覆盖未 override 的 descendant。
 
 overlay 拼接进它覆盖的行时不做字符串连接。`ebox--split-parts` 在 overlay 的像素列处切分底层 parts；
-跨越切点的 string 变为按宽度截取的 substring 加边缘空白，组合出的 string 把像素宽度记录在
+跨越切点的 string 变为按宽度截取的 substring 加边缘空白（空白保留被切单元除 `display` 外的属性，交互因此不丢失），组合出的 string 把像素宽度记录在
 `ebox--part-widths` 中，后续拼接无需重新测量。没有边框的 overlay 行保持为 part list，
 因此移动 overlay 的成本是覆盖行数乘以各行的 part 数。
 
@@ -181,8 +182,10 @@ mount 记录一个 viewport。`ebox-viewport.el` 监听 frame/window-size notifi
 scroll offset 存在 node 上。scroll mutation 改变可见 content lines，而非 layout constraints，因此 clean scrollable node
 可直接为自身 visible height 入队 line damage。
 
-input session 会临时把一个 painted span 交给用户。Ebox 保存 marker、original text 与 read-only state，暂缓该 mount 的写入，
-结束时先恢复 retained text，再 flush queued node changes。
+input session 在一个隐藏的编辑 buffer 中编辑某个 text node 的值。挂载 buffer 本身从不被直接编辑：buffer-local
+pre-command hook 把每个按键转到它在编辑 buffer 中的绑定，因此原生命令、undo、kill ring 与输入法都作用于这个值。每条命令之后，
+值通过普通 layout mutation 成为节点文本；节点处于编辑状态时，其 piece 为每个字符带上值偏移（`ebox-offset`），用于在两个 buffer
+之间映射 point、点击、按行移动与 region。输入法 preedit 文本以带下划线的形式显示在 caret 处；平台 preedit 事件绕过命令循环，所以存在 session 时由 session 经 `special-event-map` 接管。节点盒子内的主键按下由 session 自行跟踪并消费释放事件，因此点击、拖动与多击不会到达画布的按下命令。flush 与 refit 不会等待 session。
 
 ## 不变式
 
@@ -194,6 +197,7 @@ input session 会临时把一个 painted span 交给用户。Ebox 保存 marker�
 - 同 constraint 下的 clean node 保留 layout 与 composed line cache。dirty node 要么记录精确 damage，要么 damage 最小 shape-changing boundary。
 - buffer 写入保留无关 buffer state：read-only、undo list、modified flag、point 与 window start。
 - 图片 decoding 与外部 converter 执行只发生在图片准备阶段，绝不发生在 layout 或 buffer 写入中。
+- 图形图片的每一行是一个显示整行切片的字形：redisplay 对每个字形都绘制一次图片（某些平台还会重新缩放），按单元格切片会把滚动和重绘成本乘上列数。在盒子或浮层边缘裁剪这样的行时缩窄切片，而不是换成空格。
 - private module 可以变化；consumer 只 require `ebox`，只使用 `ebox.el` 中记录的 symbol。
 
 ## 设计理由

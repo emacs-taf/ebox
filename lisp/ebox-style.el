@@ -212,6 +212,10 @@
      :contexts (box row column flex grid) :group paint
      :dirty-kind paint :signature paint
      :normalizer color :validator color)
+    (:name :border-radius :id ebox/border-radius :initial (px 0)
+     :contexts (box row column flex grid) :group paint
+     :dirty-kind paint :signature paint
+     :size-axis inline :validator nonnegative-size)
     (:name :text-align :id ebox/text-align :initial left :inherits t
      :contexts (box)
      :author-contexts (box)
@@ -220,6 +224,10 @@
      :contexts (box row column flex grid) :group structure
      :dirty-kind geometry :signature layout
      :impacts (geometry paint) :projections (layout paint))
+    (:name :scroll-anchor :id ebox/scroll-anchor :initial start
+     :contexts (box row column flex grid) :group structure
+     :dirty-kind geometry :signature layout
+     :validator scroll-anchor)
     (:name :wrap-mode :id ebox/wrap-mode :initial word :inherits t
      :contexts (box row column flex grid)
      :group geometry :dirty-kind geometry :signature layout
@@ -931,6 +939,10 @@ ALLOW-REPEAT permits a top-level repeat expression."
   "Return non-nil when VALUE is a canonical Grid self alignment."
   (memq value '(auto stretch start end center)))
 
+(defun ebox-style--scroll-anchor-p (value)
+  "Return non-nil when VALUE is a public scroll anchor."
+  (memq value '(start end)))
+
 (defun ebox-style--wrap-mode-p (value)
   "Return non-nil when VALUE is a public Box wrapping mode."
   (memq value '(word char kp none)))
@@ -991,6 +1003,7 @@ generated wrappers that already contain exact line breaks."
     ('flex-factor #'ebox-style--nonnegative-number-p)
     ('justify-self #'ebox-style--justify-self-p)
     ('wrap-mode #'ebox-style--wrap-mode-p)
+    ('scroll-anchor #'ebox-style--scroll-anchor-p)
     ('boolean (lambda (value) (memq value '(nil t))))
     (_ (lambda (_value) t))))
 
@@ -1298,7 +1311,9 @@ not affect declaration compilation and are intentionally excluded."
      (and (numberp value) (not (ebox-style--nonnegative-number-p value))))
     ('justify-self (not (ebox-style--justify-self-p value)))
     ('wrap-mode
-     (not (ebox-style--wrap-mode-p value)))))
+     (not (ebox-style--wrap-mode-p value)))
+    ('scroll-anchor
+     (not (ebox-style--scroll-anchor-p value)))))
 
 (defconst ebox-style--declaration-predicate-limit 512
   "Maximum schemas retained by the declaration-value predicate cache.")

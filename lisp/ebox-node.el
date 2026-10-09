@@ -28,7 +28,7 @@
 
 (defconst ebox-interaction-properties
   '(:help-echo :pointer :hover-style :hover-content :keymap :tab-index :disabled
-    :drag-lock-modifier :hover-group)
+    :drag-lock-modifier :hover-group :swipe :scroll)
   "Node capabilities accepted outside the Ebox style schema.")
 
 (defconst ebox--meta-properties
@@ -249,7 +249,7 @@ composed without caching, or nil when none are composed."
   cs (dirty 15)
   (w 0) (h 0) (x 0) (y 0)
   meas intr contrib seen avail layout lines
-  dkids ops overlays host placed (scroll 0)
+  dkids ops overlays host placed (scroll 0) (pinned t)
   mount)
 
 ;; Dirty bits.
@@ -399,7 +399,11 @@ composed without caching, or nil when none are composed."
     (unless (or (null tab) (integerp tab))
       (signal 'ebox-error (list "Ebox :tab-index requires nil or an integer" tab)))
     (unless (memq disabled '(nil t))
-      (signal 'ebox-error (list "Ebox :disabled requires nil or t" disabled)))))
+      (signal 'ebox-error (list "Ebox :disabled requires nil or t" disabled)))
+    (dolist (key '(:swipe :scroll))
+      (unless (or (null (plist-get inter key)) (functionp (plist-get inter key)))
+        (signal 'ebox-error (list (format "Ebox %s requires a one-argument function" key)
+                                  (plist-get inter key)))))))
 
 (defun ebox--node-set-props (node props)
   "Install author PROPS on NODE without invalidation."
@@ -1010,6 +1014,30 @@ Return nil for keywords and unresolvable percentages."
                   value (list :percent-base base :viewport-height ebox--vh
                               :viewport-width ebox--vw :lh 1 :ch 1))))
       (and lines (floor (+ lines 1e-9)))))))
+
+(defun ebox--pad-lines (value)
+  "Return the whole lines block padding VALUE takes, rounding fractions up."
+  (let ((lines (cond ((null value) nil)
+                     ((symbolp value) nil)
+                     ((numberp value) value)
+                     ((and (eq (car value) 'lh) (numberp (cadr value))) (cadr value))
+                     (t (ebox-size-resolve
+                         value (list :viewport-height ebox--vh
+                                     :viewport-width ebox--vw :lh 1 :ch 1))))))
+    (and lines (max 0 (ceiling (- lines 1e-9))))))
+
+(defun ebox--pad-inset (value lines)
+  "Return the pixels of LINES padding lines that fractional VALUE leaves unpainted."
+  (let ((exact (cond ((numberp value) value)
+                     ((eq (car-safe value) 'lh) (cadr value))
+                     ((consp value)
+                      (ebox-size-resolve
+                       value (list :viewport-height ebox--vh
+                                   :viewport-width ebox--vw :lh 1 :ch 1))))))
+    (if (and (numberp exact) (< exact lines))
+        (let ((lh (frame-char-height)))
+          (- (* lines lh) (round (* exact lh))))
+      0)))
 
 (provide 'ebox-node)
 

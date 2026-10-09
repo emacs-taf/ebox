@@ -654,59 +654,637 @@ focus returns when NODE is gone."
 
 ;;;; Input sessions
 
+;; A session edits one text node through a hidden editing buffer that holds
+;; the node's value.  Keys typed in the mounted buffer resolve against that
+;; buffer's keymaps and run there, so every native editing command, the kill
+;; ring, undo and input methods act on the value itself.  The node displays
+;; the value through ordinary layout: wrapping, padding and borders stay
+;; intact while the user types, and each painted character carries its
+;; value offset so point and the region map between both buffers.
+
 (define-error 'ebox-input-error "Invalid Ebox input session" 'ebox-error)
 
 (cl-defstruct (ebox--input-session (:constructor ebox--input-session-make)
                                    (:copier nil))
-  "Native editing of one node's painted text."
-  mount node start end original read-only)
+  "Native editing of one text node through a hidden editing buffer."
+  mount node shadow keymap on-change on-leave value preedit
+  held turn command goal-x overlays emulation done)
+
+(defvar ebox--input-sessions nil
+  "Active input sessions.")
+
+(defvar ebox-input-edit-commands
+  '(newline open-line newline-and-indent electric-newline-and-maybe-indent
+    completion-at-point indent-for-tab-command yank)
+  "Commands that edit the session text when bound in a session keymap.
+Other bindings of a session keymap run in the mounted buffer.")
+
+(defconst ebox--input-passthrough-regexp
+  (concat "\\`\\(?:mouse-\\|mwheel-\\|pixel-scroll-\\|scroll-\\|recenter\\|"
+          "move-to-window-line\\|other-window\\|other-frame\\|delete-window\\|"
+          "delete-other-windows\\|split-window\\|switch-to-buffer\\|"
+          "kill-buffer\\|kill-current-buffer\\|save-buffer\\|save-some-buffers\\|"
+          "save-buffers-kill\\|find-file\\|execute-extended-command\\|"
+          "eval-expression\\|universal-argument\\|digit-argument\\|"
+          "negative-argument\\|handle-\\|text-scale-\\|tab-\\|windmove-\\|"
+          "winner-\\|toggle-frame\\|suspend-frame\\|describe-\\|help\\|"
+          "ns-\\|menu-bar-\\|tmm-\\|ignore\\'\\|keyboard-escape-quit\\)")
+  "Names of commands acting on windows, frames or Emacs rather than text.")
 
 (defun ebox-input-active-p (&optional buffer-or-name)
   "Return the active input session of BUFFER-OR-NAME, or nil."
   (let ((mount (ebox-buffer-mount buffer-or-name)))
     (and mount (ebox-mount-session mount))))
 
-(defun ebox-input-begin (buffer-or-name node)
-  "Begin native editing of NODE's painted text in BUFFER-OR-NAME.
-Return a session for `ebox-input-text' and `ebox-input-end'.  Pending
-changes are written first.  While the session is active the buffer is
-writable, the user edits the node's span directly, and flushes of this
-mount are deferred, so typed text, point, selection and undo stay intact.
-Tree mutations meanwhile are kept and written when the session ends.  An
-unmounted buffer, a node without painted text and a second session are
-`ebox-input-error's."
-  (let ((mount (ebox-buffer-mount buffer-or-name)))
-    (unless mount (signal 'ebox-input-error (list "Expected a mounted Ebox buffer")))
-    (when (ebox-mount-session mount)
-      (signal 'ebox-input-error (list "Buffer already has an input session")))
-    (ebox-flush)
-    (let ((bounds (and (ebox--node-live-p node mount) (ebox-node-bounds node))))
-      (unless bounds
-        (signal 'ebox-input-error (list "Node has no painted text to edit" node)))
-      (with-current-buffer (ebox-mount-buffer mount)
-        (let ((session (ebox--input-session-make
-                        :mount mount :node node
-                        :start (copy-marker (car bounds))
-                        :end (copy-marker (cdr bounds) t)
-                        :original (buffer-substring (car bounds) (cdr bounds))
-                        :read-only buffer-read-only)))
-          (setq buffer-read-only nil)
-          (setf (ebox-mount-session mount) session)
-          session)))))
+(defun ebox--input-current ()
+  "Return the current buffer's live input session, or nil."
+  (let ((mount ebox--buffer-mount))
+    (and mount (ebox-mount-session mount))))
 
 (defun ebox--input-check (session)
   "Signal unless SESSION is an input session."
   (unless (ebox--input-session-p session)
     (signal 'ebox-input-error (list "Expected an input session" session))))
 
+(defun ebox--input-caret (session)
+  "Return SESSION's caret as a value offset."
+  (with-current-buffer (ebox--input-session-shadow session) (1- (point))))
+
+(defun ebox--input-display (session)
+  "Return SESSION's displayed text: its value with any preedit at the caret."
+  (let ((value (ebox--input-session-value session))
+        (preedit (ebox--input-session-preedit session)))
+    (if (and preedit (> (length preedit) 0))
+        (let ((caret (ebox--input-caret session)))
+          (concat (substring value 0 caret) preedit (substring value caret)))
+      value)))
+
+(defun ebox--input-display-caret (session)
+  "Return SESSION's caret as an offset in its displayed text."
+  (+ (ebox--input-caret session) (length (ebox--input-session-preedit session))))
+
+(defun ebox--input-value-offset (session offset)
+  "Return the value offset of displayed OFFSET in SESSION."
+  (let ((caret (ebox--input-caret session))
+        (size (length (ebox--input-session-preedit session))))
+    (cond ((<= offset caret) offset)
+          ((>= offset (+ caret size)) (- offset size))
+          (t caret))))
+
+(defun ebox--input-show (session)
+  "Display SESSION's text in its node; the caller settles the change."
+  (let* ((node (ebox--input-session-node session))
+         (display (ebox--input-display session))
+         (preedit (ebox--input-session-preedit session))
+         (caret (ebox--input-caret session))
+         (cell (assq node ebox--editing)))
+    (when cell
+      (setcdr cell (and preedit (> (length preedit) 0)
+                        (cons caret (+ caret (length preedit))))))
+    (unless (equal display (ebox-node-text node))
+      (setf (ebox-node-text node) display)
+      (ebox--mark node ebox--d-layout))))
+
+;;;; Painted rows
+
+(defun ebox--input-para (node)
+  "Return (OWNER . PARA) for the paragraph that lays out text NODE, or nil."
+  (let ((owner node) para)
+    (while (and owner (not para))
+      (let ((geo (ebox-node-layout owner)))
+        (setq para (and geo (ebox--para-of geo node))))
+      (unless para (setq owner (ebox-node-parent owner))))
+    (and para (cons owner para))))
+
+(defun ebox--input-rows (session)
+  "Return SESSION's painted rows in the current (mounted) buffer.
+Each row is [BOL FIRST FIRST-OFFSET LAST LAST-OFFSET START INDEX]: FIRST and
+LAST are the positions of the row's first and last value characters, nil on
+an empty row, and START is the row's content start."
+  (let* ((mount (ebox--input-session-mount session))
+         (found (ebox--input-para (ebox--input-session-node session))))
+    (when found
+      (let* ((owner (car found)) (para (cdr found))
+             (geo (ebox-node-layout owner))
+             (top (ebox--item-top-in-root para))
+             (left (+ (car (ebox--root-xy owner)) (ebox-geo-ml geo) (ebox-geo-bl geo)
+                      (ebox-geo-pl geo) (ebox-para-x para)))
+             (total (ebox-mount-lines mount))
+             rows)
+        (save-excursion
+          (dotimes (k (ebox-para-h para))
+            (let ((line (+ top k)))
+              (when (and (>= line 0) (< line total))
+                (ebox--goto-line mount line)
+                (let* ((bol (point)) (eol (line-end-position))
+                       (first (text-property-not-all bol eol 'ebox-offset nil))
+                       (last (and first
+                                  (if (get-text-property (1- eol) 'ebox-offset)
+                                      (1- eol)
+                                    (1- (previous-single-property-change
+                                         eol 'ebox-offset nil first))))))
+                  (push (vector bol first (and first (get-text-property first 'ebox-offset))
+                                last (and last (get-text-property last 'ebox-offset))
+                                (ebox--pos-at-x bol left) k)
+                        rows))))))
+        (nreverse rows)))))
+
+(defun ebox--input-empty-offset (row before)
+  "Return the offset of empty ROW after the non-empty row BEFORE, or nil.
+Only newlines leave a row empty, one per row after the previous text."
+  (if before
+      (+ (aref before 4) 1 (- (aref row 6) (aref before 6)))
+    (aref row 6)))
+
+(defun ebox--input-offset-at (session rows pos)
+  "Return SESSION's displayed offset for buffer POS among ROWS."
+  (let ((bol (save-excursion (goto-char pos) (line-beginning-position)))
+        (size (length (ebox--input-display session)))
+        before)
+    (catch 'done
+      (dolist (row rows)
+        (when (= (aref row 0) bol)
+          (throw 'done
+                 (min size
+                      (cond
+                       ((null (aref row 1)) (ebox--input-empty-offset row before))
+                       ((<= pos (aref row 1)) (aref row 2))
+                       ((> pos (aref row 3)) (1+ (aref row 4)))
+                       (t (or (get-text-property pos 'ebox-offset)
+                              (let ((p pos))
+                                (while (and (> p (aref row 1))
+                                            (not (get-text-property (1- p) 'ebox-offset)))
+                                  (setq p (1- p)))
+                                (1+ (get-text-property (1- p) 'ebox-offset)))))))))
+        (when (aref row 1) (setq before row)))
+      (if (and rows (< bol (aref (car rows) 0))) 0 size))))
+
+(defun ebox--input-position-of (rows offset)
+  "Return the buffer position showing displayed OFFSET among ROWS."
+  (let (before result (tail rows))
+    (while (and tail (not result))
+      (let ((row (car tail)) (next (cadr tail)))
+        (if (aref row 1)
+            (let ((first (aref row 2)) (last (aref row 4)))
+              (cond
+               ((and (<= first offset) (<= offset last))
+                (setq result (or (text-property-any (aref row 1) (1+ (aref row 3))
+                                                    'ebox-offset offset)
+                                 (aref row 1))))
+               ((and (= offset (1+ last))
+                     (not (and next (aref next 1) (= (aref next 2) offset))))
+                (setq result (1+ (aref row 3)))))
+              (setq before row))
+          (when (= offset (ebox--input-empty-offset row before))
+            (setq result (aref row 5)))))
+      (setq tail (cdr tail)))
+    (or result
+        (let ((row (car (last rows))))
+          (and row (if (aref row 1) (1+ (aref row 3)) (aref row 5)))))))
+
+(defun ebox--input-paint-region (session rows)
+  "Highlight SESSION's active region over its painted value characters."
+  (mapc #'delete-overlay (ebox--input-session-overlays session))
+  (setf (ebox--input-session-overlays session) nil)
+  (let ((region (with-current-buffer (ebox--input-session-shadow session)
+                  (and mark-active (mark t) (/= (mark t) (point))
+                       (cons (1- (min (mark t) (point))) (1- (max (mark t) (point)))))))
+        overlays)
+    (when region
+      (dolist (row rows)
+        (when (aref row 1)
+          (let ((from (max (car region) (aref row 2)))
+                (to (min (cdr region) (1+ (aref row 4)))))
+            (when (< from to)
+              (let* ((end (1+ (aref row 3)))
+                     (start (text-property-any (aref row 1) end 'ebox-offset from))
+                     (stop (text-property-any (aref row 1) end 'ebox-offset (1- to))))
+                (when (and start stop)
+                  (let ((overlay (make-overlay start (1+ stop) nil t nil)))
+                    (overlay-put overlay 'face 'region)
+                    (overlay-put overlay 'priority 100)
+                    (push overlay overlays)))))))))
+    (setf (ebox--input-session-overlays session) overlays)))
+
+(defun ebox--input-place-point (session)
+  "Put the mounted buffer's point on SESSION's caret and paint its region."
+  (let ((buffer (ebox-mount-buffer (ebox--input-session-mount session))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let* ((rows (ebox--input-rows session))
+               (pos (and rows (ebox--input-position-of
+                               rows (ebox--input-display-caret session)))))
+          (when pos
+            (goto-char pos)
+            (dolist (window (get-buffer-window-list buffer nil t))
+              (set-window-point window pos)))
+          (ebox--input-paint-region session rows))))))
+
+(defun ebox--input-after-flush (buffer)
+  "Keep BUFFER's point on its input session's caret after a flush."
+  (let* ((mount (ebox-buffer-mount buffer))
+         (session (and mount (ebox-mount-session mount))))
+    (when (and session (ebox--input-session-held session))
+      (ebox--input-place-point session))))
+
+(add-hook 'ebox-after-flush-functions #'ebox--input-after-flush)
+
+;;;; Commands
+
+(defun ebox--input-passthrough-p (command)
+  "Return non-nil when COMMAND acts outside the session text."
+  (and (symbolp command)
+       (string-match-p ebox--input-passthrough-regexp (symbol-name command))))
+
+(defun ebox--input-text-binding (keys)
+  "Return the current buffer's binding of KEYS as typed into a text buffer.
+The mounted buffer may bind a function key such as <backspace> that a
+plain buffer reaches only through `local-function-key-map' (as DEL)."
+  (or (key-binding keys t)
+      (let ((translated (lookup-key local-function-key-map keys)))
+        (and (arrayp translated) (key-binding translated t)))))
+
+(defun ebox--input-pre-command ()
+  "Route the coming keyboard command to the current buffer's input session."
+  (when-let* ((session (ebox--input-current)))
+    (setf (ebox--input-session-turn session) nil
+          (ebox--input-session-command session) nil)
+    (let ((event last-command-event))
+      (when (and (consp event) (eq (event-basic-type event) 'mouse-1)
+                 (memq 'down (event-modifiers event)))
+        (let ((start (event-start event)))
+          (when (and (eq (posn-window start) (selected-window))
+                     (null (posn-area start)) (integerp (posn-point start))
+                     (ebox--input-inside-p session (posn-point start)))
+            (setq this-command #'ebox--input-track-pointer))))
+      (when (or (integerp event) (and event (symbolp event)))
+        (let* ((keys (this-command-keys-vector))
+               (keymap (ebox--input-session-keymap session))
+               (own (and keymap (lookup-key keymap keys)))
+               (own (and (commandp own) (not (numberp own)) own)))
+          (if (and own (not (memq own ebox-input-edit-commands)))
+              (setq this-command own)
+            (let ((command (or own (with-current-buffer
+                                       (ebox--input-session-shadow session)
+                                     (ebox--input-text-binding keys)))))
+              (cond
+               ((memq command '(ns-put-working-text ns-insert-working-text))
+                (setf (ebox--input-session-turn session) t)
+                (setq this-command #'ebox--input-put-preedit))
+               ((memq command '(ns-unput-working-text ns-delete-working-text))
+                (setf (ebox--input-session-turn session) t)
+                (setq this-command #'ebox--input-clear-preedit))
+               ((memq command '(next-line previous-line))
+                (setf (ebox--input-session-turn session) t)
+                (setq this-command (if (eq command 'next-line)
+                                       #'ebox--input-next-row
+                                     #'ebox--input-previous-row)))
+               ((and command (commandp command)
+                     (not (ebox--input-passthrough-p command)))
+                (setf (ebox--input-session-turn session) t
+                      (ebox--input-session-command session) command)
+                (setq this-command #'ebox--input-run))))))))))
+
+(defun ebox--input-run ()
+  "Run the current input session's command in its editing buffer."
+  (interactive)
+  (let* ((session (ebox--input-current))
+         (command (and session (ebox--input-session-command session)))
+         (keys (this-command-keys-vector))
+         final)
+    (when command
+      (with-current-buffer (ebox--input-session-shadow session)
+        (setq deactivate-mark nil)
+        (let ((this-command command) (real-this-command command))
+          (when (and (bound-and-true-p delete-selection-mode)
+                     (fboundp 'delete-selection-pre-hook))
+            (delete-selection-pre-hook))
+          (call-interactively command nil keys)
+          (setq final this-command))
+        (when (and deactivate-mark mark-active) (deactivate-mark)))
+      (setq this-command final))))
+
+(defun ebox--input-put-preedit ()
+  "Show the input method's working text at the session caret."
+  (interactive)
+  (when-let* ((session (ebox--input-current)))
+    (setf (ebox--input-session-preedit session)
+          (and (boundp 'ns-working-text) (stringp ns-working-text)
+               (substring-no-properties ns-working-text)))
+    (ebox--mutation (ebox--input-show session))))
+
+(defvar ebox--input-special-saved nil
+  "Input-method special-event bindings displaced while sessions are active.")
+
+(defconst ebox--input-special-events
+  '((ns-put-working-text . ebox--input-special-put)
+    (ns-unput-working-text . ebox--input-special-unput))
+  "Input-method working-text special events and their session handlers.
+Emacs runs these outside the command loop, so command hooks never see them.")
+
+(defun ebox--input-special-session ()
+  "Return the input session of the selected window's buffer, or nil."
+  (with-current-buffer (window-buffer (selected-window))
+    (ebox--input-current)))
+
+(defun ebox--input-special-fallback (event)
+  "Run EVENT's displaced special-event binding."
+  (let ((command (cdr (assq event ebox--input-special-saved))))
+    (when (commandp command) (call-interactively command))))
+
+(defun ebox--input-special-put ()
+  "Show input-method working text in the selected session, else natively."
+  (interactive)
+  (if (ebox--input-special-session)
+      (with-current-buffer (window-buffer (selected-window))
+        (ebox--input-put-preedit))
+    (ebox--input-special-fallback 'ns-put-working-text)))
+
+(defun ebox--input-special-unput ()
+  "Clear input-method working text in the selected session, else natively."
+  (interactive)
+  (if (ebox--input-special-session)
+      (with-current-buffer (window-buffer (selected-window))
+        (ebox--input-clear-preedit))
+    (ebox--input-special-fallback 'ns-unput-working-text)))
+
+(defun ebox--input-special-install ()
+  "Route input-method special events through sessions while any is active."
+  (unless ebox--input-special-saved
+    (dolist (entry ebox--input-special-events)
+      (push (cons (car entry) (lookup-key special-event-map (vector (car entry))))
+            ebox--input-special-saved)
+      (define-key special-event-map (vector (car entry)) (cdr entry)))))
+
+(defun ebox--input-special-uninstall ()
+  "Restore the input-method special-event bindings once no session remains."
+  (when (and ebox--input-special-saved (null ebox--input-sessions))
+    (dolist (entry ebox--input-special-saved)
+      (when (eq (lookup-key special-event-map (vector (car entry)))
+                (cdr (assq (car entry) ebox--input-special-events)))
+        (define-key special-event-map (vector (car entry)) (cdr entry))))
+    (setq ebox--input-special-saved nil)))
+
+(defun ebox--input-clear-preedit ()
+  "Remove the input method's working text from the session."
+  (interactive)
+  (when-let* ((session (ebox--input-current)))
+    (setf (ebox--input-session-preedit session) nil)
+    (ebox--mutation (ebox--input-show session))))
+
+(defun ebox--input-move-row (delta)
+  "Move the current session's caret DELTA painted rows, keeping its column."
+  (when-let* ((session (ebox--input-current)))
+    (let* ((rows (ebox--input-rows session))
+           (caret (ebox--input-display-caret session))
+           (pos (and rows (ebox--input-position-of rows caret)))
+           (bol (and pos (save-excursion (goto-char pos) (line-beginning-position))))
+           (index (and bol (cl-position bol rows :key (lambda (row) (aref row 0)))))
+           (x (if (and (memq last-command '(ebox--input-next-row ebox--input-previous-row))
+                       (ebox--input-session-goal-x session))
+                  (ebox--input-session-goal-x session)
+                (and bol (ebox--line-width (buffer-substring bol pos)))))
+           (target (and index (+ index delta)))
+           (offset (cond ((null target) nil)
+                         ((< target 0) 0)
+                         ((>= target (length rows)) (length (ebox--input-display session)))
+                         (t (let ((row (nth target rows)))
+                              (ebox--input-offset-at
+                               session rows (ebox--pos-at-x (aref row 0) x)))))))
+      (setf (ebox--input-session-goal-x session) x)
+      (when offset
+        (with-current-buffer (ebox--input-session-shadow session)
+          (goto-char (1+ (ebox--input-value-offset session offset))))))))
+
+(defun ebox--input-next-row ()
+  "Move the session caret to the next painted row."
+  (interactive)
+  (ebox--input-move-row 1))
+
+(defun ebox--input-previous-row ()
+  "Move the session caret to the previous painted row."
+  (interactive)
+  (ebox--input-move-row -1))
+
+(defun ebox--input-sync (session)
+  "Publish SESSION's edited value and show its caret."
+  (let ((value (with-current-buffer (ebox--input-session-shadow session)
+                 (buffer-substring-no-properties (point-min) (point-max)))))
+    (unless (equal value (ebox--input-session-value session))
+      (setf (ebox--input-session-value session) value)
+      (when-let* ((callback (ebox--input-session-on-change session)))
+        (funcall callback value)))
+    (unless (ebox--input-session-done session)
+      (ebox--mutation (ebox--input-show session))
+      (ebox--input-place-point session))))
+
+(defun ebox--input-inside-p (session pos)
+  "Return non-nil when buffer POS lies inside SESSION's field.
+The field is the box of the edited node's activatable owner, padding
+included, or the value's painted rows when no owner frames it."
+  (let ((owner (ebox--keymap-owner (ebox--input-session-node session))))
+    (if (and owner (eq owner (ebox--event-owner pos)))
+        t
+      (let* ((found (ebox--input-para (ebox--input-session-node session)))
+             (geometry (and found (ebox-node-geometry (car found))))
+             (rows (ebox--input-rows session))
+             (bol (save-excursion (goto-char pos) (line-beginning-position))))
+        (when (and geometry (cl-find bol rows :key (lambda (row) (aref row 0))))
+          (let ((left (plist-get geometry :x)))
+            (and (>= pos (ebox--pos-at-x bol left))
+                 (< pos (ebox--pos-at-x bol (+ left (plist-get geometry :width)))))))))))
+
+(defun ebox--input-select (session from to)
+  "Put SESSION's caret at buffer position TO, selecting from FROM when it differs."
+  (let* ((rows (ebox--input-rows session))
+         (caret (ebox--input-value-offset
+                 session (ebox--input-offset-at session rows to)))
+         (anchor (and from (/= from to)
+                      (ebox--input-value-offset
+                       session (ebox--input-offset-at session rows from)))))
+    (when mark-active (deactivate-mark))
+    (with-current-buffer (ebox--input-session-shadow session)
+      (if (and anchor (/= anchor caret))
+          (push-mark (1+ anchor) t t)
+        (deactivate-mark))
+      (goto-char (1+ caret)))
+    (setf (ebox--input-session-held session) t)
+    (ebox--input-place-point session)))
+
+(defun ebox--input-select-unit (session unit)
+  "Select the word around SESSION's caret, or its whole value, for UNIT."
+  (with-current-buffer (ebox--input-session-shadow session)
+    (let ((bounds (if (eq unit 'word)
+                      (bounds-of-thing-at-point 'word)
+                    (cons (point-min) (point-max)))))
+      (when (and bounds (< (car bounds) (cdr bounds)))
+        (push-mark (car bounds) t t)
+        (goto-char (cdr bounds)))))
+  (ebox--input-place-point session))
+
+(defun ebox--input-leave (session)
+  "Release SESSION's caret hold and report that the pointer left its field."
+  (setf (ebox--input-session-held session) nil)
+  (mapc #'delete-overlay (ebox--input-session-overlays session))
+  (setf (ebox--input-session-overlays session) nil)
+  (when-let* ((callback (ebox--input-session-on-leave session)))
+    (funcall callback)))
+
+(defun ebox--input-track-pointer (event)
+  "Place the input caret at primary press EVENT and select while dragging.
+A double press selects the word at the caret and a triple press the value."
+  (interactive "e")
+  (when-let* ((session (ebox--input-current)))
+    (let* ((from (posn-point (event-start event)))
+           (count (cond ((memq 'triple (event-modifiers event)) 3)
+                        ((memq 'double (event-modifiers event)) 2)
+                        (t 1))))
+      (ebox--input-select session from from)
+      (let (next)
+        (track-mouse
+          (setq track-mouse 'dragging)
+          (while (progn (setq next (read-event))
+                        (mouse-movement-p next))
+            (let ((to (posn-point (event-end next))))
+              (when (and (= count 1) (integerp to) (ebox--input-inside-p session to))
+                (ebox--input-select session from to)))))
+        ;; The release belongs to this press; anything else runs normally.
+        (unless (and (consp next) (eq (event-basic-type next) 'mouse-1)
+                     (not (memq 'down (event-modifiers next))))
+          (push next unread-command-events)))
+      (pcase count
+        (2 (ebox--input-select-unit session 'word))
+        (3 (ebox--input-select-unit session 'all))))))
+
+(defun ebox--input-pointer (session event)
+  "Place SESSION's caret and region from mouse EVENT, or leave the field."
+  (let* ((end (event-end event))
+         (window (posn-window end))
+         (buffer (ebox-mount-buffer (ebox--input-session-mount session))))
+    (when (and (windowp window) (eq (window-buffer window) buffer)
+               (null (posn-area end)) (integerp (posn-point end)))
+      (let ((pos (posn-point end))
+            (from (posn-point (event-start event))))
+        (if (not (ebox--input-inside-p session pos))
+            (ebox--input-leave session)
+          (ebox--input-select
+           session (if (and (integerp from) (ebox--input-inside-p session from)) from pos)
+           pos))))))
+
+(defun ebox--input-post-command ()
+  "Show the effect of the last command on the current buffer's session."
+  (when-let* ((session (ebox--input-current)))
+    (let ((event (if (and (consp last-command-event)
+                          (memq 'down (event-modifiers last-command-event))
+                          (consp last-input-event))
+                     ;; A press tracker consumed the release: judge by it.
+                     last-input-event
+                   last-command-event)))
+      (cond
+       ((ebox--input-session-turn session)
+        (setf (ebox--input-session-held session) t)
+        (ebox--input-sync session))
+       ((eq this-command #'ebox--input-track-pointer))
+       ((and (consp event)
+             (memq (event-basic-type event) '(mouse-1 mouse-2 mouse-3))
+             (cl-intersection '(click drag) (event-modifiers event)))
+        (ebox--input-pointer session event))
+       ((and (ebox--input-session-held session)
+             (or (integerp event) (and event (symbolp event))))
+        (ebox--input-place-point session))))
+    (when (and (not (ebox--input-session-done session))
+               (ebox--input-session-held session))
+      (setq disable-point-adjustment t))))
+
+;;;; Session lifecycle
+
+(defun ebox--input-external-text (node string)
+  "Handle STRING set on NODE while an input session edits it.
+Return non-nil when NODE is edited.  The session's own value is ignored;
+another string replaces the value, clears undo and puts the caret at its end."
+  (when-let* ((session (cl-find node ebox--input-sessions
+                                :key #'ebox--input-session-node)))
+    (unless (equal string (ebox--input-session-value session))
+      (with-current-buffer (ebox--input-session-shadow session)
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (substring-no-properties string)))
+        (setq buffer-undo-list nil)
+        (deactivate-mark))
+      (setf (ebox--input-session-value session) (substring-no-properties string)
+            (ebox--input-session-preedit session) nil)
+      (ebox--input-show session))
+    t))
+
+(setq ebox--input-text-function #'ebox--input-external-text)
+
+(defun ebox-input-begin (buffer-or-name node &rest options)
+  "Begin native editing of text NODE in BUFFER-OR-NAME and return a session.
+The node's text becomes the session value with the caret at its end.  Keys
+typed in the buffer while the session is active edit that value with their
+ordinary Emacs commands: insertion, deletion, motion, kill and yank, undo,
+the region and input methods.  The node keeps its layout and displays each
+edit immediately, so wrapping, padding and borders stay in place; point
+follows the caret and a click inside the node's box moves it.
+
+OPTIONS is a plist.  :on-change is called with the new value after each
+command that changes it.  :keymap holds bindings consulted first; they run
+in BUFFER-OR-NAME, except the commands in `ebox-input-edit-commands', which
+edit the value.  :on-leave is called without arguments when a click lands
+outside the node's box.  :local-variables is an alist of buffer-local
+settings, such as `completion-at-point-functions', for the commands editing
+the value.  Setting the node's text to another string replaces the value.
+
+An unmounted buffer, a node that is not laid-out text and a second session
+in the same buffer are `ebox-input-error's."
+  (let ((mount (ebox-buffer-mount buffer-or-name))
+        (keymap (plist-get options :keymap)))
+    (unless mount (signal 'ebox-input-error (list "Expected a mounted Ebox buffer")))
+    (when (ebox-mount-session mount)
+      (signal 'ebox-input-error (list "Buffer already has an input session")))
+    (unless (and (ebox-node-p node) (ebox-node-text-p node)
+                 (ebox--node-live-p node mount))
+      (signal 'ebox-input-error (list "Expected a mounted text node" node)))
+    (when (and keymap (not (keymapp keymap)))
+      (signal 'ebox-input-error (list "Expected a keymap" keymap)))
+    (let* ((value (substring-no-properties (ebox-node-text node)))
+           (shadow (generate-new-buffer " *ebox-input*" t))
+           (session (ebox--input-session-make
+                     :mount mount :node node :shadow shadow :keymap keymap
+                     :on-change (plist-get options :on-change)
+                     :on-leave (plist-get options :on-leave)
+                     :value value :held t
+                     :emulation (and keymap (list (cons t keymap))))))
+      (with-current-buffer shadow
+        (insert value)
+        (setq buffer-undo-list nil)
+        (dolist (binding (plist-get options :local-variables))
+          (set (make-local-variable (car binding)) (cdr binding))))
+      (with-current-buffer (ebox-mount-buffer mount)
+        (setf (ebox-mount-session mount) session)
+        (push session ebox--input-sessions)
+        (ebox--input-special-install)
+        (push (list node) ebox--editing)
+        (when (ebox--input-session-emulation session)
+          (setq-local emulation-mode-map-alists
+                      (cons (ebox--input-session-emulation session)
+                            emulation-mode-map-alists)))
+        (add-hook 'pre-command-hook #'ebox--input-pre-command nil t)
+        (add-hook 'post-command-hook #'ebox--input-post-command nil t)
+        (when mark-active (deactivate-mark))
+        ;; A fresh string makes the paragraph rebuild its pieces, which now
+        ;; carry the value offsets.
+        (ebox--mutation
+          (setf (ebox-node-text node) (copy-sequence value))
+          (ebox--mark node ebox--d-layout))
+        (ebox--input-place-point session))
+      session)))
+
 (defun ebox-input-text (session)
-  "Return SESSION's current property-free text, or nil once released."
+  "Return SESSION's current value, or nil once it ended."
   (ebox--input-check session)
-  (let ((start (marker-position (ebox--input-session-start session))))
-    (when start
-      (with-current-buffer (marker-buffer (ebox--input-session-start session))
-        (buffer-substring-no-properties
-         start (ebox--input-session-end session))))))
+  (unless (ebox--input-session-done session)
+    (ebox--input-session-value session)))
 
 (defun ebox-input-session-node (session)
   "Return the node SESSION edits."
@@ -714,48 +1292,47 @@ unmounted buffer, a node without painted text and a second session are
   (ebox--input-session-node session))
 
 (defun ebox--input-release (session)
-  "Detach SESSION from its mount and markers without touching text."
-  (let ((mount (ebox--input-session-mount session)))
-    (when (eq (ebox-mount-session mount) session)
-      (setf (ebox-mount-session mount) nil))
-    (set-marker (ebox--input-session-start session) nil)
-    (set-marker (ebox--input-session-end session) nil)))
+  "Detach SESSION from its buffers without repainting its node."
+  (unless (ebox--input-session-done session)
+    (setf (ebox--input-session-done session) t
+          (ebox--input-session-held session) nil)
+    (let* ((mount (ebox--input-session-mount session))
+           (node (ebox--input-session-node session))
+           (buffer (ebox-mount-buffer mount))
+           (shadow (ebox--input-session-shadow session)))
+      (setq ebox--input-sessions (delq session ebox--input-sessions)
+            ebox--editing (assq-delete-all node ebox--editing))
+      (ebox--input-special-uninstall)
+      (when (eq (ebox-mount-session mount) session)
+        (setf (ebox-mount-session mount) nil))
+      (mapc #'delete-overlay (ebox--input-session-overlays session))
+      (setf (ebox--input-session-overlays session) nil)
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (remove-hook 'pre-command-hook #'ebox--input-pre-command t)
+          (remove-hook 'post-command-hook #'ebox--input-post-command t)
+          (when (ebox--input-session-emulation session)
+            (setq-local emulation-mode-map-alists
+                        (delq (ebox--input-session-emulation session)
+                              emulation-mode-map-alists)))))
+      (when (buffer-live-p shadow) (kill-buffer shadow)))))
 
 (defun ebox-input-end (session)
-  "End SESSION, restore its painted text and return the user's text.
-Deferred changes are then written.  Ending a released session, for example
-after its buffer was unmounted, only returns nil."
+  "End SESSION and return its value.
+The node keeps displaying the value without preedit.  Ending a session that
+already ended, for example after its buffer was unmounted, returns nil."
   (ebox--input-check session)
-  (let* ((mount (ebox--input-session-mount session))
-         (buffer (ebox-mount-buffer mount))
-         (live (and (eq (ebox-mount-session mount) session)
-                    (buffer-live-p buffer)
-                    (marker-position (ebox--input-session-start session))))
-         text)
-    (unwind-protect
-        (when live
-          (with-current-buffer buffer
-            (let ((start (marker-position (ebox--input-session-start session)))
-                  (finish (marker-position (ebox--input-session-end session))))
-              (setq text (buffer-substring-no-properties start finish))
-              (let ((inhibit-read-only t)
-                    (inhibit-modification-hooks t))
-                (save-excursion
-                  (delete-region start finish)
-                  (goto-char start)
-                  (insert (ebox--input-session-original session))))
-              (setq buffer-read-only (ebox--input-session-read-only session))
-              ;; Line anchors inside the edited span collapsed with it.
-              (ebox--rebuild-anchors mount))))
+  (unless (ebox--input-session-done session)
+    (let* ((value (ebox--input-session-value session))
+           (mount (ebox--input-session-mount session))
+           (node (ebox--input-session-node session)))
       (ebox--input-release session)
-      ;; A viewport change waited for the session.
-      (when (and live (eq (ebox-buffer-mount buffer) mount))
-        (ebox-refit buffer))
-      (when (and live (ebox-mount-queued mount)
-                 (eq (ebox-buffer-mount buffer) mount))
-        (unless (memq mount ebox--queue) (push mount ebox--queue))
-        (ebox--settle)))
-    text))
+      (when (and (eq (ebox-buffer-mount (ebox-mount-buffer mount)) mount)
+                 (ebox--node-live-p node mount))
+        (ebox--mutation
+          (setf (ebox-node-text node) (copy-sequence value))
+          (ebox--mark node ebox--d-layout)))
+      value)))
 
 ;;;; Interaction navigation
 
@@ -908,10 +1485,14 @@ after its buffer was unmounted, only returns nil."
   (ebox-node-scroll node))
 
 (defun ebox-node-set-scroll (node offset)
-  "Scroll NODE's content to OFFSET lines, clamped; return the applied offset."
+  "Scroll NODE's content to OFFSET lines, clamped; return the applied offset.
+Reaching the last line pins a `:scroll-anchor end' node there, so it keeps
+showing the end as content grows; any smaller offset releases the pin.
+A changed offset is reported to NODE's `:scroll' function after settling."
   (let* ((geo (ebox-node-layout node))
          (limit (if geo (max 0 (- (ebox-geo-ch geo) (ebox-geo-vh geo))) 0))
          (offset (max 0 (min offset limit))))
+    (setf (ebox-node-pinned node) (>= offset limit))
     (unless (= offset (ebox-node-scroll node))
       (setf (ebox-node-scroll node) offset)
       (let ((mount (ebox--mount-of node)))
@@ -923,8 +1504,37 @@ after its buffer was unmounted, only returns nil."
                     (ebox-mount-report mount))
               (ebox--enqueue node))
           (ebox--mark node ebox--d-layout))
-        (ebox--settle)))
+        (ebox--settle))
+      (when-let* ((fn (plist-get (ebox-node-inter node) :scroll)))
+        (funcall fn offset)))
     offset))
+
+(defun ebox-node-scroll-into-view (node &optional align)
+  "Scroll NODE's scrolling ancestors so its lines show; return NODE.
+Each scroller, innermost first, moves the least distance that shows NODE's
+margin box, or its top when NODE is taller than the viewport.  ALIGN
+`start' or `end' instead puts NODE's top at the scroller's first line or
+its bottom at the last line, as far as the content allows."
+  (unless (memq align '(nil start end))
+    (signal 'wrong-type-argument (list '(member nil start end) align)))
+  (let ((scroller (ebox--clip-parent node)))
+    (while scroller
+      (when (ebox--scrollable-p scroller)
+        (let* ((geo (ebox-node-layout scroller))
+               (offset (ebox-geo-scroll geo))
+               (top (+ (- (ebox--item-top-in-root node)
+                          (ebox--item-top-in-root scroller)
+                          (ebox-geo-mt geo) (ebox-geo-pt geo))
+                       offset))
+               (bottom (+ top (ebox-node-h node)))
+               (vh (ebox-geo-vh geo)))
+          (cond ((eq align 'start) (ebox-node-set-scroll scroller top))
+                ((eq align 'end) (ebox-node-set-scroll scroller (- bottom vh)))
+                ((< top offset) (ebox-node-set-scroll scroller top))
+                ((> bottom (+ offset vh))
+                 (ebox-node-set-scroll scroller (min top (- bottom vh)))))))
+      (setq scroller (ebox--clip-parent scroller))))
+  node)
 
 (defun ebox--scroll-by (delta position fallback)
   "Scroll the node chain at POSITION by DELTA lines; FALLBACK gets the rest."
@@ -939,11 +1549,20 @@ after its buffer was unmounted, only returns nil."
           (funcall fallback rest)
         ((beginning-of-buffer end-of-buffer) nil)))))
 
+(defun ebox--scroll-window (lines)
+  "Scroll the selected window by LINES that no scroller consumed.
+The window never scrolls down once the buffer end shows, so a mounted tree
+that fits its window keeps its pinned top and bottom rows in place."
+  (if (> lines 0)
+      (unless (or (<= (count-lines (window-start) (point-max)) (window-body-height))
+                  (pos-visible-in-window-p (point-max) nil t))
+        (scroll-up lines))
+    (scroll-down (- lines))))
+
 (defun ebox-scroll-down (&optional n)
   "Scroll the content at point down by N lines (default `ebox-scroll-step')."
   (interactive "p")
-  (ebox--scroll-by (or n ebox-scroll-step) (point)
-                   (lambda (rest) (if (> rest 0) (scroll-up rest) (scroll-down (- rest))))))
+  (ebox--scroll-by (or n ebox-scroll-step) (point) #'ebox--scroll-window))
 
 (defun ebox-scroll-up (&optional n)
   "Scroll the content at point up by N lines (default `ebox-scroll-step')."
@@ -972,9 +1591,7 @@ after its buffer was unmounted, only returns nil."
     (if (and (window-live-p window) (null (posn-area start))
              (ebox-buffer-mount (window-buffer window)))
         (with-selected-window window
-          (ebox--scroll-by delta (posn-point start)
-                           (lambda (rest)
-                             (if (> rest 0) (scroll-up rest) (scroll-down (- rest))))))
+          (ebox--scroll-by delta (posn-point start) #'ebox--scroll-window))
       (mwheel-scroll event))))
 
 (defun ebox-wheel-scroll-down (event)
@@ -987,16 +1604,85 @@ after its buffer was unmounted, only returns nil."
   (interactive "e")
   (ebox--wheel event (- ebox-scroll-step)))
 
+;;;; Swipe gestures
+
+(defvar ebox-swipe-distance 60
+  "Horizontal pixels a two-finger gesture travels before it counts as a swipe.")
+
+(defvar ebox-swipe-quiet 0.35
+  "Seconds without horizontal wheel events that end a swipe gesture.
+Momentum events continue the gesture, so one physical swipe fires once.")
+
+(defvar ebox--swipe-state nil
+  "Current gesture as (TIME DIRECTION DISTANCE FIRED).")
+
+(defun ebox--swipe-direction (event)
+  "Return the finger direction, `left' or `right', of horizontal wheel EVENT.
+macOS natural scrolling reports fingers moving right as `wheel-left';
+`mouse-wheel-flip-direction' reverses the mapping."
+  (let ((right (eq (event-basic-type event) 'wheel-left)))
+    (if (bound-and-true-p mouse-wheel-flip-direction)
+        (if right 'left 'right)
+      (if right 'right 'left))))
+
+(defun ebox--swipe-target (position)
+  "Return the innermost enabled node with a `:swipe' handler at POSITION."
+  (let ((node (and (integer-or-marker-p position) (ebox-node-at position)))
+        found)
+    (while (and node (not found))
+      (let ((inter (ebox-node-inter node)))
+        (if (and (plist-get inter :swipe) (not (plist-get inter :disabled)))
+            (setq found node)
+          (setq node (if (and (ebox-node-cs node) (ebox--abs-p node))
+                         (ebox-node-host node)
+                       (ebox-node-parent node))))))
+    found))
+
+(defun ebox-wheel-swipe (event)
+  "Recognize a horizontal two-finger swipe from wheel EVENT.
+Accumulate one gesture's horizontal travel and, once it reaches
+`ebox-swipe-distance', call the `:swipe' handler of the innermost node under
+the pointer once with the finger direction.  Later events of the same
+gesture, including momentum, are absorbed."
+  (interactive "e")
+  (let* ((start (event-start event))
+         (window (posn-window start))
+         (now (float-time))
+         (direction (ebox--swipe-direction event))
+         (delta (nth 4 event))
+         (travel (if (and (consp delta) (numberp (car delta)))
+                     (abs (car delta))
+                   ebox-swipe-distance))
+         (state ebox--swipe-state))
+    (when (or (null state) (> (- now (nth 0 state)) ebox-swipe-quiet)
+              (and (not (nth 3 state)) (not (eq direction (nth 1 state)))))
+      (setq state (list now direction 0 nil)))
+    (setf (nth 0 state) now
+          (nth 2 state) (+ (nth 2 state) travel))
+    (setq ebox--swipe-state state)
+    (when (and (not (nth 3 state)) (>= (nth 2 state) ebox-swipe-distance)
+               (window-live-p window) (null (posn-area start)))
+      (setf (nth 3 state) t)
+      (with-current-buffer (window-buffer window)
+        (when-let* ((node (ebox--swipe-target (posn-point start))))
+          (funcall (plist-get (ebox-node-inter node) :swipe) direction))))))
+
 ;;;; Buffer mode
 
 (defvar ebox-buffer-mode-map
   (let ((map (make-sparse-keymap)))
+    ;; A mounted canvas is application output: unbound printing keys must
+    ;; not type into it.  Input sessions disable the mode while they edit.
+    (suppress-keymap map t)
     (dolist (area '(nil right-fringe left-fringe right-margin left-margin))
       (let ((prefix (if area (vector area) [])))
         (dolist (event '(wheel-down double-wheel-down triple-wheel-down mouse-5))
           (define-key map (vconcat prefix (vector event)) #'ebox-wheel-scroll-down))
         (dolist (event '(wheel-up double-wheel-up triple-wheel-up mouse-4))
           (define-key map (vconcat prefix (vector event)) #'ebox-wheel-scroll-up))))
+    (dolist (event '(wheel-left double-wheel-left triple-wheel-left
+                     wheel-right double-wheel-right triple-wheel-right))
+      (define-key map (vector event) #'ebox-wheel-swipe))
     (define-key map [remap scroll-up-command] #'ebox-scroll-page-down)
     (define-key map [remap scroll-down-command] #'ebox-scroll-page-up)
     (define-key map (kbd "n") #'ebox-scroll-down)
@@ -1013,14 +1699,26 @@ after its buffer was unmounted, only returns nil."
     (dolist (key '("RET" "<return>"))
       (define-key map (kbd key) #'ebox-activate))
     (define-key map [mouse-movement] #'ebox--hover-event)
+    ;; Painted cells are not a text selection: a press or drag only moves
+    ;; point, so dragging over the canvas never paints a region.
+    (dolist (event '(down-mouse-1 drag-mouse-1))
+      (define-key map (vector event) #'mouse-set-point))
     map)
   "Keymap of mounted Ebox buffers: scrolling, focus navigation and activation.")
+
+(defun ebox--refuse-mark ()
+  "Deactivate a mark activated over a mounted canvas.
+The canvas has no text selection; an input session keeps its own region."
+  (deactivate-mark))
 
 (defconst ebox--scroll-overridden-modes '(pixel-scroll-precision-mode pixel-scroll-mode)
   "Minor modes whose wheel bindings Ebox buffers override locally.")
 
 (defvar-local ebox--saved-overline-margin nil
   "Original local flag and value of `overline-margin' while the mode is on.")
+
+(defvar-local ebox--saved-show-paren nil
+  "Original local flag and value of `show-paren-mode' while the mode is on.")
 
 (define-minor-mode ebox-buffer-mode
   "Minor mode for mounted Ebox buffers."
@@ -1033,6 +1731,13 @@ after its buffer was unmounted, only returns nil."
                 (cons (local-variable-p 'overline-margin) overline-margin)))
         ;; Overlines otherwise add ascent to rows with a top border.
         (setq-local overline-margin 0)
+        ;; Painted text is not code: paren matching would tint layout cells.
+        (unless ebox--saved-show-paren
+          (setq ebox--saved-show-paren
+                (cons (local-variable-p 'show-paren-mode)
+                      (bound-and-true-p show-paren-mode))))
+        (setq-local show-paren-mode nil)
+        (add-hook 'activate-mark-hook #'ebox--refuse-mark nil t)
         (setq-local minor-mode-overriding-map-alist
                     (append (mapcar (lambda (mode) (cons mode ebox-buffer-mode-map))
                                     ebox--scroll-overridden-modes)
@@ -1044,11 +1749,17 @@ after its buffer was unmounted, only returns nil."
                 (cl-remove-if (lambda (entry)
                                 (memq (car entry) ebox--scroll-overridden-modes))
                               minor-mode-overriding-map-alist))
+    (remove-hook 'activate-mark-hook #'ebox--refuse-mark t)
     (when ebox--saved-overline-margin
       (if (car ebox--saved-overline-margin)
           (setq-local overline-margin (cdr ebox--saved-overline-margin))
         (kill-local-variable 'overline-margin))
       (setq ebox--saved-overline-margin nil))
+    (when ebox--saved-show-paren
+      (if (car ebox--saved-show-paren)
+          (setq-local show-paren-mode (cdr ebox--saved-show-paren))
+        (kill-local-variable 'show-paren-mode))
+      (setq ebox--saved-show-paren nil))
     (kill-local-variable 'track-mouse)))
 
 (defun ebox--after-flush-hover (buffer)

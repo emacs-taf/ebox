@@ -25,6 +25,16 @@
       "purpose": "Changing an image node repaints the mounted buffer to the new prepared content."
     },
     {
+      "name": "ebox-image-in-a-wider-box-paints-the-box-background-beside-it",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "An image narrower than its stretched box leaves no unpainted gap beside it."
+    },
+    {
+      "name": "ebox-image-slice-cut-at-a-box-edge-keeps-its-visible-part",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "An image row slice cut at a box edge shows its visible part instead of a blank."
+    },
+    {
       "name": "ebox-image-prepare-rejects-invalid-protocol-inputs",
       "file": "tests/ebox-image-file-tests.el",
       "purpose": "Image preparation rejects invalid sizes, adapters and sources."
@@ -60,6 +70,11 @@
       "purpose": "Help, pointer, keymap and hover style capabilities become native text properties."
     },
     {
+      "name": "ebox-clipped-overlay-keeps-interaction-on-blank-rows",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A clipped interactive overlay keeps its keymap and pointer on blank rows and cut padding."
+    },
+    {
       "name": "ebox-focus-first-next-previous-and-cycle-update-focused-node",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Focus navigation updates the public focused node in document order with cycling."
@@ -75,6 +90,26 @@
       "purpose": "Overlapping overlays hit in paint order, and boxes covered by them have no position and refuse focus."
     },
     {
+      "name": "ebox-buffer-mode-keeps-paren-matching-off-painted-text",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A mounted buffer turns off paren matching so it never tints layout cells, and leaving the mode restores the user's setting."
+    },
+    {
+      "name": "ebox-buffer-mode-shows-no-region-on-the-canvas",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Setting the mark in a mounted canvas leaves no active region to paint, while the same buffer outside the mode keeps native region behavior."
+    },
+    {
+      "name": "ebox-node-at-resolves-padding-cells-to-their-box",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A padding or indent cell resolves to the box that owns it rather than the root."
+    },
+    {
+      "name": "ebox-node-at-resolves-scrolled-padding-cells-to-their-box",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Inside a scroll container, a child's padding cell resolves to that child rather than the scroller."
+    },
+    {
       "name": "ebox-descendants-inherit-or-block-native-feedback",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Descendants inherit an ancestor's help, pointer and hover feedback unless they set it to nil."
@@ -88,6 +123,11 @@
       "name": "ebox-node-bounds-spans-first-or-every-painted-row",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Node bounds span a box's first painted row by default and all of its painted rows on request."
+    },
+    {
+      "name": "ebox-node-bounds-include-cells-under-own-overlays",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A node's bounds start at its first cell even where its own positioned descendant paints over it."
     },
     {
       "name": "ebox-node-bounds-keep-hidden-flow-slots",
@@ -125,6 +165,11 @@
       "purpose": "Text wrapping, alignment and CJK measurement produce the documented visible lines."
     },
     {
+      "name": "ebox-render-keeps-punctuation-off-line-edges",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "Soft wraps keep closing punctuation off line starts and opening punctuation off line ends."
+    },
+    {
       "name": "ebox-render-paints-face-and-display-spaces",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Paint styles and pixel padding produce public face and display text properties."
@@ -158,6 +203,11 @@
       "name": "ebox-render-absolute-children-start-at-content-origin",
       "file": "tests/ebox-rendering-tests.el",
       "purpose": "Absolute children are offset from their host's content origin, inside its padding."
+    },
+    {
+      "name": "ebox-render-root-layer-boxes-cover-the-root-border-box",
+      "file": "tests/ebox-rendering-tests.el",
+      "purpose": "A root-layer absolute box is placed and sized from the root's border box, covering its padding."
     },
     {
       "name": "ebox-render-relative-flow-paints-above-lower-overlays",
@@ -195,9 +245,34 @@
       "purpose": "Programmatic scroll clamps the offset and repaints the visible lines."
     },
     {
+      "name": "ebox-end-anchored-scroll-follows-growing-content-while-pinned",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "An end-anchored scroller starts at and follows its last line until scrolled away, and rejects unknown anchors."
+    },
+    {
+      "name": "ebox-scroll-into-view-moves-nested-scrollers-minimally",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Scrolling a node into view moves each enclosing scroller by the least distance and leaves visible nodes alone."
+    },
+    {
+      "name": "ebox-horizontal-wheel-gesture-fires-one-swipe-on-the-nearest-handler",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "A horizontal two-finger gesture calls the nearest :swipe handler once with the finger direction, absorbs momentum and respects flipped wheels."
+    },
+    {
+      "name": "ebox-scroll-property-reports-changed-offsets",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "A scroller's :scroll function receives each changed offset from scroll commands and set-scroll, but not unchanged offsets or pinned end growth."
+    },
+    {
       "name": "ebox-scroll-commands-use-node-at-point",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "Interactive line scroll commands operate on the scrollable node at point."
+    },
+    {
+      "name": "ebox-scroll-past-the-end-keeps-a-fitting-buffer-in-place",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Scrolling past a scroller's end never scrolls a window that already shows the whole buffer."
     },
     {
       "name": "ebox-page-scroll-commands-accept-explicit-line-counts",
@@ -205,24 +280,49 @@
       "purpose": "Page scroll commands accept explicit line counts and update visible content."
     },
     {
-      "name": "ebox-input-session-edits-visible-text-and-restores-published-content",
+      "name": "ebox-input-session-edits-the-value-inside-the-node-layout",
       "file": "tests/ebox-scroll-input-tests.el",
-      "purpose": "Input sessions expose user edits, return them, and restore published text."
+      "purpose": "Typed keys edit a session value inside its padded box, which wraps and grows with it; on-change reports each value and ending keeps it displayed."
     },
     {
-      "name": "ebox-input-session-defers-viewport-refit",
+      "name": "ebox-input-session-runs-native-editing-commands-on-the-value",
       "file": "tests/ebox-scroll-input-tests.el",
-      "purpose": "A viewport change during an input session waits, then lays out when the session ends."
+      "purpose": "Word motion, kill and yank, undo and the region act on a session value like in an ordinary buffer."
     },
     {
-      "name": "ebox-input-session-excludes-focusable-text-fill",
+      "name": "ebox-input-session-keymap-separates-value-and-buffer-commands",
       "file": "tests/ebox-scroll-input-tests.el",
-      "purpose": "Focusable text bounds and input sessions cover only the text glyphs, not alignment fill."
+      "purpose": "Session keymap bindings run in the mounted buffer except value edits such as newline; up moves by painted rows."
+    },
+    {
+      "name": "ebox-input-session-pointer-places-caret-and-leaves-outside",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Presses inside the node box place the caret, double presses select a word, and a press outside reports leaving."
+    },
+    {
+      "name": "ebox-input-session-shows-input-method-preedit-in-layout",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Input method preedit wraps inside the node without changing the value and restores special events when sessions end."
+    },
+    {
+      "name": "ebox-input-session-follows-external-text",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Setting a session node to its value is a no-op; another string replaces the value."
+    },
+    {
+      "name": "ebox-input-session-relayouts-during-editing",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "A viewport change lays out at once during a session and editing continues."
+    },
+    {
+      "name": "ebox-canvas-ignores-printing-keys-outside-input-sessions",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Printing keys never edit a mounted canvas outside a session; a session receives them as value edits."
     },
     {
       "name": "ebox-input-session-validates-lifecycle",
       "file": "tests/ebox-scroll-input-tests.el",
-      "purpose": "Input sessions reject concurrent and ended-session lifecycle errors."
+      "purpose": "Input sessions reject non-text nodes, invalid keymaps and concurrent sessions; ending or unmounting releases them."
     },
     {
       "name": "ebox-call-with-input-returns-reader-value-and-closes-session",
@@ -275,14 +375,24 @@
       "purpose": "Mounting exposes root, buffer and viewport state and viewport changes relayout the tree."
     },
     {
+      "name": "ebox-viewport-change-hook-reports-settled-size",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "A viewport size change runs the viewport hook once with the buffer after the new layout settled; an unchanged size runs nothing."
+    },
+    {
       "name": "ebox-mount-viewport-follows-displaying-window",
       "file": "tests/ebox-update-tests.el",
-      "purpose": "A mount without a fixed viewport takes its width and height from the window displaying its buffer, including in batch."
+      "purpose": "A mount without a fixed viewport takes its width and height from the window displaying its buffer, including in batch, and the size is measurable before mounting."
     },
     {
       "name": "ebox-first-content-keeps-point-and-window-start-at-top",
       "file": "tests/ebox-update-tests.el",
       "purpose": "Content written into an empty mounted buffer leaves point and the displaying window's start at the top instead of after the new lines."
+    },
+    {
+      "name": "ebox-refit-returns-a-fitting-tree-to-the-window-top",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Refitting a mount whose whole tree fits its window restores the window start to the buffer top after a temporarily shorter window scrolled it."
     },
     {
       "name": "ebox-buffer-background-follows-root-background",

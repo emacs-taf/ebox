@@ -13,13 +13,31 @@
     (should (equal (ebox-node-geometry root) '(:x 0 :y 0 :width 10 :height 1)))
     (should (ebox-test-buffer-matches-render-p root buffer))))
 
+(ert-deftest ebox-viewport-change-hook-reports-settled-size ()
+  (ebox-test-with-mounted (buffer root '(box :width (vw 50) :height (lh 1)))
+    (let* ((seen nil)
+           (hook (lambda (changed)
+                   (push (list changed (ebox-mount-viewport changed)
+                               (plist-get (ebox-node-geometry root) :width))
+                         seen))))
+      (add-hook 'ebox-viewport-change-functions hook)
+      (unwind-protect
+          (progn
+            (ebox-mount-set-viewport buffer 20 5)
+            (ebox-mount-set-viewport buffer 20 5)
+            (should (equal seen (list (list buffer '(20 . 5) 10)))))
+        (remove-hook 'ebox-viewport-change-functions hook)))))
+
 (ert-deftest ebox-mount-viewport-follows-displaying-window ()
   (let ((buffer (get-buffer-create " *ebox-viewport-window*"))
         (config (current-window-configuration)))
     (unwind-protect
         (progn
           (set-window-buffer (selected-window) buffer)
-          (ebox-mount buffer '(box :height (vh 100) "x"))
+          (let ((prospective (ebox-viewport-measure buffer)))
+            (should (equal (ebox-viewport-measure buffer 33 7) '(33 . 7)))
+            (ebox-mount buffer '(box :height (vh 100) "x"))
+            (should (equal (ebox-mount-viewport buffer) prospective)))
           (should (equal (ebox-mount-viewport buffer)
                          (cons (ebox-viewport-window-width (selected-window))
                                (window-body-height (selected-window)))))
@@ -42,6 +60,23 @@
               (should (equal (ebox-test-buffer-text buffer) "One \nTwo \nThree "))
               (should (= (point) (point-min))))
             (should (= (window-point window) 1))
+            (should (= (window-start window) 1))))
+      (set-window-configuration config)
+      (kill-buffer buffer))))
+
+(ert-deftest ebox-refit-returns-a-fitting-tree-to-the-window-top ()
+  (let ((buffer (get-buffer-create " *ebox-refit-start*"))
+        (config (current-window-configuration)))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buffer)
+          (ebox-mount buffer '(column (box "One") (box "Two") (box "Three")))
+          (let ((window (selected-window)))
+            ;; A borrowed, shorter window scrolled the tree; it fits again.
+            (set-window-start window (with-current-buffer buffer
+                                       (save-excursion (goto-char (point-min))
+                                                       (forward-line 1) (point))))
+            (ebox-refit buffer)
             (should (= (window-start window) 1))))
       (set-window-configuration config)
       (kill-buffer buffer))))

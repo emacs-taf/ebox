@@ -10,6 +10,8 @@
 
 (require 'cl-lib)
 
+(declare-function ebox-image--metrics "ebox-image" (frame))
+
 (defvar ebox--measure-buffer nil
   "Buffer whose face remapping applies to measurements, or nil.")
 
@@ -104,9 +106,11 @@ face plists, which must not re-measure every character."
       (let ((hash (cdr table)))
         (or (gethash char hash)
             (puthash char
-                     (ebox--measure-raw
-                      (if face (propertize (string char) 'face face)
-                        (string char)))
+                     (if (ebox--fit-candidate-p char)
+                         (ebox--fitted-width (string char) face)
+                       (ebox--measure-raw
+                        (if face (propertize (string char) 'face face)
+                          (string char))))
                      hash))))))
 
 (defconst ebox--width-probe (concat (number-sequence 32 126) "汉")
@@ -187,12 +191,23 @@ under it repaints without moving text."
 (defvar ebox--image-widths (make-hash-table :test 'eq :weakness 'key)
   "Map of image display specification to (REMAP-KEY . WIDTH).")
 
+(defun ebox--slice-width (display start end)
+  "Return the pixel width of one glyph START..END showing image slice DISPLAY.
+Return nil unless DISPLAY is ((slice X Y W H) IMAGE) with pixel W."
+  (and (= end (1+ start))
+       (let ((slice (car-safe display)))
+         (and (eq (car-safe slice) 'slice)
+              (natnump (nth 3 slice))
+              (eq (car-safe (cadr display)) 'image)
+              (nth 3 slice)))))
+
 (defun ebox--display-width (string start end &optional face)
   "Measure display run START..END of STRING under FACE.
 Fixed spaces need no measurement, and an image keeps its width while its
 specification object and the measuring buffer's remapping stay the same."
   (let ((display (get-text-property start 'display string)))
     (or (ebox--fixed-space-width display)
+        (ebox--slice-width display start end)
         (if (eq (car-safe display) 'image)
             (let ((key (ebox--remap-key))
                   (cached (gethash display ebox--image-widths)))
@@ -211,6 +226,227 @@ specification object and the measuring buffer's remapping stay the same."
       (add-face-text-property 0 (length segment) face t segment))
     (ebox--measure-raw segment)))
 
+;;;; Line-fitting glyphs
+;; Fallback fonts for emoji, symbols and rarer scripts can reach above or
+;; below the default line, so one such glyph grows its whole row and opens
+;; gaps between the slices of images beside it.  A character is a candidate
+;; when its font's ascent or descent exceeds the default font's, judged
+;; once per character; a candidate cluster taller than its face's line is
+;; fitted by the largest font scale that keeps the line height.  `raise'
+;; cannot help: it only adds ascent or descent.  SVG text is not an option:
+;; librsvg's Pango backend aborts Emacs on some emoji, and draws others
+;; without color.  A color emoji font's line is far taller than its
+;; glyphs, so scaling shrinks emoji well below the text; on macOS such
+;; clusters are instead drawn as line-high images that the native helper
+;; renders once into a disk cache.  Measurement and painting share the
+;; fitted form.
+
+(defsubst ebox--fit-range-p (char)
+  "Return non-nil when CHAR lies in a range of emoji and symbol fonts.
+Emoji sequences take their font from later characters, so the font of
+these characters alone does not decide."
+  (and (>= char #x2000)
+       (or (<= char #x2BFF)
+           (memq char '(#x3030 #x303D #x3297 #x3299 #xFE0F))
+           (and (>= char #x1F000) (<= char #x1FAFF)))))
+
+(defvar ebox--tall-chars (make-char-table 'ebox-tall-chars)
+  "Whether each character's font exceeds the default font: t or `no'.")
+
+(defvar ebox--default-font-box nil
+  "The default font's (ASCENT . DESCENT) in pixels, or nil before use.")
+
+(defun ebox--font-box (font)
+  "Return FONT's (ASCENT . DESCENT) in pixels."
+  (let ((info (query-font font)))
+    (cons (aref info 4) (aref info 5))))
+
+(defun ebox--tall-char-p (char)
+  "Return non-nil when CHAR's font reaches beyond the default font's line.
+Only graphical frames have fonts; elsewhere every row is one text line."
+  (let ((known (aref ebox--tall-chars char)))
+    (cond (known (eq known t))
+          ((or noninteractive (not (display-graphic-p))) nil)
+          (t
+           (let* ((base (or ebox--default-font-box
+                            (setq ebox--default-font-box
+                                  (ebox--font-box (car (internal-char-font nil ?0))))))
+                  (font (car-safe (internal-char-font nil char)))
+                  (box (and font (ebox--font-box font)))
+                  (tall (and box (or (> (car box) (car base))
+                                     (> (cdr box) (cdr base))))))
+             (aset ebox--tall-chars char (if tall t 'no))
+             tall)))))
+
+(defsubst ebox--fit-candidate-p (char)
+  "Return non-nil when CHAR may need fitting into the line."
+  (and (>= char #x80)
+       (or (ebox--fit-range-p char) (ebox--tall-char-p char))))
+
+(defun ebox--next-fit-candidate (string start)
+  "Return the index of the first fitting candidate in STRING from START."
+  (let (found)
+    (while (and (not found) start
+                (setq start (string-match-p "[^\0-\177]" string start)))
+      (if (ebox--fit-candidate-p (aref string start))
+          (setq found start)
+        (setq start (1+ start))))
+    found))
+
+(defun ebox--fit-candidate-string-p (string)
+  "Return non-nil when STRING contains a character that may need fitting."
+  (and (multibyte-string-p string)
+       (ebox--next-fit-candidate string 0)))
+
+(defvar ebox--fit-scales
+  '(0.9 0.85 0.8 0.75 0.7 0.65 0.6 0.55 0.5 0.45 0.4 0.35 0.3)
+  "Font scales tried, largest first, to fit a glyph taller than its line.
+A glyph that no scale fits takes the last.")
+
+(defun ebox--measure-raw-size (string)
+  "Return STRING's (WIDTH . HEIGHT) in pixels in the measuring context."
+  (let ((remap (and ebox--measure-buffer (buffer-live-p ebox--measure-buffer)
+                    (buffer-local-value 'face-remapping-alist
+                                        ebox--measure-buffer))))
+    (with-temp-buffer
+      (setq-local face-remapping-alist remap
+                  line-spacing nil)
+      (insert string)
+      (buffer-text-pixel-size nil nil t))))
+
+(defun ebox--face-line-height (face)
+  "Return the pixel height of a line of ordinary text under FACE."
+  (let ((hash (cdr (ebox--face-table face))))
+    (or (gethash 'line-height hash)
+        (puthash 'line-height
+                 (max (frame-char-height)
+                      (cdr (ebox--measure-raw-size
+                            (if face (propertize "0" 'face face) "0"))))
+                 hash))))
+
+(defun ebox--fit-row-height (cluster face scale)
+  "Return the height of a row holding CLUSTER at SCALE beside text under FACE."
+  (let ((glyph (propertize cluster 'face face)))
+    (when scale
+      (put-text-property 0 (length glyph) 'display (list 'height scale) glyph))
+    (cdr (ebox--measure-raw-size (concat (propertize "0" 'face face) glyph)))))
+
+(defconst ebox--emoji-source
+  (expand-file-name "../native/emoji/emoji-render.swift"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Source of the macOS helper that renders color emoji images.")
+
+(defvar ebox--emoji-directory (locate-user-emacs-file "ebox-emoji/")
+  "Directory holding the compiled emoji helper and its rendered images.")
+
+(defvar ebox--emoji-program nil
+  "The emoji helper executable, `off' when unavailable, or nil before use.")
+
+(defvar ebox--emoji-process nil
+  "The running emoji helper process, or nil.")
+
+(defun ebox--emoji-program ()
+  "Return the compiled emoji helper, building it once, or nil."
+  (unless ebox--emoji-program
+    (setq ebox--emoji-program
+          (or (and (eq window-system 'ns)
+                   (file-readable-p ebox--emoji-source)
+                   (executable-find "swiftc")
+                   (let ((program (expand-file-name
+                                   (format "emoji-render-%s"
+                                           (substring (with-temp-buffer
+                                                        (insert-file-contents-literally
+                                                         ebox--emoji-source)
+                                                        (secure-hash 'sha1 (current-buffer)))
+                                                      0 12))
+                                   ebox--emoji-directory)))
+                     (make-directory ebox--emoji-directory t)
+                     (unless (file-executable-p program)
+                       ;; Images from an older helper may be drawn differently.
+                       (dolist (file (directory-files ebox--emoji-directory t
+                                                      "\\`emoji-render-\\|\\.png\\'"))
+                         (delete-file file))
+                       (call-process "swiftc" nil nil nil "-O"
+                                     ebox--emoji-source "-o" program))
+                     (and (file-executable-p program) program)))
+              'off)))
+  (and (stringp ebox--emoji-program) ebox--emoji-program))
+
+(defun ebox--emoji-render (size name text)
+  "Render TEXT as SIZE-pixel image NAME through the helper; return success."
+  (when-let* ((program (ebox--emoji-program)))
+    (unless (process-live-p ebox--emoji-process)
+      (setq ebox--emoji-process
+            (make-process :name "ebox-emoji" :noquery t :connection-type 'pipe
+                          :coding 'utf-8-unix
+                          :buffer (generate-new-buffer " *ebox-emoji*")
+                          :command (list program (expand-file-name
+                                                  ebox--emoji-directory)))))
+    (let ((process ebox--emoji-process))
+      (with-current-buffer (process-buffer process)
+        (erase-buffer)
+        (process-send-string process (format "%d\t%s\t%s\n" size name text))
+        (while (and (not (progn (goto-char (point-min)) (search-forward "\n" nil t)))
+                    (accept-process-output process 2)))
+        (string= (buffer-substring (point-min) (max (point-min) (1- (point))))
+                 name)))))
+
+(defun ebox--emoji-p (cluster)
+  "Return non-nil when CLUSTER is drawn with a color emoji font."
+  (cl-some (lambda (char)
+             (or (= char #xFE0F) (and (>= char #x1F000) (<= char #x1FAFF))
+                 (let ((font (car-safe (internal-char-font nil char))))
+                   (and font (string-match-p "Emoji" (format "%s" (font-get font :family)))))))
+           cluster))
+
+(defun ebox--emoji-image (cluster height)
+  "Return a HEIGHT-pixel square image of emoji CLUSTER, or nil."
+  (when (and (ebox--emoji-p cluster) (image-type-available-p 'png))
+    (let* ((size (* 2 height))
+           (name (format "%s-%d" (mapconcat (lambda (c) (format "%x" c)) cluster "-")
+                         size))
+           (file (expand-file-name (concat name ".png") ebox--emoji-directory))
+           (ascent (nth 2 (ebox-image--metrics nil))))
+      (when (and ascent (or (file-exists-p file) (ebox--emoji-render size name cluster)))
+        (create-image file 'png nil :width height :height height
+                      :ascent ascent :margin 0)))))
+
+(defun ebox--fit (cluster face)
+  "Return nil when CLUSTER fits its line under FACE, else (WIDTH . DISPLAY).
+DISPLAY, painted over CLUSTER, is a line-high emoji image or a `height'
+display specification."
+  (if (or noninteractive (not (display-graphic-p)))
+      nil
+    (let* ((hash (cdr (ebox--face-table face)))
+           (fits (or (gethash 'fit hash)
+                     (puthash 'fit (make-hash-table :test 'equal) hash)))
+           (cached (gethash cluster fits)))
+      (if cached
+          (and (consp cached) cached)
+        ;; A row's height is its largest ascent plus its largest descent, so
+        ;; each candidate is measured beside an ordinary character.
+        (let* ((line (ebox--face-line-height face))
+               (image nil)
+               (fit
+                (and (> (ebox--fit-row-height cluster face nil) line)
+                     (if (setq image (ebox--emoji-image cluster line))
+                         (cons line image)
+                       (cl-loop
+                      for (scale . more) on ebox--fit-scales
+                      when (or (null more)
+                               (<= (ebox--fit-row-height cluster face scale) line))
+                      return (cons (car (ebox--measure-raw-size
+                                         (propertize cluster 'face face
+                                                     'display (list 'height scale))))
+                                   (list 'height scale)))))))
+          (puthash cluster (or fit 'fits) fits)
+          fit)))))
+
+(defun ebox--fitted-width (cluster face)
+  "Return CLUSTER's pixel width under FACE in its line-fitted form."
+  (or (car (ebox--fit cluster face))
+      (ebox--measure-raw (if face (propertize cluster 'face face) cluster))))
+
 (defun ebox--cluster-width (string start next face)
   "Return the width of cluster START..NEXT in plain STRING under FACE."
   (if (= next (1+ start))
@@ -218,8 +454,10 @@ specification object and the measuring buffer's remapping stay the same."
     (let* ((text (substring-no-properties string start next))
            (key (cons face text)))
       (or (gethash key ebox--cluster-width-cache)
-          (puthash key (ebox--measure-raw
-                        (if face (propertize text 'face face) text))
+          (puthash key (if (ebox--fit-candidate-string-p text)
+                           (ebox--fitted-width text face)
+                         (ebox--measure-raw
+                          (if face (propertize text 'face face) text)))
                    ebox--cluster-width-cache)))))
 
 (defun ebox--units (string face)
@@ -426,6 +664,8 @@ See `ebox--join'."
   (clrhash ebox--space-cache)
   (clrhash ebox--image-widths)
   (fillarray ebox--face-memo nil)
+  (setq ebox--tall-chars (make-char-table 'ebox-tall-chars)
+        ebox--default-font-box nil)
   (cl-incf ebox--width-epoch))
 
 (provide 'ebox-measure)

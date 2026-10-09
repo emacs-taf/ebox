@@ -38,6 +38,26 @@
     (should (equal (get-text-property 0 'mouse-face rendered)
                    '(:background "#eeeeee")))))
 
+(ert-deftest ebox-clipped-overlay-keeps-interaction-on-blank-rows ()
+  (let* ((map (ebox-keymap-create :bindings `(("x" . ,(lambda () :ok)))))
+         (rendered
+          (ebox-render
+           `(column :width (ch 12) :height (lh 3) :padding ((lh 0) (ch 2))
+                    "page"
+                    (column :position absolute :left (ch 0) :top (lh 0)
+                            :width (% 100) :height (lh 3) :keymap ,map :pointer hand
+                            :background-color "#101010"
+                            (box :height (lh 1))
+                            "over"
+                            (box :height (lh 1))))))
+         (covered 0))
+    (dotimes (pos (length rendered))
+      (when (equal (get-text-property pos 'face rendered) '(:background "#101010"))
+        (setq covered (1+ covered))
+        (should (eq (get-text-property pos 'keymap rendered) map))
+        (should (eq (get-text-property pos 'pointer rendered) 'hand))))
+    (should (> covered 4))))
+
 (ert-deftest ebox-focus-first-next-previous-and-cycle-update-focused-node ()
   (ebox-test-with-mounted (buffer root
                            '(column
@@ -102,6 +122,69 @@
       (should-error (ebox-focus under buffer) :type 'user-error)
       (should (eq (ebox-focus-first buffer) panel)))))
 
+(ert-deftest ebox-buffer-mode-keeps-paren-matching-off-painted-text ()
+  (require 'paren)
+  (let ((global show-paren-mode))
+    (unwind-protect
+        (progn
+          (show-paren-mode 1)
+          (ebox-test-with-mounted (buffer _root '(column (text "a (b")))
+            (with-current-buffer buffer
+              (should ebox-buffer-mode)
+              (should-not show-paren-mode)
+              (ebox-buffer-mode -1)
+              (should show-paren-mode)
+              (should-not (local-variable-p 'show-paren-mode)))))
+      (show-paren-mode (if global 1 -1)))))
+
+(ert-deftest ebox-buffer-mode-shows-no-region-on-the-canvas ()
+  (let ((buffer (get-buffer-create " *ebox-no-region*"))
+        (config (current-window-configuration))
+        (transient-mark-mode t))
+    (unwind-protect
+        (progn
+          (set-window-buffer (selected-window) buffer)
+          (set-buffer buffer)
+          (ebox-mount buffer '(column (text "one") (text "two")))
+          (execute-kbd-macro (kbd "C-SPC C-n"))
+          (should-not (region-active-p))
+          (ebox-buffer-mode -1)
+          (execute-kbd-macro (kbd "C-SPC"))
+          (should (region-active-p)))
+      (set-window-configuration config)
+      (kill-buffer buffer))))
+
+(ert-deftest ebox-node-at-resolves-padding-cells-to-their-box ()
+  (ebox-test-with-mounted (buffer root
+                           '(column :width (ch 20)
+                                    (box :id "first" "One")
+                                    (box :id "second" :padding-top (lh 1)
+                                         :padding-left (ch 2) "Two")))
+    (let ((second (car (ebox-selector-query root "#second"))))
+      ;; The padding line and the indent carry no node property; the hit
+      ;; still resolves to the box that owns those cells.
+      (should (eq (ebox-node-at (ebox-node-position second) buffer) second))
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line 2)
+        (should (eq (ebox-node-at (point) buffer) second))))))
+
+(ert-deftest ebox-node-at-resolves-scrolled-padding-cells-to-their-box ()
+  (ebox-test-with-mounted (buffer root
+                           '(column :width (ch 20) :height (lh 6)
+                                    :overflow scroll
+                                    (box :id "first" "One")
+                                    (box :id "second" :padding-top (lh 1)
+                                         :padding-left (ch 2) "Two")))
+    (let ((second (car (ebox-selector-query root "#second"))))
+      ;; The scroller's own cells cover its children's blank padding; the
+      ;; innermost box covering the cell still owns it.
+      (should (eq (ebox-node-at (ebox-node-position second) buffer) second))
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line 2)
+        (should (eq (ebox-node-at (point) buffer) second))))))
+
 (ert-deftest ebox-node-bounds-spans-first-or-every-painted-row ()
   (ebox-test-with-mounted (buffer root '(column (box :id "tall" :width (ch 4) :height (lh 2)
                                                      "ab")
@@ -120,6 +203,18 @@
         (should (equal (mapcar #'string-trim-right
                                (split-string (buffer-substring-no-properties start end) "\n"))
                        '("abc" "def")))))))
+
+(ert-deftest ebox-node-bounds-include-cells-under-own-overlays ()
+  (ebox-test-with-mounted (buffer root '(column :width (ch 10)
+                                                (box :id "track" :position relative
+                                                     :width (ch 8) "--------"
+                                                     (box :position absolute :left (ch 0)
+                                                          :top (lh 0) :width (ch 3) "==="))))
+    ;; An overlay inside the node paints the node itself; its bounds still
+    ;; start at the node's first cell.
+    (pcase-let ((`(,start . ,end) (ebox-node-bounds (car (ebox-selector-query root "#track")))))
+      (should (= start (point-min)))
+      (should (equal (buffer-substring-no-properties start end) "===-----")))))
 
 (ert-deftest ebox-node-bounds-keep-hidden-flow-slots ()
   (ebox-test-with-mounted (buffer root '(box :position relative :width (ch 8) :height (lh 2)

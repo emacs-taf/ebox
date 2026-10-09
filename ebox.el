@@ -104,16 +104,27 @@
 ;;;###autoload (autoload 'ebox-viewport-window-width "ebox" nil nil)
 ;; Return the pixel width WINDOW offers to a mounted tree.
 ;;
+;; Function: ebox-viewport-measure (buffer-or-name &optional width height)
+;;;###autoload (autoload 'ebox-viewport-measure "ebox" nil nil)
+;; Return the (WIDTH . HEIGHT) viewport a mount of BUFFER-OR-NAME would use
+;; now, whether or not it is mounted yet.  Non-nil WIDTH or HEIGHT fixes that
+;; dimension; the rest follows the window displaying the buffer, like
+;; `ebox-mount-viewport'.  A layer mounting a tree after computing its content
+;; uses it to size that content to the viewport the mount will have.
+;;
 ;; Function: ebox-refit (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-refit "ebox" nil nil)
-;; Relayout BUFFER-OR-NAME's mount when its viewport size changed.
-;; Return non-nil when the layout changed.  During an input session the refit
-;; waits and returns nil; `ebox-input-end' applies it.
+;; Relayout BUFFER-OR-NAME's mount when its viewport size changed.  A
+;; window showing the whole buffer starts at its top again, so a tree that
+;; scrolled while transient UI borrowed window lines returns to place.
+;; Return non-nil when the layout changed.
 ;;
 ;; Function: ebox-buffer-mode (&optional arg)
 ;;;###autoload (autoload 'ebox-buffer-mode "ebox" nil t)
 ;; Minor mode for mounted Ebox buffers.  `ebox-mount' enables it and
 ;; `ebox-unmount-buffer' disables it; customize `ebox-buffer-mode-map'.
+;; The canvas has no text selection: a press or drag on it only moves point
+;; and an activated mark is deactivated; input sessions keep their region.
 ;;
 ;; Variable: ebox-viewport-width
 ;; Viewport width in pixels for rendering outside a mount, or nil.
@@ -126,6 +137,12 @@
 ;;
 ;; Hook: ebox-unmount-functions
 ;; Abnormal hook run with a buffer whose mount is being released.
+;;
+;; Hook: ebox-viewport-change-functions
+;; Abnormal hook run with a mounted buffer after its viewport size changed,
+;; whether a window resize or `ebox-mount-set-viewport' caused it.  It runs
+;; once the relayout for the new size has settled; read the new size with
+;; `ebox-mount-viewport'.
 ;;
 ;;;; Updating nodes
 ;;
@@ -288,6 +305,18 @@
 ;; Function: ebox-node-set-scroll (node offset)
 ;;;###autoload (autoload 'ebox-node-set-scroll "ebox" nil nil)
 ;; Scroll NODE's content to OFFSET lines, clamped; return the applied offset.
+;; Reaching the last line pins a `:scroll-anchor end' node so it follows
+;; growing content; a smaller offset releases the pin.  A changed offset is
+;; then passed to the node's `:scroll' function, for example to load more
+;; rows when a list reaches its top or bottom.
+;;
+;; Function: ebox-node-scroll-into-view (node &optional align)
+;;;###autoload (autoload 'ebox-node-scroll-into-view "ebox" nil nil)
+;; Scroll NODE's scrolling ancestors, innermost first, by the least distance
+;; that shows NODE (its top when taller than the viewport); return NODE.
+;; ALIGN `start' or `end' puts NODE's top at a scroller's first line or its
+;; bottom at the last line instead, as far as the content allows.
+;; Only Ebox scrollers move; window scrolling is the caller's choice.
 ;;
 ;; Function: ebox-scroll-up (&optional n)
 ;;;###autoload (autoload 'ebox-scroll-up "ebox" nil t)
@@ -315,6 +344,22 @@
 ;;
 ;; Variable: ebox-scroll-step
 ;; Lines scrolled by one wheel step or `ebox-scroll-down'.
+;;
+;; Function: ebox-wheel-swipe (event)
+;;;###autoload (autoload 'ebox-wheel-swipe "ebox" nil t)
+;; Recognize a horizontal two-finger swipe from wheel EVENT; mounted buffers
+;; bind it to wheel-left/right.  Once a gesture travels `ebox-swipe-distance'
+;; pixels, the innermost enabled node under the pointer whose `:swipe'
+;; interaction property is a function receives the finger direction, `left'
+;; or `right', exactly once; the rest of the gesture, including momentum, is
+;; absorbed.  Under macOS natural scrolling fingers moving right report
+;; `wheel-left'; `mouse-wheel-flip-direction' reverses the mapping.
+;;
+;; Variable: ebox-swipe-distance
+;; Horizontal pixels a gesture travels before it counts as a swipe.
+;;
+;; Variable: ebox-swipe-quiet
+;; Seconds without horizontal wheel events that end a swipe gesture.
 ;;
 ;;;; Focus and interaction
 ;;
@@ -359,18 +404,39 @@
 ;;
 ;;;; Input sessions
 ;;
-;; Function: ebox-input-begin (buffer-or-name node)
+;; Function: ebox-input-begin (buffer-or-name node &rest options)
 ;;;###autoload (autoload 'ebox-input-begin "ebox" nil nil)
-;; Begin native editing of NODE's painted text in BUFFER-OR-NAME.
+;; Begin native editing of laid-out text NODE in BUFFER-OR-NAME and return a
+;; session.  NODE's text becomes the session value with the caret at its end.
+;; Keys typed in the buffer then edit the value through their ordinary Emacs
+;; commands (insertion, deletion, motion, kill and yank, undo, the region and
+;; input methods) while the buffer stays read-only.  NODE keeps its layout and
+;; shows each edit at once: wrapping, padding and borders stay in place, point
+;; follows the caret, up/down move by painted rows and a click inside NODE's
+;; box moves the caret or selects.  OPTIONS is a plist: :on-change receives the
+;; new value after each command that changes it; :keymap holds bindings
+;; consulted first, which run in the buffer except `ebox-input-edit-commands';
+;; :on-leave is called without arguments when a click lands outside NODE's box;
+;; :local-variables is an alist of buffer-local settings, such as
+;; `completion-at-point-functions', for the commands editing the value.
+;; Setting NODE's text to the session value is a no-op; another string
+;; replaces the value and clears its undo history.  One session per buffer;
+;; an unmounted buffer or a node that is not laid-out text signals
+;; `ebox-input-error'.  Unmounting the buffer ends the session.
+;;
+;; Variable: ebox-input-edit-commands
+;; Commands that edit the session value when a session :keymap binds them,
+;; such as `newline' for a multi-line field.  Other :keymap bindings run in
+;; the mounted buffer.
 ;;
 ;; Function: ebox-input-end (session)
 ;;;###autoload (autoload 'ebox-input-end "ebox" nil nil)
-;; End SESSION, restore its painted text and return the user's text.
-;; Deferred changes and a viewport refit that waited are then written.
+;; End SESSION and return its value; NODE keeps displaying it.  Ending a
+;; session that already ended returns nil.
 ;;
 ;; Function: ebox-input-text (session)
 ;;;###autoload (autoload 'ebox-input-text "ebox" nil nil)
-;; Return SESSION's current property-free text, or nil once released.
+;; Return SESSION's current property-free value, or nil once it ended.
 ;;
 ;; Function: ebox-input-active-p (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-input-active-p "ebox" nil nil)
@@ -423,9 +489,12 @@
 ;;;###autoload (autoload 'ebox-style-scope-with-rules "ebox" nil nil)
 ;; Return a new RULES snapshot preserving SCOPE's membership identity.
 ;;
-;; Function: ebox-image-prepare (source columns rows &key (adapter 'auto) (frame (selected-frame)) (converters ebox-image-converters))
+;; Function: ebox-image-prepare (source columns rows &key (adapter 'auto) (frame (selected-frame)) inset (converters ebox-image-converters))
 ;;;###autoload (autoload 'ebox-image-prepare "ebox" nil nil)
-;; Prepare SOURCE for an integer COLUMNS by ROWS character area.
+;; Prepare SOURCE for an integer COLUMNS by ROWS character area.  INSET
+;; (TOP . BOTTOM) leaves that many pixels, under one line each, empty inside a
+;; graphics image's first and last rows; the gap shows the box background.
+;; Graphics images composite transparent pixels over their box background.
 ;;
 ;; Function: ebox-image-content (prepared)
 ;;;###autoload (autoload 'ebox-image-content "ebox" nil nil)

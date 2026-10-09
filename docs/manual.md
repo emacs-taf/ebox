@@ -130,6 +130,17 @@ changed.  Left and right borders paint at their resolved pixel width.  Top and
 bottom borders draw as the line's overline or underline, so a top or bottom
 border wider than 1px signals `ebox-error`.
 
+On graphical frames a box background can have rounded corners through
+`:border-radius`, for example `(px 12)`.  Block padding may be fractional:
+`:padding-block (lh 0.5)` takes a whole line but paints the background over
+only half of it, so pills and bubbles get even vertical air.  Rows keep one
+line height and text is never replaced; terminals paint square, full-line
+backgrounds.
+
+Soft wraps never start a line with closing punctuation such as `。`, `，`,
+`）` or `!`, nor end one with opening punctuation such as `（` or `“`; the
+preceding character or word moves down instead.
+
 Inline ECSS rules can be attached with `:ecss`.  Reusable scopes are created with
 `ebox-style-scope-create`, attached to a root with `:ecss-scope-roots`, and
 joined by members through `:ecss-scopes`.
@@ -173,9 +184,10 @@ its parent's flow and placed from the parent's content origin by `:left` and
 the composed overlay to its canvas, so give it an explicit height when absolute
 children need reserved space. `:z-index` orders overlapping paint: a `:position relative` flow child keeps
 its flow slot and paints above absolute siblings with a lower `:z-index`, showing
-their background through its blank cells.  The
-`:layer` property can select the root paint target while preserving logical
-parentage for selectors and inheritance.  Anchored absolute boxes use `:anchor`
+their background through its blank cells.  `:layer root` paints the box in the root's top layer while
+preserving logical parentage for selectors and inheritance; without an anchor
+its offsets and percentages start from the root's border box, so a
+`:width (% 100) :height (% 100)` scrim covers the whole page.  Anchored absolute boxes use `:anchor`
 and `:placement` to position relative to a unique semantic target in their host.
 While that target is missing the box paints nothing, has no position and cannot
 take focus.
@@ -228,6 +240,14 @@ directly.
 - `:hover-content` temporarily replaces a text node or the first child text of a
   box while the mouse is over a group; `:hover-group` updates related members as
   one batch.
+- `:swipe` takes a one-argument function called once per horizontal
+  two-finger gesture over the node or its descendants with the finger
+  direction, `left` or `right`.  The innermost enabled handler wins; momentum
+  is absorbed.  `ebox-swipe-distance` and `ebox-swipe-quiet` tune recognition.
+- `:scroll` takes a one-argument function called with a scroller's new line
+  offset after `ebox-node-set-scroll`, the wheel, scroll keys or
+  scroll-into-view change it.  Growth that keeps a pinned `:scroll-anchor end`
+  scroller at its end does not call it.
 - `ebox-keymap-create` can bind `:drag` callbacks and a supported
   `:drag-lock-modifier`.  Drag callbacks receive a plist with phase, node,
   window, buffer, start, position, delta and cancellation reason.
@@ -235,15 +255,32 @@ directly.
 ### Input sessions
 
 Input sessions are the only supported way to let the user edit mounted text
-directly.  A session flushes pending changes, makes the painted span writable,
-defers further writes for that mount, and restores the published text when it
-ends.
+directly.  A session edits one laid-out text node's value with ordinary Emacs
+commands while the node keeps its layout: typed text wraps inside the node's
+box, padding and borders stay in place, and point follows the caret.  Undo,
+kill and yank, the region, word motion and input methods behave as in an
+ordinary buffer; up and down move by painted rows; a click inside the node's
+box moves the caret, a drag selects, a double click selects a word and a
+triple click the whole value.  Input method preedit text wraps inside the box.
+
+`ebox-input-begin` accepts `:on-change` (called with each new value),
+`:on-leave` (called when a click lands outside the box), `:keymap` (bindings
+consulted first, which run in the mounted buffer) and `:local-variables`
+(settings such as `completion-at-point-functions` for the editing commands).
+A `:keymap` binding listed in `ebox-input-edit-commands`, such as `newline`,
+edits the value instead, which is how a multi-line field binds S-RET.
+Setting the node's text to the session value is a no-op, so a layer can echo
+`:on-change` into its model; another string replaces the value.
 
 ```elisp
-(let* ((root (ebox-mount "*Ebox Input*" '(box :id "field" "draft")
+(let* ((root (ebox-mount "*Ebox Input*"
+                         '(box :padding-inline (ch 1) (text :id "field" "draft"))
                          :width 160 :height 3))
        (field (car (ebox-selector-query root "#field")))
-       (session (ebox-input-begin "*Ebox Input*" field)))
+       (map (define-keymap "C-j" #'newline))
+       (session (ebox-input-begin "*Ebox Input*" field
+                                  :keymap map
+                                  :on-change (lambda (value) (message "%s" value)))))
   (prog1 (ebox-input-text session)
     (ebox-input-end session)))
 ```
@@ -266,6 +303,15 @@ scrollable.  Scroll offsets are stored on the retained node.
   (ebox-node-set-scroll pane 1)
   (ebox-node-scroll-offset pane)) ; => 1
 ```
+
+`:scroll-anchor end` suits logs and conversations.  The node starts at its
+last line and stays pinned there while content grows or shrinks.  Scrolling to
+any earlier offset releases the pin, so new content no longer moves the visible
+lines; scrolling back to the last line pins it again.  The default `start`
+keeps the stored offset, clamped to the content.
+
+`ebox-node-scroll-into-view` scrolls every enclosing scroller, innermost first,
+by the least distance that shows a node, for example a selected row.
 
 Interactive commands scroll the innermost scrollable node under point first and
 fall back to ordinary window scrolling when no Ebox node can consume the rest:
@@ -292,6 +338,17 @@ Use `ebox-image-info` to inspect the chosen adapter and dimensions,
 `ebox-image-content` to get an owned string, and `ebox-image-cache-clear` after
 converter or font capability changes.  To change an image node in place, prepare
 the new value and call `ebox-node-set-image`.
+
+`:inset (TOP . BOTTOM)` leaves TOP and BOTTOM pixels, each under one line
+height, blank above and below a graphics image without changing its rows,
+so an image keeps a small gap to the text around it.  Transparent pixels of
+a graphics image show the background of the box that holds it.
+
+On macOS graphical frames, colour emoji that would make their line taller
+are shown as images at full line height.  The first use compiles a small
+renderer with `swiftc` (Xcode command line tools) and caches the images in
+`ebox-emoji/` under `user-emacs-directory`; without `swiftc` emoji are scaled
+down to fit the line.
 
 ## 10. Viewport and refit
 
@@ -338,8 +395,8 @@ under Ebox-specific error symbols where documented in `ebox.el`.
 - A text node cannot contain children.
 - `ebox-focus`, activation, scrolling and input-session entry points signal
   `user-error` or `ebox-input-error` when the requested target is unavailable.
-- An active input session defers flushes for that mount; ending the session
-  restores the published text and then writes queued tree changes.
+- An input session ends when its buffer is unmounted; `ebox-input-text` then
+  returns nil.
 - `ebox-unmount-buffer` releases markers, hooks and mount state while leaving the
   current buffer text in place.
 - `ebox-clear-cache` should be called after font or named-face metric changes;

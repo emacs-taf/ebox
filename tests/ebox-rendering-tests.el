@@ -32,6 +32,15 @@ def"))
                  "你好
 吗 ")))
 
+(ert-deftest ebox-render-keeps-punctuation-off-line-edges ()
+  (should (equal (ebox-test-render-text '(box :width (ch 4) "你好。好"))
+                 "你 
+好。
+好 "))
+  (should (equal (ebox-test-render-text '(box :width (ch 6) "你好（是"))
+                 "你好 
+（是 ")))
+
 (ert-deftest ebox-render-paints-face-and-display-spaces ()
   (let* ((rendered (ebox-render
                     '(box :width (px 10) :height (lh 1)
@@ -134,6 +143,19 @@ def"))
     (let ((over (car (ebox-selector-query root "#over"))))
       (should (equal (ebox-node-geometry over) '(:x 2 :y 1 :width 2 :height 1)))
       (should (string-match-p "AB" (nth 1 (split-string (ebox-test-buffer-text) "\n")))))))
+
+(ert-deftest ebox-render-root-layer-boxes-cover-the-root-border-box ()
+  (ebox-test-with-mounted (buffer root
+                           '(box :width (ch 10) :height (lh 3) :padding ((lh 1) (ch 2))
+                                 (column "flowing"
+                                         (box :id "scrim" :position absolute :layer root
+                                              :left (px 0) :top (lh 0)
+                                              :width (% 100) :height (% 100)
+                                              :background-color "#101010"))))
+    (let ((scrim (car (ebox-selector-query root "#scrim"))))
+      (should (equal (ebox-node-geometry scrim) '(:x 0 :y 0 :width 10 :height 3)))
+      (with-current-buffer buffer
+        (should (equal (get-text-property (point-min) 'face) '(:background "#101010")))))))
 
 (ert-deftest ebox-render-relative-flow-paints-above-lower-overlays ()
   (let* ((out (ebox-render
