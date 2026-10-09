@@ -22,7 +22,7 @@ Implementation modules are organized by responsibility:
 | --- | --- |
 | `ebox-size.el` | Pure validation and resolution of `(unit number)` lengths and size functions. |
 | `ebox-style.el` | Ebox style schema, aliases, validators, shorthand expansion, ECSS scope creation and style compilation. |
-| `ebox-measure.el` | Pixel measurement, text-unit segmentation, display-space construction, property comparison and pad twins. |
+| `ebox-measure.el` | Pixel measurement, text-unit segmentation, display-space construction, property comparison and display twins. |
 | `ebox-node.el` | Retained node records, child sequences, author property parsing, author DSL, selector adapter and computed-style records. |
 | `ebox-layout.el` | Text, box, row, column and positioned layout; line composition; damage ranges; root-line edit planning. |
 | `ebox-flex.el` | Flex and grid algorithms used by `ebox-layout.el`. |
@@ -187,10 +187,12 @@ height limit; paragraphs cache wrapped line strings.  Damage invalidates the
 changed node and ancestors that have already composed its lines.
 
 `ebox--join-parts` flattens nested parts.  Display spaces are interned by pixel
-width and face.  Emacs coalesces adjacent characters whose `display` objects are
-`eq`, so `ebox-measure.el` keeps twin pad displays and substitutes an alternate
-at part boundaries.  This preserves exact pixel spacing while allowing line
-parts to be shared across flushes.
+width and face, and fitted glyphs share one display per cluster.  Emacs
+coalesces adjacent characters whose `display` objects are `eq`, so
+`ebox-measure.el` keeps an equal twin of every shared display and substitutes
+an alternate wherever one display would meet itself: within a run of identical
+fitted glyphs, and at part boundaries.  This preserves exact pixel spacing and
+every glyph while allowing line parts to be shared across flushes.
 
 Interaction decoration happens during composition.  Ebox fills absent `ebox-node`,
 `keymap`, `help-echo`, `pointer` and `mouse-face` properties so the innermost

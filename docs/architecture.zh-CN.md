@@ -18,7 +18,7 @@ Public 合同是 [`../ebox.el`](../ebox.el) 的 Commentary。`lisp/` 下的文�
 | --- | --- |
 | `ebox-size.el` | 纯验证与解析 `(unit number)` 长度和尺寸函数。 |
 | `ebox-style.el` | Ebox style schema、alias、validator、shorthand expansion、ECSS scope 创建与样式编译。 |
-| `ebox-measure.el` | 像素测量、文本单元分段、display-space 构造、属性比较与 pad twin。 |
+| `ebox-measure.el` | 像素测量、文本单元分段、display-space 构造、属性比较与 display twin。 |
 | `ebox-node.el` | Retained node record、child sequence、author 属性解析、author DSL、selector adapter 与 computed-style record。 |
 | `ebox-layout.el` | Text、box、row、column 与 positioned layout；line composition；damage range；root-line edit planning。 |
 | `ebox-flex.el` | `ebox-layout.el` 使用的 flex 与 grid 算法。 |
@@ -145,9 +145,10 @@ layout 产生 geometry；paint 按 root line 懒组合。node line 是由 margin
 组成的 string parts tree。节点在高度限制内缓存已组合 line parts；paragraph 缓存 wrapped line strings。
 damage 会使 changed node 以及已经组合过它 line 的 ancestor 失效。
 
-`ebox--join-parts` 展平嵌套 parts。display space 按 pixel width 与 face intern。Emacs 会合并相邻且 `display` 对象
-`eq` 的字符，因此 `ebox-measure.el` 维护 twin pad displays，并在 part 边界替换 alternate。这样既保持精确像素间距，
-又允许 line parts 跨 flush 共享。
+`ebox--join-parts` 展平嵌套 parts。display space 按 pixel width 与 face intern，拟合字形按 cluster 共享同一个
+display。Emacs 会合并相邻且 `display` 对象 `eq` 的字符，因此 `ebox-measure.el` 为每个共享 display 保存一个相等 twin，
+并在同一 display 相遇处替换为 alternate：拟合相同字形序列时如此，part 边界拼接时也如此。这样既保持精确像素间距和
+每个字形，又允许 line parts 跨 flush 共享。
 
 交互 decoration 在 composition 中发生。Ebox 填充未设置的 `ebox-node`、`keymap`、`help-echo`、`pointer` 和
 `mouse-face` property，使最内层显式节点胜出，ancestor keymap 覆盖未 override 的 descendant。
