@@ -245,6 +245,93 @@
       (should-not (get-text-property own 'pointer))
       (should-not (get-text-property own 'mouse-face)))))
 
+(ert-deftest ebox-hover-paints-over-a-nodes-own-background ()
+  ;; Hover paint is unconditional: whether a selected element keeps its own
+  ;; surface is application policy (declare :hover-style nil for it), because
+  ;; only the application knows which state counts as selected.
+  (let ((rendered (ebox-render '(box :background-color "#ffffff"
+                                     :hover-style (:background-color "#123456")
+                                     "Filled"))))
+    (should (equal (get-text-property 0 'mouse-face rendered)
+                   '(:background "#123456")))))
+
+(ert-deftest ebox-hover-spans-every-row-of-a-multiline-node ()
+  (ebox-test-with-mounted (buffer root '(column :width 'stretch
+                                               (box :id "tall" :width 'stretch
+                                                    :hover-style (:background-color "#123456")
+                                                    (column "aa" "aa" "aa"))
+                                               (box :id "after" :height (lh 1) "zz")))
+    (let* ((start (ebox-node-position (car (ebox-selector-query root "#tall"))))
+           (hover (get-text-property start 'mouse-face)))
+      (should hover)
+      ;; Every painted cell of the element shares the hover face, so the
+      ;; native mouse-face run covers the element's whole area instead of only
+      ;; the row under the pointer.  The newlines between its rows carry the
+      ;; same face.
+      (save-excursion
+        (goto-char start)
+        (forward-line 1)
+        (should (eq hover (get-text-property (1- (point)) 'mouse-face)))
+        (forward-line 1)
+        (should (eq hover (get-text-property (1- (point)) 'mouse-face)))
+        ;; A row that does not continue the element does not carry the run.
+        (forward-line 1)
+        (should-not (get-text-property (1- (point)) 'mouse-face))))))
+
+(ert-deftest ebox-hover-keeps-a-single-row-element-within-its-cells ()
+  (ebox-test-with-mounted (buffer root '(column :width 'stretch
+                                               (box :id "one" :width 'stretch
+                                                    :hover-style (:background-color "#123456") "AB")
+                                               (box :height (lh 1) "zz")))
+    (let ((start (ebox-node-position (car (ebox-selector-query root "#one")))))
+      (should (get-text-property start 'mouse-face))
+      ;; The newline after the element's only row carries no face, so hover
+      ;; feedback cannot bleed into the rest of the screen row.
+      (save-excursion
+        (goto-char start)
+        (forward-line 1)
+        (should-not (get-text-property (1- (point)) 'mouse-face))))))
+
+(ert-deftest ebox-render-carries-hover-across-rendered-rows ()
+  (let* ((rendered (ebox-render '(box :width (ch 6)
+                                       :hover-style (:background-color "#123456")
+                                       (column "aa" "aa" "aa"))))
+         (first (string-search "\n" rendered))
+         (second (and first (string-search "\n" rendered (1+ first))))
+         (hover (get-text-property 0 'mouse-face rendered)))
+    (should hover)
+    (should first)
+    (should second)
+    (should (eq hover (get-text-property first 'mouse-face rendered)))
+    (should (eq hover (get-text-property second 'mouse-face rendered)))
+    (should (eq hover (get-text-property (1- (length rendered)) 'mouse-face rendered)))))
+
+(ert-deftest ebox-hidden-node-paints-no-interaction-feedback ()
+  ;; A hidden node keeps its layout slot to preserve the surrounding layout,
+  ;; but paints nothing; that includes interaction feedback, so an empty list
+  ;; slot offers no hover highlight, pointer or help.
+  (ebox-test-with-mounted (buffer root '(column :width (ch 8)
+                                               (box :height (lh 1)
+                                                    :hover-style (:background-color "#123456")
+                                                    :help-echo "shown" :pointer hand
+                                                    "SHOW")
+                                               (box :height (lh 1) :visibility hidden
+                                                    :hover-style (:background-color "#123456")
+                                                    :help-echo "hidden" :pointer hand
+                                                    "HIDE")))
+    (should (get-text-property (point-min) 'mouse-face))
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line 1)
+      (let ((start (point)) (end (line-end-position)))
+        (should (> end start))
+        (should (string-blank-p (buffer-substring-no-properties start end)))
+        (while (< (point) end)
+          (should-not (get-text-property (point) 'mouse-face))
+          (should-not (get-text-property (point) 'help-echo))
+          (should-not (get-text-property (point) 'pointer))
+          (forward-char))))))
+
 (ert-deftest ebox-unanchored-overlay-has-no-position-or-focus ()
   (ebox-test-with-mounted (buffer root '(column :width (ch 20) :height (lh 4)
                                          (box :id "base" :tab-index 0 "Base")

@@ -115,6 +115,31 @@
       "purpose": "Descendants inherit an ancestor's help, pointer and hover feedback unless they set it to nil."
     },
     {
+      "name": "ebox-hover-paints-over-a-nodes-own-background",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Hover paint covers a node's own background too; suppressing hover for a selected item is application policy, not an engine guess."
+    },
+    {
+      "name": "ebox-hover-spans-every-row-of-a-multiline-node",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Hover feedback joins every row of a multirow element into one mouse-face run instead of highlighting only the pointer's row."
+    },
+    {
+      "name": "ebox-hover-keeps-a-single-row-element-within-its-cells",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Hover feedback never bleeds past an element's last row into the rest of the screen row."
+    },
+    {
+      "name": "ebox-render-carries-hover-across-rendered-rows",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Rendered output carries hover feedback across rows exactly like a mounted buffer."
+    },
+    {
+      "name": "ebox-hidden-node-paints-no-interaction-feedback",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A hidden element keeps its layout slot but paints no hover, pointer, help or activation feedback."
+    },
+    {
       "name": "ebox-unanchored-overlay-has-no-position-or-focus",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "An overlay whose anchor is missing paints nothing, has no position and refuses focus."

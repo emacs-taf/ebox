@@ -795,13 +795,43 @@ trailing newline."
        (unwind-protect (progn ,@body)
          (restore-buffer-modified-p ,modified)))))
 
+(defun ebox--carry-mouse-face (position value next-value &optional object)
+  "Make the newline at POSITION bridge a hover run in OBJECT.
+VALUE is the last cell's mouse face on the preceding line and NEXT-VALUE the
+first cell's face on the following line.  The newline bridges the two rows
+only when both carry the same face, joining a multirow element into one
+native mouse-face run without extending its last row to the window edge."
+  (let ((bridge (and value (eq value next-value) value)))
+    (if (eq bridge (get-text-property position 'mouse-face object))
+        nil
+      (if bridge
+          (put-text-property position (1+ position) 'mouse-face bridge object)
+        (remove-text-properties position (1+ position) '(mouse-face nil) object)))))
+
+(defun ebox--carry-string-mouse-face (string)
+  "Make STRING's newlines join the rows of one interactive element.
+Rendered output then carries hover feedback across rows exactly like a
+mounted buffer does."
+  (let ((position 0))
+    (while (setq position (string-search "\n" string position))
+      (ebox--carry-mouse-face position
+                              (and (> position 0)
+                                   (get-text-property (1- position) 'mouse-face string))
+                              (and (< (1+ position) (length string))
+                                   (get-text-property (1+ position) 'mouse-face string))
+                              string)
+      (cl-incf position)))
+  string)
+
 (defun ebox--extend-line-ends (mount from count)
   "Carry COUNT lines of MOUNT from FROM to the window's right edge.
 Emacs keeps the last text column free for the truncation glyph when a
 window has no right fringe, and lines shorter than the window leave the
 rest of the screen row to the default face.  Giving each newline the
 background and border lines of its line's last cell with `:extend' paints
-that remainder like the box that reaches the line's right edge."
+that remainder like the box that reaches the line's right edge.  The same
+newline carries the cell's `mouse-face', so native hover feedback covers
+every row an interactive element spans."
   (let ((last (min (+ from count) (1- (ebox-mount-lines mount)))))
     (when (and (>= from 0) (< from last))
       (ebox--goto-line mount from)
@@ -810,6 +840,7 @@ that remainder like the box that reaches the line's right edge."
           (let* ((bol (point))
                  (eol (line-end-position))
                  (tail (and (> eol bol) (get-text-property (1- eol) 'face)))
+                 (hover (and (> eol bol) (get-text-property (1- eol) 'mouse-face)))
                  (face nil))
             (dolist (key '(:overline :underline :background))
               (when-let* ((value (ebox--face-attribute tail key)))
@@ -817,6 +848,7 @@ that remainder like the box that reaches the line's right edge."
             (when face (setq face (cl-list* :extend t face)))
             (unless (equal face (get-text-property eol 'face))
               (put-text-property eol (1+ eol) 'face face))
+            (ebox--carry-mouse-face eol hover (get-text-property (1+ eol) 'mouse-face))
             (goto-char (1+ eol))
             (setq line (1+ line))))))))
 
@@ -969,8 +1001,9 @@ The viewport is `ebox-viewport-width' by `ebox-viewport-height'."
     (ebox--style-pass root nil nil)
     (ebox--layout root ebox--vw (if (eq (ebox-node-tag root) 'text) 'shrink 'stretch) ebox--vh)
     (ebox--place-anchored root (ebox--collect-anchored root))
-    (mapconcat (lambda (i) (ebox--root-line root i))
-               (number-sequence 0 (1- (ebox-node-h root))) "\n")))
+    (ebox--carry-string-mouse-face
+     (mapconcat (lambda (i) (ebox--root-line root i))
+                (number-sequence 0 (1- (ebox-node-h root))) "\n"))))
 
 (defun ebox-viewport-window-width (window)
   "Return the pixel width WINDOW offers to a mounted tree."

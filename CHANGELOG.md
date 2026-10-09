@@ -110,4 +110,9 @@ All notable changes to Ebox are documented here.
 - A mounted buffer's default background follows the root's background color,
   so the partial line below the last row and other space beyond the laid-out
   text match the application surface; unmounting removes the remapping.
+- Hover feedback covers every row of a multirow element: the rows join into
+  one native `mouse-face` run instead of highlighting only the row under the
+  pointer.
+- A `:visibility hidden` box keeps its layout slot but paints no interaction
+  feedback, so an empty slot no longer shows hover, pointer or help output.
 

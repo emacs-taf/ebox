@@ -201,6 +201,13 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
 - `:help-echo` 接受字符串或由 `ebox-help-create` 生成的函数。
 - `:pointer` 设置 Emacs pointer shape。
 - `:hover-style` 映射为 `mouse-face`，用于颜色和文本装饰变化。
+- hover 反馈覆盖元素的整个绘制区域：跨多行的元素把各行连成一段原生
+  `mouse-face` run，而不是只高亮指针所在的那一行。
+- hidden 元素不绘制任何东西，因此也不绘制交互反馈：`:visibility hidden` 的
+  槽位保留布局空间，但不提供 hover、pointer、help 或激活。
+- hover 绘制是无条件的，自带背景的元素同样会被覆盖。是否让选中/当前项不
+  叠加 hover 属于应用策略：在该状态下把元素的 `:hover-style` 声明为 nil。
+  引擎无法推断选中状态，而有底色元素叠加 hover 变色是受支持的效果。
 - 后代继承祖先的 `:help-echo`、`:pointer`、`:hover-style` 和 `:keymap`；后代显式设为
   nil 会阻断继承值。
 - `:hover-content` 在鼠标悬停某个 group 时临时替换文本节点或 box 的第一个子文本；

@@ -114,10 +114,13 @@ A present nil, painted by an inner node, keeps blocking VALUE."
 
 (defun ebox--decorate-interactive (node line &optional fresh)
   "Return LINE carrying NODE's interaction properties.
-LINE is copied first unless FRESH says the caller owns it."
-  (let ((props (ebox--inter-text-properties node))
-        (copy (if fresh line (copy-sequence line))))
-    (when (and ebox--current-mount (plist-get (ebox-node-inter node) :hover-content))
+LINE is copied first unless FRESH says the caller owns it.  A hidden node
+paints nothing, so it carries no interaction feedback either."
+  (let* ((hidden (ebox--hidden-p node))
+         (props (and (not hidden) (ebox--inter-text-properties node)))
+         (copy (if fresh line (copy-sequence line))))
+    (when (and props ebox--current-mount
+               (plist-get (ebox-node-inter node) :hover-content))
       (setf (ebox-mount-hover-p ebox--current-mount) t))
     (while props
       (ebox--fill-property copy (car props) (cadr props))

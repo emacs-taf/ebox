@@ -235,6 +235,17 @@ directly.
 - `:help-echo` accepts a string or a function made with `ebox-help-create`.
 - `:pointer` sets an Emacs pointer shape.
 - `:hover-style` maps to `mouse-face` for color and text-decoration changes.
+- Hover feedback covers the element's whole painted area: the rows a multirow
+  element spans join into one native `mouse-face` run instead of highlighting
+  only the row under the pointer.
+- A hidden element paints nothing, so it paints no interaction feedback: a
+  `:visibility hidden` slot keeps its layout space but offers no hover,
+  pointer, help or activation.
+- Hover paint is unconditional and also covers an element that declares its own
+  background.  Whether a selected or current item suppresses its hover is the
+  application's policy; declare the item's `:hover-style` as nil in that state.
+  The engine cannot infer selection, and a hover tint over a filled element is
+  a supported effect.
 - Descendants inherit an ancestor's `:help-echo`, `:pointer`, `:hover-style` and
   `:keymap`; an explicit nil on the descendant blocks the inherited value.
 - `:hover-content` temporarily replaces a text node or the first child text of a
