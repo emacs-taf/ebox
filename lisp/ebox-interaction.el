@@ -213,9 +213,10 @@ A text node has no box of its own; it is live when its parent is."
 (defun ebox--focused-key (focus)
   "Run the key just typed for FOCUS instead of the node under point.
 FOCUS's own keymap answers first; without a binding there, the key reaches
-the buffer's other active maps as if no node keymap covered point."
+the buffer's other active maps as if no node keymap covered point.  A call
+without a key event, such as `call-interactively', is an activation (RET)."
   (let* ((keys (this-command-keys-vector))
-         (keys (if (> (length keys) 0) keys (vector last-input-event)))
+         (keys (if (> (length keys) 0) keys (kbd "RET")))
          (map (ebox--declared-keymap focus))
          (own (and (keymapp map) (lookup-key map keys)))
          (beneath (lambda ()
@@ -226,7 +227,9 @@ the buffer's other active maps as if no node keymap covered point."
                                   keys)))))
     (cond
      ((commandp own)
-      (let ((ebox--dispatching-activation t)) (command-execute own)))
+      (let ((last-input-event (aref keys (1- (length keys))))
+            (ebox--dispatching-activation t))
+        (command-execute own)))
      ((commandp (setq own (funcall beneath)))
       (command-execute own))
      (t (user-error "%s is undefined for the focused node"
