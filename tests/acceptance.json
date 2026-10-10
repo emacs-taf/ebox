@@ -85,6 +85,11 @@
       "purpose": "Focus-within navigation remains inside the requested container."
     },
     {
+      "name": "ebox-focus-change-functions-report-each-move",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Explicit focus and Tab navigation report each change of focused node, including clearing, and not a repeated focus of the same node."
+    },
+    {
       "name": "ebox-focus-group-is-one-tab-stop-roved-by-arrows",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "A focus group is one Tab stop entered at its selected or remembered member; arrows rove inside it, leave at its edges and Home reaches its first member."

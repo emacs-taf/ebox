@@ -6,6 +6,12 @@ Ebox 的重要变化记录在这里。
 
 ### 新增
 
+- 键盘焦点支持复合控件：`:focus-group`（`vertical`、`horizontal` 或 `grid`）使容器
+  成为一个 Tab 停靠点，进入时落在选中或上次聚焦的成员上，并用方向键在内部移动；
+  `:focus-scope modal` 把导航限制在打开的对话框内；`ebox-focus-direction` 移到某方向上
+  最近的停靠点；`ebox-focus-scope` 和 `ebox-focus-stops` 公开当前作用域；
+  `ebox-focus-change-functions` 报告每次焦点移动。
+
 - 图形 frame 上的盒子背景支持 `:border-radius`；块方向 padding 接受行高的分数，
   例如 `(lh 0.5)`，背景会覆盖该行的相应部分，而每行仍保持一个行高。
 - `ebox-image-prepare` 接受 `:inset (TOP . BOTTOM)`，在图形图像上方和下方留出几像素

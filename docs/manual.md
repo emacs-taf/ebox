@@ -254,6 +254,9 @@ navigation so applications declare structure instead of key handlers.
 - Focusing a node scrolls its Ebox scrollers to show it and shows its
   `:hover-content`.  When the focused node is removed, the next movement
   continues from its last position.
+- `ebox-focus-change-functions` runs in the buffer with the previous and new
+  focused node whenever `ebox-focus` or navigation moves focus, so a host can
+  react when focus enters a region, for example raising a window.
 
 ```elisp
 (ebox-mount "*Ebox Keys*"

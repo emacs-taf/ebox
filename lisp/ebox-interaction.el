@@ -645,12 +645,19 @@ group strictly inside the searched subtree contributes only its entry."
       (when (ebox-mount-hover mount) (ebox--hover-restore mount))
       (when group (ebox--hover-activate mount group)))))
 
+(defvar ebox-focus-change-functions nil
+  "Abnormal hook run in a mounted buffer after `ebox-focus' moved its focus.
+Each function receives the previously focused node, or nil, and the newly
+focused node, or nil when focus was cleared.")
+
 (defun ebox-focus (node &optional buffer-or-name)
   "Focus NODE in BUFFER-OR-NAME and move point to its first character.
 Nil NODE clears focus.  Signal `user-error' when NODE cannot be focused.
 NODE's scrolling ancestors reveal it, its focus group remembers it and its
-hover content shows as it would under the mouse."
-  (let ((mount (ebox--mount-for buffer-or-name)))
+hover content shows as it would under the mouse.  A change of focused node
+runs `ebox-focus-change-functions'."
+  (let* ((mount (ebox--mount-for buffer-or-name))
+         (previous (ebox-mount-focus mount)))
     (when (and node (not (ebox--focusable-p node mount)))
       (user-error "Ebox node cannot receive focus"))
     (with-current-buffer (ebox-mount-buffer mount)
@@ -666,7 +673,9 @@ hover content shows as it would under the mouse."
           (when position
             (goto-char position)
             (dolist (window (get-buffer-window-list (current-buffer) nil t))
-              (set-window-point window position))))))
+              (set-window-point window position)))))
+      (unless (eq previous node)
+        (run-hook-with-args 'ebox-focus-change-functions previous node)))
     node))
 
 (defun ebox-focused-node (&optional buffer-or-name)

@@ -212,6 +212,8 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
   列出其中所有 stop（包括焦点组成员），供按键分发或命令面板停留在打开的对话框内。
 - 聚焦节点会滚动其 Ebox scroller 使其可见，并显示它的 `:hover-content`。被聚焦的节点
   被移除后，下一次移动从它最后的位置继续。
+- 每当 `ebox-focus` 或导航移动焦点，`ebox-focus-change-functions` 以先前和新的聚焦节点
+  在该 buffer 中运行，宿主可以在焦点进入某个区域时做出反应，例如提升窗口。
 
 ```elisp
 (ebox-mount "*Ebox Keys*"

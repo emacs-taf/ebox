@@ -138,6 +138,12 @@
 ;; Hook: ebox-unmount-functions
 ;; Abnormal hook run with a buffer whose mount is being released.
 ;;
+;; Hook: ebox-focus-change-functions
+;; Abnormal hook run in a mounted buffer after `ebox-focus' (and the focus
+;; navigation built on it) moved focus.  Functions receive the previously
+;; focused node, or nil, and the new node, or nil when focus was cleared.
+;; Focus that Ebox restores after a publication does not run it.
+;;
 ;; Hook: ebox-viewport-change-functions
 ;; Abnormal hook run with a mounted buffer after its viewport size changed,
 ;; whether a window resize or `ebox-mount-set-viewport' caused it.  It runs

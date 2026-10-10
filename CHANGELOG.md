@@ -6,6 +6,13 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- Keyboard focus models composite widgets: `:focus-group` (`vertical`,
+  `horizontal` or `grid`) makes a container one Tab stop entered at its
+  selected or last focused member and roved with arrows; `:focus-scope modal`
+  confines navigation to an open dialog; `ebox-focus-direction` moves to the
+  nearest stop in a direction; `ebox-focus-scope` and `ebox-focus-stops`
+  expose the scope; `ebox-focus-change-functions` reports each focus move.
+
 - Box backgrounds take `:border-radius` on graphical frames, and block
   padding accepts fractions of a line such as `(lh 0.5)`, painting the
   background over that part of the line while rows keep one line height.

@@ -93,6 +93,24 @@
   "Return ROOT's node with ID."
   (car (ebox-selector-query root (concat "#" id))))
 
+(ert-deftest ebox-focus-change-functions-report-each-move ()
+  (ebox-test-with-mounted (buffer root
+                           '(column
+                             (box :id "a" :tab-index 0 "A")
+                             (box :id "b" :tab-index 0 "B")))
+    (let ((a (ebox-test--node root "a"))
+          (b (ebox-test--node root "b"))
+          changes)
+      (with-current-buffer buffer
+        (add-hook 'ebox-focus-change-functions
+                  (lambda (old new) (push (cons old new) changes)) nil t))
+      (ebox-focus a buffer)
+      (ebox-focus a buffer)
+      (ebox-focus-next 1 t buffer)
+      (ebox-focus nil buffer)
+      (should (equal (nreverse changes)
+                     (list (cons nil a) (cons a b) (cons b nil)))))))
+
 (ert-deftest ebox-focus-group-is-one-tab-stop-roved-by-arrows ()
   (ebox-test-with-mounted (buffer root
                            '(column
