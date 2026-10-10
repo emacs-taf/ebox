@@ -85,6 +85,11 @@
       "purpose": "A keyboard activation typed while point rests on a clickable descendant of the focused node activates the focused node."
     },
     {
+      "name": "ebox-tab-order-finishes-a-side-region-before-the-next",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Tab order follows the tree, so a sidebar's stops all precede the region beside it even when they share screen rows."
+    },
+    {
       "name": "ebox-focus-within-stays-inside-container",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Focus-within navigation remains inside the requested container."

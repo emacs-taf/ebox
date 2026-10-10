@@ -600,22 +600,18 @@ gesture alive after the first release until the next press."
            '("aria-selected" "aria-current" "aria-checked")))
 
 (defun ebox--raw-stops (mount root)
-  "Return focusable stops under ROOT in MOUNT, sorted in tab order."
+  "Return focusable stops under ROOT in MOUNT, sorted in tab order.
+Lower tab indices come first; equal indices keep tree order, so each
+region's controls are visited together even when regions sit side by side."
   (let (stops)
     (ebox-node-walk root
                     (lambda (node)
                       (let ((index (plist-get (ebox-node-inter node) :tab-index)))
                         (when (and (integerp index) (>= index 0)
                                    (ebox--focusable-p node mount))
-                          (let ((g (ebox-node-geometry node)))
-                            (push (list node index (plist-get g :y) (plist-get g :x))
-                                  stops))))))
-    (mapcar #'car
-            (sort (nreverse stops)
-                  (lambda (a b)
-                    (cond ((/= (nth 1 a) (nth 1 b)) (< (nth 1 a) (nth 1 b)))
-                          ((/= (nth 2 a) (nth 2 b)) (< (nth 2 a) (nth 2 b)))
-                          (t (< (nth 3 a) (nth 3 b)))))))))
+                          (push (cons node index) stops)))))
+    (mapcar #'car (sort (nreverse stops)
+                        (lambda (a b) (< (cdr a) (cdr b)))))))
 
 (defun ebox--group-entry (mount group members)
   "Return the member of GROUP among MEMBERS that represents it in tab order."

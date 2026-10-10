@@ -109,6 +109,21 @@
   "Return ROOT's node with ID."
   (car (ebox-selector-query root (concat "#" id))))
 
+;; Side-by-side regions share screen rows; Tab must finish one first.
+(ert-deftest ebox-tab-order-finishes-a-side-region-before-the-next ()
+  (ebox-test-with-mounted (buffer root
+                           '(row
+                             (column :id "side" :width (ch 10)
+                                     (box :id "s1" :tab-index 0 "S1")
+                                     (box :id "s2" :tab-index 0 "S2"))
+                             (column :id "main" :width (ch 10)
+                                     (box :id "m1" :tab-index 0 "M1")
+                                     (box :id "m2" :tab-index 0 "M2")))
+                           :width 40 :height 5)
+    (should (equal (ebox-focus-stops buffer)
+                   (mapcar (lambda (id) (ebox-test--node root id))
+                           '("s1" "s2" "m1" "m2"))))))
+
 (ert-deftest ebox-focus-change-functions-report-each-move ()
   (ebox-test-with-mounted (buffer root
                            '(column

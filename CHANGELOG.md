@@ -43,6 +43,10 @@ All notable changes to Ebox are documented here.
 
 ### Changed
 
+- Tab visits focus stops in ascending `:tab-index` and then tree order
+  instead of screen rows, so a sidebar's controls all come before the pane
+  beside it.
+
 - **BREAKING:** Ebox now exposes a mutable retained-node engine.  Build roots
   with `ebox-build`, `ebox-node-create` or `ebox-text-create`; mount them with
   `ebox-mount`; then update the existing tree with node mutation functions.

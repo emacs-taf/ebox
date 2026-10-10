@@ -201,6 +201,8 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
 
 每个指针交互都需要键盘路径；导航由引擎提供，应用只声明结构，不写按键处理。
 
+- Tab 按 `:tab-index` 升序、再按树顺序访问 stop：侧栏的控件全部排在旁边内容区之前，
+  不论它们是否位于同一行。
 - 容器上的 `:focus-group`（`vertical`、`horizontal` 或 `grid`）把其中的 `:tab-index`
   后代合并为一个 Tab stop。Tab 进入时落在上次聚焦的成员，否则是 `aria-selected`、
   `aria-current` 或 `aria-checked` 为真的成员，否则是第一个。方向键沿组的方向在组内移动；

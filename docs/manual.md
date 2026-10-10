@@ -236,6 +236,8 @@ directly.
 Every pointer interaction needs a keyboard path, and the engine supplies the
 navigation so applications declare structure instead of key handlers.
 
+- Tab visits stops in ascending `:tab-index`, then in tree order: a sidebar's
+  controls all come before the content beside it, whatever rows they share.
 - `:focus-group` on a container (`vertical`, `horizontal` or `grid`) turns
   its `:tab-index` descendants into one Tab stop.  Tab enters at the member
   focused last, else the member whose `aria-selected`, `aria-current` or

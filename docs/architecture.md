@@ -259,7 +259,9 @@ command.  Flushes and refits never wait for a session.
 
 Keyboard focus is mount state, not text position.  Tab order, directional
 movement and edges are derived on demand from the live tree: the innermost
-visible `:focus-scope modal` node bounds the search, each `:focus-group`
+visible `:focus-scope modal` node bounds the search, stops follow ascending
+`:tab-index` and then tree order (so side-by-side regions are finished one
+at a time rather than interleaved by screen row), each `:focus-group`
 contributes one entry (the member it remembers in a weak per-mount table, a
 member marked selected or current, or its first member) and directional moves
 compare border boxes with lines converted to pixels.  The mount also keeps the
