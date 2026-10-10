@@ -28,7 +28,7 @@
 
 (defconst ebox-interaction-properties
   '(:help-echo :pointer :hover-style :hover-content :keymap :tab-index :disabled
-    :drag-lock-modifier :hover-group :swipe :scroll)
+    :drag-lock-modifier :hover-group :swipe :scroll :focus-group :focus-scope)
   "Node capabilities accepted outside the Ebox style schema.")
 
 (defconst ebox--meta-properties
@@ -400,6 +400,12 @@ composed without caching, or nil when none are composed."
       (signal 'ebox-error (list "Ebox :tab-index requires nil or an integer" tab)))
     (unless (memq disabled '(nil t))
       (signal 'ebox-error (list "Ebox :disabled requires nil or t" disabled)))
+    (unless (memq (plist-get inter :focus-group) '(nil vertical horizontal grid))
+      (signal 'ebox-error (list "Ebox :focus-group requires vertical, horizontal, grid or nil"
+                                (plist-get inter :focus-group))))
+    (unless (memq (plist-get inter :focus-scope) '(nil modal))
+      (signal 'ebox-error (list "Ebox :focus-scope requires modal or nil"
+                                (plist-get inter :focus-scope))))
     (dolist (key '(:swipe :scroll))
       (unless (or (null (plist-get inter key)) (functionp (plist-get inter key)))
         (signal 'ebox-error (list (format "Ebox %s requires a one-argument function" key)

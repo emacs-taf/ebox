@@ -48,8 +48,8 @@ Images are prepared outside layout and become node content.
   and user data;
 - compiled declarations, default rules, local/shared ECSS scopes and active
   scope environment;
-- interaction properties such as help, pointer, hover, keymap, tab index and
-  disabled state;
+- interaction properties such as help, pointer, hover, keymap, tab index,
+  focus group, focus scope and disabled state;
 - text or prepared image content;
 - parent/child links in chunked sequences;
 - computed style, measurement cache, intrinsic-size cache and last layout;
@@ -85,7 +85,7 @@ box.
 
 `ebox-mount` binds one root to one buffer.  It stores viewport dimensions,
 line anchors, remembered written line parts, update reports, observer, focus,
-active and hover state, input session, queue flag, flush count and saved display
+focus anchor and group memory, active and hover state, input session, queue flag, flush count and saved display
 settings.
 
 ## Dirty bits and queueing
@@ -256,6 +256,16 @@ them through `special-event-map` while any session is live.  A primary press
 inside the node's box is tracked by the session itself, which consumes the
 release, so clicks, drags and multi-clicks never reach the canvas press
 command.  Flushes and refits never wait for a session.
+
+Keyboard focus is mount state, not text position.  Tab order, directional
+movement and edges are derived on demand from the live tree: the innermost
+visible `:focus-scope modal` node bounds the search, each `:focus-group`
+contributes one entry (the member it remembers in a weak per-mount table, a
+member marked selected or current, or its first member) and directional moves
+compare border boxes with lines converted to pixels.  The mount also keeps the
+last focused box as an anchor so navigation continues near a removed node.
+Focus reveals a node through `ebox-node-scroll-into-view` before point moves,
+so the cursor never lands in clipped content.
 
 ## Invariants
 

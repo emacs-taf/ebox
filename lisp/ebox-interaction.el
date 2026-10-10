@@ -540,35 +540,36 @@ gesture alive after the first release until the next press."
               (or (ebox-node-text-p node)
                   (ebox--uncovered-x node mount geometry))))))
 
-(defun ebox-focus (node &optional buffer-or-name)
-  "Focus NODE in BUFFER-OR-NAME and move point to its first character.
-Nil NODE clears focus.  Signal `user-error' when NODE cannot be focused."
-  (let ((mount (ebox--mount-for buffer-or-name)))
-    (when (and node (not (ebox--focusable-p node mount)))
-      (user-error "Ebox node cannot receive focus"))
-    (ebox--set-mount-state mount 'focus node)
-    (when node
-      (let ((position (ebox-node-position node)))
-        (when position
-          (with-current-buffer (ebox-mount-buffer mount)
-            (goto-char position)
-            (dolist (window (get-buffer-window-list (current-buffer) nil t))
-              (set-window-point window position))))))
-    node))
+(defun ebox--focus-scope (mount)
+  "Return MOUNT's innermost visible modal focus scope, or its root."
+  (let ((root (ebox-mount-root mount)) found)
+    (ebox-node-walk root
+                    (lambda (node)
+                      (when (and (eq (plist-get (ebox-node-inter node) :focus-scope) 'modal)
+                                 (ebox--node-visible-p node))
+                        (setq found node))))
+    (or found root)))
 
-(defun ebox-focused-node (&optional buffer-or-name)
-  "Return the focused node of BUFFER-OR-NAME, or nil."
-  (let ((mount (ebox-buffer-mount buffer-or-name)))
-    (when mount
-      (let ((focus (ebox-mount-focus mount)))
-        (if (and focus (not (ebox--focusable-p focus mount)))
-            (progn (setf (ebox-mount-focus mount) nil) nil)
-          focus)))))
+(defun ebox--focus-group (node limit)
+  "Return NODE's nearest strict ancestor declaring :focus-group below LIMIT."
+  (let ((parent (ebox-node-parent node)) found)
+    (while (and parent (not found) (not (eq parent limit)))
+      (when (plist-get (ebox-node-inter parent) :focus-group)
+        (setq found parent))
+      (setq parent (ebox-node-parent parent)))
+    found))
 
-(defun ebox--tab-stops (mount &optional within)
-  "Return MOUNT's focus stops in tab order, optionally only WITHIN a node."
+(defun ebox--current-member-p (node)
+  "Return non-nil when NODE is marked as its group's selected or current item."
+  (cl-some (lambda (name)
+             (let ((value (cdr (assoc name (ebox-node-attributes node)))))
+               (and value (not (member value '("false" "nil"))))))
+           '("aria-selected" "aria-current" "aria-checked")))
+
+(defun ebox--raw-stops (mount root)
+  "Return focusable stops under ROOT in MOUNT, sorted in tab order."
   (let (stops)
-    (ebox-node-walk (or within (ebox-mount-root mount))
+    (ebox-node-walk root
                     (lambda (node)
                       (let ((index (plist-get (ebox-node-inter node) :tab-index)))
                         (when (and (integerp index) (>= index 0)
@@ -583,9 +584,120 @@ Nil NODE clears focus.  Signal `user-error' when NODE cannot be focused."
                           ((/= (nth 2 a) (nth 2 b)) (< (nth 2 a) (nth 2 b)))
                           (t (< (nth 3 a) (nth 3 b)))))))))
 
+(defun ebox--group-entry (mount group members)
+  "Return the member of GROUP among MEMBERS that represents it in tab order."
+  (let ((focus (ebox-mount-focus mount))
+        (memory (gethash group (ebox-mount-focus-memory mount))))
+    (or (car (memq focus members))
+        (car (memq memory members))
+        (cl-find-if #'ebox--current-member-p members)
+        (car members))))
+
+(defun ebox--tab-stops (mount &optional within)
+  "Return MOUNT's focus stops in tab order, optionally only WITHIN a node.
+Without WITHIN the stops come from the innermost modal scope.  Each focus
+group strictly inside the searched subtree contributes only its entry."
+  (let* ((root (or within (ebox--focus-scope mount)))
+         (stops (ebox--raw-stops mount root))
+         (groups (make-hash-table :test #'eq)))
+    (dolist (stop stops)
+      (let ((group (ebox--focus-group stop root)))
+        (when group (push stop (gethash group groups)))))
+    (if (zerop (hash-table-count groups))
+        stops
+      (let ((entries (make-hash-table :test #'eq)))
+        (maphash (lambda (group members)
+                   (puthash group (ebox--group-entry mount group (nreverse members))
+                            entries))
+                 groups)
+        (cl-remove-if (lambda (stop)
+                        (let ((group (ebox--focus-group stop root)))
+                          (and group (not (eq stop (gethash group entries))))))
+                      stops)))))
+
+(defun ebox--node-rect (node)
+  "Return NODE's border box as (X Y WIDTH HEIGHT), Y in pixels."
+  (let ((g (ebox-node-geometry node))
+        (line (ebox--line-pixels)))
+    (and g (list (plist-get g :x) (* line (plist-get g :y))
+                 (plist-get g :width) (* line (plist-get g :height))))))
+
+(defun ebox--line-pixels ()
+  "Return the approximate pixel height of one root line."
+  (let ((window (get-buffer-window (current-buffer) t)))
+    (if window (frame-char-height (window-frame window)) (frame-char-height))))
+
+(defun ebox--focus-reveal (node mount)
+  "Scroll NODE's scrollers so NODE shows, flushing MOUNT when unbatched."
+  (when (ebox--clip-parent node)
+    (ebox-node-scroll-into-view node)
+    (when (and (zerop ebox--batch-depth) (ebox-mount-queued mount))
+      (ebox-flush))))
+
+(defun ebox--focus-hover (mount node)
+  "Show the hover content of NODE's hover owner in MOUNT, or restore it."
+  (let* ((owner (let ((n node))
+                  (while (and n (not (plist-get (ebox-node-inter n) :hover-content)))
+                    (setq n (ebox-node-parent n)))
+                  n))
+         (group (and owner (ebox--hover-group owner))))
+    (unless (equal group (ebox-mount-hover mount))
+      (when (ebox-mount-hover mount) (ebox--hover-restore mount))
+      (when group (ebox--hover-activate mount group)))))
+
+(defun ebox-focus (node &optional buffer-or-name)
+  "Focus NODE in BUFFER-OR-NAME and move point to its first character.
+Nil NODE clears focus.  Signal `user-error' when NODE cannot be focused.
+NODE's scrolling ancestors reveal it, its focus group remembers it and its
+hover content shows as it would under the mouse."
+  (let ((mount (ebox--mount-for buffer-or-name)))
+    (when (and node (not (ebox--focusable-p node mount)))
+      (user-error "Ebox node cannot receive focus"))
+    (with-current-buffer (ebox-mount-buffer mount)
+      (when node
+        (ebox--focus-reveal node mount)
+        (let ((group (ebox--focus-group node nil)))
+          (when group (puthash group node (ebox-mount-focus-memory mount))))
+        (setf (ebox-mount-focus-anchor mount) (ebox--node-rect node)))
+      (ebox--set-mount-state mount 'focus node)
+      (when (ebox-mount-hover-p mount) (ebox--focus-hover mount node))
+      (when node
+        (let ((position (ebox-node-position node)))
+          (when position
+            (goto-char position)
+            (dolist (window (get-buffer-window-list (current-buffer) nil t))
+              (set-window-point window position))))))
+    node))
+
+(defun ebox-focused-node (&optional buffer-or-name)
+  "Return the focused node of BUFFER-OR-NAME, or nil."
+  (let ((mount (ebox-buffer-mount buffer-or-name)))
+    (when mount
+      (let ((focus (ebox-mount-focus mount)))
+        (if (and focus (not (ebox--focusable-p focus mount)))
+            (progn (setf (ebox-mount-focus mount) nil) nil)
+          focus)))))
+
+(defun ebox--anchor-index (mount stops count)
+  "Return the index in STOPS after (COUNT > 0) or before MOUNT's lost focus."
+  (let ((anchor (ebox-mount-focus-anchor mount))
+        (n (length stops)))
+    (when anchor
+      (let* ((line (ebox--line-pixels))
+             (ay (/ (nth 1 anchor) line)) (ax (nth 0 anchor))
+             (after (cl-position-if
+                     (lambda (stop)
+                       (let ((g (ebox-node-geometry stop)))
+                         (or (> (plist-get g :y) ay)
+                             (and (= (plist-get g :y) ay) (>= (plist-get g :x) ax)))))
+                     stops)))
+        (if (> count 0) (+ (or after n) (1- count))
+          (+ (or after n) count))))))
+
 (defun ebox--focus-move (count cycle buffer-or-name &optional within restart)
   "Move focus COUNT stops; CYCLE wraps.  WITHIN limits the stops to a subtree.
-RESTART ignores the current focus."
+RESTART ignores the current focus.  When the focused node has disappeared,
+movement continues from its last position."
   (let* ((mount (ebox--mount-for buffer-or-name))
          (stops (ebox--tab-stops mount within))
          (current (and (not restart) (ebox-focused-node buffer-or-name)))
@@ -593,15 +705,18 @@ RESTART ignores the current focus."
     (unless stops (user-error "No Ebox focus stop"))
     (if (and (eql count 0) (not restart))
         current
-    (let* ((n (length stops))
-           (target
-            (cond
-             ((null index) (if (< count 0) (+ n count) (max 0 (1- count))))
-             (t (+ index count)))))
-      (if cycle (setq target (mod target n))
-        (unless (and (>= target 0) (< target n))
-          (user-error "No %s Ebox focus stop" (if (< count 0) "previous" "next"))))
-      (ebox-focus (nth target stops) buffer-or-name)))))
+      (let* ((n (length stops))
+             (target
+              (cond
+               (index (+ index count))
+               ((and (not restart) (not current))
+                (or (ebox--anchor-index mount stops count)
+                    (if (< count 0) (+ n count) (max 0 (1- count)))))
+               (t (if (< count 0) (+ n count) (max 0 (1- count)))))))
+        (if cycle (setq target (mod target n))
+          (unless (and (>= target 0) (< target n))
+            (user-error "No %s Ebox focus stop" (if (< count 0) "previous" "next"))))
+        (ebox-focus (nth target stops) buffer-or-name)))))
 
 (defun ebox-focus-next (&optional count cycle buffer-or-name)
   "Move focus COUNT (default 1) tab stops forward; CYCLE wraps at the end."
@@ -630,6 +745,105 @@ focus when it lies inside NODE."
     (if (or (null count) (not inside))
         (ebox--focus-move (if (and count (< count 0)) -1 1) cycle buffer-or-name node t)
       (ebox--focus-move count cycle buffer-or-name node))))
+
+;;;; Directional focus
+
+(defun ebox--direction-score (from to direction)
+  "Return the distance from rect FROM to rect TO in DIRECTION, or nil.
+TO must lie wholly beyond FROM's edge; the perpendicular gap counts double
+and the offset between centers breaks ties."
+  (pcase-let ((`(,fx ,fy ,fw ,fh) from) (`(,tx ,ty ,tw ,th) to))
+    (let ((along (pcase direction
+                   ('down (and (>= ty (+ fy fh)) (- ty (+ fy fh))))
+                   ('up (and (<= (+ ty th) fy) (- fy (+ ty th))))
+                   ('right (and (>= tx (+ fx fw)) (- tx (+ fx fw))))
+                   ('left (and (<= (+ tx tw) fx) (- fx (+ tx tw))))))
+          (gap (if (memq direction '(up down))
+                   (max 0 (- tx (+ fx fw)) (- fx (+ tx tw)))
+                 (max 0 (- ty (+ fy fh)) (- fy (+ ty th)))))
+          (offset (if (memq direction '(up down))
+                      (abs (- (+ tx (/ tw 2.0)) (+ fx (/ fw 2.0))))
+                    (abs (- (+ ty (/ th 2.0)) (+ fy (/ fh 2.0)))))))
+      (and along (+ along (* 2 gap) (/ offset 4.0))))))
+
+(defun ebox--nearest (from candidates direction)
+  "Return the node in CANDIDATES nearest to rect FROM in DIRECTION."
+  (let (best best-score)
+    (dolist (node candidates)
+      (let* ((rect (ebox--node-rect node))
+             (score (and rect (ebox--direction-score from rect direction))))
+        (when (and score (or (null best-score) (< score best-score)))
+          (setq best node best-score score))))
+    best))
+
+(defun ebox--group-members (mount group)
+  "Return GROUP's focusable member stops in MOUNT in tab order."
+  (cl-remove-if-not (lambda (stop) (eq (ebox--focus-group stop nil) group))
+                    (ebox--raw-stops mount group)))
+
+(defun ebox-focus-direction (direction &optional buffer-or-name)
+  "Move focus toward DIRECTION, one of `up', `down', `left' or `right'.
+Inside a `vertical' focus group, up and down step through its members; a
+`horizontal' group steps with left and right and a `grid' group moves to
+the nearest member in DIRECTION.  Other keys, a group boundary and
+ungrouped stops move to the nearest stop in DIRECTION within the modal
+scope; entering another group lands on its entry.  Return the focused node,
+or nil when no stop lies in DIRECTION."
+  (unless (memq direction '(up down left right))
+    (signal 'wrong-type-argument (list '(member up down left right) direction)))
+  (let* ((mount (ebox--mount-for buffer-or-name))
+         (current (ebox-focused-node buffer-or-name))
+         (scope (ebox--focus-scope mount))
+         (group (and current (ebox--focus-group current scope)))
+         (orientation (and group (plist-get (ebox-node-inter group) :focus-group)))
+         (forward (memq direction '(down right)))
+         (from (if current (ebox--node-rect current) (ebox-mount-focus-anchor mount)))
+         target)
+    (cond
+     ((and (null current) (null from))
+      (let ((stops (ebox--tab-stops mount)))
+        (setq target (if forward (car stops) (car (last stops))))))
+     (group
+      (let ((members (ebox--group-members mount group)))
+        (setq target
+              (if (eq orientation 'grid)
+                  (ebox--nearest from (delq current (copy-sequence members)) direction)
+                (when (memq direction (if (eq orientation 'vertical) '(up down) '(left right)))
+                  (let ((index (cl-position current members)))
+                    (and index (> (if forward (1+ index) index) 0)
+                         (nth (if forward (1+ index) (1- index)) members)))))))))
+    (unless target
+      (let* ((stops (ebox--raw-stops mount scope))
+             (candidates (cl-remove-if (lambda (stop)
+                                         (or (eq stop current)
+                                             (and group (eq (ebox--focus-group stop scope) group))))
+                                       stops))
+             (near (and from (ebox--nearest from candidates direction)))
+             (near-group (and near (ebox--focus-group near scope))))
+        (setq target (if near-group
+                         (ebox--group-entry mount near-group
+                                            (ebox--group-members mount near-group))
+                       near))))
+    (when target (ebox-focus target buffer-or-name))))
+
+(defun ebox-focus-edge (last &optional buffer-or-name)
+  "Focus the first member of the focused node's group, or the LAST one.
+Outside a group, focus the first or LAST stop of the modal scope."
+  (let* ((mount (ebox--mount-for buffer-or-name))
+         (current (ebox-focused-node buffer-or-name))
+         (group (and current (ebox--focus-group current (ebox--focus-scope mount))))
+         (stops (if group (ebox--group-members mount group) (ebox--tab-stops mount))))
+    (unless stops (user-error "No Ebox focus stop"))
+    (ebox-focus (if last (car (last stops)) (car stops)) buffer-or-name)))
+
+(defun ebox--direction-command (direction)
+  "Return a command moving focus toward DIRECTION or scrolling past the end."
+  (lambda ()
+    (interactive)
+    (unless (ebox-focus-direction direction)
+      (pcase direction
+        ('down (ebox-scroll-down))
+        ('up (ebox-scroll-up))))))
 
 ;;;; Native input
 
@@ -1707,13 +1921,24 @@ next gesture immediately, so consecutive left and right swipes each fire."
       (define-key map (kbd key) (lambda () (interactive) (ebox-focus-previous 1 t))))
     (dolist (key '("RET" "<return>"))
       (define-key map (kbd key) #'ebox-activate))
+    (dolist (entry '((down "<down>" "C-n") (up "<up>" "C-p")
+                     (left "<left>" "C-b") (right "<right>" "C-f")))
+      (dolist (key (cdr entry))
+        (define-key map (kbd key) (ebox--direction-command (car entry)))))
+    (dolist (key '("<home>" "M-<"))
+      (define-key map (kbd key) (lambda () (interactive) (ebox-focus-edge nil))))
+    (dolist (key '("<end>" "M->"))
+      (define-key map (kbd key) (lambda () (interactive) (ebox-focus-edge t))))
     (define-key map [mouse-movement] #'ebox--hover-event)
     ;; Painted cells are not a text selection: a press or drag only moves
     ;; point, so dragging over the canvas never paints a region.
     (dolist (event '(down-mouse-1 drag-mouse-1))
       (define-key map (vector event) #'mouse-set-point))
     map)
-  "Keymap of mounted Ebox buffers: scrolling, focus navigation and activation.")
+  "Keymap of mounted Ebox buffers: scrolling, focus navigation and activation.
+Arrows and C-n/C-p/C-b/C-f move focus with `ebox-focus-direction', scrolling
+when no stop lies above or below; Home/End and M-</M-> reach the group's or
+scope's first and last stop.")
 
 (defun ebox--refuse-mark ()
   "Deactivate a mark activated over a mounted canvas.

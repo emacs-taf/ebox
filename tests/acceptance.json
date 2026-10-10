@@ -85,6 +85,41 @@
       "purpose": "Focus-within navigation remains inside the requested container."
     },
     {
+      "name": "ebox-focus-group-is-one-tab-stop-roved-by-arrows",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A focus group is one Tab stop entered at its selected or remembered member; arrows rove inside it, leave at its edges and Home reaches its first member."
+    },
+    {
+      "name": "ebox-focus-direction-moves-to-nearest-stop-and-enters-grids",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Directional focus moves to the nearest stop in each direction and moves geometrically inside a grid group."
+    },
+    {
+      "name": "ebox-modal-focus-scope-confines-navigation",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A visible modal focus scope confines Tab and arrow navigation until it is hidden."
+    },
+    {
+      "name": "ebox-focus-reveals-node-inside-scroller",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Focusing a node scrolls its Ebox scroller so the node and point show."
+    },
+    {
+      "name": "ebox-focus-navigation-resumes-near-a-removed-node",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Navigation after the focused node disappears continues from its last position."
+    },
+    {
+      "name": "ebox-focus-shows-hover-content",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Keyboard focus shows a node's hover content and restores it when focus leaves."
+    },
+    {
+      "name": "ebox-buffer-mode-arrows-move-focus-and-scroll-at-the-end",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "Mounted buffers bind arrows, C-n/C-p and Home/End to directional focus navigation."
+    },
+    {
       "name": "ebox-overlays-cover-hits-positions-and-focus-in-paint-order",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Overlapping overlays hit in paint order, and boxes covered by them have no position and refuse focus."

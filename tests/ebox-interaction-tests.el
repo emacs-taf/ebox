@@ -89,6 +89,141 @@
       (should-error (ebox-focus-within group 1 nil buffer) :type 'user-error)
       (should (eq (ebox-focused-node buffer) b)))))
 
+(defun ebox-test--node (root id)
+  "Return ROOT's node with ID."
+  (car (ebox-selector-query root (concat "#" id))))
+
+(ert-deftest ebox-focus-group-is-one-tab-stop-roved-by-arrows ()
+  (ebox-test-with-mounted (buffer root
+                           '(column
+                             (box :id "before" :tab-index 0 "Before")
+                             (column :id "list" :focus-group vertical
+                                     (box :id "a" :tab-index 0 "A")
+                                     (box :id "b" :tab-index 0
+                                          :attributes (("aria-selected" . "true")) "B")
+                                     (box :id "c" :tab-index 0 "C"))
+                             (box :id "after" :tab-index 0 "After"))
+                           :width 200 :height 10)
+    (cl-flet ((node (id) (ebox-test--node root id)))
+      (ebox-focus (node "before") buffer)
+      (should (eq (ebox-focus-next 1 nil buffer) (node "b")))
+      (should (eq (ebox-focus-direction 'down buffer) (node "c")))
+      (should (eq (ebox-focus-next 1 nil buffer) (node "after")))
+      (should (eq (ebox-focus-previous 1 nil buffer) (node "c")))
+      (should (eq (ebox-focus-direction 'down buffer) (node "after")))
+      (should (eq (ebox-focus-direction 'up buffer) (node "c")))
+      (should (eq (ebox-focus-edge nil buffer) (node "a")))
+      (should (eq (ebox-focus-direction 'up buffer) (node "before")))
+      (should (eq (ebox-focus-direction 'up buffer) nil))
+      (should (eq (ebox-focused-node buffer) (node "before"))))))
+
+(ert-deftest ebox-focus-direction-moves-to-nearest-stop-and-enters-grids ()
+  (ebox-test-with-mounted (buffer root
+                           '(column
+                             (row (box :id "left" :tab-index 0 :width (ch 6) "Left")
+                                  (box :id "right" :tab-index 0 :width (ch 6) "Right"))
+                             (row :id "grid" :focus-group grid
+                                  (column :width (ch 6)
+                                          (box :id "g1" :tab-index 0 "G1")
+                                          (box :id "g3" :tab-index 0 "G3"))
+                                  (column :width (ch 6)
+                                          (box :id "g2" :tab-index 0 "G2")
+                                          (box :id "g4" :tab-index 0 "G4"))))
+                           :width 300 :height 10)
+    (cl-flet ((node (id) (ebox-test--node root id)))
+      (ebox-focus (node "left") buffer)
+      (should (eq (ebox-focus-direction 'right buffer) (node "right")))
+      (should-not (ebox-focus-direction 'right buffer))
+      (should (eq (ebox-focus-direction 'left buffer) (node "left")))
+      (should (eq (ebox-focus-direction 'down buffer) (node "g1")))
+      (should (eq (ebox-focus-direction 'right buffer) (node "g2")))
+      (should (eq (ebox-focus-direction 'down buffer) (node "g4")))
+      (should (eq (ebox-focus-direction 'left buffer) (node "g3")))
+      (should (eq (ebox-focus-direction 'up buffer) (node "g1")))
+      (should (eq (ebox-focus-direction 'up buffer) (node "left"))))))
+
+(ert-deftest ebox-modal-focus-scope-confines-navigation ()
+  (ebox-test-with-mounted (buffer root
+                           '(column
+                             (box :id "outside" :tab-index 0 "Outside")
+                             (column :id "dialog" :focus-scope modal
+                                     (box :id "x" :tab-index 0 "X")
+                                     (box :id "y" :tab-index 0 "Y")))
+                           :width 200 :height 10)
+    (cl-flet ((node (id) (ebox-test--node root id)))
+      (should (eq (ebox-focus-first buffer) (node "x")))
+      (should (eq (ebox-focus-next 1 t buffer) (node "y")))
+      (should (eq (ebox-focus-next 1 t buffer) (node "x")))
+      (should-not (ebox-focus-direction 'up buffer))
+      (ebox-node-remove (node "dialog"))
+      (ebox-flush)
+      (should (eq (ebox-focus-first buffer) (node "outside"))))))
+
+(ert-deftest ebox-focus-reveals-node-inside-scroller ()
+  (ebox-test-with-mounted (buffer root
+                           `(column :id "list" :height (lh 3) :overflow scroll
+                                    ,@(mapcar (lambda (i)
+                                                `(box :id ,(format "i%d" i) :tab-index 0
+                                                      ,(format "Item %d" i)))
+                                              (number-sequence 0 9)))
+                           :width 200 :height 6)
+    (let ((list (ebox-test--node root "list"))
+          (last (ebox-test--node root "i9")))
+      (ebox-focus last buffer)
+      (should (> (ebox-node-scroll-offset list) 0))
+      (should (ebox-node-ancestor-p last (ebox-node-at (point) buffer)))
+      (should (equal (string-trim (buffer-substring-no-properties
+                                   (line-beginning-position) (line-end-position)))
+                     "Item 9")))))
+
+(ert-deftest ebox-focus-navigation-resumes-near-a-removed-node ()
+  (ebox-test-with-mounted (buffer root
+                           '(column
+                             (box :id "a" :tab-index 0 "A")
+                             (box :id "b" :tab-index 0 "B")
+                             (box :id "c" :tab-index 0 "C"))
+                           :width 200 :height 6)
+    (cl-flet ((node (id) (ebox-test--node root id)))
+      (ebox-focus (node "b") buffer)
+      (ebox-node-remove (node "b"))
+      (ebox-flush)
+      (should-not (ebox-focused-node buffer))
+      (should (eq (ebox-focus-next 1 nil buffer) (node "c")))
+      (ebox-focus (node "c") buffer)
+      (ebox-node-remove (node "c"))
+      (ebox-flush)
+      (should (eq (ebox-focus-direction 'up buffer) (node "a"))))))
+
+(ert-deftest ebox-focus-shows-hover-content ()
+  (ebox-test-with-mounted (buffer root
+                           '(column
+                             (box :id "row" :tab-index 0 :hover-content "Play" "Song")
+                             (box :id "other" :tab-index 0 "Other"))
+                           :width 200 :height 6)
+    (cl-flet ((node (id) (ebox-test--node root id)))
+      (ebox-focus (node "row") buffer)
+      (ebox-flush)
+      (should (string-match-p "Play" (buffer-substring-no-properties
+                                      (point-min) (point-max))))
+      (ebox-focus (node "other") buffer)
+      (ebox-flush)
+      (should (string-match-p "Song" (buffer-substring-no-properties
+                                      (point-min) (point-max)))))))
+
+(ert-deftest ebox-buffer-mode-arrows-move-focus-and-scroll-at-the-end ()
+  (ebox-test-with-mounted (buffer root
+                           '(column (box :id "a" :tab-index 0 "A")
+                                    (box :id "b" :tab-index 0 "B"))
+                           :width 200 :height 6)
+    (cl-flet ((node (id) (ebox-test--node root id)))
+      (ebox-focus (node "a") buffer)
+      (call-interactively (key-binding (kbd "<down>")))
+      (should (eq (ebox-focused-node buffer) (node "b")))
+      (call-interactively (key-binding (kbd "C-p")))
+      (should (eq (ebox-focused-node buffer) (node "a")))
+      (call-interactively (key-binding (kbd "<end>")))
+      (should (eq (ebox-focused-node buffer) (node "b"))))))
+
 (ert-deftest ebox-focus-derived-state-matches-selector-and-styles ()
   (ebox-test-with-mounted (buffer root
                            '(column :ecss (("#a:focus" :color "#ff0000"))

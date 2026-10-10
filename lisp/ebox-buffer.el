@@ -27,6 +27,7 @@
   root buffer (anchors []) (lines 0) vw vh fixed-vw fixed-vh
   queued observer (flushes 0) report last-report anchored
   focus active hover hover-saved hover-p session display-saved
+  focus-anchor (focus-memory (make-hash-table :test #'eq :weakness 'key))
   (written (make-hash-table)) tick canvas canvas-cookie)
 
 (defvar ebox--current-mount nil

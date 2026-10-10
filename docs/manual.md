@@ -224,11 +224,49 @@ Create native keymaps with `ebox-keymap-create`.
 ```
 
 `ebox-mount` enables `ebox-buffer-mode`, which installs scrolling keys,
-TAB/backtab focus cycling and RET/return activation; unmounting disables it.
+TAB/backtab focus cycling, arrow (and C-n/C-p/C-b/C-f) focus movement,
+Home/End group edges and RET/return activation; unmounting disables it.
 After turning the mode off, applications can call
 `ebox-focus`, `ebox-focus-next`, `ebox-focus-previous`, `ebox-focus-within`,
 `ebox-activate`, `ebox-next-interaction` and `ebox-previous-interaction`
 directly.
+
+### Keyboard navigation
+
+Every pointer interaction needs a keyboard path, and the engine supplies the
+navigation so applications declare structure instead of key handlers.
+
+- `:focus-group` on a container (`vertical`, `horizontal` or `grid`) turns
+  its `:tab-index` descendants into one Tab stop.  Tab enters at the member
+  focused last, else the member whose `aria-selected`, `aria-current` or
+  `aria-checked` attribute is true, else the first one.  Arrows rove inside
+  the group along its orientation; a `grid` moves to the geometrically
+  nearest member.  At the group's edge, and along the other axis, focus moves
+  to the nearest stop outside the group.
+- Ungrouped stops are reached spatially: `ebox-focus-direction` picks the
+  nearest stop wholly beyond the current one in that direction.  Up and down
+  scroll the content when nothing lies that way.
+- `:focus-scope modal` confines Tab, arrows and `ebox-focus-first` to the
+  innermost visible modal node, such as a dialog or menu.
+- Focusing a node scrolls its Ebox scrollers to show it and shows its
+  `:hover-content`.  When the focused node is removed, the next movement
+  continues from its last position.
+
+```elisp
+(ebox-mount "*Ebox Keys*"
+            `(column
+              (box :id "search" :tab-index 0 "Search")
+              (column :focus-group vertical
+                      ,@(mapcar (lambda (title)
+                                  `(box :tab-index 0
+                                        :attributes (("aria-selected"
+                                                      . ,(if (equal title "B") "true" "false")))
+                                        ,title))
+                                '("A" "B" "C"))))
+            :width 240 :height 6)
+```
+
+Tab from Search lands on B; Down moves to C and Up returns to B.
 
 ### Help, pointers, hover and drag
 

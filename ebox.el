@@ -369,6 +369,18 @@
 ;; Function: ebox-focus (node &optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-focus "ebox" nil nil)
 ;; Focus NODE in BUFFER-OR-NAME and move point to its first character.
+;; NODE's Ebox scrollers reveal it, its focus group remembers it as the
+;; group's entry and its `:hover-content' shows as under the mouse.  When
+;; the focused node disappears, the next navigation continues from its last
+;; position instead of restarting at the first stop.
+;;
+;; Focus navigation follows two interaction facts.  `:focus-group' on a
+;; container (`vertical', `horizontal' or `grid') makes its `:tab-index'
+;; descendants one Tab stop: Tab enters at the remembered member, else the
+;; member whose `aria-selected', `aria-current' or `aria-checked' attribute
+;; is true, else the first member; arrows move inside it.  A stop belongs to
+;; its nearest group.  `:focus-scope modal' confines Tab, arrows and
+;; `ebox-focus-first' to the innermost visible modal node.
 ;;
 ;; Function: ebox-focused-node (&optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-focused-node "ebox" nil nil)
@@ -390,6 +402,21 @@
 ;;;###autoload (autoload 'ebox-focus-within "ebox" nil nil)
 ;; Move focus among the tab stops inside NODE.
 ;;
+;; Function: ebox-focus-direction (direction &optional buffer-or-name)
+;;;###autoload (autoload 'ebox-focus-direction "ebox" nil nil)
+;; Move focus toward DIRECTION (`up', `down', `left' or `right') and return
+;; the focused node, or nil when no stop lies that way.  A `vertical' group
+;; steps through its members with up/down, a `horizontal' group with
+;; left/right and a `grid' group moves to the nearest member.  Other
+;; directions, group edges and ungrouped stops move to the nearest stop
+;; beyond the current one in the modal scope; entering a group lands on
+;; its entry.
+;;
+;; Function: ebox-focus-edge (last &optional buffer-or-name)
+;;;###autoload (autoload 'ebox-focus-edge "ebox" nil nil)
+;; Focus the first member of the focused node's group, or the LAST one;
+;; outside a group, the first or LAST stop of the modal scope.
+;;
 ;; Function: ebox-activate (&optional position noerror)
 ;;;###autoload (autoload 'ebox-activate "ebox" nil t)
 ;; Invoke the RET binding of the node at POSITION, defaulting to point.
@@ -404,6 +431,8 @@
 ;;
 ;; Variable: ebox-buffer-mode-map
 ;; Keymap of mounted Ebox buffers: scrolling, focus navigation and activation.
+;; Arrows and C-n/C-p/C-b/C-f call `ebox-focus-direction', scrolling when no
+;; stop lies above or below; Home/End and M-</M-> call `ebox-focus-edge'.
 ;;
 ;;;; Input sessions
 ;;

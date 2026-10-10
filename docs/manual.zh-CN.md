@@ -192,9 +192,41 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
     (ebox-activate (ebox-node-position button) t)))
 ```
 
-`ebox-mount` 会启用 `ebox-buffer-mode`，卸载时关闭；它安装 scrolling 键、TAB/backtab focus 循环和 RET/return activation。
+`ebox-mount` 会启用 `ebox-buffer-mode`，卸载时关闭；它安装 scrolling 键、TAB/backtab focus 循环、
+方向键（以及 C-n/C-p/C-b/C-f）focus 移动、Home/End 组边界和 RET/return activation。
 不启用 mode 时，应用可直接调用 `ebox-focus`、`ebox-focus-next`、`ebox-focus-previous`、
 `ebox-focus-within`、`ebox-activate`、`ebox-next-interaction` 和 `ebox-previous-interaction`。
+
+### 键盘导航
+
+每个指针交互都需要键盘路径；导航由引擎提供，应用只声明结构，不写按键处理。
+
+- 容器上的 `:focus-group`（`vertical`、`horizontal` 或 `grid`）把其中的 `:tab-index`
+  后代合并为一个 Tab stop。Tab 进入时落在上次聚焦的成员，否则是 `aria-selected`、
+  `aria-current` 或 `aria-checked` 为真的成员，否则是第一个。方向键沿组的方向在组内移动；
+  `grid` 移动到几何上最近的成员。到达组边界或沿另一轴移动时，focus 移到组外最近的 stop。
+- 未分组的 stop 按空间位置到达：`ebox-focus-direction` 选择该方向上完全位于当前 stop
+  之外的最近 stop。上下方向没有 stop 时滚动内容。
+- `:focus-scope modal` 把 Tab、方向键和 `ebox-focus-first` 限制在最内层可见的 modal 节点，
+  例如对话框或菜单。
+- 聚焦节点会滚动其 Ebox scroller 使其可见，并显示它的 `:hover-content`。被聚焦的节点
+  被移除后，下一次移动从它最后的位置继续。
+
+```elisp
+(ebox-mount "*Ebox Keys*"
+            `(column
+              (box :id "search" :tab-index 0 "Search")
+              (column :focus-group vertical
+                      ,@(mapcar (lambda (title)
+                                  `(box :tab-index 0
+                                        :attributes (("aria-selected"
+                                                      . ,(if (equal title "B") "true" "false")))
+                                        ,title))
+                                '("A" "B" "C"))))
+            :width 240 :height 6)
+```
+
+从 Search 按 Tab 落在 B；Down 移到 C，Up 回到 B。
 
 ### Help、pointer、hover 和 drag
 
