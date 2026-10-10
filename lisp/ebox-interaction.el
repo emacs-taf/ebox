@@ -826,6 +826,17 @@ or nil when no stop lies in DIRECTION."
                        near))))
     (when target (ebox-focus target buffer-or-name))))
 
+(defun ebox-focus-scope (&optional buffer-or-name)
+  "Return the innermost visible modal focus scope of BUFFER-OR-NAME.
+Without a visible `:focus-scope modal' node, return the mount root."
+  (ebox--focus-scope (ebox--mount-for buffer-or-name)))
+
+(defun ebox-focus-stops (&optional buffer-or-name)
+  "Return every focus stop of BUFFER-OR-NAME's modal scope in tab order.
+Unlike Tab navigation, members of focus groups are all listed."
+  (let ((mount (ebox--mount-for buffer-or-name)))
+    (ebox--raw-stops mount (ebox--focus-scope mount))))
+
 (defun ebox-focus-edge (last &optional buffer-or-name)
   "Focus the first member of the focused node's group, or the LAST one.
 Outside a group, focus the first or LAST stop of the modal scope."

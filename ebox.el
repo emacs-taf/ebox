@@ -417,6 +417,17 @@
 ;; Focus the first member of the focused node's group, or the LAST one;
 ;; outside a group, the first or LAST stop of the modal scope.
 ;;
+;; Function: ebox-focus-scope (&optional buffer-or-name)
+;;;###autoload (autoload 'ebox-focus-scope "ebox" nil nil)
+;; Return the innermost visible `:focus-scope modal' node, or the mount
+;; root.  Key dispatch and command palettes use it to stay inside an open
+;; dialog.
+;;
+;; Function: ebox-focus-stops (&optional buffer-or-name)
+;;;###autoload (autoload 'ebox-focus-stops "ebox" nil nil)
+;; Return every focus stop in the modal scope in tab order, including all
+;; members of focus groups, for listing the actionable controls on screen.
+;;
 ;; Function: ebox-activate (&optional position noerror)
 ;;;###autoload (autoload 'ebox-activate "ebox" nil t)
 ;; Invoke the RET binding of the node at POSITION, defaulting to point.

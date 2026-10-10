@@ -208,7 +208,8 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
 - 未分组的 stop 按空间位置到达：`ebox-focus-direction` 选择该方向上完全位于当前 stop
   之外的最近 stop。上下方向没有 stop 时滚动内容。
 - `:focus-scope modal` 把 Tab、方向键和 `ebox-focus-first` 限制在最内层可见的 modal 节点，
-  例如对话框或菜单。
+  例如对话框或菜单。`ebox-focus-scope` 返回该节点（或根节点），`ebox-focus-stops`
+  列出其中所有 stop（包括焦点组成员），供按键分发或命令面板停留在打开的对话框内。
 - 聚焦节点会滚动其 Ebox scroller 使其可见，并显示它的 `:hover-content`。被聚焦的节点
   被移除后，下一次移动从它最后的位置继续。
 

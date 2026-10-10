@@ -97,7 +97,7 @@
     {
       "name": "ebox-modal-focus-scope-confines-navigation",
       "file": "tests/ebox-interaction-tests.el",
-      "purpose": "A visible modal focus scope confines Tab and arrow navigation until it is hidden."
+      "purpose": "A visible modal focus scope confines Tab, arrow navigation and the listed focus stops until it is removed."
     },
     {
       "name": "ebox-focus-reveals-node-inside-scroller",

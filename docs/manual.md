@@ -248,6 +248,9 @@ navigation so applications declare structure instead of key handlers.
   scroll the content when nothing lies that way.
 - `:focus-scope modal` confines Tab, arrows and `ebox-focus-first` to the
   innermost visible modal node, such as a dialog or menu.
+  `ebox-focus-scope` returns that node (or the root) and `ebox-focus-stops`
+  lists every stop inside it, group members included, so a key dispatcher or
+  command palette can stay inside the open dialog.
 - Focusing a node scrolls its Ebox scrollers to show it and shows its
   `:hover-content`.  When the focused node is removed, the next movement
   continues from its last position.
