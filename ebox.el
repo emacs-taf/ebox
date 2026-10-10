@@ -352,14 +352,17 @@
 ;; pixels, the innermost enabled node under the pointer whose `:swipe'
 ;; interaction property is a function receives the finger direction, `left'
 ;; or `right', exactly once; the rest of the gesture, including momentum, is
-;; absorbed.  Under macOS natural scrolling fingers moving right report
-;; `wheel-left'; `mouse-wheel-flip-direction' reverses the mapping.
+;; absorbed.  A reversal of direction starts the next gesture at once, so
+;; consecutive left and right swipes each fire without waiting for a pause.
+;; Under macOS natural scrolling fingers moving right report `wheel-left';
+;; `mouse-wheel-flip-direction' reverses the mapping.
 ;;
 ;; Variable: ebox-swipe-distance
 ;; Horizontal pixels a gesture travels before it counts as a swipe.
 ;;
 ;; Variable: ebox-swipe-quiet
-;; Seconds without horizontal wheel events that end a swipe gesture.
+;; Seconds without horizontal wheel events that end a swipe gesture; a
+;; direction change also ends it immediately.
 ;;
 ;;;; Focus and interaction
 ;;

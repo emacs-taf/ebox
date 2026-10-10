@@ -110,10 +110,16 @@ B "))
         ;; Momentum of the same gesture is absorbed.
         (wheel 'triple-wheel-left "plain" 200)
         (should (equal swipes '((outer right))))
-        ;; A pause ends the gesture; the nearest handler wins.
-        (pause)
+        ;; Reversing direction right away starts the next swipe, so a
+        ;; reader can swipe left and right in a row without stopping.
         (wheel 'wheel-right "nested" 80)
         (should (equal swipes '((inner left) (outer right))))
+        (wheel 'wheel-left "plain" 80)
+        (should (equal swipes '((outer right) (inner left) (outer right))))
+        ;; A pause ends the gesture too; the nearest handler wins.
+        (pause)
+        (wheel 'wheel-right "nested" 80)
+        (should (equal (car swipes) '(inner left)))
         (let ((mouse-wheel-flip-direction t))
           (pause)
           (wheel 'wheel-right "plain" 80))

@@ -69,6 +69,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- A two-finger swipe that reverses direction starts and fires the next
+gesture at once, so consecutive left and right swipes each register
+instead of waiting out the momentum's quiet interval.
 - An interactive overlay clipped by its host keeps its keymap, pointer and
   help on blank rows and on padding cut at the clip edge, so clicks there
   reach it.

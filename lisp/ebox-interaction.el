@@ -1614,7 +1614,9 @@ that fits its window keeps its pinned top and bottom rows in place."
 
 (defvar ebox-swipe-quiet 0.35
   "Seconds without horizontal wheel events that end a swipe gesture.
-Momentum events continue the gesture, so one physical swipe fires once.")
+Momentum events continue the gesture, so one physical swipe fires once; a
+change of direction starts the next gesture at once, so swiping left and
+right in a row fires each time without waiting for the momentum to stop.")
 
 (defvar ebox--swipe-state nil
   "Current gesture as (TIME DIRECTION DISTANCE FIRED).")
@@ -1646,7 +1648,8 @@ macOS natural scrolling reports fingers moving right as `wheel-left';
 Accumulate one gesture's horizontal travel and, once it reaches
 `ebox-swipe-distance', call the `:swipe' handler of the innermost node under
 the pointer once with the finger direction.  Later events of the same
-gesture, including momentum, are absorbed."
+gesture, including momentum, are absorbed; a change of direction starts the
+next gesture immediately, so consecutive left and right swipes each fire."
   (interactive "e")
   (let* ((start (event-start event))
          (window (posn-window start))
@@ -1657,8 +1660,11 @@ gesture, including momentum, are absorbed."
                      (abs (car delta))
                    ebox-swipe-distance))
          (state ebox--swipe-state))
+    ;; Momentum keeps the fired gesture's direction, so the opposite way is
+    ;; the reader swiping back at once; it begins a new gesture without a
+    ;; quiet pause, or a repeated swipe would be swallowed.
     (when (or (null state) (> (- now (nth 0 state)) ebox-swipe-quiet)
-              (and (not (nth 3 state)) (not (eq direction (nth 1 state)))))
+              (not (eq direction (nth 1 state))))
       (setq state (list now direction 0 nil)))
     (setf (nth 0 state) now
           (nth 2 state) (+ (nth 2 state) travel))
