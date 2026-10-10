@@ -80,6 +80,11 @@
       "purpose": "Focus navigation updates the public focused node in document order with cycling."
     },
     {
+      "name": "ebox-keyboard-activation-belongs-to-focused-ancestor",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A keyboard activation typed while point rests on a clickable descendant of the focused node activates the focused node."
+    },
+    {
       "name": "ebox-focus-within-stays-inside-container",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "Focus-within navigation remains inside the requested container."

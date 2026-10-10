@@ -203,15 +203,45 @@ A text node has no box of its own; it is live when its parent is."
                (eql (point) (ebox-node-position focus)))
       focus)))
 
+(defun ebox--focus-around-point ()
+  "Return the focused node when point lies inside its painted subtree."
+  (let* ((mount ebox--buffer-mount)
+         (focus (and mount (ebox-mount-focus mount)))
+         (here (and (ebox--node-live-p focus mount) (ebox-node-at))))
+    (and here (ebox-node-ancestor-p focus here) focus)))
+
+(defun ebox--focused-key (focus)
+  "Run the key just typed for FOCUS instead of the node under point.
+FOCUS's own keymap answers first; without a binding there, the key reaches
+the buffer's other active maps as if no node keymap covered point."
+  (let* ((keys (this-command-keys-vector))
+         (keys (if (> (length keys) 0) keys (vector last-input-event)))
+         (map (ebox--declared-keymap focus))
+         (own (and (keymapp map) (lookup-key map keys)))
+         (beneath (lambda ()
+                    (let ((covering (list (get-char-property (point) 'keymap)
+                                          (get-char-property (point) 'local-map))))
+                      (lookup-key (cl-remove-if (lambda (m) (memq m covering))
+                                                (current-active-maps t))
+                                  keys)))))
+    (cond
+     ((commandp own)
+      (let ((ebox--dispatching-activation t)) (command-execute own)))
+     ((commandp (setq own (funcall beneath)))
+      (command-execute own))
+     (t (user-error "%s is undefined for the focused node"
+                    (key-description keys))))))
+
 (defun ebox--command (callback &optional activation-p)
-  "Wrap CALLBACK as a command; ACTIVATION-P uses logical focus."
+  "Wrap CALLBACK as a command; ACTIVATION-P uses logical focus.
+A keyboard activation typed while point lies inside the focused node belongs
+to that node, even when point rests on a clickable descendant."
   (lambda (&optional event)
     (interactive (list (and (mouse-event-p last-input-event) last-input-event)))
     (if (null event)
-        (if (and activation-p (not ebox--dispatching-activation)
-                 (ebox--focused-at-point))
-            (ebox-activate)
-          (funcall callback))
+        (let ((focus (and activation-p (not ebox--dispatching-activation)
+                          (ebox--focus-around-point))))
+          (if focus (ebox--focused-key focus) (funcall callback)))
       (let* ((position (event-start event))
              (window (posn-window position)))
         (unless (and (window-live-p window) (null (posn-area position)))

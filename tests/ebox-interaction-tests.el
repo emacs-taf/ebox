@@ -13,6 +13,22 @@
       (ebox-activate)
       (should (= hits 1)))))
 
+(ert-deftest ebox-keyboard-activation-belongs-to-focused-ancestor ()
+  (let* ((outer 0) (inner 0)
+         (outer-map (ebox-keymap-create :activate (lambda () (setq outer (1+ outer)))))
+         (inner-map (ebox-keymap-create :activate (lambda () (setq inner (1+ inner))))))
+    (ebox-test-with-mounted (buffer root
+                             `(box :id "row" :tab-index 0 :keymap ,outer-map
+                                   "Row " (box :id "link" :keymap ,inner-map "link")))
+      (ebox-focus (ebox-test--node root "row") buffer)
+      (goto-char (point-min))
+      (search-forward "link")
+      (backward-char)
+      (let ((last-input-event ?\r))
+        (command-execute (lookup-key (get-char-property (point) 'keymap) (kbd "RET"))))
+      (should (= outer 1))
+      (should (= inner 0)))))
+
 (ert-deftest ebox-help-create-runs-business-function-in-hovered-buffer ()
   (let* ((help (ebox-help-create (lambda () (buffer-name))))
          (buffer (generate-new-buffer " *ebox-help-test*")))
