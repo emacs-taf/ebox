@@ -408,7 +408,7 @@
 ;;;###autoload (autoload 'ebox-focus-within "ebox" nil nil)
 ;; Move focus among the tab stops inside NODE.
 ;;
-;; Function: ebox-focus-direction (direction &optional buffer-or-name)
+;; Function: ebox-focus-direction (direction &optional buffer-or-name root)
 ;;;###autoload (autoload 'ebox-focus-direction "ebox" nil nil)
 ;; Move focus toward DIRECTION (`up', `down', `left' or `right') and return
 ;; the focused node, or nil when no stop lies that way.  A `vertical' group
@@ -416,7 +416,9 @@
 ;; left/right and a `grid' group moves to the nearest member.  Other
 ;; directions, group edges and ungrouped stops move to the nearest stop
 ;; beyond the current one in the modal scope; entering a group lands on
-;; its entry.
+;; its entry.  ROOT restricts movement to ROOT itself and its descendants,
+;; and a group participates only when it lies inside ROOT, so a caller can
+;; keep navigation inside a named area and detect its boundary.
 ;;
 ;; Function: ebox-focus-edge (last &optional buffer-or-name)
 ;;;###autoload (autoload 'ebox-focus-edge "ebox" nil nil)
@@ -467,11 +469,14 @@
 ;; consulted first, which run in the buffer except `ebox-input-edit-commands';
 ;; :on-leave is called without arguments when a click lands outside NODE's box;
 ;; :local-variables is an alist of buffer-local settings, such as
-;; `completion-at-point-functions', for the commands editing the value.
-;; Setting NODE's text to the session value is a no-op; another string
-;; replaces the value and clears its undo history.  One session per buffer;
-;; an unmounted buffer or a node that is not laid-out text signals
-;; `ebox-input-error'.  Unmounting the buffer ends the session.
+;; `completion-at-point-functions', for the commands editing the value;
+;; :caret is a value offset placing the caret, and a session whose node text
+;; is unchanged since the last one reuses its editing buffer, keeping the
+;; previous caret, region and undo history.  Without :caret a fresh session
+;; opens at the end.  Setting NODE's text to the session value is a no-op;
+;; another string replaces the value and clears its undo history.  One
+;; session per buffer; an unmounted buffer or a node that is not laid-out
+;; text signals `ebox-input-error'.  Unmounting the buffer ends the session.
 ;;
 ;; Variable: ebox-input-edit-commands
 ;; Commands that edit the session value when a session :keymap binds them,

@@ -191,6 +191,23 @@
       (should (eq (ebox-focus-direction 'up buffer) (node "g1")))
       (should (eq (ebox-focus-direction 'up buffer) (node "left"))))))
 
+(ert-deftest ebox-focus-direction-honours-a-root-boundary ()
+  "ROOT limits candidates and reports the boundary with nil."
+  (ebox-test-with-mounted (buffer root
+                           '(row
+                             (column :id "left" :width (ch 8) :focus-group vertical
+                                     (box :id "a" :tab-index 0 "A")
+                                     (box :id "b" :tab-index 0 "B"))
+                             (box :id "right" :tab-index 0 :width (ch 6) "R"))
+                           :width 300 :height 10)
+    (cl-flet ((node (id) (ebox-test--node root id)))
+      (ebox-focus (node "a") buffer)
+      (should (eq (ebox-focus-direction 'down buffer (node "left")) (node "b")))
+      (should-not (ebox-focus-direction 'down buffer (node "left")))
+      (should (eq (ebox-focus-direction 'right buffer (node "left")) nil))
+      (should (eq (ebox-focused-node buffer) (node "b")))
+      (should (eq (ebox-focus-direction 'right buffer) (node "right"))))))
+
 (ert-deftest ebox-modal-focus-scope-confines-navigation ()
   (ebox-test-with-mounted (buffer root
                            '(column

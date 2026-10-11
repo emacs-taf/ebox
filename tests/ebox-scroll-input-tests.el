@@ -355,6 +355,23 @@ keyboard macros reach it."
       (ignore-errors (execute-kbd-macro (kbd "y")))
       (should (equal (ebox-test-buffer-text buffer) "abcx ")))))
 
+(ert-deftest ebox-input-session-reuses-caret-and-undo ()
+  "A second session on the same text resumes its caret and undo history."
+  (ebox-test-with-session (buffer root '(box (text :id "field" "value")) session)
+    (execute-kbd-macro (kbd "A B"))
+    (should (equal (ebox-input-text session) "valueAB"))
+    (execute-kbd-macro (kbd "<left> <left>"))
+    (should (equal (ebox-input-end session) "valueAB"))
+    (let ((second (ebox-input-begin buffer (car (ebox-selector-query root "#field")))))
+      (execute-kbd-macro "X")
+      (should (equal (ebox-input-text second) "valueXAB"))
+      (execute-kbd-macro (kbd "C-/"))
+      (should (equal (ebox-input-text second) "valueAB"))
+      (ebox-input-end second)))
+  (ebox-test-with-session (buffer root '(box (text :id "field" "value")) session :caret 0)
+    (execute-kbd-macro "X")
+    (should (equal (ebox-input-text session) "Xvalue"))))
+
 (ert-deftest ebox-input-session-validates-lifecycle ()
   (ebox-test-with-mounted (buffer root '(box :id "box" (text :id "field" "abc")))
     (let ((field (car (ebox-selector-query root "#field"))))

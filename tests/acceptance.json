@@ -110,6 +110,11 @@
       "purpose": "Directional focus moves to the nearest stop in each direction and moves geometrically inside a grid group."
     },
     {
+      "name": "ebox-focus-direction-honours-a-root-boundary",
+      "file": "tests/ebox-interaction-tests.el",
+      "purpose": "A ROOT argument limits directional candidates to its subtree and reports the boundary with nil."
+    },
+    {
       "name": "ebox-modal-focus-scope-confines-navigation",
       "file": "tests/ebox-interaction-tests.el",
       "purpose": "A visible modal focus scope confines Tab, arrow navigation and the listed focus stops until it is removed."
@@ -363,6 +368,11 @@
       "name": "ebox-input-session-edits-the-value-inside-the-node-layout",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "Typed keys edit a session value inside its padded box, which wraps and grows with it; on-change reports each value and ending keeps it displayed."
+    },
+    {
+      "name": "ebox-input-session-reuses-caret-and-undo",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "A second session on unchanged text resumes the previous caret and undo history, and :caret places the caret explicitly."
     },
     {
       "name": "ebox-input-session-runs-native-editing-commands-on-the-value",

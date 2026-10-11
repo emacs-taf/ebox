@@ -819,30 +819,44 @@ and the offset between centers breaks ties."
   (cl-remove-if-not (lambda (stop) (eq (ebox--focus-group stop nil) group))
                     (ebox--raw-stops mount group)))
 
-(defun ebox-focus-direction (direction &optional buffer-or-name)
+(defun ebox--nodes-within-p (node root)
+  "Return non-nil when NODE is ROOT or a descendant of ROOT."
+  (or (eq node root) (ebox-node-ancestor-p root node)))
+
+(defun ebox-focus-direction (direction &optional buffer-or-name root)
   "Move focus toward DIRECTION, one of `up', `down', `left' or `right'.
 Inside a `vertical' focus group, up and down step through its members; a
 `horizontal' group steps with left and right and a `grid' group moves to
 the nearest member in DIRECTION.  Other keys, a group boundary and
 ungrouped stops move to the nearest stop in DIRECTION within the modal
-scope; entering another group lands on its entry.  Return the focused node,
-or nil when no stop lies in DIRECTION."
+scope; entering another group lands on its entry.  ROOT, when non-nil,
+restricts every candidate stop to ROOT or its descendants, and a group
+participates only when it lies inside ROOT.  Return the focused node, or
+nil when no stop lies in DIRECTION."
   (unless (memq direction '(up down left right))
     (signal 'wrong-type-argument (list '(member up down left right) direction)))
   (let* ((mount (ebox--mount-for buffer-or-name))
          (current (ebox-focused-node buffer-or-name))
          (scope (ebox--focus-scope mount))
          (group (and current (ebox--focus-group current scope)))
+         (group (and group
+                     (or (null root) (ebox--nodes-within-p group root))
+                     group))
          (orientation (and group (plist-get (ebox-node-inter group) :focus-group)))
          (forward (memq direction '(down right)))
          (from (if current (ebox--node-rect current) (ebox-mount-focus-anchor mount)))
          target)
     (cond
      ((and (null current) (null from))
-      (let ((stops (ebox--tab-stops mount)))
+      (let ((stops (cl-remove-if-not (lambda (stop) (or (null root)
+                                                        (ebox--nodes-within-p stop root)))
+                                     (ebox--tab-stops mount))))
         (setq target (if forward (car stops) (car (last stops))))))
      (group
-      (let ((members (ebox--group-members mount group)))
+      (let ((members (if (null root)
+                         (ebox--group-members mount group)
+                       (cl-remove-if-not (lambda (stop) (ebox--nodes-within-p stop root))
+                                         (ebox--group-members mount group)))))
         (setq target
               (if (eq orientation 'grid)
                   (ebox--nearest from (delq current (copy-sequence members)) direction)
@@ -854,10 +868,14 @@ or nil when no stop lies in DIRECTION."
       (let* ((stops (ebox--raw-stops mount scope))
              (candidates (cl-remove-if (lambda (stop)
                                          (or (eq stop current)
+                                             (and root (not (ebox--nodes-within-p stop root)))
                                              (and group (eq (ebox--focus-group stop scope) group))))
                                        stops))
              (near (and from (ebox--nearest from candidates direction)))
-             (near-group (and near (ebox--focus-group near scope))))
+             (near-group (and near (ebox--focus-group near scope)))
+             (near-group (and near-group
+                              (or (null root) (ebox--nodes-within-p near-group root))
+                              near-group)))
         (setq target (if near-group
                          (ebox--group-entry mount near-group
                                             (ebox--group-members mount near-group))
@@ -938,6 +956,9 @@ focus returns when NODE is gone."
 
 (defvar ebox--input-sessions nil
   "Active input sessions.")
+
+(defvar ebox--input-shadow-cache (make-hash-table :test #'eq :weakness 'key)
+  "Last editing buffer of each text node, keeping point and undo history.")
 
 (defvar ebox-input-edit-commands
   '(newline open-line newline-and-indent electric-newline-and-maybe-indent
@@ -1499,7 +1520,11 @@ in BUFFER-OR-NAME, except the commands in `ebox-input-edit-commands', which
 edit the value.  :on-leave is called without arguments when a click lands
 outside the node's box.  :local-variables is an alist of buffer-local
 settings, such as `completion-at-point-functions', for the commands editing
-the value.  Setting the node's text to another string replaces the value.
+the value.  :caret is a value offset placing the caret; without it a fresh
+session opens at the end, while a session whose node text is unchanged
+since the last one reuses its editing buffer and keeps the previous caret,
+region and undo history.  Setting the node's text to another string
+replaces the value and clears its undo history.
 
 An unmounted buffer, a node that is not laid-out text and a second session
 in the same buffer are `ebox-input-error's."
@@ -1514,7 +1539,12 @@ in the same buffer are `ebox-input-error's."
     (when (and keymap (not (keymapp keymap)))
       (signal 'ebox-input-error (list "Expected a keymap" keymap)))
     (let* ((value (substring-no-properties (ebox-node-text node)))
-           (shadow (generate-new-buffer " *ebox-input*" t))
+           (cached (gethash node ebox--input-shadow-cache))
+           (cached-p (and (buffer-live-p cached)
+                          (with-current-buffer cached
+                            (equal (buffer-substring-no-properties (point-min) (point-max))
+                                   value))))
+           (shadow (if cached-p cached (generate-new-buffer " *ebox-input*" t)))
            (session (ebox--input-session-make
                      :mount mount :node node :shadow shadow :keymap keymap
                      :on-change (plist-get options :on-change)
@@ -1522,8 +1552,12 @@ in the same buffer are `ebox-input-error's."
                      :value value :held t
                      :emulation (and keymap (list (cons t keymap))))))
       (with-current-buffer shadow
-        (insert value)
-        (setq buffer-undo-list nil)
+        (unless cached-p
+          (erase-buffer)
+          (insert value)
+          (setq buffer-undo-list nil))
+        (when-let* ((caret (plist-get options :caret)))
+          (goto-char (min (point-max) (max (point-min) (1+ (max 0 (truncate caret)))))))
         (dolist (binding (plist-get options :local-variables))
           (set (make-local-variable (car binding)) (cdr binding))))
       (with-current-buffer (ebox-mount-buffer mount)
@@ -1581,7 +1615,11 @@ in the same buffer are `ebox-input-error's."
             (setq-local emulation-mode-map-alists
                         (delq (ebox--input-session-emulation session)
                               emulation-mode-map-alists)))))
-      (when (buffer-live-p shadow) (kill-buffer shadow)))))
+      (if (and (buffer-live-p shadow)
+               (eq (ebox-buffer-mount (ebox-mount-buffer mount)) mount)
+               (ebox--node-live-p node mount))
+          (puthash node shadow ebox--input-shadow-cache)
+        (when (buffer-live-p shadow) (kill-buffer shadow))))))
 
 (defun ebox-input-end (session)
   "End SESSION and return its value.

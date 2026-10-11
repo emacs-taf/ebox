@@ -208,7 +208,9 @@ padding 和 border 的 Emacs text property；子节点的显式值覆盖祖先�
   `aria-current` 或 `aria-checked` 为真的成员，否则是第一个。方向键沿组的方向在组内移动；
   `grid` 移动到几何上最近的成员。到达组边界或沿另一轴移动时，focus 移到组外最近的 stop。
 - 未分组的 stop 按空间位置到达：`ebox-focus-direction` 选择该方向上完全位于当前 stop
-  之外的最近 stop。上下方向没有 stop 时滚动内容。
+  之外的最近 stop。上下方向没有 stop 时滚动内容。可选的 ROOT 参数把每个候选
+  （以及可参与的分组）限制在该节点的子树内，调用方据此把移动限制在命名区域内，
+  并在返回 nil 时判定到达边界。
 - `:focus-scope modal` 把 Tab、方向键和 `ebox-focus-first` 限制在最内层可见的 modal 节点，
   例如对话框或菜单。`ebox-focus-scope` 返回该节点（或根节点），`ebox-focus-stops`
   列出其中所有 stop（包括焦点组成员），供按键分发或命令面板停留在打开的对话框内。
@@ -267,7 +269,8 @@ Input session 是允许用户直接编辑已挂载文本的唯一受支持方式
 `ebox-input-begin` 接受 `:on-change`（每次新值时调用）、`:on-leave`（点击落在盒子外时调用）、`:keymap`（优先查找的绑定，
 在挂载 buffer 中执行）以及 `:local-variables`（为编辑命令设置 `completion-at-point-functions` 等变量）。`:keymap` 中属于
 `ebox-input-edit-commands` 的绑定（如 `newline`）会编辑值本身，多行输入框据此绑定 S-RET。把节点文本设为 session 当前值不产生
-任何效果，因此上层可以把 `:on-change` 回写到自己的模型；设为其他字符串则替换该值。
+任何效果，因此上层可以把 `:on-change` 回写到自己的模型；设为其他字符串则替换该值。`:caret` 以值的偏移量放置光标；
+节点文本与上次会话相同的新会话会复用其编辑 buffer，从而保留光标、选区和撤销历史。
 
 ```elisp
 (let* ((root (ebox-mount "*Ebox Input*"

@@ -247,7 +247,10 @@ navigation so applications declare structure instead of key handlers.
   to the nearest stop outside the group.
 - Ungrouped stops are reached spatially: `ebox-focus-direction` picks the
   nearest stop wholly beyond the current one in that direction.  Up and down
-  scroll the content when nothing lies that way.
+  scroll the content when nothing lies that way.  Its optional ROOT argument
+  restricts every candidate (and any group that participates) to that node's
+  subtree, so a caller can keep movement inside a named area and detect the
+  boundary when it returns nil.
 - `:focus-scope modal` confines Tab, arrows and `ebox-focus-first` to the
   innermost visible modal node, such as a dialog or menu.
   `ebox-focus-scope` returns that node (or the root) and `ebox-focus-stops`
@@ -327,7 +330,10 @@ consulted first, which run in the mounted buffer) and `:local-variables`
 A `:keymap` binding listed in `ebox-input-edit-commands`, such as `newline`,
 edits the value instead, which is how a multi-line field binds S-RET.
 Setting the node's text to the session value is a no-op, so a layer can echo
-`:on-change` into its model; another string replaces the value.
+`:on-change` into its model; another string replaces the value.  `:caret`
+places the caret at a value offset, and a session whose node text is unchanged
+since the last one reuses its editing buffer, keeping the previous caret, the
+region and the undo history.
 
 ```elisp
 (let* ((root (ebox-mount "*Ebox Input*"
