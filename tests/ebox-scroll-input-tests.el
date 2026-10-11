@@ -401,4 +401,50 @@ keyboard macros reach it."
       (should-not (ebox-input-active-p buffer))
       (should (string-prefix-p "abc" (ebox-test-buffer-text buffer))))))
 
+(ert-deftest ebox-fixed-flex-text-growth-preserves-following-content ()
+  "Child height changes replace fixed flex rows, never insert root rows."
+  (let ((ebox-viewport-width 400) (ebox-viewport-height 15))
+    (dolist (overflow '(hidden scroll))
+      (ebox-test-with-mounted
+          (buffer root `(column
+                         (text "HEADER")
+                         (flex :height (lh 5) :flex-direction column :overflow ,overflow
+                               (text :id "field" ""))
+                         (text :id "footer" "FOOTER"))
+                  :width 400 :height 15)
+        (let ((field (car (ebox-selector-query root "#field")))
+              (footer (car (ebox-selector-query root "#footer"))))
+          (dolist (count '(1 2 3 5 6 8 2 0 12 1))
+            (ebox-node-set-text
+             field (mapconcat #'number-to-string (number-sequence 1 count) "\n"))
+            (ebox-node-set-text footer (format "FOOTER %d" count))
+            (let ((actual (ebox-test-buffer-text buffer))
+                  (expected (substring-no-properties (ebox-render (ebox-node-copy root))))
+                  (footer-row (plist-get (ebox-node-geometry footer) :y)))
+              (should (equal actual expected))
+              (should (= footer-row 6)))))))))
+
+(ert-deftest ebox-fixed-flex-native-multiline-edit-preserves-following-content ()
+  "Newlines, clearing and undo cannot corrupt siblings outside the editor."
+  (let ((ebox-viewport-width 400) (ebox-viewport-height 15))
+    (ebox-test-with-session
+        (buffer root '(column
+                       (flex :height (lh 5) :flex-direction column :overflow hidden
+                             (text :id "field" ""))
+                       (text :id "footer" "FOOTER"))
+                session)
+      (let ((footer (car (ebox-selector-query root "#footer"))))
+        (dotimes (round 3)
+          (execute-kbd-macro (vconcat "one" [return] "two" [return] "three" [return]
+                                     "four" [return] "five" [return] "six" [return]
+                                     "seven" [return] "eight"))
+          (dolist (keys (list nil (kbd "C-x h C-w") (kbd "C-/") (kbd "C-x h C-w")))
+            (when keys (execute-kbd-macro keys))
+            (ebox-node-set-text footer (format "FOOTER %d" round))
+            (let ((actual (ebox-test-buffer-text buffer))
+                  (expected (substring-no-properties (ebox-render (ebox-node-copy root)))))
+              (should (equal actual expected))))
+          (should (equal (ebox-input-text session) "")))
+        (ebox-input-end session)))))
+
 ;;; ebox-scroll-input-tests.el ends here

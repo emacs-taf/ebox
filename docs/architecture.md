@@ -154,6 +154,11 @@ remain compatible, damage stays local.  If a container cannot absorb the change,
 Ebox relayouts that container.  If a full relayout leaves the container size and
 child places unchanged, inner damage is preserved; otherwise the container's
 whole margin box is damaged and ancestors see only its new outer size.
+If partial layout has already changed a child's geometry before falling back,
+the container must damage its whole margin box: a new child-place snapshot
+would only see the changed sizes, not the old layout still in the buffer.
+This keeps internal text growth inside a fixed-height editor from becoming
+insertions or deletions in the surrounding buffer.
 
 Text measurement is cached per text node, font face and wrap mode.  Paragraph
 layout breaks text into pixel-width units, preserving supported clusters and

@@ -1404,6 +1404,14 @@ height change moves them without changing the lines it inserted or deleted."
     (if full
         (let ((key (ebox--constraint node)))
           (setf (ebox-node-intr node) nil)
+          ;; Partial layout has already replaced CHANGED children's sizes.
+          ;; A fresh place snapshot would compare their new sizes with
+          ;; themselves and wrongly forward a child insertion/deletion through
+          ;; a fixed-size parent.  Repaint this boundary instead; its old
+          ;; outer height is still intact and siblings outside it cannot move.
+          (when changed
+            (setf (ebox-node-dirty node)
+                  (logior (ebox-node-dirty node) ebox--d-layout)))
           (ebox--layout-full node (aref key 0) (aref key 1) (aref key 2) (aref key 3))
           t)
       (ebox--border-damage node geo old-bh)

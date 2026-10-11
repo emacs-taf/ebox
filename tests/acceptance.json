@@ -400,6 +400,16 @@
       "purpose": "Setting a session node to its value is a no-op; another string replaces the value."
     },
     {
+      "name": "ebox-fixed-flex-text-growth-preserves-following-content",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Growing and shrinking text in fixed-height flex containers preserves following content and matches a fresh render."
+    },
+    {
+      "name": "ebox-fixed-flex-native-multiline-edit-preserves-following-content",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "Multiline native input, clearing and undo preserve independently updated content below the editing container."
+    },
+    {
       "name": "ebox-input-session-relayouts-during-editing",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "A viewport change lays out at once during a session and editing continues."

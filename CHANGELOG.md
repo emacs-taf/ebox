@@ -80,6 +80,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Growing or shrinking text inside a fixed-height flex container no longer
+  inserts or deletes rows outside it. Multiline native editing, clearing and
+  undo preserve following content, including independently animated footers.
+
 - A two-finger swipe that reverses direction starts and fires the next
 gesture at once, so consecutive left and right swipes each register
 instead of waiting out the momentum's quiet interval.

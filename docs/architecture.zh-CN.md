@@ -125,7 +125,9 @@ layout 会跳过。
 后续 stack items 并调整自身 content height 来吸收 child height change。这就是常见 relayout boundary：当 ancestor
 的 outer size 与 child placements 仍兼容时，damage 保持局部。如果 container 不能吸收变化，Ebox relayout 该 container。
 如果 full relayout 后 container size 和 child places 不变，则保留 inner damage；否则该 container 的整个 margin box
-成为 damage，ancestor 只看到它的新 outer size。
+成为 damage，ancestor 只看到它的新 outer size。如果局部重排已经改过 child 几何再回退，
+必须标记 container 的整个 margin box：此时重新拍 child-place 快照只会看到新尺寸，
+不能代表 buffer 中仍显示的旧布局。这样固定高度编辑器内部的文字增减不会变成外部 buffer 的插行或删行。
 
 文本测量按 text node、font face 与 wrap mode 缓存。paragraph layout 将文本拆成 pixel-width units，保留受支持
 cluster 与 fixed display space。图形 frame 上，若某 cluster 的回退字体高于其 face 的行高（彩色 emoji、符号、数学字母，或字体 ascent/descent 超过默认字体的任何文字，每个字符只判定一次），
