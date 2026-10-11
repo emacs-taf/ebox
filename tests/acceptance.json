@@ -25,6 +25,16 @@
       "purpose": "Unmounting and killing a buffer releases resources captured by rendered callbacks."
     },
     {
+      "name": "ebox-image-identical-preparation-reuses-a-screenful-of-images",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "A preparation stays cached while more distinct images than the old clear-all threshold are prepared."
+    },
+    {
+      "name": "ebox-image-cache-stays-bounded-and-usable-under-churn",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "Preparing many distinct images keeps the most recent preparations reusable."
+    },
+    {
       "name": "ebox-image-placeholder-preparation-reports-size-and-content",
       "file": "tests/ebox-image-file-tests.el",
       "purpose": "Placeholder image preparation reports size and returns deterministic character content."
@@ -433,6 +443,11 @@
       "name": "ebox-canvas-ignores-printing-keys-outside-input-sessions",
       "file": "tests/ebox-scroll-input-tests.el",
       "purpose": "Printing keys never edit a mounted canvas outside a session; a session receives them as value edits."
+    },
+    {
+      "name": "ebox-input-opening-click-is-not-an-outside-click",
+      "file": "tests/ebox-scroll-input-tests.el",
+      "purpose": "A complete button press and release opens editing without triggering on-leave; later outside clicks still end it, and reopening works."
     },
     {
       "name": "ebox-input-session-validates-lifecycle",

@@ -80,6 +80,10 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- The prepared-image cache keeps the most recently used preparations instead
+  of discarding every entry at a fixed count.  A screen holding more images
+  than the old threshold, such as a tiled arena, reuses unchanged
+  preparations instead of re-preparing and republishing them every frame.
 - Hidden nodes no longer retain callback resources removed from their authored
   properties through obsolete interaction decorations.
 - Mounted buffers disable native line continuation so already-laid-out rows

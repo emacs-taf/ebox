@@ -31,15 +31,45 @@ The defaults try chafa's truecolor symbols, then ffmpeg's scaled raw RGB.
 Neither executable is a package dependency; nil selects the placeholder.")
 
 (defvar ebox-image--cache (make-hash-table :test #'equal)
-  "Bounded cache of prepared image rasters, independent of mounted buffers.")
+  "Bounded cache of prepared image rasters, independent of mounted buffers.
+Each entry is (LAST-USE . PREPARED): the bounded cache keeps the most
+recently used preparations, so a screen holding more images than the old
+fixed count does not evict every unrelated one on each preparation.")
 
-(defconst ebox-image--cache-limit 64
+(defconst ebox-image--cache-limit 256
   "Maximum cached preparations; live prepared values survive eviction.")
+
+(defconst ebox-image--cache-evict 32
+  "Entries dropped when the cache exceeds `ebox-image--cache-limit'.")
+
+(defvar ebox-image--cache-uses 0
+  "Monotonic access stamp marking the least recently used cache entries.")
+
+(defun ebox-image--cache-take (key)
+  "Return the cached preparation for KEY and mark it recently used."
+  (let ((cell (gethash key ebox-image--cache)))
+    (when cell
+      (setcar cell (cl-incf ebox-image--cache-uses))
+      (cdr cell))))
+
+(defun ebox-image--cache-put (key prepared)
+  "Cache PREPARED for KEY, dropping the least recently used entries."
+  (puthash key (cons (cl-incf ebox-image--cache-uses) prepared) ebox-image--cache)
+  (when (> (hash-table-count ebox-image--cache) ebox-image--cache-limit)
+    (let ((stamps nil))
+      (maphash (lambda (item cell) (push (cons (car cell) item) stamps))
+               ebox-image--cache)
+      (setq stamps (sort stamps (lambda (left right) (< (car left) (car right)))))
+      (dotimes (_ (min (length stamps)
+                       (max 1 ebox-image--cache-evict)))
+        (remhash (cdr (car stamps)) ebox-image--cache)
+        (setq stamps (cdr stamps))))))
 
 (defun ebox-image-cache-clear ()
   "Release cached preparations without changing live image content.
 Call after installing converters or changing their configuration."
-  (clrhash ebox-image--cache))
+  (clrhash ebox-image--cache)
+  (setq ebox-image--cache-uses 0))
 
 (defun ebox-image--source (source)
   "Validate SOURCE and return an owned source and its cache identity."
@@ -270,7 +300,7 @@ Repeat after source or frame/font changes; identical preparations are cached."
                (metrics (and (eq adapter 'auto) (ebox-image--metrics frame)))
                (key (list identity columns rows adapter metrics inset
                           (and metrics image-types) (copy-tree converters)))
-               (cached (gethash key ebox-image--cache)))
+               (cached (ebox-image--cache-take key)))
     (or cached
         (let ((text (and metrics
                          (ignore-errors
@@ -303,9 +333,7 @@ Repeat after source or frame/font changes; identical preparations are cached."
           (let ((prepared (ebox-image--make-prepared
                            :columns columns :rows rows :adapter selected
                            :converter converter :text text)))
-            (when (>= (hash-table-count ebox-image--cache) ebox-image--cache-limit)
-              (clrhash ebox-image--cache))
-            (puthash key prepared ebox-image--cache)
+            (ebox-image--cache-put key prepared)
             prepared)))))
 
 (defun ebox-image--check (prepared)

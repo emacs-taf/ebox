@@ -299,7 +299,10 @@ so the cursor never lands in clipped content.
 - Buffer writes preserve unrelated buffer state: read-only, undo list,
   modified flag, point and window starts.
 - Image decoding and external converter execution happen only in image
-  preparation, never in layout or buffer writing.
+  preparation, never in layout or buffer writing.  Preparation results are
+  cached by source identity, size and frame; the bounded cache keeps the most
+  recently used preparations, so a screen holding many images reuses them
+  across updates instead of rebuilding each one.
 - A graphical image row is one glyph displaying a full-width slice, because
   redisplay draws, and on some platforms rescales, the image once per glyph.
   Cutting such a row at a box or overlay edge narrows its slice instead of

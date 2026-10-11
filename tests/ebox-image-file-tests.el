@@ -11,6 +11,33 @@
                    "...
 ..."))))
 
+(ert-deftest ebox-image-identical-preparation-reuses-a-screenful-of-images ()
+  "A preparation stays cached while other distinct images are prepared.
+A screen with more images than the old clear-all threshold must not
+re-create every preparation on the next request."
+  (let* ((source (list 'image :type 'xpm :data "reused"))
+         (first (ebox-image-prepare source 2 1 :adapter 'placeholder))
+         (later (cl-loop for index below 96
+                         collect
+                         (ebox-image-prepare
+                          (list 'image :type 'xpm :data (format "later-%d" index))
+                          2 1 :adapter 'placeholder))))
+    (should (= 96 (length later)))
+    (should (eq first (ebox-image-prepare source 2 1 :adapter 'placeholder)))))
+
+(ert-deftest ebox-image-cache-stays-bounded-and-usable-under-churn ()
+  "Preparing many distinct images keeps recent preparations usable."
+  (let (newest)
+    (dotimes (index 400)
+      (setq newest
+            (ebox-image-prepare
+             (list 'image :type 'xpm :data (format "churn-%d" index))
+             2 1 :adapter 'placeholder)))
+    (should (eq newest
+                (ebox-image-prepare '(image :type xpm :data "churn-399")
+                                    2 1 :adapter 'placeholder)))
+    (should (equal (substring-no-properties (ebox-image-content newest)) ".."))))
+
 (ert-deftest ebox-image-text-converter-result-is-renderable-image-node ()
   (let* ((converted (copy-sequence "▀▀\n▀▀"))
          (converter (lambda (_source _columns _rows)
