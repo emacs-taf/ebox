@@ -68,6 +68,27 @@ re-create every preparation on the next request."
       (should (equal (ebox-test-buffer-text buffer) "..."))
       (should (ebox-test-buffer-matches-render-p root buffer)))))
 
+(ert-deftest ebox-node-set-props-repaints-a-same-sized-image-with-other-pixels ()
+  "A different preparation of the same size replaces the shown image.
+Both preparations have already been laid out, as cached images have."
+  (let* ((converter
+          (lambda (source _columns _rows)
+            (propertize "▀▀" 'face
+                        (list :foreground (plist-get (cdr source) :data)
+                              :background "#000000"))))
+         (converters (list (cons 'fixture converter)))
+         (red (ebox-image-prepare '(image :type xpm :data "#ff0000") 2 1
+                                  :adapter 'text :converters converters))
+         (blue (ebox-image-prepare '(image :type xpm :data "#0000ff") 2 1
+                                   :adapter 'text :converters converters)))
+    (ebox-render (ebox-node-create 'image (list :image blue)))
+    (ebox-test-with-mounted (buffer root (ebox-node-create 'image (list :image red)))
+      (ebox-node-set-props root (list :image blue))
+      (let ((face (with-current-buffer buffer
+                    (get-text-property (point-min) 'face))))
+        (should (equal (plist-get face :foreground) "#0000ff")))
+      (should (ebox-test-buffer-matches-render-p root buffer)))))
+
 (ert-deftest ebox-image-in-a-wider-box-paints-the-box-background-beside-it ()
   (let* ((image (ebox-image-prepare '(image :type xpm :data "bad") 2 1
                                     :adapter 'placeholder))

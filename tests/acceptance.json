@@ -50,6 +50,11 @@
       "purpose": "Changing an image node repaints the mounted buffer to the new prepared content."
     },
     {
+      "name": "ebox-node-set-props-repaints-a-same-sized-image-with-other-pixels",
+      "file": "tests/ebox-image-file-tests.el",
+      "purpose": "A different, already laid out preparation of the same size replaces the shown image instead of comparing equal."
+    },
+    {
       "name": "ebox-image-in-a-wider-box-paints-the-box-background-beside-it",
       "file": "tests/ebox-image-file-tests.el",
       "purpose": "An image narrower than its stretched box leaves no unpainted gap beside it."

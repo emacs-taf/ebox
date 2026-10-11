@@ -13,8 +13,13 @@
 (require 'ansi-color)
 (require 'ebox-measure)
 
-(cl-defstruct (ebox-image--prepared (:constructor ebox-image--make-prepared))
-  "Immutable, detached raster prepared for one character allocation."
+(cl-defstruct (ebox-image--prepared (:constructor ebox-image--make-prepared)
+                                    (:copier nil))
+  "Immutable, detached raster prepared for one character allocation.
+IDENTITY makes distinct preparations unequal: `equal' ignores the text
+properties that carry their pixels, so two images of one size would
+otherwise compare equal and an update to the other one would be skipped."
+  (identity (make-symbol "ebox-image"))
   columns rows adapter converter text lines width)
 
 (defvar ebox-image-converters
