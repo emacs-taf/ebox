@@ -73,15 +73,14 @@
 (defvar ebox--empty-keymap (make-sparse-keymap)
   "Keymap that blocks an ancestor's keymap on explicit nil.")
 
-(defvar ebox--inter-cache (make-hash-table :test 'eq :weakness 'key)
-  "Node to (INTER . TEXT-PROPERTIES) of its interaction capabilities.")
-
 (defun ebox--inter-text-properties (node)
   "Return text properties painting NODE's interaction capabilities."
-  (let* ((inter (ebox-node-inter node))
-         (cached (gethash node ebox--inter-cache)))
-    (if (and cached (eq (car cached) inter)) (cdr cached)
-      (let ((props (list 'ebox-node node)))
+  ;; Keep hover-face identity stable across rows, but let NODE own the cache.
+  ;; Authored property replacement clears it even when a hidden node does not
+  ;; compose another line, so retired callbacks do not outlive their owner.
+  (or (ebox-node-inter-cache node)
+      (let ((inter (ebox-node-inter node))
+            (props (list 'ebox-node node)))
         (when (plist-member inter :keymap)
           (setq props (append props
                               (list 'keymap
@@ -99,8 +98,7 @@
                                           (and (plist-get inter :hover-style)
                                                (ebox--hover-face
                                                 (plist-get inter :hover-style)))))))
-        (puthash node (cons inter props) ebox--inter-cache)
-        props))))
+        (setf (ebox-node-inter-cache node) props))))
 
 (defun ebox--fill-property (string property value)
   "Put PROPERTY VALUE on the parts of STRING where it is absent.

@@ -10,6 +10,21 @@
   ],
   "cases": [
     {
+      "name": "ebox-hidden-node-releases-replaced-callbacks",
+      "file": "tests/ebox-lifetime-tests.el",
+      "purpose": "A live hidden node releases callbacks removed from its public authored properties."
+    },
+    {
+      "name": "ebox-detached-output-owns-callbacks-only-while-retained",
+      "file": "tests/ebox-lifetime-tests.el",
+      "purpose": "Rendered help remains usable while retained and releases callback resources after disposal."
+    },
+    {
+      "name": "ebox-disposed-buffer-releases-rendered-callbacks",
+      "file": "tests/ebox-lifetime-tests.el",
+      "purpose": "Unmounting and killing a buffer releases resources captured by rendered callbacks."
+    },
+    {
       "name": "ebox-image-placeholder-preparation-reports-size-and-content",
       "file": "tests/ebox-image-file-tests.el",
       "purpose": "Placeholder image preparation reports size and returns deterministic character content."

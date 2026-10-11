@@ -203,7 +203,11 @@ Interaction decoration happens during composition.  Ebox fills absent `ebox-node
 `keymap`, `help-echo`, `pointer` and `mouse-face` properties so the innermost
 explicit node wins and ancestor keymaps cover descendants that do not override
 them.  An inner node's explicit nil is painted as a present property, so it
-blocks the ancestor's value instead of inheriting it.
+blocks the ancestor's value instead of inheriting it. The owning node caches
+its decoration to keep hover-face identity stable across rows. Replacing
+authored properties immediately clears that cache, including for hidden nodes
+that will not compose another line. No global cache owns callback-bearing
+interaction plists after their node or authored capabilities are retired.
 
 Overlays splice into the lines they cover without concatenating them.
 `ebox--split-parts` cuts the underlying parts at the overlay's pixel columns;

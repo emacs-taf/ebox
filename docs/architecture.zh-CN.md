@@ -154,6 +154,9 @@ display。Emacs 会合并相邻且 `display` 对象 `eq` 的字符，因此 `ebo
 
 交互 decoration 在 composition 中发生。Ebox 填充未设置的 `ebox-node`、`keymap`、`help-echo`、`pointer` 和
 `mouse-face` property，使最内层显式节点胜出，ancestor keymap 覆盖未 override 的 descendant。
+节点拥有自己的装饰缓存，使 hover face 在多行之间保持同一对象。
+替换声明属性时立即清空缓存，包括不再组合新行的隐藏节点；节点或声明能力退役后，
+没有全局缓存继续持有这些包含回调的交互属性。
 
 overlay 拼接进它覆盖的行时不做字符串连接。`ebox--split-parts` 在 overlay 的像素列处切分底层 parts；
 跨越切点的 string 变为按宽度截取的 substring 加边缘空白（空白保留被切单元除 `display` 外的属性，交互因此不丢失），组合出的 string 把像素宽度记录在

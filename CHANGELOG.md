@@ -80,6 +80,8 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Hidden nodes no longer retain callback resources removed from their authored
+  properties through obsolete interaction decorations.
 - Mounted buffers disable native line continuation so already-laid-out rows
   reach the right edge without an extra continuation-column background strip.
   Unmounting restores the buffer's original wrapping setting.

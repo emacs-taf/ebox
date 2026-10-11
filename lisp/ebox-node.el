@@ -250,7 +250,7 @@ composed without caching, or nil when none are composed."
   (w 0) (h 0) (x 0) (y 0)
   meas intr contrib seen avail layout lines
   dkids ops overlays host placed (scroll 0) (pinned t)
-  mount)
+  mount inter-cache)
 
 ;; Dirty bits.
 (defconst ebox--d-style 1)
@@ -421,6 +421,7 @@ composed without caching, or nil when none are composed."
     (setf (ebox-node-props node) props
           (ebox-node-decls node) (ebox--compile-decls tag style)
           (ebox-node-inter node) inter
+          (ebox-node-inter-cache node) nil
           (ebox-node-key node) (plist-get meta :key)
           (ebox-node-id node) (ebox--token (plist-get meta :id))
           (ebox-node-classes node) (ebox--class-list (plist-get meta :class))
