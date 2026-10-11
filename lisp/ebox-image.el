@@ -22,6 +22,11 @@ otherwise compare equal and an update to the other one would be skipped."
   (identity (make-symbol "ebox-image"))
   columns rows adapter converter text lines width)
 
+(defvar ebox-image--background nil
+  "Background color graphical images were most recently composited over.
+Layout records it; preparation decodes new graphics for it, so images on one
+background decode once instead of once more for a background variant.")
+
 (defvar ebox-image-converters
   '((chafa . ebox-image--chafa) (ffmpeg . ebox-image--ffmpeg))
   "Ordered (NAME . FUNCTION) image converters, called only by preparation.
@@ -170,8 +175,12 @@ INSET is (TOP . BOTTOM) pixels left empty above and below the image."
                    (width (* columns cw))
                    (height (- (* rows lh) top bottom))
                    (descriptor (and (> height 0)
-                                    (create-image data type t :width width :height height
-                                                  :scale 1 :ascent ascent :margin 0))))
+                                    (apply #'create-image data type t :width width
+                                           :height height :scale 1 :ascent ascent
+                                           :margin 0
+                                           (and ebox-image--background
+                                                (list :background
+                                                      ebox-image--background))))))
         ;; A type that cannot decode/scale this source is not usable.  Decoding
         ;; here also warms Emacs' cache before a caller publishes the block.
         ;; Each row is one glyph showing a full-width slice: redisplay

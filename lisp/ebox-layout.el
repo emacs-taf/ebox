@@ -1833,7 +1833,9 @@ may sit inside another overlay, so placement repeats until it settles."
 ;; Emacs composites an image's transparent pixels over the frame
 ;; background unless the descriptor names one, so a round avatar on a tinted
 ;; row would show frame-colored corners.  Each slice is painted over the
-;; nearest background of its box or ancestors instead.
+;; nearest background of its box or ancestors instead.  Preparation already
+;; decodes for the most recent such background, so the common case of images
+;; over one background displays the prepared descriptor and decodes once.
 
 (defvar ebox--image-backgrounds (make-hash-table :test 'eq :weakness 'key)
   "Image descriptors and slice strings to alists of (BACKGROUND . VARIANT).
@@ -1848,13 +1850,16 @@ Slices of one image share one descriptor variant, so it decodes once.")
           variant))))
 
 (defun ebox--image-on-background (line node)
-  "Return image slice LINE composited over NODE's background."
+  "Return image slice LINE composited over NODE's background.
+A descriptor prepared for this background is shown as is; any other
+background gets one shared variant."
   (let* ((bg (and (not noninteractive) (ebox-cs-bg (ebox-node-cs node))))
-         (display (and (stringp bg) (> (length line) 0)
-                       (get-text-property 0 'display line)))
+         (bg (and (stringp bg) bg))
+         (display (and (> (length line) 0) (get-text-property 0 'display line)))
          (image (and (consp display) (eq (car-safe (car (last display))) 'image)
                      (car (last display)))))
-    (if (not image)
+    (when (and image bg) (setq ebox-image--background bg))
+    (if (or (not image) (equal bg (plist-get (cdr image) :background)))
         line
       (ebox--background-variant
        line bg
@@ -1863,8 +1868,13 @@ Slices of one image share one descriptor variant, so it decodes once.")
                (variant (ebox--background-variant
                          image bg
                          (lambda ()
-                           (cons 'image (plist-put (copy-sequence (cdr image))
-                                                   :background bg))))))
+                           (cons 'image
+                                 (if bg
+                                     (plist-put (copy-sequence (cdr image))
+                                                :background bg)
+                                   (cl-loop for (key value) on (cdr image) by #'cddr
+                                            unless (eq key :background)
+                                            append (list key value))))))))
            (put-text-property 0 1 'display (append (butlast display) (list variant))
                               copy)
            copy))))))

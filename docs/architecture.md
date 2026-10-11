@@ -302,7 +302,10 @@ so the cursor never lands in clipped content.
   preparation, never in layout or buffer writing.  Preparation results are
   cached by source identity, size and frame; the bounded cache keeps the most
   recently used preparations, so a screen holding many images reuses them
-  across updates instead of rebuilding each one.
+  across updates instead of rebuilding each one.  Graphics preparation
+  decodes for the background graphical images were last composited over, so
+  an image on that background is decoded once; another background gets one
+  shared variant decoded during paint.
 - A graphical image row is one glyph displaying a full-width slice, because
   redisplay draws, and on some platforms rescales, the image once per glyph.
   Cutting such a row at a box or overlay edge narrows its slice instead of

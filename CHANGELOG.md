@@ -94,6 +94,10 @@ All notable changes to Ebox are documented here.
   updates are no longer skipped when the new image was laid out before, as
   cached images are; a moving tile in an animated arena froze until a cache
   miss.
+- A graphics image shown over a box background is decoded once.  Preparation
+  already decodes for the background images were last painted over, so
+  layout no longer decodes every new image a second time for a background
+  variant; an image placed over a different background still gets one.
 - Hidden nodes no longer retain callback resources removed from their authored
   properties through obsolete interaction decorations.
 - Mounted buffers disable native line continuation so already-laid-out rows
