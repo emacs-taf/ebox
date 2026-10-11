@@ -47,10 +47,13 @@
 
 (defconst ebox--display-locals
   '((bidi-paragraph-direction . left-to-right)
+    (truncate-lines . t)
     (long-line-threshold . nil))
   "Display settings of a mounted buffer and the values Ebox gives them.
 Ebox lays rows out left to right, so a paragraph detected as right-to-left
-would mirror whole rows.  Row length is bounded by the layout width, so
+would mirror whole rows.  Native continuation must not wrap the assembled
+rows again or reserve a continuation column at their right edge.
+Row length is bounded by the layout width, so
 the long-line scan Emacs repeats over the whole buffer after text changes
 cannot find anything.")
 

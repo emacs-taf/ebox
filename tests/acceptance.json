@@ -495,6 +495,11 @@
       "purpose": "Refitting a mount whose whole tree fits its window restores the window start to the buffer top after a temporarily shorter window scrolled it."
     },
     {
+      "name": "ebox-mounted-rows-own-wrapping-and-restore-buffer-settings",
+      "file": "tests/ebox-update-tests.el",
+      "purpose": "Mounted output disables native continuation of engine-owned rows and restores the buffer's original wrapping setting on unmount."
+    },
+    {
       "name": "ebox-buffer-background-follows-root-background",
       "file": "tests/ebox-update-tests.el",
       "purpose": "A mounted buffer's default background follows the root's background color, so window areas beyond the text match the root, and unmounting restores it."

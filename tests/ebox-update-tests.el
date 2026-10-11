@@ -81,6 +81,22 @@
       (set-window-configuration config)
       (kill-buffer buffer))))
 
+(ert-deftest ebox-mounted-rows-own-wrapping-and-restore-buffer-settings ()
+  "A mounted buffer cannot wrap engine rows again; unmount restores its policy."
+  (dolist (initial '(inherit nil t))
+    (with-temp-buffer
+      (let ((truncate-lines nil))
+        (unless (eq initial 'inherit) (setq-local truncate-lines initial))
+        (let ((was-local (local-variable-p 'truncate-lines))
+              (before truncate-lines))
+          (ebox-mount (current-buffer) '(box :width (px 400) "Already laid out")
+                      :width 400 :height 2)
+          (should truncate-lines)
+          (should (local-variable-p 'truncate-lines))
+          (ebox-unmount-buffer (current-buffer))
+          (should (eq before truncate-lines))
+          (should (eq was-local (local-variable-p 'truncate-lines))))))))
+
 (ert-deftest ebox-buffer-background-follows-root-background ()
   (let ((buffer (get-buffer-create " *ebox-canvas*")))
     (unwind-protect

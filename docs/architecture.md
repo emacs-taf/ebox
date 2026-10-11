@@ -230,6 +230,11 @@ back to `ebox--rewrite-line`, which compares characters by prefix/suffix and
 sets only changed property runs.  A foreign buffer edit invalidates remembered
 parts by buffer tick and the next flush recomputes safely from the retained tree.
 
+Mounted buffers disable native line continuation: Ebox has already wrapped
+and positioned each row. A second wrapping pass would reserve a continuation
+column and can leave a foreign background strip at the right edge. The original
+buffer-local wrapping setting is restored on unmount.
+
 Position tracking is skipped when the mount has no lines yet, so the first
 content written into an empty buffer leaves point and window starts at the
 top.  At the end of each flush `ebox--sync-canvas` remaps the buffer's

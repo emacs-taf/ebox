@@ -173,6 +173,9 @@ overlay 拼接进它覆盖的行时不做字符串连接。`ebox--split-parts` �
 变化的 property runs。外部 buffer edit 会通过 buffer tick 使 remembered parts 失效；下一次 flush 从 retained tree
 安全重算。
 
+挂载期间禁用 Emacs 原生续行，因为 Ebox 已完成每行的折行和定位。再次原生折行会预留续行列，
+并可能在右侧露出不属于应用的背景色条。卸载后恢复 buffer 原有的折行设置。
+
 mount 尚无任何行时跳过位置跟踪，因此首次写入空 buffer 的内容保持 point 与 window start 在顶部。
 每次 flush 结束时 `ebox--sync-canvas` 把 buffer 的 `default` 背景 remap 为根节点的计算背景，
 使最后一行以下与行尾之后的窗口区域与根一致；卸载时移除该 remap。

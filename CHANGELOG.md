@@ -80,6 +80,9 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Mounted buffers disable native line continuation so already-laid-out rows
+  reach the right edge without an extra continuation-column background strip.
+  Unmounting restores the buffer's original wrapping setting.
 - Growing or shrinking text inside a fixed-height flex container no longer
   inserts or deletes rows outside it. Multiline native editing, clearing and
   undo preserve following content, including independently animated footers.
