@@ -80,6 +80,11 @@ All notable changes to Ebox are documented here.
 
 ### Fixed
 
+- Starting native input from a button no longer immediately ends it when the
+  opening gesture is released outside the text field. Nested field controls
+  retain editing unless their callback finishes it; later outside clicks
+  still invoke the ordinary leave callback.
+
 - The prepared-image cache keeps the most recently used preparations instead
   of discarding every entry at a fixed count.  A screen holding more images
   than the old threshold, such as a tiled arena, reuses unchanged

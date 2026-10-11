@@ -1448,13 +1448,20 @@ A double press selects the word at the caret and a triple press the value."
          (buffer (ebox-mount-buffer (ebox--input-session-mount session))))
     (when (and (windowp window) (eq (window-buffer window) buffer)
                (null (posn-area end)) (integerp (posn-point end)))
-      (let ((pos (posn-point end))
-            (from (posn-point (event-start event))))
-        (if (not (ebox--input-inside-p session pos))
-            (ebox--input-leave session)
-          (ebox--input-select
-           session (if (and (integerp from) (ebox--input-inside-p session from)) from pos)
-           pos))))))
+      (let* ((pos (posn-point end))
+             (from (posn-point (event-start event)))
+             (owner (ebox--keymap-owner (ebox--input-session-node session)))
+             (control (ebox--event-owner pos)))
+        ;; A nested control owns this click, but is not outside the field's
+        ;; frame.  Its callback may explicitly finish editing; otherwise keep
+        ;; the session and caret, rather than treating its release as leaving.
+        (unless (and owner control (not (eq owner control))
+                     (ebox-node-ancestor-p owner control))
+          (if (not (ebox--input-inside-p session pos))
+              (ebox--input-leave session)
+            (ebox--input-select
+             session (if (and (integerp from) (ebox--input-inside-p session from)) from pos)
+             pos)))))))
 
 (defun ebox--input-post-command ()
   "Show the effect of the last command on the current buffer's session."
@@ -1515,8 +1522,9 @@ follows the caret and a click inside the node's box moves it.
 OPTIONS is a plist.  :on-change is called with the new value after each
 command that changes it.  :keymap holds bindings consulted first; they run
 in BUFFER-OR-NAME, except the commands in `ebox-input-edit-commands', which
-edit the value.  :on-leave is called without arguments when a click lands
-outside the node's box.  :local-variables is an alist of buffer-local
+edit the value.  :on-leave is called without arguments when a later click lands
+outside the node's box; the opening gesture is not a leave event.
+:local-variables is an alist of buffer-local
 settings, such as `completion-at-point-functions', for the commands editing
 the value.  :caret is a value offset placing the caret; without it a fresh
 session opens at the end, while a session whose node text is unchanged
@@ -1547,7 +1555,11 @@ in the same buffer are `ebox-input-error's."
                      :mount mount :node node :shadow shadow :keymap keymap
                      :on-change (plist-get options :on-change)
                      :on-leave (plist-get options :on-leave)
-                     :value value :held t
+                     ;; The command opening the editor already consumed its
+                     ;; activation gesture.  Its release must not immediately
+                     ;; count as a click outside this newly opened field.
+                     ;; The next pre-command hook resets TURN normally.
+                     :value value :held t :turn t
                      :emulation (and keymap (list (cons t keymap))))))
       (with-current-buffer shadow
         (unless cached-p

@@ -447,4 +447,67 @@ keyboard macros reach it."
           (should (equal (ebox-input-text session) "")))
         (ebox-input-end session)))))
 
+(ert-deftest ebox-input-opening-click-is-not-an-outside-click ()
+  "Opening from a button survives release; a later outside click still leaves."
+  (let ((buffer (generate-new-buffer " *input opening click*"))
+        field session (leaves 0))
+    (unwind-protect
+        (save-window-excursion
+          (switch-to-buffer buffer)
+          (let* ((start (lambda ()
+                          (setq session
+                                (ebox-input-begin
+                                 buffer field
+                                 :on-leave (lambda ()
+                                             (cl-incf leaves)
+                                             (ebox-input-end session))))))
+                 (root (ebox-mount
+                        buffer
+                        (list 'column
+                              (list 'box :id "edit" :keymap
+                                    (ebox-keymap-create :activate start) "Edit")
+                              (list 'column :height '(lh 4)
+                                    :keymap (ebox-keymap-create :activate #'ignore)
+                                    '(text :id "field" "")
+                                    (list 'box :id "inside-control" :keymap
+                                          (ebox-keymap-create :activate #'ignore) "Tool"))
+                              (list 'box :id "outside" :keymap
+                                    (ebox-keymap-create :activate #'ignore) "Outside"))
+                        :width 400 :height 12)))
+            (setq field (car (ebox-selector-query root "#field")))
+            (cl-labels
+                ((click (id)
+                   (let* ((node (car (ebox-selector-query root id)))
+                          (position (ebox-node-position node))
+                          (posn (list (selected-window) position '(2 . 2) 0))
+                          ;; Use the published cell's native keymap in batch
+                          ;; too, where there is no graphical pixel hit tester.
+                          (overriding-local-map (get-text-property position 'keymap)))
+                     (execute-kbd-macro (vector (list 'down-mouse-1 posn)
+                                                (list 'mouse-1 posn))))))
+              (click "#edit")
+              (let ((active (and (ebox-input-active-p buffer) t)))
+                (should active))
+              (should (= leaves 0))
+              (execute-kbd-macro "abc")
+              (should (equal (ebox-input-text session) "abc"))
+              (click "#inside-control")
+              (let ((active (and (ebox-input-active-p buffer) t)))
+                (should active))
+              (should (= leaves 0))
+              (should (equal (ebox-input-text session) "abc"))
+              (execute-kbd-macro (kbd "DEL DEL DEL"))
+              (ebox-mount-set-viewport buffer 200 12)
+              (execute-kbd-macro "x")
+              (should (equal (ebox-input-text session) "x"))
+              (click "#outside")
+              (let ((active (and (ebox-input-active-p buffer) t)))
+                (should-not active))
+              (should (= leaves 1))
+              (click "#edit")
+              (let ((active (and (ebox-input-active-p buffer) t)))
+                (should active))
+              (should (= leaves 1)))))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 ;;; ebox-scroll-input-tests.el ends here

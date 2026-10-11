@@ -467,7 +467,8 @@
 ;; box moves the caret or selects.  OPTIONS is a plist: :on-change receives the
 ;; new value after each command that changes it; :keymap holds bindings
 ;; consulted first, which run in the buffer except `ebox-input-edit-commands';
-;; :on-leave is called without arguments when a click lands outside NODE's box;
+;; :on-leave is called without arguments when a later click lands outside NODE's
+;; box; the gesture opening the session does not also count as leaving it.
 ;; :local-variables is an alist of buffer-local settings, such as
 ;; `completion-at-point-functions', for the commands editing the value;
 ;; :caret is a value offset placing the caret, and a session whose node text
