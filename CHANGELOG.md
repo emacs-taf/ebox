@@ -6,6 +6,11 @@ All notable changes to Ebox are documented here.
 
 ### Added
 
+- The `:backdrop-filter` style property dims the cells an overlay covers while
+  keeping their text and images visible.  Its `(brightness AMOUNT)` value
+  multiplies the covered foreground and background colors, so a modal backdrop
+  keeps the application painted instead of covering it.
+
 - Keyboard focus models composite widgets: `:focus-group` (`vertical`,
   `horizontal` or `grid`) makes a container one Tab stop entered at its
   selected or last focused member and roved with arrows; `:focus-scope modal`
@@ -66,7 +71,7 @@ All notable changes to Ebox are documented here.
 
 ### Removed
 
-- The package manual `docs/manual.md` is replaced by the [ETAF Reference Manual](https://gitea.gklazycat.heiyu.space/emacs-taf/etaf-manual/src/branch/main/book/en/ebox-node-construction.md), which the README and the package Commentary link; `docs/architecture.md` remains the maintainer contract.
+- The package manual `docs/manual.md` is replaced by the [ETAF Reference Manual](https://etaf.top/ebox-node-construction/), which the README and the package Commentary link; `docs/architecture.md` remains the maintainer contract.
 
 - **BREAKING:** Removed the previous engine's canonical inputs, source builders,
   surfaces, publications, transactions, prepared update/geometry APIs,
